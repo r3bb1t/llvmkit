@@ -1,0 +1,16 @@
+[package]
+name                   = "llvmkit-asmparser"
+description            = "Lexer and parser for LLVM textual IR (.ll), mirroring llvm/lib/AsmParser."
+authors.workspace      = true
+edition.workspace      = true
+version.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+rust-version.workspace = true
+keywords.workspace     = true
+categories.workspace   = true
+
+[dependencies]
+llvmkit-support = { workspace = true }
+thiserror       = { workspace = true }
