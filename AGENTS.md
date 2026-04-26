@@ -18,9 +18,15 @@ What `rllvm` is *not*:
 
 ## Project Status
 
-The repo is a Cargo workspace at `C:/Users/Aslan/rllvm/`. The first subsystem
-(the `.ll` lexer) is implemented; the parser, IR data model, and bitcode
-layers will land in subsequent sessions.
+The repo is a Cargo workspace at `C:/Users/Aslan/rllvm/`. The `.ll` lexer is
+implemented; the IR data model has Phase A1 (width-typed integers via
+`IntType<'ctx, W>` markers) plus Phase A2 (kind-typed floats via
+`FloatType<'ctx, K>` markers), the value layer foundation, the minimum
+`add`/`sub`/`mul`/`ret` builder, and an `AsmWriter` covering that opcode
+set with real `.ll` output via `format!("{module}")`. Parser, return-type
+marker on `FunctionValue`, medium IRBuilder (full integer + FP arithmetic,
+casts, memory, GEP, control flow), and the bitcode layers will land in
+subsequent sessions.
 
 Workspace shape (see each crate's `Cargo.toml` for details):
 
@@ -110,8 +116,10 @@ If a translation unit genuinely benefits from a split, use the modern Rust
 containing private helper files — the parent `foo.rs` stays the canonical
 navigation entry-point.
 
-Current shape (only the lexer is implemented; the rest are listed for parity
-with `lib/AsmParser/` and will land in subsequent sessions):
+Current shape (the lexer plus the IR data-model + value layer +
+minimal IRBuilder are implemented; the rest are listed for parity
+with `lib/IR/` and `lib/AsmParser/` and will land in subsequent
+sessions):
 
 ```
 <repo root>/
@@ -119,6 +127,7 @@ with `lib/AsmParser/` and will land in subsequent sessions):
 ├── README.md
 ├── LICENSE
 ├── AGENTS.md
+├── INKWELL_MIGRATION.md
 ├── llvmkit/                         # umbrella crate
 │   ├── Cargo.toml
 │   └── src/lib.rs
@@ -128,13 +137,63 @@ with `lib/AsmParser/` and will land in subsequent sessions):
     │       ├── lib.rs
     │       ├── span.rs              # Span + Spanned<T>
     │       └── source_map.rs        # byte-offset → (line, col)
+    ├── llvmkit-ir/                  # IR data model
+    │   ├── Cargo.toml
+    │   ├── src/
+    │   │   ├── lib.rs
+    │   │   ├── type.rs              # Type + TypeData + IrType / TypeKind
+    │   │   ├── derived_types.rs     # IntType/FloatType/.. + refinement enums
+    │   │   ├── typed_pointer_type.rs # TypedPointerType
+    │   │   ├── module.rs            # Module + ModuleId + ModuleRef
+    │   │   ├── llvm_context.rs      # type/value arenas + intern maps
+    │   │   ├── calling_conv.rs      # CallingConv newtype
+    │   │   ├── cmp_predicate.rs     # IntPredicate + FloatPredicate
+    │   │   ├── attributes.rs        # AttrKind / Attribute / AttributeList / AttributeStorage
+    │   │   ├── attribute_mask.rs    # AttributeMask bitflags
+    │   │   ├── fmf.rs               # FastMathFlags
+    │   │   ├── gep_no_wrap_flags.rs # GepNoWrapFlags
+    │   │   ├── error.rs             # IrError + TypeKindLabel + ValueCategoryLabel
+    │   │   ├── value.rs             # Value + IntValue/FloatValue/… + sealed traits
+    │   │   ├── use.rs               # Use (transient view)
+    │   │   ├── user.rs              # sealed User trait
+    │   │   ├── debug_loc.rs         # opaque DebugLoc placeholder
+    │   │   ├── basic_block.rs       # BasicBlock handle
+    │   │   ├── value_symbol_table.rs # per-function name lookup
+    │   │   ├── constant.rs          # Constant + IsConstant
+    │   │   ├── constants.rs         # ConstantInt/Float/… refinements + ctors
+    │   │   ├── global_value.rs      # Linkage enum (subset)
+    │   │   ├── unnamed_addr.rs      # GlobalValue::UnnamedAddr
+    │   │   ├── argument.rs          # Argument handle
+    │   │   ├── function.rs          # FunctionValue<'ctx, R> + FunctionBuilder<R>
+    │   │   ├── return_marker.rs     # RVoid/RInt/RFloat/RPtr/RDyn
+    │   │   ├── instruction.rs       # Instruction + InstructionKind/TerminatorKind
+    │   │   ├── instr_types.rs       # BinaryOpData / CastOpData / CastOpcode / ReturnOpData payloads
+    │   │   ├── instructions.rs      # AddInst/SubInst/MulInst/CastInst/RetInst handles
+    │   │   ├── operator.rs          # OverflowingBinaryOperator view
+    │   │   ├── ir_builder.rs        # IRBuilder<'ctx, F, S, R> typestate
+    │   │   └── ir_builder/
+    │   │       ├── folder.rs        # IRBuilderFolder trait
+    │   │       ├── constant_folder.rs # default folder
+    │   │       └── no_folder.rs     # no-op folder
+    │   ├── examples/
+    │   │   ├── build_add_function.rs # cargo run --example build_add_function
+    │   │   └── cpu_state_add.rs     # multi-fn / params / unnamed_addr / trunc demo
+    │   └── tests/
+    │       ├── phase_a_types.rs
+    │       ├── asm_writer_basic.rs
+    │       ├── cpu_state_add_example.rs
+    │       ├── medium_builder_cast.rs
+    │       ├── parameter_attributes.rs
+    │       ├── phase_a_types.rs
+    │       ├── unnamed_addr.rs
+    │       └── vertical_slice.rs
     └── llvmkit-asmparser/
         ├── README.md
         ├── src/
         │   ├── lib.rs
         │   ├── ll_lexer.rs          # LLLexer.h + LLLexer.cpp
         │   ├── ll_lexer/            # private impl-details for ll_lexer.rs
-        │   │   ├── escape.rs        # mirrors UnEscapeLexed (LLLexer.cpp:124)
+        │   │   ├── escape.rs        # mirrors UnEscapeLexed
         │   │   └── keywords.rs      # mirrors the keyword switch in LexIdentifier
         │   ├── ll_lexer_tests.rs    # unit tests, included via #[path]
         │   └── ll_token.rs          # LLToken.h
@@ -156,9 +215,19 @@ Future work — each entry pairs to a single LLVM C++ file:
 | `llvmkit-asmparser/src/file_loc.rs`               | `FileLoc.h`                          |
 | `llvmkit-asmparser/src/slot_mapping.rs`           | `SlotMapping.h`                      |
 | `llvmkit-asmparser/src/numbered_values.rs`        | `NumberedValues.h`                   |
-| `llvmkit-ir/` (new crate)                         | `lib/IR/` — Type, Value, Module, … |
-| `llvmkit-irbuilder/` (new crate)                  | `IRBuilder.h` + folders              |
-| `llvmkit-bitcode/` (new crate)                    | `lib/Bitcode/`, `lib/Bitstream/`     |
+| `crates/llvmkit-ir/src/global_variable.rs`        | `IR/GlobalVariable.h` + `Globals.cpp`|
+| `crates/llvmkit-ir/src/global_alias.rs`           | `IR/GlobalAlias.h` + `Globals.cpp`   |
+| `crates/llvmkit-ir/src/global_ifunc.rs`           | `IR/GlobalIFunc.h` + `Globals.cpp`   |
+| `crates/llvmkit-ir/src/comdat.rs`                 | `IR/Comdat.h`                        |
+| `crates/llvmkit-ir/src/data_layout.rs`            | `IR/DataLayout.{h,cpp}`              |
+| `crates/llvmkit-ir/src/intrinsic_inst.rs`         | `IR/IntrinsicInst.{h,cpp}`           |
+| `crates/llvmkit-ir/src/inline_asm.rs`             | `IR/InlineAsm.{h,cpp}`               |
+| `crates/llvmkit-ir/src/intrinsics.rs`             | `IR/Intrinsics.h`                    |
+| `crates/llvmkit-ir/src/metadata.rs`               | `IR/Metadata.{h,cpp}`                |
+| `crates/llvmkit-ir/src/assembly_annotation_writer.rs` | `IR/AssemblyAnnotationWriter.h` |
+| `crates/llvmkit-ir/src/verifier.rs`               | `IR/Verifier.{h,cpp}`                |
+| `crates/llvmkit-ir/src/asm_writer.rs` (extensions) | `IR/AsmWriter.cpp` (full opcode set) |
+| `crates/llvmkit-bitcode/` (new crate)             | `lib/Bitcode/`, `lib/Bitstream/`     |
 
 **Do not add empty stub files.** A file in the tree should reflect existing
 behavior; placeholders that pretend to do work are a smell. The future-files
@@ -265,8 +334,12 @@ If a problem feels solvable only by linking against `libLLVM`, the answer is "re
 - **Naming**: standard Rust (`snake_case` items, `PascalCase` types, `SCREAMING_SNAKE_CASE` consts). Drop the `LLVM` prefix from ported names — `LLVMContext` becomes `Context`, `LLVMModule` becomes `Module`. The crate name already namespaces them.
 - **Modules**: one concept per file; let modules grow before splitting them. `Instructions.h` is 5k lines because it pays for itself; do not pre-split into 40 stub files.
 - **Errors**: one crate-level `enum Error` (or a small per-subsystem enum that flattens into it). Avoid `Box<dyn std::error::Error>` in public signatures.
-- **Comments**: explain *why*, not *what*. When porting a non-obvious C++ trick, link the source file and line: `// Mirrors LLParser::ParseTopLevelEntities (LLParser.cpp:412)`.
+- **Comments**: explain *why*, not *what*. When porting a non-obvious C++ trick, link the source file and the symbol — never the line number, which drifts between LLVM versions: `// Mirrors LLParser::parseTopLevelEntities (LLParser.cpp)`.
 - **Public API**: re-export from `lib.rs`. Keep internal modules `pub(crate)` until an external use case appears.
+- **No `as` casts.** Use `From`/`Into` for infallible widening, `TryFrom`/`TryInto` for fallible narrowing, and method-style conversions (e.g. `u32::from(x)`, `usize::try_from(x)`) elsewhere. The `as` keyword silently truncates, changes signedness, and loses precision — every site is a footgun. If a conversion has no idiomatic counterpart (rare, e.g. deliberate truncation), wrap it in a small named helper with a one-line invariant comment.
+- **No pointer-based identity in our code.** Identity flows through typed integer indices (`TypeId`, `ValueId`, `ModuleId`, ...). No `core::ptr::eq`, no `&T as *const T`, no address hashing in user-written code. Library internals like `boxcar` may use raw pointers safely behind their `unsafe` boundaries — we do not. Identity comparisons derive from `PartialEq`/`Hash` on the index types.
+- **No runtime panics in production code.** `expect`, `unwrap`, `panic!`, `unimplemented!`, `todo!` are forbidden in non-test paths. Real failures use `IrError` returned via `IrResult<T>`. `unreachable!("…invariant…")` is permitted **only** when the branch is provably dead by construction *and* there is no reasonable way to remove it via the type system; the message names the invariant in plain English. Test code (`#[cfg(test)]`, `tests/`, `examples/`) is exempt.
+
 - **No emojis**, no decorative comments, no boilerplate `mod tests` blocks unless they contain real tests.
 
 ## Development Commands

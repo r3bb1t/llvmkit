@@ -4,6 +4,7 @@ members  = [
     "llvmkit",
     "crates/llvmkit-support",
     "crates/llvmkit-asmparser",
+    "crates/llvmkit-ir",
 ]
 default-members = ["llvmkit"]
 
@@ -21,4 +22,5 @@ categories   = ["compilers", "parser-implementations", "development-tools"]
 [workspace.dependencies]
 llvmkit-support   = { path = "crates/llvmkit-support" }
 llvmkit-asmparser = { path = "crates/llvmkit-asmparser" }
+llvmkit-ir        = { path = "crates/llvmkit-ir" }
 thiserror         = "2"

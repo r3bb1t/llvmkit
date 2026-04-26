@@ -3,10 +3,23 @@
 version = 4
 
 [[package]]
+name = "bitflags"
+version = "2.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
+
+[[package]]
+name = "boxcar"
+version = "0.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36f64beae40a84da1b4b26ff2761a5b895c12adc41dc25aaee1c4f2bbfe97a6e"
+
+[[package]]
 name = "llvmkit"
 version = "0.0.1"
 dependencies = [
  "llvmkit-asmparser",
+ "llvmkit-ir",
  "llvmkit-support",
 ]
 
@@ -15,6 +28,15 @@ name = "llvmkit-asmparser"
 version = "0.0.1"
 dependencies = [
  "llvmkit-support",
+ "thiserror",
+]
+
+[[package]]
+name = "llvmkit-ir"
+version = "0.0.1"
+dependencies = [
+ "bitflags",
+ "boxcar",
  "thiserror",
 ]
 

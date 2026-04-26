@@ -1,6 +1,6 @@
 [package]
-name                   = "llvmkit"
-description            = "Rust reimplementation of LLVM IR APIs."
+name                   = "llvmkit-ir"
+description            = "LLVM IR data model in pure Rust: types, values, modules, instructions, builder."
 authors.workspace      = true
 edition.workspace      = true
 version.workspace      = true
@@ -12,6 +12,6 @@ keywords.workspace     = true
 categories.workspace   = true
 
 [dependencies]
-llvmkit-support   = { workspace = true }
-llvmkit-asmparser = { workspace = true }
-llvmkit-ir        = { workspace = true }
+bitflags  = "2"
+boxcar    = "0.2"
+thiserror = { workspace = true }
