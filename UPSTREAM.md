@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 277.
+Total `#[test]` functions: 285.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -296,3 +296,12 @@ Total `#[test]` functions: 277.
 | `crates/llvmkit-support/src/span.rs::span_indexes_slice` | `-` | llvmkit-specific |
 | `crates/llvmkit-support/src/span.rs::spanned_map_preserves_span` | `-` | llvmkit-specific |
 | `crates/llvmkit-support/src/span.rs::spanned_as_ref_borrows` | `-` | llvmkit-specific |
+
+| `crates/llvmkit-ir/tests/builder_typestate_seal.rs::cond_br_terminator_seals_block` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)` | port |
+| `crates/llvmkit-ir/tests/builder_typestate_seal.rs::phi_range_iterates_three_phis` | `unittests/IR/BasicBlockTest.cpp::TEST(BasicBlockTest, PhiRange)` | port |
+| `crates/llvmkit-ir/tests/builder_typestate_seal.rs::seal_typestate_does_not_change_asm_output` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/builder_typestate_phi.rs::phi_finishes_after_all_incomings` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/typestate_compile_fail.rs::typestate_compile_fail` | `lib/IR/Verifier.cpp::visitBasicBlock` + `visitPHINode` (runtime forms) | llvmkit-specific |
+| `crates/llvmkit-ir/tests/struct_typestate.rs::named_struct_retains_name` | `unittests/IR/TypesTest.cpp::TEST(TypesTest, StructType)` | port |
+| `crates/llvmkit-ir/tests/struct_typestate.rs::opaque_to_body_set_transition` | `unittests/IR/TypesTest.cpp::TEST(TypesTest, LayoutIdenticalEmptyStructs)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/struct_typestate.rs::double_set_body_runtime_path_rejects` | `unittests/IR/TypesTest.cpp::TEST(TypesTest, StructType)` | llvmkit-specific |

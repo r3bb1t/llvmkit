@@ -1,0 +1,24 @@
+error[E0599]: no method named `add_incoming` found for struct `PhiInst<'_, i32, Closed>` in the current scope
+  --> tests/compile_fail/add_incoming_after_finish.rs:35:17
+   |
+35 |     let _ = phi.add_incoming(3_i32, entry);
+   |                 ^^^^^^^^^^^^
+   |
+note: there's an earlier shadowed binding `phi` of type `PhiInst<'_, i32>` that has method `add_incoming` available
+  --> tests/compile_fail/add_incoming_after_finish.rs:27:9
+   |
+27 |     let phi = b.build_int_phi::<i32>("p").unwrap();
+   |         ^^^ `phi` of type `PhiInst<'_, i32>` that has method `add_incoming` defined earlier here
+28 |     let phi = phi
+   |         --- earlier `phi` shadowed here with type `PhiInst<'_, i32, Closed>`
+help: there is a method `incoming` with a similar name, but with different arguments
+  --> src/instructions.rs
+   |
+   | /     pub fn incoming(
+   | |         self,
+   | |         index: u32,
+   | |     ) -> crate::IrResult<(
+   | |         Value<'ctx>,
+   | |         crate::basic_block::BasicBlock<'ctx, crate::marker::Dyn>,
+   | |     )> {
+   | |______^

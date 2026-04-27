@@ -68,7 +68,7 @@ fn build_unreachable_terminator() -> Result<(), IrError> {
     let f = m.add_function::<()>("dead", fn_ty, Linkage::External)?;
     let entry = f.append_basic_block("entry");
     let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-    let inst = b.build_unreachable();
+    let (_sealed, inst) = b.build_unreachable();
     assert!(matches!(
         inst.terminator_kind(),
         Some(TerminatorKind::Unreachable(_))

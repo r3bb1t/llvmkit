@@ -19,6 +19,7 @@ pub mod asm_writer;
 pub mod attribute_mask;
 pub mod attributes;
 pub mod basic_block;
+pub mod block_state;
 pub mod calling_conv;
 pub mod cmp_predicate;
 pub mod constant;
@@ -41,12 +42,16 @@ pub(crate) mod llvm_context;
 pub mod marker;
 pub mod module;
 pub mod operator;
+pub mod phi_state;
+pub mod sized_element;
+pub mod struct_body_state;
 pub mod r#type;
 pub mod typed_pointer_type;
 pub mod r#use;
 pub mod user;
 pub mod value;
 pub mod value_symbol_table;
+pub mod vector_element;
 pub mod verifier;
 
 pub mod unnamed_addr;
@@ -54,6 +59,7 @@ pub use argument::Argument;
 pub use attribute_mask::AttributeMask;
 pub use attributes::{AttrIndex, AttrKind, Attribute, AttributeList, AttributeSet};
 pub use basic_block::BasicBlock;
+pub use block_state::{BlockSealState, Sealed, Unsealed};
 pub use calling_conv::CallingConv;
 pub use cmp_predicate::{FloatPredicate, IntPredicate};
 pub use constant::{Constant, IsConstant};
@@ -90,6 +96,9 @@ pub use ir_builder::{CallBuilder, IRBuilder, Positioned, SelectArm, Unpositioned
 pub use marker::{Dyn, Ptr, ReturnMarker};
 pub use module::{Module, ModuleId, ModuleRef, VerifiedModule};
 pub use operator::OverflowingBinaryOperator;
+pub use phi_state::{Closed, Open, PhiState};
+pub use sized_element::{ArrayDyn, SizedElement};
+pub use struct_body_state::{BodySet, Opaque, StructBodyDyn, StructBodyState};
 pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeKind};
 pub use typed_pointer_type::TypedPointerType;
 pub use unnamed_addr::UnnamedAddr;
@@ -99,6 +108,7 @@ pub use value::{
     ArrayValue, FloatValue, FunctionTypedValue, HasDebugLoc, HasName, IntValue, IntoPointerValue,
     IsValue, PointerValue, StructValue, Typed, Value, ValueCategory, VectorValue,
 };
+pub use vector_element::{VectorDyn, VectorElement};
 
 pub use align::{Align, MaybeAlign};
 pub use float_kind::{

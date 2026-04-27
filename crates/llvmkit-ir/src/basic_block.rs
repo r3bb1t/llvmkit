@@ -18,14 +18,14 @@
 //!
 //! [`IRBuilder`]: crate::ir_builder::IRBuilder
 
-use core::cell::RefCell;
-use core::marker::PhantomData;
-
+use crate::block_state::{BlockSealState, Unsealed};
 use crate::marker::{Dyn, ReturnMarker};
 use crate::module::{Module, ModuleRef};
 use crate::r#type::TypeId;
 use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
 use crate::{DebugLoc, IrError, IrResult, Type};
+use core::cell::RefCell;
+use core::marker::PhantomData;
 
 // --------------------------------------------------------------------------
 // Storage payload
@@ -65,35 +65,46 @@ impl BasicBlockData {
 /// shape at the type level so a typed [`IRBuilder`](crate::IRBuilder)
 /// positioned inside the block can keep its compile-time `build_ret`
 /// invariant.
-pub struct BasicBlock<'ctx, R: ReturnMarker> {
+///
+/// The `Seal: BlockSealState` parameter (default [`Unsealed`])
+/// distinguishes blocks that still accept appended instructions from
+/// blocks whose terminator has been emitted. The compile-time
+/// guarantee is enforced at [`crate::IRBuilder::position_at_end`],
+/// which only accepts an [`Unsealed`] block; once a terminator-emitting
+/// `build_*` consumes the builder, the same block is returned with
+/// `Seal = Sealed`. Cross-block references (branch targets, phi
+/// predecessors) are generic over `Seal` so already-sealed blocks
+/// can still be named.
+pub struct BasicBlock<'ctx, R: ReturnMarker, Seal: BlockSealState = Unsealed> {
     pub(crate) id: ValueId,
     pub(crate) module: ModuleRef<'ctx>,
     pub(crate) ty: TypeId,
     pub(crate) _r: PhantomData<R>,
+    pub(crate) _seal: PhantomData<Seal>,
 }
 
-impl<'ctx, R: ReturnMarker> Clone for BasicBlock<'ctx, R> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState> Clone for BasicBlock<'ctx, R, Seal> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'ctx, R: ReturnMarker> Copy for BasicBlock<'ctx, R> {}
-impl<'ctx, R: ReturnMarker> PartialEq for BasicBlock<'ctx, R> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState> Copy for BasicBlock<'ctx, R, Seal> {}
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState> PartialEq for BasicBlock<'ctx, R, Seal> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
     }
 }
-impl<'ctx, R: ReturnMarker> Eq for BasicBlock<'ctx, R> {}
-impl<'ctx, R: ReturnMarker> core::hash::Hash for BasicBlock<'ctx, R> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState> Eq for BasicBlock<'ctx, R, Seal> {}
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState> core::hash::Hash for BasicBlock<'ctx, R, Seal> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
         self.ty.hash(h);
     }
 }
-impl<'ctx, R: ReturnMarker> core::fmt::Debug for BasicBlock<'ctx, R> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState> core::fmt::Debug for BasicBlock<'ctx, R, Seal> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("BasicBlock")
             .field("id", &self.id)
@@ -102,7 +113,7 @@ impl<'ctx, R: ReturnMarker> core::fmt::Debug for BasicBlock<'ctx, R> {
     }
 }
 
-impl<'ctx, R: ReturnMarker> BasicBlock<'ctx, R> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
     #[inline]
     pub(crate) fn from_parts(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
         Self {
@@ -110,6 +121,7 @@ impl<'ctx, R: ReturnMarker> BasicBlock<'ctx, R> {
             module: ModuleRef::new(module),
             ty,
             _r: PhantomData,
+            _seal: PhantomData,
         }
     }
 
@@ -125,14 +137,31 @@ impl<'ctx, R: ReturnMarker> BasicBlock<'ctx, R> {
 
     /// Erase the return-shape marker, producing the runtime-checked
     /// [`Dyn`] form. Useful for storage and printing helpers that
-    /// shouldn't have to be generic in `R`.
+    /// shouldn't have to be generic in `R`. Also collapses the seal
+    /// state to the default [`Unsealed`] view (the runtime form does
+    /// not track seal state).
     #[inline]
-    pub fn as_dyn(self) -> BasicBlock<'ctx, Dyn> {
+    pub fn as_dyn(self) -> BasicBlock<'ctx, Dyn, Unsealed> {
         BasicBlock {
             id: self.id,
             module: self.module,
             ty: self.ty,
             _r: PhantomData,
+            _seal: PhantomData,
+        }
+    }
+
+    /// Re-tag the seal-state marker. Crate-internal: only the
+    /// terminator-emitting build path produces a sealed view from an
+    /// unsealed builder block.
+    #[inline]
+    pub(crate) fn retag_seal<S2: BlockSealState>(self) -> BasicBlock<'ctx, R, S2> {
+        BasicBlock {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+            _r: PhantomData,
+            _seal: PhantomData,
         }
     }
 
@@ -277,7 +306,7 @@ impl<'ctx, R: ReturnMarker> BasicBlock<'ctx, R> {
 // Splice helpers (T1)
 // --------------------------------------------------------------------------
 
-impl<'ctx, R: ReturnMarker> BasicBlock<'ctx, R> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
     /// Move every instruction from `self` into `dest`, appending at the
     /// end. After the call, `self` is empty and every moved instruction's
     /// `parent` field has been re-pointed at `dest`. Mirrors
@@ -285,7 +314,10 @@ impl<'ctx, R: ReturnMarker> BasicBlock<'ctx, R> {
     ///
     /// Both blocks must belong to the same module; cross-module splicing
     /// errors with [`IrError::ForeignValue`].
-    pub fn splice_into<R2: ReturnMarker>(self, dest: BasicBlock<'ctx, R2>) -> IrResult<()> {
+    pub fn splice_into<R2: ReturnMarker, S2: BlockSealState>(
+        self,
+        dest: BasicBlock<'ctx, R2, S2>,
+    ) -> IrResult<()> {
         if self.module.module().id() != dest.module.module().id() {
             return Err(IrError::ForeignValue);
         }
@@ -314,7 +346,7 @@ impl<'ctx, R: ReturnMarker> BasicBlock<'ctx, R> {
         self,
         before: &crate::instruction::Instruction<'ctx, crate::instruction::state::Attached>,
         name: impl Into<String>,
-    ) -> IrResult<BasicBlock<'ctx, R>> {
+    ) -> IrResult<BasicBlock<'ctx, R, Unsealed>> {
         let module = self.module.module();
         let parent_fn_id = match self.parent_id() {
             Some(id) => id,
@@ -344,20 +376,20 @@ impl<'ctx, R: ReturnMarker> BasicBlock<'ctx, R> {
     }
 }
 
-impl<'ctx, R: ReturnMarker> sealed::Sealed for BasicBlock<'ctx, R> {}
-impl<'ctx, R: ReturnMarker> IsValue<'ctx> for BasicBlock<'ctx, R> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState> sealed::Sealed for BasicBlock<'ctx, R, Seal> {}
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState> IsValue<'ctx> for BasicBlock<'ctx, R, Seal> {
     #[inline]
     fn as_value(self) -> Value<'ctx> {
         BasicBlock::as_value(self)
     }
 }
-impl<'ctx, R: ReturnMarker> Typed<'ctx> for BasicBlock<'ctx, R> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState> Typed<'ctx> for BasicBlock<'ctx, R, Seal> {
     #[inline]
     fn ty(self) -> Type<'ctx> {
         self.as_value().ty()
     }
 }
-impl<'ctx, R: ReturnMarker> HasName<'ctx> for BasicBlock<'ctx, R> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState> HasName<'ctx> for BasicBlock<'ctx, R, Seal> {
     #[inline]
     fn name(self) -> Option<String> {
         BasicBlock::name(self)
@@ -367,21 +399,21 @@ impl<'ctx, R: ReturnMarker> HasName<'ctx> for BasicBlock<'ctx, R> {
         BasicBlock::set_name(self, name);
     }
 }
-impl<R: ReturnMarker> HasDebugLoc for BasicBlock<'_, R> {
+impl<R: ReturnMarker, Seal: BlockSealState> HasDebugLoc for BasicBlock<'_, R, Seal> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
         self.as_value().debug_loc()
     }
 }
 
-impl<'ctx, R: ReturnMarker> From<BasicBlock<'ctx, R>> for Value<'ctx> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState> From<BasicBlock<'ctx, R, Seal>> for Value<'ctx> {
     #[inline]
-    fn from(b: BasicBlock<'ctx, R>) -> Self {
+    fn from(b: BasicBlock<'ctx, R, Seal>) -> Self {
         b.as_value()
     }
 }
 
-impl<'ctx> TryFrom<Value<'ctx>> for BasicBlock<'ctx, Dyn> {
+impl<'ctx> TryFrom<Value<'ctx>> for BasicBlock<'ctx, Dyn, Unsealed> {
     type Error = IrError;
     fn try_from(v: Value<'ctx>) -> IrResult<Self> {
         match v.data().kind {
@@ -390,6 +422,7 @@ impl<'ctx> TryFrom<Value<'ctx>> for BasicBlock<'ctx, Dyn> {
                 module: v.module,
                 ty: v.ty,
                 _r: PhantomData,
+                _seal: PhantomData,
             }),
             _ => Err(IrError::ValueCategoryMismatch {
                 expected: crate::error::ValueCategoryLabel::BasicBlock,
@@ -399,7 +432,7 @@ impl<'ctx> TryFrom<Value<'ctx>> for BasicBlock<'ctx, Dyn> {
     }
 }
 
-impl<'ctx, R: ReturnMarker> core::fmt::Display for BasicBlock<'ctx, R> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState> core::fmt::Display for BasicBlock<'ctx, R, Seal> {
     /// Print the basic block including its label and instructions.
     /// Mirrors LLVM's `BasicBlock::print`.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {

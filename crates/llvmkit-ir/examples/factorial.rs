@@ -83,10 +83,12 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
 
     acc_phi
         .add_incoming(1_i32, entry)?
-        .add_incoming(next_acc, loop_bb)?;
+        .add_incoming(next_acc, loop_bb)?
+        .finish();
     i_phi
         .add_incoming(n, entry)?
-        .add_incoming(next_i, loop_bb)?;
+        .add_incoming(next_i, loop_bb)?
+        .finish();
 
     // exit: ret i32 %next_acc
     let b = IRBuilder::new_for::<i32>(m).position_at_end(exit);

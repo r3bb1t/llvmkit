@@ -361,6 +361,35 @@ impl<'ctx> Module<'ctx> {
         StructType::new(id, self)
     }
 
+    /// Identified opaque struct in its [`Opaque`](crate::Opaque)
+    /// typestate. Doctrine D1: returns a handle whose `B` parameter
+    /// is `Opaque`, gating [`Self::set_struct_body_typed`] (which
+    /// consumes `Opaque` -> `BodySet`) at compile time.
+    ///
+    /// Errors with [`IrError::StructBodyAlreadySet`] if `name` was
+    /// previously declared and already has a body. The runtime check
+    /// is required because `'ctx`-shared contexts may have created
+    /// the struct earlier.
+    pub fn opaque_struct(
+        &'ctx self,
+        name: &str,
+    ) -> IrResult<StructType<'ctx, crate::struct_body_state::Opaque>> {
+        let (id, existed) = self.ctx.get_or_create_named_struct(name);
+        if existed {
+            let s = self
+                .ctx
+                .type_data(id)
+                .as_struct()
+                .expect("named struct invariant");
+            if s.body.borrow().is_some() {
+                return Err(IrError::StructBodyAlreadySet {
+                    name: name.to_owned(),
+                });
+            }
+        }
+        Ok(StructType::new(id, self))
+    }
+
     /// Look up an existing identified struct by name without creating
     /// one on miss.
     pub fn get_named_struct(&'ctx self, name: &str) -> Option<StructType<'ctx>> {
@@ -400,6 +429,29 @@ impl<'ctx> Module<'ctx> {
             });
         }
         self.ctx.set_named_struct_body(st.id, body)
+    }
+
+    /// Typed-state `set_struct_body`: consumes a `StructType<Opaque>`
+    /// and produces a `StructType<BodySet>` (Doctrine D1). Calling
+    /// this twice is a compile error because there is no second
+    /// `StructType<Opaque>` for the same id.
+    pub fn set_struct_body_typed<I, T>(
+        &self,
+        opaque: StructType<'ctx, crate::struct_body_state::Opaque>,
+        elements: I,
+        packed: bool,
+    ) -> IrResult<StructType<'ctx, crate::struct_body_state::BodySet>>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Type<'ctx>>,
+    {
+        let elems: Box<[TypeId]> = elements.into_iter().map(|t| t.into().id()).collect();
+        let body = StructBody {
+            elements: elems,
+            packed,
+        };
+        self.ctx.set_named_struct_body(opaque.id, body)?;
+        Ok(opaque.retag::<crate::struct_body_state::BodySet>())
     }
 
     // ---- Function ----

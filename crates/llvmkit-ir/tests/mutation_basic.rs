@@ -91,7 +91,7 @@ fn erase_no_invalidation() -> Result<(), IrError> {
     let i1 = b.build_int_add(x, 0_i32, "i1")?;
     let i2 = b.build_int_add(x, 0_i32, "i2")?;
     let i3 = b.build_int_add(x, 0_i32, "i3")?;
-    let ret = b.build_ret_void();
+    let (_sealed, ret) = b.build_ret_void();
 
     // Pre-erase order: I1, I2, I3, Ret.
     let pre: Vec<_> = bb.instructions().map(|i| i.as_value()).collect();

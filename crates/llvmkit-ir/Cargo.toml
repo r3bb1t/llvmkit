@@ -15,3 +15,6 @@ categories.workspace   = true
 bitflags  = "2"
 boxcar    = "0.2"
 thiserror = { workspace = true }
+
+[dev-dependencies]
+trybuild = "1"

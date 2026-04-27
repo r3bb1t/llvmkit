@@ -1,0 +1,11 @@
+error[E0599]: no method named `return_int_value` found for struct `CallInst<'_, ()>` in the current scope
+  --> tests/compile_fail/call_void_no_return_accessor.rs:29:18
+   |
+29 |     let _ = inst.return_int_value();
+   |                  ^^^^^^^^^^^^^^^^
+   |
+help: there is a method `return_value` with a similar name
+   |
+29 -     let _ = inst.return_int_value();
+29 +     let _ = inst.return_value();
+   |

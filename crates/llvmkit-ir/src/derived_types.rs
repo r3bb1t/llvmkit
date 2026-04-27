@@ -119,11 +119,131 @@ decl_type_handle!(
     ArrayType, Array,
     predicate |d| matches!(d, TypeData::Array { .. })
 );
-decl_type_handle!(
-    /// Literal or identified struct. Mirrors `StructType` (`DerivedTypes.h`).
-    StructType, Struct,
-    predicate |d| matches!(d, TypeData::Struct(_))
-);
+// `StructType<'ctx, B = StructBodyDyn>` is hand-written below: the
+// `B: StructBodyState` parameter expresses the body-set typestate
+// (Doctrine D1 -- see `struct_body_state.rs`). Existing
+// `StructType<'ctx>` references resolve to `StructType<'ctx,
+// StructBodyDyn>` via the default.
+/// Literal or identified struct. Mirrors `StructType` in
+/// `llvm/include/llvm/IR/DerivedTypes.h`.
+///
+/// The `B: StructBodyState` parameter (default
+/// [`crate::StructBodyDyn`]) tracks whether the struct's body has
+/// been set. [`crate::Module::opaque_struct`] yields a
+/// `StructType<'ctx, Opaque>`; [`crate::Module::set_struct_body`]
+/// consumes the opaque handle and produces a `StructType<'ctx,
+/// BodySet>`. The runtime-checked default keeps existing parsed-IR /
+/// literal-struct call sites working without churn.
+pub struct StructType<
+    'ctx,
+    B: crate::struct_body_state::StructBodyState = crate::struct_body_state::StructBodyDyn,
+> {
+    pub(crate) id: TypeId,
+    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) _b: core::marker::PhantomData<B>,
+}
+
+impl<'ctx, B: crate::struct_body_state::StructBodyState> Clone for StructType<'ctx, B> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'ctx, B: crate::struct_body_state::StructBodyState> Copy for StructType<'ctx, B> {}
+impl<'ctx, B: crate::struct_body_state::StructBodyState> PartialEq for StructType<'ctx, B> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.module == other.module
+    }
+}
+impl<'ctx, B: crate::struct_body_state::StructBodyState> Eq for StructType<'ctx, B> {}
+impl<'ctx, B: crate::struct_body_state::StructBodyState> core::hash::Hash for StructType<'ctx, B> {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.id.hash(h);
+        self.module.hash(h);
+    }
+}
+impl<'ctx, B: crate::struct_body_state::StructBodyState> core::fmt::Debug for StructType<'ctx, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StructType").field("id", &self.id).finish()
+    }
+}
+
+impl<'ctx, B: crate::struct_body_state::StructBodyState> StructType<'ctx, B> {
+    #[inline]
+    pub(crate) fn new(id: TypeId, module: &'ctx Module<'ctx>) -> Self {
+        Self {
+            id,
+            module: ModuleRef::new(module),
+            _b: core::marker::PhantomData,
+        }
+    }
+
+    /// Re-tag the body-state marker. Crate-internal: only
+    /// [`crate::Module::set_struct_body`] flips the public marker.
+    #[inline]
+    pub(crate) fn retag<B2: crate::struct_body_state::StructBodyState>(
+        self,
+    ) -> StructType<'ctx, B2> {
+        StructType {
+            id: self.id,
+            module: self.module,
+            _b: core::marker::PhantomData,
+        }
+    }
+
+    /// Erase the body-state marker.
+    #[inline]
+    pub fn as_dyn(self) -> StructType<'ctx, crate::struct_body_state::StructBodyDyn> {
+        self.retag::<crate::struct_body_state::StructBodyDyn>()
+    }
+
+    /// Widen to the erased [`Type`] handle.
+    #[inline]
+    pub fn as_type(self) -> Type<'ctx> {
+        Type {
+            id: self.id,
+            module: self.module,
+        }
+    }
+}
+
+impl<'ctx, B: crate::struct_body_state::StructBodyState> sealed::Sealed for StructType<'ctx, B> {}
+impl<'ctx, B: crate::struct_body_state::StructBodyState> IrType<'ctx> for StructType<'ctx, B> {
+    #[inline]
+    fn as_type(self) -> Type<'ctx> {
+        self.as_type()
+    }
+}
+impl<'ctx, B: crate::struct_body_state::StructBodyState> fmt::Display for StructType<'ctx, B> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        <Type<'ctx> as fmt::Display>::fmt(&self.as_type(), f)
+    }
+}
+impl<'ctx, B: crate::struct_body_state::StructBodyState> From<StructType<'ctx, B>> for Type<'ctx> {
+    #[inline]
+    fn from(t: StructType<'ctx, B>) -> Self {
+        t.as_type()
+    }
+}
+impl<'ctx> TryFrom<Type<'ctx>> for StructType<'ctx, crate::struct_body_state::StructBodyDyn> {
+    type Error = IrError;
+    #[inline]
+    fn try_from(t: Type<'ctx>) -> IrResult<Self> {
+        if matches!(t.data(), TypeData::Struct(_)) {
+            Ok(Self {
+                id: t.id(),
+                module: t.module,
+                _b: core::marker::PhantomData,
+            })
+        } else {
+            Err(IrError::TypeMismatch {
+                expected: TypeKindLabel::Struct,
+                got: t.kind_label(),
+            })
+        }
+    }
+}
 decl_type_handle!(
     /// Fixed or scalable vector. Mirrors `VectorType` (`DerivedTypes.h`).
     VectorType, FixedVector,
@@ -638,7 +758,7 @@ impl<'ctx> FunctionType<'ctx> {
 // StructType — name / packed / opacity / fields
 // --------------------------------------------------------------------------
 
-impl<'ctx> StructType<'ctx> {
+impl<'ctx, B: crate::struct_body_state::StructBodyState> StructType<'ctx, B> {
     /// Name of an identified (named) struct, or `None` for literal
     /// structs.
     pub fn name(self) -> Option<&'ctx str> {

@@ -721,7 +721,7 @@ impl<'ctx> ArrayType<'ctx> {
     }
 }
 
-impl<'ctx> StructType<'ctx> {
+impl<'ctx, B: crate::struct_body_state::StructBodyState> StructType<'ctx, B> {
     /// `T { ... }`. Element types must match the struct's declared
     /// body. Mirrors `ConstantStruct::get`.
     pub fn const_struct<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx>>

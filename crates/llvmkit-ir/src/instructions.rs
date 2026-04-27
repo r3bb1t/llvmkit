@@ -15,6 +15,7 @@ use crate::instr_types::{
 };
 use crate::instruction::{Instruction, InstructionKindData, state};
 use crate::module::{Module, ModuleRef};
+use crate::phi_state::{Closed, Open, PhiState};
 use crate::r#type::TypeId;
 use crate::value::{Value, ValueId, ValueKindData};
 
@@ -367,16 +368,77 @@ impl<'ctx> GepInst<'ctx> {
 }
 
 /// `call` instruction. Mirrors `CallInst` (`Instructions.h`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CallInst<'ctx> {
+///
+/// The `R: ReturnMarker` parameter (default [`crate::Dyn`]) propagates
+/// the callee's return shape, so a typed [`crate::IRBuilder::build_call`] for an `i32`
+/// callee returns `CallInst<'ctx, i32>` and exposes a typed
+/// `return_int_value()` accessor without a runtime
+/// [`crate::IrError::TypeMismatch`].
+#[derive(Debug)]
+pub struct CallInst<'ctx, R: crate::marker::ReturnMarker = crate::marker::Dyn> {
     pub(crate) id: ValueId,
     pub(crate) module: ModuleRef<'ctx>,
     pub(crate) ty: TypeId,
+    _r: core::marker::PhantomData<R>,
 }
 
-decl_handle_scaffold!(CallInst);
+impl<'ctx, R: crate::marker::ReturnMarker> Clone for CallInst<'ctx, R> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'ctx, R: crate::marker::ReturnMarker> Copy for CallInst<'ctx, R> {}
+impl<'ctx, R: crate::marker::ReturnMarker> PartialEq for CallInst<'ctx, R> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.module == other.module && self.ty == other.ty
+    }
+}
+impl<'ctx, R: crate::marker::ReturnMarker> Eq for CallInst<'ctx, R> {}
+impl<'ctx, R: crate::marker::ReturnMarker> core::hash::Hash for CallInst<'ctx, R> {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.id.hash(h);
+        self.module.hash(h);
+        self.ty.hash(h);
+    }
+}
 
-impl<'ctx> CallInst<'ctx> {
+impl<'ctx, R: crate::marker::ReturnMarker> CallInst<'ctx, R> {
+    #[inline]
+    pub(crate) fn from_raw(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
+        Self {
+            id,
+            module: ModuleRef::new(module),
+            ty,
+            _r: core::marker::PhantomData,
+        }
+    }
+
+    /// Materialise a single-use lifecycle handle.
+    #[inline]
+    pub fn as_instruction(self) -> Instruction<'ctx, state::Attached> {
+        Instruction::from_parts(self.id, self.module.module())
+    }
+
+    /// Re-tag the return marker. Crate-internal: only [`build_call`]
+    /// flows the typed marker; [`as_dyn`] erases it.
+    #[inline]
+    pub(crate) fn retag<R2: crate::marker::ReturnMarker>(self) -> CallInst<'ctx, R2> {
+        CallInst {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+            _r: core::marker::PhantomData,
+        }
+    }
+
+    /// Erase the return marker. Useful for storage / printing helpers
+    /// that don't want to be generic in `R`.
+    #[inline]
+    pub fn as_dyn(self) -> CallInst<'ctx, crate::marker::Dyn> {
+        self.retag::<crate::marker::Dyn>()
+    }
+
     fn payload(self) -> &'ctx crate::instr_types::CallInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
@@ -413,7 +475,11 @@ impl<'ctx> CallInst<'ctx> {
     pub fn tail_call_kind(self) -> crate::instr_types::TailCallKind {
         self.payload().tail_kind
     }
-    /// Return value, or `None` for a void-returning callee.
+    /// Return value, or `None` for a void-returning callee. Available
+    /// on every `R`; the typed `return_int_value` /
+    /// `return_float_value` / `return_pointer_value` accessors below
+    /// are gated to the corresponding marker so a typed callee skips
+    /// the runtime narrowing.
     pub fn return_value(self) -> Option<Value<'ctx>> {
         let module = self.module.module();
         let ret_ty_data = module.context().type_data(self.ty);
@@ -422,6 +488,67 @@ impl<'ctx> CallInst<'ctx> {
         } else {
             Some(Value::from_parts(self.id, module, self.ty))
         }
+    }
+}
+
+// Typed-return accessors. Each impl is gated on the concrete return
+// marker so a `CallInst<'ctx, i32>` exposes `return_int_value` but not
+// `return_float_value`, and a `CallInst<'ctx, ()>` exposes neither.
+macro_rules! call_inst_int_return {
+    ($($w:ty),+ $(,)?) => { $(
+        impl<'ctx> CallInst<'ctx, $w> {
+            /// Typed result handle for an integer-returning call.
+            #[inline]
+            pub fn return_int_value(self) -> crate::value::IntValue<'ctx, $w> {
+                let v = Value::from_parts(self.id, self.module.module(), self.ty);
+                crate::value::IntValue::<$w>::from_value_unchecked(v)
+            }
+        }
+    )+ };
+}
+call_inst_int_return!(bool, i8, i16, i32, i64, i128, crate::int_width::IntDyn);
+
+macro_rules! call_inst_float_return {
+    ($($k:ty),+ $(,)?) => { $(
+        impl<'ctx> CallInst<'ctx, $k> {
+            /// Typed result handle for a float-returning call.
+            #[inline]
+            pub fn return_float_value(self) -> crate::value::FloatValue<'ctx, $k> {
+                let v = Value::from_parts(self.id, self.module.module(), self.ty);
+                crate::value::FloatValue::<$k>::from_value_unchecked(v)
+            }
+        }
+    )+ };
+}
+call_inst_float_return!(
+    f32,
+    f64,
+    crate::float_kind::Half,
+    crate::float_kind::BFloat,
+    crate::float_kind::Fp128,
+    crate::float_kind::X86Fp80,
+    crate::float_kind::PpcFp128,
+    crate::float_kind::FloatDyn,
+);
+
+impl<'ctx> CallInst<'ctx, crate::marker::Ptr> {
+    /// Typed result handle for a pointer-returning call.
+    #[inline]
+    pub fn return_pointer_value(self) -> crate::value::PointerValue<'ctx> {
+        crate::value::PointerValue::from_value_unchecked(Value::from_parts(
+            self.id,
+            self.module.module(),
+            self.ty,
+        ))
+    }
+}
+
+impl<'ctx, R: crate::marker::ReturnMarker> From<CallInst<'ctx, R>>
+    for Instruction<'ctx, state::Attached>
+{
+    #[inline]
+    fn from(h: CallInst<'ctx, R>) -> Self {
+        h.as_instruction()
     }
 }
 
@@ -698,23 +825,29 @@ decl_handle_scaffold!(UnreachableInst);
 /// `add_incoming` mirrors `PHINode::addIncoming`; the factorial
 /// example needs it because the loop-edge incoming value is defined
 /// later in the same block.
+///
+/// The `P: PhiState` parameter (default [`Open`]) tracks whether the
+/// phi is still accepting `add_incoming` calls. Calling
+/// [`PhiInst::finish`] consumes the open phi and returns a [`Closed`]
+/// view; the closed view exposes only read accessors.
 #[derive(Debug)]
-pub struct PhiInst<'ctx, W: crate::int_width::IntWidth> {
+pub struct PhiInst<'ctx, W: crate::int_width::IntWidth, P: PhiState = Open> {
     pub(crate) id: ValueId,
     pub(crate) module: ModuleRef<'ctx>,
     pub(crate) ty: TypeId,
     _w: core::marker::PhantomData<fn() -> W>,
+    _p: core::marker::PhantomData<P>,
 }
 
-impl<'ctx, W: crate::int_width::IntWidth> Clone for PhiInst<'ctx, W> {
+impl<'ctx, W: crate::int_width::IntWidth, P: PhiState> Clone for PhiInst<'ctx, W, P> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'ctx, W: crate::int_width::IntWidth> Copy for PhiInst<'ctx, W> {}
+impl<'ctx, W: crate::int_width::IntWidth, P: PhiState> Copy for PhiInst<'ctx, W, P> {}
 
-impl<'ctx, W: crate::int_width::IntWidth> PhiInst<'ctx, W> {
+impl<'ctx, W: crate::int_width::IntWidth, P: PhiState> PhiInst<'ctx, W, P> {
     #[inline]
     pub(crate) fn from_raw(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
         Self {
@@ -722,6 +855,20 @@ impl<'ctx, W: crate::int_width::IntWidth> PhiInst<'ctx, W> {
             module: ModuleRef::new(module),
             ty,
             _w: core::marker::PhantomData,
+            _p: core::marker::PhantomData,
+        }
+    }
+
+    /// Re-tag the phi-state marker. Crate-internal: only [`finish`]
+    /// flips the public marker.
+    #[inline]
+    pub(crate) fn retag<P2: PhiState>(self) -> PhiInst<'ctx, W, P2> {
+        PhiInst {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+            _w: core::marker::PhantomData,
+            _p: core::marker::PhantomData,
         }
     }
 
@@ -781,19 +928,22 @@ impl<'ctx, W: crate::int_width::IntWidth> PhiInst<'ctx, W> {
         let block = crate::basic_block::BasicBlock::from_parts(bid, module, label_ty);
         Ok((value, block))
     }
+}
 
+impl<'ctx, W: crate::int_width::IntWidth> PhiInst<'ctx, W, Open> {
     /// Append `(value, block)` to the incoming list. Mirrors
     /// `PHINode::addIncoming`. Returns `Self` so calls chain.
     /// Errors if `value`'s type does not match the phi's result type
     /// or `block` belongs to a different module.
-    pub fn add_incoming<V, B>(
+    pub fn add_incoming<V, R, S>(
         self,
         value: V,
-        block: crate::basic_block::BasicBlock<'ctx, B>,
+        block: crate::basic_block::BasicBlock<'ctx, R, S>,
     ) -> crate::IrResult<Self>
     where
         V: crate::int_width::IntoIntValue<'ctx, W>,
-        B: crate::marker::ReturnMarker,
+        R: crate::marker::ReturnMarker,
+        S: crate::block_state::BlockSealState,
     {
         let module = self.module.module();
         let value = value.into_int_value(module)?;
@@ -824,15 +974,25 @@ impl<'ctx, W: crate::int_width::IntWidth> PhiInst<'ctx, W> {
             })
         }
     }
+
+    /// Consume the open phi and return its [`Closed`] view. After
+    /// `finish`, `add_incoming` is no longer in scope at the type
+    /// level; the closed handle exposes only read accessors. Mirrors
+    /// the implicit "phi is finalised" convention upstream where the
+    /// verifier subsequently runs `Verifier::visitPHINode`.
+    #[inline]
+    pub fn finish(self) -> PhiInst<'ctx, W, Closed> {
+        self.retag::<Closed>()
+    }
 }
 
-impl<'ctx, W: crate::int_width::IntWidth> PartialEq for PhiInst<'ctx, W> {
+impl<'ctx, W: crate::int_width::IntWidth, P: PhiState> PartialEq for PhiInst<'ctx, W, P> {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
     }
 }
-impl<'ctx, W: crate::int_width::IntWidth> Eq for PhiInst<'ctx, W> {}
-impl<'ctx, W: crate::int_width::IntWidth> core::hash::Hash for PhiInst<'ctx, W> {
+impl<'ctx, W: crate::int_width::IntWidth, P: PhiState> Eq for PhiInst<'ctx, W, P> {}
+impl<'ctx, W: crate::int_width::IntWidth, P: PhiState> core::hash::Hash for PhiInst<'ctx, W, P> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
@@ -840,11 +1000,11 @@ impl<'ctx, W: crate::int_width::IntWidth> core::hash::Hash for PhiInst<'ctx, W> 
     }
 }
 
-impl<'ctx, W: crate::int_width::IntWidth> From<PhiInst<'ctx, W>>
+impl<'ctx, W: crate::int_width::IntWidth, P: PhiState> From<PhiInst<'ctx, W, P>>
     for Instruction<'ctx, state::Attached>
 {
     #[inline]
-    fn from(h: PhiInst<'ctx, W>) -> Self {
+    fn from(h: PhiInst<'ctx, W, P>) -> Self {
         h.as_instruction()
     }
 }

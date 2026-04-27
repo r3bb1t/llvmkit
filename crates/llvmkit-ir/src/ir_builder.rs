@@ -37,6 +37,7 @@ pub mod no_folder;
 use core::marker::PhantomData;
 
 use crate::basic_block::BasicBlock;
+use crate::block_state::{BlockSealState, Sealed};
 use crate::derived_types::IntType;
 use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::function::FunctionValue;
@@ -1256,7 +1257,7 @@ where
         callee: FunctionValue<'ctx, R2>,
         args: I,
         name: impl AsRef<str>,
-    ) -> IrResult<crate::instructions::CallInst<'ctx>>
+    ) -> IrResult<crate::instructions::CallInst<'ctx, R2>>
     where
         R2: crate::marker::ReturnMarker,
         I: IntoIterator<Item = V>,
@@ -1277,7 +1278,7 @@ where
     pub fn call_builder<R2: crate::marker::ReturnMarker>(
         &self,
         callee: FunctionValue<'ctx, R2>,
-    ) -> CallBuilder<'_, 'ctx, F, R> {
+    ) -> CallBuilder<'_, 'ctx, F, R, R2> {
         CallBuilder {
             parent: self,
             callee_id: callee.as_value().id,
@@ -1287,7 +1288,8 @@ where
             calling_conv: callee.calling_conv(),
             tail_kind: crate::instr_types::TailCallKind::None,
             name: String::new(),
-            _r: PhantomData,
+            _rp: PhantomData,
+            _rc: PhantomData,
         }
     }
 
@@ -1717,7 +1719,15 @@ where
     // ---- Branch / Unreachable ----
 
     /// Produce `br label %target`. Mirrors `IRBuilder::CreateBr`.
-    pub fn build_br(&self, target: BasicBlock<'ctx, R>) -> IrResult<Instruction<'ctx>> {
+    ///
+    /// Consumes `self`: the builder's insertion block is sealed and
+    /// returned alongside the new terminator instruction. The branch
+    /// target may be in any seal state -- backward edges (loop
+    /// back-edges) target already-sealed blocks.
+    pub fn build_br<S2: BlockSealState>(
+        self,
+        target: BasicBlock<'ctx, R, S2>,
+    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>)> {
         if target.as_value().module().id() != self.module.id() {
             return Err(IrError::ForeignValue);
         }
@@ -1725,19 +1735,25 @@ where
             kind: crate::instr_types::BranchKind::Unconditional(target.as_value().id),
         };
         let void_ty = self.module.void_type().as_type().id();
-        Ok(self.append_instruction(void_ty, InstructionKindData::Br(payload), ""))
+        let bb = self.insert_block();
+        let inst = self.append_instruction(void_ty, InstructionKindData::Br(payload), "");
+        Ok((bb.retag_seal::<Sealed>(), inst))
     }
 
     /// Produce `br i1 <cond>, label %then, label %else`. Mirrors
     /// `IRBuilder::CreateCondBr`.
-    pub fn build_cond_br<C>(
-        &self,
+    ///
+    /// Consumes `self`; both target blocks may be in any seal state.
+    pub fn build_cond_br<C, ST, SE>(
+        self,
         cond: C,
-        then_bb: BasicBlock<'ctx, R>,
-        else_bb: BasicBlock<'ctx, R>,
-    ) -> IrResult<Instruction<'ctx>>
+        then_bb: BasicBlock<'ctx, R, ST>,
+        else_bb: BasicBlock<'ctx, R, SE>,
+    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>)>
     where
         C: crate::int_width::IntoIntValue<'ctx, bool>,
+        ST: BlockSealState,
+        SE: BlockSealState,
     {
         let cond = cond.into_int_value(self.module)?;
         self.require_same_module(cond.as_value())?;
@@ -1754,15 +1770,20 @@ where
             },
         };
         let void_ty = self.module.void_type().as_type().id();
-        Ok(self.append_instruction(void_ty, InstructionKindData::Br(payload), ""))
+        let bb = self.insert_block();
+        let inst = self.append_instruction(void_ty, InstructionKindData::Br(payload), "");
+        Ok((bb.retag_seal::<Sealed>(), inst))
     }
 
     /// Produce `unreachable`. Mirrors `IRBuilder::CreateUnreachable`.
-    /// Infallible: no operands, no module brand to validate.
-    pub fn build_unreachable(&self) -> Instruction<'ctx> {
+    ///
+    /// Consumes `self`; infallible (no operands, no brand check).
+    pub fn build_unreachable(self) -> (BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>) {
         let payload = crate::instr_types::UnreachableInstData;
         let void_ty = self.module.void_type().as_type().id();
-        self.append_instruction(void_ty, InstructionKindData::Unreachable(payload), "")
+        let bb = self.insert_block();
+        let inst = self.append_instruction(void_ty, InstructionKindData::Unreachable(payload), "");
+        (bb.retag_seal::<Sealed>(), inst)
     }
 
     // ---- Internal helpers ----
@@ -1941,7 +1962,10 @@ where
     /// type-equality check.
     ///
     /// Cross-module mixing errors with [`IrError::ForeignValue`].
-    pub fn build_ret<V>(&self, value: V) -> IrResult<Instruction<'ctx>>
+    pub fn build_ret<V>(
+        self,
+        value: V,
+    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>)>
     where
         V: IntoReturnValue<'ctx, R>,
     {
@@ -1958,7 +1982,9 @@ where
                 });
             }
         }
-        Ok(self.append_ret(Some(v)))
+        let bb = self.insert_block();
+        let inst = self.append_ret(Some(v));
+        Ok((bb.retag_seal::<Sealed>(), inst))
     }
 
     /// Owning function of the current insertion block, in its
@@ -1981,8 +2007,10 @@ where
     /// `()` builder does not expose `build_ret(value)` at all (no
     /// `IntoReturnValue<'ctx, ()>` impls exist), so `build_ret_void`
     /// is the only return option.
-    pub fn build_ret_void(&self) -> Instruction<'ctx> {
-        self.append_ret(None)
+    pub fn build_ret_void(self) -> (BasicBlock<'ctx, (), Sealed>, Instruction<'ctx>) {
+        let bb = self.insert_block();
+        let inst = self.append_ret(None);
+        (bb.retag_seal::<Sealed>(), inst)
     }
 }
 
@@ -1993,7 +2021,7 @@ where
     /// Produce `ret void`. Errors with
     /// [`IrError::ReturnTypeMismatch`] if the parent function does
     /// not actually return `void`.
-    pub fn build_ret_void(&self) -> IrResult<Instruction<'ctx>> {
+    pub fn build_ret_void(self) -> IrResult<(BasicBlock<'ctx, Dyn, Sealed>, Instruction<'ctx>)> {
         let bb = self.insert_block();
         let parent_id = bb.parent_id().unwrap_or_else(|| {
             unreachable!("Positioned builder block always has a parent function")
@@ -2006,7 +2034,8 @@ where
                 got: TypeKindLabel::Void,
             });
         }
-        Ok(self.append_ret(None))
+        let inst = self.append_ret(None);
+        Ok((bb.retag_seal::<Sealed>(), inst))
     }
 }
 
@@ -2019,12 +2048,13 @@ where
 /// instruction on `.build()`. Each `.arg(...)` call is statically
 /// dispatched against `V: IsValue<'ctx>`; arg types can vary
 /// across calls without trait objects.
-pub struct CallBuilder<'a, 'ctx, F, R>
+pub struct CallBuilder<'a, 'ctx, F, RP, RC>
 where
     F: IRBuilderFolder<'ctx>,
-    R: ReturnMarker,
+    RP: ReturnMarker,
+    RC: ReturnMarker,
 {
-    parent: &'a IRBuilder<'ctx, F, Positioned, R>,
+    parent: &'a IRBuilder<'ctx, F, Positioned, RP>,
     callee_id: crate::value::ValueId,
     fn_ty: TypeId,
     return_ty: TypeId,
@@ -2032,13 +2062,15 @@ where
     calling_conv: crate::CallingConv,
     tail_kind: crate::instr_types::TailCallKind,
     name: String,
-    _r: PhantomData<R>,
+    _rp: PhantomData<RP>,
+    _rc: PhantomData<RC>,
 }
 
-impl<'a, 'ctx, F, R> CallBuilder<'a, 'ctx, F, R>
+impl<'a, 'ctx, F, RP, RC> CallBuilder<'a, 'ctx, F, RP, RC>
 where
     F: IRBuilderFolder<'ctx>,
-    R: ReturnMarker,
+    RP: ReturnMarker,
+    RC: ReturnMarker,
 {
     /// Add an argument. Statically dispatched per `V: IsValue` so
     /// mixed-type argument lists work without homogeneity.
@@ -2076,7 +2108,7 @@ where
     }
 
     /// Emit the call instruction.
-    pub fn build(self) -> IrResult<crate::instructions::CallInst<'ctx>> {
+    pub fn build(self) -> IrResult<crate::instructions::CallInst<'ctx, RC>> {
         // Cross-module check on every operand id.
         let module = self.parent.module;
         for &id in &self.args {
@@ -2098,10 +2130,11 @@ where
             InstructionKindData::Call(payload),
             self.name,
         );
-        Ok({
-            let _i = inst;
-            crate::instructions::CallInst::from_raw(_i.as_value().id, _i.module(), _i.ty().id())
-        })
+        Ok(crate::instructions::CallInst::<RC>::from_raw(
+            inst.as_value().id,
+            inst.module(),
+            inst.ty().id(),
+        ))
     }
 }
 

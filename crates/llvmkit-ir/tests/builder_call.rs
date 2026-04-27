@@ -26,10 +26,11 @@ fn call_int_returning_function() -> Result<(), IrError> {
     let x: llvmkit_ir::IntValue<i32> = caller.param(0)?.try_into()?;
     let y: llvmkit_ir::IntValue<i32> = caller.param(1)?.try_into()?;
     let inst = b.build_call(callee, [x.as_value(), y.as_value()], "r")?;
-    let ret_val: llvmkit_ir::IntValue<i32> = inst
-        .return_value()
-        .expect("non-void call returns a value")
-        .try_into()?;
+    // Typed return accessor (Doctrine D4): `R` flows from the callee
+    // through `build_call` into `CallInst<'ctx, i32>`, which directly
+    // exposes `return_int_value(): IntValue<i32>` -- no runtime
+    // `try_into` is needed.
+    let ret_val = inst.return_int_value();
     b.build_ret(ret_val)?;
     let text = format!("{m}");
     assert!(
@@ -114,7 +115,7 @@ fn call_tail() -> Result<(), IrError> {
     let entry = caller.append_basic_block("entry");
     let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
     let inst = b.call_builder(callee).tail().name("r").build()?;
-    let r: llvmkit_ir::IntValue<i32> = inst.return_value().unwrap().try_into()?;
+    let r = inst.return_int_value();
     b.build_ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%r = tail call i32 @g()"), "got:\n{text}");
@@ -134,7 +135,7 @@ fn call_to_pointer_returning_function() -> Result<(), IrError> {
     let entry = caller.append_basic_block("entry");
     let b = IRBuilder::new_for::<Ptr>(&m).position_at_end(entry);
     let inst = b.build_call(callee, Vec::<llvmkit_ir::Value>::new(), "p")?;
-    let p: llvmkit_ir::PointerValue = inst.return_value().unwrap().try_into()?;
+    let p = inst.return_pointer_value();
     b.build_ret(p)?;
     let text = format!("{m}");
     assert!(text.contains("%p = call ptr @alloc_ptr()"), "got:\n{text}");
