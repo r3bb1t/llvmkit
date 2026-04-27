@@ -276,6 +276,25 @@ let lex = Lexer::new(&bytes);
 Token payloads borrow from the source via `Cow<[u8]>`; quoted forms with
 `\\xx` escapes are the only path that allocates.
 
+## Type-Safety Doctrine (D1-D11)
+
+Eleven rules govern every API in `llvmkit`. They are NOT optional and are NOT graded by API. Cite them by id (`D1`-`D11`) in code reviews and commit messages. The full prose lives in `README.md`; the short version:
+
+1. **D1.** State machines are typestates (no `is_attached()` predicates).
+2. **D2.** Linear-typed handles for irreversible operations (`!Copy` + consume `self`).
+3. **D3.** Erased forms are explicitly opt-in (`Dyn` companion only on request).
+4. **D4.** Result types reflect operand types (`build_int_add::<i32, _, _>` returns `IntValue<i32>`).
+5. **D5.** Operand registration is structural (one place per primitive; exhaustive `match`).
+6. **D6.** Aggregate types parameterise over element shape (`VectorType<E, N>`, etc.).
+7. **D7.** Cross-module mixing is statically rejected (`'ctx` brand + `ModuleRef` check).
+8. **D8.** Verified guarantees flow through references (analyses bound to `&VerifiedModule<'ctx>`).
+9. **D9.** Iteration safety is structural (`BlockCursor`'s consume-on-step).
+10. **D10.** No undefined behaviour, by design (Cranelift-style; no silent bad-codegen).
+11. **D11.** Tests are ported, not invented (every `#[test]` cites upstream; registry at `UPSTREAM.md`).
+
+Violating any of these is a defect, not a stylistic gap. New code that introduces a new state machine, a new operand-bearing instruction, or a new aggregate type **MUST** check itself against the relevant doctrine bullet before landing.
+
+
 ## Rust Idioms & Translation Patterns
 
 These are the rules that turn a literal C++ port into idiomatic Rust. Apply them consistently.

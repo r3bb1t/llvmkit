@@ -185,6 +185,64 @@ future-files roadmap.
   carry `Cow<[u8]>` payloads that borrow whenever escape-decoding leaves bytes
   unchanged.
 
+## Type-Safety Doctrine
+
+Type safety is `llvmkit`'s killer feature. The Rust type system is pushed to its
+absolute maximum to make invalid IR unrepresentable wherever LLVM C++ relies on
+runtime checks or convention. Eleven rules govern every API in the crate; cite
+them by id (`D1`-`D11`) in code reviews and commit messages.
+
+- **D1. State machines are typestates.** If a value has more than one operational
+  state, those states are distinct types. `Instruction<'ctx, S>` for `S in
+  { Attached, Detached }`, future `BasicBlock<'ctx, R, Seal>` for `Seal in
+  { Unsealed, Sealed }`, future `PhiInst<'ctx, W, P>` for `P in { Open, Closed }`,
+  `Module` vs. `VerifiedModule`. There is no third state, no `is_attached()`
+  runtime predicate.
+- **D2. Linear-typed handles for irreversible operations.** Methods that consume a
+  resource take `self` by value AND the handle is `!Copy`. `Instruction<Attached>`
+  is `!Copy` and `!Clone`; `erase_from_parent(self)` consumes the binding so
+  use-after-erase and double-erase are *compile* errors.
+- **D3. Erased forms are explicitly opt-in.** Every typed handle has a `Dyn`
+  companion (`IntDyn`, `FloatDyn`, etc.). The user must spell the runtime-checked
+  form (`as_dyn()` / `IntValue<IntDyn>`); the default in builder return types is
+  the strongest type the construction site allows.
+- **D4. Result types reflect operand types.** `b.build_int_add::<i32, _, _>(...)`
+  returns `IntValue<i32>`. `b.build_int_cmp(...)` returns `IntValue<bool>`.
+  `Option<Value>` accessors disappear wherever the presence is statically known.
+- **D5. Operand registration is structural.** Use-list maintenance happens in
+  exactly one place per construction primitive (`IRBuilder::append_instruction`,
+  `PhiInst::add_incoming`) and exactly one place per mutation primitive
+  (`replace_all_uses_with`, `erase_from_parent`). Adding a new opcode adds an arm
+  to the operand walker; the compiler enforces exhaustiveness via `match`.
+- **D6. Aggregate types parameterise over element shape.**
+  `VectorType<'ctx, E, const N: u32>` (planned), `ArrayType<'ctx, E, const N: u64>`
+  (planned), `StructType<'ctx>` with `Opaque` / `BodySet` typestate (planned).
+- **D7. Cross-module mixing is statically rejected.** The `'ctx` lifetime brand
+  catches the common case; the `ModuleRef` runtime check covers `'static`
+  constants. Both layers stay; an invariant-lifetime brand for parser-loaded
+  modules is planned.
+- **D8. Verified guarantees flow through references.** Analyses returned by the
+  future `AnalysisManager` are bound to the lifetime of the borrowed
+  `&VerifiedModule<'ctx>` -- they cannot outlive the verified state. Mutating the
+  module strips the brand, dropping every analysis result.
+- **D9. Iteration safety is structural.** Mutating-while-iterating uses
+  [`iter::BlockCursor`](crates/llvmkit-ir/src/iter.rs), which encodes
+  "advance before mutate" via consume-on-step semantics. Direct mutation of an
+  instruction iterator is a compile error.
+- **D10. No undefined behaviour, by design.** Adopted from
+  [Cranelift](https://cranelift.dev/): every legal API call produces well-defined
+  IR. Where LLVM allows a runtime trap (unsigned overflow without `nuw`, division
+  by zero, dereferencing null), `llvmkit`'s types either prevent the construction
+  or surface the deferred-trap semantics through an `IrError` / `poison` value
+  rather than silent bad-codegen. The `nuw` / `nsw` / `exact` flags on
+  `AddFlags` / `SDivFlags` / etc. are the precedent.
+- **D11. Tests are ported, not invented.** Every `#[test]` in the workspace cites
+  its upstream `unittests/IR/*Test.cpp::TEST(...)` or `test/{Assembler,Verifier}/*.ll`
+  fixture in a doc comment. The full registry lives at [UPSTREAM.md](UPSTREAM.md).
+  When upstream genuinely lacks coverage (typestate compile-fail, AsmWriter parity
+  for an opcode without a dedicated upstream test), the test is marked
+  `llvmkit-specific:` with the closest functional reference cited.
+
 ## References
 
 - [LLVM Project](https://llvm.org/) — source license and design.
