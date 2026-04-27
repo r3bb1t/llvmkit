@@ -11,7 +11,7 @@
 //!
 //! Per the IR foundation plan (Pivot 1, "dual-view"):
 //!
-//! - **Storage:** an internal record \u2014 one variant per LLVM value
+//! - **Storage:** an internal record — one variant per LLVM value
 //!   category (`Constant`, `Argument`, `BasicBlock`, `Function`,
 //!   `Instruction`).
 //! - **Public handle:** [`Value<'ctx>`] is `(ValueId, ModuleRef<'ctx>,
@@ -42,10 +42,8 @@ use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
-use crate::float_kind::{
-    FloatKind, KBFloat, KDouble, KDyn, KFloat, KFp128, KHalf, KPpcFp128, KX86Fp80,
-};
-use crate::int_width::{B1, B8, B16, B32, B64, B128, BDyn, IntWidth};
+use crate::float_kind::{BFloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
+use crate::int_width::{IntDyn, IntWidth};
 
 // --------------------------------------------------------------------------
 // ValueId
@@ -98,6 +96,17 @@ pub(crate) struct ValueData {
     pub(crate) name: RefCell<Option<String>>,
     pub(crate) debug_loc: Option<DebugLoc>,
     pub(crate) kind: ValueKindData,
+    /// Reverse-direction use-list: every user (instruction id) that
+    /// references this value as one of its SSA operands. Mirrors
+    /// LLVM's `Value::use_list_` (`Value.h`). Maintained eagerly:
+    /// instruction creation registers entries here for each operand,
+    /// `replace_all_uses_with` walks and rewrites them, and
+    /// `erase_from_parent` deregisters them.
+    ///
+    /// User ids may appear more than once if the same instruction
+    /// references this value in multiple slots (e.g. `add %x, %x`).
+    /// Order is registration-order for determinism.
+    pub(crate) use_list: RefCell<Vec<ValueId>>,
 }
 
 /// Discriminator over the closed value-category set.
@@ -195,6 +204,38 @@ impl<'ctx> Value<'ctx> {
             ValueKindData::Function(_) => ValueCategory::Function,
             ValueKindData::Instruction(_) => ValueCategory::Instruction,
         }
+    }
+
+    /// Snapshot the reverse use-list for this value. Each returned
+    /// id is an instruction that references this value as an SSA
+    /// operand. Mirrors `Value::users` in `llvm/include/llvm/IR/Value.h`.
+    ///
+    /// The list is a snapshot, not a live view: callers may mutate
+    /// the IR (erase, RAUW) without invalidating the iterator. Order
+    /// is registration-order; user ids may appear more than once if
+    /// the same instruction references this value in multiple slots.
+    pub fn users(
+        self,
+    ) -> impl ExactSizeIterator<Item = crate::instruction::Instruction<'ctx>> + 'ctx {
+        let module = self.module.module();
+        let snapshot: Vec<ValueId> = self.data().use_list.borrow().clone();
+        snapshot
+            .into_iter()
+            .map(move |id| crate::instruction::Instruction::from_parts(id, module))
+    }
+
+    /// `true` when at least one instruction references this value.
+    /// Mirrors `Value::hasUses`. Cheaper than [`Self::users`] for the
+    /// common "is this dead?" check.
+    #[inline]
+    pub fn has_uses(self) -> bool {
+        !self.data().use_list.borrow().is_empty()
+    }
+
+    /// Number of currently-registered uses. Mirrors `Value::getNumUses`.
+    #[inline]
+    pub fn num_uses(self) -> usize {
+        self.data().use_list.borrow().len()
     }
 }
 
@@ -409,8 +450,8 @@ macro_rules! decl_value_handle {
             type Error = IrError;
             #[inline]
             fn try_from(i: crate::instruction::Instruction<'ctx>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx>>>::try_from(i.as_value())
-            }
+        <Self as TryFrom<Value<'ctx>>>::try_from(crate::instruction::Instruction::as_value(&i))
+    }
         }
 
     };
@@ -423,6 +464,20 @@ decl_value_handle!(
     PointerValue, Pointer, PointerType,
     type_predicate |d| matches!(d, TypeData::Pointer { .. })
 );
+impl<'ctx> PointerValue<'ctx> {
+    /// Crate-internal: wrap a [`Value`] known to have a pointer type.
+    /// The IR builder uses this when it just produced a pointer-result
+    /// instruction (cast / GEP / alloca / load).
+    #[inline]
+    pub(crate) fn from_value_unchecked(v: Value<'ctx>) -> Self {
+        Self {
+            id: v.id,
+            module: v.module,
+            ty: v.ty,
+        }
+    }
+}
+
 decl_value_handle!(
     /// Value whose type is `[N x T]`.
     ArrayValue, Array, ArrayType,
@@ -543,7 +598,7 @@ impl<'ctx, W: IntWidth> IntValue<'ctx, W> {
     }
     /// Erase the width marker; preserves the runtime width.
     #[inline]
-    pub fn as_dyn(self) -> IntValue<'ctx, BDyn> {
+    pub fn as_dyn(self) -> IntValue<'ctx, IntDyn> {
         IntValue {
             id: self.id,
             module: self.module,
@@ -589,7 +644,7 @@ impl<'ctx, W: IntWidth> From<IntValue<'ctx, W>> for Value<'ctx> {
     }
 }
 
-impl<'ctx> TryFrom<Value<'ctx>> for IntValue<'ctx, BDyn> {
+impl<'ctx> TryFrom<Value<'ctx>> for IntValue<'ctx, IntDyn> {
     type Error = IrError;
     fn try_from(v: Value<'ctx>) -> IrResult<Self> {
         let ty = v.ty();
@@ -608,25 +663,25 @@ impl<'ctx> TryFrom<Value<'ctx>> for IntValue<'ctx, BDyn> {
         }
     }
 }
-impl<'ctx> TryFrom<crate::argument::Argument<'ctx>> for IntValue<'ctx, BDyn> {
+impl<'ctx> TryFrom<crate::argument::Argument<'ctx>> for IntValue<'ctx, IntDyn> {
     type Error = IrError;
     #[inline]
     fn try_from(a: crate::argument::Argument<'ctx>) -> IrResult<Self> {
         <Self as TryFrom<Value<'ctx>>>::try_from(a.as_value())
     }
 }
-impl<'ctx> TryFrom<crate::constant::Constant<'ctx>> for IntValue<'ctx, BDyn> {
+impl<'ctx> TryFrom<crate::constant::Constant<'ctx>> for IntValue<'ctx, IntDyn> {
     type Error = IrError;
     #[inline]
     fn try_from(c: crate::constant::Constant<'ctx>) -> IrResult<Self> {
         <Self as TryFrom<Value<'ctx>>>::try_from(c.as_value())
     }
 }
-impl<'ctx> TryFrom<crate::instruction::Instruction<'ctx>> for IntValue<'ctx, BDyn> {
+impl<'ctx> TryFrom<crate::instruction::Instruction<'ctx>> for IntValue<'ctx, IntDyn> {
     type Error = IrError;
     #[inline]
     fn try_from(i: crate::instruction::Instruction<'ctx>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx>>>::try_from(i.as_value())
+        <Self as TryFrom<Value<'ctx>>>::try_from(crate::instruction::Instruction::as_value(&i))
     }
 }
 
@@ -673,16 +728,18 @@ macro_rules! impl_int_value_static_try_from {
             type Error = IrError;
             #[inline]
             fn try_from(i: crate::instruction::Instruction<'ctx>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx>>>::try_from(i.as_value())
+                <Self as TryFrom<Value<'ctx>>>::try_from(crate::instruction::Instruction::as_value(
+                    &i,
+                ))
             }
         }
-        impl<'ctx> TryFrom<IntValue<'ctx, BDyn>> for IntValue<'ctx, $marker> {
+        impl<'ctx> TryFrom<IntValue<'ctx, IntDyn>> for IntValue<'ctx, $marker> {
             type Error = IrError;
-            fn try_from(v: IntValue<'ctx, BDyn>) -> IrResult<Self> {
+            fn try_from(v: IntValue<'ctx, IntDyn>) -> IrResult<Self> {
                 <Self as TryFrom<Value<'ctx>>>::try_from(v.as_value())
             }
         }
-        impl<'ctx> From<IntValue<'ctx, $marker>> for IntValue<'ctx, BDyn> {
+        impl<'ctx> From<IntValue<'ctx, $marker>> for IntValue<'ctx, IntDyn> {
             #[inline]
             fn from(v: IntValue<'ctx, $marker>) -> Self {
                 v.as_dyn()
@@ -690,12 +747,80 @@ macro_rules! impl_int_value_static_try_from {
         }
     };
 }
-impl_int_value_static_try_from!(B1, 1);
-impl_int_value_static_try_from!(B8, 8);
-impl_int_value_static_try_from!(B16, 16);
-impl_int_value_static_try_from!(B32, 32);
-impl_int_value_static_try_from!(B64, 64);
-impl_int_value_static_try_from!(B128, 128);
+impl_int_value_static_try_from!(bool, 1);
+impl_int_value_static_try_from!(i8, 8);
+impl_int_value_static_try_from!(i16, 16);
+impl_int_value_static_try_from!(i32, 32);
+impl_int_value_static_try_from!(i64, 64);
+impl_int_value_static_try_from!(i128, 128);
+// Const-generic narrowing: `Value` / `Argument` / `Constant` /
+// `Instruction` / `IntValue<'ctx, IntDyn>` -> `IntValue<'ctx,
+// Width<N>>`. Pattern matches `impl_int_value_static_try_from!` but
+// the bit-count comes from the const generic `N` instead of a
+// macro literal.
+impl<'ctx, const N: u32> TryFrom<Value<'ctx>> for IntValue<'ctx, crate::int_width::Width<N>> {
+    type Error = IrError;
+    fn try_from(v: Value<'ctx>) -> IrResult<Self> {
+        let ty = v.ty();
+        match ty.data() {
+            TypeData::Integer { bits } if *bits == N => Ok(Self {
+                id: v.id,
+                module: v.module,
+                ty: v.ty,
+                _w: PhantomData,
+            }),
+            TypeData::Integer { bits } => Err(IrError::OperandWidthMismatch { lhs: N, rhs: *bits }),
+            _ => Err(IrError::TypeMismatch {
+                expected: TypeKindLabel::Integer,
+                got: ty.kind_label(),
+            }),
+        }
+    }
+}
+impl<'ctx, const N: u32> TryFrom<crate::argument::Argument<'ctx>>
+    for IntValue<'ctx, crate::int_width::Width<N>>
+{
+    type Error = IrError;
+    #[inline]
+    fn try_from(a: crate::argument::Argument<'ctx>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx>>>::try_from(a.as_value())
+    }
+}
+impl<'ctx, const N: u32> TryFrom<crate::constant::Constant<'ctx>>
+    for IntValue<'ctx, crate::int_width::Width<N>>
+{
+    type Error = IrError;
+    #[inline]
+    fn try_from(c: crate::constant::Constant<'ctx>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx>>>::try_from(c.as_value())
+    }
+}
+impl<'ctx, const N: u32> TryFrom<crate::instruction::Instruction<'ctx>>
+    for IntValue<'ctx, crate::int_width::Width<N>>
+{
+    type Error = IrError;
+    #[inline]
+    fn try_from(i: crate::instruction::Instruction<'ctx>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx>>>::try_from(crate::instruction::Instruction::as_value(&i))
+    }
+}
+impl<'ctx, const N: u32> TryFrom<IntValue<'ctx, IntDyn>>
+    for IntValue<'ctx, crate::int_width::Width<N>>
+{
+    type Error = IrError;
+    #[inline]
+    fn try_from(v: IntValue<'ctx, IntDyn>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx>>>::try_from(v.as_value())
+    }
+}
+impl<'ctx, const N: u32> From<IntValue<'ctx, crate::int_width::Width<N>>>
+    for IntValue<'ctx, IntDyn>
+{
+    #[inline]
+    fn from(v: IntValue<'ctx, crate::int_width::Width<N>>) -> Self {
+        v.as_dyn()
+    }
+}
 
 // --------------------------------------------------------------------------
 // FloatValue<'ctx, K> -- kind-typed floating-point value handle
@@ -741,7 +866,6 @@ impl<'ctx, K: FloatKind> fmt::Debug for FloatValue<'ctx, K> {
 
 impl<'ctx, K: FloatKind> FloatValue<'ctx, K> {
     /// Crate-internal: wrap a [`Value`] known to have a float type of kind `K`.
-    #[allow(dead_code)] // consumed by Phase C float builders
     #[inline]
     pub(crate) fn from_value_unchecked(v: Value<'ctx>) -> Self {
         Self {
@@ -779,7 +903,7 @@ impl<'ctx, K: FloatKind> FloatValue<'ctx, K> {
         self.as_value().debug_loc()
     }
     #[inline]
-    pub fn as_dyn(self) -> FloatValue<'ctx, KDyn> {
+    pub fn as_dyn(self) -> FloatValue<'ctx, FloatDyn> {
         FloatValue {
             id: self.id,
             module: self.module,
@@ -822,7 +946,7 @@ impl<'ctx, K: FloatKind> From<FloatValue<'ctx, K>> for Value<'ctx> {
     }
 }
 
-impl<'ctx> TryFrom<Value<'ctx>> for FloatValue<'ctx, KDyn> {
+impl<'ctx> TryFrom<Value<'ctx>> for FloatValue<'ctx, FloatDyn> {
     type Error = IrError;
     fn try_from(v: Value<'ctx>) -> IrResult<Self> {
         let ty = v.ty();
@@ -850,22 +974,22 @@ impl<'ctx> TryFrom<Value<'ctx>> for FloatValue<'ctx, KDyn> {
         }
     }
 }
-impl<'ctx> TryFrom<crate::argument::Argument<'ctx>> for FloatValue<'ctx, KDyn> {
+impl<'ctx> TryFrom<crate::argument::Argument<'ctx>> for FloatValue<'ctx, FloatDyn> {
     type Error = IrError;
     fn try_from(a: crate::argument::Argument<'ctx>) -> IrResult<Self> {
         <Self as TryFrom<Value<'ctx>>>::try_from(a.as_value())
     }
 }
-impl<'ctx> TryFrom<crate::constant::Constant<'ctx>> for FloatValue<'ctx, KDyn> {
+impl<'ctx> TryFrom<crate::constant::Constant<'ctx>> for FloatValue<'ctx, FloatDyn> {
     type Error = IrError;
     fn try_from(c: crate::constant::Constant<'ctx>) -> IrResult<Self> {
         <Self as TryFrom<Value<'ctx>>>::try_from(c.as_value())
     }
 }
-impl<'ctx> TryFrom<crate::instruction::Instruction<'ctx>> for FloatValue<'ctx, KDyn> {
+impl<'ctx> TryFrom<crate::instruction::Instruction<'ctx>> for FloatValue<'ctx, FloatDyn> {
     type Error = IrError;
     fn try_from(i: crate::instruction::Instruction<'ctx>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx>>>::try_from(i.as_value())
+        <Self as TryFrom<Value<'ctx>>>::try_from(crate::instruction::Instruction::as_value(&i))
     }
 }
 
@@ -904,16 +1028,18 @@ macro_rules! impl_float_value_static_try_from {
         impl<'ctx> TryFrom<crate::instruction::Instruction<'ctx>> for FloatValue<'ctx, $marker> {
             type Error = IrError;
             fn try_from(i: crate::instruction::Instruction<'ctx>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx>>>::try_from(i.as_value())
+                <Self as TryFrom<Value<'ctx>>>::try_from(crate::instruction::Instruction::as_value(
+                    &i,
+                ))
             }
         }
-        impl<'ctx> TryFrom<FloatValue<'ctx, KDyn>> for FloatValue<'ctx, $marker> {
+        impl<'ctx> TryFrom<FloatValue<'ctx, FloatDyn>> for FloatValue<'ctx, $marker> {
             type Error = IrError;
-            fn try_from(v: FloatValue<'ctx, KDyn>) -> IrResult<Self> {
+            fn try_from(v: FloatValue<'ctx, FloatDyn>) -> IrResult<Self> {
                 <Self as TryFrom<Value<'ctx>>>::try_from(v.as_value())
             }
         }
-        impl<'ctx> From<FloatValue<'ctx, $marker>> for FloatValue<'ctx, KDyn> {
+        impl<'ctx> From<FloatValue<'ctx, $marker>> for FloatValue<'ctx, FloatDyn> {
             #[inline]
             fn from(v: FloatValue<'ctx, $marker>) -> Self {
                 v.as_dyn()
@@ -921,17 +1047,90 @@ macro_rules! impl_float_value_static_try_from {
         }
     };
 }
-impl_float_value_static_try_from!(KHalf, Half, Half);
-impl_float_value_static_try_from!(KBFloat, BFloat, BFloat);
-impl_float_value_static_try_from!(KFloat, Float, Float);
-impl_float_value_static_try_from!(KDouble, Double, Double);
-impl_float_value_static_try_from!(KFp128, Fp128, Fp128);
-impl_float_value_static_try_from!(KX86Fp80, X86Fp80, X86Fp80);
-impl_float_value_static_try_from!(KPpcFp128, PpcFp128, PpcFp128);
+impl_float_value_static_try_from!(Half, Half, Half);
+impl_float_value_static_try_from!(BFloat, BFloat, BFloat);
+impl_float_value_static_try_from!(f32, Float, Float);
+impl_float_value_static_try_from!(f64, Double, Double);
+impl_float_value_static_try_from!(Fp128, Fp128, Fp128);
+impl_float_value_static_try_from!(X86Fp80, X86Fp80, X86Fp80);
+impl_float_value_static_try_from!(PpcFp128, PpcFp128, PpcFp128);
 
 impl<'ctx> fmt::Display for Value<'ctx> {
     /// Print as `<type> <ref>`. Mirrors LLVM's `Value::print`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         crate::asm_writer::fmt_operand(f, *self, None)
+    }
+}
+
+// --------------------------------------------------------------------------
+// IntoPointerValue: ergonomic operand input for the IRBuilder
+// --------------------------------------------------------------------------
+
+/// Inputs that can be lifted into a [`PointerValue<'ctx>`] operand
+/// for the IR builder. Mirrors the int-side
+/// [`crate::IntoIntValue`] for the pointer family.
+///
+/// Implemented by:
+/// - [`PointerValue<'ctx>`] (identity).
+/// - [`crate::ConstantPointerNull<'ctx>`] (lift via `null`).
+/// - [`crate::argument::Argument<'ctx>`] (runtime-checked narrow).
+/// - [`Value<'ctx>`] (runtime-checked narrow).
+/// - [`crate::instruction::Instruction<'ctx>`] (runtime-checked narrow).
+pub trait IntoPointerValue<'ctx>: Sized {
+    fn into_pointer_value(
+        self,
+        module: &'ctx crate::module::Module<'ctx>,
+    ) -> crate::IrResult<PointerValue<'ctx>>;
+}
+
+impl<'ctx> IntoPointerValue<'ctx> for PointerValue<'ctx> {
+    #[inline]
+    fn into_pointer_value(
+        self,
+        _module: &'ctx crate::module::Module<'ctx>,
+    ) -> crate::IrResult<PointerValue<'ctx>> {
+        Ok(self)
+    }
+}
+
+impl<'ctx> IntoPointerValue<'ctx> for crate::constants::ConstantPointerNull<'ctx> {
+    #[inline]
+    fn into_pointer_value(
+        self,
+        _module: &'ctx crate::module::Module<'ctx>,
+    ) -> crate::IrResult<PointerValue<'ctx>> {
+        Ok(PointerValue::from_value_unchecked(
+            crate::value::IsValue::as_value(self),
+        ))
+    }
+}
+
+impl<'ctx> IntoPointerValue<'ctx> for crate::argument::Argument<'ctx> {
+    #[inline]
+    fn into_pointer_value(
+        self,
+        _module: &'ctx crate::module::Module<'ctx>,
+    ) -> crate::IrResult<PointerValue<'ctx>> {
+        PointerValue::try_from(self.as_value())
+    }
+}
+
+impl<'ctx> IntoPointerValue<'ctx> for Value<'ctx> {
+    #[inline]
+    fn into_pointer_value(
+        self,
+        _module: &'ctx crate::module::Module<'ctx>,
+    ) -> crate::IrResult<PointerValue<'ctx>> {
+        PointerValue::try_from(self)
+    }
+}
+
+impl<'ctx> IntoPointerValue<'ctx> for crate::instruction::Instruction<'ctx> {
+    #[inline]
+    fn into_pointer_value(
+        self,
+        _module: &'ctx crate::module::Module<'ctx>,
+    ) -> crate::IrResult<PointerValue<'ctx>> {
+        PointerValue::try_from(self.as_value())
     }
 }

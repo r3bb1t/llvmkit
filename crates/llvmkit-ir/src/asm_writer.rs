@@ -29,10 +29,12 @@ use crate::attributes::{AttributeStorage, AttributeStored};
 use crate::basic_block::BasicBlock;
 use crate::constant::ConstantData;
 use crate::function::FunctionValue;
-use crate::instr_types::{BinaryOpData, CastOpData, ReturnOpData};
+use crate::instr_types::{
+    BinaryOpData, BranchInstData, BranchKind, CastOpData, CmpInstData, PhiData, ReturnOpData,
+};
 use crate::instruction::{Instruction, InstructionKindData};
+use crate::marker::Dyn;
 use crate::module::Module;
-use crate::return_marker::RDyn;
 use crate::r#type::{Type, TypeData};
 use crate::value::{Value, ValueId, ValueKindData};
 
@@ -64,7 +66,7 @@ impl SlotTracker {
     /// Build a slot tracker for a single function. Arguments come
     /// first, then each basic block (header counts as a value), then
     /// every instruction in program order.
-    pub(crate) fn for_function(f: FunctionValue<'_, RDyn>) -> Self {
+    pub(crate) fn for_function(f: FunctionValue<'_, Dyn>) -> Self {
         let mut local = HashMap::new();
         let mut blocks = HashMap::new();
         let mut next: u32 = 0;
@@ -82,7 +84,7 @@ impl SlotTracker {
                 next += 1;
             }
             for inst in bb.instructions() {
-                if produces_named_result(inst) && inst.name().is_none() {
+                if produces_named_result(&inst) && inst.name().is_none() {
                     local.insert(inst.as_value().id, next);
                     next += 1;
                 }
@@ -103,17 +105,46 @@ impl SlotTracker {
 
 /// `true` if `inst` produces a result that gets a textual name (or
 /// slot). Terminators and stores don't.
-fn produces_named_result(inst: Instruction<'_>) -> bool {
-    match &inst_kind_data(inst) {
+fn produces_named_result(inst: &Instruction<'_>) -> bool {
+    match inst_kind_data(inst) {
         InstructionKindData::Add(_)
         | InstructionKindData::Sub(_)
         | InstructionKindData::Mul(_)
-        | InstructionKindData::Cast(_) => true,
-        InstructionKindData::Ret(_) => false,
+        | InstructionKindData::UDiv(_)
+        | InstructionKindData::SDiv(_)
+        | InstructionKindData::URem(_)
+        | InstructionKindData::SRem(_)
+        | InstructionKindData::Shl(_)
+        | InstructionKindData::LShr(_)
+        | InstructionKindData::AShr(_)
+        | InstructionKindData::And(_)
+        | InstructionKindData::Or(_)
+        | InstructionKindData::Xor(_)
+        | InstructionKindData::FAdd(_)
+        | InstructionKindData::FSub(_)
+        | InstructionKindData::FMul(_)
+        | InstructionKindData::FDiv(_)
+        | InstructionKindData::FRem(_)
+        | InstructionKindData::FCmp(_)
+        | InstructionKindData::Alloca(_)
+        | InstructionKindData::Load(_)
+        | InstructionKindData::Gep(_)
+        | InstructionKindData::Select(_)
+        | InstructionKindData::Cast(_)
+        | InstructionKindData::ICmp(_)
+        | InstructionKindData::Phi(_) => true,
+        InstructionKindData::Ret(_)
+        | InstructionKindData::Store(_)
+        | InstructionKindData::Br(_)
+        | InstructionKindData::Unreachable(_) => false,
+        InstructionKindData::Call(_) => {
+            // Void-returning calls don't get a `%name = ` prefix.
+            !matches!(inst.ty().data(), crate::r#type::TypeData::Void)
+        }
     }
 }
 
-fn inst_kind_data(inst: Instruction<'_>) -> &InstructionKindData {
+fn inst_kind_data<'ctx>(inst: &Instruction<'ctx>) -> &'ctx InstructionKindData {
     match &inst.as_value().data().kind {
         ValueKindData::Instruction(i) => &i.kind,
         _ => unreachable!("Instruction handle invariant: kind is Instruction"),
@@ -293,7 +324,7 @@ fn fmt_aggregate_constant(
 
 pub(crate) fn fmt_instruction(
     f: &mut fmt::Formatter<'_>,
-    inst: Instruction<'_>,
+    inst: &Instruction<'_>,
     slots: &SlotTracker,
 ) -> fmt::Result {
     f.write_str("  ")?;
@@ -311,7 +342,33 @@ pub(crate) fn fmt_instruction(
         InstructionKindData::Add(b) => fmt_binop(f, "add", inst, b, slots),
         InstructionKindData::Sub(b) => fmt_binop(f, "sub", inst, b, slots),
         InstructionKindData::Mul(b) => fmt_binop(f, "mul", inst, b, slots),
+        InstructionKindData::UDiv(b) => fmt_binop(f, "udiv", inst, b, slots),
+        InstructionKindData::SDiv(b) => fmt_binop(f, "sdiv", inst, b, slots),
+        InstructionKindData::URem(b) => fmt_binop(f, "urem", inst, b, slots),
+        InstructionKindData::SRem(b) => fmt_binop(f, "srem", inst, b, slots),
+        InstructionKindData::Shl(b) => fmt_binop(f, "shl", inst, b, slots),
+        InstructionKindData::LShr(b) => fmt_binop(f, "lshr", inst, b, slots),
+        InstructionKindData::AShr(b) => fmt_binop(f, "ashr", inst, b, slots),
+        InstructionKindData::And(b) => fmt_binop(f, "and", inst, b, slots),
+        InstructionKindData::Or(b) => fmt_binop(f, "or", inst, b, slots),
+        InstructionKindData::Xor(b) => fmt_binop(f, "xor", inst, b, slots),
+        InstructionKindData::FAdd(b) => fmt_binop(f, "fadd", inst, b, slots),
+        InstructionKindData::FSub(b) => fmt_binop(f, "fsub", inst, b, slots),
+        InstructionKindData::FMul(b) => fmt_binop(f, "fmul", inst, b, slots),
+        InstructionKindData::FDiv(b) => fmt_binop(f, "fdiv", inst, b, slots),
+        InstructionKindData::FRem(b) => fmt_binop(f, "frem", inst, b, slots),
+        InstructionKindData::FCmp(c) => fmt_fcmp(f, inst, c, slots),
+        InstructionKindData::Alloca(a) => fmt_alloca(f, inst, a, slots),
+        InstructionKindData::Load(l) => fmt_load(f, inst, l, slots),
+        InstructionKindData::Store(s) => fmt_store(f, inst, s, slots),
+        InstructionKindData::Gep(g) => fmt_gep(f, inst, g, slots),
+        InstructionKindData::Call(c) => fmt_call(f, inst, c, slots),
+        InstructionKindData::Select(s) => fmt_select(f, inst, s, slots),
         InstructionKindData::Cast(c) => fmt_cast(f, inst, c, slots),
+        InstructionKindData::ICmp(c) => fmt_icmp(f, inst, c, slots),
+        InstructionKindData::Phi(p) => fmt_phi(f, inst, p, slots),
+        InstructionKindData::Br(b) => fmt_br(f, inst, b, slots),
+        InstructionKindData::Unreachable(_) => f.write_str("unreachable"),
         InstructionKindData::Ret(r) => fmt_ret(f, inst, r, slots),
     }
 }
@@ -319,7 +376,7 @@ pub(crate) fn fmt_instruction(
 fn fmt_binop(
     f: &mut fmt::Formatter<'_>,
     opcode: &str,
-    inst: Instruction<'_>,
+    inst: &Instruction<'_>,
     b: &BinaryOpData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -330,21 +387,24 @@ fn fmt_binop(
     if b.no_signed_wrap {
         f.write_str(" nsw")?;
     }
+    if b.is_exact {
+        f.write_str(" exact")?;
+    }
     f.write_str(" ")?;
     let module = inst.module();
-    let lhs_data = module.context().value_data(b.lhs);
-    let lhs = Value::from_parts(b.lhs, module, lhs_data.ty);
+    let lhs_data = module.context().value_data(b.lhs.get());
+    let lhs = Value::from_parts(b.lhs.get(), module, lhs_data.ty);
     write!(f, "{} ", lhs.ty())?;
     fmt_operand_ref(f, lhs, Some(slots))?;
     f.write_str(", ")?;
-    let rhs_data = module.context().value_data(b.rhs);
-    let rhs = Value::from_parts(b.rhs, module, rhs_data.ty);
+    let rhs_data = module.context().value_data(b.rhs.get());
+    let rhs = Value::from_parts(b.rhs.get(), module, rhs_data.ty);
     fmt_operand_ref(f, rhs, Some(slots))
 }
 
 fn fmt_cast(
     f: &mut fmt::Formatter<'_>,
-    inst: Instruction<'_>,
+    inst: &Instruction<'_>,
     c: &CastOpData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -352,8 +412,8 @@ fn fmt_cast(
     f.write_str(c.kind.keyword())?;
     f.write_str(" ")?;
     let module = inst.module();
-    let src_data = module.context().value_data(c.src);
-    let src = Value::from_parts(c.src, module, src_data.ty);
+    let src_data = module.context().value_data(c.src.get());
+    let src = Value::from_parts(c.src.get(), module, src_data.ty);
     write!(f, "{} ", src.ty())?;
     fmt_operand_ref(f, src, Some(slots))?;
     write!(f, " to {}", inst.ty())
@@ -361,11 +421,11 @@ fn fmt_cast(
 
 fn fmt_ret(
     f: &mut fmt::Formatter<'_>,
-    inst: Instruction<'_>,
+    inst: &Instruction<'_>,
     r: &ReturnOpData,
     slots: &SlotTracker,
 ) -> fmt::Result {
-    match r.value {
+    match r.value.get() {
         None => f.write_str("ret void"),
         Some(id) => {
             let module = inst.module();
@@ -373,6 +433,237 @@ fn fmt_ret(
             let v = Value::from_parts(id, module, data.ty);
             f.write_str("ret ")?;
             fmt_operand(f, v, Some(slots))
+        }
+    }
+}
+
+fn fmt_icmp(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    c: &CmpInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    let module = inst.module();
+    let lhs_data = module.context().value_data(c.lhs.get());
+    let lhs = Value::from_parts(c.lhs.get(), module, lhs_data.ty);
+    write!(f, "icmp {} {} ", c.predicate.name(), lhs.ty())?;
+    fmt_operand_ref(f, lhs, Some(slots))?;
+    f.write_str(", ")?;
+    let rhs_data = module.context().value_data(c.rhs.get());
+    let rhs = Value::from_parts(c.rhs.get(), module, rhs_data.ty);
+    fmt_operand_ref(f, rhs, Some(slots))
+}
+fn fmt_fcmp(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    c: &crate::instr_types::FCmpInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    let module = inst.module();
+    let lhs_data = module.context().value_data(c.lhs.get());
+    let lhs = Value::from_parts(c.lhs.get(), module, lhs_data.ty);
+    write!(f, "fcmp {} {} ", c.predicate.name(), lhs.ty())?;
+    fmt_operand_ref(f, lhs, Some(slots))?;
+    f.write_str(", ")?;
+    let rhs_data = module.context().value_data(c.rhs.get());
+    let rhs = Value::from_parts(c.rhs.get(), module, rhs_data.ty);
+    fmt_operand_ref(f, rhs, Some(slots))
+}
+fn fmt_alloca(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    a: &crate::instr_types::AllocaInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    let module = inst.module();
+    let allocated = crate::r#type::Type::new(a.allocated_ty, module);
+    write!(f, "alloca {}", allocated)?;
+    if let Some(num_id) = a.num_elements.get() {
+        let nd = module.context().value_data(num_id);
+        let nv = Value::from_parts(num_id, module, nd.ty);
+        write!(f, ", {} ", nv.ty())?;
+        fmt_operand_ref(f, nv, Some(slots))?;
+    }
+    if let Some(al) = a.align.align() {
+        write!(f, ", align {}", al.value())?;
+    }
+    Ok(())
+}
+
+fn fmt_load(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    l: &crate::instr_types::LoadInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    let module = inst.module();
+    let pointee = crate::r#type::Type::new(l.pointee_ty, module);
+    f.write_str("load ")?;
+    if l.volatile {
+        f.write_str("volatile ")?;
+    }
+    write!(f, "{}, ", pointee)?;
+    let pd = module.context().value_data(l.ptr.get());
+    let pv = Value::from_parts(l.ptr.get(), module, pd.ty);
+    write!(f, "{} ", pv.ty())?;
+    fmt_operand_ref(f, pv, Some(slots))?;
+    if let Some(al) = l.align.align() {
+        write!(f, ", align {}", al.value())?;
+    }
+    Ok(())
+}
+
+fn fmt_store(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    s: &crate::instr_types::StoreInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    let module = inst.module();
+    f.write_str("store ")?;
+    if s.volatile {
+        f.write_str("volatile ")?;
+    }
+    let vd = module.context().value_data(s.value.get());
+    let vv = Value::from_parts(s.value.get(), module, vd.ty);
+    write!(f, "{} ", vv.ty())?;
+    fmt_operand_ref(f, vv, Some(slots))?;
+    f.write_str(", ")?;
+    let pd = module.context().value_data(s.ptr.get());
+    let pv = Value::from_parts(s.ptr.get(), module, pd.ty);
+    write!(f, "{} ", pv.ty())?;
+    fmt_operand_ref(f, pv, Some(slots))?;
+    if let Some(al) = s.align.align() {
+        write!(f, ", align {}", al.value())?;
+    }
+    Ok(())
+}
+
+fn fmt_gep(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    g: &crate::instr_types::GepInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    let module = inst.module();
+    f.write_str("getelementptr ")?;
+    let flags_str = format!("{}", g.flags);
+    if !flags_str.is_empty() {
+        write!(f, "{} ", flags_str)?;
+    }
+    let source = crate::r#type::Type::new(g.source_ty, module);
+    write!(f, "{}, ", source)?;
+    let pd = module.context().value_data(g.ptr.get());
+    let pv = Value::from_parts(g.ptr.get(), module, pd.ty);
+    write!(f, "{} ", pv.ty())?;
+    fmt_operand_ref(f, pv, Some(slots))?;
+    for idx_cell in g.indices.iter() {
+        let iid = idx_cell.get();
+        let id_data = module.context().value_data(iid);
+        let iv = Value::from_parts(iid, module, id_data.ty);
+        f.write_str(", ")?;
+        write!(f, "{} ", iv.ty())?;
+        fmt_operand_ref(f, iv, Some(slots))?;
+    }
+    Ok(())
+}
+
+fn fmt_call(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    c: &crate::instr_types::CallInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    if let Some(kw) = c.tail_kind.keyword() {
+        write!(f, "{} ", kw)?;
+    }
+    f.write_str("call ")?;
+    if c.calling_conv != crate::CallingConv::C {
+        write!(f, "{} ", c.calling_conv)?;
+    }
+    let module = inst.module();
+    // Print the return type. Mirrors AsmWriter's
+    // `printType(I.getType())`.
+    write!(f, "{} ", inst.ty())?;
+    let cd = module.context().value_data(c.callee.get());
+    let callee = Value::from_parts(c.callee.get(), module, cd.ty);
+    fmt_operand_ref(f, callee, Some(slots))?;
+    f.write_str("(")?;
+    let mut first = true;
+    for arg_cell in c.args.iter() {
+        let aid = arg_cell.get();
+        if !first {
+            f.write_str(", ")?;
+        }
+        first = false;
+        let ad = module.context().value_data(aid);
+        let av = Value::from_parts(aid, module, ad.ty);
+        write!(f, "{} ", av.ty())?;
+        fmt_operand_ref(f, av, Some(slots))?;
+    }
+    f.write_str(")")
+}
+
+fn fmt_phi(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    p: &PhiData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    write!(f, "phi {} ", inst.ty())?;
+    let module = inst.module();
+    let mut first = true;
+    for (vid_cell, bid) in p.incoming.borrow().iter() {
+        let vid = vid_cell.get();
+        if !first {
+            f.write_str(", ")?;
+        }
+        first = false;
+        let v_data = module.context().value_data(vid);
+        let v = Value::from_parts(vid, module, v_data.ty);
+        f.write_str("[ ")?;
+        fmt_operand_ref(f, v, Some(slots))?;
+        f.write_str(", ")?;
+        let b_data = module.context().value_data(*bid);
+        let b = Value::from_parts(*bid, module, b_data.ty);
+        fmt_operand_ref(f, b, Some(slots))?;
+        f.write_str(" ]")?;
+    }
+    Ok(())
+}
+
+fn fmt_br(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    b: &BranchInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    let module = inst.module();
+    match &b.kind {
+        BranchKind::Unconditional(target) => {
+            let data = module.context().value_data(*target);
+            let v = Value::from_parts(*target, module, data.ty);
+            f.write_str("br label ")?;
+            fmt_operand_ref(f, v, Some(slots))
+        }
+        BranchKind::Conditional {
+            cond,
+            then_bb,
+            else_bb,
+        } => {
+            let cid = cond.get();
+            let c_data = module.context().value_data(cid);
+            let cv = Value::from_parts(cid, module, c_data.ty);
+            f.write_str("br ")?;
+            fmt_operand(f, cv, Some(slots))?;
+            f.write_str(", label ")?;
+            let t_data = module.context().value_data(*then_bb);
+            let t = Value::from_parts(*then_bb, module, t_data.ty);
+            fmt_operand_ref(f, t, Some(slots))?;
+            f.write_str(", label ")?;
+            let e_data = module.context().value_data(*else_bb);
+            let e = Value::from_parts(*else_bb, module, e_data.ty);
+            fmt_operand_ref(f, e, Some(slots))
         }
     }
 }
@@ -428,7 +719,7 @@ fn fmt_attribute_stored(f: &mut fmt::Formatter<'_>, attr: &AttributeStored) -> f
 
 pub(crate) fn fmt_basic_block(
     f: &mut fmt::Formatter<'_>,
-    bb: BasicBlock<'_, RDyn>,
+    bb: BasicBlock<'_, Dyn>,
     slots: &SlotTracker,
     is_first: bool,
 ) -> fmt::Result {
@@ -444,7 +735,7 @@ pub(crate) fn fmt_basic_block(
     }
     f.write_str("\n")?;
     for inst in bb.instructions() {
-        fmt_instruction(f, inst, slots)?;
+        fmt_instruction(f, &inst, slots)?;
         f.write_str("\n")?;
     }
     Ok(())
@@ -452,7 +743,7 @@ pub(crate) fn fmt_basic_block(
 
 pub(crate) fn fmt_function(
     f: &mut fmt::Formatter<'_>,
-    func: FunctionValue<'_, RDyn>,
+    func: FunctionValue<'_, Dyn>,
 ) -> fmt::Result {
     let slots = SlotTracker::for_function(func);
     let sig = func.signature();
@@ -532,4 +823,28 @@ pub(crate) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &Module<'_>) -> fmt::Res
         fmt_function(f, func)?;
     }
     Ok(())
+}
+
+fn fmt_select(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    s: &crate::instr_types::SelectInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    let module = inst.module();
+    f.write_str("select ")?;
+    let cd = module.context().value_data(s.cond.get());
+    let cv = Value::from_parts(s.cond.get(), module, cd.ty);
+    write!(f, "{} ", cv.ty())?;
+    fmt_operand_ref(f, cv, Some(slots))?;
+    f.write_str(", ")?;
+    let td = module.context().value_data(s.true_val.get());
+    let tv = Value::from_parts(s.true_val.get(), module, td.ty);
+    write!(f, "{} ", tv.ty())?;
+    fmt_operand_ref(f, tv, Some(slots))?;
+    f.write_str(", ")?;
+    let fd = module.context().value_data(s.false_val.get());
+    let fv = Value::from_parts(s.false_val.get(), module, fd.ty);
+    write!(f, "{} ", fv.ty())?;
+    fmt_operand_ref(f, fv, Some(slots))
 }

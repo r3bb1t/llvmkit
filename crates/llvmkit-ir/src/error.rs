@@ -95,6 +95,185 @@ impl fmt::Display for ValueCategoryLabel {
     }
 }
 
+/// Categorical discriminator over the verifier-rule set.
+///
+/// One variant per rule the verifier can enforce. Tests pattern-match
+/// on this enum to assert which invariant fired without coupling to the
+/// human-readable diagnostic message. New rules are added
+/// non-breakingly via `#[non_exhaustive]`.
+///
+/// Each variant cites its `Verifier::visit*` C++ method in
+/// `llvm/lib/IR/Verifier.cpp`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum VerifierRule {
+    /// Binary operator: LHS and RHS operand types differ.
+    /// Mirrors `Verifier::visitBinaryOperator`.
+    BinaryOperandsTypeMismatch,
+    /// Binary operator's result type does not match its operand type.
+    /// Mirrors `Verifier::visitBinaryOperator`.
+    BinaryResultTypeMismatch,
+    /// Integer arithmetic / shift / logical opcode given a non-integer
+    /// operand. Mirrors `Verifier::visitBinaryOperator`.
+    IntegerOpNonIntegerOperand,
+    /// Floating-point arithmetic opcode given a non-float operand.
+    /// Mirrors `Verifier::visitBinaryOperator`.
+    FloatOpNonFloatOperand,
+    /// `icmp` operands have different types or are not integer/pointer.
+    /// Mirrors `Verifier::visitICmpInst`.
+    IcmpOperandTypeMismatch,
+    /// `fcmp` operands have different types or are not floating-point.
+    /// Mirrors `Verifier::visitFCmpInst`.
+    FcmpOperandTypeMismatch,
+    /// `ret` operand type does not match the function's declared
+    /// return type. Mirrors `Verifier::visitReturnInst`.
+    ReturnTypeMismatch,
+    /// Conditional `br` was given a non-`i1` condition operand.
+    /// Mirrors `Verifier::visitBranchInst`.
+    BranchConditionNotI1,
+    /// A basic block has no terminator at all.
+    /// Mirrors `Verifier::visitBasicBlock`.
+    MissingTerminator,
+    /// A basic block has more than one terminator, or a terminator
+    /// that is not the last instruction.
+    /// Mirrors `Verifier::visitInstruction` ("It is not the terminator
+    /// of its parent").
+    MisplacedTerminator,
+    /// `phi` appears after a non-phi instruction within the same
+    /// block. Mirrors `Verifier::visitPHINode` ("PHI nodes not grouped
+    /// at top of block").
+    PhiNotAtTop,
+    /// `phi` references a predecessor block that is not actually a
+    /// CFG predecessor of the phi's block, or omits a real predecessor.
+    /// Mirrors `Verifier::visitPHINode`.
+    PhiPredecessorMismatch,
+    /// `phi` incoming-value type differs from the phi's result type.
+    /// Mirrors `Verifier::visitPHINode`.
+    PhiIncomingTypeMismatch,
+    /// `phi` has duplicate entries from the same predecessor with
+    /// differing values. Mirrors `Verifier::visitPHINode`
+    /// ("PHI node has multiple entries for the same basic block with
+    /// different incoming values").
+    AmbiguousPhi,
+    /// `call` callee is not a function-typed value.
+    /// Mirrors `Verifier::visitCallBase`.
+    CallNonFunction,
+    /// `call` argument count differs from the callee signature's
+    /// parameter count (and the callee is not vararg).
+    /// Mirrors `Verifier::visitCallBase`.
+    CallArgCountMismatch,
+    /// `call` argument type differs from the callee signature's
+    /// parameter type at the same slot.
+    /// Mirrors `Verifier::visitCallBase`.
+    CallArgTypeMismatch,
+    /// `select` condition operand is not `i1`.
+    /// Mirrors `Verifier::visitSelectInst`.
+    SelectConditionNotI1,
+    /// `select` true-arm and false-arm types differ, or differ from
+    /// the result type. Mirrors `Verifier::visitSelectInst`.
+    SelectArmTypeMismatch,
+    /// `getelementptr` base operand is not a pointer (or vector of
+    /// pointers). Mirrors `Verifier::visitGetElementPtrInst`.
+    GepNonPointerBase,
+    /// `getelementptr` source element type is unsized.
+    /// Mirrors `Verifier::visitGetElementPtrInst`.
+    GepUnsizedSourceType,
+    /// `getelementptr` index operand is non-integer.
+    /// Mirrors `Verifier::visitGetElementPtrInst`.
+    GepNonIntegerIndex,
+    /// `alloca` allocated type is unsized (function/void/label/...).
+    /// Mirrors `Verifier::visitAllocaInst`.
+    AllocaUnsizedType,
+    /// `alloca` num-elements operand is not an integer.
+    /// Mirrors `Verifier::visitAllocaInst`.
+    AllocaNonIntegerCount,
+    /// `load` pointer operand is not a pointer.
+    /// Mirrors `Verifier::visitLoadInst`.
+    LoadNonPointer,
+    /// `load` pointee type is unsized.
+    /// Mirrors `Verifier::visitLoadInst`.
+    LoadUnsizedType,
+    /// `store` pointer operand is not a pointer.
+    /// Mirrors `Verifier::visitStoreInst`.
+    StoreNonPointer,
+    /// `store` value-operand type is unsized.
+    /// Mirrors `Verifier::visitStoreInst`.
+    StoreUnsizedType,
+    /// `bitcast` source and destination bit widths differ.
+    /// Mirrors `Verifier::visitBitCastInst`.
+    BitCastSizeMismatch,
+    /// Cast opcode source/destination kind constraint failed
+    /// (e.g. `zext` from a non-integer, `fptrunc` to an integer).
+    /// Mirrors `Verifier::visit{Trunc,ZExt,SExt,FpTrunc,FpExt,FpToUI,
+    /// FpToSI,UIToFp,SIToFp,PtrToInt,IntToPtr}Inst`.
+    CastTypeMismatch,
+    /// Cast width relationship is wrong (e.g. `trunc` to a wider
+    /// integer; `fpext` to a narrower float).
+    /// Mirrors the same `visit*Inst` family.
+    CastWidthMismatch,
+    /// A non-`phi` instruction references its own result as an operand.
+    /// Mirrors `Verifier::visitInstruction` ("Only PHI nodes may
+    /// reference their own value").
+    SelfReference,
+    /// In-block use-before-def: an operand whose defining instruction
+    /// follows the use in the same basic block.
+    /// Mirrors `Verifier::verifyDominatesUse`.
+    UseBeforeDef,
+}
+
+impl fmt::Display for VerifierRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::BinaryOperandsTypeMismatch => "binary operands have differing types",
+            Self::BinaryResultTypeMismatch => "binary result type differs from operand type",
+            Self::IntegerOpNonIntegerOperand => "integer opcode with non-integer operand",
+            Self::FloatOpNonFloatOperand => "float opcode with non-floating-point operand",
+            Self::IcmpOperandTypeMismatch => {
+                "icmp operand types do not match or are not integer/pointer"
+            }
+            Self::FcmpOperandTypeMismatch => {
+                "fcmp operand types do not match or are not floating-point"
+            }
+            Self::ReturnTypeMismatch => "return value does not match function result type",
+            Self::BranchConditionNotI1 => "conditional branch condition is not i1",
+            Self::MissingTerminator => "basic block has no terminator",
+            Self::MisplacedTerminator => "terminator is not the last instruction in its block",
+            Self::PhiNotAtTop => "PHI nodes not grouped at top of block",
+            Self::PhiPredecessorMismatch => {
+                "PHI predecessor list disagrees with control-flow graph"
+            }
+            Self::PhiIncomingTypeMismatch => {
+                "PHI incoming value type does not match the PHI result type"
+            }
+            Self::AmbiguousPhi => {
+                "PHI node has multiple entries for the same basic block with different incoming values"
+            }
+            Self::CallNonFunction => "call callee is not a function value",
+            Self::CallArgCountMismatch => "call argument count does not match callee signature",
+            Self::CallArgTypeMismatch => "call argument type does not match callee parameter type",
+            Self::SelectConditionNotI1 => "select condition is not i1",
+            Self::SelectArmTypeMismatch => {
+                "select arm types differ from each other or from the result"
+            }
+            Self::GepNonPointerBase => "getelementptr base is not a pointer",
+            Self::GepUnsizedSourceType => "getelementptr source element type is unsized",
+            Self::GepNonIntegerIndex => "getelementptr index operand is not an integer",
+            Self::AllocaUnsizedType => "alloca allocated type is unsized",
+            Self::AllocaNonIntegerCount => "alloca num-elements operand is not an integer",
+            Self::LoadNonPointer => "load pointer operand is not a pointer",
+            Self::LoadUnsizedType => "loading unsized types is not allowed",
+            Self::StoreNonPointer => "store pointer operand is not a pointer",
+            Self::StoreUnsizedType => "storing unsized types is not allowed",
+            Self::BitCastSizeMismatch => "bitcast source and destination have differing bit widths",
+            Self::CastTypeMismatch => "cast source/destination kind constraint failed",
+            Self::CastWidthMismatch => "cast width relationship is invalid",
+            Self::SelfReference => "only PHI nodes may reference their own value",
+            Self::UseBeforeDef => "instruction does not dominate all uses",
+        };
+        f.write_str(s)
+    }
+}
+
 /// Crate-wide error.
 ///
 /// Variants are added incrementally as new subsystems land. Marked
@@ -167,6 +346,25 @@ pub enum IrError {
     /// An immediate value does not fit in the destination integer type.
     #[error("immediate {value} does not fit in {bits} bits")]
     ImmediateOverflow { value: u128, bits: u32 },
+    /// A builder method was called with arguments that violate
+    /// LangRef invariants the type system can't catch (e.g. `exact`
+    /// flag on `add`, non-power-of-two alignment).
+    #[error("invalid operation: {message}")]
+    InvalidOperation { message: &'static str },
+    /// IR validation failure detected by [`Module::verify`](crate::Module::verify) /
+    /// [`Module::verify_borrowed`](crate::Module::verify_borrowed). The
+    /// `rule` discriminator names the LangRef invariant that was
+    /// violated; `function` / `block` carry diagnostic context, and
+    /// `message` is a human-readable description that mirrors the
+    /// shape of `Verifier::CheckFailed` output in
+    /// `llvm/lib/IR/Verifier.cpp`.
+    #[error("verifier: {rule}: {message}")]
+    VerifierFailure {
+        rule: VerifierRule,
+        function: Option<String>,
+        block: Option<String>,
+        message: String,
+    },
 }
 
 /// Crate-wide `Result` alias.

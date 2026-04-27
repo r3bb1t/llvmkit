@@ -593,10 +593,15 @@ pub(super) fn classify_word(word: &[u8]) -> Option<Token<'static>> {
     }
 }
 
+/// Upstream provenance: mirrors the `KEYWORD` / `TYPEKEYWORD` /
+/// `INSTKEYWORD` macro switch driving `LexIdentifier` in
+/// `lib/AsmParser/LLLexer.cpp`.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Mirrors `TYPEKEYWORD` cases for primitive types in
+    /// `lib/AsmParser/LLLexer.cpp::LexIdentifier`.
     #[test]
     fn types_classified() {
         assert!(matches!(
@@ -609,6 +614,8 @@ mod tests {
         ));
     }
 
+    /// Mirrors `INSTKEYWORD` cases for opcode keywords in
+    /// `lib/AsmParser/LLLexer.cpp::LexIdentifier`.
     #[test]
     fn opcodes_classified() {
         assert!(matches!(
@@ -621,6 +628,9 @@ mod tests {
         ));
     }
 
+    /// Mirrors generic `KEYWORD(...)` cases for structural keywords
+    /// (`true`, `define`, `fastcc`) in
+    /// `lib/AsmParser/LLLexer.cpp::LexIdentifier`.
     #[test]
     fn plain_keywords_classified() {
         assert!(matches!(
@@ -637,6 +647,9 @@ mod tests {
         ));
     }
 
+    /// Mirrors attribute keyword cases (`noinline`, `nounwind`, `sret`) in
+    /// `lib/AsmParser/LLLexer.cpp::LexIdentifier`; assembler shape
+    /// `test/Assembler/unnamed_addr.ll` and `test/Verifier/*.ll`.
     #[test]
     fn attributes_classified() {
         assert!(matches!(
@@ -653,6 +666,10 @@ mod tests {
         ));
     }
 
+    /// Mirrors the `dso_local` / `dsoLocal` and `noinline` / `noInline`
+    /// distinct keyword entries in
+    /// `lib/AsmParser/LLLexer.cpp::LexIdentifier` (the summary-index
+    /// keywords use camelCase to avoid collision).
     #[test]
     fn summary_camelcase_distinct_from_snake() {
         // `dso_local` and `dsoLocal` are distinct keywords.
@@ -675,6 +692,9 @@ mod tests {
         ));
     }
 
+    /// Mirrors the fall-through path in
+    /// `lib/AsmParser/LLLexer.cpp::LexIdentifier` for unknown words
+    /// (returns a generic identifier rather than a keyword).
     #[test]
     fn unknown_returns_none() {
         assert!(classify_word(b"completely_unknown").is_none());

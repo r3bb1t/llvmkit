@@ -23,9 +23,9 @@
 //!
 //! [`FunctionValue<'ctx, R>`] carries a [`ReturnMarker`] generic. A
 //! function known to return `i32` is spelled
-//! `FunctionValue<'ctx, RInt<B32>>`; one that returns `void` is
-//! `FunctionValue<'ctx, RVoid>`; parsed / runtime IR uses
-//! `FunctionValue<'ctx, RDyn>`. The marker propagates to the function's
+//! `FunctionValue<'ctx, i32>`; one that returns `void` is
+//! `FunctionValue<'ctx, ()>`; parsed / runtime IR uses
+//! `FunctionValue<'ctx, Dyn>`. The marker propagates to the function's
 //! basic blocks and to any [`IRBuilder`](crate::IRBuilder) positioned
 //! inside them, so the builder's `build_ret` can be statically typed.
 
@@ -43,8 +43,8 @@ use crate::error::{IrError, IrResult};
 use crate::float_kind::FloatKind;
 use crate::global_value::Linkage;
 use crate::int_width::IntWidth;
+use crate::marker::{Dyn, ReturnMarker};
 use crate::module::{Module, ModuleRef};
-use crate::return_marker::{RDyn, RFloat, RInt, RPtr, RVoid, ReturnMarker};
 use crate::r#type::{Type, TypeData, TypeId};
 use crate::unnamed_addr::UnnamedAddr;
 use crate::value::{
@@ -103,8 +103,8 @@ impl FunctionData {
 /// Typed handle to a function value parametrised by its return shape.
 ///
 /// The `R: ReturnMarker` parameter encodes the return type at compile
-/// time (see [`crate::return_marker`]). Use [`FunctionValue::as_dyn`]
-/// to widen to the runtime-checked [`RDyn`] form.
+/// time (see [`crate::marker`]). Use [`FunctionValue::as_dyn`]
+/// to widen to the runtime-checked [`Dyn`] form.
 pub struct FunctionValue<'ctx, R: ReturnMarker> {
     pub(crate) id: ValueId,
     pub(crate) module: ModuleRef<'ctx>,
@@ -182,9 +182,9 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
     }
 
     /// Erase the return-shape marker, producing a runtime-checked
-    /// [`RDyn`] handle.
+    /// [`Dyn`] handle.
     #[inline]
-    pub fn as_dyn(self) -> FunctionValue<'ctx, RDyn> {
+    pub fn as_dyn(self) -> FunctionValue<'ctx, Dyn> {
         FunctionValue {
             id: self.id,
             module: self.module,
@@ -331,6 +331,7 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
             name: RefCell::new((!name.is_empty()).then(|| name.clone())),
             debug_loc: None,
             kind: ValueKindData::BasicBlock(BasicBlockData::new(Some(self.id))),
+            use_list: core::cell::RefCell::new(Vec::new()),
         });
         // Register the block under its name in the per-function symbol table.
         if !name.is_empty() {
@@ -378,68 +379,26 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
 /// Mirrors the runtime side of LLVM's `Function::Create` invariant
 /// (the `RetTy` template parameter on the C++ IRBuilder enforces this
 /// at the type level; we do the same here for static markers, with
-/// a runtime fallback for [`RDyn`] / aggregate return types).
+/// a runtime fallback for [`Dyn`] / aggregate return types).
 pub(crate) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool {
-    use crate::float_kind::{KBFloat, KDouble, KFloat, KFp128, KHalf, KPpcFp128, KX86Fp80};
-    use crate::int_width::{B1, B8, B16, B32, B64, B128};
-    use core::any::TypeId as RustTypeId;
-
-    let r = RustTypeId::of::<R>();
-    if r == RustTypeId::of::<RDyn>() {
-        return true;
-    }
-    if r == RustTypeId::of::<RVoid>() {
-        return matches!(ret, TypeData::Void);
-    }
-    if r == RustTypeId::of::<RPtr>() {
-        return matches!(ret, TypeData::Pointer { .. });
-    }
-    // RInt<W> for each static W
-    if r == RustTypeId::of::<RInt<B1>>() {
-        return matches!(ret, TypeData::Integer { bits: 1 });
-    }
-    if r == RustTypeId::of::<RInt<B8>>() {
-        return matches!(ret, TypeData::Integer { bits: 8 });
-    }
-    if r == RustTypeId::of::<RInt<B16>>() {
-        return matches!(ret, TypeData::Integer { bits: 16 });
-    }
-    if r == RustTypeId::of::<RInt<B32>>() {
-        return matches!(ret, TypeData::Integer { bits: 32 });
-    }
-    if r == RustTypeId::of::<RInt<B64>>() {
-        return matches!(ret, TypeData::Integer { bits: 64 });
-    }
-    if r == RustTypeId::of::<RInt<B128>>() {
-        return matches!(ret, TypeData::Integer { bits: 128 });
-    }
-    if r == RustTypeId::of::<RInt<crate::int_width::BDyn>>() {
-        return matches!(ret, TypeData::Integer { .. });
-    }
-    // RFloat<K>
-    if r == RustTypeId::of::<RFloat<KHalf>>() {
-        return matches!(ret, TypeData::Half);
-    }
-    if r == RustTypeId::of::<RFloat<KBFloat>>() {
-        return matches!(ret, TypeData::BFloat);
-    }
-    if r == RustTypeId::of::<RFloat<KFloat>>() {
-        return matches!(ret, TypeData::Float);
-    }
-    if r == RustTypeId::of::<RFloat<KDouble>>() {
-        return matches!(ret, TypeData::Double);
-    }
-    if r == RustTypeId::of::<RFloat<KFp128>>() {
-        return matches!(ret, TypeData::Fp128);
-    }
-    if r == RustTypeId::of::<RFloat<KX86Fp80>>() {
-        return matches!(ret, TypeData::X86Fp80);
-    }
-    if r == RustTypeId::of::<RFloat<KPpcFp128>>() {
-        return matches!(ret, TypeData::PpcFp128);
-    }
-    if r == RustTypeId::of::<RFloat<crate::float_kind::KDyn>>() {
-        return matches!(
+    use crate::marker::ExpectedRetKind;
+    match R::expected_kind() {
+        ExpectedRetKind::Dyn => true,
+        ExpectedRetKind::Void => matches!(ret, TypeData::Void),
+        ExpectedRetKind::Ptr => matches!(ret, TypeData::Pointer { .. }),
+        ExpectedRetKind::IntStatic(b) => matches!(ret, TypeData::Integer { bits } if *bits == b),
+        ExpectedRetKind::IntDyn => matches!(ret, TypeData::Integer { .. }),
+        ExpectedRetKind::FloatStatic(label) => match label {
+            "half" => matches!(ret, TypeData::Half),
+            "bfloat" => matches!(ret, TypeData::BFloat),
+            "float" => matches!(ret, TypeData::Float),
+            "double" => matches!(ret, TypeData::Double),
+            "fp128" => matches!(ret, TypeData::Fp128),
+            "x86_fp80" => matches!(ret, TypeData::X86Fp80),
+            "ppc_fp128" => matches!(ret, TypeData::PpcFp128),
+            _ => unreachable!("FloatKind::ieee_label() returned unrecognised tag"),
+        },
+        ExpectedRetKind::FloatDyn => matches!(
             ret,
             TypeData::Half
                 | TypeData::BFloat
@@ -448,12 +407,8 @@ pub(crate) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool 
                 | TypeData::Fp128
                 | TypeData::X86Fp80
                 | TypeData::PpcFp128
-        );
+        ),
     }
-    // Sealed: by exhaustion any other ReturnMarker would have been
-    // listed above. The trait is sealed so there is no way for an
-    // external crate to introduce a fresh marker.
-    unreachable!("ReturnMarker is sealed; every implementor handled above")
 }
 
 impl<'ctx, R: ReturnMarker> sealed::Sealed for FunctionValue<'ctx, R> {}
@@ -495,7 +450,7 @@ impl<'ctx, R: ReturnMarker> From<FunctionValue<'ctx, R>> for Value<'ctx> {
     }
 }
 
-impl<'ctx> TryFrom<Value<'ctx>> for FunctionValue<'ctx, RDyn> {
+impl<'ctx> TryFrom<Value<'ctx>> for FunctionValue<'ctx, Dyn> {
     type Error = IrError;
     fn try_from(v: Value<'ctx>) -> IrResult<Self> {
         match &v.data().kind {
@@ -528,9 +483,9 @@ impl<'ctx> TryFrom<Value<'ctx>> for FunctionValue<'ctx, RDyn> {
 /// returns [`IrError::ReturnTypeMismatch`] otherwise.
 ///
 /// ```ignore
-/// let f = m.function_builder::<RInt<B32>, _>("worker", fn_ty)
+/// let f = m.function_builder::<i32, _>("worker", fn_ty)
 ///     .linkage(Linkage::Internal)
-///     .calling_conv(CallingConv::Fast)
+///     .calling_conv(CallingConv::FAST)
 ///     .unnamed_addr(UnnamedAddr::Local)
 ///     .param_name(0, "x")
 ///     .return_attribute(AttrKind::NoUndef)
@@ -644,12 +599,12 @@ impl<'ctx, R: ReturnMarker> FunctionBuilder<'ctx, R> {
 // Per-marker monomorphic constructors used by typed builders
 // --------------------------------------------------------------------------
 //
-// `FunctionValue<'ctx, RInt<W>>` and friends need integer-typed
+// `FunctionValue<'ctx, W>` and friends need integer-typed
 // return-type accessors. The relevant per-marker accessors live on
 // the type-state-aware impl blocks where the IRBuilder constructs
 // them; here we expose only what's universally needed.
 
-impl<'ctx, W: IntWidth> FunctionValue<'ctx, RInt<W>> {
+impl<'ctx, W: IntWidth + ReturnMarker> FunctionValue<'ctx, W> {
     /// Return type as an integer-typed handle. Mirrors the
     /// `Function::getReturnType()` round-trip on a typed function.
     #[inline]
@@ -659,7 +614,7 @@ impl<'ctx, W: IntWidth> FunctionValue<'ctx, RInt<W>> {
     }
 }
 
-impl<'ctx, K: FloatKind> FunctionValue<'ctx, RFloat<K>> {
+impl<'ctx, K: FloatKind + ReturnMarker> FunctionValue<'ctx, K> {
     /// Return type as a kind-typed float handle.
     #[inline]
     pub fn return_float_type(self) -> crate::derived_types::FloatType<'ctx, K> {

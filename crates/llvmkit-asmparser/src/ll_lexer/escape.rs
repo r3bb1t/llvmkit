@@ -67,10 +67,15 @@ pub(super) fn unescape(input: &[u8]) -> Cow<'_, [u8]> {
     Cow::Owned(out)
 }
 
+/// Upstream provenance: mirrors `UnEscapeLexed` in
+/// `lib/AsmParser/LLLexer.cpp`. Inputs trace assembler fixture shapes from
+/// `test/Assembler/*.ll` (e.g. `unnamed_addr.ll` for `\01` mangling).
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Mirrors the no-op fast path in
+    /// `lib/AsmParser/LLLexer.cpp::UnEscapeLexed` (no `\` byte present).
     #[test]
     fn no_escapes_borrows() {
         let s = b"plain text 123";
@@ -79,6 +84,8 @@ mod tests {
         assert_eq!(&*out, &b"plain text 123"[..]);
     }
 
+    /// Mirrors the `\\` collapse case in
+    /// `lib/AsmParser/LLLexer.cpp::UnEscapeLexed`.
     #[test]
     fn double_backslash_collapses() {
         let out = unescape(br"a\\b");
@@ -86,6 +93,8 @@ mod tests {
         assert!(matches!(out, Cow::Owned(_)));
     }
 
+    /// Mirrors the `\xx` two-hex-digit decode in
+    /// `lib/AsmParser/LLLexer.cpp::UnEscapeLexed`.
     #[test]
     fn hex_escape_decodes() {
         // \41 == 'A', \22 == '"'
@@ -93,12 +102,17 @@ mod tests {
         assert_eq!(&*out, b"xA\"");
     }
 
+    /// Mirrors `\00` decoding in
+    /// `lib/AsmParser/LLLexer.cpp::UnEscapeLexed` (NUL is a legal payload byte).
     #[test]
     fn nul_byte_escape() {
         let out = unescape(br"\00");
         assert_eq!(&*out, &[0u8][..]);
     }
 
+    /// Mirrors the `\01` mangling-suppression marker handled by
+    /// `lib/AsmParser/LLLexer.cpp::UnEscapeLexed`; assembler shape lives in
+    /// `test/Assembler/unnamed_addr.ll`.
     #[test]
     fn mangling_prefix_decodes() {
         // \01 is the front-end mangling-suppression marker; must round-trip
@@ -107,6 +121,8 @@ mod tests {
         assert_eq!(&*out, &[1u8, b'_', b'f', b'o', b'o'][..]);
     }
 
+    /// llvmkit-specific: lenient EOF-after-backslash. Closest upstream:
+    /// `lib/AsmParser/LLLexer.cpp::UnEscapeLexed` (which would diagnose).
     #[test]
     fn lenient_keeps_bad_backslash_at_eof() {
         // A trailing '\' has nothing after it; the backslash survives.
@@ -114,6 +130,8 @@ mod tests {
         assert_eq!(&*out, b"x\\");
     }
 
+    /// llvmkit-specific: lenient bad-hex-digit recovery. Closest upstream:
+    /// `lib/AsmParser/LLLexer.cpp::UnEscapeLexed`.
     #[test]
     fn lenient_keeps_bad_hex() {
         // \xZ — only one valid hex digit; the second is 'Z'. The backslash is
@@ -122,6 +140,8 @@ mod tests {
         assert_eq!(&*out, b"\\xZ");
     }
 
+    /// llvmkit-specific: lenient single-hex-digit at EOF. Closest upstream:
+    /// `lib/AsmParser/LLLexer.cpp::UnEscapeLexed`.
     #[test]
     fn lenient_keeps_one_hex_at_eof() {
         // \4 with nothing after — the backslash and '4' both survive.
@@ -129,6 +149,8 @@ mod tests {
         assert_eq!(&*out, b"\\4");
     }
 
+    /// llvmkit-specific: empty-input borrow path. Closest upstream:
+    /// `lib/AsmParser/LLLexer.cpp::UnEscapeLexed` (no-op when input empty).
     #[test]
     fn empty_input_borrows() {
         let out = unescape(b"");
@@ -136,6 +158,8 @@ mod tests {
         assert!(out.is_empty());
     }
 
+    /// Mirrors mixed escape + literal input through
+    /// `lib/AsmParser/LLLexer.cpp::UnEscapeLexed`.
     #[test]
     fn mixed_escapes_and_text() {
         let out = unescape(br"hello\20world\\!");

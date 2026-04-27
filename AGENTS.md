@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-`rllvm` is a from-scratch Rust reimplementation of LLVM IR APIs. It is **not** an FFI binding to `libLLVM` — the build and runtime never depend on `libLLVM` or `llvm-sys`.
+`llvmkit` is a from-scratch Rust reimplementation of LLVM IR APIs. It is **not** an FFI binding to `libLLVM` — the build and runtime never depend on `libLLVM` or `llvm-sys`.
 
 Goals, in priority order:
 
@@ -11,22 +11,36 @@ Goals, in priority order:
 3. **Mirror LLVM's logic exactly**, using the C++ source under `orig_cpp/` as the canonical reference for behavior.
 4. **Make invalid IR unrepresentable** at the type level wherever LLVM uses runtime checks. Where C++ forces `if (v->getType()->isFloatTy())`, Rust should expose a sum type whose variants already encode the answer.
 
-What `rllvm` is *not*:
+What `llvmkit` is *not*:
 
 - Not a binding crate (`llvm-sys`, `inkwell`, `llvm-ir`-style wrappers are all out of scope).
 - Not a code generator and not a target backend. `llvmkit` doesn't lower IR to machine code or link objects — use upstream LLVM (`llvm-sys`, `inkwell`) for that. Optimization / transform / analysis passes are *planned* future work, not excluded; they will land once the IR data model, builder, parser, and verifier are stable.
 
 ## Project Status
 
-The repo is a Cargo workspace at `C:/Users/Aslan/rllvm/`. The `.ll` lexer is
-implemented; the IR data model has Phase A1 (width-typed integers via
-`IntType<'ctx, W>` markers) plus Phase A2 (kind-typed floats via
-`FloatType<'ctx, K>` markers), the value layer foundation, the minimum
-`add`/`sub`/`mul`/`ret` builder, and an `AsmWriter` covering that opcode
-set with real `.ll` output via `format!("{module}")`. Parser, return-type
-marker on `FunctionValue`, medium IRBuilder (full integer + FP arithmetic,
-casts, memory, GEP, control flow), and the bitcode layers will land in
-subsequent sessions.
+The repo is a Cargo workspace at `C:/Users/Aslan/llvmkit/`. Implemented today:
+
+- The `.ll` lexer (`llvmkit-asmparser/src/ll_lexer.rs`).
+- The IR data model with **width-typed integers** (`IntType<'ctx, W>`, `W in { bool, i8, i16, i32, i64, i128, IntDyn, Width<const N: u32> }`) and **kind-typed floats** (`FloatType<'ctx, K>`, `K in { f32, f64, Half, BFloat, Fp128, X86Fp80, PpcFp128, FloatDyn }`).
+- Sealed marker traits: `IntWidth`, `StaticIntWidth`, `FloatKind`, `StaticFloatKind`, `WiderThan`, `FloatWiderThan`, `ReturnMarker`, `SelectArm`.
+- Multi-source operand traits: `IntoIntValue<W>`, `IntoFloatValue<K>`, `IntoPointerValue`, `IntoConstantInt<W>`, `IntoConstantFloat<K>`, `IntoReturnValue<R>`.
+- The full medium IRBuilder: every integer binop (`add`/`sub`/`mul`/`udiv`/`sdiv`/`urem`/`srem`/`shl`/`lshr`/`ashr`/`and`/`or`/`xor`) plus per-opcode flag types (`AddFlags`/`UDivFlags`/...), every float binop (`fadd`/`fsub`/`fmul`/`fdiv`/`frem`), every cast (`trunc`/`zext`/`sext`/`bitcast`/`ptrtoint`/`inttoptr`/`fptrunc`/`fpext`/`fptosi`/`fptoui`/`sitofp`/`uitofp`/`addrspacecast`), `icmp`/`fcmp`, control flow (`br`/`cond_br`/`unreachable`), `phi` (chainable `add_incoming`), memory (`alloca`/`load`/`store` with optional `Align`), `getelementptr` (`build_gep`/`build_inbounds_gep`/`build_struct_gep`), `call` (flat + chainable `CallBuilder`), and `select` (sealed `SelectArm` for int/float/pointer arms).
+- AsmWriter producing real `.ll` output via `format!("{module}")` for every shipped opcode.
+- **Verifier** (`crates/llvmkit-ir/src/verifier.rs`): `Module::verify_borrowed(&self) -> IrResult<()>` for diagnostic-only validation and `Module::verify(self) -> IrResult<VerifiedModule<'ctx>>` for the typestate path that brands a module as well-formed. Implements the constructive subset of `llvm/lib/IR/Verifier.cpp::visit*` for every shipped opcode (binary int/float, icmp/fcmp, all casts, alloca/load/store, GEP, call, select, phi, ret/br/unreachable). Catches type mismatches, terminator placement, phi-predecessor coherence, ambiguous phi, in-block use-before-def, and self-reference. Cross-block dominance is deferred to Session 4 (DominatorTree).
+- **Mutation API (T1)**: full instruction-lifecycle typestate. `Instruction<'ctx, S = state::Attached>` is parameterised by `S: state::InstructionState` (sealed; variants `Attached` / `Detached`). `Instruction` is intentionally **`!Copy` and `!Clone`** (Doctrine D2): the linear-typed handle prevents use-after-erase / double-erase at compile time. Per-opcode handles (`AddInst`, `LoadInst`, ...) stay `Copy` and now hold `(ValueId, ModuleRef, TypeId)` directly; their `as_instruction(self)` materialises a fresh `Instruction<Attached>` on demand. Every operand slot in `instr_types.rs` is wrapped in `core::cell::Cell<ValueId>` (and `Cell<Option<ValueId>>` for the optional `alloca` / `ret` operands) so RAUW can rewrite the operand wiring through `&self`. The shipped lifecycle methods are:
+    - `Instruction<Attached>::replace_all_uses_with(self, replacement)` --- `Value::replaceAllUsesWith` in `lib/IR/Value.cpp`.
+    - `Instruction<Attached>::erase_from_parent(self)` --- `Instruction::eraseFromParent`.
+    - `Instruction<Attached>::detach_from_parent(self) -> Instruction<Detached>` --- `Instruction::removeFromParent`.
+    - `Instruction<Attached>::move_before(self, other)` / `move_after` --- `Instruction::moveBefore` / `moveAfter`.
+    - `Instruction<Detached>::insert_before(self, other)` / `insert_after` / `append_to(block)` --- `Instruction::insertBefore` / `insertAfter` / `insertInto`.
+    - `Instruction<Detached>::drop_detached(self)` --- discard a detached instruction without inserting it (deregisters its operands' use-list entries).
+    - `BasicBlock::splice_into(self, dest)` --- `BasicBlock::splice`.
+    - `BasicBlock::split_at(self, before, name) -> BasicBlock<R>` --- `BasicBlock::splitBasicBlock`.
+    - `iter::BlockCursor::at_start(block)` and `cursor.next() -> Option<(Instruction<Attached>, BlockCursor)>` --- the canonical advance-then-mutate iteration helper (Doctrine D9). Yields each instruction by value while consuming the cursor; the next call sees the precomputed snapshot, so erasing the yielded handle does not invalidate the iteration.
+  Note: `IsValue` keeps its `Copy` supertrait bound (every other implementer is a thin `Copy` handle); `Instruction<Attached>` is therefore *not* an `IsValue` impl. Callers that need an erased view use [`Instruction::as_value(&self)`] (inherent, `&self`).
+- **Test provenance registry (T0)**: `UPSTREAM.md` (repo root) is the authoritative answer to "where does this llvmkit test come from?". Every `#[test]` in the workspace ships with a per-test doc comment citing the upstream `unittests/IR/*Test.cpp::TEST(...)` or `test/{Assembler,Verifier}/*.ll` fixture it ports (Doctrine D11).
+
+Still ahead: parser, more lifecycle tests ported from `unittests/IR/UserTest.cpp` / `BasicBlockTest.cpp` (RAUW / splice / cursor coverage), `Sealed`/`Unsealed` typestate on `BasicBlock` (T2), `Open`/`Closed` on `PhiInst` (T2), `CallInst<R>` typed-return propagation (T3), `VectorType<E, N>` / `ArrayType<E, N>` / `StructType<Opaque/BodySet>` aggregates (T4), pass infrastructure, transforms, bitcode, switch / atomic / aggregate / vector ops, debug info, intrinsics.
 
 Workspace shape (see each crate's `Cargo.toml` for details):
 
@@ -35,8 +49,8 @@ Workspace shape (see each crate's `Cargo.toml` for details):
 - `crates/llvmkit-support/` — shared helpers (`Span`, `Spanned<T>`, `SourceMap`).
 - `crates/llvmkit-asmparser/` — textual IR lexer (parser later).
 
-The crate name `llvmkit` was chosen because `rllvm` is taken on crates.io. The
-repo directory is still `rllvm/` to avoid churn; rename whenever convenient.
+The crate name `llvmkit` was chosen because `llvmkit` is taken on crates.io. The
+repo directory is still `llvmkit/` to avoid churn; rename whenever convenient.
 
 Reference C++ tree at `orig_cpp/llvm-project-llvmorg-22.1.4/` is **read-only**:
 never modified, never built, never shipped. `compile_commands.json` for clangd
@@ -165,7 +179,8 @@ sessions):
     │   │   ├── unnamed_addr.rs      # GlobalValue::UnnamedAddr
     │   │   ├── argument.rs          # Argument handle
     │   │   ├── function.rs          # FunctionValue<'ctx, R> + FunctionBuilder<R>
-    │   │   ├── return_marker.rs     # RVoid/RInt/RFloat/RPtr/RDyn
+    │   │   ├── marker.rs            # ReturnMarker + Dyn + Ptr (top-level)
+    │   │   ├── align.rs             # Align + MaybeAlign (Support/Alignment.h)
     │   │   ├── instruction.rs       # Instruction + InstructionKind/TerminatorKind
     │   │   ├── instr_types.rs       # BinaryOpData / CastOpData / CastOpcode / ReturnOpData payloads
     │   │   ├── instructions.rs      # AddInst/SubInst/MulInst/CastInst/RetInst handles
@@ -179,10 +194,14 @@ sessions):
     │   │   ├── build_add_function.rs # cargo run --example build_add_function
     │   │   └── cpu_state_add.rs     # multi-fn / params / unnamed_addr / trunc demo
     │   └── tests/
-    │       ├── phase_a_types.rs
     │       ├── asm_writer_basic.rs
     │       ├── cpu_state_add_example.rs
+    │       ├── factorial_example.rs
     │       ├── medium_builder_cast.rs
+    │       ├── medium_builder_cmp.rs
+    │       ├── medium_builder_control_flow.rs
+    │       ├── medium_builder_int.rs
+    │       ├── medium_builder_phi.rs
     │       ├── parameter_attributes.rs
     │       ├── phase_a_types.rs
     │       ├── unnamed_addr.rs
@@ -328,6 +347,63 @@ LLVM C++ uses tagged pointers, hung-off operands, intrusive lists, and `union`-v
 
 If a problem feels solvable only by linking against `libLLVM`, the answer is "read the C++ and reimplement it." This is the explicit point of the project.
 
+### Multi-source operand traits
+
+For every operand slot in the IR builder, the trait should accept every reasonable statically-known source: the typed handle itself, the matching constant handle, every Rust scalar literal that lifts, `Argument<'ctx>`, the erased `Value<'ctx>`, `Instruction<'ctx>`, and the dyn-marker variant of the same family (`IntValue<IntDyn>` -> `IntValue<W>`). The `try_into()?` boilerplate disappears at the call site. Each impl is a *concrete-type* impl - no overlap with the identity blanket, no `dyn` dispatch. Cross-module rejection lives inside the lift trait's `into_*_value(module)` method, not at every IRBuilder call site - one check, reused everywhere.
+
+### Typed forms paired with `_dyn` fallbacks
+
+Every method that returns a typed handle ships in two shapes:
+
+- the static-marker form (`build_int_load::<W>(...)` returns `IntValue<W>`);
+- the erased fallback (`build_int_load_dyn(ty, ...)` takes an explicit `IntType<'ctx, IntDyn>` and returns `IntValue<IntDyn>`).
+
+Same posture for trunc / zext / sext / phi / fp loads. The dyn form keeps the runtime check; the typed form pins the invariant at compile time.
+
+### Builder pattern for variable-shape ops
+
+Calls, GEPs, allocas, and any op with several optional knobs ship a chainable builder alongside the flat method:
+
+- `b.build_call(callee, args, name)?` for homogeneous-arg construction.
+- `b.call_builder(callee).arg(a).arg(b).tail().calling_conv(cc).name("r").build()?` for mixed-type / mixed-flag construction. `.arg<V: IsValue<'ctx>>(value)` is generic per call so heterogeneous argument lists work without trait objects.
+
+The builder is a plain struct that accumulates state into a `Vec<ValueId>`; `.build()` performs cross-module checks once and emits the instruction.
+
+### Sealed sum-of-categories traits
+
+Where a single concept (`select`, future `freeze`) accepts any of int / float / pointer arms, define **one** sealed trait with an associated `Output` and ship **one** method:
+
+```rust
+pub trait SelectArm<'ctx>: Sized + sealed::Sealed {
+    type Output;
+    fn from_select_value(v: Value<'ctx>) -> Self::Output;
+    fn arm_value(self) -> Value<'ctx>;
+}
+impl<'ctx, W: IntWidth>  SelectArm<'ctx> for IntValue<'ctx, W>   { type Output = IntValue<'ctx, W>;   ... }
+impl<'ctx, K: FloatKind> SelectArm<'ctx> for FloatValue<'ctx, K> { type Output = FloatValue<'ctx, K>; ... }
+impl<'ctx>               SelectArm<'ctx> for PointerValue<'ctx>  { type Output = PointerValue<'ctx>;   ... }
+```
+
+Each impl is concrete; the method monomorphises per arm category. Beats N per-category overload methods.
+
+### Compile-time invariants via `const { assert!(...) }`
+
+Stable Rust does not allow const-evaluated bounds in `where` clauses (`{ M > N }` needs unstable `generic_const_exprs`). The stable analogue is `const { assert!(...) }` inside the trait method body - monomorphisation evaluates the assertion at instantiation time. Under-spec'd instantiations are *compile* errors.
+
+Used today by `Width<const N: u32>` for arbitrary integer widths:
+
+```rust
+impl<'ctx, const N: u32> IntoConstantInt<'ctx, Width<N>> for i32 {
+    type Error = Infallible;
+    fn into_constant_int(self, ty: IntType<'ctx, Width<N>>) -> Result<...> {
+        const { assert!(N >= 32, "i32 lift to Width<N> requires N >= 32"); }
+        // ...
+    }
+}
+```
+
+And by `Module::int_type_n::<N>()` for the range check (`MIN_INT_BITS..=MAX_INT_BITS`). Prefer this over runtime `IrError::InvalidIntegerWidth` when `N` is statically known.
+
 ## Code Conventions
 
 - **Edition**: 2024. Use 2024-only features (e.g. `let chains` in stable form) when they help.
@@ -339,12 +415,20 @@ If a problem feels solvable only by linking against `libLLVM`, the answer is "re
 - **No `as` casts.** Use `From`/`Into` for infallible widening, `TryFrom`/`TryInto` for fallible narrowing, and method-style conversions (e.g. `u32::from(x)`, `usize::try_from(x)`) elsewhere. The `as` keyword silently truncates, changes signedness, and loses precision — every site is a footgun. If a conversion has no idiomatic counterpart (rare, e.g. deliberate truncation), wrap it in a small named helper with a one-line invariant comment.
 - **No pointer-based identity in our code.** Identity flows through typed integer indices (`TypeId`, `ValueId`, `ModuleId`, ...). No `core::ptr::eq`, no `&T as *const T`, no address hashing in user-written code. Library internals like `boxcar` may use raw pointers safely behind their `unsafe` boundaries — we do not. Identity comparisons derive from `PartialEq`/`Hash` on the index types.
 - **No runtime panics in production code.** `expect`, `unwrap`, `panic!`, `unimplemented!`, `todo!` are forbidden in non-test paths. Real failures use `IrError` returned via `IrResult<T>`. `unreachable!("…invariant…")` is permitted **only** when the branch is provably dead by construction *and* there is no reasonable way to remove it via the type system; the message names the invariant in plain English. Test code (`#[cfg(test)]`, `tests/`, `examples/`) is exempt.
+- **Rust scalar types double as IR markers** where natural. The integer-width markers are the Rust types themselves (`bool` for i1, `i8`/`i16`/`i32`/`i64`/`i128`); the IEEE binary32/binary64 float kinds are `f32`/`f64`. Marker structs (`int_width::IntDyn`, `float_kind::{Half, BFloat, Fp128, X86Fp80, PpcFp128, FloatDyn}`) cover only the cases without a Rust counterpart. `IntDyn` and `FloatDyn` are distinct types so trait coherence stays sane (a single shared `Dyn` would simultaneously implement `IntWidth` and `FloatKind`). The top-level [`marker::Dyn`] / [`marker::Ptr`] / `()` mark fully-erased / pointer / void return shapes respectively; the bare type acts as the [`ReturnMarker`] (no wrapper structs).
+- **Function and IRBuilder name parameters take `impl AsRef<str>`**; module / function / block / parameter names take `impl Into<String>`. The empty-name fast path stays allocation-free.
+- **Compile-time invariants on cast widths** flow through sealed marker traits. `int_width::WiderThan<W>` is implemented for every `(Wider, Narrower)` pair of static markers, and the IR builder uses it as a bound on `build_trunc<Src: WiderThan<Dst>, Dst>` (and inversely on `build_zext` / `build_sext`). The `_dyn`-flavoured fallbacks keep the runtime check for the genuinely-erased path.
+
+- **No `#[allow(...)]` attributes anywhere.** Not `#[allow(dead_code)]`, not `#[allow(clippy::...)]`, not `#[allow(unused_imports)]`, not `#[allow(non_upper_case_globals)]`, not anything else. The compiler / clippy is a teammate; silencing it is silencing the codebase. If a lint fires, fix the code (rename the symbol, drop the dead code, restructure the type) instead of suppressing the lint. The only exception is per-bullet `#[deny(...)]` and `#![forbid(unsafe_code)]` which *strengthen* lints.
+- **Static dispatch only in the public IR / builder surface.** All polymorphism flows through monomorphised generics: `<T: Trait>` turbofish-form, `impl Trait` in argument position (which is just turbofish spelled differently - same monomorphisation, no vtable), or sealed-trait blanket impls. **No `dyn Trait`, no `Box<dyn>`, no `&dyn`** in any IR-builder, value, type, or instruction surface. Where homogeneity forces a slice (e.g. `args: &[Value<'ctx>]`), the slice element is a concrete handle - never a trait object.
+- **Per-opcode flag types over shared flag bags.** When LLVM's `Operator.h` distinguishes flag classes per opcode (`OverflowingBinaryOperator`, `PossiblyExactOperator`, ...), each flag class gets its own Rust struct exposing only the flags LLVM permits for it (`AddFlags { nuw, nsw }`, `UDivFlags { exact }`, ...). Don't ship a single `BinopFlags` requiring runtime validation against the opcode - the type system should make invalid combinations *unspellable*.
+- **AsmWriter print form matches `lib/IR/AsmWriter.cpp` byte-for-byte.** Read the matching `printInstruction` arm before adding an opcode formatter, and lock at least one fixture against the upstream-canonical text via `assert_eq!(format!("{m}"), expected)`. Flag print order, whitespace, and trailing punctuation all match the C++ reference.
 
 - **No emojis**, no decorative comments, no boilerplate `mod tests` blocks unless they contain real tests.
 
 ## Development Commands
 
-Run from the repository root (`C:/Users/Aslan/rllvm` on the current host).
+Run from the repository root (`C:/Users/Aslan/llvmkit` on the current host).
 
 ```bash
 cargo build                  # compile
@@ -362,7 +446,19 @@ There is no `build.rs`, no Make/CMake, no submodules. `orig_cpp/` is **not** bui
 
 ## Testing & QA
 
-No tests exist beyond the placeholder. The recommended testing strategy as code lands:
+The crate ships a substantial test suite (250+ tests across `crates/llvmkit-ir/tests/` plus per-module `#[cfg(test)]` blocks). The categories:
+
+**Tests are ported, not invented.** Every new opcode, predicate, or instruction lands with tests sourced from one of the upstream LLVM trees:
+
+1. **`orig_cpp/.../llvm/test/Assembler/*.ll`** - the canonical round-trip / format fixtures. Each `.ll` is `RUN: llvm-as | llvm-dis | FileCheck %s` upstream; the `; CHECK:` directives spell the canonical AsmWriter output. We can't run `llvm-as` (no parser yet), but we can build an equivalent module programmatically and assert `format!("{m}")` against the fixture body byte-for-byte. Copy the constructive subset to `tests/fixtures/llvm/<topic>.ll` with a leading comment block citing the upstream path.
+2. **`orig_cpp/.../llvm/unittests/IR/*Test.cpp`** - GoogleTest-flavoured unit tests for `IRBuilder::Create*`, `ConstantInt::get`, etc. Each `TEST_F(*, Foo)` translates to a Rust `#[test]` mirroring the structural assertions (operand wiring, flag bits, result types).
+3. **`orig_cpp/.../llvm/test/Verifier/*.ll`** - negative tests: malformed IR that LLVM's verifier rejects. Useful for `IrError` coverage on builder methods that surface domain rules.
+
+**Do not invent `.ll` strings or test scenarios** unless upstream genuinely lacks coverage for the construct. When that happens, document the gap inline and cite the closest upstream test family (e.g. `IRBuilderTest::CreateStepVectorI3` for arbitrary-width tests).
+
+**Test provenance registry.** Every `#[test]` in the workspace ships with a doc comment citing the upstream LLVM file, fixture, or `TEST(...)` it ports. The complete registry lives at `UPSTREAM.md` (repo root) and is the authoritative answer to "where does this test come from?". After adding a new test, append the row. Doctrine D11 (see `local://RLLVM_TYPE_SAFETY_SWEEP.md`) makes this rule mechanical: a test without a citation is a defect, not a stylistic gap.
+
+Categories below are the *shape* of testing; their content always sources from the upstream tree above.
 
 - **Unit tests** (`#[cfg(test)] mod tests` in each module) for type interning, constant folding, instruction construction.
 - **Round-trip tests** (`tests/roundtrip.rs`) that read a `.ll` file, print it back, and assert the canonical form is stable. Use small `.ll` snippets as fixtures under `tests/fixtures/`. The LLVM repo's own `llvm/test/Assembler/*.ll` files are good seed material — copy specific files in as needed; do not pull the whole `test/` tree.
@@ -387,3 +483,4 @@ Do not commit code that breaks `cargo test`, `cargo clippy --all-targets -- -D w
 3. **Prefer one well-modeled subsystem over many half-modeled ones.** A complete, idiomatic `Type` + `Context` pair is more valuable than stubs for `Type`, `Value`, `Module`, `Function`, and `IRBuilder` simultaneously.
 4. **Surface uncertainty.** If a C++ behavior is ambiguous (e.g. silent overflow vs. assertion), state the choice and the rationale in a comment. Do not silently pick.
 5. **Do not import LLVM via FFI** to "validate" Rust output. The Rust implementation must stand on its own; cross-checking against `llc` / `opt` is fine as an external manual step but must not be a build dependency.
+6. **LSP-first for cross-file refactors.** Use `lsp rename` for symbol renames (cross-crate, cross-module), `lsp references` to find every consumer before changing a public signature, `lsp diagnostics file:"*"` after substantive edits to catch stragglers, and `lsp code_actions` for missing-trait-impl / missing-import suggestions. Regex / `sed` is the right tool only for doc-comment markdown links and similar non-symbol text - never for code-symbol changes.

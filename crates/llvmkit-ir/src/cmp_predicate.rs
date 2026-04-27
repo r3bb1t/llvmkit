@@ -130,7 +130,7 @@ impl FloatPredicate {
         }
     }
 
-    /// Inverse predicate (`x \u22a2 y` becomes the negation). Mirrors
+    /// Inverse predicate (`x != y` becomes the negation). Mirrors
     /// the FCMP arm of `CmpInst::getInversePredicate`
     /// (`Instructions.cpp`); the LLVM source spells it as `XOR 0b1111`,
     /// we spell it as a direct mapping match (no `as` cast required).
@@ -359,10 +359,16 @@ impl fmt::Display for IntPredicate {
     }
 }
 
+/// Upstream provenance: mirrors `CmpInst::Predicate` /
+/// `ICmpInst::Predicate` / `FCmpInst::Predicate` from
+/// `include/llvm/IR/InstrTypes.h` and `lib/IR/Instructions.cpp`,
+/// exercised at runtime by `unittests/IR/InstructionsTest.cpp`.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// llvmkit-specific: enum round-trip. Mirrors `FCmpInst::Predicate`
+    /// numeric stability in `include/llvm/IR/InstrTypes.h`.
     #[test]
     fn float_round_trip() {
         for p in FloatPredicate::all() {
@@ -370,6 +376,8 @@ mod tests {
         }
     }
 
+    /// llvmkit-specific: enum round-trip. Mirrors `ICmpInst::Predicate`
+    /// numeric stability in `include/llvm/IR/InstrTypes.h`.
     #[test]
     fn int_round_trip() {
         for p in IntPredicate::all() {
@@ -377,6 +385,8 @@ mod tests {
         }
     }
 
+    /// Mirrors `CmpInst::getInversePredicate` (XOR-with-15 trick) for FCmp
+    /// in `lib/IR/Instructions.cpp`.
     #[test]
     fn float_inverse_is_xor_15() {
         for p in FloatPredicate::all() {
@@ -385,6 +395,8 @@ mod tests {
         }
     }
 
+    /// Mirrors `CmpInst::getInversePredicate` involution for ICmp in
+    /// `lib/IR/Instructions.cpp`.
     #[test]
     fn int_inverse_involutive() {
         for p in IntPredicate::all() {
@@ -392,6 +404,8 @@ mod tests {
         }
     }
 
+    /// Mirrors `CmpInst::getSwappedPredicate` involution for ICmp in
+    /// `lib/IR/Instructions.cpp`.
     #[test]
     fn int_swapped_involutive() {
         for p in IntPredicate::all() {
@@ -399,6 +413,8 @@ mod tests {
         }
     }
 
+    /// Mirrors `CmpInst::getSwappedPredicate` involution for FCmp in
+    /// `lib/IR/Instructions.cpp`.
     #[test]
     fn float_swapped_involutive() {
         for p in FloatPredicate::all() {
@@ -406,6 +422,8 @@ mod tests {
         }
     }
 
+    /// Mirrors `CmpInst::isSigned` / `isUnsigned` partition for ICmp in
+    /// `lib/IR/Instructions.cpp`.
     #[test]
     fn int_signedness_partition() {
         // eq / ne are neither signed nor unsigned; the rest are exactly one.
@@ -419,6 +437,8 @@ mod tests {
         }
     }
 
+    /// Mirrors `CmpInst::getPredicateName` in `lib/IR/Instructions.cpp`;
+    /// rendered shape matches `test/Assembler/*.ll` icmp/fcmp fixtures.
     #[test]
     fn display_matches_llvm() {
         // Spot-check a handful — the exhaustive list lives in the source.
@@ -428,6 +448,8 @@ mod tests {
         assert_eq!(format!("{}", IntPredicate::Slt), "slt");
     }
 
+    /// llvmkit-specific: enum range guard. Closest upstream:
+    /// `CmpInst::Predicate` enum in `include/llvm/IR/InstrTypes.h`.
     #[test]
     fn from_raw_rejects_out_of_range() {
         assert_eq!(FloatPredicate::from_raw(16), None);

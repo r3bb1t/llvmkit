@@ -321,7 +321,6 @@ pub enum Opcode {
 /// or an `ATTRIBUTE_ENUM` entry from `Attributes.td` (LLVM 22.1.4 snapshot, see
 /// `keywords.rs`).
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-#[allow(non_camel_case_types)] // names mirror the LLVM source for parser-side traceability
 pub enum Keyword {
     // Booleans / declarations
     True,

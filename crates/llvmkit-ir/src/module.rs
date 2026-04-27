@@ -35,8 +35,8 @@ use crate::derived_types::{
     TargetExtType, TokenType, VectorType, VoidType,
 };
 use crate::error::{IrError, IrResult, TypeKindLabel};
-use crate::float_kind::{KBFloat, KDouble, KFloat, KFp128, KHalf, KPpcFp128, KX86Fp80};
-use crate::int_width::{B1, B8, B16, B32, B64, B128, BDyn};
+use crate::float_kind::{BFloat, Fp128, Half, PpcFp128, X86Fp80};
+use crate::int_width::IntDyn;
 use crate::llvm_context::Context;
 use crate::r#type::{MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeId};
 use crate::typed_pointer_type::TypedPointerType;
@@ -148,7 +148,7 @@ pub struct Module<'ctx> {
     /// Stored as a `RefCell<Vec<ValueId>>` so `add_function` can mutate
     /// while the same `&'ctx self` borrow is held by call sites.
     functions: core::cell::RefCell<Vec<crate::value::ValueId>>,
-    /// Module-level name \u2192 function value-id table.
+    /// Module-level name -> function value-id table.
     function_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueId>>,
     /// Brand carrier. Without it, `Module<'ctx>` would have no use of
     /// `'ctx` in its fields (since `Context` is lifetime-free) and the
@@ -211,37 +211,37 @@ impl<'ctx> Module<'ctx> {
     }
 
     /// `half`.
-    pub fn half_type(&'ctx self) -> FloatType<'ctx, KHalf> {
+    pub fn half_type(&'ctx self) -> FloatType<'ctx, Half> {
         FloatType::new(self.ctx.half(), self)
     }
 
     /// `bfloat`.
-    pub fn bfloat_type(&'ctx self) -> FloatType<'ctx, KBFloat> {
+    pub fn bfloat_type(&'ctx self) -> FloatType<'ctx, BFloat> {
         FloatType::new(self.ctx.bfloat(), self)
     }
 
     /// `float` (32-bit IEEE 754).
-    pub fn f32_type(&'ctx self) -> FloatType<'ctx, KFloat> {
+    pub fn f32_type(&'ctx self) -> FloatType<'ctx, f32> {
         FloatType::new(self.ctx.float(), self)
     }
 
     /// `double` (64-bit IEEE 754).
-    pub fn f64_type(&'ctx self) -> FloatType<'ctx, KDouble> {
+    pub fn f64_type(&'ctx self) -> FloatType<'ctx, f64> {
         FloatType::new(self.ctx.double(), self)
     }
 
     /// `fp128` (128-bit IEEE 754 binary128).
-    pub fn fp128_type(&'ctx self) -> FloatType<'ctx, KFp128> {
+    pub fn fp128_type(&'ctx self) -> FloatType<'ctx, Fp128> {
         FloatType::new(self.ctx.fp128(), self)
     }
 
     /// `x86_fp80` (80-bit X87 extended precision).
-    pub fn x86_fp80_type(&'ctx self) -> FloatType<'ctx, KX86Fp80> {
+    pub fn x86_fp80_type(&'ctx self) -> FloatType<'ctx, X86Fp80> {
         FloatType::new(self.ctx.x86_fp80(), self)
     }
 
     /// `ppc_fp128` (PowerPC double-double).
-    pub fn ppc_fp128_type(&'ctx self) -> FloatType<'ctx, KPpcFp128> {
+    pub fn ppc_fp128_type(&'ctx self) -> FloatType<'ctx, PpcFp128> {
         FloatType::new(self.ctx.ppc_fp128(), self)
     }
 
@@ -253,37 +253,51 @@ impl<'ctx> Module<'ctx> {
     // ---- Integer types ----
 
     /// `i1`. Convenience for [`Self::custom_width_int_type`] with `bits = 1`.
-    pub fn bool_type(&'ctx self) -> IntType<'ctx, B1> {
+    pub fn bool_type(&'ctx self) -> IntType<'ctx, bool> {
         IntType::new(self.ctx.int_type(1), self)
     }
     /// Alias for [`Self::bool_type`] mirroring inkwell's spelling.
     #[inline]
-    pub fn i1_type(&'ctx self) -> IntType<'ctx, B1> {
+    pub fn i1_type(&'ctx self) -> IntType<'ctx, bool> {
         self.bool_type()
     }
-    pub fn i8_type(&'ctx self) -> IntType<'ctx, B8> {
+    pub fn i8_type(&'ctx self) -> IntType<'ctx, i8> {
         IntType::new(self.ctx.int_type(8), self)
     }
-    pub fn i16_type(&'ctx self) -> IntType<'ctx, B16> {
+    pub fn i16_type(&'ctx self) -> IntType<'ctx, i16> {
         IntType::new(self.ctx.int_type(16), self)
     }
-    pub fn i32_type(&'ctx self) -> IntType<'ctx, B32> {
+    pub fn i32_type(&'ctx self) -> IntType<'ctx, i32> {
         IntType::new(self.ctx.int_type(32), self)
     }
-    pub fn i64_type(&'ctx self) -> IntType<'ctx, B64> {
+    pub fn i64_type(&'ctx self) -> IntType<'ctx, i64> {
         IntType::new(self.ctx.int_type(64), self)
     }
-    pub fn i128_type(&'ctx self) -> IntType<'ctx, B128> {
+    pub fn i128_type(&'ctx self) -> IntType<'ctx, i128> {
         IntType::new(self.ctx.int_type(128), self)
     }
 
     /// Arbitrary-width integer (`iN`). Returns `Err` if `bits` is
     /// outside `[`[`MIN_INT_BITS`]`, `[`MAX_INT_BITS`]`]`.
-    pub fn custom_width_int_type(&'ctx self, bits: u32) -> IrResult<IntType<'ctx, BDyn>> {
+    pub fn custom_width_int_type(&'ctx self, bits: u32) -> IrResult<IntType<'ctx, IntDyn>> {
         if !(MIN_INT_BITS..=MAX_INT_BITS).contains(&bits) {
             return Err(IrError::InvalidIntegerWidth { bits });
         }
         Ok(IntType::new(self.ctx.int_type(bits), self))
+    }
+
+    /// Const-generic integer type. Returns [`IntType<'ctx, Width<N>>`](
+    /// crate::Width). Const-evaluated range check at monomorphisation:
+    /// `N` outside `MIN_INT_BITS..=MAX_INT_BITS` is a compile error.
+    /// Mirrors `Type::getIntNTy(C, N)`.
+    pub fn int_type_n<const N: u32>(&'ctx self) -> IntType<'ctx, crate::int_width::Width<N>> {
+        const {
+            assert!(
+                N >= MIN_INT_BITS && N <= MAX_INT_BITS,
+                "integer width N outside [MIN_INT_BITS, MAX_INT_BITS]",
+            );
+        }
+        IntType::new(self.ctx.int_type(N), self)
     }
 
     // ---- Pointer / typed-pointer ----
@@ -435,16 +449,17 @@ impl<'ctx> Module<'ctx> {
     /// Returns `Err(IrError::DuplicateFunctionName)` if a function
     /// of the same name already exists, or
     /// [`IrError::ReturnTypeMismatch`] if the signature's return
-    /// type does not match the chosen [`ReturnMarker`](crate::return_marker::ReturnMarker).
+    /// type does not match the chosen [`ReturnMarker`](crate::marker::ReturnMarker).
     pub fn add_function<R>(
         &'ctx self,
-        name: &str,
+        name: impl AsRef<str>,
         signature: FunctionType<'ctx>,
         linkage: crate::global_value::Linkage,
     ) -> IrResult<crate::function::FunctionValue<'ctx, R>>
     where
-        R: crate::return_marker::ReturnMarker,
+        R: crate::marker::ReturnMarker,
     {
+        let name = name.as_ref();
         if self.function_by_name.borrow().contains_key(name) {
             return Err(IrError::DuplicateFunctionName {
                 name: name.to_owned(),
@@ -476,6 +491,7 @@ impl<'ctx> Module<'ctx> {
             name: core::cell::RefCell::new(Some(name.to_owned())),
             debug_loc: None,
             kind: crate::value::ValueKindData::Function(fn_data),
+            use_list: core::cell::RefCell::new(Vec::new()),
         });
 
         // Push each parameter as its own value-arena entry.
@@ -492,6 +508,7 @@ impl<'ctx> Module<'ctx> {
                     parent_fn: fn_id,
                     slot: slot_u32,
                 },
+                use_list: core::cell::RefCell::new(Vec::new()),
             });
             arg_ids.push(id);
         }
@@ -512,26 +529,22 @@ impl<'ctx> Module<'ctx> {
     }
 
     /// Look up a function by name, widened to the runtime-checked
-    /// [`RDyn`](crate::return_marker::RDyn) form. Mirrors `Module::getFunction`. Use
+    /// [`Dyn`](crate::marker::Dyn) form. Mirrors `Module::getFunction`. Use
     /// [`Self::function_by_name_typed`] when the caller knows the
     /// expected return shape and wants a typed handle.
     pub fn function_by_name(
         &'ctx self,
         name: &str,
-    ) -> Option<crate::function::FunctionValue<'ctx, crate::return_marker::RDyn>> {
-        self.function_by_name
-            .borrow()
-            .get(name)
-            .copied()
-            .map(|id| {
-                crate::function::FunctionValue::<'ctx, crate::return_marker::RDyn>::from_parts_unchecked(
-                    id, self,
-                )
-            })
+    ) -> Option<crate::function::FunctionValue<'ctx, crate::marker::Dyn>> {
+        self.function_by_name.borrow().get(name).copied().map(|id| {
+            crate::function::FunctionValue::<'ctx, crate::marker::Dyn>::from_parts_unchecked(
+                id, self,
+            )
+        })
     }
 
     /// Look up a function by name and narrow to a specific
-    /// [`ReturnMarker`](crate::return_marker::ReturnMarker). Errors with
+    /// [`ReturnMarker`](crate::marker::ReturnMarker). Errors with
     /// [`IrError::ReturnTypeMismatch`] if the signature does not
     /// match `R`, or returns `Ok(None)` for an unknown name.
     pub fn function_by_name_typed<R>(
@@ -539,7 +552,7 @@ impl<'ctx> Module<'ctx> {
         name: &str,
     ) -> IrResult<Option<crate::function::FunctionValue<'ctx, R>>>
     where
-        R: crate::return_marker::ReturnMarker,
+        R: crate::marker::ReturnMarker,
     {
         let Some(id) = self.function_by_name.borrow().get(name).copied() else {
             return Ok(None);
@@ -569,15 +582,14 @@ impl<'ctx> Module<'ctx> {
     }
 
     /// Iterate the module's functions in declaration order, widened
-    /// to [`RDyn`](crate::return_marker::RDyn). Mirrors `Module::functions`.
+    /// to [`Dyn`](crate::marker::Dyn). Mirrors `Module::functions`.
     pub fn iter_functions(
         &'ctx self,
-    ) -> impl ExactSizeIterator<
-        Item = crate::function::FunctionValue<'ctx, crate::return_marker::RDyn>,
-    > + 'ctx {
+    ) -> impl ExactSizeIterator<Item = crate::function::FunctionValue<'ctx, crate::marker::Dyn>> + 'ctx
+    {
         let ids: Vec<crate::value::ValueId> = self.functions.borrow().clone();
         ids.into_iter().map(move |id| {
-            crate::function::FunctionValue::<'ctx, crate::return_marker::RDyn>::from_parts_unchecked(
+            crate::function::FunctionValue::<'ctx, crate::marker::Dyn>::from_parts_unchecked(
                 id, self,
             )
         })
@@ -593,9 +605,82 @@ impl<'ctx> Module<'ctx> {
         signature: FunctionType<'ctx>,
     ) -> crate::function::FunctionBuilder<'ctx, R>
     where
-        R: crate::return_marker::ReturnMarker,
+        R: crate::marker::ReturnMarker,
     {
         crate::function::FunctionBuilder::new(self, name, signature)
+    }
+
+    // ---- Verification (Phase F) ----
+
+    /// Verify the module's structural invariants without consuming
+    /// it. Mirrors `verifyModule` (`Verifier.h`) for the diagnostic-
+    /// only path.
+    ///
+    /// Returns the first invariant violation as an
+    /// [`IrError::VerifierFailure`]. Use [`Self::verify`] when you
+    /// want a branded [`VerifiedModule<'ctx>`] for the (future) pass
+    /// manager.
+    pub fn verify_borrowed(&'ctx self) -> IrResult<()> {
+        crate::verifier::Verifier::new(self).run()
+    }
+
+    /// Verify the module and -- on success -- consume it into a
+    /// brand-checked [`VerifiedModule<'ctx>`]. Future pass APIs
+    /// require `&VerifiedModule` to guarantee the IR they operate
+    /// on is well-formed.
+    ///
+    /// On failure, the underlying `Module` is destroyed; recover the
+    /// IR by re-parsing or re-building.
+    pub fn verify(self) -> IrResult<VerifiedModule<'ctx>> {
+        // Borrow-checker dance: `verify_borrowed` requires `&'ctx self`,
+        // which we satisfy by referencing the about-to-be-moved value
+        // through a temporary borrow before the move.
+        {
+            crate::verifier::Verifier::new(&self).run()?;
+        }
+        Ok(VerifiedModule {
+            inner: self,
+            _brand: core::marker::PhantomData,
+        })
+    }
+}
+
+// --------------------------------------------------------------------------
+// VerifiedModule
+// --------------------------------------------------------------------------
+
+/// Brand-wrapper for a [`Module`] that has passed [`Module::verify`].
+///
+/// Constructed only by `Module::verify`, the wrapper signals to (future)
+/// pass-manager APIs that the contained IR satisfies every verifier rule
+/// at the moment of construction. Mutating the underlying module via
+/// [`Self::unverify`] strips the brand; re-running [`Module::verify`] on
+/// the resulting `Module` is required before passes that demand
+/// well-formed IR can run again.
+///
+/// The wrapper carries a `'ctx` lifetime parameter so handles minted
+/// against the contained module continue to compose with the rest of
+/// the IR API.
+pub struct VerifiedModule<'ctx> {
+    pub(crate) inner: Module<'ctx>,
+    /// Brand-only ZST; the only construction path is
+    /// [`Module::verify`].
+    pub(crate) _brand: core::marker::PhantomData<*const ()>,
+}
+
+impl<'ctx> VerifiedModule<'ctx> {
+    /// Borrow the wrapped module for read-only inspection.
+    #[inline]
+    pub fn as_module(&'ctx self) -> &'ctx Module<'ctx> {
+        &self.inner
+    }
+
+    /// Strip the brand and recover the inner [`Module`]. Any
+    /// subsequent mutation invalidates the verification status; the
+    /// caller can re-run [`Module::verify`] to recover a fresh
+    /// [`VerifiedModule`].
+    pub fn unverify(self) -> Module<'ctx> {
+        self.inner
     }
 }
 
@@ -613,5 +698,14 @@ impl<'ctx> core::fmt::Display for Module<'ctx> {
     /// `llvm/lib/IR/AsmWriter.cpp`.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         crate::asm_writer::fmt_module(f, self)
+    }
+}
+
+impl<'ctx> core::fmt::Display for VerifiedModule<'ctx> {
+    /// Forward to the wrapped [`Module`]'s [`fmt::Display`](core::fmt::Display) impl. Mirrors
+    /// `Module::print`.
+    #[inline]
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        <Module<'ctx> as core::fmt::Display>::fmt(&self.inner, f)
     }
 }

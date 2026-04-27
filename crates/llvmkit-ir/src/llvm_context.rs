@@ -11,11 +11,11 @@
 //! - Per-kind intern maps (`int_types: HashMap<u32, TypeId>` etc.) instead
 //!   of one big `HashMap<TypeKey, TypeId>` over a giant enum. Keys stay
 //!   small and hash cheaply, and each constructor knows exactly which map
-//!   to consult \u2014 the same way `LLVMContextImpl` operates.
+//!   to consult — the same way `LLVMContextImpl` operates.
 //! - Singletons (`void`, `half`, ...) live in `Cell<Option<TypeId>>`
 //!   slots, lazily filled on first request.
 //!
-//! `Context` is `pub(crate)` \u2014 the public surface is on
+//! `Context` is `pub(crate)` — the public surface is on
 //! [`Module`](crate::Module). Promotion to a public `TypePool<'ctx>` is
 //! a future-work item if cross-module type sharing ever becomes a need.
 
@@ -384,6 +384,16 @@ impl Context {
         ValueId::from_index(idx)
     }
 
+    /// Update the parent block of the instruction stored at `inst_id`.
+    /// No-op if the value at that id is not an instruction. Crate-internal:
+    /// only the lifecycle primitives in [`crate::instruction`] reach for this.
+    pub(crate) fn set_instruction_parent(&self, inst_id: ValueId, new_parent: ValueId) {
+        let data = self.value_data(inst_id);
+        if let crate::value::ValueKindData::Instruction(idata) = &data.kind {
+            idata.parent.set(new_parent);
+        }
+    }
+
     // ---- Constant interning ----
     //
     // Each kind has its own intern map. Keys are the structural
@@ -399,6 +409,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::Int(words)),
+            use_list: core::cell::RefCell::new(Vec::new()),
         });
         self.int_constants.borrow_mut().insert(key, id);
         id
@@ -414,6 +425,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::Float(bits)),
+            use_list: core::cell::RefCell::new(Vec::new()),
         });
         self.float_constants.borrow_mut().insert(key, id);
         id
@@ -428,6 +440,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::PointerNull),
+            use_list: core::cell::RefCell::new(Vec::new()),
         });
         self.null_constants.borrow_mut().insert(ty, id);
         id
@@ -442,6 +455,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::Undef),
+            use_list: core::cell::RefCell::new(Vec::new()),
         });
         self.undef_constants.borrow_mut().insert(ty, id);
         id
@@ -456,6 +470,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::Poison),
+            use_list: core::cell::RefCell::new(Vec::new()),
         });
         self.poison_constants.borrow_mut().insert(ty, id);
         id
@@ -475,6 +490,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::Aggregate(elements)),
+            use_list: core::cell::RefCell::new(Vec::new()),
         });
         self.aggregate_constants.borrow_mut().insert(key, id);
         id

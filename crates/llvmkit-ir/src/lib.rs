@@ -13,6 +13,7 @@
 //! `ret`), and a **minimum [`IRBuilder`]**
 //! with type-state insertion-point invariants.
 
+pub mod align;
 pub mod argument;
 pub mod asm_writer;
 pub mod attribute_mask;
@@ -35,16 +36,18 @@ pub mod instruction;
 pub mod instructions;
 pub mod int_width;
 pub mod ir_builder;
+pub mod iter;
 pub(crate) mod llvm_context;
+pub mod marker;
 pub mod module;
 pub mod operator;
-pub mod return_marker;
 pub mod r#type;
 pub mod typed_pointer_type;
 pub mod r#use;
 pub mod user;
 pub mod value;
 pub mod value_symbol_table;
+pub mod verifier;
 
 pub mod unnamed_addr;
 pub use argument::Argument;
@@ -64,31 +67,47 @@ pub use derived_types::{
     FunctionType, IntType, LabelType, MetadataType, PointerType, SizedType, StructType,
     TargetExtType, TokenType, VectorType, VoidType,
 };
-pub use error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
+pub use error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel, VerifierRule};
 pub use fmf::FastMathFlags;
 pub use function::{FunctionBuilder, FunctionValue};
 pub use gep_no_wrap_flags::GepNoWrapFlags;
 pub use global_value::Linkage;
+pub use instr_types::{
+    AShrFlags, AddFlags, LShrFlags, MulFlags, SDivFlags, ShlFlags, SubFlags, TailCallKind,
+    UDivFlags,
+};
 pub use instruction::{Instruction, InstructionKind, TerminatorKind};
-pub use instructions::{AddInst, CastInst, MulInst, RetInst, SubInst};
+pub use instructions::{
+    AShrInst, AddInst, AllocaInst, AndInst, BranchInst, CallInst, CastInst, FAddInst, FCmpInst,
+    FDivInst, FMulInst, FRemInst, FSubInst, GepInst, ICmpInst, LShrInst, LoadInst, MulInst, OrInst,
+    PhiInst, RetInst, SDivInst, SRemInst, SelectInst, ShlInst, StoreInst, SubInst, UDivInst,
+    URemInst, UnreachableInst, XorInst,
+};
 pub use ir_builder::constant_folder::ConstantFolder;
 pub use ir_builder::folder::IRBuilderFolder;
 pub use ir_builder::no_folder::NoFolder;
-pub use ir_builder::{IRBuilder, Positioned, Unpositioned};
-pub use module::{Module, ModuleId, ModuleRef};
+pub use ir_builder::{CallBuilder, IRBuilder, Positioned, SelectArm, Unpositioned};
+pub use marker::{Dyn, Ptr, ReturnMarker};
+pub use module::{Module, ModuleId, ModuleRef, VerifiedModule};
 pub use operator::OverflowingBinaryOperator;
-pub use return_marker::{RDyn, RFloat, RInt, RPtr, RVoid, ReturnMarker};
 pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeKind};
 pub use typed_pointer_type::TypedPointerType;
 pub use unnamed_addr::UnnamedAddr;
 pub use r#use::Use;
 pub use user::User;
 pub use value::{
-    ArrayValue, FloatValue, FunctionTypedValue, HasDebugLoc, HasName, IntValue, IsValue,
-    PointerValue, StructValue, Typed, Value, ValueCategory, VectorValue,
+    ArrayValue, FloatValue, FunctionTypedValue, HasDebugLoc, HasName, IntValue, IntoPointerValue,
+    IsValue, PointerValue, StructValue, Typed, Value, ValueCategory, VectorValue,
 };
 
+pub use align::{Align, MaybeAlign};
 pub use float_kind::{
-    FloatKind, KBFloat, KDouble, KDyn, KFloat, KFp128, KHalf, KPpcFp128, KX86Fp80,
+    BFloat, FloatDyn, FloatKind, FloatWiderThan, Fp128, Half, IntoConstantFloat, IntoFloatValue,
+    PpcFp128, StaticFloatKind, X86Fp80,
 };
-pub use int_width::{B1, B8, B16, B32, B64, B128, BDyn, IntWidth, IntoConstantInt};
+// `f32`/`f64` are std types — no re-export needed.
+
+pub use int_width::{
+    IntDyn, IntWidth, IntoConstantInt, IntoIntValue, StaticIntWidth, WiderThan, Width,
+};
+// `bool`/`i8`/`i16`/`i32`/`i64`/`i128` are std types — no re-export.

@@ -87,13 +87,16 @@ check at runtime:
 |"integer width is valid"|panic on bad width|`Module::custom_width_int_type` returns `IrResult`|
 ||"the builder has an insertion point"|runtime `BuilderError::NoInsertionPoint`|`IRBuilder<'ctx, F, S, R>` typestate: `S = Unpositioned` has no `build_*` methods at all; `position_at_end` consumes `self` and returns `IRBuilder<'ctx, F, Positioned, R>`. Calling `build_int_add` on an unpositioned builder is a compile-time error.|
 ||"this value is an integer"|runtime `is_int_value()` / `as_int_value()`|`IntValue<'ctx>` per-kind handle. `build_int_add(lhs: IntValue, rhs: IntValue, name)` rejects non-int arguments at the type level. Same for `FloatValue`, `PointerValue`, etc.|
-||"add operands have the same width"|runtime `assert_eq!(lhs.ty(), rhs.ty())` inside LLVM|`build_int_add<W: IntWidth>(IntValue<'ctx, W>, IntValue<'ctx, W>, name)` enforces equal widths at compile time via the `W` marker. Mixing `IntValue<B32>` with `IntValue<B64>` is a compile error "" no runtime check.|
+||"add operands have the same width"|runtime `assert_eq!(lhs.ty(), rhs.ty())` inside LLVM|`build_int_add<W: IntWidth, ...>(IntValue<'ctx, W>, IntValue<'ctx, W>, name)` enforces equal widths at compile time via the `W` marker. Mixing `IntValue<i32>` with `IntValue<i64>` is a compile error — no runtime check.|
 ||"`build_ret` value matches function return type"|runtime `BuilderError::TypeMismatch`|`FunctionValue<'ctx, R>` carries a `ReturnMarker`. The IRBuilder's `build_ret` is dispatched per `R`: `RInt<W>` requires an `IntValue<'ctx, W>`, `RFloat<K>` requires a `FloatValue<'ctx, K>`, `RPtr` requires a `PointerValue<'ctx>`, `RVoid` exposes only `build_ret_void()`. The runtime type-equality check survives only on `RDyn`-marked builders.|
 
-Width markers are now first-class: `B1`, `B8`, `B16`, `B32`, `B64`,
-`B128` for static widths, `BDyn` for parsed-IR / runtime widths.
-Float kinds follow the same shape: `KHalf`, `KBFloat`, `KFloat`,
-`KDouble`, `KFp128`, `KX86Fp80`, `KPpcFp128`, `KDyn`.
+Width markers are **Rust scalar types**: `bool`, `i8`, `i16`, `i32`,
+`i64`, `i128` for static widths, `Dyn` for parsed-IR / runtime widths.
+Float kinds follow the same shape: `f32`, `f64` for the binary32 /
+binary64 IEEE kinds; `Half`, `BFloat`, `Fp128`, `X86Fp80`, `PpcFp128`
+for kinds without a Rust scalar counterpart; `Dyn` for the runtime-
+checked path. The same `Dyn` is shared between `IntType<Dyn>` and
+`FloatType<Dyn>` — the surrounding container disambiguates.
 
 ## Method-name deltas
 
@@ -115,7 +118,7 @@ Float kinds follow the same shape: `KHalf`, `KBFloat`, `KFloat`,
 ||`module.add_function(name, fn_ty, linkage)`|`module.add_function(name, fn_ty, linkage)?`|fallible (`Err(DuplicateFunctionName)`)|
 ||`module.get_function(name)`|`module.function_by_name(name)`|`Option<FunctionValue>`|
 ||`module.get_functions()`|`module.iter_functions()`|`ExactSizeIterator`|
-||\u2014|`module.function_builder(name, fn_ty)`|new \u2014 chainable `.linkage()` / `.calling_conv()` / `.attribute()` / `.build()?`|
+||—|`module.function_builder(name, fn_ty)`|new — chainable `.linkage()` / `.calling_conv()` / `.attribute()` / `.build()?`|
 ||`function.get_nth_param(n)`|`f.param(n)?`|fallible (`Err(ArgumentIndexOutOfRange)`); returns `Argument<'ctx>`|
 ||`function.get_param_iter()`|`f.params()`|`ExactSizeIterator<Item = Argument>`|
 ||`function.get_first_basic_block()`|`f.entry_block()`|`Option<BasicBlock>`|
@@ -126,10 +129,19 @@ Float kinds follow the same shape: `KHalf`, `KBFloat`, `KFloat`,
 ||`Builder::build_return(Some(v))`|`b.build_ret(value)?`|`value: impl IsValue<'ctx>`; type must match the function's return type|
 ||`Builder::build_return(None)`|`b.build_ret_void()?`|errors if return type isn't `void`|
 ||`Builder::position_at_end(bb)`|`IRBuilder::new(&m).position_at_end(bb)`|consumes `self` and transitions `Unpositioned` \u2192 `Positioned` typestate; `build_*` methods are only reachable in `Positioned`|
-||\u2014|`IRBuilder::new_for::<R>(&m)`|new \u2014 produces an [`RInt<W>`](crate::return_marker::RInt) / [`RFloat<K>`](crate::return_marker::RFloat) / [`RPtr`](crate::return_marker::RPtr) / [`RVoid`](crate::return_marker::RVoid)-tagged builder for compile-time-checked `build_ret`|
-||\u2014|`m.add_function::<R>(name, fn_ty, linkage)?`|new \u2014 typed-return form; errors with `IrError::ReturnTypeMismatch` if the signature's return type does not match `R`|
-||\u2014|`m.function_builder::<R>(name, fn_ty)`|chainable: `.linkage()` / `.calling_conv()` / `.unnamed_addr()` / `.attribute()` / `.return_attribute(kind)` / `.param_attribute(slot, kind)` / `.param_name(slot, name)` / `.build()?`|
-||`Builder::build_int_truncate(v, dst, name)`|`b.build_trunc::<WSrc, WDst>(value, dst_ty, name)?`|widths inferred at the call site; widening rejected with `IrError::OperandWidthMismatch`|
+||—|`IRBuilder::new_for::<R>(&m)`|new — produces an [`RInt<W>`](crate::return_marker::RInt) / [`RFloat<K>`](crate::return_marker::RFloat) / [`RPtr`](crate::return_marker::RPtr) / [`RVoid`](crate::return_marker::RVoid)-tagged builder for compile-time-checked `build_ret`|
+||—|`m.add_function::<R>(name, fn_ty, linkage)?`|new — typed-return form; errors with `IrError::ReturnTypeMismatch` if the signature's return type does not match `R`|
+||—|`m.function_builder::<R>(name, fn_ty)`|chainable: `.linkage()` / `.calling_conv()` / `.unnamed_addr()` / `.attribute()` / `.return_attribute(kind)` / `.param_attribute(slot, kind)` / `.param_name(slot, name)` / `.build()?`|
+||`Builder::build_int_truncate(v, dst, name)`|`b.build_trunc::<Src, Dst>(value, dst_ty, name)?`|widths checked at compile time via `Src: WiderThan<Dst>`; widening fails to compile|
+||—|`b.build_trunc_dyn(value, dst_ty, name)?`|runtime-checked fallback for `IntValue<Dyn>` paths; errors with `IrError::OperandWidthMismatch`|
+||`Builder::build_int_z_extend(v, dst, name)`|`b.build_zext::<Src, Dst>(value, dst_ty, name)?`|widths checked at compile time via `Dst: WiderThan<Src>`|
+||`Builder::build_int_s_extend(v, dst, name)`|`b.build_sext::<Src, Dst>(value, dst_ty, name)?`|widths checked at compile time via `Dst: WiderThan<Src>`|
+||—|`b.build_zext_dyn` / `b.build_sext_dyn`|runtime-checked fallbacks for `IntValue<Dyn>` paths|
+||`Builder::build_int_compare(p, l, r, name)`|`b.build_int_cmp::<W, _, _>(IntPredicate, lhs, rhs, name)?`|both operands share width `W`; result is `IntValue<'ctx, bool>`|
+||`Builder::build_unconditional_branch(bb)`|`b.build_br(target)?`|target's `R` matches the builder's; foreign module rejected with `IrError::ForeignValue`|
+||`Builder::build_conditional_branch(c, t, e)`|`b.build_cond_br(cond, then_bb, else_bb)?`|`cond` accepts any `IntoIntValue<'ctx, bool>`|
+||`Builder::build_unreachable()`|`b.build_unreachable()`|infallible (no operands)|
+||`Builder::build_phi(ty, name)` + `phi.add_incoming(&[...])`|`b.build_int_phi::<W, _, _>(ty, incoming, name)?` + `phi.add_incoming(value, block)?`|empty initial list allowed; mirrors `PHINode::addIncoming` for the loop-edge flow|
 
 ## Error model
 
@@ -181,11 +193,20 @@ than a runtime [`IrError`]:
 - The IRBuilder must be positioned (`Unpositioned` has no `build_*`).
 - Integer-arithmetic operands must share a width (`W: IntWidth`).
 - `build_trunc`'s source / destination widths are tagged statically;
-  the runtime check only catches widening attempts.
+  the runtime check only fires on the `_dyn`-flavoured fallbacks.
+- `build_zext` / `build_sext` reject narrowing the same way: the
+  destination width must be statically wider than the source.
+- `build_int_cmp`'s result type is statically `IntValue<'ctx, bool>`
+  (`i1`); downstream `build_cond_br` accepts it without further
+  narrowing.
+- `build_cond_br`'s condition slot accepts any `IntoIntValue<'ctx, bool>`.
+- Branch targets share the parent function's `R` so the typed-return
+  invariant flows transitively across branches.
+- Phi incoming widths match the phi's static `W`.
 - `build_ret` on a typed-return builder requires a value of the
   function's exact return shape (`RInt<W>` / `RFloat<K>` / `RPtr`).
 - `build_ret_void` is *only* reachable on a `void`-returning builder
   (`RVoid`) or on `RDyn` with a runtime check.
 - The runtime [`IrError::ReturnTypeMismatch`] survives only on the
-  `RDyn` path \u2014 every static marker enforces the invariant at
+  `RDyn` path — every static marker enforces the invariant at
   compile time.

@@ -33,11 +33,9 @@ use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
-use crate::float_kind::{
-    FloatKind, KBFloat, KDouble, KDyn, KFloat, KFp128, KHalf, KPpcFp128, KX86Fp80,
-};
+use crate::float_kind::{BFloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
 use crate::int_width::IntoConstantInt;
-use crate::int_width::{B1, B8, B16, B32, B64, B128, BDyn, IntWidth};
+use crate::int_width::{IntDyn, IntWidth};
 
 // --------------------------------------------------------------------------
 // Per-kind handles
@@ -229,7 +227,7 @@ impl<'ctx, W: IntWidth> ConstantIntValue<'ctx, W> {
     }
     /// Erase the width marker.
     #[inline]
-    pub fn as_dyn(self) -> ConstantIntValue<'ctx, BDyn> {
+    pub fn as_dyn(self) -> ConstantIntValue<'ctx, IntDyn> {
         ConstantIntValue {
             id: self.id,
             module: self.module,
@@ -283,7 +281,7 @@ impl<'ctx, W: IntWidth> From<ConstantIntValue<'ctx, W>> for Value<'ctx> {
         c.as_value()
     }
 }
-impl<'ctx> TryFrom<Constant<'ctx>> for ConstantIntValue<'ctx, BDyn> {
+impl<'ctx> TryFrom<Constant<'ctx>> for ConstantIntValue<'ctx, IntDyn> {
     type Error = IrError;
     fn try_from(c: Constant<'ctx>) -> IrResult<Self> {
         let ty = c.ty();
@@ -317,7 +315,7 @@ macro_rules! impl_constant_int_static_try_from {
                 }
             }
         }
-        impl<'ctx> From<ConstantIntValue<'ctx, $marker>> for ConstantIntValue<'ctx, BDyn> {
+        impl<'ctx> From<ConstantIntValue<'ctx, $marker>> for ConstantIntValue<'ctx, IntDyn> {
             #[inline]
             fn from(c: ConstantIntValue<'ctx, $marker>) -> Self {
                 c.as_dyn()
@@ -325,12 +323,12 @@ macro_rules! impl_constant_int_static_try_from {
         }
     };
 }
-impl_constant_int_static_try_from!(B1, 1);
-impl_constant_int_static_try_from!(B8, 8);
-impl_constant_int_static_try_from!(B16, 16);
-impl_constant_int_static_try_from!(B32, 32);
-impl_constant_int_static_try_from!(B64, 64);
-impl_constant_int_static_try_from!(B128, 128);
+impl_constant_int_static_try_from!(bool, 1);
+impl_constant_int_static_try_from!(i8, 8);
+impl_constant_int_static_try_from!(i16, 16);
+impl_constant_int_static_try_from!(i32, 32);
+impl_constant_int_static_try_from!(i64, 64);
+impl_constant_int_static_try_from!(i128, 128);
 
 // --------------------------------------------------------------------------
 // ConstantFloatValue<'ctx, K> -- kind-typed floating-point constant
@@ -400,7 +398,7 @@ impl<'ctx, K: FloatKind> ConstantFloatValue<'ctx, K> {
         }
     }
     #[inline]
-    pub fn as_dyn(self) -> ConstantFloatValue<'ctx, KDyn> {
+    pub fn as_dyn(self) -> ConstantFloatValue<'ctx, FloatDyn> {
         ConstantFloatValue {
             id: self.id,
             module: self.module,
@@ -451,7 +449,7 @@ impl<'ctx, K: FloatKind> From<ConstantFloatValue<'ctx, K>> for Value<'ctx> {
         c.as_value()
     }
 }
-impl<'ctx> TryFrom<Constant<'ctx>> for ConstantFloatValue<'ctx, KDyn> {
+impl<'ctx> TryFrom<Constant<'ctx>> for ConstantFloatValue<'ctx, FloatDyn> {
     type Error = IrError;
     fn try_from(c: Constant<'ctx>) -> IrResult<Self> {
         let ty = c.ty();
@@ -490,7 +488,7 @@ macro_rules! impl_constant_float_static_try_from {
                 }
             }
         }
-        impl<'ctx> From<ConstantFloatValue<'ctx, $marker>> for ConstantFloatValue<'ctx, KDyn> {
+        impl<'ctx> From<ConstantFloatValue<'ctx, $marker>> for ConstantFloatValue<'ctx, FloatDyn> {
             #[inline]
             fn from(c: ConstantFloatValue<'ctx, $marker>) -> Self {
                 c.as_dyn()
@@ -498,13 +496,13 @@ macro_rules! impl_constant_float_static_try_from {
         }
     };
 }
-impl_constant_float_static_try_from!(KHalf, Half, Half);
-impl_constant_float_static_try_from!(KBFloat, BFloat, BFloat);
-impl_constant_float_static_try_from!(KFloat, Float, Float);
-impl_constant_float_static_try_from!(KDouble, Double, Double);
-impl_constant_float_static_try_from!(KFp128, Fp128, Fp128);
-impl_constant_float_static_try_from!(KX86Fp80, X86Fp80, X86Fp80);
-impl_constant_float_static_try_from!(KPpcFp128, PpcFp128, PpcFp128);
+impl_constant_float_static_try_from!(Half, Half, Half);
+impl_constant_float_static_try_from!(BFloat, BFloat, BFloat);
+impl_constant_float_static_try_from!(f32, Float, Float);
+impl_constant_float_static_try_from!(f64, Double, Double);
+impl_constant_float_static_try_from!(Fp128, Fp128, Fp128);
+impl_constant_float_static_try_from!(X86Fp80, X86Fp80, X86Fp80);
+impl_constant_float_static_try_from!(PpcFp128, PpcFp128, PpcFp128);
 
 // --------------------------------------------------------------------------
 // IntType: integer-constant constructors
@@ -538,7 +536,7 @@ impl<'ctx, W: IntWidth> IntType<'ctx, W> {
     /// zero-extend, `bool` becomes `i1` true/false).
     ///
     /// For widths the input type fits losslessly into, the call is
-    /// infallible. For narrowing inputs (e.g. `i64 -> B32`), use
+    /// infallible. For narrowing inputs (e.g. `i64 -> i32`), use
     /// [`Self::const_int_checked`] or call this on a wider target.
     pub fn const_int<V>(self, v: V) -> ConstantIntValue<'ctx, W>
     where
@@ -633,16 +631,16 @@ impl<'ctx, W: IntWidth> ConstantIntValue<'ctx, W> {
 // FloatType: float-constant constructors
 // --------------------------------------------------------------------------
 
-impl<'ctx> FloatType<'ctx, KDouble> {
+impl<'ctx> FloatType<'ctx, f64> {
     /// Construct a `double` constant from an `f64`. Infallible.
-    pub fn const_double(self, value: f64) -> ConstantFloatValue<'ctx, KDouble> {
+    pub fn const_double(self, value: f64) -> ConstantFloatValue<'ctx, f64> {
         intern_float_constant(self, u128::from(value.to_bits()))
     }
 }
 
-impl<'ctx> FloatType<'ctx, KFloat> {
+impl<'ctx> FloatType<'ctx, f32> {
     /// Construct a `float` constant from an `f32`. Infallible.
-    pub fn const_float(self, value: f32) -> ConstantFloatValue<'ctx, KFloat> {
+    pub fn const_float(self, value: f32) -> ConstantFloatValue<'ctx, f32> {
         intern_float_constant(self, u128::from(value.to_bits()))
     }
 }

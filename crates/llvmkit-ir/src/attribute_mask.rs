@@ -73,11 +73,16 @@ impl AttributeMask {
     }
 }
 
+/// Upstream provenance: mirrors `class AttributeMask` from
+/// `llvm/include/llvm/IR/AttributeMask.h` and `lib/IR/Attributes.cpp`,
+/// exercised at runtime by `unittests/IR/AttributesTest.cpp`.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::attributes::AttrKind;
 
+    /// Mirrors `AttributeMask::addAttribute(Attribute::AttrKind)` /
+    /// `contains` in `include/llvm/IR/AttributeMask.h`.
     #[test]
     fn add_and_query_kinds() {
         let mut m = AttributeMask::new();
@@ -87,6 +92,9 @@ mod tests {
         assert!(!m.contains_kind(AttrKind::AlwaysInline));
     }
 
+    /// Mirrors `AttributeMask::addAttributes(AttributeSet)` in
+    /// `include/llvm/IR/AttributeMask.h` (collects both enum and string
+    /// attributes from a set).
     #[test]
     fn add_set_collects_kinds_and_strings() {
         let mut s = AttributeSet::<'_>::new();
@@ -100,6 +108,8 @@ mod tests {
         assert!(m.contains_string("target-features"));
     }
 
+    /// Mirrors `AttributeMask::contains(Attribute)` polymorphic dispatch
+    /// in `include/llvm/IR/AttributeMask.h`.
     #[test]
     fn contains_dispatches_by_attr_shape() {
         let mut m = AttributeMask::new();

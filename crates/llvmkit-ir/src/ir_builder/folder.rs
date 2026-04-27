@@ -15,7 +15,7 @@
 
 use crate::constant::Constant;
 use crate::constants::ConstantIntValue;
-use crate::int_width::BDyn;
+use crate::int_width::IntDyn;
 use crate::value::Value;
 
 /// Strategy for folding constant operands during builder calls.
@@ -33,7 +33,7 @@ pub trait IRBuilderFolder<'ctx> {
 /// Returns `None` if the value isn't a constant integer of a width
 /// that fits losslessly in `u128` (the canonical fold representation
 /// for the slice).
-pub(crate) fn as_int_const<'ctx>(v: Value<'ctx>) -> Option<ConstantIntValue<'ctx, BDyn>> {
+pub(crate) fn as_int_const<'ctx>(v: Value<'ctx>) -> Option<ConstantIntValue<'ctx, IntDyn>> {
     let c = Constant::try_from(v).ok()?;
     ConstantIntValue::try_from(c).ok()
 }

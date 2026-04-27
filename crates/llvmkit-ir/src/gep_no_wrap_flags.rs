@@ -102,10 +102,16 @@ impl fmt::Display for GepNoWrapFlags {
     }
 }
 
+/// Upstream provenance: mirrors `GEPNoWrapFlags` from
+/// `include/llvm/IR/GEPNoWrapFlags.h` and `GEPOperator` helpers in
+/// `lib/IR/Operator.cpp`. Display assertions track GEP flag printing in
+/// `lib/IR/AsmWriter.cpp` (and assembler shape `test/Assembler/*.ll`).
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Mirrors the `inBounds()` invariant in
+    /// `include/llvm/IR/GEPNoWrapFlags.h` (inbounds always implies nusw).
     #[test]
     fn inbounds_implies_nusw() {
         assert!(GepNoWrapFlags::inbounds().contains(GepNoWrapFlags::NUSW));
@@ -116,6 +122,9 @@ mod tests {
         );
     }
 
+    /// Mirrors `GEPNoWrapFlags::intersectForOffsetAdd` in
+    /// `include/llvm/IR/GEPNoWrapFlags.h` (orphan nusw is dropped without
+    /// inbounds).
     #[test]
     fn intersect_offset_add_drops_orphan_nusw() {
         // x has nusw, y has nusw — intersection has nusw. But the C++ rule
@@ -126,6 +135,8 @@ mod tests {
         assert!(!r.contains(GepNoWrapFlags::NUSW));
     }
 
+    /// Mirrors `GEPNoWrapFlags::intersectForReassociate` in
+    /// `include/llvm/IR/GEPNoWrapFlags.h` (reassociation requires nuw).
     #[test]
     fn intersect_reassociate_requires_nuw() {
         let x = GepNoWrapFlags::inbounds();
@@ -139,18 +150,24 @@ mod tests {
         assert!(x.intersect_for_reassociate(y).contains(GepNoWrapFlags::NUW));
     }
 
+    /// Mirrors GEP flag printing in `lib/IR/AsmWriter.cpp`: when `inbounds`
+    /// is set the implicit `nusw` is suppressed.
     #[test]
     fn display_inbounds_hides_nusw() {
         let f = GepNoWrapFlags::inbounds();
         assert_eq!(format!("{f}"), "inbounds");
     }
 
+    /// Mirrors GEP flag printing in `lib/IR/AsmWriter.cpp` for the bare
+    /// `nusw` case.
     #[test]
     fn display_nusw_only() {
         let f = GepNoWrapFlags::NUSW;
         assert_eq!(format!("{f}"), "nusw");
     }
 
+    /// Mirrors GEP flag printing in `lib/IR/AsmWriter.cpp` for the
+    /// `inbounds nuw` combined case.
     #[test]
     fn display_all() {
         let f = GepNoWrapFlags::all_flags();

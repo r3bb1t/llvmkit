@@ -124,32 +124,47 @@ impl fmt::Display for FastMathFlags {
     }
 }
 
+/// Upstream provenance: mirrors `FastMathFlags` from
+/// `include/llvm/IR/FMF.h`. Closest unit-test:
+/// `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)`.
+/// Display assertions track `WriteOptimizationInfo` in
+/// `lib/IR/AsmWriter.cpp`.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Mirrors `FastMathFlags::setFast()` / `isFast()` in
+    /// `include/llvm/IR/FMF.h`.
     #[test]
     fn fast_is_all() {
         assert!(FastMathFlags::fast().is_fast());
         assert_eq!(FastMathFlags::fast(), FastMathFlags::ALL);
     }
 
+    /// Mirrors `WriteOptimizationInfo` `fast` short-form printer case in
+    /// `lib/IR/AsmWriter.cpp`.
     #[test]
     fn display_fast() {
         assert_eq!(format!("{}", FastMathFlags::fast()), "fast");
     }
 
+    /// Mirrors `WriteOptimizationInfo` partial-flag printer in
+    /// `lib/IR/AsmWriter.cpp` (each set bit prints its mnemonic).
     #[test]
     fn display_partial() {
         let f = FastMathFlags::NO_NANS | FastMathFlags::NO_INFS;
         assert_eq!(format!("{f}"), "nnan ninf");
     }
 
+    /// Mirrors `WriteOptimizationInfo` empty case in `lib/IR/AsmWriter.cpp`
+    /// (no flags -> no output).
     #[test]
     fn display_empty() {
         assert_eq!(format!("{}", FastMathFlags::empty()), "");
     }
 
+    /// Mirrors `FastMathFlags::intersectRewrite` semantics in
+    /// `include/llvm/IR/FMF.h` (only rewrite-permitting bits survive).
     #[test]
     fn intersect_rewrite_drops_value_bits() {
         let lhs = FastMathFlags::ALL;
@@ -159,6 +174,8 @@ mod tests {
         assert!(r.contains(FastMathFlags::ALLOW_REASSOC));
     }
 
+    /// Mirrors `FastMathFlags::unionValue` semantics in
+    /// `include/llvm/IR/FMF.h` (only value-affecting bits survive).
     #[test]
     fn union_value_drops_rewrite_bits() {
         let lhs = FastMathFlags::ALL;

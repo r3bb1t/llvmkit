@@ -507,7 +507,7 @@ impl<'ctx> AttributeList<'ctx> {
 /// lifetime-free and can be embedded in [`crate::value::ValueData`].
 ///
 /// Conversions are total in both directions when paired with a
-/// `Module<'ctx>`: `Attribute<'ctx> \u2194 AttributeStored`.
+/// `Module<'ctx>`: `Attribute<'ctx> <-> AttributeStored`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum AttributeStored {
     Enum(AttrKind),
@@ -564,10 +564,19 @@ impl AttributeStorage {
     }
 }
 
+/// Upstream provenance: mirrors `class Attribute` / `AttributeSet` /
+/// `AttributeList` from `lib/IR/Attributes.cpp`, exercised at runtime by
+/// `unittests/IR/AttributesTest.cpp`. Display assertions track the
+/// `getAsString` shape used in `test/Assembler/unnamed_addr.ll` and other
+/// `test/Assembler/*.ll` fixtures.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Mirrors `Attribute::get(LLVMContext &, AttrKind)` /
+    /// `Attribute::get(LLVMContext &, AttrKind, uint64_t)` validation in
+    /// `lib/IR/Attributes.cpp`. Closest unit-test:
+    /// `unittests/IR/AttributesTest.cpp::TEST(Attributes, AttributeRoundTrip)`.
     #[test]
     fn enum_kind_constructors_validate() {
         assert!(Attribute::<'_>::enum_attr(AttrKind::AlwaysInline).is_some());
@@ -582,6 +591,9 @@ mod tests {
         ));
     }
 
+    /// llvmkit-specific: Rust enum partition. Closest upstream:
+    /// `Attribute::isEnumAttribute` / `isIntAttribute` / `isTypeAttribute`
+    /// in `lib/IR/Attributes.cpp`.
     #[test]
     fn kind_partition_is_total() {
         // Every variant is exactly one of enum/int/type.
@@ -594,6 +606,9 @@ mod tests {
         }
     }
 
+    /// Mirrors `Attribute::getAsString` in `lib/IR/Attributes.cpp`;
+    /// rendered shape matches assembler emission in
+    /// `test/Assembler/unnamed_addr.ll` and `lib/IR/AsmWriter.cpp`.
     #[test]
     fn display_renders_attribute_text() {
         assert_eq!(
@@ -610,6 +625,8 @@ mod tests {
         assert_eq!(format!("{bare}"), "\"nobuiltin\"");
     }
 
+    /// Mirrors `AttributeSetNode::get` dedup semantics in
+    /// `lib/IR/Attributes.cpp` (and `unittests/IR/AttributesTest.cpp`).
     #[test]
     fn attribute_set_dedupes_and_iterates() {
         let mut s = AttributeSet::<'_>::new();
@@ -621,6 +638,8 @@ mod tests {
         assert_eq!(s.int_value(AttrKind::Alignment), Some(8));
     }
 
+    /// Mirrors `AttributeList::addAttributeAtIndex` /
+    /// `getAttributes(AttrIndex)` in `lib/IR/Attributes.cpp`.
     #[test]
     fn attribute_list_indexed_storage() {
         let mut l = AttributeList::<'_>::new();

@@ -1,7 +1,14 @@
 //! End-to-end lexer integration tests.
 //!
-//! Exercises every advertised input path against the same fixture and
-//! confirms the public error / `Cow` semantics behave as documented.
+//! ## Upstream provenance
+//!
+//! Exercises the public lexer entry points (`Lexer::new`, `Lexer::from`,
+//! `read_to_owned`) against `tests/fixtures/demo.ll`. Closest upstream
+//! reference: `lib/AsmParser/LLLexer.cpp` (`LLLexer::Lex`,
+//! `LLLexer::LexToken`, `LLLexer::LexIdentifier`, `LLLexer::LexQuote`).
+//! Upstream has no isolated lexer unit test; the lexer is exercised via
+//! `parseAssembly*` round-trips on `test/Assembler/*.ll` fixtures.
+//! Per-test citations below.
 
 use std::borrow::Cow;
 use std::io::Cursor;
@@ -26,6 +33,9 @@ fn collect(mut lex: Lexer<'_>) -> Vec<Token<'_>> {
     out
 }
 
+/// llvmkit-specific: validates that all three constructor paths produce the
+/// same token stream. No upstream analog (LLVM ships only `parseAssembly*`).
+/// Closest reference: `lib/AsmParser/LLLexer.cpp::LLLexer::LLLexer` constructor.
 #[test]
 fn three_input_paths_yield_identical_streams() {
     // Path 1: From<&str> (most ergonomic for in-memory data).
@@ -43,6 +53,9 @@ fn three_input_paths_yield_identical_streams() {
     assert!(!a.is_empty(), "fixture should produce tokens");
 }
 
+/// llvmkit-specific: landmark-token snapshot over `tests/fixtures/demo.ll`.
+/// Closest upstream input shape: `test/Assembler/*.ll` fixtures consumed by
+/// `lib/AsmParser/LLLexer.cpp::LLLexer::LexToken`.
 #[test]
 fn snapshot_landmark_tokens() {
     let toks = collect(Lexer::from(SRC));
@@ -69,6 +82,9 @@ fn snapshot_landmark_tokens() {
     assert_eq!(toks.last(), Some(&Token::RBrace));
 }
 
+/// llvmkit-specific: validates `LexError::UnterminatedString` propagation via
+/// `?`. Closest upstream reference: `lib/AsmParser/LLLexer.cpp::LLLexer::LexQuote`
+/// emitting a `Tag::Error` token on missing terminator.
 #[test]
 fn lex_error_propagates_via_question_mark() -> Result<(), LexError> {
     // Two valid tokens, then an unterminated string. `?` walks through the
@@ -81,6 +97,10 @@ fn lex_error_propagates_via_question_mark() -> Result<(), LexError> {
     Ok(())
 }
 
+/// llvmkit-specific: `Cow` borrowing semantics for global names. Upstream
+/// stores names as `std::string` (always owned). Closest reference:
+/// `lib/AsmParser/LLLexer.cpp::LLLexer::LexIdentifier` /
+/// `LLLexer::LexQuote` for the `\\NN` escape decode path.
 #[test]
 fn cow_borrows_when_possible() {
     // First name has no escapes → borrowed. Second has `\41` → owned.

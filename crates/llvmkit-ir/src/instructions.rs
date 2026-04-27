@@ -1,18 +1,22 @@
 //! Per-opcode instruction handles. Mirrors a slice of
 //! `llvm/include/llvm/IR/Instructions.h`.
 //!
-//! Phase E minimum: `add`, `sub`, `mul`, `ret`. Each handle is a thin
-//! wrapper around an [`Instruction`] that exposes opcode-specific
-//! accessors (operand pickers, flag readers, etc.). Most consumers
-//! reach for [`Instruction`] and pattern-match on
-//! [`Instruction::kind`] /
-//! [`Instruction::terminator_kind`](Instruction::terminator_kind).
-//! The dedicated handles are useful when a function accepts only one
-//! opcode (e.g. `wraps_overflow_op(inst: AddInst)`).
+//! Each handle is a thin `Copy` view onto an attached instruction in
+//! some basic block. Internally it stores the `(ValueId, ModuleRef,
+//! TypeId)` triple --- the same shape `Value` uses --- so it does not
+//! depend on [`Instruction`]'s `!Copy` lifecycle handle. To get a
+//! single-use lifecycle handle, call `as_instruction()` on the per-opcode handle;
+//! the resulting [`Instruction<'ctx, state::Attached>`] is `!Copy` and
+//! can drive `erase_from_parent` / `detach_from_parent` / RAUW.
 
-use crate::instr_types::{BinaryOpData, CastOpData, CastOpcode, ReturnOpData};
-use crate::instruction::{Instruction, InstructionKindData};
-use crate::value::{Value, ValueKindData};
+use crate::instr_types::{
+    BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData, PhiData,
+    ReturnOpData,
+};
+use crate::instruction::{Instruction, InstructionKindData, state};
+use crate::module::{Module, ModuleRef};
+use crate::r#type::TypeId;
+use crate::value::{Value, ValueId, ValueKindData};
 
 macro_rules! decl_binop_handle {
     (
@@ -22,18 +26,21 @@ macro_rules! decl_binop_handle {
     ) => {
         $(#[$attr])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        pub struct $name<'ctx>(pub(crate) Instruction<'ctx>);
+        pub struct $name<'ctx> {
+            pub(crate) id: ValueId,
+            pub(crate) module: ModuleRef<'ctx>,
+            pub(crate) ty: TypeId,
+        }
 
         impl<'ctx> $name<'ctx> {
-            /// Wrap an instruction known to be of this opcode. Crate-
-            /// internal: only the IR builder and `Instruction::kind`
-            /// hand these out.
             #[inline]
-            pub(crate) fn wrap(inst: Instruction<'ctx>) -> Self { Self(inst) }
+            pub(crate) fn from_raw(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
+                Self { id, module: ModuleRef::new(module), ty }
+            }
 
-            /// Borrow the binary-operator payload.
             fn payload(self) -> &'ctx BinaryOpData {
-                match &self.0.as_value().data().kind {
+                let module = self.module.module();
+                match &module.context().value_data(self.id).kind {
                     ValueKindData::Instruction(i) => match &i.kind {
                         InstructionKindData::$variant(b) => b,
                         _ => unreachable!(
@@ -46,22 +53,28 @@ macro_rules! decl_binop_handle {
                 }
             }
 
-            /// Underlying generic instruction handle.
+            /// Materialise a single-use lifecycle handle for this
+            /// instruction. The returned `Instruction<Attached>` is
+            /// `!Copy`; the caller may call `erase_from_parent`,
+            /// `detach_from_parent`, or `replace_all_uses_with` exactly
+            /// once on the binding.
             #[inline]
-            pub fn as_instruction(self) -> Instruction<'ctx> { self.0 }
+            pub fn as_instruction(self) -> Instruction<'ctx, state::Attached> {
+                Instruction::from_parts(self.id, self.module.module())
+            }
 
             /// Left-hand side operand. Mirrors `getOperand(0)`.
             pub fn lhs(self) -> Value<'ctx> {
-                let id = self.payload().lhs;
-                let module = self.0.module();
+                let id = self.payload().lhs.get();
+                let module = self.module.module();
                 let data = module.context().value_data(id);
                 Value::from_parts(id, module, data.ty)
             }
 
             /// Right-hand side operand. Mirrors `getOperand(1)`.
             pub fn rhs(self) -> Value<'ctx> {
-                let id = self.payload().rhs;
-                let module = self.0.module();
+                let id = self.payload().rhs.get();
+                let module = self.module.module();
                 let data = module.context().value_data(id);
                 Value::from_parts(id, module, data.ty)
             }
@@ -73,11 +86,15 @@ macro_rules! decl_binop_handle {
             /// `nsw` flag.
             #[inline]
             pub fn has_no_signed_wrap(self) -> bool { self.payload().no_signed_wrap }
+
+            /// `exact` flag.
+            #[inline]
+            pub fn is_exact(self) -> bool { self.payload().is_exact }
         }
 
-        impl<'ctx> ::core::convert::From<$name<'ctx>> for Instruction<'ctx> {
+        impl<'ctx> ::core::convert::From<$name<'ctx>> for Instruction<'ctx, state::Attached> {
             #[inline]
-            fn from(h: $name<'ctx>) -> Self { h.0 }
+            fn from(h: $name<'ctx>) -> Self { h.as_instruction() }
         }
     };
 }
@@ -94,21 +111,376 @@ decl_binop_handle!(
     /// `mul` binary operator.
     MulInst, Mul
 );
+decl_binop_handle!(
+    /// `udiv` integer divide (unsigned).
+    UDivInst, UDiv
+);
+decl_binop_handle!(
+    /// `sdiv` integer divide (signed).
+    SDivInst, SDiv
+);
+decl_binop_handle!(
+    /// `urem` integer remainder (unsigned).
+    URemInst, URem
+);
+decl_binop_handle!(
+    /// `srem` integer remainder (signed).
+    SRemInst, SRem
+);
+decl_binop_handle!(
+    /// `shl` logical left shift.
+    ShlInst, Shl
+);
+decl_binop_handle!(
+    /// `lshr` logical right shift.
+    LShrInst, LShr
+);
+decl_binop_handle!(
+    /// `ashr` arithmetic right shift.
+    AShrInst, AShr
+);
+decl_binop_handle!(
+    /// `and` bitwise and.
+    AndInst, And
+);
+decl_binop_handle!(
+    /// `or` bitwise or.
+    OrInst, Or
+);
+decl_binop_handle!(
+    /// `xor` bitwise xor.
+    XorInst, Xor
+);
+decl_binop_handle!(
+    /// `fadd` floating-point add.
+    FAddInst, FAdd
+);
+decl_binop_handle!(
+    /// `fsub` floating-point subtract.
+    FSubInst, FSub
+);
+decl_binop_handle!(
+    /// `fmul` floating-point multiply.
+    FMulInst, FMul
+);
+decl_binop_handle!(
+    /// `fdiv` floating-point divide.
+    FDivInst, FDiv
+);
+decl_binop_handle!(
+    /// `frem` floating-point remainder.
+    FRemInst, FRem
+);
+
+/// Common scaffolding used by every non-macro handle.
+macro_rules! decl_handle_scaffold {
+    ($name:ident) => {
+        impl<'ctx> $name<'ctx> {
+            #[inline]
+            pub(crate) fn from_raw(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
+                Self {
+                    id,
+                    module: ModuleRef::new(module),
+                    ty,
+                }
+            }
+
+            /// Materialise a single-use lifecycle handle. See
+            /// [`AddInst::as_instruction`] for semantics.
+            #[inline]
+            pub fn as_instruction(self) -> Instruction<'ctx, state::Attached> {
+                Instruction::from_parts(self.id, self.module.module())
+            }
+        }
+
+        impl<'ctx> ::core::convert::From<$name<'ctx>> for Instruction<'ctx, state::Attached> {
+            #[inline]
+            fn from(h: $name<'ctx>) -> Self {
+                h.as_instruction()
+            }
+        }
+    };
+}
+
+/// `alloca` stack-slot allocation. Mirrors `AllocaInst`
+/// (`Instructions.h`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AllocaInst<'ctx> {
+    pub(crate) id: ValueId,
+    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) ty: TypeId,
+}
+
+decl_handle_scaffold!(AllocaInst);
+
+impl<'ctx> AllocaInst<'ctx> {
+    fn payload(self) -> &'ctx crate::instr_types::AllocaInstData {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::Alloca(a) => a,
+                _ => unreachable!("AllocaInst invariant: kind is Alloca"),
+            },
+            _ => unreachable!("AllocaInst invariant: kind is Instruction"),
+        }
+    }
+    /// Allocated element type.
+    pub fn allocated_type(self) -> crate::r#type::Type<'ctx> {
+        crate::r#type::Type::new(self.payload().allocated_ty, self.module.module())
+    }
+    /// Optional element-count operand (`alloca i32, i32 %n`).
+    pub fn array_size(self) -> Option<Value<'ctx>> {
+        let id = self.payload().num_elements.get()?;
+        let module = self.module.module();
+        let data = module.context().value_data(id);
+        Some(Value::from_parts(id, module, data.ty))
+    }
+    /// Explicit alignment, if any.
+    pub fn align(self) -> Option<crate::align::Align> {
+        self.payload().align.align()
+    }
+    /// Address space of the result pointer.
+    pub fn addr_space(self) -> u32 {
+        self.payload().addr_space
+    }
+}
+
+/// `load` instruction. Mirrors `LoadInst` (`Instructions.h`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LoadInst<'ctx> {
+    pub(crate) id: ValueId,
+    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) ty: TypeId,
+}
+
+decl_handle_scaffold!(LoadInst);
+
+impl<'ctx> LoadInst<'ctx> {
+    fn payload(self) -> &'ctx crate::instr_types::LoadInstData {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::Load(l) => l,
+                _ => unreachable!("LoadInst invariant: kind is Load"),
+            },
+            _ => unreachable!("LoadInst invariant: kind is Instruction"),
+        }
+    }
+    pub fn pointer(self) -> Value<'ctx> {
+        let id = self.payload().ptr.get();
+        let module = self.module.module();
+        let data = module.context().value_data(id);
+        Value::from_parts(id, module, data.ty)
+    }
+    pub fn align(self) -> Option<crate::align::Align> {
+        self.payload().align.align()
+    }
+    pub fn is_volatile(self) -> bool {
+        self.payload().volatile
+    }
+}
+
+/// `store` instruction. Mirrors `StoreInst` (`Instructions.h`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StoreInst<'ctx> {
+    pub(crate) id: ValueId,
+    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) ty: TypeId,
+}
+
+decl_handle_scaffold!(StoreInst);
+
+impl<'ctx> StoreInst<'ctx> {
+    fn payload(self) -> &'ctx crate::instr_types::StoreInstData {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::Store(s) => s,
+                _ => unreachable!("StoreInst invariant: kind is Store"),
+            },
+            _ => unreachable!("StoreInst invariant: kind is Instruction"),
+        }
+    }
+    pub fn value_operand(self) -> Value<'ctx> {
+        let id = self.payload().value.get();
+        let module = self.module.module();
+        let data = module.context().value_data(id);
+        Value::from_parts(id, module, data.ty)
+    }
+    pub fn pointer(self) -> Value<'ctx> {
+        let id = self.payload().ptr.get();
+        let module = self.module.module();
+        let data = module.context().value_data(id);
+        Value::from_parts(id, module, data.ty)
+    }
+    pub fn align(self) -> Option<crate::align::Align> {
+        self.payload().align.align()
+    }
+    pub fn is_volatile(self) -> bool {
+        self.payload().volatile
+    }
+}
+
+/// `getelementptr` instruction. Mirrors `GetElementPtrInst`
+/// (`Instructions.h`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GepInst<'ctx> {
+    pub(crate) id: ValueId,
+    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) ty: TypeId,
+}
+
+decl_handle_scaffold!(GepInst);
+
+impl<'ctx> GepInst<'ctx> {
+    fn payload(self) -> &'ctx crate::instr_types::GepInstData {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::Gep(g) => g,
+                _ => unreachable!("GepInst invariant: kind is GEP"),
+            },
+            _ => unreachable!("GepInst invariant: kind is Instruction"),
+        }
+    }
+    /// Source-element type (the second operand of `getelementptr`).
+    pub fn source_element_type(self) -> crate::r#type::Type<'ctx> {
+        crate::r#type::Type::new(self.payload().source_ty, self.module.module())
+    }
+    pub fn pointer(self) -> Value<'ctx> {
+        let id = self.payload().ptr.get();
+        let module = self.module.module();
+        let data = module.context().value_data(id);
+        Value::from_parts(id, module, data.ty)
+    }
+    pub fn indices(self) -> impl ExactSizeIterator<Item = Value<'ctx>> + 'ctx {
+        let module = self.module.module();
+        let ids: Vec<ValueId> = self.payload().indices.iter().map(|c| c.get()).collect();
+        ids.into_iter().map(move |id| {
+            let data = module.context().value_data(id);
+            Value::from_parts(id, module, data.ty)
+        })
+    }
+    pub fn flags(self) -> crate::gep_no_wrap_flags::GepNoWrapFlags {
+        self.payload().flags
+    }
+}
+
+/// `call` instruction. Mirrors `CallInst` (`Instructions.h`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CallInst<'ctx> {
+    pub(crate) id: ValueId,
+    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) ty: TypeId,
+}
+
+decl_handle_scaffold!(CallInst);
+
+impl<'ctx> CallInst<'ctx> {
+    fn payload(self) -> &'ctx crate::instr_types::CallInstData {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::Call(c) => c,
+                _ => unreachable!("CallInst invariant: kind is Call"),
+            },
+            _ => unreachable!("CallInst invariant: kind is Instruction"),
+        }
+    }
+    /// Callee operand (typically a `FunctionValue`, but a function-
+    /// pointer value also fits here).
+    pub fn callee(self) -> Value<'ctx> {
+        let id = self.payload().callee.get();
+        let module = self.module.module();
+        let data = module.context().value_data(id);
+        Value::from_parts(id, module, data.ty)
+    }
+    /// Function-type of the call (`FunctionType<'ctx>`).
+    pub fn function_type(self) -> crate::derived_types::FunctionType<'ctx> {
+        crate::derived_types::FunctionType::new(self.payload().fn_ty, self.module.module())
+    }
+    pub fn args(self) -> impl ExactSizeIterator<Item = Value<'ctx>> + 'ctx {
+        let module = self.module.module();
+        let ids: Vec<ValueId> = self.payload().args.iter().map(|c| c.get()).collect();
+        ids.into_iter().map(move |id| {
+            let data = module.context().value_data(id);
+            Value::from_parts(id, module, data.ty)
+        })
+    }
+    pub fn calling_conv(self) -> crate::CallingConv {
+        self.payload().calling_conv
+    }
+    pub fn tail_call_kind(self) -> crate::instr_types::TailCallKind {
+        self.payload().tail_kind
+    }
+    /// Return value, or `None` for a void-returning callee.
+    pub fn return_value(self) -> Option<Value<'ctx>> {
+        let module = self.module.module();
+        let ret_ty_data = module.context().type_data(self.ty);
+        if matches!(ret_ty_data, crate::r#type::TypeData::Void) {
+            None
+        } else {
+            Some(Value::from_parts(self.id, module, self.ty))
+        }
+    }
+}
+
+/// `select` instruction. Mirrors `SelectInst` (`Instructions.h`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SelectInst<'ctx> {
+    pub(crate) id: ValueId,
+    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) ty: TypeId,
+}
+
+decl_handle_scaffold!(SelectInst);
+
+impl<'ctx> SelectInst<'ctx> {
+    fn payload(self) -> &'ctx crate::instr_types::SelectInstData {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::Select(s) => s,
+                _ => unreachable!("SelectInst invariant: kind is Select"),
+            },
+            _ => unreachable!("SelectInst invariant: kind is Instruction"),
+        }
+    }
+    pub fn condition(self) -> Value<'ctx> {
+        let id = self.payload().cond.get();
+        let module = self.module.module();
+        let data = module.context().value_data(id);
+        Value::from_parts(id, module, data.ty)
+    }
+    pub fn true_value(self) -> Value<'ctx> {
+        let id = self.payload().true_val.get();
+        let module = self.module.module();
+        let data = module.context().value_data(id);
+        Value::from_parts(id, module, data.ty)
+    }
+    pub fn false_value(self) -> Value<'ctx> {
+        let id = self.payload().false_val.get();
+        let module = self.module.module();
+        let data = module.context().value_data(id);
+        Value::from_parts(id, module, data.ty)
+    }
+}
 
 /// `ret` terminator instruction. Mirrors `ReturnInst` in
 /// `Instructions.h`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RetInst<'ctx>(pub(crate) Instruction<'ctx>);
+pub struct RetInst<'ctx> {
+    pub(crate) id: ValueId,
+    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) ty: TypeId,
+}
+
+decl_handle_scaffold!(RetInst);
 
 impl<'ctx> RetInst<'ctx> {
-    /// Crate-internal wrapping constructor.
-    #[inline]
-    pub(crate) fn wrap(inst: Instruction<'ctx>) -> Self {
-        Self(inst)
-    }
-
     fn payload(self) -> &'ctx ReturnOpData {
-        match &self.0.as_value().data().kind {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
                 InstructionKindData::Ret(r) => r,
                 _ => unreachable!("RetInst invariant: kind is Ret"),
@@ -116,43 +488,30 @@ impl<'ctx> RetInst<'ctx> {
             _ => unreachable!("RetInst invariant: kind is Instruction"),
         }
     }
-
-    /// Underlying generic instruction handle.
-    #[inline]
-    pub fn as_instruction(self) -> Instruction<'ctx> {
-        self.0
-    }
-
     /// Returned value. `None` for `ret void`.
     pub fn return_value(self) -> Option<Value<'ctx>> {
-        let id = self.payload().value?;
-        let module = self.0.module();
+        let id = self.payload().value.get()?;
+        let module = self.module.module();
         let data = module.context().value_data(id);
         Some(Value::from_parts(id, module, data.ty))
-    }
-}
-
-impl<'ctx> From<RetInst<'ctx>> for Instruction<'ctx> {
-    #[inline]
-    fn from(h: RetInst<'ctx>) -> Self {
-        h.0
     }
 }
 
 /// Cast instruction (`trunc`, `zext`, `sext`, `bitcast`, ...).
 /// Mirrors `CastInst` in `InstrTypes.h`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CastInst<'ctx>(pub(crate) Instruction<'ctx>);
+pub struct CastInst<'ctx> {
+    pub(crate) id: ValueId,
+    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) ty: TypeId,
+}
+
+decl_handle_scaffold!(CastInst);
 
 impl<'ctx> CastInst<'ctx> {
-    /// Crate-internal wrapping constructor.
-    #[inline]
-    pub(crate) fn wrap(inst: Instruction<'ctx>) -> Self {
-        Self(inst)
-    }
-
     fn payload(self) -> &'ctx CastOpData {
-        match &self.0.as_value().data().kind {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
                 InstructionKindData::Cast(c) => c,
                 _ => unreachable!("CastInst invariant: kind is Cast"),
@@ -160,31 +519,332 @@ impl<'ctx> CastInst<'ctx> {
             _ => unreachable!("CastInst invariant: kind is Instruction"),
         }
     }
-
-    /// Underlying generic instruction handle.
-    #[inline]
-    pub fn as_instruction(self) -> Instruction<'ctx> {
-        self.0
-    }
-
     /// Cast opcode (`Trunc`, `ZExt`, ...).
     #[inline]
     pub fn opcode(self) -> CastOpcode {
         self.payload().kind
     }
-
     /// Source operand of the cast.
     pub fn src(self) -> Value<'ctx> {
-        let id = self.payload().src;
-        let module = self.0.module();
+        let id = self.payload().src.get();
+        let module = self.module.module();
         let data = module.context().value_data(id);
         Value::from_parts(id, module, data.ty)
     }
 }
 
-impl<'ctx> From<CastInst<'ctx>> for Instruction<'ctx> {
+// --------------------------------------------------------------------------
+// Comparison instructions
+// --------------------------------------------------------------------------
+
+/// `icmp` integer comparison. Mirrors `ICmpInst` (`Instructions.h`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ICmpInst<'ctx> {
+    pub(crate) id: ValueId,
+    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) ty: TypeId,
+}
+
+decl_handle_scaffold!(ICmpInst);
+
+impl<'ctx> ICmpInst<'ctx> {
+    fn payload(self) -> &'ctx CmpInstData {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::ICmp(c) => c,
+                _ => unreachable!("ICmpInst invariant: kind is ICmp"),
+            },
+            _ => unreachable!("ICmpInst invariant: kind is Instruction"),
+        }
+    }
+    /// Integer predicate (`eq`, `slt`, `ult`, ...).
     #[inline]
-    fn from(h: CastInst<'ctx>) -> Self {
-        h.0
+    pub fn predicate(self) -> crate::cmp_predicate::IntPredicate {
+        self.payload().predicate
+    }
+    pub fn lhs(self) -> Value<'ctx> {
+        let id = self.payload().lhs.get();
+        let module = self.module.module();
+        let data = module.context().value_data(id);
+        Value::from_parts(id, module, data.ty)
+    }
+    pub fn rhs(self) -> Value<'ctx> {
+        let id = self.payload().rhs.get();
+        let module = self.module.module();
+        let data = module.context().value_data(id);
+        Value::from_parts(id, module, data.ty)
+    }
+}
+
+/// `fcmp` floating-point comparison. Mirrors `FCmpInst`
+/// (`Instructions.h`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FCmpInst<'ctx> {
+    pub(crate) id: ValueId,
+    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) ty: TypeId,
+}
+
+decl_handle_scaffold!(FCmpInst);
+
+impl<'ctx> FCmpInst<'ctx> {
+    fn payload(self) -> &'ctx crate::instr_types::FCmpInstData {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::FCmp(c) => c,
+                _ => unreachable!("FCmpInst invariant: kind is FCmp"),
+            },
+            _ => unreachable!("FCmpInst invariant: kind is Instruction"),
+        }
+    }
+    /// Float predicate (`oeq`, `olt`, `une`, ...).
+    #[inline]
+    pub fn predicate(self) -> crate::cmp_predicate::FloatPredicate {
+        self.payload().predicate
+    }
+    pub fn lhs(self) -> Value<'ctx> {
+        let id = self.payload().lhs.get();
+        let module = self.module.module();
+        let data = module.context().value_data(id);
+        Value::from_parts(id, module, data.ty)
+    }
+    pub fn rhs(self) -> Value<'ctx> {
+        let id = self.payload().rhs.get();
+        let module = self.module.module();
+        let data = module.context().value_data(id);
+        Value::from_parts(id, module, data.ty)
+    }
+}
+
+// --------------------------------------------------------------------------
+// Branch terminator
+// --------------------------------------------------------------------------
+
+/// `br` terminator. Mirrors `BranchInst` (`Instructions.h`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BranchInst<'ctx> {
+    pub(crate) id: ValueId,
+    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) ty: TypeId,
+}
+
+decl_handle_scaffold!(BranchInst);
+
+impl<'ctx> BranchInst<'ctx> {
+    fn payload(self) -> &'ctx BranchInstData {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::Br(b) => b,
+                _ => unreachable!("BranchInst invariant: kind is Br"),
+            },
+            _ => unreachable!("BranchInst invariant: kind is Instruction"),
+        }
+    }
+    pub fn is_conditional(self) -> bool {
+        matches!(self.payload().kind, BranchKind::Conditional { .. })
+    }
+    pub fn condition(self) -> Option<Value<'ctx>> {
+        match &self.payload().kind {
+            BranchKind::Conditional { cond, .. } => {
+                let module = self.module.module();
+                let cid = cond.get();
+                let data = module.context().value_data(cid);
+                Some(Value::from_parts(cid, module, data.ty))
+            }
+            BranchKind::Unconditional(_) => None,
+        }
+    }
+    /// Iterator over successor block-ids.
+    pub(crate) fn successor_ids(self) -> Vec<ValueId> {
+        match &self.payload().kind {
+            BranchKind::Unconditional(t) => vec![*t],
+            BranchKind::Conditional {
+                then_bb, else_bb, ..
+            } => vec![*then_bb, *else_bb],
+        }
+    }
+    /// Successors as runtime-checked basic-block handles.
+    pub fn successors(
+        self,
+    ) -> impl ExactSizeIterator<Item = crate::basic_block::BasicBlock<'ctx, crate::marker::Dyn>> + 'ctx
+    {
+        let module = self.module.module();
+        let label_ty = module.label_type().as_type().id();
+        self.successor_ids()
+            .into_iter()
+            .map(move |id| crate::basic_block::BasicBlock::from_parts(id, module, label_ty))
+    }
+}
+
+/// `unreachable` terminator. Mirrors `UnreachableInst`
+/// (`Instructions.h`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UnreachableInst<'ctx> {
+    pub(crate) id: ValueId,
+    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) ty: TypeId,
+}
+
+decl_handle_scaffold!(UnreachableInst);
+
+// --------------------------------------------------------------------------
+// Phi
+// --------------------------------------------------------------------------
+
+/// `phi` node. Mirrors `PHINode` (`Instructions.h`). Mutable
+/// `add_incoming` mirrors `PHINode::addIncoming`; the factorial
+/// example needs it because the loop-edge incoming value is defined
+/// later in the same block.
+#[derive(Debug)]
+pub struct PhiInst<'ctx, W: crate::int_width::IntWidth> {
+    pub(crate) id: ValueId,
+    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) ty: TypeId,
+    _w: core::marker::PhantomData<fn() -> W>,
+}
+
+impl<'ctx, W: crate::int_width::IntWidth> Clone for PhiInst<'ctx, W> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'ctx, W: crate::int_width::IntWidth> Copy for PhiInst<'ctx, W> {}
+
+impl<'ctx, W: crate::int_width::IntWidth> PhiInst<'ctx, W> {
+    #[inline]
+    pub(crate) fn from_raw(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
+        Self {
+            id,
+            module: ModuleRef::new(module),
+            ty,
+            _w: core::marker::PhantomData,
+        }
+    }
+
+    fn payload(self) -> &'ctx PhiData {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::Phi(p) => p,
+                _ => unreachable!("PhiInst invariant: kind is Phi"),
+            },
+            _ => unreachable!("PhiInst invariant: kind is Instruction"),
+        }
+    }
+
+    #[inline]
+    pub fn as_instruction(self) -> Instruction<'ctx, state::Attached> {
+        Instruction::from_parts(self.id, self.module.module())
+    }
+
+    /// Result handle for the phi node, narrowed to the static width
+    /// `W`.
+    #[inline]
+    pub fn as_int_value(self) -> crate::value::IntValue<'ctx, W> {
+        let v = Value::from_parts(self.id, self.module.module(), self.ty);
+        crate::value::IntValue::<W>::from_value_unchecked(v)
+    }
+
+    pub fn incoming_count(self) -> u32 {
+        let len = self.payload().incoming.borrow().len();
+        u32::try_from(len).unwrap_or_else(|_| unreachable!("phi has more than u32::MAX incoming"))
+    }
+
+    /// Read the `(value, block)` pair at `index`.
+    pub fn incoming(
+        self,
+        index: u32,
+    ) -> crate::IrResult<(
+        Value<'ctx>,
+        crate::basic_block::BasicBlock<'ctx, crate::marker::Dyn>,
+    )> {
+        let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
+        let module = self.module.module();
+        let pair = self
+            .payload()
+            .incoming
+            .borrow()
+            .get(slot)
+            .map(|(v, b)| (v.get(), *b))
+            .ok_or(crate::IrError::ArgumentIndexOutOfRange {
+                index,
+                count: self.incoming_count(),
+            })?;
+        let (vid, bid) = pair;
+        let v_data = module.context().value_data(vid);
+        let value = Value::from_parts(vid, module, v_data.ty);
+        let label_ty = module.label_type().as_type().id();
+        let block = crate::basic_block::BasicBlock::from_parts(bid, module, label_ty);
+        Ok((value, block))
+    }
+
+    /// Append `(value, block)` to the incoming list. Mirrors
+    /// `PHINode::addIncoming`. Returns `Self` so calls chain.
+    /// Errors if `value`'s type does not match the phi's result type
+    /// or `block` belongs to a different module.
+    pub fn add_incoming<V, B>(
+        self,
+        value: V,
+        block: crate::basic_block::BasicBlock<'ctx, B>,
+    ) -> crate::IrResult<Self>
+    where
+        V: crate::int_width::IntoIntValue<'ctx, W>,
+        B: crate::marker::ReturnMarker,
+    {
+        let module = self.module.module();
+        let value = value.into_int_value(module)?;
+        if value.as_value().module().id() != module.id()
+            || block.as_value().module().id() != module.id()
+        {
+            return Err(crate::IrError::ForeignValue);
+        }
+        if value.as_value().ty == self.ty {
+            let value_id = value.as_value().id;
+            let block_id = block.as_value().id;
+            self.payload()
+                .incoming
+                .borrow_mut()
+                .push((core::cell::Cell::new(value_id), block_id));
+            // Register the phi as a user of the incoming value.
+            module
+                .context()
+                .value_data(value_id)
+                .use_list
+                .borrow_mut()
+                .push(self.id);
+            Ok(self)
+        } else {
+            Err(crate::IrError::TypeMismatch {
+                expected: crate::r#type::Type::new(self.ty, module).kind_label(),
+                got: value.as_value().ty().kind_label(),
+            })
+        }
+    }
+}
+
+impl<'ctx, W: crate::int_width::IntWidth> PartialEq for PhiInst<'ctx, W> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.module == other.module && self.ty == other.ty
+    }
+}
+impl<'ctx, W: crate::int_width::IntWidth> Eq for PhiInst<'ctx, W> {}
+impl<'ctx, W: crate::int_width::IntWidth> core::hash::Hash for PhiInst<'ctx, W> {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.id.hash(h);
+        self.module.hash(h);
+        self.ty.hash(h);
+    }
+}
+
+impl<'ctx, W: crate::int_width::IntWidth> From<PhiInst<'ctx, W>>
+    for Instruction<'ctx, state::Attached>
+{
+    #[inline]
+    fn from(h: PhiInst<'ctx, W>) -> Self {
+        h.as_instruction()
     }
 }

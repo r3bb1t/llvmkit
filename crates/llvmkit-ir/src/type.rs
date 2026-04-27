@@ -214,7 +214,7 @@ impl TypeData {
     }
 }
 
-/// Payload for any struct type \u2014 both literal and named.
+/// Payload for any struct type — both literal and named.
 ///
 /// `name = None` distinguishes literal structs (whose `body` is set at
 /// creation and never changes) from identified ones (whose body may be

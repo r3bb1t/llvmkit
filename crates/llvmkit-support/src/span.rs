@@ -95,10 +95,15 @@ impl<T> Spanned<T> {
     }
 }
 
+/// Upstream provenance: llvmkit-specific support utility. Closest upstream:
+/// `llvm/Support/SourceMgr.h::SMLoc` / `SMRange` (LLVM uses raw pointers
+/// where llvmkit uses byte offsets).
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// llvmkit-specific: span constructors. Closest upstream:
+    /// `SMRange` / `SMLoc` in `llvm/Support/SourceMgr.h`.
     #[test]
     fn span_basics() {
         let s = Span::new(3, 7);
@@ -115,6 +120,8 @@ mod tests {
         assert!(empty.is_empty());
     }
 
+    /// llvmkit-specific: span as slice index. Closest upstream:
+    /// `SMRange::Start` / `End` in `llvm/Support/SourceMgr.h`.
     #[test]
     fn span_indexes_slice() {
         let src = b"hello world";
@@ -124,6 +131,8 @@ mod tests {
         assert_eq!(r, 6..11);
     }
 
+    /// llvmkit-specific: `Spanned<T>::map`. Closest upstream:
+    /// `llvm::SMLoc`-tagged value patterns in the LLVM source.
     #[test]
     fn spanned_map_preserves_span() {
         let sp = Spanned::new(7u32, Span::new(2, 4));
@@ -132,6 +141,8 @@ mod tests {
         assert_eq!(mapped.span, Span::new(2, 4));
     }
 
+    /// llvmkit-specific: `Spanned<T>::as_ref` borrow. Closest upstream:
+    /// no direct equivalent; mirrors LLVM's diag `SMLoc`-tag pattern.
     #[test]
     fn spanned_as_ref_borrows() {
         let sp = Spanned::new(String::from("hi"), Span::new(0, 2));

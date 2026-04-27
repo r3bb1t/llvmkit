@@ -33,10 +33,8 @@ use crate::r#type::{Type, TypeData, TypeId, TypeKind};
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
-use crate::float_kind::{
-    FloatKind, KBFloat, KDouble, KDyn, KFloat, KFp128, KHalf, KPpcFp128, KX86Fp80,
-};
-use crate::int_width::{B1, B8, B16, B32, B64, B128, BDyn, IntWidth};
+use crate::float_kind::{BFloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
+use crate::int_width::{IntDyn, IntWidth};
 use crate::r#type::{IrType, sealed};
 
 // --------------------------------------------------------------------------
@@ -167,11 +165,11 @@ decl_type_handle!(
 /// `iN` integer type. Mirrors `IntegerType` (`DerivedTypes.h`).
 ///
 /// The `W: IntWidth` marker encodes the bit-width at the type level:
-/// `IntType<'ctx, B32>` is a different type from `IntType<'ctx, B64>`,
+/// `IntType<'ctx, i32>` is a different type from `IntType<'ctx, i64>`,
 /// and the IRBuilder's binary-op methods use this distinction to
 /// reject mismatched widths at compile time.
 ///
-/// Use [`IntType<'ctx, BDyn>`](BDyn) when the width
+/// Use [`IntType<'ctx, IntDyn>`](IntDyn) when the width
 /// is only known at runtime (parsed `.ll`).
 pub struct IntType<'ctx, W: IntWidth> {
     pub(crate) id: TypeId,
@@ -231,7 +229,7 @@ impl<'ctx, W: IntWidth> IntType<'ctx, W> {
     }
 
     /// Bit width of this integer type. For static widths this is
-    /// equivalent to `W::static_bits().unwrap()`; for [`BDyn`] it
+    /// equivalent to `W::static_bits().unwrap()`; for [`IntDyn`] it
     /// reads from the type-arena payload.
     #[inline]
     pub fn bit_width(self) -> u32 {
@@ -241,10 +239,10 @@ impl<'ctx, W: IntWidth> IntType<'ctx, W> {
             .expect("IntType invariant: wraps Integer")
     }
 
-    /// Erase the width marker, producing a [`BDyn`]-tagged handle that
+    /// Erase the width marker, producing an [`IntDyn`]-tagged handle that
     /// preserves the runtime width but loses the static guarantee.
     #[inline]
-    pub fn as_dyn(self) -> IntType<'ctx, BDyn> {
+    pub fn as_dyn(self) -> IntType<'ctx, IntDyn> {
         IntType {
             id: self.id,
             module: self.module,
@@ -274,7 +272,7 @@ impl<'ctx, W: IntWidth> From<IntType<'ctx, W>> for Type<'ctx> {
     }
 }
 
-impl<'ctx> TryFrom<Type<'ctx>> for IntType<'ctx, BDyn> {
+impl<'ctx> TryFrom<Type<'ctx>> for IntType<'ctx, IntDyn> {
     type Error = IrError;
     #[inline]
     fn try_from(t: Type<'ctx>) -> IrResult<Self> {
@@ -311,9 +309,9 @@ macro_rules! impl_int_type_static_try_from {
                 }
             }
         }
-        impl<'ctx> TryFrom<IntType<'ctx, BDyn>> for IntType<'ctx, $marker> {
+        impl<'ctx> TryFrom<IntType<'ctx, IntDyn>> for IntType<'ctx, $marker> {
             type Error = IrError;
-            fn try_from(t: IntType<'ctx, BDyn>) -> IrResult<Self> {
+            fn try_from(t: IntType<'ctx, IntDyn>) -> IrResult<Self> {
                 let bits = t.bit_width();
                 if bits == $bits {
                     Ok(Self::new(t.id, t.module.module()))
@@ -327,17 +325,17 @@ macro_rules! impl_int_type_static_try_from {
         }
     };
 }
-impl_int_type_static_try_from!(B1, 1);
-impl_int_type_static_try_from!(B8, 8);
-impl_int_type_static_try_from!(B16, 16);
-impl_int_type_static_try_from!(B32, 32);
-impl_int_type_static_try_from!(B64, 64);
-impl_int_type_static_try_from!(B128, 128);
+impl_int_type_static_try_from!(bool, 1);
+impl_int_type_static_try_from!(i8, 8);
+impl_int_type_static_try_from!(i16, 16);
+impl_int_type_static_try_from!(i32, 32);
+impl_int_type_static_try_from!(i64, 64);
+impl_int_type_static_try_from!(i128, 128);
 
-/// Static "" `BDyn` widening (always succeeds).
+/// Static -> `Dyn` widening (always succeeds).
 macro_rules! impl_int_type_static_to_dyn {
     ($marker:ident) => {
-        impl<'ctx> From<IntType<'ctx, $marker>> for IntType<'ctx, BDyn> {
+        impl<'ctx> From<IntType<'ctx, $marker>> for IntType<'ctx, IntDyn> {
             #[inline]
             fn from(t: IntType<'ctx, $marker>) -> Self {
                 t.as_dyn()
@@ -345,12 +343,12 @@ macro_rules! impl_int_type_static_to_dyn {
         }
     };
 }
-impl_int_type_static_to_dyn!(B1);
-impl_int_type_static_to_dyn!(B8);
-impl_int_type_static_to_dyn!(B16);
-impl_int_type_static_to_dyn!(B32);
-impl_int_type_static_to_dyn!(B64);
-impl_int_type_static_to_dyn!(B128);
+impl_int_type_static_to_dyn!(bool);
+impl_int_type_static_to_dyn!(i8);
+impl_int_type_static_to_dyn!(i16);
+impl_int_type_static_to_dyn!(i32);
+impl_int_type_static_to_dyn!(i64);
+impl_int_type_static_to_dyn!(i128);
 
 // --------------------------------------------------------------------------
 // FloatType<'ctx, K> "" kind-typed floating-point handle
@@ -360,7 +358,7 @@ impl_int_type_static_to_dyn!(B128);
 /// `Type::isFloatingPointTy` arms.
 ///
 /// The `K: FloatKind` marker encodes which kind at the type level.
-/// Use [`KDyn`] when the kind is only known
+/// Use [`FloatDyn`] when the kind is only known
 /// at runtime.
 pub struct FloatType<'ctx, K: FloatKind> {
     pub(crate) id: TypeId,
@@ -416,9 +414,9 @@ impl<'ctx, K: FloatKind> FloatType<'ctx, K> {
         }
     }
 
-    /// Erase the kind marker, producing a [`KDyn`]-tagged handle.
+    /// Erase the kind marker, producing a [`FloatDyn`]-tagged handle.
     #[inline]
-    pub fn as_dyn(self) -> FloatType<'ctx, KDyn> {
+    pub fn as_dyn(self) -> FloatType<'ctx, FloatDyn> {
         FloatType {
             id: self.id,
             module: self.module,
@@ -447,7 +445,7 @@ impl<'ctx, K: FloatKind> From<FloatType<'ctx, K>> for Type<'ctx> {
     }
 }
 
-impl<'ctx> TryFrom<Type<'ctx>> for FloatType<'ctx, KDyn> {
+impl<'ctx> TryFrom<Type<'ctx>> for FloatType<'ctx, FloatDyn> {
     type Error = IrError;
     fn try_from(t: Type<'ctx>) -> IrResult<Self> {
         if matches!(
@@ -485,25 +483,25 @@ macro_rules! impl_float_type_static_try_from {
                 }
             }
         }
-        impl<'ctx> TryFrom<FloatType<'ctx, KDyn>> for FloatType<'ctx, $marker> {
+        impl<'ctx> TryFrom<FloatType<'ctx, FloatDyn>> for FloatType<'ctx, $marker> {
             type Error = IrError;
-            fn try_from(t: FloatType<'ctx, KDyn>) -> IrResult<Self> {
+            fn try_from(t: FloatType<'ctx, FloatDyn>) -> IrResult<Self> {
                 <Self as TryFrom<Type<'ctx>>>::try_from(t.as_type())
             }
         }
     };
 }
-impl_float_type_static_try_from!(KHalf, Half, Half);
-impl_float_type_static_try_from!(KBFloat, BFloat, BFloat);
-impl_float_type_static_try_from!(KFloat, Float, Float);
-impl_float_type_static_try_from!(KDouble, Double, Double);
-impl_float_type_static_try_from!(KFp128, Fp128, Fp128);
-impl_float_type_static_try_from!(KX86Fp80, X86Fp80, X86Fp80);
-impl_float_type_static_try_from!(KPpcFp128, PpcFp128, PpcFp128);
+impl_float_type_static_try_from!(Half, Half, Half);
+impl_float_type_static_try_from!(BFloat, BFloat, BFloat);
+impl_float_type_static_try_from!(f32, Float, Float);
+impl_float_type_static_try_from!(f64, Double, Double);
+impl_float_type_static_try_from!(Fp128, Fp128, Fp128);
+impl_float_type_static_try_from!(X86Fp80, X86Fp80, X86Fp80);
+impl_float_type_static_try_from!(PpcFp128, PpcFp128, PpcFp128);
 
 macro_rules! impl_float_type_static_to_dyn {
     ($marker:ident) => {
-        impl<'ctx> From<FloatType<'ctx, $marker>> for FloatType<'ctx, KDyn> {
+        impl<'ctx> From<FloatType<'ctx, $marker>> for FloatType<'ctx, FloatDyn> {
             #[inline]
             fn from(t: FloatType<'ctx, $marker>) -> Self {
                 t.as_dyn()
@@ -511,13 +509,13 @@ macro_rules! impl_float_type_static_to_dyn {
         }
     };
 }
-impl_float_type_static_to_dyn!(KHalf);
-impl_float_type_static_to_dyn!(KBFloat);
-impl_float_type_static_to_dyn!(KFloat);
-impl_float_type_static_to_dyn!(KDouble);
-impl_float_type_static_to_dyn!(KFp128);
-impl_float_type_static_to_dyn!(KX86Fp80);
-impl_float_type_static_to_dyn!(KPpcFp128);
+impl_float_type_static_to_dyn!(Half);
+impl_float_type_static_to_dyn!(BFloat);
+impl_float_type_static_to_dyn!(f32);
+impl_float_type_static_to_dyn!(f64);
+impl_float_type_static_to_dyn!(Fp128);
+impl_float_type_static_to_dyn!(X86Fp80);
+impl_float_type_static_to_dyn!(PpcFp128);
 
 // --------------------------------------------------------------------------
 // PointerType — address-space accessor
@@ -741,8 +739,8 @@ impl<'ctx> TargetExtType<'ctx> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AnyTypeEnum<'ctx> {
     Void(VoidType<'ctx>),
-    Int(IntType<'ctx, BDyn>),
-    Float(FloatType<'ctx, KDyn>),
+    Int(IntType<'ctx, IntDyn>),
+    Float(FloatType<'ctx, FloatDyn>),
     Pointer(PointerType<'ctx>),
     Array(ArrayType<'ctx>),
     Struct(StructType<'ctx>),
@@ -864,8 +862,8 @@ impl<'ctx> fmt::Display for SizedType<'ctx> {
 /// pointer / array / struct / vector. Mirrors LLVM's "basic" type group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BasicTypeEnum<'ctx> {
-    Int(IntType<'ctx, BDyn>),
-    Float(FloatType<'ctx, KDyn>),
+    Int(IntType<'ctx, IntDyn>),
+    Float(FloatType<'ctx, FloatDyn>),
     Pointer(PointerType<'ctx>),
     Array(ArrayType<'ctx>),
     Struct(StructType<'ctx>),
@@ -932,8 +930,8 @@ impl<'ctx> fmt::Display for BasicTypeEnum<'ctx> {
 /// arguments may include `metadata` slots (e.g. `@llvm.dbg.value`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BasicMetadataTypeEnum<'ctx> {
-    Int(IntType<'ctx, BDyn>),
-    Float(FloatType<'ctx, KDyn>),
+    Int(IntType<'ctx, IntDyn>),
+    Float(FloatType<'ctx, FloatDyn>),
     Pointer(PointerType<'ctx>),
     Array(ArrayType<'ctx>),
     Struct(StructType<'ctx>),

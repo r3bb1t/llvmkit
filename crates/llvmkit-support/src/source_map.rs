@@ -96,10 +96,14 @@ impl<'src> From<&'src str> for SourceMap<'src> {
     }
 }
 
+/// Upstream provenance: llvmkit-specific support utility. Closest upstream:
+/// `llvm/Support/SourceMgr.h::SMLoc` and `SourceMgr::getLineAndColumn`.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// llvmkit-specific: byte-offset-to-(line,col) mapping. Closest upstream:
+    /// `SourceMgr::getLineAndColumn` in `llvm/Support/SourceMgr.h`.
     #[test]
     fn line_col_basic() {
         let sm = SourceMap::from("abc\ndef\nghi");
@@ -112,12 +116,16 @@ mod tests {
         assert_eq!(sm.line_col(10), (3, 3));
     }
 
+    /// llvmkit-specific: out-of-range clamp. Closest upstream:
+    /// `SourceMgr::getLineAndColumn` saturation in `llvm/Support/SourceMgr.h`.
     #[test]
     fn line_col_eof_clamps() {
         let sm = SourceMap::from("ab");
         assert_eq!(sm.line_col(99), (1, 3));
     }
 
+    /// llvmkit-specific: line-text accessor. Closest upstream:
+    /// `SourceMgr::FindLineNumber` / line buffer lookup in `SourceMgr.h`.
     #[test]
     fn line_text_trims_newlines() {
         let sm = SourceMap::from("abc\r\ndef\nghi");
@@ -127,6 +135,8 @@ mod tests {
         assert_eq!(sm.line_text(4), None);
     }
 
+    /// llvmkit-specific: empty-source guard. Closest upstream: `SourceMgr`
+    /// invariants in `llvm/Support/SourceMgr.h`.
     #[test]
     fn empty_source() {
         let sm = SourceMap::from("");

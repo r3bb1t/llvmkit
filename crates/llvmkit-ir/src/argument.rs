@@ -51,11 +51,11 @@ impl<'ctx> Argument<'ctx> {
         }
     }
 
-    /// Owning function as a runtime-checked [`FunctionValue<RDyn>`].
+    /// Owning function as a runtime-checked [`FunctionValue<Dyn>`].
     /// Narrow with [`TryFrom`] when a typed handle is needed.
     #[inline]
-    pub fn parent_function(self) -> FunctionValue<'ctx, crate::return_marker::RDyn> {
-        FunctionValue::<'_, crate::return_marker::RDyn>::from_parts_unchecked(
+    pub fn parent_function(self) -> FunctionValue<'ctx, crate::marker::Dyn> {
+        FunctionValue::<'_, crate::marker::Dyn>::from_parts_unchecked(
             self.parent_fn,
             self.module.module(),
         )
