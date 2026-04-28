@@ -73,6 +73,16 @@ mod state_sealed {
     impl Sealed for super::Positioned {}
 }
 
+/// Snapshot of an [`IRBuilder`] insertion location. Mirrors
+/// `IRBuilderBase::InsertPoint` in `IRBuilder.h`. The `block` is `None`
+/// when the builder was unpositioned at save time; `before` is `None`
+/// when the saved location was end-of-block.
+#[derive(Debug, Clone, Copy)]
+pub struct InsertPoint<'ctx, R: ReturnMarker> {
+    pub(crate) block: Option<BasicBlock<'ctx, R>>,
+    pub(crate) before: Option<super::value::ValueId>,
+}
+
 /// Builder for a chain of [`Instruction`]s appended to a
 /// [`BasicBlock`].
 ///
@@ -88,7 +98,13 @@ where
 {
     module: &'ctx Module<'ctx>,
     insert_block: Option<BasicBlock<'ctx, R>>,
+    /// Optional insertion anchor: when `Some(id)`, new instructions are
+    /// inserted *before* the instruction with this id (mirrors upstream
+    /// `IRBuilder::SetInsertPoint(Instruction*)`). When `None`, new
+    /// instructions append to the end of `insert_block`.
+    insert_before: Option<super::value::ValueId>,
     folder: F,
+    fmf: super::fmf::FastMathFlags,
     _state: PhantomData<S>,
 }
 
@@ -106,7 +122,9 @@ impl<'ctx> IRBuilder<'ctx, ConstantFolder, Unpositioned, Dyn> {
         Self {
             module,
             insert_block: None,
+            insert_before: None,
             folder: ConstantFolder,
+            fmf: super::fmf::FastMathFlags::empty(),
             _state: PhantomData,
         }
     }
@@ -128,7 +146,9 @@ impl<'ctx> IRBuilder<'ctx, ConstantFolder, Unpositioned, Dyn> {
         IRBuilder {
             module,
             insert_block: None,
+            insert_before: None,
             folder: ConstantFolder,
+            fmf: super::fmf::FastMathFlags::empty(),
             _state: PhantomData,
         }
     }
@@ -145,7 +165,9 @@ where
         Self {
             module,
             insert_block: None,
+            insert_before: None,
             folder,
+            fmf: super::fmf::FastMathFlags::empty(),
             _state: PhantomData,
         }
     }
@@ -157,7 +179,105 @@ where
         IRBuilder {
             module: self.module,
             insert_block: Some(bb),
+            insert_before: None,
             folder: self.folder,
+            fmf: self.fmf,
+            _state: PhantomData,
+        }
+    }
+}
+
+// --------------------------------------------------------------------------
+// Positioning methods that move from any state to Positioned.
+// --------------------------------------------------------------------------
+
+impl<'ctx, F, S, R> IRBuilder<'ctx, F, S, R>
+where
+    F: IRBuilderFolder<'ctx>,
+    S: state_sealed::Sealed,
+    R: ReturnMarker,
+{
+    /// Re-anchor the builder *before* the given attached instruction.
+    /// New instructions land between the prior instruction and `anchor`.
+    /// Mirrors `IRBuilder::SetInsertPoint(Instruction *I)` in `IRBuilder.h`,
+    /// which sets `BB = I->getParent(); InsertPt = I->getIterator();`.
+    pub fn position_before(
+        self,
+        anchor: super::instruction::Instruction<'ctx, super::instruction::state::Attached>,
+    ) -> IRBuilder<'ctx, F, Positioned, R> {
+        let anchor_id = anchor.as_value().id;
+        let parent_block_id = anchor.parent().as_value().id;
+        let label_ty = self.module.label_type().as_type().id();
+        let bb = BasicBlock::<R>::from_parts(parent_block_id, self.module, label_ty);
+        IRBuilder {
+            module: self.module,
+            insert_block: Some(bb),
+            insert_before: Some(anchor_id),
+            folder: self.folder,
+            fmf: self.fmf,
+            _state: PhantomData,
+        }
+    }
+
+    /// Position at the entry block, past any leading `alloca`s. Mirrors
+    /// `IRBuilder::SetInsertPointPastAllocas(Function*)` in `IRBuilder.h`,
+    /// which sets `BB = &F->getEntryBlock(); InsertPt = BB->getFirstNonPHIOrDbgOrAlloca();`.
+    pub fn position_past_allocas(
+        self,
+        f: FunctionValue<'ctx, R>,
+    ) -> IRBuilder<'ctx, F, Positioned, R> {
+        let entry = f.entry_block().unwrap_or_else(|| {
+            unreachable!("position_past_allocas requires a function with at least one block")
+        });
+        // Find the first non-alloca instruction id, mirroring
+        // `BasicBlock::getFirstNonPHIOrDbgOrAlloca`. We don't ship phi/dbg
+        // filters yet, so the practical filter here is alloca-only.
+        let mut anchor: Option<super::value::ValueId> = None;
+        for inst in entry.instructions() {
+            match inst.kind() {
+                Some(super::instruction::InstructionKind::Alloca(_)) => continue,
+                _ => {
+                    anchor = Some(inst.as_value().id);
+                    break;
+                }
+            }
+        }
+        IRBuilder {
+            module: self.module,
+            insert_block: Some(entry),
+            insert_before: anchor,
+            folder: self.folder,
+            fmf: self.fmf,
+            _state: PhantomData,
+        }
+    }
+
+    /// Snapshot the current insertion location. Mirrors
+    /// `IRBuilder::saveIP` (returns `InsertPoint(BB, InsertPt)`).
+    pub fn save_insert_point(&self) -> InsertPoint<'ctx, R> {
+        InsertPoint {
+            block: self.insert_block,
+            before: self.insert_before,
+        }
+    }
+
+    /// Restore a previously-saved insertion point. Mirrors
+    /// `IRBuilder::restoreIP(InsertPoint)`. Returns a Positioned builder
+    /// when the snapshot carries a block, an Unpositioned one otherwise.
+    /// Restoring a snapshot whose block is `None` should rarely be needed,
+    /// so we return a Positioned builder unconditionally and panic only
+    /// when the snapshot was taken from a state with no block, mirroring
+    /// upstream `restoreIP` which calls `ClearInsertionPoint` in that case.
+    pub fn restore_insert_point(
+        self,
+        ip: InsertPoint<'ctx, R>,
+    ) -> IRBuilder<'ctx, F, Positioned, R> {
+        IRBuilder {
+            module: self.module,
+            insert_block: ip.block,
+            insert_before: ip.before,
+            folder: self.folder,
+            fmf: self.fmf,
             _state: PhantomData,
         }
     }
@@ -173,7 +293,9 @@ where
         Self {
             module: self.module,
             insert_block: Some(bb),
+            insert_before: None,
             folder: self.folder,
+            fmf: self.fmf,
             _state: PhantomData,
         }
     }
@@ -184,7 +306,9 @@ where
         IRBuilder {
             module: self.module,
             insert_block: None,
+            insert_before: None,
             folder: self.folder,
+            fmf: self.fmf,
             _state: PhantomData,
         }
     }
@@ -569,6 +693,54 @@ where
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
     {
         self.build_int_binop_flagged(lhs, rhs, name, flags, InstructionKindData::AShr)
+    }
+
+    /// Integer negation: `sub 0, V`. Mirrors `IRBuilder::CreateNeg(V, Name)`,
+    /// which expands to `CreateSub(Constant::getNullValue(V->getType()), V, Name)`.
+    pub fn build_int_neg<W, V>(
+        &self,
+        value: V,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, W>>
+    where
+        W: super::int_width::StaticIntWidth,
+        V: super::int_width::IntoIntValue<'ctx, W>,
+    {
+        let v = value.into_int_value(self.module)?;
+        let zero = W::ir_type(self.module).const_zero();
+        self.build_int_sub(zero, v, name)
+    }
+
+    /// Integer NSW negation. Mirrors `IRBuilder::CreateNSWNeg(V, Name)` ->
+    /// `CreateNeg(V, Name, /*HasNSW=*/true)` -> `CreateSub` with `nsw`.
+    pub fn build_int_neg_nsw<W, V>(
+        &self,
+        value: V,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, W>>
+    where
+        W: super::int_width::StaticIntWidth,
+        V: super::int_width::IntoIntValue<'ctx, W>,
+    {
+        let v = value.into_int_value(self.module)?;
+        let zero = W::ir_type(self.module).const_zero();
+        self.build_int_sub_with_flags(zero, v, super::instr_types::SubFlags::new().nsw(), name)
+    }
+
+    /// Bitwise complement: `xor V, -1`. Mirrors `IRBuilder::CreateNot(V, Name)`,
+    /// which expands to `CreateXor(V, Constant::getAllOnesValue(V->getType()))`.
+    pub fn build_int_not<W, V>(
+        &self,
+        value: V,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, W>>
+    where
+        W: super::int_width::StaticIntWidth,
+        V: super::int_width::IntoIntValue<'ctx, W>,
+    {
+        let v = value.into_int_value(self.module)?;
+        let all_ones = W::ir_type(self.module).const_all_ones();
+        self.build_int_xor(v, all_ones, name)
     }
 
     /// Crate-internal helper: emit a flagged binary op. The flag
@@ -2273,6 +2445,97 @@ where
         ))
     }
 
+    /// Pointer cast: pick `bitcast` for same-addrspace pointer-to-pointer
+    /// (a no-op in opaque-pointer LLVM, but a structurally-distinct `Cast`
+    /// instruction) and `addrspacecast` when address spaces differ.
+    /// Mirrors `IRBuilder::CreatePointerBitCastOrAddrSpaceCast`
+    /// (`IRBuilder.h`), which dispatches the same way.
+    pub fn build_pointer_cast(
+        &self,
+        value: super::value::PointerValue<'ctx>,
+        dst_ty: super::derived_types::PointerType<'ctx>,
+        name: impl AsRef<str>,
+    ) -> IrResult<super::value::PointerValue<'ctx>> {
+        let v = super::value::IsValue::as_value(value);
+        self.require_same_module(v)?;
+        let opcode = if value.ty().address_space() == dst_ty.address_space() {
+            super::instr_types::CastOpcode::BitCast
+        } else {
+            super::instr_types::CastOpcode::AddrSpaceCast
+        };
+        let payload = CastOpData::new(opcode, v.id);
+        let inst = self.append_instruction(
+            dst_ty.as_type().id(),
+            InstructionKindData::Cast(payload),
+            name,
+        );
+        Ok(super::value::PointerValue::from_value_unchecked(
+            inst.as_value(),
+        ))
+    }
+
+    /// `icmp eq <ptr>, null` -- pointer-null test. Mirrors
+    /// `IRBuilder::CreateIsNull(Arg)` ->
+    /// `CreateICmpEQ(Arg, Constant::getNullValue(Arg->getType()))`.
+    pub fn build_is_null(
+        &self,
+        ptr: super::value::PointerValue<'ctx>,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>> {
+        self.build_pointer_cmp(
+            super::cmp_predicate::IntPredicate::Eq,
+            ptr,
+            ptr.ty().const_null(),
+            name,
+        )
+    }
+
+    /// `icmp ne <ptr>, null` -- pointer-non-null test. Mirrors
+    /// `IRBuilder::CreateIsNotNull(Arg)` ->
+    /// `CreateICmpNE(Arg, Constant::getNullValue(Arg->getType()))`.
+    pub fn build_is_not_null(
+        &self,
+        ptr: super::value::PointerValue<'ctx>,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>> {
+        self.build_pointer_cmp(
+            super::cmp_predicate::IntPredicate::Ne,
+            ptr,
+            ptr.ty().const_null(),
+            name,
+        )
+    }
+
+    /// Pointer-pointer comparison. Mirrors `IRBuilder::CreateICmp` with
+    /// pointer operands; LLVM's `icmp` works on integers OR pointers, but
+    /// our typed [`Self::build_int_cmp`] is integer-only. This helper
+    /// covers the pointer arm directly (used by `build_is_null` /
+    /// `build_is_not_null`).
+    pub fn build_pointer_cmp<L, R2>(
+        &self,
+        pred: super::cmp_predicate::IntPredicate,
+        lhs: L,
+        rhs: R2,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        L: super::value::IntoPointerValue<'ctx>,
+        R2: super::value::IntoPointerValue<'ctx>,
+    {
+        let lhs = lhs.into_pointer_value(self.module)?;
+        let rhs = rhs.into_pointer_value(self.module)?;
+        self.require_same_module(super::value::IsValue::as_value(lhs))?;
+        self.require_same_module(super::value::IsValue::as_value(rhs))?;
+        let payload = super::instr_types::CmpInstData::new(
+            pred,
+            super::value::IsValue::as_value(lhs).id,
+            super::value::IsValue::as_value(rhs).id,
+        );
+        let i1_ty = self.module.bool_type().as_type().id();
+        let inst = self.append_instruction(i1_ty, InstructionKindData::ICmp(payload), name);
+        Ok(IntValue::<bool>::from_value_unchecked(inst.as_value()))
+    }
+
     // ---- Integer comparison ----
 
     /// Produce `icmp <pred> <ty> <lhs>, <rhs>`. Mirrors
@@ -3024,7 +3287,19 @@ where
                 .borrow_mut()
                 .push(id);
         }
-        bb.append_instruction(id);
+        match self.insert_before {
+            Some(anchor) => {
+                // Mirrors `IRBuilder::SetInsertPoint(Instruction*)`: new
+                // instruction is inserted before the anchor.
+                if bb.insert_instruction_before(id, anchor).is_err() {
+                    unreachable!(
+                        "insert_before anchor not in the builder's insertion block: \
+                         positioning methods must keep block and anchor coherent"
+                    );
+                }
+            }
+            None => bb.append_instruction(id),
+        }
         if !name.is_empty() {
             if let Some(parent_fn_id) = bb.parent_id() {
                 let parent_fn =

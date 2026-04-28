@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 345.
+Total `#[test]` functions: 354.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -365,5 +365,14 @@ Total `#[test]` functions: 345.
 | `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::verifier_rejects_atomic_load_release_ordering` | `lib/IR/Verifier.cpp::Verifier::visitLoadInst` ("Load cannot have Release ordering") | mirror |
 | `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::verifier_rejects_atomic_store_acquire_ordering` | `lib/IR/Verifier.cpp::Verifier::visitStoreInst` ("Store cannot have Acquire ordering") | mirror |
 | `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::verifier_rejects_atomic_load_non_power_of_two_size` | `lib/IR/Verifier.cpp::Verifier::checkAtomicMemAccessSize` | mirror |
-| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::bitcast_int_to_fp_emits_text` | `IRBuilder.h::CreateBitCast` (`CreateCast(Instruction::BitCast, V, DestTy)`) | mirror |
-| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::bitcast_fp_to_int_emits_text` | `IRBuilder.h::CreateBitCast` (`CreateCast(Instruction::BitCast, V, DestTy)`) | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::bitcast_int_to_fp_emits_text` | `unittests/IR/PatternMatch.cpp::TEST_F(PatternMatchTest, BitCast)` (line 638) | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::bitcast_fp_to_int_emits_text` | `unittests/IR/PatternMatch.cpp::TEST_F(PatternMatchTest, BitCast)` (line 638-643) | mirror |
+| `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::position_before_inserts_between_prev_and_anchor` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, DebugLoc)` (lines 1155-1190) | mirror |
+| `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::position_past_allocas_anchors_after_alloca_prefix` | `IRBuilder.h::IRBuilder::SetInsertPointPastAllocas` (no upstream `TEST_F`; live use in `lib/Frontend/OpenMP/OMPIRBuilder.cpp`) | llvmkit-specific |
+| `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::save_and_restore_insert_point_round_trip` | `unittests/Frontend/OpenMPIRBuilderTest.cpp` lines 244 / 253 (`Builder.saveIP()` / `Builder.restoreIP`) | mirror |
+| `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::build_int_neg_emits_sub_zero` | `IRBuilder.h::IRBuilder::CreateNeg` + `test/Assembler/auto_upgrade_nvvm_intrinsics.ll` line 128 (`; CHECK-DAG: ... = sub i32 0, %a`) | llvmkit-specific |
+| `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::build_int_neg_nsw_emits_sub_nsw` | `IRBuilder.h::IRBuilder::CreateNSWNeg` + closest `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, WrapFlags)` (line 773) | llvmkit-specific |
+| `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::build_int_not_emits_xor_minus_one` | `IRBuilder.h::IRBuilder::CreateNot` (no upstream `TEST_F`) | llvmkit-specific |
+| `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::build_pointer_cast_same_addrspace_emits_bitcast` | `IRBuilder.h::IRBuilder::CreatePointerBitCastOrAddrSpaceCast` + live use in `unittests/Frontend/OpenMPIRBuilderTest.cpp` line 6473 | llvmkit-specific |
+| `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::build_is_null_emits_icmp_eq_null` | `IRBuilder.h::IRBuilder::CreateIsNull` (no dedicated `TEST_F`; sibling `CreateIsNotNull` used in `unittests/Frontend/OpenMPIRBuilderTest.cpp` line 1153) | llvmkit-specific |
+| `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::build_is_not_null_emits_icmp_ne_null` | `unittests/Frontend/OpenMPIRBuilderTest.cpp` line 1153 (`Builder.CreateIsNotNull(F->arg_begin())`) | mirror |

@@ -282,10 +282,9 @@ fn verifier_rejects_atomic_load_non_power_of_two_size() -> Result<(), IrError> {
 
 // --- bitcast methods ---------------------------------------------------
 
-/// Mirrors `IRBuilderTest.cpp::TEST_F(IRBuilderTest, *)` for the bit-cast
-/// arm of `CreateCast(BitCast, V, DestTy)`. Closest fixture is the
-/// `bitcast i32 0 to float` constant-expression form in `compatibility.ll`,
-/// re-shaped here as an instruction.
+/// Mirrors `unittests/IR/PatternMatch.cpp::TEST_F(PatternMatchTest, BitCast)`
+/// (line 638-678) which exercises `IRB.CreateBitCast(double, i64)` and
+/// related shapes. We test the typed-marker variant of the same construct.
 #[test]
 fn bitcast_int_to_fp_emits_text() -> Result<(), IrError> {
     let m = Module::new("a");
@@ -306,10 +305,9 @@ fn bitcast_int_to_fp_emits_text() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Symmetric `fp -> int` form of [`bitcast_int_to_fp_emits_text`]. Mirrors
-/// the same `CreateCast(BitCast)` arm but with operands swapped; closest
-/// upstream coverage is the `bitcast double X to i64` shape that appears
-/// throughout `test/CodeGen/X86/`.
+/// Mirrors `unittests/IR/PatternMatch.cpp::TEST_F(PatternMatchTest, BitCast)`
+/// (line 638). The `fp -> int` direction uses `IRB.CreateBitCast(OneDouble,
+/// IRB.getInt64Ty())` upstream (line 643).
 #[test]
 fn bitcast_fp_to_int_emits_text() -> Result<(), IrError> {
     let m = Module::new("a");
