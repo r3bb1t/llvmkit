@@ -199,6 +199,23 @@ pub enum VerifierRule {
     /// `store` value-operand type is unsized.
     /// Mirrors `Verifier::visitStoreInst`.
     StoreUnsizedType,
+    /// Atomic `load` carries `Release` or `AcquireRelease` ordering.
+    /// Mirrors `Verifier::visitLoadInst` ("Load cannot have Release ordering").
+    AtomicLoadInvalidOrdering,
+    /// Atomic `store` carries `Acquire` or `AcquireRelease` ordering.
+    /// Mirrors `Verifier::visitStoreInst` ("Store cannot have Acquire ordering").
+    AtomicStoreInvalidOrdering,
+    /// Atomic load/store operand type is not integer / pointer / floating-point.
+    /// Mirrors `Verifier::visitLoadInst` / `visitStoreInst` ("atomic load/store
+    /// operand must have integer, pointer, floating point, or vector type!").
+    AtomicLoadStoreInvalidType,
+    /// Atomic memory access' bit size is not a power-of-two between 8
+    /// and 128. Mirrors `Verifier::checkAtomicMemAccessSize`.
+    AtomicLoadStoreInvalidSize,
+    /// Non-atomic load/store carries a non-default `syncscope`. Mirrors
+    /// `Verifier::visitLoadInst` / `visitStoreInst` ("Non-atomic load/store
+    /// cannot have SynchronizationScope specified").
+    NonAtomicWithSyncScope,
     /// `bitcast` source and destination bit widths differ.
     /// Mirrors `Verifier::visitBitCastInst`.
     BitCastSizeMismatch,
@@ -310,6 +327,17 @@ impl fmt::Display for VerifierRule {
             Self::LoadUnsizedType => "loading unsized types is not allowed",
             Self::StoreNonPointer => "store pointer operand is not a pointer",
             Self::StoreUnsizedType => "storing unsized types is not allowed",
+            Self::AtomicLoadInvalidOrdering => "atomic load cannot have Release ordering",
+            Self::AtomicStoreInvalidOrdering => "atomic store cannot have Acquire ordering",
+            Self::AtomicLoadStoreInvalidType => {
+                "atomic load/store operand must have integer, pointer, floating point, or vector type"
+            }
+            Self::AtomicLoadStoreInvalidSize => {
+                "atomic memory access' size must be byte-sized and a power of two"
+            }
+            Self::NonAtomicWithSyncScope => {
+                "non-atomic load/store cannot have a non-default syncscope"
+            }
             Self::BitCastSizeMismatch => "bitcast source and destination have differing bit widths",
             Self::CastTypeMismatch => "cast source/destination kind constraint failed",
             Self::CastWidthMismatch => "cast width relationship is invalid",

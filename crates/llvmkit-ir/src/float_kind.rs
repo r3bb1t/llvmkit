@@ -327,14 +327,22 @@ impl_into_float_value_via_try_from!(
 /// methods take an explicit [`FloatType<'ctx, FloatDyn>`] for the
 /// runtime kind.
 pub trait StaticFloatKind: FloatKind {
+    /// Bit width of this IEEE-754 form. Mirrors
+    /// `Type::getPrimitiveSizeInBits` in `lib/IR/Type.cpp` for the
+    /// statically-known kinds (`half=16`, `bfloat=16`, `float=32`,
+    /// `double=64`, `x86_fp80=80`, `fp128=128`, `ppc_fp128=128`).
+    /// Usable as `K::STATIC_BITS` in `const { ... }` assertions.
+    const STATIC_BITS: u32;
+
     fn ir_type<'ctx>(module: &'ctx Module<'ctx>) -> FloatType<'ctx, Self>
     where
         Self: Sized;
 }
 
 macro_rules! impl_static_float_kind {
-    ($ty:ty, $method:ident) => {
+    ($ty:ty, $method:ident, $bits:literal) => {
         impl StaticFloatKind for $ty {
+            const STATIC_BITS: u32 = $bits;
             #[inline]
             fn ir_type<'ctx>(module: &'ctx Module<'ctx>) -> FloatType<'ctx, Self> {
                 module.$method()
@@ -342,10 +350,10 @@ macro_rules! impl_static_float_kind {
         }
     };
 }
-impl_static_float_kind!(f32, f32_type);
-impl_static_float_kind!(f64, f64_type);
-impl_static_float_kind!(Half, half_type);
-impl_static_float_kind!(BFloat, bfloat_type);
-impl_static_float_kind!(Fp128, fp128_type);
-impl_static_float_kind!(X86Fp80, x86_fp80_type);
-impl_static_float_kind!(PpcFp128, ppc_fp128_type);
+impl_static_float_kind!(f32, f32_type, 32);
+impl_static_float_kind!(f64, f64_type, 64);
+impl_static_float_kind!(Half, half_type, 16);
+impl_static_float_kind!(BFloat, bfloat_type, 16);
+impl_static_float_kind!(Fp128, fp128_type, 128);
+impl_static_float_kind!(X86Fp80, x86_fp80_type, 80);
+impl_static_float_kind!(PpcFp128, ppc_fp128_type, 128);

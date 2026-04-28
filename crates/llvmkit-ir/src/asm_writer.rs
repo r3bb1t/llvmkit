@@ -860,17 +860,24 @@ fn fmt_load(
     l: &crate::instr_types::LoadInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
+    // Mirrors `AssemblyWriter::printInstruction` LoadInst arm in
+    // `lib/IR/AsmWriter.cpp`: `load [atomic] [volatile] <ty>, <ptrty> <ptr>
+    // [syncscope("...")] <ordering>, align N`.
     let module = inst.module();
     let pointee = crate::r#type::Type::new(l.pointee_ty, module);
-    f.write_str("load ")?;
-    if l.volatile {
-        f.write_str("volatile ")?;
+    f.write_str("load")?;
+    if l.is_atomic() {
+        f.write_str(" atomic")?;
     }
-    write!(f, "{}, ", pointee)?;
+    if l.volatile {
+        f.write_str(" volatile")?;
+    }
+    write!(f, " {}, ", pointee)?;
     let pd = module.context().value_data(l.ptr.get());
     let pv = Value::from_parts(l.ptr.get(), module, pd.ty);
     write!(f, "{} ", pv.ty())?;
     fmt_operand_ref(f, pv, Some(slots))?;
+    write_atomic_suffix(f, l.ordering, &l.sync_scope)?;
     if let Some(al) = l.align.align() {
         write!(f, ", align {}", al.value())?;
     }
@@ -883,11 +890,18 @@ fn fmt_store(
     s: &crate::instr_types::StoreInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
+    // Mirrors `AssemblyWriter::printInstruction` StoreInst arm in
+    // `lib/IR/AsmWriter.cpp`: `store [atomic] [volatile] <valty> <val>,
+    // <ptrty> <ptr> [syncscope("...")] <ordering>, align N`.
     let module = inst.module();
-    f.write_str("store ")?;
-    if s.volatile {
-        f.write_str("volatile ")?;
+    f.write_str("store")?;
+    if s.is_atomic() {
+        f.write_str(" atomic")?;
     }
+    if s.volatile {
+        f.write_str(" volatile")?;
+    }
+    f.write_str(" ")?;
     let vd = module.context().value_data(s.value.get());
     let vv = Value::from_parts(s.value.get(), module, vd.ty);
     write!(f, "{} ", vv.ty())?;
@@ -897,6 +911,7 @@ fn fmt_store(
     let pv = Value::from_parts(s.ptr.get(), module, pd.ty);
     write!(f, "{} ", pv.ty())?;
     fmt_operand_ref(f, pv, Some(slots))?;
+    write_atomic_suffix(f, s.ordering, &s.sync_scope)?;
     if let Some(al) = s.align.align() {
         write!(f, ", align {}", al.value())?;
     }

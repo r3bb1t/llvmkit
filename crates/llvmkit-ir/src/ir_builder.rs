@@ -36,20 +36,23 @@ pub mod no_folder;
 
 use core::marker::PhantomData;
 
-use crate::basic_block::BasicBlock;
-use crate::block_state::{BlockSealState, Sealed};
-use crate::derived_types::IntType;
-use crate::error::{IrError, IrResult, TypeKindLabel};
-use crate::function::FunctionValue;
-use crate::instr_types::{BinaryOpData, CastOpData, ReturnOpData};
-use crate::instruction::{Instruction, InstructionKindData, build_instruction_value};
-use crate::int_width::IntWidth;
-use crate::ir_builder::constant_folder::ConstantFolder;
-use crate::ir_builder::folder::IRBuilderFolder;
-use crate::marker::{Dyn, Ptr, ReturnMarker};
-use crate::module::Module;
-use crate::r#type::TypeId;
-use crate::value::IntValue;
+use super::align::{Align, MaybeAlign};
+use super::atomic_ordering::AtomicOrdering;
+use super::basic_block::BasicBlock;
+use super::block_state::{BlockSealState, Sealed};
+use super::derived_types::IntType;
+use super::error::{IrError, IrResult, TypeKindLabel};
+use super::function::FunctionValue;
+use super::instr_types::{BinaryOpData, CastOpData, LoadInstData, ReturnOpData, StoreInstData};
+use super::instruction::{Instruction, InstructionKindData, build_instruction_value};
+use super::int_width::IntWidth;
+use super::ir_builder::constant_folder::ConstantFolder;
+use super::ir_builder::folder::IRBuilderFolder;
+use super::marker::{Dyn, Ptr, ReturnMarker};
+use super::module::Module;
+use super::sync_scope::SyncScope;
+use super::r#type::TypeId;
+use super::value::IntValue;
 use crate::value::Value;
 
 /// Type-state marker: the builder has no insertion point. None of the
@@ -1037,8 +1040,8 @@ where
     /// `IRBuilder::CreateFence`.
     pub fn build_fence(
         &self,
-        ordering: crate::atomic_ordering::AtomicOrdering,
-        sync_scope: crate::sync_scope::SyncScope,
+        ordering: AtomicOrdering,
+        sync_scope: SyncScope,
         name: impl AsRef<str>,
     ) -> IrResult<crate::instructions::FenceInst<'ctx>> {
         let payload = crate::instr_types::FenceInstData::new(ordering, sync_scope);
@@ -1306,13 +1309,7 @@ where
     where
         T: crate::r#type::IrType<'ctx>,
     {
-        self.build_alloca_inner(
-            ty.as_type().id(),
-            None,
-            crate::align::MaybeAlign::NONE,
-            0,
-            name,
-        )
+        self.build_alloca_inner(ty.as_type().id(), None, MaybeAlign::NONE, 0, name)
     }
 
     /// Produce `alloca <ty>, <size-ty> <num_elements>`. Mirrors
@@ -1331,7 +1328,7 @@ where
         self.build_alloca_inner(
             ty.as_type().id(),
             Some(n.as_value().id),
-            crate::align::MaybeAlign::NONE,
+            MaybeAlign::NONE,
             0,
             name,
         )
@@ -1342,26 +1339,20 @@ where
     pub fn build_alloca_with_align<T>(
         &self,
         ty: T,
-        align: crate::align::Align,
+        align: Align,
         name: impl AsRef<str>,
     ) -> IrResult<crate::value::PointerValue<'ctx>>
     where
         T: crate::r#type::IrType<'ctx>,
     {
-        self.build_alloca_inner(
-            ty.as_type().id(),
-            None,
-            crate::align::MaybeAlign::new(align),
-            0,
-            name,
-        )
+        self.build_alloca_inner(ty.as_type().id(), None, MaybeAlign::new(align), 0, name)
     }
 
     fn build_alloca_inner(
         &self,
         allocated_ty: TypeId,
         num_elements: Option<crate::value::ValueId>,
-        align: crate::align::MaybeAlign,
+        align: MaybeAlign,
         addr_space: u32,
         name: impl AsRef<str>,
     ) -> IrResult<crate::value::PointerValue<'ctx>> {
@@ -1391,7 +1382,15 @@ where
     {
         let ty_id = ty.as_type().id();
         let p = ptr.into_pointer_value(self.module)?;
-        let inst = self.build_load_inner(ty_id, p, crate::align::MaybeAlign::NONE, false, name)?;
+        let payload = LoadInstData::new(
+            ty_id,
+            super::value::IsValue::as_value(p).id,
+            MaybeAlign::NONE,
+            false,
+            AtomicOrdering::NotAtomic,
+            SyncScope::System,
+        );
+        let inst = self.build_load_inner(p, payload, name)?;
         Ok(inst.as_value())
     }
 
@@ -1405,13 +1404,15 @@ where
     {
         let ty = W::ir_type(self.module);
         let p = ptr.into_pointer_value(self.module)?;
-        let inst = self.build_load_inner(
+        let payload = LoadInstData::new(
             ty.as_type().id(),
-            p,
-            crate::align::MaybeAlign::NONE,
+            super::value::IsValue::as_value(p).id,
+            MaybeAlign::NONE,
             false,
-            name,
-        )?;
+            AtomicOrdering::NotAtomic,
+            SyncScope::System,
+        );
+        let inst = self.build_load_inner(p, payload, name)?;
         Ok(IntValue::<W>::from_value_unchecked(inst.as_value()))
     }
 
@@ -1427,13 +1428,15 @@ where
         P: crate::value::IntoPointerValue<'ctx>,
     {
         let p = ptr.into_pointer_value(self.module)?;
-        let inst = self.build_load_inner(
+        let payload = LoadInstData::new(
             ty.as_type().id(),
-            p,
-            crate::align::MaybeAlign::NONE,
+            super::value::IsValue::as_value(p).id,
+            MaybeAlign::NONE,
             false,
-            name,
-        )?;
+            AtomicOrdering::NotAtomic,
+            SyncScope::System,
+        );
+        let inst = self.build_load_inner(p, payload, name)?;
         Ok(IntValue::<crate::int_width::IntDyn>::from_value_unchecked(
             inst.as_value(),
         ))
@@ -1451,13 +1454,15 @@ where
     {
         let ty = K::ir_type(self.module);
         let p = ptr.into_pointer_value(self.module)?;
-        let inst = self.build_load_inner(
+        let payload = LoadInstData::new(
             ty.as_type().id(),
-            p,
-            crate::align::MaybeAlign::NONE,
+            super::value::IsValue::as_value(p).id,
+            MaybeAlign::NONE,
             false,
-            name,
-        )?;
+            AtomicOrdering::NotAtomic,
+            SyncScope::System,
+        );
+        let inst = self.build_load_inner(p, payload, name)?;
         Ok(crate::value::FloatValue::<K>::from_value_unchecked(
             inst.as_value(),
         ))
@@ -1475,13 +1480,15 @@ where
         P: crate::value::IntoPointerValue<'ctx>,
     {
         let p = ptr.into_pointer_value(self.module)?;
-        let inst = self.build_load_inner(
+        let payload = LoadInstData::new(
             ty.as_type().id(),
-            p,
-            crate::align::MaybeAlign::NONE,
+            super::value::IsValue::as_value(p).id,
+            MaybeAlign::NONE,
             false,
-            name,
-        )?;
+            AtomicOrdering::NotAtomic,
+            SyncScope::System,
+        );
+        let inst = self.build_load_inner(p, payload, name)?;
         Ok(
             crate::value::FloatValue::<crate::float_kind::FloatDyn>::from_value_unchecked(
                 inst.as_value(),
@@ -1503,13 +1510,15 @@ where
     {
         let ty = self.module.ptr_type(0);
         let p = ptr.into_pointer_value(self.module)?;
-        let inst = self.build_load_inner(
+        let payload = LoadInstData::new(
             ty.as_type().id(),
-            p,
-            crate::align::MaybeAlign::NONE,
+            super::value::IsValue::as_value(p).id,
+            MaybeAlign::NONE,
             false,
-            name,
-        )?;
+            AtomicOrdering::NotAtomic,
+            SyncScope::System,
+        );
+        let inst = self.build_load_inner(p, payload, name)?;
         Ok(crate::value::PointerValue::from_value_unchecked(
             inst.as_value(),
         ))
@@ -1519,7 +1528,7 @@ where
     pub fn build_int_load_with_align<W, P>(
         &self,
         ptr: P,
-        align: crate::align::Align,
+        align: Align,
         name: impl AsRef<str>,
     ) -> IrResult<IntValue<'ctx, W>>
     where
@@ -1528,31 +1537,26 @@ where
     {
         let ty = W::ir_type(self.module);
         let p = ptr.into_pointer_value(self.module)?;
-        let inst = self.build_load_inner(
+        let payload = LoadInstData::new(
             ty.as_type().id(),
-            p,
-            crate::align::MaybeAlign::new(align),
+            super::value::IsValue::as_value(p).id,
+            MaybeAlign::new(align),
             false,
-            name,
-        )?;
+            AtomicOrdering::NotAtomic,
+            SyncScope::System,
+        );
+        let inst = self.build_load_inner(p, payload, name)?;
         Ok(IntValue::<W>::from_value_unchecked(inst.as_value()))
     }
 
     fn build_load_inner(
         &self,
-        pointee_ty: TypeId,
-        ptr: crate::value::PointerValue<'ctx>,
-        align: crate::align::MaybeAlign,
-        volatile: bool,
+        ptr: super::value::PointerValue<'ctx>,
+        payload: LoadInstData,
         name: impl AsRef<str>,
     ) -> IrResult<Instruction<'ctx>> {
-        self.require_same_module(crate::value::IsValue::as_value(ptr))?;
-        let payload = crate::instr_types::LoadInstData::new(
-            pointee_ty,
-            crate::value::IsValue::as_value(ptr).id,
-            align,
-            volatile,
-        );
+        self.require_same_module(super::value::IsValue::as_value(ptr))?;
+        let pointee_ty = payload.pointee_ty;
         Ok(self.append_instruction(pointee_ty, InstructionKindData::Load(payload), name))
     }
 
@@ -1567,7 +1571,15 @@ where
         V: crate::value::IsValue<'ctx>,
         P: crate::value::IntoPointerValue<'ctx>,
     {
-        self.build_store_inner(value, ptr, crate::align::MaybeAlign::NONE, false)
+        let payload = self.store_payload(
+            value,
+            ptr,
+            MaybeAlign::NONE,
+            false,
+            AtomicOrdering::NotAtomic,
+            SyncScope::System,
+        )?;
+        self.build_store_inner(payload)
     }
 
     /// Same as `build_store` plus an explicit alignment slot.
@@ -1575,42 +1587,153 @@ where
         &self,
         value: V,
         ptr: P,
-        align: crate::align::Align,
+        align: Align,
     ) -> IrResult<crate::instructions::StoreInst<'ctx>>
     where
         V: crate::value::IsValue<'ctx>,
         P: crate::value::IntoPointerValue<'ctx>,
     {
-        self.build_store_inner(value, ptr, crate::align::MaybeAlign::new(align), false)
+        let payload = self.store_payload(
+            value,
+            ptr,
+            MaybeAlign::new(align),
+            false,
+            AtomicOrdering::NotAtomic,
+            SyncScope::System,
+        )?;
+        self.build_store_inner(payload)
     }
 
-    fn build_store_inner<V, P>(
+    /// Inner store: caller has already computed the payload and validated
+    /// the pointer/value modules. Single-arg helper used by the four
+    /// public store builders.
+    fn build_store_inner(
+        &self,
+        payload: StoreInstData,
+    ) -> IrResult<super::instructions::StoreInst<'ctx>> {
+        let void_ty = self.module.void_type().as_type().id();
+        let inst = self.append_instruction(void_ty, InstructionKindData::Store(payload), "");
+        Ok(super::instructions::StoreInst::from_raw(
+            inst.as_value().id,
+            inst.module(),
+            inst.ty().id(),
+        ))
+    }
+
+    fn store_payload<V, P>(
         &self,
         value: V,
         ptr: P,
-        align: crate::align::MaybeAlign,
+        align: MaybeAlign,
         volatile: bool,
-    ) -> IrResult<crate::instructions::StoreInst<'ctx>>
+        ordering: AtomicOrdering,
+        sync_scope: SyncScope,
+    ) -> IrResult<StoreInstData>
     where
-        V: crate::value::IsValue<'ctx>,
-        P: crate::value::IntoPointerValue<'ctx>,
+        V: super::value::IsValue<'ctx>,
+        P: super::value::IntoPointerValue<'ctx>,
     {
         let v = value.as_value();
         let p = ptr.into_pointer_value(self.module)?;
         self.require_same_module(v)?;
-        self.require_same_module(crate::value::IsValue::as_value(p))?;
-        let payload = crate::instr_types::StoreInstData::new(
+        self.require_same_module(super::value::IsValue::as_value(p))?;
+        Ok(StoreInstData::new(
             v.id,
-            crate::value::IsValue::as_value(p).id,
+            super::value::IsValue::as_value(p).id,
             align,
             volatile,
+            ordering,
+            sync_scope,
+        ))
+    }
+
+    /// Atomic load: `load atomic [volatile] iN, ptr <ptr> [syncscope(\"...\")]
+    /// <ordering>, align N`. Mirrors the 5-arg upstream constructor
+    /// `LoadInst::LoadInst(Type*, Value*, Twine&, bool isVolatile, Align,
+    /// AtomicOrdering, SyncScope::ID)` (see `lib/IR/Instructions.cpp`)
+    /// inserted via the IRBuilder's standard insert-point. Atomic loads
+    /// require an explicit alignment per LangRef. The atomic-specific
+    /// state (ordering, sync scope, align, volatile) is bundled into
+    /// [`super::instr_types::AtomicLoadConfig`] (parallel to the existing
+    /// [`super::instr_types::AtomicCmpXchgConfig`] /
+    /// [`super::instr_types::AtomicRMWConfig`] shapes).
+    pub fn build_int_load_atomic<W, P>(
+        &self,
+        ptr: P,
+        config: super::instr_types::AtomicLoadConfig,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, W>>
+    where
+        W: super::int_width::StaticIntWidth,
+        P: super::value::IntoPointerValue<'ctx>,
+    {
+        let ty = W::ir_type(self.module);
+        let p = ptr.into_pointer_value(self.module)?;
+        let payload = LoadInstData::new(
+            ty.as_type().id(),
+            super::value::IsValue::as_value(p).id,
+            MaybeAlign::new(config.align),
+            config.volatile,
+            config.ordering,
+            config.sync_scope,
         );
-        let void_ty = self.module.void_type().as_type().id();
-        let inst = self.append_instruction(void_ty, InstructionKindData::Store(payload), "");
-        Ok({
-            let _i = inst;
-            crate::instructions::StoreInst::from_raw(_i.as_value().id, _i.module(), _i.ty().id())
-        })
+        let inst = self.build_load_inner(p, payload, name)?;
+        Ok(IntValue::<W>::from_value_unchecked(inst.as_value()))
+    }
+
+    /// Erased atomic load. Same upstream constructor as
+    /// [`Self::build_int_load_atomic`] but with an explicit pointee type
+    /// (caller narrows the returned [`Value`]).
+    pub fn build_load_atomic<T, P>(
+        &self,
+        ty: T,
+        ptr: P,
+        config: super::instr_types::AtomicLoadConfig,
+        name: impl AsRef<str>,
+    ) -> IrResult<Value<'ctx>>
+    where
+        T: super::r#type::IrType<'ctx>,
+        P: super::value::IntoPointerValue<'ctx>,
+    {
+        let ty_id = ty.as_type().id();
+        let p = ptr.into_pointer_value(self.module)?;
+        let payload = LoadInstData::new(
+            ty_id,
+            super::value::IsValue::as_value(p).id,
+            MaybeAlign::new(config.align),
+            config.volatile,
+            config.ordering,
+            config.sync_scope,
+        );
+        let inst = self.build_load_inner(p, payload, name)?;
+        Ok(inst.as_value())
+    }
+
+    /// Atomic store: `store atomic [volatile] <ty> <val>, ptr <ptr>
+    /// [syncscope("...")] <ordering>, align N`. Mirrors the 6-arg upstream
+    /// `StoreInst::StoreInst(Value*, Value*, bool isVolatile, Align,
+    /// AtomicOrdering, SyncScope::ID)` constructor (see
+    /// `lib/IR/Instructions.cpp`). Atomic stores require an explicit
+    /// alignment carried in [`super::instr_types::AtomicStoreConfig`].
+    pub fn build_store_atomic<V, P>(
+        &self,
+        value: V,
+        ptr: P,
+        config: super::instr_types::AtomicStoreConfig,
+    ) -> IrResult<super::instructions::StoreInst<'ctx>>
+    where
+        V: super::value::IsValue<'ctx>,
+        P: super::value::IntoPointerValue<'ctx>,
+    {
+        let payload = self.store_payload(
+            value,
+            ptr,
+            MaybeAlign::new(config.align),
+            config.volatile,
+            config.ordering,
+            config.sync_scope,
+        )?;
+        self.build_store_inner(payload)
     }
 
     // ---- Call ----
@@ -1981,6 +2104,150 @@ where
             name,
         );
         Ok(crate::value::PointerValue::from_value_unchecked(
+            inst.as_value(),
+        ))
+    }
+
+    /// Generic bitcast on values of equal bit width. Mirrors
+    /// `IRBuilder::CreateBitCast` (`IRBuilder.h`), which is itself
+    /// `CreateCast(Instruction::BitCast, V, DestTy)`. The width
+    /// equality is enforced statically through
+    /// [`super::int_width::StaticIntWidth::STATIC_BITS`] /
+    /// [`super::float_kind::StaticFloatKind::STATIC_BITS`]
+    /// `const { assert!(...) }` blocks at monomorphisation; under-spec'd
+    /// instantiations are *compile* errors.
+    pub fn build_bitcast_int_to_int<Src, Dst, V>(
+        &self,
+        value: V,
+        dst_ty: IntType<'ctx, Dst>,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, Dst>>
+    where
+        Src: super::int_width::StaticIntWidth,
+        Dst: super::int_width::StaticIntWidth,
+        V: super::int_width::IntoIntValue<'ctx, Src>,
+    {
+        const {
+            assert!(
+                <Src as super::int_width::StaticIntWidth>::STATIC_BITS
+                    == <Dst as super::int_width::StaticIntWidth>::STATIC_BITS,
+                "bitcast int->int requires Src::STATIC_BITS == Dst::STATIC_BITS",
+            );
+        }
+        let v = value.into_int_value(self.module)?;
+        let v_value = super::value::IsValue::as_value(v);
+        self.require_same_module(v_value)?;
+        let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
+        let inst = self.append_instruction(
+            dst_ty.as_type().id(),
+            InstructionKindData::Cast(payload),
+            name,
+        );
+        Ok(IntValue::<Dst>::from_value_unchecked(inst.as_value()))
+    }
+
+    /// Bitcast an integer value to a same-bit-width float. Mirrors the
+    /// `Instruction::BitCast` arm of `CastInst::Create` in
+    /// `lib/IR/Instructions.cpp` for the `int -> fp` shape. Width
+    /// equality is enforced statically.
+    pub fn build_bitcast_int_to_fp<W, K, V>(
+        &self,
+        value: V,
+        dst_ty: super::derived_types::FloatType<'ctx, K>,
+        name: impl AsRef<str>,
+    ) -> IrResult<super::value::FloatValue<'ctx, K>>
+    where
+        W: super::int_width::StaticIntWidth,
+        K: super::float_kind::StaticFloatKind,
+        V: super::int_width::IntoIntValue<'ctx, W>,
+    {
+        const {
+            assert!(
+                <W as super::int_width::StaticIntWidth>::STATIC_BITS
+                    == <K as super::float_kind::StaticFloatKind>::STATIC_BITS,
+                "bitcast int->fp requires W::STATIC_BITS == K::STATIC_BITS",
+            );
+        }
+        let v = value.into_int_value(self.module)?;
+        let v_value = super::value::IsValue::as_value(v);
+        self.require_same_module(v_value)?;
+        let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
+        let inst = self.append_instruction(
+            dst_ty.as_type().id(),
+            InstructionKindData::Cast(payload),
+            name,
+        );
+        Ok(super::value::FloatValue::<K>::from_value_unchecked(
+            inst.as_value(),
+        ))
+    }
+
+    /// Bitcast a float to a same-bit-width integer. Mirrors the
+    /// `Instruction::BitCast` arm of `CastInst::Create` in
+    /// `lib/IR/Instructions.cpp` for the `fp -> int` shape. Width
+    /// equality is enforced statically.
+    pub fn build_bitcast_fp_to_int<K, W, V>(
+        &self,
+        value: V,
+        dst_ty: IntType<'ctx, W>,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, W>>
+    where
+        K: super::float_kind::StaticFloatKind,
+        W: super::int_width::StaticIntWidth,
+        V: super::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        const {
+            assert!(
+                <K as super::float_kind::StaticFloatKind>::STATIC_BITS
+                    == <W as super::int_width::StaticIntWidth>::STATIC_BITS,
+                "bitcast fp->int requires K::STATIC_BITS == W::STATIC_BITS",
+            );
+        }
+        let v = value.into_float_value(self.module)?;
+        let v_value = super::value::IsValue::as_value(v);
+        self.require_same_module(v_value)?;
+        let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
+        let inst = self.append_instruction(
+            dst_ty.as_type().id(),
+            InstructionKindData::Cast(payload),
+            name,
+        );
+        Ok(IntValue::<W>::from_value_unchecked(inst.as_value()))
+    }
+
+    /// Bitcast a float to a same-bit-width float. Used for
+    /// `bfloat <-> half` (both 16 bits) and `fp128 <-> ppc_fp128` (both
+    /// 128 bits). Mirrors `Instruction::BitCast` in
+    /// `lib/IR/Instructions.cpp`.
+    pub fn build_bitcast_fp_to_fp<Src, Dst, V>(
+        &self,
+        value: V,
+        dst_ty: super::derived_types::FloatType<'ctx, Dst>,
+        name: impl AsRef<str>,
+    ) -> IrResult<super::value::FloatValue<'ctx, Dst>>
+    where
+        Src: super::float_kind::StaticFloatKind,
+        Dst: super::float_kind::StaticFloatKind,
+        V: super::float_kind::IntoFloatValue<'ctx, Src>,
+    {
+        const {
+            assert!(
+                <Src as super::float_kind::StaticFloatKind>::STATIC_BITS
+                    == <Dst as super::float_kind::StaticFloatKind>::STATIC_BITS,
+                "bitcast fp->fp requires Src::STATIC_BITS == Dst::STATIC_BITS",
+            );
+        }
+        let v = value.into_float_value(self.module)?;
+        let v_value = super::value::IsValue::as_value(v);
+        self.require_same_module(v_value)?;
+        let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
+        let inst = self.append_instruction(
+            dst_ty.as_type().id(),
+            InstructionKindData::Cast(payload),
+            name,
+        );
+        Ok(super::value::FloatValue::<Dst>::from_value_unchecked(
             inst.as_value(),
         ))
     }

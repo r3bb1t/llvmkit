@@ -712,6 +712,12 @@ impl_into_int_value_static!(u128, i128, i128_type);
 /// integer type" in a module; the dyn-flavour builder methods take an
 /// explicit [`IntType<'ctx, IntDyn>`] for the runtime width.
 pub trait StaticIntWidth: IntWidth {
+    /// Bit width of the integer type at the type level. Mirrors
+    /// `Type::getIntegerBitWidth` in `lib/IR/Type.cpp` for the cases
+    /// where the width is statically known. Usable as `W::STATIC_BITS`
+    /// in `const { ... }` assertions to enforce width-equality at
+    /// monomorphisation time.
+    const STATIC_BITS: u32;
     /// Project the marker into the matching [`IntType`] from the
     /// caller's module.
     fn ir_type<'ctx>(module: &'ctx Module<'ctx>) -> IntType<'ctx, Self>
@@ -720,8 +726,9 @@ pub trait StaticIntWidth: IntWidth {
 }
 
 macro_rules! impl_static_int_width {
-    ($ty:ty, $method:ident) => {
+    ($ty:ty, $method:ident, $bits:literal) => {
         impl StaticIntWidth for $ty {
+            const STATIC_BITS: u32 = $bits;
             #[inline]
             fn ir_type<'ctx>(module: &'ctx Module<'ctx>) -> IntType<'ctx, Self> {
                 module.$method()
@@ -729,17 +736,18 @@ macro_rules! impl_static_int_width {
         }
     };
 }
-impl_static_int_width!(bool, bool_type);
-impl_static_int_width!(i8, i8_type);
-impl_static_int_width!(i16, i16_type);
-impl_static_int_width!(i32, i32_type);
-impl_static_int_width!(i64, i64_type);
-impl_static_int_width!(i128, i128_type);
+impl_static_int_width!(bool, bool_type, 1);
+impl_static_int_width!(i8, i8_type, 8);
+impl_static_int_width!(i16, i16_type, 16);
+impl_static_int_width!(i32, i32_type, 32);
+impl_static_int_width!(i64, i64_type, 64);
+impl_static_int_width!(i128, i128_type, 128);
 
 // `Width<N>` static-width impl: routes through the const-generic
 // `Module::int_type_n::<N>()` constructor, which performs the
 // `MIN_INT_BITS..=MAX_INT_BITS` range check at monomorphisation.
 impl<const N: u32> StaticIntWidth for Width<N> {
+    const STATIC_BITS: u32 = N;
     #[inline]
     fn ir_type<'ctx>(module: &'ctx Module<'ctx>) -> IntType<'ctx, Self> {
         module.int_type_n::<N>()

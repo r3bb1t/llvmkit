@@ -85,8 +85,9 @@ pub use function::{FunctionBuilder, FunctionValue};
 pub use gep_no_wrap_flags::GepNoWrapFlags;
 pub use global_value::Linkage;
 pub use instr_types::{
-    AShrFlags, AddFlags, AtomicCmpXchgConfig, AtomicRMWConfig, AtomicRMWFlags, CmpXchgFlags,
-    LShrFlags, MulFlags, SDivFlags, ShlFlags, SubFlags, TailCallKind, UDivFlags,
+    AShrFlags, AddFlags, AtomicCmpXchgConfig, AtomicLoadConfig, AtomicRMWConfig, AtomicRMWFlags,
+    AtomicStoreConfig, CmpXchgFlags, LShrFlags, MulFlags, SDivFlags, ShlFlags, SubFlags,
+    TailCallKind, UDivFlags,
 };
 pub use instruction::{Instruction, InstructionKind, TerminatorKind};
 pub use instructions::{

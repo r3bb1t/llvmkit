@@ -279,6 +279,21 @@ impl<'ctx> LoadInst<'ctx> {
     pub fn is_volatile(self) -> bool {
         self.payload().volatile
     }
+    /// Atomic-ordering on this load. Mirrors `LoadInst::getOrdering`
+    /// in `Instructions.h`. Returns `NotAtomic` for ordinary non-atomic loads.
+    pub fn ordering(self) -> crate::atomic_ordering::AtomicOrdering {
+        self.payload().ordering
+    }
+    /// Synchronization scope on this load. Mirrors
+    /// `LoadInst::getSyncScopeID` in `Instructions.h`.
+    pub fn sync_scope(self) -> crate::sync_scope::SyncScope {
+        self.payload().sync_scope.clone()
+    }
+    /// `true` when this load carries a non-`NotAtomic` ordering. Mirrors
+    /// `LoadInst::isAtomic` in `Instructions.h`.
+    pub fn is_atomic(self) -> bool {
+        self.payload().is_atomic()
+    }
 }
 
 /// `store` instruction. Mirrors `StoreInst` (`Instructions.h`).
@@ -319,6 +334,21 @@ impl<'ctx> StoreInst<'ctx> {
     }
     pub fn is_volatile(self) -> bool {
         self.payload().volatile
+    }
+    /// Atomic-ordering on this store. Mirrors `StoreInst::getOrdering`
+    /// in `Instructions.h`. Returns `NotAtomic` for ordinary non-atomic stores.
+    pub fn ordering(self) -> crate::atomic_ordering::AtomicOrdering {
+        self.payload().ordering
+    }
+    /// Synchronization scope on this store. Mirrors
+    /// `StoreInst::getSyncScopeID` in `Instructions.h`.
+    pub fn sync_scope(self) -> crate::sync_scope::SyncScope {
+        self.payload().sync_scope.clone()
+    }
+    /// `true` when this store carries a non-`NotAtomic` ordering. Mirrors
+    /// `StoreInst::isAtomic` in `Instructions.h`.
+    pub fn is_atomic(self) -> bool {
+        self.payload().is_atomic()
     }
 }
 

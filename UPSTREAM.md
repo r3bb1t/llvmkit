@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 334.
+Total `#[test]` functions: 345.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -356,3 +356,14 @@ Total `#[test]` functions: 334.
 | `crates/llvmkit-ir/tests/builder_funclet.rs::cleanupret_unwind_to_caller` | `test/Bitcode/compatibility.ll` line 1397 | mirror |
 | `crates/llvmkit-ir/tests/builder_funclet.rs::catchret_to_label` | `test/Bitcode/compatibility.ll` line 1412 | mirror |
 | `crates/llvmkit-ir/tests/concurrent_counter_example.rs::concurrent_counter_example_emits_locked_ir` | `https://llvm.org/docs/Atomics.html` (fence-based decomposition) + `test/Bitcode/compatibility.ll` lines 848 / 893-895 / 1302-1310 | example |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::load_atomic_monotonic_align4` | `test/Bitcode/compatibility.ll` line 902 | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::load_atomic_volatile_acquire_align8` | `test/Bitcode/compatibility.ll` line 904 | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::load_atomic_volatile_singlethread_seq_cst_align16` | `test/Bitcode/compatibility.ll` line 906 | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::store_atomic_monotonic_align4` | `test/Bitcode/compatibility.ll` line 909 | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::store_atomic_volatile_monotonic_align4` | `test/Bitcode/compatibility.ll` line 911 | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::store_atomic_volatile_singlethread_monotonic` | `test/Bitcode/compatibility.ll` line 913 | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::verifier_rejects_atomic_load_release_ordering` | `lib/IR/Verifier.cpp::Verifier::visitLoadInst` ("Load cannot have Release ordering") | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::verifier_rejects_atomic_store_acquire_ordering` | `lib/IR/Verifier.cpp::Verifier::visitStoreInst` ("Store cannot have Acquire ordering") | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::verifier_rejects_atomic_load_non_power_of_two_size` | `lib/IR/Verifier.cpp::Verifier::checkAtomicMemAccessSize` | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::bitcast_int_to_fp_emits_text` | `IRBuilder.h::CreateBitCast` (`CreateCast(Instruction::BitCast, V, DestTy)`) | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::bitcast_fp_to_int_emits_text` | `IRBuilder.h::CreateBitCast` (`CreateCast(Instruction::BitCast, V, DestTy)`) | mirror |

@@ -1351,6 +1351,30 @@ impl<'ctx> Verifier<'ctx> {
                 ),
             ));
         }
+        // Atomic-specific rules. Mirrors `Verifier::visitLoadInst`.
+        if l.is_atomic() {
+            use crate::atomic_ordering::AtomicOrdering;
+            if matches!(
+                l.ordering,
+                AtomicOrdering::Release | AtomicOrdering::AcquireRelease
+            ) {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::AtomicLoadInvalidOrdering,
+                    format!("atomic load has ordering {}", l.ordering),
+                ));
+            }
+            self.check_atomic_access_type(f, bb, l.pointee_ty, "load")?;
+            self.check_atomic_access_size(f, bb, l.pointee_ty)?;
+        } else if !l.sync_scope.is_default() {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::NonAtomicWithSyncScope,
+                "non-atomic load carries a non-default syncscope".to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -1381,6 +1405,83 @@ impl<'ctx> Verifier<'ctx> {
                 bb,
                 VerifierRule::StoreUnsizedType,
                 format!("store value type {} is unsized", self.type_label(val_ty)),
+            ));
+        }
+        // Atomic-specific rules. Mirrors `Verifier::visitStoreInst`.
+        if s.is_atomic() {
+            use crate::atomic_ordering::AtomicOrdering;
+            if matches!(
+                s.ordering,
+                AtomicOrdering::Acquire | AtomicOrdering::AcquireRelease
+            ) {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::AtomicStoreInvalidOrdering,
+                    format!("atomic store has ordering {}", s.ordering),
+                ));
+            }
+            self.check_atomic_access_type(f, bb, val_ty, "store")?;
+            self.check_atomic_access_size(f, bb, val_ty)?;
+        } else if !s.sync_scope.is_default() {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::NonAtomicWithSyncScope,
+                "non-atomic store carries a non-default syncscope".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Mirrors `Verifier::visitLoadInst` / `visitStoreInst` operand-type
+    /// branch: atomic load/store operands must be integer, pointer,
+    /// floating-point, or a vector thereof.
+    fn check_atomic_access_type(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        ty: TypeId,
+        kind: &str,
+    ) -> IrResult<()> {
+        if is_int_or_int_vector(self.module, ty)
+            || is_fp_or_fp_vector(self.module, ty)
+            || is_pointer_or_pointer_vector(self.module, ty)
+        {
+            return Ok(());
+        }
+        Err(self.fail(
+            f,
+            bb,
+            VerifierRule::AtomicLoadStoreInvalidType,
+            format!("atomic {} operand has type {}", kind, self.type_label(ty)),
+        ))
+    }
+
+    /// Mirrors `Verifier::checkAtomicMemAccessSize` in `lib/IR/Verifier.cpp`:
+    /// the operand bit width must be at least 8 (byte-sized) and a power
+    /// of two.
+    fn check_atomic_access_size(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        ty: TypeId,
+    ) -> IrResult<()> {
+        let Some(bits) = type_bit_width(self.module, ty) else {
+            // Pointers (no statically-known bit width) are accepted by
+            // upstream because the data layout decides; we have no
+            // DataLayout yet, so accept silently.
+            return Ok(());
+        };
+        if bits < 8 || (bits & (bits - 1)) != 0 {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::AtomicLoadStoreInvalidSize,
+                format!(
+                    "atomic access bit width {} is not byte-sized and power-of-two",
+                    bits
+                ),
             ));
         }
         Ok(())

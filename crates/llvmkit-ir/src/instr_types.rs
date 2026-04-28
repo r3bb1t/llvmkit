@@ -790,14 +790,18 @@ impl core::hash::Hash for AllocaInstData {
 }
 
 /// Storage payload for `load`. Mirrors `LoadInst`
-/// (`Instructions.h`). Atomic ordering / sync-scope are deferred to
-/// the atomic-ops session.
+/// (`Instructions.h`). Atomic ordering and sync-scope mirror the
+/// `OrderingField` / `SSID` slots on the upstream class; the default
+/// (`AtomicOrdering::NotAtomic`, `SyncScope::System`) reproduces the
+/// non-atomic load.
 #[derive(Debug)]
 pub(crate) struct LoadInstData {
     pub(crate) pointee_ty: crate::r#type::TypeId,
     pub(crate) ptr: Cell<ValueId>,
     pub(crate) align: crate::align::MaybeAlign,
     pub(crate) volatile: bool,
+    pub(crate) ordering: crate::atomic_ordering::AtomicOrdering,
+    pub(crate) sync_scope: crate::sync_scope::SyncScope,
 }
 
 impl LoadInstData {
@@ -806,13 +810,26 @@ impl LoadInstData {
         ptr: ValueId,
         align: crate::align::MaybeAlign,
         volatile: bool,
+        ordering: crate::atomic_ordering::AtomicOrdering,
+        sync_scope: crate::sync_scope::SyncScope,
     ) -> Self {
         Self {
             pointee_ty,
             ptr: Cell::new(ptr),
             align,
             volatile,
+            ordering,
+            sync_scope,
         }
+    }
+
+    /// `true` when the load carries a non-`NotAtomic` ordering. Mirrors
+    /// `LoadInst::isAtomic` in `Instructions.h`.
+    pub(crate) fn is_atomic(&self) -> bool {
+        !matches!(
+            self.ordering,
+            crate::atomic_ordering::AtomicOrdering::NotAtomic,
+        )
     }
 }
 impl Clone for LoadInstData {
@@ -822,6 +839,8 @@ impl Clone for LoadInstData {
             ptr: Cell::new(self.ptr.get()),
             align: self.align,
             volatile: self.volatile,
+            ordering: self.ordering,
+            sync_scope: self.sync_scope.clone(),
         }
     }
 }
@@ -831,6 +850,8 @@ impl PartialEq for LoadInstData {
             && self.ptr.get() == other.ptr.get()
             && self.align == other.align
             && self.volatile == other.volatile
+            && self.ordering == other.ordering
+            && self.sync_scope == other.sync_scope
     }
 }
 impl Eq for LoadInstData {}
@@ -840,17 +861,24 @@ impl core::hash::Hash for LoadInstData {
         self.ptr.get().hash(h);
         self.align.hash(h);
         self.volatile.hash(h);
+        self.ordering.hash(h);
+        self.sync_scope.hash(h);
     }
 }
 
 /// Storage payload for `store`. Mirrors `StoreInst`
-/// (`Instructions.h`).
+/// (`Instructions.h`). Atomic ordering and sync-scope mirror the
+/// `OrderingField` / `SSID` slots on the upstream class; the default
+/// (`AtomicOrdering::NotAtomic`, `SyncScope::System`) reproduces the
+/// non-atomic store.
 #[derive(Debug)]
 pub(crate) struct StoreInstData {
     pub(crate) value: Cell<ValueId>,
     pub(crate) ptr: Cell<ValueId>,
     pub(crate) align: crate::align::MaybeAlign,
     pub(crate) volatile: bool,
+    pub(crate) ordering: crate::atomic_ordering::AtomicOrdering,
+    pub(crate) sync_scope: crate::sync_scope::SyncScope,
 }
 
 impl StoreInstData {
@@ -859,13 +887,26 @@ impl StoreInstData {
         ptr: ValueId,
         align: crate::align::MaybeAlign,
         volatile: bool,
+        ordering: crate::atomic_ordering::AtomicOrdering,
+        sync_scope: crate::sync_scope::SyncScope,
     ) -> Self {
         Self {
             value: Cell::new(value),
             ptr: Cell::new(ptr),
             align,
             volatile,
+            ordering,
+            sync_scope,
         }
+    }
+
+    /// `true` when the store carries a non-`NotAtomic` ordering. Mirrors
+    /// `StoreInst::isAtomic` in `Instructions.h`.
+    pub(crate) fn is_atomic(&self) -> bool {
+        !matches!(
+            self.ordering,
+            crate::atomic_ordering::AtomicOrdering::NotAtomic,
+        )
     }
 }
 impl Clone for StoreInstData {
@@ -875,6 +916,8 @@ impl Clone for StoreInstData {
             ptr: Cell::new(self.ptr.get()),
             align: self.align,
             volatile: self.volatile,
+            ordering: self.ordering,
+            sync_scope: self.sync_scope.clone(),
         }
     }
 }
@@ -884,6 +927,8 @@ impl PartialEq for StoreInstData {
             && self.ptr.get() == other.ptr.get()
             && self.align == other.align
             && self.volatile == other.volatile
+            && self.ordering == other.ordering
+            && self.sync_scope == other.sync_scope
     }
 }
 impl Eq for StoreInstData {}
@@ -893,6 +938,8 @@ impl core::hash::Hash for StoreInstData {
         self.ptr.get().hash(h);
         self.align.hash(h);
         self.volatile.hash(h);
+        self.ordering.hash(h);
+        self.sync_scope.hash(h);
     }
 }
 
@@ -2157,4 +2204,74 @@ pub struct AtomicRMWConfig {
     pub sync_scope: crate::sync_scope::SyncScope,
     pub flags: AtomicRMWFlags,
     pub align: crate::align::MaybeAlign,
+}
+
+/// Bundled configuration for atomic [`crate::IRBuilder::build_int_load_atomic`]
+/// / `build_load_atomic` / `build_int_load_atomic_volatile`. Mirrors the
+/// state passed to the 5-arg upstream constructor
+/// `LoadInst::LoadInst(Type*, Value*, Twine&, bool isVolatile, Align,
+/// AtomicOrdering, SyncScope::ID)` (`Instructions.h`).
+#[derive(Debug, Clone)]
+pub struct AtomicLoadConfig {
+    pub ordering: crate::atomic_ordering::AtomicOrdering,
+    pub sync_scope: crate::sync_scope::SyncScope,
+    pub align: crate::align::Align,
+    pub volatile: bool,
+}
+
+impl AtomicLoadConfig {
+    /// Convenience constructor with `volatile = false`. The 4-arg shape
+    /// matches the common-case upstream `LoadInst` constructor that omits
+    /// the volatile slot.
+    pub fn new(
+        ordering: crate::atomic_ordering::AtomicOrdering,
+        sync_scope: crate::sync_scope::SyncScope,
+        align: crate::align::Align,
+    ) -> Self {
+        Self {
+            ordering,
+            sync_scope,
+            align,
+            volatile: false,
+        }
+    }
+
+    /// Flip the volatile bit. Mirrors `LoadInst::setVolatile(true)`.
+    pub fn volatile(mut self) -> Self {
+        self.volatile = true;
+        self
+    }
+}
+
+/// Bundled configuration for atomic [`crate::IRBuilder::build_store_atomic`]
+/// / `build_store_atomic_volatile`. Mirrors the state passed to the 6-arg
+/// upstream constructor `StoreInst::StoreInst(Value*, Value*, bool isVolatile,
+/// Align, AtomicOrdering, SyncScope::ID)`.
+#[derive(Debug, Clone)]
+pub struct AtomicStoreConfig {
+    pub ordering: crate::atomic_ordering::AtomicOrdering,
+    pub sync_scope: crate::sync_scope::SyncScope,
+    pub align: crate::align::Align,
+    pub volatile: bool,
+}
+
+impl AtomicStoreConfig {
+    pub fn new(
+        ordering: crate::atomic_ordering::AtomicOrdering,
+        sync_scope: crate::sync_scope::SyncScope,
+        align: crate::align::Align,
+    ) -> Self {
+        Self {
+            ordering,
+            sync_scope,
+            align,
+            volatile: false,
+        }
+    }
+
+    /// Flip the volatile bit. Mirrors `StoreInst::setVolatile(true)`.
+    pub fn volatile(mut self) -> Self {
+        self.volatile = true;
+        self
+    }
 }
