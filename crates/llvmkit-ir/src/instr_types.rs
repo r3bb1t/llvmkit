@@ -40,6 +40,11 @@ pub(crate) struct BinaryOpData {
     /// `exact` flag. Mirrors `PossiblyExactOperator::IsExact`.
     /// Applies to `udiv` / `sdiv` / `lshr` / `ashr`.
     pub(crate) is_exact: bool,
+    /// Per-instruction fast-math flags. Applies only to FP binops
+    /// (`fadd` / `fsub` / `fmul` / `fdiv` / `frem`); empty for integer
+    /// opcodes. Mirrors the `FastMathFlags` slot on `FPMathOperator`
+    /// (`Operator.h`).
+    pub(crate) fmf: crate::fmf::FastMathFlags,
 }
 
 impl BinaryOpData {
@@ -50,6 +55,7 @@ impl BinaryOpData {
             no_unsigned_wrap: false,
             no_signed_wrap: false,
             is_exact: false,
+            fmf: crate::fmf::FastMathFlags::empty(),
         }
     }
 }
@@ -66,6 +72,7 @@ impl Clone for BinaryOpData {
             no_unsigned_wrap: self.no_unsigned_wrap,
             no_signed_wrap: self.no_signed_wrap,
             is_exact: self.is_exact,
+            fmf: self.fmf,
         }
     }
 }
@@ -76,6 +83,7 @@ impl PartialEq for BinaryOpData {
             && self.no_unsigned_wrap == other.no_unsigned_wrap
             && self.no_signed_wrap == other.no_signed_wrap
             && self.is_exact == other.is_exact
+            && self.fmf == other.fmf
     }
 }
 impl Eq for BinaryOpData {}
@@ -86,6 +94,7 @@ impl core::hash::Hash for BinaryOpData {
         self.no_unsigned_wrap.hash(h);
         self.no_signed_wrap.hash(h);
         self.is_exact.hash(h);
+        self.fmf.bits().hash(h);
     }
 }
 
@@ -396,6 +405,9 @@ pub(crate) struct FCmpInstData {
     pub(crate) predicate: crate::cmp_predicate::FloatPredicate,
     pub(crate) lhs: Cell<ValueId>,
     pub(crate) rhs: Cell<ValueId>,
+    /// Per-instruction fast-math flags. `fcmp` is an `FPMathOperator`
+    /// upstream, so the same FMF slot applies. Empty by default.
+    pub(crate) fmf: crate::fmf::FastMathFlags,
 }
 
 impl FCmpInstData {
@@ -408,6 +420,7 @@ impl FCmpInstData {
             predicate,
             lhs: Cell::new(lhs),
             rhs: Cell::new(rhs),
+            fmf: crate::fmf::FastMathFlags::empty(),
         }
     }
 }
@@ -417,6 +430,7 @@ impl Clone for FCmpInstData {
             predicate: self.predicate,
             lhs: Cell::new(self.lhs.get()),
             rhs: Cell::new(self.rhs.get()),
+            fmf: self.fmf,
         }
     }
 }
@@ -425,6 +439,7 @@ impl PartialEq for FCmpInstData {
         self.predicate == other.predicate
             && self.lhs.get() == other.lhs.get()
             && self.rhs.get() == other.rhs.get()
+            && self.fmf == other.fmf
     }
 }
 impl Eq for FCmpInstData {}
@@ -433,6 +448,7 @@ impl core::hash::Hash for FCmpInstData {
         self.predicate.hash(h);
         self.lhs.get().hash(h);
         self.rhs.get().hash(h);
+        self.fmf.bits().hash(h);
     }
 }
 

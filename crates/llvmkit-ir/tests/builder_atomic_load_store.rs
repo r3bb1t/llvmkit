@@ -282,9 +282,11 @@ fn verifier_rejects_atomic_load_non_power_of_two_size() -> Result<(), IrError> {
 
 // --- bitcast methods ---------------------------------------------------
 
-/// Mirrors `unittests/IR/PatternMatch.cpp::TEST_F(PatternMatchTest, BitCast)`
-/// (line 638-678) which exercises `IRB.CreateBitCast(double, i64)` and
-/// related shapes. We test the typed-marker variant of the same construct.
+/// Adaptation of `unittests/IR/PatternMatch.cpp::TEST_F(PatternMatchTest,
+/// BitCast)` (line 638). Upstream exercises the `fp -> int` direction
+/// (`IRB.CreateBitCast(OneDouble, IRB.getInt64Ty())`); we exercise the
+/// inverse `int -> fp` direction here. llvmkit-specific scaffold for
+/// the `int -> fp` arm of `Instruction::BitCast` (`lib/IR/Instructions.cpp`).
 #[test]
 fn bitcast_int_to_fp_emits_text() -> Result<(), IrError> {
     let m = Module::new("a");

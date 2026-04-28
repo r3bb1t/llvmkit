@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 354.
+Total `#[test]` functions: 367.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -365,7 +365,7 @@ Total `#[test]` functions: 354.
 | `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::verifier_rejects_atomic_load_release_ordering` | `lib/IR/Verifier.cpp::Verifier::visitLoadInst` ("Load cannot have Release ordering") | mirror |
 | `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::verifier_rejects_atomic_store_acquire_ordering` | `lib/IR/Verifier.cpp::Verifier::visitStoreInst` ("Store cannot have Acquire ordering") | mirror |
 | `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::verifier_rejects_atomic_load_non_power_of_two_size` | `lib/IR/Verifier.cpp::Verifier::checkAtomicMemAccessSize` | mirror |
-| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::bitcast_int_to_fp_emits_text` | `unittests/IR/PatternMatch.cpp::TEST_F(PatternMatchTest, BitCast)` (line 638) | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::bitcast_int_to_fp_emits_text` | `unittests/IR/PatternMatch.cpp::TEST_F(PatternMatchTest, BitCast)` (line 638; inverse `int -> fp` direction) | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::bitcast_fp_to_int_emits_text` | `unittests/IR/PatternMatch.cpp::TEST_F(PatternMatchTest, BitCast)` (line 638-643) | mirror |
 | `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::position_before_inserts_between_prev_and_anchor` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, DebugLoc)` (lines 1155-1190) | mirror |
 | `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::position_past_allocas_anchors_after_alloca_prefix` | `IRBuilder.h::IRBuilder::SetInsertPointPastAllocas` (no upstream `TEST_F`; live use in `lib/Frontend/OpenMP/OMPIRBuilder.cpp`) | llvmkit-specific |
@@ -376,3 +376,16 @@ Total `#[test]` functions: 354.
 | `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::build_pointer_cast_same_addrspace_emits_bitcast` | `IRBuilder.h::IRBuilder::CreatePointerBitCastOrAddrSpaceCast` + live use in `unittests/Frontend/OpenMPIRBuilderTest.cpp` line 6473 | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::build_is_null_emits_icmp_eq_null` | `IRBuilder.h::IRBuilder::CreateIsNull` (no dedicated `TEST_F`; sibling `CreateIsNotNull` used in `unittests/Frontend/OpenMPIRBuilderTest.cpp` line 1153) | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::build_is_not_null_emits_icmp_ne_null` | `unittests/Frontend/OpenMPIRBuilderTest.cpp` line 1153 (`Builder.CreateIsNotNull(F->arg_begin())`) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_propagates_from_builder_to_fadd` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` (line 557) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::clear_fast_math_flags_drops_flags_from_subsequent_ops` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` (line 622-628) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_propagates_to_fcmp_oeq` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` (lines 643-658, AllowReciprocal arm) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_oeq_emits_oeq` | `test/Bitcode/compatibility.ll` line 1677 | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_ogt_emits_ogt` | `test/Bitcode/compatibility.ll` line 1679 | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_oge_emits_oge` | `test/Bitcode/compatibility.ll` line 1681 | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_olt_emits_olt` | `test/Bitcode/compatibility.ll` line 1683 | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_ole_emits_ole` | `test/Bitcode/compatibility.ll` line 1685 | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_ord_emits_ord` | `test/Bitcode/compatibility.ll` line 1689 | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_uno_emits_uno` | `test/Bitcode/compatibility.ll` line 1703 | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_ueq_emits_ueq` | `test/Bitcode/compatibility.ll` line 1691 | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fp_phi_emits_phi_with_double_kind` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, FPMathOperator)` line 539 (`Builder.CreatePHI(getDoubleTy(), 0)`) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_pointer_phi_emits_phi_with_ptr` | `test/Verifier/inalloca2.ll` line 35 (`%args = phi ptr [ %a, %if ], [ %b, %else ]`) | llvmkit-specific |

@@ -440,6 +440,11 @@ fn fmt_binop(
     if b.is_exact {
         f.write_str(" exact")?;
     }
+    // Mirrors `writeOptimizationInfo` in `lib/IR/AsmWriter.cpp`: an
+    // `FPMathOperator` prints its FMF (` <flags>`) before the operands.
+    if !b.fmf.is_empty() {
+        write!(f, " {}", b.fmf)?;
+    }
     f.write_str(" ")?;
     let module = inst.module();
     let lhs_data = module.context().value_data(b.lhs.get());
@@ -823,10 +828,16 @@ fn fmt_fcmp(
     c: &crate::instr_types::FCmpInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
+    // `fcmp [<fmf>] <pred> <ty> <lhs>, <rhs>`. The optional FMF block
+    // mirrors `writeOptimizationInfo` in `lib/IR/AsmWriter.cpp`.
     let module = inst.module();
     let lhs_data = module.context().value_data(c.lhs.get());
     let lhs = Value::from_parts(c.lhs.get(), module, lhs_data.ty);
-    write!(f, "fcmp {} {} ", c.predicate.name(), lhs.ty())?;
+    f.write_str("fcmp")?;
+    if !c.fmf.is_empty() {
+        write!(f, " {}", c.fmf)?;
+    }
+    write!(f, " {} {} ", c.predicate.name(), lhs.ty())?;
     fmt_operand_ref(f, lhs, Some(slots))?;
     f.write_str(", ")?;
     let rhs_data = module.context().value_data(c.rhs.get());

@@ -1040,6 +1040,302 @@ impl<'ctx, W: crate::int_width::IntWidth, P: PhiState> From<PhiInst<'ctx, W, P>>
 }
 
 // --------------------------------------------------------------------------
+// FpPhiInst<'ctx, K, P> -- floating-point phi handle
+// --------------------------------------------------------------------------
+
+/// `phi` node whose result type is `FloatType<'ctx, K>`. Mirrors
+/// upstream `PHINode` in `Instructions.h`; we keep one handle per
+/// element-kind family (int / float / pointer) to mirror the existing
+/// per-opcode handle pattern in this crate (the unified-trait alternative
+/// would force every read accessor through dyn dispatch).
+#[derive(Debug)]
+pub struct FpPhiInst<'ctx, K: crate::float_kind::FloatKind, P: PhiState = Open> {
+    pub(crate) id: ValueId,
+    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) ty: TypeId,
+    _k: core::marker::PhantomData<fn() -> K>,
+    _p: core::marker::PhantomData<P>,
+}
+
+impl<'ctx, K: crate::float_kind::FloatKind, P: PhiState> Clone for FpPhiInst<'ctx, K, P> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'ctx, K: crate::float_kind::FloatKind, P: PhiState> Copy for FpPhiInst<'ctx, K, P> {}
+
+impl<'ctx, K: crate::float_kind::FloatKind, P: PhiState> FpPhiInst<'ctx, K, P> {
+    #[inline]
+    pub(crate) fn from_raw(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
+        Self {
+            id,
+            module: ModuleRef::new(module),
+            ty,
+            _k: core::marker::PhantomData,
+            _p: core::marker::PhantomData,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn retag<P2: PhiState>(self) -> FpPhiInst<'ctx, K, P2> {
+        FpPhiInst {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+            _k: core::marker::PhantomData,
+            _p: core::marker::PhantomData,
+        }
+    }
+
+    fn payload(self) -> &'ctx PhiData {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::Phi(p) => p,
+                _ => unreachable!("FpPhiInst invariant: kind is Phi"),
+            },
+            _ => unreachable!("FpPhiInst invariant: kind is Instruction"),
+        }
+    }
+
+    #[inline]
+    pub fn as_instruction(self) -> Instruction<'ctx, state::Attached> {
+        Instruction::from_parts(self.id, self.module.module())
+    }
+
+    /// Result handle for the phi, narrowed to the static kind `K`.
+    #[inline]
+    pub fn as_float_value(self) -> crate::value::FloatValue<'ctx, K> {
+        let v = Value::from_parts(self.id, self.module.module(), self.ty);
+        crate::value::FloatValue::<K>::from_value_unchecked(v)
+    }
+
+    pub fn incoming_count(self) -> u32 {
+        let len = self.payload().incoming.borrow().len();
+        u32::try_from(len).unwrap_or_else(|_| unreachable!("phi has more than u32::MAX incoming"))
+    }
+}
+
+impl<'ctx, K: crate::float_kind::FloatKind> FpPhiInst<'ctx, K, Open> {
+    /// Append `(value, block)` to the incoming list. Mirrors
+    /// `PHINode::addIncoming`. Errors if `value`'s type does not match
+    /// the phi's result type or `block` belongs to a different module.
+    pub fn add_incoming<V, R, S>(
+        self,
+        value: V,
+        block: crate::basic_block::BasicBlock<'ctx, R, S>,
+    ) -> crate::IrResult<Self>
+    where
+        V: crate::float_kind::IntoFloatValue<'ctx, K>,
+        R: crate::marker::ReturnMarker,
+        S: crate::block_state::BlockSealState,
+    {
+        let module = self.module.module();
+        let value = value.into_float_value(module)?;
+        if value.as_value().module().id() != module.id()
+            || block.as_value().module().id() != module.id()
+        {
+            return Err(crate::IrError::ForeignValue);
+        }
+        if value.as_value().ty == self.ty {
+            let value_id = value.as_value().id;
+            let block_id = block.as_value().id;
+            self.payload()
+                .incoming
+                .borrow_mut()
+                .push((core::cell::Cell::new(value_id), block_id));
+            module
+                .context()
+                .value_data(value_id)
+                .use_list
+                .borrow_mut()
+                .push(self.id);
+            Ok(self)
+        } else {
+            Err(crate::IrError::TypeMismatch {
+                expected: crate::r#type::Type::new(self.ty, module).kind_label(),
+                got: value.as_value().ty().kind_label(),
+            })
+        }
+    }
+
+    /// Consume the open phi and return its [`Closed`] view.
+    #[inline]
+    pub fn finish(self) -> FpPhiInst<'ctx, K, Closed> {
+        self.retag::<Closed>()
+    }
+}
+
+impl<'ctx, K: crate::float_kind::FloatKind, P: PhiState> PartialEq for FpPhiInst<'ctx, K, P> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.module == other.module && self.ty == other.ty
+    }
+}
+impl<'ctx, K: crate::float_kind::FloatKind, P: PhiState> Eq for FpPhiInst<'ctx, K, P> {}
+impl<'ctx, K: crate::float_kind::FloatKind, P: PhiState> core::hash::Hash
+    for FpPhiInst<'ctx, K, P>
+{
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.id.hash(h);
+        self.module.hash(h);
+        self.ty.hash(h);
+    }
+}
+
+impl<'ctx, K: crate::float_kind::FloatKind, P: PhiState> From<FpPhiInst<'ctx, K, P>>
+    for Instruction<'ctx, state::Attached>
+{
+    #[inline]
+    fn from(h: FpPhiInst<'ctx, K, P>) -> Self {
+        h.as_instruction()
+    }
+}
+
+// --------------------------------------------------------------------------
+// PointerPhiInst<'ctx, P> -- pointer phi handle
+// --------------------------------------------------------------------------
+
+/// `phi` node whose result type is a pointer. Pointers carry no
+/// element-kind type parameter (only addrspace, which is encoded in
+/// the type id), so the handle is parameterised only by `P: PhiState`.
+#[derive(Debug)]
+pub struct PointerPhiInst<'ctx, P: PhiState = Open> {
+    pub(crate) id: ValueId,
+    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) ty: TypeId,
+    _p: core::marker::PhantomData<P>,
+}
+
+impl<'ctx, P: PhiState> Clone for PointerPhiInst<'ctx, P> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'ctx, P: PhiState> Copy for PointerPhiInst<'ctx, P> {}
+
+impl<'ctx, P: PhiState> PointerPhiInst<'ctx, P> {
+    #[inline]
+    pub(crate) fn from_raw(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
+        Self {
+            id,
+            module: ModuleRef::new(module),
+            ty,
+            _p: core::marker::PhantomData,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn retag<P2: PhiState>(self) -> PointerPhiInst<'ctx, P2> {
+        PointerPhiInst {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+            _p: core::marker::PhantomData,
+        }
+    }
+
+    fn payload(self) -> &'ctx PhiData {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::Phi(p) => p,
+                _ => unreachable!("PointerPhiInst invariant: kind is Phi"),
+            },
+            _ => unreachable!("PointerPhiInst invariant: kind is Instruction"),
+        }
+    }
+
+    #[inline]
+    pub fn as_instruction(self) -> Instruction<'ctx, state::Attached> {
+        Instruction::from_parts(self.id, self.module.module())
+    }
+
+    /// Result handle for the phi, narrowed to a
+    /// [`PointerValue`](crate::value::PointerValue).
+    #[inline]
+    pub fn as_pointer_value(self) -> crate::value::PointerValue<'ctx> {
+        let v = Value::from_parts(self.id, self.module.module(), self.ty);
+        crate::value::PointerValue::from_value_unchecked(v)
+    }
+
+    pub fn incoming_count(self) -> u32 {
+        let len = self.payload().incoming.borrow().len();
+        u32::try_from(len).unwrap_or_else(|_| unreachable!("phi has more than u32::MAX incoming"))
+    }
+}
+
+impl<'ctx> PointerPhiInst<'ctx, Open> {
+    /// Append `(value, block)` to the incoming list.
+    pub fn add_incoming<V, R, S>(
+        self,
+        value: V,
+        block: crate::basic_block::BasicBlock<'ctx, R, S>,
+    ) -> crate::IrResult<Self>
+    where
+        V: crate::value::IntoPointerValue<'ctx>,
+        R: crate::marker::ReturnMarker,
+        S: crate::block_state::BlockSealState,
+    {
+        let module = self.module.module();
+        let value = value.into_pointer_value(module)?;
+        if crate::value::IsValue::as_value(value).module().id() != module.id()
+            || block.as_value().module().id() != module.id()
+        {
+            return Err(crate::IrError::ForeignValue);
+        }
+        if crate::value::IsValue::as_value(value).ty == self.ty {
+            let value_id = crate::value::IsValue::as_value(value).id;
+            let block_id = block.as_value().id;
+            self.payload()
+                .incoming
+                .borrow_mut()
+                .push((core::cell::Cell::new(value_id), block_id));
+            module
+                .context()
+                .value_data(value_id)
+                .use_list
+                .borrow_mut()
+                .push(self.id);
+            Ok(self)
+        } else {
+            Err(crate::IrError::TypeMismatch {
+                expected: crate::r#type::Type::new(self.ty, module).kind_label(),
+                got: crate::value::IsValue::as_value(value).ty().kind_label(),
+            })
+        }
+    }
+
+    /// Consume the open phi and return its [`Closed`] view.
+    #[inline]
+    pub fn finish(self) -> PointerPhiInst<'ctx, Closed> {
+        self.retag::<Closed>()
+    }
+}
+
+impl<'ctx, P: PhiState> PartialEq for PointerPhiInst<'ctx, P> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.module == other.module && self.ty == other.ty
+    }
+}
+impl<'ctx, P: PhiState> Eq for PointerPhiInst<'ctx, P> {}
+impl<'ctx, P: PhiState> core::hash::Hash for PointerPhiInst<'ctx, P> {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.id.hash(h);
+        self.module.hash(h);
+        self.ty.hash(h);
+    }
+}
+
+impl<'ctx, P: PhiState> From<PointerPhiInst<'ctx, P>> for Instruction<'ctx, state::Attached> {
+    #[inline]
+    fn from(h: PointerPhiInst<'ctx, P>) -> Self {
+        h.as_instruction()
+    }
+}
+
+// --------------------------------------------------------------------------
 // Unary ops: fneg / freeze / va_arg
 // --------------------------------------------------------------------------
 

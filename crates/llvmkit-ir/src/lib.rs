@@ -94,10 +94,10 @@ pub use instructions::{
     AShrInst, AddInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst, BranchInst,
     CallBrInst, CallInst, CastInst, CatchPadInst, CatchReturnInst, CatchSwitchInst, CleanupPadInst,
     CleanupReturnInst, ExtractElementInst, ExtractValueInst, FAddInst, FCmpInst, FDivInst,
-    FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FreezeInst, GepInst, ICmpInst,
+    FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FpPhiInst, FreezeInst, GepInst, ICmpInst,
     IndirectBrInst, InsertElementInst, InsertValueInst, InvokeInst, LShrInst, LandingPadInst,
-    LoadInst, MulInst, OrInst, PhiInst, ResumeInst, RetInst, SDivInst, SRemInst, SelectInst,
-    ShlInst, ShuffleVectorInst, StoreInst, SubInst, SwitchInst, UDivInst, URemInst,
+    LoadInst, MulInst, OrInst, PhiInst, PointerPhiInst, ResumeInst, RetInst, SDivInst, SRemInst,
+    SelectInst, ShlInst, ShuffleVectorInst, StoreInst, SubInst, SwitchInst, UDivInst, URemInst,
     UnreachableInst, VAArgInst, XorInst,
 };
 pub use ir_builder::constant_folder::ConstantFolder;

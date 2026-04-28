@@ -323,6 +323,31 @@ where
         }
     }
 
+    // ---- Fast-math flags (builder-context) ----
+
+    /// Get the builder's current default FMF set. Mirrors
+    /// `IRBuilderBase::getFastMathFlags() const` in `IRBuilder.h`.
+    #[inline]
+    pub fn fast_math_flags(&self) -> super::fmf::FastMathFlags {
+        self.fmf
+    }
+
+    /// Set the builder's default FMF. Subsequent FP-math instructions
+    /// (fadd / fsub / fmul / fdiv / frem / fneg / fcmp) carry these flags.
+    /// Mirrors `IRBuilderBase::setFastMathFlags(FastMathFlags)`.
+    pub fn with_fast_math_flags(self, fmf: super::fmf::FastMathFlags) -> Self {
+        Self { fmf, ..self }
+    }
+
+    /// Reset the builder's default FMF to empty. Mirrors
+    /// `IRBuilderBase::clearFastMathFlags()`.
+    pub fn clear_fast_math_flags(self) -> Self {
+        Self {
+            fmf: super::fmf::FastMathFlags::empty(),
+            ..self
+        }
+    }
+
     // ---- Integer arithmetic ----
 
     /// Produce `add lhs, rhs`. Mirrors `IRBuilder::CreateAdd`.
@@ -894,10 +919,14 @@ where
         let rhs = rhs.into_float_value(self.module)?;
         self.require_same_module(crate::value::IsValue::as_value(lhs))?;
         self.require_same_module(crate::value::IsValue::as_value(rhs))?;
-        let payload = BinaryOpData::new(
+        let mut payload = BinaryOpData::new(
             crate::value::IsValue::as_value(lhs).id,
             crate::value::IsValue::as_value(rhs).id,
         );
+        // Apply the builder-context FMF (parallel to upstream
+        // `IRBuilderBase::setFPAttrs` in `IRBuilder.h`, which calls
+        // `I->setFastMathFlags(FMF)` on every FP-math instruction).
+        payload.fmf = self.fmf;
         let inst =
             self.append_instruction(crate::value::Typed::ty(lhs).id(), kind_ctor(payload), name);
         Ok(crate::value::FloatValue::<K>::from_value_unchecked(
@@ -923,14 +952,232 @@ where
         let rhs = rhs.into_float_value(self.module)?;
         self.require_same_module(crate::value::IsValue::as_value(lhs))?;
         self.require_same_module(crate::value::IsValue::as_value(rhs))?;
-        let payload = crate::instr_types::FCmpInstData::new(
+        let mut payload = crate::instr_types::FCmpInstData::new(
             pred,
             crate::value::IsValue::as_value(lhs).id,
             crate::value::IsValue::as_value(rhs).id,
         );
+        // Apply builder-context FMF (`fcmp` is an `FPMathOperator` upstream).
+        payload.fmf = self.fmf;
         let i1_ty = self.module.bool_type().as_type().id();
         let inst = self.append_instruction(i1_ty, InstructionKindData::FCmp(payload), name);
         Ok(IntValue::<bool>::from_value_unchecked(inst.as_value()))
+    }
+
+    // ---- Per-predicate fcmp wrappers ----
+    //
+    // Each method mirrors the matching `IRBuilder::CreateFCmpO<Pred>` /
+    // `CreateFCmpU<Pred>` in `IRBuilder.h` (lines 2371-2475). All
+    // delegate to `build_fp_cmp` with the appropriate `FloatPredicate`.
+
+    /// Mirrors `IRBuilder::CreateFCmpOEQ`.
+    pub fn build_fcmp_oeq<K, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        K: super::float_kind::FloatKind,
+        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Oeq, lhs, rhs, name)
+    }
+
+    /// Mirrors `IRBuilder::CreateFCmpOGT`.
+    pub fn build_fcmp_ogt<K, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        K: super::float_kind::FloatKind,
+        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Ogt, lhs, rhs, name)
+    }
+
+    /// Mirrors `IRBuilder::CreateFCmpOGE`.
+    pub fn build_fcmp_oge<K, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        K: super::float_kind::FloatKind,
+        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Oge, lhs, rhs, name)
+    }
+
+    /// Mirrors `IRBuilder::CreateFCmpOLT`.
+    pub fn build_fcmp_olt<K, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        K: super::float_kind::FloatKind,
+        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Olt, lhs, rhs, name)
+    }
+
+    /// Mirrors `IRBuilder::CreateFCmpOLE`.
+    pub fn build_fcmp_ole<K, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        K: super::float_kind::FloatKind,
+        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Ole, lhs, rhs, name)
+    }
+
+    /// Mirrors `IRBuilder::CreateFCmpONE`.
+    pub fn build_fcmp_one<K, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        K: super::float_kind::FloatKind,
+        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::One, lhs, rhs, name)
+    }
+
+    /// Mirrors `IRBuilder::CreateFCmpORD`.
+    pub fn build_fcmp_ord<K, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        K: super::float_kind::FloatKind,
+        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Ord, lhs, rhs, name)
+    }
+
+    /// Mirrors `IRBuilder::CreateFCmpUNO`.
+    pub fn build_fcmp_uno<K, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        K: super::float_kind::FloatKind,
+        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Uno, lhs, rhs, name)
+    }
+
+    /// Mirrors `IRBuilder::CreateFCmpUEQ`.
+    pub fn build_fcmp_ueq<K, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        K: super::float_kind::FloatKind,
+        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Ueq, lhs, rhs, name)
+    }
+
+    /// Mirrors `IRBuilder::CreateFCmpUGT`.
+    pub fn build_fcmp_ugt<K, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        K: super::float_kind::FloatKind,
+        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Ugt, lhs, rhs, name)
+    }
+
+    /// Mirrors `IRBuilder::CreateFCmpUGE`.
+    pub fn build_fcmp_uge<K, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        K: super::float_kind::FloatKind,
+        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Uge, lhs, rhs, name)
+    }
+
+    /// Mirrors `IRBuilder::CreateFCmpULT`.
+    pub fn build_fcmp_ult<K, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        K: super::float_kind::FloatKind,
+        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Ult, lhs, rhs, name)
+    }
+
+    /// Mirrors `IRBuilder::CreateFCmpULE`.
+    pub fn build_fcmp_ule<K, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        K: super::float_kind::FloatKind,
+        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Ule, lhs, rhs, name)
+    }
+
+    /// Mirrors `IRBuilder::CreateFCmpUNE`.
+    pub fn build_fcmp_une<K, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        K: super::float_kind::FloatKind,
+        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Une, lhs, rhs, name)
     }
 
     // ---- Unary ops: fneg / freeze / va_arg ----
@@ -947,7 +1194,7 @@ where
         K: crate::float_kind::FloatKind,
         V: crate::float_kind::IntoFloatValue<'ctx, K>,
     {
-        self.build_float_neg_with_flags::<K, V>(value, crate::fmf::FastMathFlags::empty(), name)
+        self.build_float_neg_with_flags::<K, V>(value, self.fmf, name)
     }
 
     /// Produce `fneg <fmf> <value>`. Mirrors `IRBuilder::CreateFNegFMF`.
@@ -2790,6 +3037,80 @@ where
                 _i.ty().id(),
             )
         })
+    }
+
+    /// Float-typed phi: `phi <fpty>`. Marker-only form keyed on
+    /// `K: StaticFloatKind`. Mirrors `IRBuilder::CreatePHI(Type*, ...)`
+    /// applied to a floating-point type.
+    pub fn build_fp_phi<K>(
+        &self,
+        name: impl AsRef<str>,
+    ) -> IrResult<super::instructions::FpPhiInst<'ctx, K>>
+    where
+        K: super::float_kind::StaticFloatKind,
+    {
+        let ty = K::ir_type(self.module);
+        let payload = super::instr_types::PhiData::new();
+        let inst =
+            self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
+        Ok(super::instructions::FpPhiInst::<K>::from_raw(
+            inst.as_value().id,
+            inst.module(),
+            inst.ty().id(),
+        ))
+    }
+
+    /// Runtime-kind float phi: takes the type explicitly because
+    /// [`crate::FloatDyn`] carries no static kind.
+    pub fn build_fp_phi_dyn(
+        &self,
+        ty: super::derived_types::FloatType<'ctx, super::float_kind::FloatDyn>,
+        name: impl AsRef<str>,
+    ) -> IrResult<super::instructions::FpPhiInst<'ctx, super::float_kind::FloatDyn>> {
+        let payload = super::instr_types::PhiData::new();
+        let inst =
+            self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
+        Ok(
+            super::instructions::FpPhiInst::<super::float_kind::FloatDyn>::from_raw(
+                inst.as_value().id,
+                inst.module(),
+                inst.ty().id(),
+            ),
+        )
+    }
+
+    /// Pointer-typed phi in the default address space (addrspace 0).
+    /// Mirrors `IRBuilder::CreatePHI(PointerType::getUnqual(...), ...)`.
+    pub fn build_pointer_phi(
+        &self,
+        name: impl AsRef<str>,
+    ) -> IrResult<super::instructions::PointerPhiInst<'ctx>> {
+        let ty = self.module.ptr_type(0);
+        let payload = super::instr_types::PhiData::new();
+        let inst =
+            self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
+        Ok(super::instructions::PointerPhiInst::from_raw(
+            inst.as_value().id,
+            inst.module(),
+            inst.ty().id(),
+        ))
+    }
+
+    /// Pointer-typed phi in a caller-specified address space. Mirrors
+    /// `IRBuilder::CreatePHI(PointerType::get(Ctx, AS), ...)`.
+    pub fn build_pointer_phi_in_addrspace(
+        &self,
+        ty: super::derived_types::PointerType<'ctx>,
+        name: impl AsRef<str>,
+    ) -> IrResult<super::instructions::PointerPhiInst<'ctx>> {
+        let payload = super::instr_types::PhiData::new();
+        let inst =
+            self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
+        Ok(super::instructions::PointerPhiInst::from_raw(
+            inst.as_value().id,
+            inst.module(),
+            inst.ty().id(),
+        ))
     }
 
     // ---- Branch / Unreachable ----
