@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 292.
+Total `#[test]` functions: 334.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -312,3 +312,47 @@ Total `#[test]` functions: 292.
 | `crates/llvmkit-ir/tests/builder_icmp_named.rs::build_icmp_ne_emits_icmp_ne` | `test/Assembler/auto_upgrade_nvvm_intrinsics.ll` | mirror |
 | `crates/llvmkit-ir/tests/builder_icmp_named.rs::build_icmp_slt_emits_icmp_slt` | `test/Assembler/2004-02-27-SelfUseAssertError.ll` | mirror |
 | `crates/llvmkit-ir/tests/builder_icmp_named.rs::build_icmp_sge_emits_icmp_sge` | `test/Assembler/auto_upgrade_nvvm_intrinsics.ll` | mirror |
+
+<!-- Parser-1: Session 1 instruction-set completion -->
+| `crates/llvmkit-ir/tests/builder_unary_ops.rs::build_fneg_round_trip` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, UnaryOperators)` | port |
+| `crates/llvmkit-ir/tests/builder_unary_ops.rs::fneg_with_fmf_prints_canonical_form` | `test/Bitcode/compatibility.ll::fastmathflags_unop` | mirror |
+| `crates/llvmkit-ir/tests/builder_unary_ops.rs::fneg_double_no_flags_unnamed_result` | `test/Bitcode/compatibility.ll::instructions.unops` | mirror |
+| `crates/llvmkit-ir/tests/builder_unary_ops.rs::freeze_i8_round_trip` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, FreezeInst)` | port |
+| `crates/llvmkit-ir/tests/builder_unary_ops.rs::freeze_int_and_pointer_print_forms` | `test/Bitcode/compatibility.ll` lines 1732-1741 | mirror |
+| `crates/llvmkit-ir/tests/builder_unary_ops.rs::verifier_accepts_freeze_int` | `unittests/IR/VerifierTest.cpp::TEST(VerifierTest, Freeze)` | port |
+| `crates/llvmkit-ir/tests/builder_unary_ops.rs::va_arg_int_round_trip` | `test/Bitcode/variableArgumentIntrinsic.3.2.ll` | mirror |
+| `crates/llvmkit-ir/tests/builder_unary_ops.rs::va_arg_print_keyword_and_destination_type` | `test/Bitcode/compatibility.ll` line 1815 | mirror |
+| `crates/llvmkit-ir/tests/builder_unary_ops.rs::verifier_accepts_va_arg_pointer_source` | `test/Verifier/tbaa-allowed.ll` | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_struct_field0` | `test/Bitcode/compatibility.ll` line 1549 | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_array_index` | `test/Bitcode/compatibility.ll` line 1553 | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_nested_indices` | `test/Bitcode/compatibility.ll` line 1555 | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_value_struct_field0` | `test/Bitcode/compatibility.ll` line 1558 | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_value_array_index_zero` | `test/Bitcode/compatibility.ll` line 1562 | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_element_vector_i8_index` | `test/Bitcode/compatibility.ll` line 1535 | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_element_vector_float_at_i8` | `test/Bitcode/compatibility.ll` line 1537 | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_zeroinitializer_mask` | `test/Bitcode/compatibility.ll` line 1539 | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_explicit_mask_print` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, ShuffleMaskQueries)` | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic.rs::fence_system_scope_orderings` | `test/Bitcode/compatibility.ll` lines 893-898 | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic.rs::fence_singlethread_seq_cst` | `test/Bitcode/compatibility.ll` line 899 | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic.rs::cmpxchg_no_align_monotonic_monotonic` | `test/Bitcode/compatibility.ll` line 810 | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic.rs::cmpxchg_weak_volatile_singlethread` | `test/Bitcode/compatibility.ll` line 824 | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic.rs::atomicrmw_xchg_monotonic` | `test/Bitcode/compatibility.ll` line 846 | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic.rs::atomicrmw_volatile_min_monotonic` | `test/Bitcode/compatibility.ll` line 862 | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic.rs::atomicrmw_umax_singlethread` | `test/Bitcode/compatibility.ll` line 864 | mirror |
+| `crates/llvmkit-ir/tests/builder_var_arity_terminators.rs::switch_three_cases_print_form` | `test/Bitcode/compatibility.ll` lines 1302-1310 | mirror |
+| `crates/llvmkit-ir/tests/builder_var_arity_terminators.rs::switch_no_cases_only_default` | `test/Assembler/2003-05-15-SwitchBug.ll` | mirror |
+| `crates/llvmkit-ir/tests/builder_var_arity_terminators.rs::indirectbr_single_destination` | `test/Bitcode/compatibility.ll` line 1320 | mirror |
+| `crates/llvmkit-ir/tests/builder_var_arity_terminators.rs::indirectbr_multiple_destinations` | `test/Bitcode/compatibility.ll` line 1322 | mirror |
+| `crates/llvmkit-ir/tests/builder_eh_calls.rs::invoke_void_to_unwind` | `test/Bitcode/compatibility.ll` line 1325 | mirror |
+| `crates/llvmkit-ir/tests/builder_eh_calls.rs::callbr_void_with_one_indirect_dest` | `test/Assembler/callbr.ll` lines 8-9 | mirror |
+| `crates/llvmkit-ir/tests/builder_eh_calls.rs::callbr_two_indirect_dests_print_form` | `test/Assembler/inline-asm-constraint-error.ll` | mirror |
+| `crates/llvmkit-ir/tests/builder_eh_data.rs::landingpad_cleanup_only` | `test/Bitcode/compatibility.ll` line 789 | mirror |
+| `crates/llvmkit-ir/tests/builder_eh_data.rs::landingpad_cleanup_plus_catch` | `test/Bitcode/compatibility.ll` lines 1782-1786 | mirror |
+| `crates/llvmkit-ir/tests/builder_eh_data.rs::resume_i32_undef` | `test/Bitcode/compatibility.ll` line 1332 | mirror |
+| `crates/llvmkit-ir/tests/builder_eh_data.rs::landingpad_followed_by_resume` | `test/Bitcode/compatibility.ll` lines 1330-1332 | mirror |
+| `crates/llvmkit-ir/tests/builder_funclet.rs::catchswitch_within_none_unwind_to_caller` | `test/Bitcode/compatibility.ll` line 1351 | mirror |
+| `crates/llvmkit-ir/tests/builder_funclet.rs::catchpad_within_catchswitch_empty_args` | `test/Bitcode/compatibility.ll` line 1354 | mirror |
+| `crates/llvmkit-ir/tests/builder_funclet.rs::cleanuppad_within_none_empty_args` | `test/Bitcode/compatibility.ll` line 1378 | mirror |
+| `crates/llvmkit-ir/tests/builder_funclet.rs::cleanupret_unwind_to_caller` | `test/Bitcode/compatibility.ll` line 1397 | mirror |
+| `crates/llvmkit-ir/tests/builder_funclet.rs::catchret_to_label` | `test/Bitcode/compatibility.ll` line 1412 | mirror |
+| `crates/llvmkit-ir/tests/concurrent_counter_example.rs::concurrent_counter_example_emits_locked_ir` | `https://llvm.org/docs/Atomics.html` (fence-based decomposition) + `test/Bitcode/compatibility.ll` lines 848 / 893-895 / 1302-1310 | example |

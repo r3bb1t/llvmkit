@@ -79,8 +79,16 @@ Tracking **LLVM 22.1.4** (`llvmorg-22.1.4`, released 2026-04-21).
     `local_unnamed_addr` / `unnamed_addr`, and parameter / return
     attribute slots (`define noundef i32 @main() {`).
 - **`.ll` parser** — not yet.
-- **Memory ops, GEP, calls, vector ops, full constant set** — not yet;
-  each scheduled as its own focused session.
+- **Full instruction set (Parser-1)**: every opcode the `.ll` parser will
+  need ships end-to-end. Beyond the medium-builder set, this adds
+  `fneg` (with FMF), `freeze`, `va_arg`; `extractvalue` / `insertvalue`
+  with compile-time index lists; `extractelement` / `insertelement` /
+  `shufflevector`; `fence` / `cmpxchg` / `atomicrmw` plus
+  `AtomicOrdering` / `SyncScope` / `AtomicRMWBinOp` support; `switch` /
+  `indirectbr` with Open/Closed case-list typestate; `invoke<R>` /
+  `callbr` (typed-return mirroring `CallInst<R>`); `landingpad` /
+  `resume`; and the funclet family `cleanuppad` / `catchpad` /
+  `catchret` / `cleanupret` / `catchswitch`.
 - **Bitcode** — not yet.
 - **Optimizations / passes** — not yet, but planned. The IR data model is
   designed to support pass-style transforms; concrete passes will land once

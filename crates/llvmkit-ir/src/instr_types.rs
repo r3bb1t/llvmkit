@@ -217,6 +217,117 @@ impl core::hash::Hash for CastOpData {
 }
 
 // --------------------------------------------------------------------------
+// Unary ops: fneg / freeze / va_arg
+// --------------------------------------------------------------------------
+
+/// Storage payload for `fneg`. Mirrors `UnaryOperator` restricted to the
+/// `Instruction::FNeg` opcode in `InstrTypes.h`. Carries fast-math flags
+/// because every `FPMathOperator` instruction subclass may set them
+/// (`Operator.h`, `FPMathOperator`).
+#[derive(Debug)]
+pub(crate) struct FNegInstData {
+    pub(crate) src: Cell<ValueId>,
+    pub(crate) fmf: crate::fmf::FastMathFlags,
+}
+
+impl FNegInstData {
+    pub(crate) fn new(src: ValueId, fmf: crate::fmf::FastMathFlags) -> Self {
+        Self {
+            src: Cell::new(src),
+            fmf,
+        }
+    }
+}
+impl Clone for FNegInstData {
+    fn clone(&self) -> Self {
+        Self {
+            src: Cell::new(self.src.get()),
+            fmf: self.fmf,
+        }
+    }
+}
+impl PartialEq for FNegInstData {
+    fn eq(&self, other: &Self) -> bool {
+        self.src.get() == other.src.get() && self.fmf == other.fmf
+    }
+}
+impl Eq for FNegInstData {}
+impl core::hash::Hash for FNegInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.src.get().hash(h);
+        self.fmf.bits().hash(h);
+    }
+}
+
+/// Storage payload for `freeze`. Mirrors `FreezeInst`
+/// (`Instructions.h`). The result type matches the operand type and
+/// is carried in the host [`crate::value::ValueData::ty`].
+#[derive(Debug)]
+pub(crate) struct FreezeInstData {
+    pub(crate) src: Cell<ValueId>,
+}
+
+impl FreezeInstData {
+    pub(crate) fn new(src: ValueId) -> Self {
+        Self {
+            src: Cell::new(src),
+        }
+    }
+}
+impl Clone for FreezeInstData {
+    fn clone(&self) -> Self {
+        Self {
+            src: Cell::new(self.src.get()),
+        }
+    }
+}
+impl PartialEq for FreezeInstData {
+    fn eq(&self, other: &Self) -> bool {
+        self.src.get() == other.src.get()
+    }
+}
+impl Eq for FreezeInstData {}
+impl core::hash::Hash for FreezeInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.src.get().hash(h);
+    }
+}
+
+/// Storage payload for `va_arg`. Mirrors `VAArgInst`
+/// (`Instructions.h`). The destination type is carried in the host
+/// `ValueData::ty`; the payload stores only the `va_list` pointer.
+#[derive(Debug)]
+pub(crate) struct VAArgInstData {
+    pub(crate) src: Cell<ValueId>,
+}
+
+impl VAArgInstData {
+    pub(crate) fn new(src: ValueId) -> Self {
+        Self {
+            src: Cell::new(src),
+        }
+    }
+}
+impl Clone for VAArgInstData {
+    fn clone(&self) -> Self {
+        Self {
+            src: Cell::new(self.src.get()),
+        }
+    }
+}
+impl PartialEq for VAArgInstData {
+    fn eq(&self, other: &Self) -> bool {
+        self.src.get() == other.src.get()
+    }
+}
+impl Eq for VAArgInstData {}
+impl core::hash::Hash for VAArgInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.src.get().hash(h);
+    }
+}
+
+// --------------------------------------------------------------------------
 // Comparison instructions (icmp)
 // --------------------------------------------------------------------------
 
@@ -992,4 +1103,1058 @@ impl core::hash::Hash for SelectInstData {
         self.true_val.get().hash(h);
         self.false_val.get().hash(h);
     }
+}
+
+// --------------------------------------------------------------------------
+// Aggregate ops: extractvalue / insertvalue
+// --------------------------------------------------------------------------
+
+/// Storage payload for `extractvalue`. Mirrors `ExtractValueInst`
+/// (`Instructions.h`). Indices are `u32` because LangRef restricts them
+/// to `i32`-fitting compile-time constants (see
+/// `Instructions.h::ExtractValueInst::Indices` -- `SmallVector<unsigned,4>`).
+#[derive(Debug)]
+pub(crate) struct ExtractValueInstData {
+    pub(crate) aggregate: Cell<ValueId>,
+    pub(crate) indices: Box<[u32]>,
+}
+
+impl ExtractValueInstData {
+    pub(crate) fn new(aggregate: ValueId, indices: impl IntoIterator<Item = u32>) -> Self {
+        Self {
+            aggregate: Cell::new(aggregate),
+            indices: indices.into_iter().collect(),
+        }
+    }
+}
+impl Clone for ExtractValueInstData {
+    fn clone(&self) -> Self {
+        Self {
+            aggregate: Cell::new(self.aggregate.get()),
+            indices: self.indices.clone(),
+        }
+    }
+}
+impl PartialEq for ExtractValueInstData {
+    fn eq(&self, other: &Self) -> bool {
+        self.aggregate.get() == other.aggregate.get() && self.indices == other.indices
+    }
+}
+impl Eq for ExtractValueInstData {}
+impl core::hash::Hash for ExtractValueInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.aggregate.get().hash(h);
+        self.indices.hash(h);
+    }
+}
+
+/// Storage payload for `insertvalue`. Mirrors `InsertValueInst`
+/// (`Instructions.h`).
+#[derive(Debug)]
+pub(crate) struct InsertValueInstData {
+    pub(crate) aggregate: Cell<ValueId>,
+    pub(crate) value: Cell<ValueId>,
+    pub(crate) indices: Box<[u32]>,
+}
+
+impl InsertValueInstData {
+    pub(crate) fn new(
+        aggregate: ValueId,
+        value: ValueId,
+        indices: impl IntoIterator<Item = u32>,
+    ) -> Self {
+        Self {
+            aggregate: Cell::new(aggregate),
+            value: Cell::new(value),
+            indices: indices.into_iter().collect(),
+        }
+    }
+}
+impl Clone for InsertValueInstData {
+    fn clone(&self) -> Self {
+        Self {
+            aggregate: Cell::new(self.aggregate.get()),
+            value: Cell::new(self.value.get()),
+            indices: self.indices.clone(),
+        }
+    }
+}
+impl PartialEq for InsertValueInstData {
+    fn eq(&self, other: &Self) -> bool {
+        self.aggregate.get() == other.aggregate.get()
+            && self.value.get() == other.value.get()
+            && self.indices == other.indices
+    }
+}
+impl Eq for InsertValueInstData {}
+impl core::hash::Hash for InsertValueInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.aggregate.get().hash(h);
+        self.value.get().hash(h);
+        self.indices.hash(h);
+    }
+}
+
+// --------------------------------------------------------------------------
+// Vector ops: extractelement / insertelement / shufflevector
+// --------------------------------------------------------------------------
+
+/// Storage payload for `extractelement`. Mirrors `ExtractElementInst`
+/// (`Instructions.h`).
+#[derive(Debug)]
+pub(crate) struct ExtractElementInstData {
+    pub(crate) vector: Cell<ValueId>,
+    pub(crate) index: Cell<ValueId>,
+}
+
+impl ExtractElementInstData {
+    pub(crate) fn new(vector: ValueId, index: ValueId) -> Self {
+        Self {
+            vector: Cell::new(vector),
+            index: Cell::new(index),
+        }
+    }
+}
+impl Clone for ExtractElementInstData {
+    fn clone(&self) -> Self {
+        Self {
+            vector: Cell::new(self.vector.get()),
+            index: Cell::new(self.index.get()),
+        }
+    }
+}
+impl PartialEq for ExtractElementInstData {
+    fn eq(&self, other: &Self) -> bool {
+        self.vector.get() == other.vector.get() && self.index.get() == other.index.get()
+    }
+}
+impl Eq for ExtractElementInstData {}
+impl core::hash::Hash for ExtractElementInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.vector.get().hash(h);
+        self.index.get().hash(h);
+    }
+}
+
+/// Storage payload for `insertelement`. Mirrors `InsertElementInst`
+/// (`Instructions.h`).
+#[derive(Debug)]
+pub(crate) struct InsertElementInstData {
+    pub(crate) vector: Cell<ValueId>,
+    pub(crate) value: Cell<ValueId>,
+    pub(crate) index: Cell<ValueId>,
+}
+
+impl InsertElementInstData {
+    pub(crate) fn new(vector: ValueId, value: ValueId, index: ValueId) -> Self {
+        Self {
+            vector: Cell::new(vector),
+            value: Cell::new(value),
+            index: Cell::new(index),
+        }
+    }
+}
+impl Clone for InsertElementInstData {
+    fn clone(&self) -> Self {
+        Self {
+            vector: Cell::new(self.vector.get()),
+            value: Cell::new(self.value.get()),
+            index: Cell::new(self.index.get()),
+        }
+    }
+}
+impl PartialEq for InsertElementInstData {
+    fn eq(&self, other: &Self) -> bool {
+        self.vector.get() == other.vector.get()
+            && self.value.get() == other.value.get()
+            && self.index.get() == other.index.get()
+    }
+}
+impl Eq for InsertElementInstData {}
+impl core::hash::Hash for InsertElementInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.vector.get().hash(h);
+        self.value.get().hash(h);
+        self.index.get().hash(h);
+    }
+}
+
+/// Sentinel mask element representing `poison` (mirrors
+/// `PoisonMaskElem` / `UndefMaskElem` in `Instructions.h`).
+pub const POISON_MASK_ELEM: i32 = -1;
+
+/// Storage payload for `shufflevector`. Mirrors `ShuffleVectorInst`
+/// (`Instructions.h`). The mask is stored as a list of integers per
+/// upstream's `SmallVector<int, 4> ShuffleMask` representation;
+/// `POISON_MASK_ELEM` (-1) marks poison entries.
+#[derive(Debug)]
+pub(crate) struct ShuffleVectorInstData {
+    pub(crate) lhs: Cell<ValueId>,
+    pub(crate) rhs: Cell<ValueId>,
+    pub(crate) mask: Box<[i32]>,
+}
+
+impl ShuffleVectorInstData {
+    pub(crate) fn new(lhs: ValueId, rhs: ValueId, mask: impl IntoIterator<Item = i32>) -> Self {
+        Self {
+            lhs: Cell::new(lhs),
+            rhs: Cell::new(rhs),
+            mask: mask.into_iter().collect(),
+        }
+    }
+}
+impl Clone for ShuffleVectorInstData {
+    fn clone(&self) -> Self {
+        Self {
+            lhs: Cell::new(self.lhs.get()),
+            rhs: Cell::new(self.rhs.get()),
+            mask: self.mask.clone(),
+        }
+    }
+}
+impl PartialEq for ShuffleVectorInstData {
+    fn eq(&self, other: &Self) -> bool {
+        self.lhs.get() == other.lhs.get()
+            && self.rhs.get() == other.rhs.get()
+            && self.mask == other.mask
+    }
+}
+impl Eq for ShuffleVectorInstData {}
+impl core::hash::Hash for ShuffleVectorInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.lhs.get().hash(h);
+        self.rhs.get().hash(h);
+        self.mask.hash(h);
+    }
+}
+
+// --------------------------------------------------------------------------
+// Atomic ops: fence / cmpxchg / atomicrmw
+// --------------------------------------------------------------------------
+
+/// Storage payload for `fence`. Mirrors `FenceInst` (`Instructions.h`).
+/// No SSA operands; ordering and sync-scope only.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct FenceInstData {
+    pub(crate) ordering: crate::atomic_ordering::AtomicOrdering,
+    pub(crate) sync_scope: crate::sync_scope::SyncScope,
+}
+
+impl FenceInstData {
+    pub(crate) fn new(
+        ordering: crate::atomic_ordering::AtomicOrdering,
+        sync_scope: crate::sync_scope::SyncScope,
+    ) -> Self {
+        Self {
+            ordering,
+            sync_scope,
+        }
+    }
+}
+
+/// Storage payload for `cmpxchg`. Mirrors `AtomicCmpXchgInst`
+/// (`Instructions.h`). The result type is the literal struct
+/// `{ <pointee>, i1 }` (carried in the host `ValueData::ty`).
+#[derive(Debug)]
+pub(crate) struct AtomicCmpXchgInstData {
+    pub(crate) ptr: Cell<ValueId>,
+    pub(crate) cmp: Cell<ValueId>,
+    pub(crate) new_val: Cell<ValueId>,
+    pub(crate) align: crate::align::MaybeAlign,
+    pub(crate) success_ordering: crate::atomic_ordering::AtomicOrdering,
+    pub(crate) failure_ordering: crate::atomic_ordering::AtomicOrdering,
+    pub(crate) sync_scope: crate::sync_scope::SyncScope,
+    pub(crate) weak: bool,
+    pub(crate) volatile: bool,
+}
+
+impl AtomicCmpXchgInstData {
+    pub(crate) fn new(
+        ptr: ValueId,
+        cmp: ValueId,
+        new_val: ValueId,
+        config: crate::instr_types::AtomicCmpXchgConfig,
+    ) -> Self {
+        Self {
+            ptr: Cell::new(ptr),
+            cmp: Cell::new(cmp),
+            new_val: Cell::new(new_val),
+            align: config.align,
+            success_ordering: config.success_ordering,
+            failure_ordering: config.failure_ordering,
+            sync_scope: config.sync_scope,
+            weak: config.flags.weak,
+            volatile: config.flags.volatile,
+        }
+    }
+}
+impl Clone for AtomicCmpXchgInstData {
+    fn clone(&self) -> Self {
+        Self {
+            ptr: Cell::new(self.ptr.get()),
+            cmp: Cell::new(self.cmp.get()),
+            new_val: Cell::new(self.new_val.get()),
+            align: self.align,
+            success_ordering: self.success_ordering,
+            failure_ordering: self.failure_ordering,
+            sync_scope: self.sync_scope.clone(),
+            weak: self.weak,
+            volatile: self.volatile,
+        }
+    }
+}
+impl PartialEq for AtomicCmpXchgInstData {
+    fn eq(&self, other: &Self) -> bool {
+        self.ptr.get() == other.ptr.get()
+            && self.cmp.get() == other.cmp.get()
+            && self.new_val.get() == other.new_val.get()
+            && self.align == other.align
+            && self.success_ordering == other.success_ordering
+            && self.failure_ordering == other.failure_ordering
+            && self.sync_scope == other.sync_scope
+            && self.weak == other.weak
+            && self.volatile == other.volatile
+    }
+}
+impl Eq for AtomicCmpXchgInstData {}
+impl core::hash::Hash for AtomicCmpXchgInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.ptr.get().hash(h);
+        self.cmp.get().hash(h);
+        self.new_val.get().hash(h);
+        self.align.hash(h);
+        self.success_ordering.hash(h);
+        self.failure_ordering.hash(h);
+        self.sync_scope.hash(h);
+        self.weak.hash(h);
+        self.volatile.hash(h);
+    }
+}
+
+/// Storage payload for `atomicrmw`. Mirrors `AtomicRMWInst`
+/// (`Instructions.h`).
+#[derive(Debug)]
+pub(crate) struct AtomicRMWInstData {
+    pub(crate) op: crate::atomicrmw_binop::AtomicRMWBinOp,
+    pub(crate) ptr: Cell<ValueId>,
+    pub(crate) value: Cell<ValueId>,
+    pub(crate) align: crate::align::MaybeAlign,
+    pub(crate) ordering: crate::atomic_ordering::AtomicOrdering,
+    pub(crate) sync_scope: crate::sync_scope::SyncScope,
+    pub(crate) volatile: bool,
+}
+
+impl AtomicRMWInstData {
+    pub(crate) fn new(
+        op: crate::atomicrmw_binop::AtomicRMWBinOp,
+        ptr: ValueId,
+        value: ValueId,
+        config: crate::instr_types::AtomicRMWConfig,
+    ) -> Self {
+        Self {
+            op,
+            ptr: Cell::new(ptr),
+            value: Cell::new(value),
+            align: config.align,
+            ordering: config.ordering,
+            sync_scope: config.sync_scope,
+            volatile: config.flags.volatile,
+        }
+    }
+}
+impl Clone for AtomicRMWInstData {
+    fn clone(&self) -> Self {
+        Self {
+            op: self.op,
+            ptr: Cell::new(self.ptr.get()),
+            value: Cell::new(self.value.get()),
+            align: self.align,
+            ordering: self.ordering,
+            sync_scope: self.sync_scope.clone(),
+            volatile: self.volatile,
+        }
+    }
+}
+impl PartialEq for AtomicRMWInstData {
+    fn eq(&self, other: &Self) -> bool {
+        self.op == other.op
+            && self.ptr.get() == other.ptr.get()
+            && self.value.get() == other.value.get()
+            && self.align == other.align
+            && self.ordering == other.ordering
+            && self.sync_scope == other.sync_scope
+            && self.volatile == other.volatile
+    }
+}
+impl Eq for AtomicRMWInstData {}
+impl core::hash::Hash for AtomicRMWInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.op.hash(h);
+        self.ptr.get().hash(h);
+        self.value.get().hash(h);
+        self.align.hash(h);
+        self.ordering.hash(h);
+        self.sync_scope.hash(h);
+        self.volatile.hash(h);
+    }
+}
+
+/// Flags for `cmpxchg`. Mirrors `AtomicCmpXchgInst::isWeak` /
+/// `isVolatile`. Default is non-weak, non-volatile.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct CmpXchgFlags {
+    pub(crate) weak: bool,
+    pub(crate) volatile: bool,
+}
+
+impl CmpXchgFlags {
+    /// Default flags: not weak, not volatile.
+    #[inline]
+    pub const fn new() -> Self {
+        Self {
+            weak: false,
+            volatile: false,
+        }
+    }
+    /// Set the `weak` flag (mirrors `cmpxchg weak ...`).
+    #[inline]
+    #[must_use]
+    pub const fn weak(mut self) -> Self {
+        self.weak = true;
+        self
+    }
+    /// Set the `volatile` flag.
+    #[inline]
+    #[must_use]
+    pub const fn volatile(mut self) -> Self {
+        self.volatile = true;
+        self
+    }
+}
+
+/// Flags for `atomicrmw`. Mirrors `AtomicRMWInst::isVolatile`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct AtomicRMWFlags {
+    pub(crate) volatile: bool,
+}
+
+impl AtomicRMWFlags {
+    #[inline]
+    pub const fn new() -> Self {
+        Self { volatile: false }
+    }
+    #[inline]
+    #[must_use]
+    pub const fn volatile(mut self) -> Self {
+        self.volatile = true;
+        self
+    }
+}
+
+// --------------------------------------------------------------------------
+// Variable-arity terminators: switch / indirectbr
+// --------------------------------------------------------------------------
+
+/// Storage payload for `switch`. Mirrors `SwitchInst`
+/// (`Instructions.h`). The case list is mutable through the
+/// [`Open`](crate::term_open_state::Open)-typestate handle's
+/// `add_case` method (Doctrine D1); storage uses [`RefCell`] so the
+/// mutation goes through `&self`.
+#[derive(Debug)]
+pub(crate) struct SwitchInstData {
+    pub(crate) cond: Cell<ValueId>,
+    pub(crate) default_bb: Cell<ValueId>,
+    /// Each entry is `(case_value_id, dest_bb_id)`. Mirrors the
+    /// `(Constant, BB)` pairs in `SwitchInst::Case`.
+    pub(crate) cases: core::cell::RefCell<Vec<(Cell<ValueId>, ValueId)>>,
+}
+
+impl SwitchInstData {
+    pub(crate) fn new(cond: ValueId, default_bb: ValueId) -> Self {
+        Self {
+            cond: Cell::new(cond),
+            default_bb: Cell::new(default_bb),
+            cases: core::cell::RefCell::new(Vec::new()),
+        }
+    }
+}
+impl Clone for SwitchInstData {
+    fn clone(&self) -> Self {
+        Self {
+            cond: Cell::new(self.cond.get()),
+            default_bb: Cell::new(self.default_bb.get()),
+            cases: core::cell::RefCell::new(
+                self.cases
+                    .borrow()
+                    .iter()
+                    .map(|(v, b)| (Cell::new(v.get()), *b))
+                    .collect(),
+            ),
+        }
+    }
+}
+impl PartialEq for SwitchInstData {
+    fn eq(&self, other: &Self) -> bool {
+        if self.cond.get() != other.cond.get() || self.default_bb.get() != other.default_bb.get() {
+            return false;
+        }
+        let a = self.cases.borrow();
+        let b = other.cases.borrow();
+        a.len() == b.len()
+            && a.iter()
+                .zip(b.iter())
+                .all(|((va, ba), (vb, bbid))| va.get() == vb.get() && ba == bbid)
+    }
+}
+impl Eq for SwitchInstData {}
+impl core::hash::Hash for SwitchInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.cond.get().hash(h);
+        self.default_bb.get().hash(h);
+        for (v, b) in self.cases.borrow().iter() {
+            v.get().hash(h);
+            b.hash(h);
+        }
+    }
+}
+
+/// Storage payload for `indirectbr`. Mirrors `IndirectBrInst`
+/// (`Instructions.h`). Destinations are mutable through the
+/// [`Open`](crate::term_open_state::Open)-typestate handle's
+/// `add_destination` method.
+#[derive(Debug)]
+pub(crate) struct IndirectBrInstData {
+    pub(crate) addr: Cell<ValueId>,
+    pub(crate) destinations: core::cell::RefCell<Vec<ValueId>>,
+}
+
+impl IndirectBrInstData {
+    pub(crate) fn new(addr: ValueId) -> Self {
+        Self {
+            addr: Cell::new(addr),
+            destinations: core::cell::RefCell::new(Vec::new()),
+        }
+    }
+}
+impl Clone for IndirectBrInstData {
+    fn clone(&self) -> Self {
+        Self {
+            addr: Cell::new(self.addr.get()),
+            destinations: core::cell::RefCell::new(self.destinations.borrow().clone()),
+        }
+    }
+}
+impl PartialEq for IndirectBrInstData {
+    fn eq(&self, other: &Self) -> bool {
+        self.addr.get() == other.addr.get()
+            && *self.destinations.borrow() == *other.destinations.borrow()
+    }
+}
+impl Eq for IndirectBrInstData {}
+impl core::hash::Hash for IndirectBrInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.addr.get().hash(h);
+        for d in self.destinations.borrow().iter() {
+            d.hash(h);
+        }
+    }
+}
+
+// --------------------------------------------------------------------------
+// EH-call terminators: invoke / callbr
+// --------------------------------------------------------------------------
+
+/// Storage payload for `invoke`. Mirrors `InvokeInst`
+/// (`Instructions.h`). Layout reuses the call-site shape from
+/// [`CallInstData`] plus the normal/unwind destination block ids.
+#[derive(Debug)]
+pub(crate) struct InvokeInstData {
+    pub(crate) callee: Cell<ValueId>,
+    pub(crate) fn_ty: crate::r#type::TypeId,
+    pub(crate) args: Box<[Cell<ValueId>]>,
+    pub(crate) calling_conv: crate::CallingConv,
+    pub(crate) normal_dest: Cell<ValueId>,
+    pub(crate) unwind_dest: Cell<ValueId>,
+}
+
+impl InvokeInstData {
+    pub(crate) fn new(
+        callee: ValueId,
+        fn_ty: crate::r#type::TypeId,
+        args: impl IntoIterator<Item = ValueId>,
+        calling_conv: crate::CallingConv,
+        normal_dest: ValueId,
+        unwind_dest: ValueId,
+    ) -> Self {
+        Self {
+            callee: Cell::new(callee),
+            fn_ty,
+            args: args.into_iter().map(Cell::new).collect(),
+            calling_conv,
+            normal_dest: Cell::new(normal_dest),
+            unwind_dest: Cell::new(unwind_dest),
+        }
+    }
+}
+impl Clone for InvokeInstData {
+    fn clone(&self) -> Self {
+        Self {
+            callee: Cell::new(self.callee.get()),
+            fn_ty: self.fn_ty,
+            args: self.args.iter().map(|c| Cell::new(c.get())).collect(),
+            calling_conv: self.calling_conv,
+            normal_dest: Cell::new(self.normal_dest.get()),
+            unwind_dest: Cell::new(self.unwind_dest.get()),
+        }
+    }
+}
+impl PartialEq for InvokeInstData {
+    fn eq(&self, other: &Self) -> bool {
+        if self.callee.get() != other.callee.get()
+            || self.fn_ty != other.fn_ty
+            || self.calling_conv != other.calling_conv
+            || self.normal_dest.get() != other.normal_dest.get()
+            || self.unwind_dest.get() != other.unwind_dest.get()
+            || self.args.len() != other.args.len()
+        {
+            return false;
+        }
+        self.args
+            .iter()
+            .zip(other.args.iter())
+            .all(|(a, b)| a.get() == b.get())
+    }
+}
+impl Eq for InvokeInstData {}
+impl core::hash::Hash for InvokeInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.callee.get().hash(h);
+        self.fn_ty.hash(h);
+        for arg in self.args.iter() {
+            arg.get().hash(h);
+        }
+        self.calling_conv.hash(h);
+        self.normal_dest.get().hash(h);
+        self.unwind_dest.get().hash(h);
+    }
+}
+
+/// Storage payload for `callbr`. Mirrors `CallBrInst`
+/// (`Instructions.h`). The default destination is the fallthrough
+/// block; the indirect destinations are the asm-listed labels.
+#[derive(Debug)]
+pub(crate) struct CallBrInstData {
+    pub(crate) callee: Cell<ValueId>,
+    pub(crate) fn_ty: crate::r#type::TypeId,
+    pub(crate) args: Box<[Cell<ValueId>]>,
+    pub(crate) calling_conv: crate::CallingConv,
+    pub(crate) default_dest: Cell<ValueId>,
+    pub(crate) indirect_dests: Box<[Cell<ValueId>]>,
+}
+
+impl CallBrInstData {
+    pub(crate) fn new(
+        callee: ValueId,
+        fn_ty: crate::r#type::TypeId,
+        args: impl IntoIterator<Item = ValueId>,
+        calling_conv: crate::CallingConv,
+        default_dest: ValueId,
+        indirect_dests: impl IntoIterator<Item = ValueId>,
+    ) -> Self {
+        Self {
+            callee: Cell::new(callee),
+            fn_ty,
+            args: args.into_iter().map(Cell::new).collect(),
+            calling_conv,
+            default_dest: Cell::new(default_dest),
+            indirect_dests: indirect_dests.into_iter().map(Cell::new).collect(),
+        }
+    }
+}
+impl Clone for CallBrInstData {
+    fn clone(&self) -> Self {
+        Self {
+            callee: Cell::new(self.callee.get()),
+            fn_ty: self.fn_ty,
+            args: self.args.iter().map(|c| Cell::new(c.get())).collect(),
+            calling_conv: self.calling_conv,
+            default_dest: Cell::new(self.default_dest.get()),
+            indirect_dests: self
+                .indirect_dests
+                .iter()
+                .map(|c| Cell::new(c.get()))
+                .collect(),
+        }
+    }
+}
+impl PartialEq for CallBrInstData {
+    fn eq(&self, other: &Self) -> bool {
+        if self.callee.get() != other.callee.get()
+            || self.fn_ty != other.fn_ty
+            || self.calling_conv != other.calling_conv
+            || self.default_dest.get() != other.default_dest.get()
+            || self.args.len() != other.args.len()
+            || self.indirect_dests.len() != other.indirect_dests.len()
+        {
+            return false;
+        }
+        self.args
+            .iter()
+            .zip(other.args.iter())
+            .all(|(a, b)| a.get() == b.get())
+            && self
+                .indirect_dests
+                .iter()
+                .zip(other.indirect_dests.iter())
+                .all(|(a, b)| a.get() == b.get())
+    }
+}
+impl Eq for CallBrInstData {}
+impl core::hash::Hash for CallBrInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.callee.get().hash(h);
+        self.fn_ty.hash(h);
+        for arg in self.args.iter() {
+            arg.get().hash(h);
+        }
+        self.calling_conv.hash(h);
+        self.default_dest.get().hash(h);
+        for d in self.indirect_dests.iter() {
+            d.get().hash(h);
+        }
+    }
+}
+
+// --------------------------------------------------------------------------
+// EH-data: landingpad / resume
+// --------------------------------------------------------------------------
+
+/// One clause of a `landingpad`. Mirrors `LandingPadInst::ClauseType`
+/// in `Instructions.h`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LandingPadClauseKind {
+    /// `catch <ty> <val>` --- a typeinfo. Mirrors
+    /// `LandingPadInst::ClauseType::Catch`.
+    Catch,
+    /// `filter <ty> <val>` --- an array constant of typeinfos.
+    /// Mirrors `LandingPadInst::ClauseType::Filter`.
+    Filter,
+}
+
+/// Storage payload for `landingpad`. Mirrors `LandingPadInst`
+/// (`Instructions.h`).
+///
+/// The result type lives in the host `ValueData::ty`. The clause list
+/// is mutable through the [`crate::term_open_state::Open`]-typestate
+/// handle's `add_clause` method.
+#[derive(Debug)]
+pub(crate) struct LandingPadInstData {
+    pub(crate) cleanup: core::cell::Cell<bool>,
+    pub(crate) clauses: core::cell::RefCell<Vec<(LandingPadClauseKind, Cell<ValueId>)>>,
+}
+
+impl LandingPadInstData {
+    pub(crate) fn new(cleanup: bool) -> Self {
+        Self {
+            cleanup: core::cell::Cell::new(cleanup),
+            clauses: core::cell::RefCell::new(Vec::new()),
+        }
+    }
+}
+impl Clone for LandingPadInstData {
+    fn clone(&self) -> Self {
+        Self {
+            cleanup: core::cell::Cell::new(self.cleanup.get()),
+            clauses: core::cell::RefCell::new(
+                self.clauses
+                    .borrow()
+                    .iter()
+                    .map(|(k, c)| (*k, Cell::new(c.get())))
+                    .collect(),
+            ),
+        }
+    }
+}
+impl PartialEq for LandingPadInstData {
+    fn eq(&self, other: &Self) -> bool {
+        if self.cleanup.get() != other.cleanup.get() {
+            return false;
+        }
+        let a = self.clauses.borrow();
+        let b = other.clauses.borrow();
+        a.len() == b.len()
+            && a.iter()
+                .zip(b.iter())
+                .all(|((ka, ca), (kb, cb))| ka == kb && ca.get() == cb.get())
+    }
+}
+impl Eq for LandingPadInstData {}
+impl core::hash::Hash for LandingPadInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.cleanup.get().hash(h);
+        for (k, c) in self.clauses.borrow().iter() {
+            k.hash(h);
+            c.get().hash(h);
+        }
+    }
+}
+
+/// Storage payload for `resume`. Mirrors `ResumeInst`
+/// (`Instructions.h`). Single SSA operand; no successors; terminator.
+#[derive(Debug)]
+pub(crate) struct ResumeInstData {
+    pub(crate) value: Cell<ValueId>,
+}
+
+impl ResumeInstData {
+    pub(crate) fn new(value: ValueId) -> Self {
+        Self {
+            value: Cell::new(value),
+        }
+    }
+}
+impl Clone for ResumeInstData {
+    fn clone(&self) -> Self {
+        Self {
+            value: Cell::new(self.value.get()),
+        }
+    }
+}
+impl PartialEq for ResumeInstData {
+    fn eq(&self, other: &Self) -> bool {
+        self.value.get() == other.value.get()
+    }
+}
+impl Eq for ResumeInstData {}
+impl core::hash::Hash for ResumeInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.value.get().hash(h);
+    }
+}
+
+// --------------------------------------------------------------------------
+// Funclet ops: cleanuppad / cleanupret / catchpad / catchret / catchswitch
+// --------------------------------------------------------------------------
+
+/// Storage payload for `cleanuppad`. Mirrors `CleanupPadInst`
+/// (`Instructions.h`). The result is a `token`-typed value.
+#[derive(Debug)]
+pub(crate) struct CleanupPadInstData {
+    pub(crate) parent_pad: Cell<Option<ValueId>>,
+    pub(crate) args: Box<[Cell<ValueId>]>,
+}
+
+impl CleanupPadInstData {
+    pub(crate) fn new(
+        parent_pad: Option<ValueId>,
+        args: impl IntoIterator<Item = ValueId>,
+    ) -> Self {
+        Self {
+            parent_pad: Cell::new(parent_pad),
+            args: args.into_iter().map(Cell::new).collect(),
+        }
+    }
+}
+impl Clone for CleanupPadInstData {
+    fn clone(&self) -> Self {
+        Self {
+            parent_pad: Cell::new(self.parent_pad.get()),
+            args: self.args.iter().map(|c| Cell::new(c.get())).collect(),
+        }
+    }
+}
+impl PartialEq for CleanupPadInstData {
+    fn eq(&self, other: &Self) -> bool {
+        if self.parent_pad.get() != other.parent_pad.get() || self.args.len() != other.args.len() {
+            return false;
+        }
+        self.args
+            .iter()
+            .zip(other.args.iter())
+            .all(|(a, b)| a.get() == b.get())
+    }
+}
+impl Eq for CleanupPadInstData {}
+impl core::hash::Hash for CleanupPadInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.parent_pad.get().hash(h);
+        for arg in self.args.iter() {
+            arg.get().hash(h);
+        }
+    }
+}
+
+/// Storage payload for `catchpad`. Mirrors `CatchPadInst`
+/// (`Instructions.h`). Same shape as [`CleanupPadInstData`] but the
+/// parent must be a `catchswitch` (verifier rule).
+#[derive(Debug)]
+pub(crate) struct CatchPadInstData {
+    pub(crate) parent_pad: Cell<Option<ValueId>>,
+    pub(crate) args: Box<[Cell<ValueId>]>,
+}
+
+impl CatchPadInstData {
+    pub(crate) fn new(
+        parent_pad: Option<ValueId>,
+        args: impl IntoIterator<Item = ValueId>,
+    ) -> Self {
+        Self {
+            parent_pad: Cell::new(parent_pad),
+            args: args.into_iter().map(Cell::new).collect(),
+        }
+    }
+}
+impl Clone for CatchPadInstData {
+    fn clone(&self) -> Self {
+        Self {
+            parent_pad: Cell::new(self.parent_pad.get()),
+            args: self.args.iter().map(|c| Cell::new(c.get())).collect(),
+        }
+    }
+}
+impl PartialEq for CatchPadInstData {
+    fn eq(&self, other: &Self) -> bool {
+        if self.parent_pad.get() != other.parent_pad.get() || self.args.len() != other.args.len() {
+            return false;
+        }
+        self.args
+            .iter()
+            .zip(other.args.iter())
+            .all(|(a, b)| a.get() == b.get())
+    }
+}
+impl Eq for CatchPadInstData {}
+impl core::hash::Hash for CatchPadInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.parent_pad.get().hash(h);
+        for arg in self.args.iter() {
+            arg.get().hash(h);
+        }
+    }
+}
+
+/// Storage payload for `catchret`. Mirrors `CatchReturnInst`
+/// (`Instructions.h`).
+#[derive(Debug, Clone)]
+pub(crate) struct CatchReturnInstData {
+    pub(crate) catch_pad: Cell<ValueId>,
+    pub(crate) target_bb: ValueId,
+}
+
+impl CatchReturnInstData {
+    pub(crate) fn new(catch_pad: ValueId, target_bb: ValueId) -> Self {
+        Self {
+            catch_pad: Cell::new(catch_pad),
+            target_bb,
+        }
+    }
+}
+impl PartialEq for CatchReturnInstData {
+    fn eq(&self, other: &Self) -> bool {
+        self.catch_pad.get() == other.catch_pad.get() && self.target_bb == other.target_bb
+    }
+}
+impl Eq for CatchReturnInstData {}
+impl core::hash::Hash for CatchReturnInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.catch_pad.get().hash(h);
+        self.target_bb.hash(h);
+    }
+}
+
+/// Storage payload for `cleanupret`. Mirrors `CleanupReturnInst`
+/// (`Instructions.h`). `unwind_dest = None` represents `unwind to
+/// caller`; `Some(bb_id)` is `unwind label %bb`.
+#[derive(Debug, Clone)]
+pub(crate) struct CleanupReturnInstData {
+    pub(crate) cleanup_pad: Cell<ValueId>,
+    pub(crate) unwind_dest: Option<ValueId>,
+}
+
+impl CleanupReturnInstData {
+    pub(crate) fn new(cleanup_pad: ValueId, unwind_dest: Option<ValueId>) -> Self {
+        Self {
+            cleanup_pad: Cell::new(cleanup_pad),
+            unwind_dest,
+        }
+    }
+}
+impl PartialEq for CleanupReturnInstData {
+    fn eq(&self, other: &Self) -> bool {
+        self.cleanup_pad.get() == other.cleanup_pad.get() && self.unwind_dest == other.unwind_dest
+    }
+}
+impl Eq for CleanupReturnInstData {}
+impl core::hash::Hash for CleanupReturnInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.cleanup_pad.get().hash(h);
+        self.unwind_dest.hash(h);
+    }
+}
+
+/// Storage payload for `catchswitch`. Mirrors `CatchSwitchInst`
+/// (`Instructions.h`). Variable-arity (handlers).
+#[derive(Debug)]
+pub(crate) struct CatchSwitchInstData {
+    pub(crate) parent_pad: Cell<Option<ValueId>>,
+    pub(crate) unwind_dest: Cell<Option<ValueId>>,
+    pub(crate) handlers: core::cell::RefCell<Vec<ValueId>>,
+}
+
+impl CatchSwitchInstData {
+    pub(crate) fn new(parent_pad: Option<ValueId>, unwind_dest: Option<ValueId>) -> Self {
+        Self {
+            parent_pad: Cell::new(parent_pad),
+            unwind_dest: Cell::new(unwind_dest),
+            handlers: core::cell::RefCell::new(Vec::new()),
+        }
+    }
+}
+impl Clone for CatchSwitchInstData {
+    fn clone(&self) -> Self {
+        Self {
+            parent_pad: Cell::new(self.parent_pad.get()),
+            unwind_dest: Cell::new(self.unwind_dest.get()),
+            handlers: core::cell::RefCell::new(self.handlers.borrow().clone()),
+        }
+    }
+}
+impl PartialEq for CatchSwitchInstData {
+    fn eq(&self, other: &Self) -> bool {
+        self.parent_pad.get() == other.parent_pad.get()
+            && self.unwind_dest.get() == other.unwind_dest.get()
+            && *self.handlers.borrow() == *other.handlers.borrow()
+    }
+}
+impl Eq for CatchSwitchInstData {}
+impl core::hash::Hash for CatchSwitchInstData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.parent_pad.get().hash(h);
+        self.unwind_dest.get().hash(h);
+        for h_id in self.handlers.borrow().iter() {
+            h_id.hash(h);
+        }
+    }
+}
+
+/// Bundled configuration for [`crate::IRBuilder::build_atomic_cmpxchg`].
+/// Mirrors the per-instruction state stored on `AtomicCmpXchgInst`
+/// (orderings + scope + flags + alignment).
+#[derive(Debug, Clone)]
+pub struct AtomicCmpXchgConfig {
+    pub success_ordering: crate::atomic_ordering::AtomicOrdering,
+    pub failure_ordering: crate::atomic_ordering::AtomicOrdering,
+    pub sync_scope: crate::sync_scope::SyncScope,
+    pub flags: CmpXchgFlags,
+    pub align: crate::align::MaybeAlign,
+}
+
+/// Bundled configuration for [`crate::IRBuilder::build_atomicrmw`].
+/// Mirrors the per-instruction state stored on `AtomicRMWInst`.
+#[derive(Debug, Clone)]
+pub struct AtomicRMWConfig {
+    pub ordering: crate::atomic_ordering::AtomicOrdering,
+    pub sync_scope: crate::sync_scope::SyncScope,
+    pub flags: AtomicRMWFlags,
+    pub align: crate::align::MaybeAlign,
 }

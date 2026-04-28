@@ -43,7 +43,9 @@ The repo is a Cargo workspace at `C:/Users/Aslan/llvmkit/`. Implemented today:
 - **CallInst Typed Return (T3)**: [`crate::CallInst<'ctx, R>`] gains a `R: ReturnMarker` parameter (default [`Dyn`]) that propagates the callee's return shape. `IRBuilder::build_call(callee: FunctionValue<'ctx, R>, ...)` returns `CallInst<'ctx, R>`; per-marker accessors (`return_int_value`, `return_float_value`, `return_pointer_value`) are gated to the matching marker so `CallInst<'ctx, ()>` exposes neither -- the runtime narrowing on `return_value() -> Option<Value>` is gone for typed call sites.
 - **Aggregate Typing scaffolding (T4)**: [`crate::StructType<'ctx, B>`] gains a `B: StructBodyState` parameter (default [`StructBodyDyn`]) with `Opaque` / `BodySet` / `StructBodyDyn` markers. [`Module::opaque_struct(name) -> StructType<Opaque>`] and [`Module::set_struct_body_typed(opaque) -> StructType<BodySet>`] gate the body-set transition at the type level; the existing runtime-checked `set_struct_body` path stays for parsed / legacy code. Sealed-trait scaffolding for [`crate::VectorElement`] (`vector_element.rs` -- mirrors `VectorType::isValidElementType`) and [`crate::SizedElement`] (`sized_element.rs` -- mirrors `ArrayType::isValidElementType`) is in place; the const-generic parameterisation of [`crate::VectorType`] / [`crate::ArrayType`] (`<E, const N>`) is deferred to a later session because it touches every `m.array_type(elem, n)` / `m.vector_type(elem, n, scalable)` call site.
 
-Still ahead: parser, const-generic `VectorType<E, const N: u32, Scalable>` / `ArrayType<E, const N: u64>` (T4 follow-up; the sealed-trait scaffolding ships today), pass infrastructure, transforms, bitcode, switch / atomic / aggregate / vector ops, debug info, intrinsics.
+- **Parser-1: full instruction set (Session 1)**. Every opcode the `.ll` parser will need is shipped end-to-end (handle struct, payload, exhaustive operand walker arm per Doctrine D5, IRBuilder method, AsmWriter byte-for-byte parity, verifier `visit_*` arm). The 21 new instruction families: `fneg` (with FMF), `freeze`, `va_arg`; `extractvalue`/`insertvalue` (compile-time `u32` index lists); `extractelement`/`insertelement`/`shufflevector` (`shufflevector` mask is `Box<[i32]>` with `POISON_MASK_ELEM = -1`); `fence`/`cmpxchg`/`atomicrmw` (with new `AtomicOrdering`/`SyncScope`/`AtomicRMWBinOp` support modules and `AtomicCmpXchgConfig`/`AtomicRMWConfig` flag-bag structs); `switch`/`indirectbr` (Open/Closed typestate via new `term_open_state` mod, mirrors `phi_state`); `invoke<R>`/`callbr` (`InvokeInst<R>` mirrors `CallInst<R>` typed-return); `landingpad` (Open/Closed; `add_catch_clause`/`add_filter_clause`/`set_cleanup`)/`resume`; `cleanuppad`/`catchpad`/`catchret`/`cleanupret`/`catchswitch` (funclet pads with `Option<ValueId>` parent-pad slot for `within none`).
+
+Still ahead: parser, const-generic `VectorType<E, const N: u32, Scalable>` / `ArrayType<E, const N: u64>` (T4 follow-up; the sealed-trait scaffolding ships today), brand-based module identity (Doctrine D7 follow-up), DominatorTree + cross-block dominance verifier, pass infrastructure, transforms, bitcode, debug info, intrinsics.
 
 Workspace shape (see each crate's `Cargo.toml` for details):
 
@@ -195,7 +197,9 @@ sessions):
     │   │       └── no_folder.rs     # no-op folder
     │   ├── examples/
     │   │   ├── build_add_function.rs # cargo run --example build_add_function
-    │   │   └── cpu_state_add.rs     # multi-fn / params / unnamed_addr / trunc demo
+    │   │   ├── cpu_state_add.rs     # multi-fn / params / unnamed_addr / trunc demo
+    │   │   ├── factorial.rs         # phi + br + icmp + mul + sub loop demo
+    │   │   └── concurrent_counter.rs # fence + atomicrmw + switch (Open/Closed) demo
     │   └── tests/
     │       ├── asm_writer_basic.rs
     │       ├── cpu_state_add_example.rs

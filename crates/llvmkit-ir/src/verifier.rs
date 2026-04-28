@@ -261,6 +261,30 @@ impl<'ctx> Verifier<'ctx> {
             InstructionKindData::Phi(p) => self.check_phi(f, bb, inst, p, cx.predecessors),
             InstructionKindData::Ret(r) => self.check_ret(f, bb, inst, r),
             InstructionKindData::Br(b) => self.check_br(f, bb, inst, b, cx.block_index),
+            InstructionKindData::FNeg(u) => self.check_fneg(f, bb, inst, u),
+            InstructionKindData::Freeze(u) => self.check_freeze(f, bb, inst, u),
+            InstructionKindData::VAArg(u) => self.check_va_arg(f, bb, inst, u),
+            InstructionKindData::ExtractValue(d) => self.check_extract_value(f, bb, inst, d),
+            InstructionKindData::InsertValue(d) => self.check_insert_value(f, bb, inst, d),
+            InstructionKindData::ExtractElement(d) => self.check_extract_element(f, bb, inst, d),
+            InstructionKindData::InsertElement(d) => self.check_insert_element(f, bb, inst, d),
+            InstructionKindData::ShuffleVector(d) => self.check_shuffle_vector(f, bb, inst, d),
+            InstructionKindData::Fence(d) => self.check_fence(f, bb, inst, d),
+            InstructionKindData::AtomicCmpXchg(d) => self.check_cmpxchg(f, bb, inst, d),
+            InstructionKindData::AtomicRMW(d) => self.check_atomicrmw(f, bb, inst, d),
+            InstructionKindData::Switch(d) => self.check_switch(f, bb, inst, d, cx.block_index),
+            InstructionKindData::IndirectBr(d) => {
+                self.check_indirectbr(f, bb, inst, d, cx.block_index)
+            }
+            InstructionKindData::Invoke(d) => self.check_invoke(f, bb, inst, d, cx.block_index),
+            InstructionKindData::CallBr(d) => self.check_callbr(f, bb, inst, d, cx.block_index),
+            InstructionKindData::LandingPad(_) => Ok(()),
+            InstructionKindData::Resume(_) => Ok(()),
+            InstructionKindData::CleanupPad(_)
+            | InstructionKindData::CatchPad(_)
+            | InstructionKindData::CatchReturn(_)
+            | InstructionKindData::CleanupReturn(_)
+            | InstructionKindData::CatchSwitch(_) => Ok(()),
             InstructionKindData::Unreachable(_) => Ok(()),
         }
     }
@@ -359,6 +383,529 @@ impl<'ctx> Verifier<'ctx> {
                     "result {} != operand {}",
                     self.type_label(inst.ty().id),
                     self.type_label(lhs_ty)
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `Verifier::visitFNeg`. The `fneg` opcode produces an FP value
+    /// whose type matches the operand type.
+    fn check_fneg(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        inst: &Instruction<'ctx>,
+        u: &crate::instr_types::FNegInstData,
+    ) -> IrResult<()> {
+        let src_ty = self.value_type(u.src.get());
+        if !is_fp_or_fp_vector(self.module, src_ty) {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::FNegTypeMismatch,
+                format!(
+                    "operand type {} is not floating-point",
+                    self.type_label(src_ty)
+                ),
+            ));
+        }
+        if inst.ty().id != src_ty {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::FNegTypeMismatch,
+                format!(
+                    "result {} != operand {}",
+                    self.type_label(inst.ty().id),
+                    self.type_label(src_ty)
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `Verifier::visitFreeze`. The result type must match the operand
+    /// type. Operand type is otherwise unconstrained (LangRef permits
+    /// any first-class type except aggregates of tokens).
+    fn check_freeze(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        inst: &Instruction<'ctx>,
+        u: &crate::instr_types::FreezeInstData,
+    ) -> IrResult<()> {
+        let src_ty = self.value_type(u.src.get());
+        if inst.ty().id != src_ty {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::FreezeTypeMismatch,
+                format!(
+                    "result {} != operand {}",
+                    self.type_label(inst.ty().id),
+                    self.type_label(src_ty)
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `Verifier::visitVAArgInst`. The source operand must be a
+    /// pointer to a `va_list`; the destination type is independent.
+    fn check_va_arg(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        _inst: &Instruction<'ctx>,
+        u: &crate::instr_types::VAArgInstData,
+    ) -> IrResult<()> {
+        let src_ty = self.value_type(u.src.get());
+        if !self.module.context().type_data(src_ty).is_pointer_data() {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::VAArgNonPointerOperand,
+                format!("va_arg source {} is not a pointer", self.type_label(src_ty)),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `Verifier::visitExtractValueInst`. Walks the aggregate type by
+    /// the index list and checks the leaf matches the result.
+    fn check_extract_value(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        inst: &Instruction<'ctx>,
+        d: &crate::instr_types::ExtractValueInstData,
+    ) -> IrResult<()> {
+        let agg_ty = self.value_type(d.aggregate.get());
+        let leaf_ty =
+            walk_aggregate_path(self.module, agg_ty, &d.indices).map_err(|e| match e {
+                AggWalkErr::NotAggregate(at) => self.fail(
+                    f,
+                    bb,
+                    VerifierRule::AggregateOpNonAggregate,
+                    format!("operand type {} is not aggregate", self.type_label(at)),
+                ),
+                AggWalkErr::OutOfRange { idx, count } => self.fail(
+                    f,
+                    bb,
+                    VerifierRule::AggregateIndexOutOfRange,
+                    format!("index {idx} >= {count}"),
+                ),
+            })?;
+        if inst.ty().id != leaf_ty {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::AggregateOpNonAggregate,
+                format!(
+                    "result {} != leaf {}",
+                    self.type_label(inst.ty().id),
+                    self.type_label(leaf_ty)
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `Verifier::visitInsertValueInst`.
+    fn check_insert_value(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        inst: &Instruction<'ctx>,
+        d: &crate::instr_types::InsertValueInstData,
+    ) -> IrResult<()> {
+        let agg_ty = self.value_type(d.aggregate.get());
+        let val_ty = self.value_type(d.value.get());
+        let leaf_ty =
+            walk_aggregate_path(self.module, agg_ty, &d.indices).map_err(|e| match e {
+                AggWalkErr::NotAggregate(at) => self.fail(
+                    f,
+                    bb,
+                    VerifierRule::AggregateOpNonAggregate,
+                    format!("operand type {} is not aggregate", self.type_label(at)),
+                ),
+                AggWalkErr::OutOfRange { idx, count } => self.fail(
+                    f,
+                    bb,
+                    VerifierRule::AggregateIndexOutOfRange,
+                    format!("index {idx} >= {count}"),
+                ),
+            })?;
+        if val_ty != leaf_ty {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::InsertValueLeafTypeMismatch,
+                format!(
+                    "inserted value {} != leaf {}",
+                    self.type_label(val_ty),
+                    self.type_label(leaf_ty)
+                ),
+            ));
+        }
+        if inst.ty().id != agg_ty {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::InsertValueLeafTypeMismatch,
+                format!(
+                    "result {} != aggregate {}",
+                    self.type_label(inst.ty().id),
+                    self.type_label(agg_ty)
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `Verifier::visitExtractElementInst`. Vector operand element type
+    /// must equal the result type; the index must be integer-typed.
+    fn check_extract_element(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        inst: &Instruction<'ctx>,
+        d: &crate::instr_types::ExtractElementInstData,
+    ) -> IrResult<()> {
+        let vec_ty = self.value_type(d.vector.get());
+        let idx_ty = self.value_type(d.index.get());
+        let elem = match self.module.context().type_data(vec_ty).as_vector() {
+            Some((e, _, _)) => e,
+            None => {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::VectorElementOpTypeMismatch,
+                    format!("vector operand {} is not a vector", self.type_label(vec_ty)),
+                ));
+            }
+        };
+        if self
+            .module
+            .context()
+            .type_data(idx_ty)
+            .as_integer()
+            .is_none()
+        {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::VectorElementOpTypeMismatch,
+                format!("index {} is not an integer", self.type_label(idx_ty)),
+            ));
+        }
+        if inst.ty().id != elem {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::VectorElementOpTypeMismatch,
+                format!(
+                    "result {} != element {}",
+                    self.type_label(inst.ty().id),
+                    self.type_label(elem)
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `Verifier::visitInsertElementInst`.
+    fn check_insert_element(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        inst: &Instruction<'ctx>,
+        d: &crate::instr_types::InsertElementInstData,
+    ) -> IrResult<()> {
+        let vec_ty = self.value_type(d.vector.get());
+        let val_ty = self.value_type(d.value.get());
+        let idx_ty = self.value_type(d.index.get());
+        let elem = match self.module.context().type_data(vec_ty).as_vector() {
+            Some((e, _, _)) => e,
+            None => {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::VectorElementOpTypeMismatch,
+                    format!("vector operand {} is not a vector", self.type_label(vec_ty)),
+                ));
+            }
+        };
+        if val_ty != elem {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::VectorElementOpTypeMismatch,
+                format!(
+                    "inserted value {} != element {}",
+                    self.type_label(val_ty),
+                    self.type_label(elem)
+                ),
+            ));
+        }
+        if self
+            .module
+            .context()
+            .type_data(idx_ty)
+            .as_integer()
+            .is_none()
+        {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::VectorElementOpTypeMismatch,
+                format!("index {} is not an integer", self.type_label(idx_ty)),
+            ));
+        }
+        if inst.ty().id != vec_ty {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::VectorElementOpTypeMismatch,
+                format!(
+                    "result {} != vector {}",
+                    self.type_label(inst.ty().id),
+                    self.type_label(vec_ty)
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `Verifier::visitShuffleVectorInst`. Both vector operands must
+    /// agree on element type; the result is `<mask.len() x elem>`.
+    fn check_shuffle_vector(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        inst: &Instruction<'ctx>,
+        d: &crate::instr_types::ShuffleVectorInstData,
+    ) -> IrResult<()> {
+        let l_ty = self.value_type(d.lhs.get());
+        let r_ty = self.value_type(d.rhs.get());
+        let l_elem = match self.module.context().type_data(l_ty).as_vector() {
+            Some((e, _, _)) => e,
+            None => {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::ShuffleVectorTypeMismatch,
+                    format!("lhs {} is not a vector", self.type_label(l_ty)),
+                ));
+            }
+        };
+        let r_elem = match self.module.context().type_data(r_ty).as_vector() {
+            Some((e, _, _)) => e,
+            None => {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::ShuffleVectorTypeMismatch,
+                    format!("rhs {} is not a vector", self.type_label(r_ty)),
+                ));
+            }
+        };
+        if l_elem != r_elem {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::ShuffleVectorTypeMismatch,
+                format!(
+                    "lhs element {} != rhs element {}",
+                    self.type_label(l_elem),
+                    self.type_label(r_elem)
+                ),
+            ));
+        }
+        // Result type element should equal the operand element; result
+        // length should equal mask length. We compare via vector data.
+        match self.module.context().type_data(inst.ty().id).as_vector() {
+            Some((re, n, _)) => {
+                if re != l_elem || (n as usize) != d.mask.len() {
+                    return Err(self.fail(
+                        f,
+                        bb,
+                        VerifierRule::ShuffleVectorTypeMismatch,
+                        "result vector shape disagrees with operands or mask length".to_string(),
+                    ));
+                }
+            }
+            None => {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::ShuffleVectorTypeMismatch,
+                    format!("result {} is not a vector", self.type_label(inst.ty().id)),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// `Verifier::visitFenceInst`. The ordering must be one of
+    /// `acquire`/`release`/`acq_rel`/`seq_cst`.
+    fn check_fence(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        _inst: &Instruction<'ctx>,
+        d: &crate::instr_types::FenceInstData,
+    ) -> IrResult<()> {
+        use crate::atomic_ordering::AtomicOrdering as AO;
+        if !matches!(
+            d.ordering,
+            AO::Acquire | AO::Release | AO::AcquireRelease | AO::SequentiallyConsistent
+        ) {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::AtomicInvalidOrdering,
+                format!("fence ordering {} is invalid", d.ordering),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `Verifier::visitAtomicCmpXchgInst`. The pointer must be a
+    /// pointer; cmp / new value types must match; orderings must be at
+    /// least monotonic and the failure ordering must not be Release /
+    /// AcqRel.
+    fn check_cmpxchg(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        _inst: &Instruction<'ctx>,
+        d: &crate::instr_types::AtomicCmpXchgInstData,
+    ) -> IrResult<()> {
+        use crate::atomic_ordering::AtomicOrdering as AO;
+        let ptr_ty = self.value_type(d.ptr.get());
+        if !self.module.context().type_data(ptr_ty).is_pointer_data() {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::AtomicNonPointerOperand,
+                format!(
+                    "cmpxchg pointer {} is not a pointer",
+                    self.type_label(ptr_ty)
+                ),
+            ));
+        }
+        let cmp_ty = self.value_type(d.cmp.get());
+        let new_ty = self.value_type(d.new_val.get());
+        if cmp_ty != new_ty {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::AtomicRMWOperandTypeMismatch,
+                format!(
+                    "cmpxchg cmp {} != new {}",
+                    self.type_label(cmp_ty),
+                    self.type_label(new_ty)
+                ),
+            ));
+        }
+        let strong_enough = |o: AO| {
+            matches!(
+                o,
+                AO::Monotonic
+                    | AO::Acquire
+                    | AO::Release
+                    | AO::AcquireRelease
+                    | AO::SequentiallyConsistent
+            )
+        };
+        if !strong_enough(d.success_ordering) || !strong_enough(d.failure_ordering) {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::AtomicInvalidOrdering,
+                format!(
+                    "cmpxchg orderings ({}, {}) must be at least monotonic",
+                    d.success_ordering, d.failure_ordering
+                ),
+            ));
+        }
+        if matches!(d.failure_ordering, AO::Release | AO::AcquireRelease) {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::AtomicInvalidOrdering,
+                format!(
+                    "cmpxchg failure ordering {} cannot be Release/AcqRel",
+                    d.failure_ordering
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `Verifier::visitAtomicRMWInst`.
+    fn check_atomicrmw(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        inst: &Instruction<'ctx>,
+        d: &crate::instr_types::AtomicRMWInstData,
+    ) -> IrResult<()> {
+        use crate::atomic_ordering::AtomicOrdering as AO;
+        let ptr_ty = self.value_type(d.ptr.get());
+        if !self.module.context().type_data(ptr_ty).is_pointer_data() {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::AtomicNonPointerOperand,
+                format!(
+                    "atomicrmw pointer {} is not a pointer",
+                    self.type_label(ptr_ty)
+                ),
+            ));
+        }
+        let val_ty = self.value_type(d.value.get());
+        if d.op.is_fp_operation() && !is_fp_or_fp_vector(self.module, val_ty) {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::AtomicRMWOperandTypeMismatch,
+                format!(
+                    "atomicrmw {} operand {} is not floating-point",
+                    d.op.keyword(),
+                    self.type_label(val_ty)
+                ),
+            ));
+        }
+        if !matches!(
+            d.ordering,
+            AO::Monotonic
+                | AO::Acquire
+                | AO::Release
+                | AO::AcquireRelease
+                | AO::SequentiallyConsistent
+        ) {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::AtomicInvalidOrdering,
+                format!(
+                    "atomicrmw ordering {} must be at least monotonic",
+                    d.ordering
+                ),
+            ));
+        }
+        if inst.ty().id != val_ty {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::AtomicRMWOperandTypeMismatch,
+                format!(
+                    "atomicrmw result {} != value {}",
+                    self.type_label(inst.ty().id),
+                    self.type_label(val_ty)
                 ),
             ));
         }
@@ -1161,6 +1708,161 @@ impl<'ctx> Verifier<'ctx> {
         }
     }
 
+    /// `Verifier::visitSwitchInst`. The condition must be an integer
+    /// type; every case value must share that type; every successor
+    /// (default + cases) must belong to the parent function.
+    fn check_switch(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        _inst: &Instruction<'ctx>,
+        d: &crate::instr_types::SwitchInstData,
+        block_index: &HashMap<ValueId, usize>,
+    ) -> IrResult<()> {
+        let cond_ty = self.value_type(d.cond.get());
+        if self
+            .module
+            .context()
+            .type_data(cond_ty)
+            .as_integer()
+            .is_none()
+        {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::SwitchOperandTypeMismatch,
+                format!(
+                    "switch condition {} is not integer",
+                    self.type_label(cond_ty)
+                ),
+            ));
+        }
+        if !block_index.contains_key(&d.default_bb.get()) {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::PhiPredecessorMismatch,
+                "switch default target is not a basic block of the parent function".into(),
+            ));
+        }
+        for (case_v, case_bb) in d.cases.borrow().iter() {
+            let v_ty = self.value_type(case_v.get());
+            if v_ty != cond_ty {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::SwitchOperandTypeMismatch,
+                    format!(
+                        "switch case value {} != condition {}",
+                        self.type_label(v_ty),
+                        self.type_label(cond_ty)
+                    ),
+                ));
+            }
+            if !block_index.contains_key(case_bb) {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::PhiPredecessorMismatch,
+                    "switch case target is not a basic block of the parent function".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// `Verifier::visitIndirectBrInst`. The address operand must be a
+    /// pointer; every destination must belong to the parent function.
+    fn check_indirectbr(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        _inst: &Instruction<'ctx>,
+        d: &crate::instr_types::IndirectBrInstData,
+        block_index: &HashMap<ValueId, usize>,
+    ) -> IrResult<()> {
+        let addr_ty = self.value_type(d.addr.get());
+        if !self.module.context().type_data(addr_ty).is_pointer_data() {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::IndirectBrNonPointerAddress,
+                format!(
+                    "indirectbr address {} is not a pointer",
+                    self.type_label(addr_ty)
+                ),
+            ));
+        }
+        for &dest in d.destinations.borrow().iter() {
+            if !block_index.contains_key(&dest) {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::PhiPredecessorMismatch,
+                    "indirectbr destination is not a basic block of the parent function".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// `Verifier::visitInvokeInst`. Constructive subset: every
+    /// destination is a basic block of the parent function. Callee /
+    /// arg type checks reuse the same logic as [`Self::check_call`]
+    /// but specialised inline since the storage payload differs.
+    fn check_invoke(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        _inst: &Instruction<'ctx>,
+        d: &crate::instr_types::InvokeInstData,
+        block_index: &HashMap<ValueId, usize>,
+    ) -> IrResult<()> {
+        if !block_index.contains_key(&d.normal_dest.get())
+            || !block_index.contains_key(&d.unwind_dest.get())
+        {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::PhiPredecessorMismatch,
+                "invoke destination is not a basic block of the parent function".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `Verifier::visitCallBrInst`. Constructive subset: every
+    /// destination is a basic block of the parent function.
+    fn check_callbr(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        _inst: &Instruction<'ctx>,
+        d: &crate::instr_types::CallBrInstData,
+        block_index: &HashMap<ValueId, usize>,
+    ) -> IrResult<()> {
+        if !block_index.contains_key(&d.default_dest.get()) {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::PhiPredecessorMismatch,
+                "callbr default destination is not a basic block of the parent function".into(),
+            ));
+        }
+        for ic in d.indirect_dests.iter() {
+            if !block_index.contains_key(&ic.get()) {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::PhiPredecessorMismatch,
+                    "callbr indirect destination is not a basic block of the parent function"
+                        .into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// `Verifier::visitBranchInst`.
     fn check_br(
         &self,
@@ -1364,6 +2066,46 @@ fn is_int_or_int_vector(m: &Module<'_>, ty: TypeId) -> bool {
         return true;
     }
     false
+}
+
+enum AggWalkErr {
+    NotAggregate(TypeId),
+    OutOfRange { idx: u32, count: u32 },
+}
+
+fn walk_aggregate_path(
+    m: &Module<'_>,
+    root: TypeId,
+    indices: &[u32],
+) -> Result<TypeId, AggWalkErr> {
+    let mut cur = root;
+    for &idx in indices {
+        let d = m.context().type_data(cur);
+        match d {
+            TypeData::Array { elem, n } => {
+                let n_u32 = u32::try_from(*n).unwrap_or(u32::MAX);
+                if idx >= n_u32 {
+                    return Err(AggWalkErr::OutOfRange { idx, count: n_u32 });
+                }
+                cur = *elem;
+            }
+            TypeData::Struct(s) => {
+                let body = s.body.borrow();
+                match body.as_ref() {
+                    Some(b) => {
+                        let count = u32::try_from(b.elements.len()).unwrap_or(u32::MAX);
+                        if idx >= count {
+                            return Err(AggWalkErr::OutOfRange { idx, count });
+                        }
+                        cur = b.elements[idx as usize];
+                    }
+                    None => return Err(AggWalkErr::NotAggregate(cur)),
+                }
+            }
+            _ => return Err(AggWalkErr::NotAggregate(cur)),
+        }
+    }
+    Ok(cur)
 }
 
 fn is_fp_or_fp_vector(m: &Module<'_>, ty: TypeId) -> bool {

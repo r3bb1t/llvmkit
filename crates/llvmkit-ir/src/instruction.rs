@@ -88,6 +88,28 @@ pub(crate) enum InstructionKindData {
     Cast(CastOpData),
     ICmp(CmpInstData),
     Phi(PhiData),
+    FNeg(crate::instr_types::FNegInstData),
+    Freeze(crate::instr_types::FreezeInstData),
+    VAArg(crate::instr_types::VAArgInstData),
+    ExtractValue(crate::instr_types::ExtractValueInstData),
+    InsertValue(crate::instr_types::InsertValueInstData),
+    ExtractElement(crate::instr_types::ExtractElementInstData),
+    InsertElement(crate::instr_types::InsertElementInstData),
+    ShuffleVector(crate::instr_types::ShuffleVectorInstData),
+    Fence(crate::instr_types::FenceInstData),
+    AtomicCmpXchg(crate::instr_types::AtomicCmpXchgInstData),
+    AtomicRMW(crate::instr_types::AtomicRMWInstData),
+    Switch(crate::instr_types::SwitchInstData),
+    IndirectBr(crate::instr_types::IndirectBrInstData),
+    Invoke(crate::instr_types::InvokeInstData),
+    CallBr(crate::instr_types::CallBrInstData),
+    LandingPad(crate::instr_types::LandingPadInstData),
+    Resume(crate::instr_types::ResumeInstData),
+    CleanupPad(crate::instr_types::CleanupPadInstData),
+    CatchPad(crate::instr_types::CatchPadInstData),
+    CatchReturn(crate::instr_types::CatchReturnInstData),
+    CleanupReturn(crate::instr_types::CleanupReturnInstData),
+    CatchSwitch(crate::instr_types::CatchSwitchInstData),
     Ret(ReturnOpData),
     Br(BranchInstData),
     Unreachable(UnreachableInstData),
@@ -142,12 +164,66 @@ impl InstructionKindData {
                 BranchKind::Unconditional(_) => Vec::new(),
                 BranchKind::Conditional { cond, .. } => vec![cond.get()],
             },
+            Self::FNeg(u) => vec![u.src.get()],
+            Self::Freeze(u) => vec![u.src.get()],
+            Self::VAArg(u) => vec![u.src.get()],
+            Self::ExtractValue(e) => vec![e.aggregate.get()],
+            Self::InsertValue(i) => vec![i.aggregate.get(), i.value.get()],
+            Self::ExtractElement(e) => vec![e.vector.get(), e.index.get()],
+            Self::InsertElement(i) => vec![i.vector.get(), i.value.get(), i.index.get()],
+            Self::ShuffleVector(s) => vec![s.lhs.get(), s.rhs.get()],
+            Self::Fence(_) => Vec::new(),
+            Self::AtomicCmpXchg(c) => vec![c.ptr.get(), c.cmp.get(), c.new_val.get()],
+            Self::AtomicRMW(r) => vec![r.ptr.get(), r.value.get()],
+            Self::Switch(s) => {
+                let mut v = vec![s.cond.get()];
+                v.extend(s.cases.borrow().iter().map(|(c, _)| c.get()));
+                v
+            }
+            Self::IndirectBr(i) => vec![i.addr.get()],
+            Self::Invoke(c) => {
+                let mut v = vec![c.callee.get()];
+                v.extend(c.args.iter().map(|c| c.get()));
+                v
+            }
+            Self::CallBr(c) => {
+                let mut v = vec![c.callee.get()];
+                v.extend(c.args.iter().map(|c| c.get()));
+                v
+            }
+            Self::LandingPad(l) => l.clauses.borrow().iter().map(|(_, c)| c.get()).collect(),
+            Self::Resume(r) => vec![r.value.get()],
+            Self::CleanupPad(p) => {
+                let mut v: Vec<ValueId> = p.parent_pad.get().into_iter().collect();
+                v.extend(p.args.iter().map(|c| c.get()));
+                v
+            }
+            Self::CatchPad(p) => {
+                let mut v: Vec<ValueId> = p.parent_pad.get().into_iter().collect();
+                v.extend(p.args.iter().map(|c| c.get()));
+                v
+            }
+            Self::CatchReturn(r) => vec![r.catch_pad.get()],
+            Self::CleanupReturn(r) => vec![r.cleanup_pad.get()],
+            Self::CatchSwitch(s) => s.parent_pad.get().into_iter().collect(),
             Self::Unreachable(_) => Vec::new(),
         }
     }
-
     pub(crate) fn is_terminator(&self) -> bool {
-        matches!(self, Self::Ret(_) | Self::Br(_) | Self::Unreachable(_))
+        matches!(
+            self,
+            Self::Ret(_)
+                | Self::Br(_)
+                | Self::Unreachable(_)
+                | Self::Switch(_)
+                | Self::IndirectBr(_)
+                | Self::Resume(_)
+                | Self::Invoke(_)
+                | Self::CallBr(_)
+                | Self::CleanupReturn(_)
+                | Self::CatchReturn(_)
+                | Self::CatchSwitch(_)
+        )
     }
 }
 
@@ -379,8 +455,58 @@ impl<'ctx, S: state::InstructionState> Instruction<'ctx, S> {
             InstructionKindData::Phi(_) => Some(InstructionKind::Phi(
                 crate::instructions::PhiInst::from_raw(id, module, ty),
             )),
+            InstructionKindData::FNeg(_) => Some(InstructionKind::FNeg(
+                crate::instructions::FNegInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::Freeze(_) => Some(InstructionKind::Freeze(
+                crate::instructions::FreezeInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::VAArg(_) => Some(InstructionKind::VAArg(
+                crate::instructions::VAArgInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::ExtractValue(_) => Some(InstructionKind::ExtractValue(
+                crate::instructions::ExtractValueInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::InsertValue(_) => Some(InstructionKind::InsertValue(
+                crate::instructions::InsertValueInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::ExtractElement(_) => Some(InstructionKind::ExtractElement(
+                crate::instructions::ExtractElementInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::InsertElement(_) => Some(InstructionKind::InsertElement(
+                crate::instructions::InsertElementInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::ShuffleVector(_) => Some(InstructionKind::ShuffleVector(
+                crate::instructions::ShuffleVectorInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::Fence(_) => Some(InstructionKind::Fence(
+                crate::instructions::FenceInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::AtomicCmpXchg(_) => Some(InstructionKind::AtomicCmpXchg(
+                crate::instructions::AtomicCmpXchgInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::AtomicRMW(_) => Some(InstructionKind::AtomicRMW(
+                crate::instructions::AtomicRMWInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::LandingPad(_) => Some(InstructionKind::LandingPad(
+                crate::instructions::LandingPadInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::CleanupPad(_) => Some(InstructionKind::CleanupPad(
+                crate::instructions::CleanupPadInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::CatchPad(_) => Some(InstructionKind::CatchPad(
+                crate::instructions::CatchPadInst::from_raw(id, module, ty),
+            )),
             InstructionKindData::Ret(_)
             | InstructionKindData::Br(_)
+            | InstructionKindData::Switch(_)
+            | InstructionKindData::IndirectBr(_)
+            | InstructionKindData::Invoke(_)
+            | InstructionKindData::CallBr(_)
+            | InstructionKindData::Resume(_)
+            | InstructionKindData::CatchReturn(_)
+            | InstructionKindData::CleanupReturn(_)
+            | InstructionKindData::CatchSwitch(_)
             | InstructionKindData::Unreachable(_) => None,
         }
     }
@@ -399,6 +525,30 @@ impl<'ctx, S: state::InstructionState> Instruction<'ctx, S> {
             )),
             InstructionKindData::Unreachable(_) => Some(TerminatorKind::Unreachable(
                 crate::instructions::UnreachableInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::Switch(_) => Some(TerminatorKind::Switch(
+                crate::instructions::SwitchInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::IndirectBr(_) => Some(TerminatorKind::IndirectBr(
+                crate::instructions::IndirectBrInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::Invoke(_) => Some(TerminatorKind::Invoke(
+                crate::instructions::InvokeInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::CallBr(_) => Some(TerminatorKind::CallBr(
+                crate::instructions::CallBrInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::Resume(_) => Some(TerminatorKind::Resume(
+                crate::instructions::ResumeInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::CatchReturn(_) => Some(TerminatorKind::CatchReturn(
+                crate::instructions::CatchReturnInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::CleanupReturn(_) => Some(TerminatorKind::CleanupReturn(
+                crate::instructions::CleanupReturnInst::from_raw(id, module, ty),
+            )),
+            InstructionKindData::CatchSwitch(_) => Some(TerminatorKind::CatchSwitch(
+                crate::instructions::CatchSwitchInst::from_raw(id, module, ty),
             )),
             _ => None,
         }
@@ -757,6 +907,77 @@ fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueId, to: ValueId)
             BranchKind::Unconditional(_) => {}
             BranchKind::Conditional { cond, .. } => swap(cond),
         },
+        InstructionKindData::FNeg(u) => swap(&u.src),
+        InstructionKindData::Freeze(u) => swap(&u.src),
+        InstructionKindData::VAArg(u) => swap(&u.src),
+        InstructionKindData::ExtractValue(e) => swap(&e.aggregate),
+        InstructionKindData::InsertValue(i) => {
+            swap(&i.aggregate);
+            swap(&i.value);
+        }
+        InstructionKindData::ExtractElement(e) => {
+            swap(&e.vector);
+            swap(&e.index);
+        }
+        InstructionKindData::InsertElement(i) => {
+            swap(&i.vector);
+            swap(&i.value);
+            swap(&i.index);
+        }
+        InstructionKindData::ShuffleVector(s) => {
+            swap(&s.lhs);
+            swap(&s.rhs);
+        }
+        InstructionKindData::Fence(_) => {}
+        InstructionKindData::AtomicCmpXchg(c) => {
+            swap(&c.ptr);
+            swap(&c.cmp);
+            swap(&c.new_val);
+        }
+        InstructionKindData::AtomicRMW(r) => {
+            swap(&r.ptr);
+            swap(&r.value);
+        }
+        InstructionKindData::Switch(s) => {
+            swap(&s.cond);
+            for (c, _) in s.cases.borrow().iter() {
+                swap(c);
+            }
+        }
+        InstructionKindData::IndirectBr(i) => swap(&i.addr),
+        InstructionKindData::Invoke(c) => {
+            swap(&c.callee);
+            for arg in c.args.iter() {
+                swap(arg);
+            }
+        }
+        InstructionKindData::CallBr(c) => {
+            swap(&c.callee);
+            for arg in c.args.iter() {
+                swap(arg);
+            }
+        }
+        InstructionKindData::LandingPad(l) => {
+            for (_, c) in l.clauses.borrow().iter() {
+                swap(c);
+            }
+        }
+        InstructionKindData::Resume(r) => swap(&r.value),
+        InstructionKindData::CleanupPad(p) => {
+            swap_opt(&p.parent_pad);
+            for arg in p.args.iter() {
+                swap(arg);
+            }
+        }
+        InstructionKindData::CatchPad(p) => {
+            swap_opt(&p.parent_pad);
+            for arg in p.args.iter() {
+                swap(arg);
+            }
+        }
+        InstructionKindData::CatchReturn(r) => swap(&r.catch_pad),
+        InstructionKindData::CleanupReturn(r) => swap(&r.cleanup_pad),
+        InstructionKindData::CatchSwitch(s) => swap_opt(&s.parent_pad),
         InstructionKindData::Unreachable(_) => {}
     }
 }
@@ -901,6 +1122,20 @@ pub enum InstructionKind<'ctx> {
     Select(crate::instructions::SelectInst<'ctx>),
     Cast(crate::instructions::CastInst<'ctx>),
     ICmp(crate::instructions::ICmpInst<'ctx>),
+    FNeg(crate::instructions::FNegInst<'ctx>),
+    Freeze(crate::instructions::FreezeInst<'ctx>),
+    VAArg(crate::instructions::VAArgInst<'ctx>),
+    ExtractValue(crate::instructions::ExtractValueInst<'ctx>),
+    InsertValue(crate::instructions::InsertValueInst<'ctx>),
+    ExtractElement(crate::instructions::ExtractElementInst<'ctx>),
+    InsertElement(crate::instructions::InsertElementInst<'ctx>),
+    ShuffleVector(crate::instructions::ShuffleVectorInst<'ctx>),
+    Fence(crate::instructions::FenceInst<'ctx>),
+    AtomicCmpXchg(crate::instructions::AtomicCmpXchgInst<'ctx>),
+    LandingPad(crate::instructions::LandingPadInst<'ctx, crate::term_open_state::Open>),
+    CleanupPad(crate::instructions::CleanupPadInst<'ctx>),
+    CatchPad(crate::instructions::CatchPadInst<'ctx>),
+    AtomicRMW(crate::instructions::AtomicRMWInst<'ctx>),
     Phi(crate::instructions::PhiInst<'ctx, crate::int_width::IntDyn>),
 }
 
@@ -910,6 +1145,14 @@ pub enum InstructionKind<'ctx> {
 pub enum TerminatorKind<'ctx> {
     Ret(crate::instructions::RetInst<'ctx>),
     Br(crate::instructions::BranchInst<'ctx>),
+    Switch(crate::instructions::SwitchInst<'ctx, crate::term_open_state::Open>),
+    IndirectBr(crate::instructions::IndirectBrInst<'ctx, crate::term_open_state::Open>),
+    Invoke(crate::instructions::InvokeInst<'ctx>),
+    Resume(crate::instructions::ResumeInst<'ctx>),
+    CatchReturn(crate::instructions::CatchReturnInst<'ctx>),
+    CleanupReturn(crate::instructions::CleanupReturnInst<'ctx>),
+    CatchSwitch(crate::instructions::CatchSwitchInst<'ctx, crate::term_open_state::Open>),
+    CallBr(crate::instructions::CallBrInst<'ctx>),
     Unreachable(crate::instructions::UnreachableInst<'ctx>),
 }
 

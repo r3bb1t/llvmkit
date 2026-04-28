@@ -16,6 +16,8 @@
 pub mod align;
 pub mod argument;
 pub mod asm_writer;
+pub mod atomic_ordering;
+pub mod atomicrmw_binop;
 pub mod attribute_mask;
 pub mod attributes;
 pub mod basic_block;
@@ -45,6 +47,8 @@ pub mod operator;
 pub mod phi_state;
 pub mod sized_element;
 pub mod struct_body_state;
+pub mod sync_scope;
+pub mod term_open_state;
 pub mod r#type;
 pub mod typed_pointer_type;
 pub mod r#use;
@@ -56,6 +60,8 @@ pub mod verifier;
 
 pub mod unnamed_addr;
 pub use argument::Argument;
+pub use atomic_ordering::AtomicOrdering;
+pub use atomicrmw_binop::AtomicRMWBinOp;
 pub use attribute_mask::AttributeMask;
 pub use attributes::{AttrIndex, AttrKind, Attribute, AttributeList, AttributeSet};
 pub use basic_block::BasicBlock;
@@ -79,15 +85,19 @@ pub use function::{FunctionBuilder, FunctionValue};
 pub use gep_no_wrap_flags::GepNoWrapFlags;
 pub use global_value::Linkage;
 pub use instr_types::{
-    AShrFlags, AddFlags, LShrFlags, MulFlags, SDivFlags, ShlFlags, SubFlags, TailCallKind,
-    UDivFlags,
+    AShrFlags, AddFlags, AtomicCmpXchgConfig, AtomicRMWConfig, AtomicRMWFlags, CmpXchgFlags,
+    LShrFlags, MulFlags, SDivFlags, ShlFlags, SubFlags, TailCallKind, UDivFlags,
 };
 pub use instruction::{Instruction, InstructionKind, TerminatorKind};
 pub use instructions::{
-    AShrInst, AddInst, AllocaInst, AndInst, BranchInst, CallInst, CastInst, FAddInst, FCmpInst,
-    FDivInst, FMulInst, FRemInst, FSubInst, GepInst, ICmpInst, LShrInst, LoadInst, MulInst, OrInst,
-    PhiInst, RetInst, SDivInst, SRemInst, SelectInst, ShlInst, StoreInst, SubInst, UDivInst,
-    URemInst, UnreachableInst, XorInst,
+    AShrInst, AddInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst, BranchInst,
+    CallBrInst, CallInst, CastInst, CatchPadInst, CatchReturnInst, CatchSwitchInst, CleanupPadInst,
+    CleanupReturnInst, ExtractElementInst, ExtractValueInst, FAddInst, FCmpInst, FDivInst,
+    FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FreezeInst, GepInst, ICmpInst,
+    IndirectBrInst, InsertElementInst, InsertValueInst, InvokeInst, LShrInst, LandingPadInst,
+    LoadInst, MulInst, OrInst, PhiInst, ResumeInst, RetInst, SDivInst, SRemInst, SelectInst,
+    ShlInst, ShuffleVectorInst, StoreInst, SubInst, SwitchInst, UDivInst, URemInst,
+    UnreachableInst, VAArgInst, XorInst,
 };
 pub use ir_builder::constant_folder::ConstantFolder;
 pub use ir_builder::folder::IRBuilderFolder;
@@ -99,6 +109,7 @@ pub use operator::OverflowingBinaryOperator;
 pub use phi_state::{Closed, Open, PhiState};
 pub use sized_element::{ArrayDyn, SizedElement};
 pub use struct_body_state::{BodySet, Opaque, StructBodyDyn, StructBodyState};
+pub use sync_scope::SyncScope;
 pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeKind};
 pub use typed_pointer_type::TypedPointerType;
 pub use unnamed_addr::UnnamedAddr;

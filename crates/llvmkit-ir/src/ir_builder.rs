@@ -758,6 +758,373 @@ where
         Ok(IntValue::<bool>::from_value_unchecked(inst.as_value()))
     }
 
+    // ---- Unary ops: fneg / freeze / va_arg ----
+
+    /// Produce `fneg <value>`. Mirrors `IRBuilder::CreateFNeg` in
+    /// `IRBuilder.h`. The result handle has the same float kind as the
+    /// operand (Doctrine D4).
+    pub fn build_float_neg<K, V>(
+        &self,
+        value: V,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    where
+        K: crate::float_kind::FloatKind,
+        V: crate::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_float_neg_with_flags::<K, V>(value, crate::fmf::FastMathFlags::empty(), name)
+    }
+
+    /// Produce `fneg <fmf> <value>`. Mirrors `IRBuilder::CreateFNegFMF`.
+    /// The flags are written verbatim onto the instruction (see
+    /// `FPMathOperator::setFastMathFlags`).
+    pub fn build_float_neg_with_flags<K, V>(
+        &self,
+        value: V,
+        fmf: crate::fmf::FastMathFlags,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    where
+        K: crate::float_kind::FloatKind,
+        V: crate::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        let v = value.into_float_value(self.module)?;
+        self.require_same_module(crate::value::IsValue::as_value(v))?;
+        let payload =
+            crate::instr_types::FNegInstData::new(crate::value::IsValue::as_value(v).id, fmf);
+        let ty = crate::value::Typed::ty(v).id();
+        let inst = self.append_instruction(ty, InstructionKindData::FNeg(payload), name);
+        Ok(crate::value::FloatValue::<K>::from_value_unchecked(
+            inst.as_value(),
+        ))
+    }
+
+    /// Produce `freeze <value>`. Mirrors `IRBuilder::CreateFreeze`.
+    /// Accepts any [`crate::value::IsValue`] operand; the result type
+    /// matches the operand type.
+    pub fn build_freeze<V>(
+        &self,
+        value: V,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::instructions::FreezeInst<'ctx>>
+    where
+        V: crate::value::IsValue<'ctx>,
+    {
+        let v = value.as_value();
+        self.require_same_module(v)?;
+        let payload = crate::instr_types::FreezeInstData::new(v.id);
+        let inst = self.append_instruction(v.ty, InstructionKindData::Freeze(payload), name);
+        Ok(crate::instructions::FreezeInst::from_raw(
+            inst.as_value().id,
+            self.module,
+            v.ty,
+        ))
+    }
+
+    /// Produce `va_arg <list>, <ty>`. Mirrors `IRBuilder::CreateVAArg`.
+    /// The destination type can be any first-class type; the source
+    /// must be a `va_list` pointer.
+    pub fn build_va_arg(
+        &self,
+        list_ptr: crate::value::PointerValue<'ctx>,
+        result_ty: crate::r#type::Type<'ctx>,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::instructions::VAArgInst<'ctx>> {
+        let v = crate::value::IsValue::as_value(list_ptr);
+        self.require_same_module(v)?;
+        let payload = crate::instr_types::VAArgInstData::new(v.id);
+        let inst = self.append_instruction(result_ty.id, InstructionKindData::VAArg(payload), name);
+        Ok(crate::instructions::VAArgInst::from_raw(
+            inst.as_value().id,
+            self.module,
+            result_ty.id,
+        ))
+    }
+
+    // ---- Aggregate ops: extractvalue / insertvalue ----
+
+    /// Produce `extractvalue <agg-ty> <agg>, idx0, idx1, ...`.
+    /// Mirrors `IRBuilder::CreateExtractValue`.
+    pub fn build_extract_value<V, I>(
+        &self,
+        aggregate: V,
+        indices: I,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::instructions::ExtractValueInst<'ctx>>
+    where
+        V: crate::value::IsValue<'ctx>,
+        I: IntoIterator<Item = u32>,
+    {
+        let agg = aggregate.as_value();
+        self.require_same_module(agg)?;
+        let indices: Vec<u32> = indices.into_iter().collect();
+        let leaf_ty = walk_aggregate_for_builder(self.module, agg.ty, &indices)?;
+        let payload = crate::instr_types::ExtractValueInstData::new(agg.id, indices);
+        let inst =
+            self.append_instruction(leaf_ty, InstructionKindData::ExtractValue(payload), name);
+        Ok(crate::instructions::ExtractValueInst::from_raw(
+            inst.as_value().id,
+            self.module,
+            leaf_ty,
+        ))
+    }
+
+    /// Produce `insertvalue <agg-ty> <agg>, <elt-ty> <elt>, idx0, ...`.
+    /// Mirrors `IRBuilder::CreateInsertValue`.
+    pub fn build_insert_value<A, V, I>(
+        &self,
+        aggregate: A,
+        value: V,
+        indices: I,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::instructions::InsertValueInst<'ctx>>
+    where
+        A: crate::value::IsValue<'ctx>,
+        V: crate::value::IsValue<'ctx>,
+        I: IntoIterator<Item = u32>,
+    {
+        let agg = aggregate.as_value();
+        let val = value.as_value();
+        self.require_same_module(agg)?;
+        self.require_same_module(val)?;
+        let indices: Vec<u32> = indices.into_iter().collect();
+        let leaf_ty = walk_aggregate_for_builder(self.module, agg.ty, &indices)?;
+        if val.ty != leaf_ty {
+            return Err(IrError::TypeMismatch {
+                expected: crate::r#type::Type::new(leaf_ty, self.module).kind_label(),
+                got: val.ty().kind_label(),
+            });
+        }
+        let payload = crate::instr_types::InsertValueInstData::new(agg.id, val.id, indices);
+        let inst = self.append_instruction(agg.ty, InstructionKindData::InsertValue(payload), name);
+        Ok(crate::instructions::InsertValueInst::from_raw(
+            inst.as_value().id,
+            self.module,
+            agg.ty,
+        ))
+    }
+
+    // ---- Vector ops: extractelement / insertelement / shufflevector ----
+
+    /// Produce `extractelement <vec-ty> <vec>, <idx-ty> <idx>`.
+    /// Mirrors `IRBuilder::CreateExtractElement`.
+    pub fn build_extract_element<V, W, I>(
+        &self,
+        vector: V,
+        index: I,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::instructions::ExtractElementInst<'ctx>>
+    where
+        V: crate::value::IsValue<'ctx>,
+        W: crate::int_width::IntWidth,
+        I: crate::int_width::IntoIntValue<'ctx, W>,
+    {
+        let vec = vector.as_value();
+        self.require_same_module(vec)?;
+        let idx_v = index.into_int_value(self.module)?;
+        let idx = crate::value::IsValue::as_value(idx_v);
+        let elem_ty = match self.module.context().type_data(vec.ty).as_vector() {
+            Some((e, _, _)) => e,
+            None => {
+                return Err(IrError::TypeMismatch {
+                    expected: crate::error::TypeKindLabel::FixedVector,
+                    got: vec.ty().kind_label(),
+                });
+            }
+        };
+        let payload = crate::instr_types::ExtractElementInstData::new(vec.id, idx.id);
+        let inst =
+            self.append_instruction(elem_ty, InstructionKindData::ExtractElement(payload), name);
+        Ok(crate::instructions::ExtractElementInst::from_raw(
+            inst.as_value().id,
+            self.module,
+            elem_ty,
+        ))
+    }
+
+    /// Produce `insertelement <vec-ty> <vec>, <elt-ty> <elt>, <idx-ty> <idx>`.
+    /// Mirrors `IRBuilder::CreateInsertElement`.
+    pub fn build_insert_element<V, E, W, I>(
+        &self,
+        vector: V,
+        elt: E,
+        index: I,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::instructions::InsertElementInst<'ctx>>
+    where
+        V: crate::value::IsValue<'ctx>,
+        E: crate::value::IsValue<'ctx>,
+        W: crate::int_width::IntWidth,
+        I: crate::int_width::IntoIntValue<'ctx, W>,
+    {
+        let vec = vector.as_value();
+        let val = elt.as_value();
+        self.require_same_module(vec)?;
+        self.require_same_module(val)?;
+        let idx_v = index.into_int_value(self.module)?;
+        let idx = crate::value::IsValue::as_value(idx_v);
+        let payload = crate::instr_types::InsertElementInstData::new(vec.id, val.id, idx.id);
+        let inst =
+            self.append_instruction(vec.ty, InstructionKindData::InsertElement(payload), name);
+        Ok(crate::instructions::InsertElementInst::from_raw(
+            inst.as_value().id,
+            self.module,
+            vec.ty,
+        ))
+    }
+
+    /// Produce `shufflevector <ty> <v1>, <ty> <v2>, <mask>`. Mirrors
+    /// `IRBuilder::CreateShuffleVector`. The mask is a slice of `i32`s;
+    /// pass `[`[`crate::instr_types::POISON_MASK_ELEM`]`; ...]` for
+    /// poison entries.
+    pub fn build_shuffle_vector<L, Rhs2>(
+        &self,
+        lhs: L,
+        rhs: Rhs2,
+        mask: &[i32],
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::instructions::ShuffleVectorInst<'ctx>>
+    where
+        L: crate::value::IsValue<'ctx>,
+        Rhs2: crate::value::IsValue<'ctx>,
+    {
+        let l = lhs.as_value();
+        let r = rhs.as_value();
+        self.require_same_module(l)?;
+        self.require_same_module(r)?;
+        if l.ty != r.ty {
+            return Err(IrError::TypeMismatch {
+                expected: l.ty().kind_label(),
+                got: r.ty().kind_label(),
+            });
+        }
+        let elem = match self.module.context().type_data(l.ty).as_vector() {
+            Some((e, _, scalable)) => {
+                if scalable {
+                    return Err(IrError::InvalidOperation {
+                        message: "shufflevector with scalable input is not yet supported",
+                    });
+                }
+                e
+            }
+            None => {
+                return Err(IrError::TypeMismatch {
+                    expected: crate::error::TypeKindLabel::FixedVector,
+                    got: l.ty().kind_label(),
+                });
+            }
+        };
+        let mask_len = u32::try_from(mask.len()).unwrap_or(u32::MAX);
+        let result_ty_id = self.module.context().fixed_vector_type(elem, mask_len);
+        let payload =
+            crate::instr_types::ShuffleVectorInstData::new(l.id, r.id, mask.iter().copied());
+        let inst = self.append_instruction(
+            result_ty_id,
+            InstructionKindData::ShuffleVector(payload),
+            name,
+        );
+        Ok(crate::instructions::ShuffleVectorInst::from_raw(
+            inst.as_value().id,
+            self.module,
+            result_ty_id,
+        ))
+    }
+
+    // ---- Atomic ops: fence / cmpxchg / atomicrmw ----
+
+    /// Produce `fence <ordering>` (or
+    /// `fence syncscope("...") <ordering>`). Mirrors
+    /// `IRBuilder::CreateFence`.
+    pub fn build_fence(
+        &self,
+        ordering: crate::atomic_ordering::AtomicOrdering,
+        sync_scope: crate::sync_scope::SyncScope,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::instructions::FenceInst<'ctx>> {
+        let payload = crate::instr_types::FenceInstData::new(ordering, sync_scope);
+        let void_ty = self.module.void_type().as_type().id();
+        let inst = self.append_instruction(void_ty, InstructionKindData::Fence(payload), name);
+        Ok(crate::instructions::FenceInst::from_raw(
+            inst.as_value().id,
+            self.module,
+            void_ty,
+        ))
+    }
+
+    /// Produce `cmpxchg [weak] [volatile] <ptr-ty> <ptr>, <cmp-ty> <cmp>,
+    /// <new-ty> <new> [syncscope("...")] <success> <failure>, align N`.
+    /// Mirrors `IRBuilder::CreateAtomicCmpXchg`.
+    ///
+    /// Result type is the literal struct `{ <pointee>, i1 }`.
+    pub fn build_atomic_cmpxchg<P, C, N>(
+        &self,
+        ptr: P,
+        cmp: C,
+        new_val: N,
+        config: crate::instr_types::AtomicCmpXchgConfig,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::instructions::AtomicCmpXchgInst<'ctx>>
+    where
+        P: crate::value::IsValue<'ctx>,
+        C: crate::value::IsValue<'ctx>,
+        N: crate::value::IsValue<'ctx>,
+    {
+        let p = ptr.as_value();
+        let c = cmp.as_value();
+        let n = new_val.as_value();
+        self.require_same_module(p)?;
+        self.require_same_module(c)?;
+        self.require_same_module(n)?;
+        if c.ty != n.ty {
+            return Err(IrError::TypeMismatch {
+                expected: c.ty().kind_label(),
+                got: n.ty().kind_label(),
+            });
+        }
+        let result_ty = self
+            .module
+            .struct_type([c.ty(), self.module.bool_type().as_type()], false);
+        let payload = crate::instr_types::AtomicCmpXchgInstData::new(p.id, c.id, n.id, config);
+        let result_id = result_ty.as_type().id();
+        let inst =
+            self.append_instruction(result_id, InstructionKindData::AtomicCmpXchg(payload), name);
+        Ok(crate::instructions::AtomicCmpXchgInst::from_raw(
+            inst.as_value().id,
+            self.module,
+            result_id,
+        ))
+    }
+
+    /// Produce `atomicrmw [volatile] <op> <ptr-ty> <ptr>, <val-ty> <val>
+    /// [syncscope("...")] <ordering>, align N`. Mirrors
+    /// `IRBuilder::CreateAtomicRMW`.
+    ///
+    /// Result type matches the value-operand type (the "old" value).
+    pub fn build_atomicrmw<P, V>(
+        &self,
+        op: crate::atomicrmw_binop::AtomicRMWBinOp,
+        ptr: P,
+        value: V,
+        config: crate::instr_types::AtomicRMWConfig,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::instructions::AtomicRMWInst<'ctx>>
+    where
+        P: crate::value::IsValue<'ctx>,
+        V: crate::value::IsValue<'ctx>,
+    {
+        let p = ptr.as_value();
+        let v = value.as_value();
+        self.require_same_module(p)?;
+        self.require_same_module(v)?;
+        let payload = crate::instr_types::AtomicRMWInstData::new(op, p.id, v.id, config);
+        let inst = self.append_instruction(v.ty, InstructionKindData::AtomicRMW(payload), name);
+        Ok(crate::instructions::AtomicRMWInst::from_raw(
+            inst.as_value().id,
+            self.module,
+            v.ty,
+        ))
+    }
+
     // ---- Casts: trunc / zext / sext ----
 
     /// Produce `trunc <value> to <dst_ty>`. Mirrors
@@ -1954,9 +2321,399 @@ where
         Ok((bb.retag_seal::<Sealed>(), inst))
     }
 
+    /// Produce `switch <cond>, label <default> [...]`. Mirrors
+    /// `IRBuilder::CreateSwitch`.
+    ///
+    /// Returns the sealed parent block plus an
+    /// [`Open`](crate::term_open_state::Open)-typestate
+    /// [`SwitchInst`](crate::instructions::SwitchInst). The caller adds
+    /// cases via [`SwitchInst::add_case`](crate::instructions::SwitchInst::add_case)
+    /// (chainable) and seals the case list with
+    /// [`SwitchInst::finish`](crate::instructions::SwitchInst::finish).
+    pub fn build_switch<C, S2>(
+        self,
+        cond: C,
+        default_target: BasicBlock<'ctx, R, S2>,
+        name: impl AsRef<str>,
+    ) -> IrResult<(
+        BasicBlock<'ctx, R, Sealed>,
+        crate::instructions::SwitchInst<'ctx, crate::term_open_state::Open>,
+    )>
+    where
+        C: crate::value::IsValue<'ctx>,
+        S2: BlockSealState,
+    {
+        let cond_v = cond.as_value();
+        self.require_same_module(cond_v)?;
+        if default_target.as_value().module().id() != self.module.id() {
+            return Err(IrError::ForeignValue);
+        }
+        let bb = self.insert_block();
+        let void_ty = self.module.void_type().as_type().id();
+        let payload =
+            crate::instr_types::SwitchInstData::new(cond_v.id, default_target.as_value().id);
+        let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
+        Ok((
+            bb.retag_seal::<Sealed>(),
+            crate::instructions::SwitchInst::from_raw(inst.as_value().id, self.module, void_ty),
+        ))
+    }
+
+    /// Produce `indirectbr <addr>, [...]`. Mirrors
+    /// `IRBuilder::CreateIndirectBr`.
+    ///
+    /// Returns the sealed parent block plus an
+    /// [`Open`](crate::term_open_state::Open)-typestate
+    /// [`IndirectBrInst`](crate::instructions::IndirectBrInst). The
+    /// caller adds destinations via
+    /// [`IndirectBrInst::add_destination`](crate::instructions::IndirectBrInst::add_destination)
+    pub fn build_indirectbr<A>(
+        self,
+        address: A,
+        name: impl AsRef<str>,
+    ) -> IrResult<(
+        BasicBlock<'ctx, R, Sealed>,
+        crate::instructions::IndirectBrInst<'ctx, crate::term_open_state::Open>,
+    )>
+    where
+        A: crate::value::IsValue<'ctx>,
+    {
+        let addr_v = address.as_value();
+        self.require_same_module(addr_v)?;
+        let bb = self.insert_block();
+        let void_ty = self.module.void_type().as_type().id();
+        let payload = crate::instr_types::IndirectBrInstData::new(addr_v.id);
+        let inst = self.append_instruction(void_ty, InstructionKindData::IndirectBr(payload), name);
+        Ok((
+            bb.retag_seal::<Sealed>(),
+            crate::instructions::IndirectBrInst::from_raw(inst.as_value().id, self.module, void_ty),
+        ))
+    }
+
+    /// Produce `invoke <ret-ty> <callee>(<args>) to label %normal
+    /// unwind label %unwind`. Mirrors `IRBuilder::CreateInvoke`.
+    ///
+    /// The result-type marker `R2` flows from the callee's
+    /// `FunctionValue<'ctx, R2>` so the returned `InvokeInst<R2>`
+    /// exposes typed-return accessors (Doctrine D4).
+    pub fn build_invoke<R2, I, V, S2, SU>(
+        self,
+        callee: FunctionValue<'ctx, R2>,
+        args: I,
+        normal_dest: BasicBlock<'ctx, R, S2>,
+        unwind_dest: BasicBlock<'ctx, R, SU>,
+        name: impl AsRef<str>,
+    ) -> IrResult<(
+        BasicBlock<'ctx, R, Sealed>,
+        crate::instructions::InvokeInst<'ctx, R2>,
+    )>
+    where
+        R2: ReturnMarker,
+        I: IntoIterator<Item = V>,
+        V: crate::value::IsValue<'ctx>,
+        S2: BlockSealState,
+        SU: BlockSealState,
+    {
+        if normal_dest.as_value().module().id() != self.module.id()
+            || unwind_dest.as_value().module().id() != self.module.id()
+        {
+            return Err(IrError::ForeignValue);
+        }
+        let callee_v = callee.as_value();
+        self.require_same_module(callee_v)?;
+        let fn_ty = callee.signature().as_type().id();
+        let ret_ty = self
+            .module
+            .context()
+            .type_data(fn_ty)
+            .as_function()
+            .map(|(r, _, _)| r)
+            .unwrap_or(fn_ty);
+        let bb = self.insert_block();
+        let arg_ids: Vec<crate::value::ValueId> =
+            args.into_iter().map(|a| a.as_value().id).collect();
+        let payload = crate::instr_types::InvokeInstData::new(
+            callee_v.id,
+            fn_ty,
+            arg_ids,
+            crate::CallingConv::C,
+            normal_dest.as_value().id,
+            unwind_dest.as_value().id,
+        );
+        let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
+        Ok((
+            bb.retag_seal::<Sealed>(),
+            crate::instructions::InvokeInst::<crate::marker::Dyn>::from_raw(
+                inst.as_value().id,
+                self.module,
+                ret_ty,
+            )
+            .retag::<R2>(),
+        ))
+    }
+
+    /// Produce `callbr <ret-ty> <callee>(<args>) to label %default
+    /// [label %indirect1, ...]`. Mirrors `IRBuilder::CreateCallBr`.
+    pub fn build_callbr<R2, I, V, S2>(
+        self,
+        callee: FunctionValue<'ctx, R2>,
+        args: I,
+        default_dest: BasicBlock<'ctx, R, S2>,
+        indirect_dests: &[BasicBlock<'ctx, R, S2>],
+        name: impl AsRef<str>,
+    ) -> IrResult<(
+        BasicBlock<'ctx, R, Sealed>,
+        crate::instructions::CallBrInst<'ctx>,
+    )>
+    where
+        R2: ReturnMarker,
+        I: IntoIterator<Item = V>,
+        V: crate::value::IsValue<'ctx>,
+        S2: BlockSealState,
+    {
+        if default_dest.as_value().module().id() != self.module.id() {
+            return Err(IrError::ForeignValue);
+        }
+        for d in indirect_dests {
+            if d.as_value().module().id() != self.module.id() {
+                return Err(IrError::ForeignValue);
+            }
+        }
+        let callee_v = callee.as_value();
+        self.require_same_module(callee_v)?;
+        let fn_ty = callee.signature().as_type().id();
+        let ret_ty = self
+            .module
+            .context()
+            .type_data(fn_ty)
+            .as_function()
+            .map(|(r, _, _)| r)
+            .unwrap_or(fn_ty);
+        let bb = self.insert_block();
+        let arg_ids: Vec<crate::value::ValueId> =
+            args.into_iter().map(|a| a.as_value().id).collect();
+        let indirect_ids: Vec<crate::value::ValueId> =
+            indirect_dests.iter().map(|d| d.as_value().id).collect();
+        let payload = crate::instr_types::CallBrInstData::new(
+            callee_v.id,
+            fn_ty,
+            arg_ids,
+            crate::CallingConv::C,
+            default_dest.as_value().id,
+            indirect_ids,
+        );
+        let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name);
+        Ok((
+            bb.retag_seal::<Sealed>(),
+            crate::instructions::CallBrInst::from_raw(inst.as_value().id, self.module, ret_ty),
+        ))
+    }
+
     /// Produce `unreachable`. Mirrors `IRBuilder::CreateUnreachable`.
     ///
     /// Consumes `self`; infallible (no operands, no brand check).
+    /// Produce `landingpad <ty>`. Mirrors `IRBuilder::CreateLandingPad`.
+    /// Returns an [`Open`](crate::term_open_state::Open)-typestate
+    /// handle; the caller adds clauses with `add_catch_clause` /
+    /// `add_filter_clause` and seals the list with `finish`.
+    pub fn build_landingpad(
+        &self,
+        result_ty: crate::r#type::Type<'ctx>,
+        cleanup: bool,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::instructions::LandingPadInst<'ctx, crate::term_open_state::Open>> {
+        let payload = crate::instr_types::LandingPadInstData::new(cleanup);
+        let inst =
+            self.append_instruction(result_ty.id, InstructionKindData::LandingPad(payload), name);
+        Ok(crate::instructions::LandingPadInst::from_raw(
+            inst.as_value().id,
+            self.module,
+            result_ty.id,
+        ))
+    }
+
+    /// Produce `resume <ty> <value>`. Mirrors `IRBuilder::CreateResume`.
+    /// The `value` is typically a previously-built `landingpad` result.
+    pub fn build_resume<V>(
+        self,
+        value: V,
+        name: impl AsRef<str>,
+    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>)>
+    where
+        V: crate::value::IsValue<'ctx>,
+    {
+        let v = value.as_value();
+        self.require_same_module(v)?;
+        let bb = self.insert_block();
+        let void_ty = self.module.void_type().as_type().id();
+        let payload = crate::instr_types::ResumeInstData::new(v.id);
+        let inst = self.append_instruction(void_ty, InstructionKindData::Resume(payload), name);
+        Ok((bb.retag_seal::<Sealed>(), inst))
+    }
+
+    /// Produce `cleanuppad within <parent> [<args>]`. Mirrors
+    /// `IRBuilder::CreateCleanupPad`. `parent_pad = None` means
+    /// `within none`.
+    pub fn build_cleanup_pad<I, V>(
+        &self,
+        parent_pad: Option<Value<'ctx>>,
+        args: I,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::instructions::CleanupPadInst<'ctx>>
+    where
+        I: IntoIterator<Item = V>,
+        V: crate::value::IsValue<'ctx>,
+    {
+        let parent_id = match parent_pad {
+            Some(v) => {
+                self.require_same_module(v)?;
+                Some(v.id)
+            }
+            None => None,
+        };
+        let arg_ids: Vec<crate::value::ValueId> =
+            args.into_iter().map(|a| a.as_value().id).collect();
+        let payload = crate::instr_types::CleanupPadInstData::new(parent_id, arg_ids);
+        let token_ty = self.module.token_type().as_type().id();
+        let inst =
+            self.append_instruction(token_ty, InstructionKindData::CleanupPad(payload), name);
+        Ok(crate::instructions::CleanupPadInst::from_raw(
+            inst.as_value().id,
+            self.module,
+            token_ty,
+        ))
+    }
+
+    /// Produce `catchpad within <catchswitch> [<args>]`. Mirrors
+    /// `IRBuilder::CreateCatchPad`.
+    pub fn build_catch_pad<I, V>(
+        &self,
+        catch_switch: Value<'ctx>,
+        args: I,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::instructions::CatchPadInst<'ctx>>
+    where
+        I: IntoIterator<Item = V>,
+        V: crate::value::IsValue<'ctx>,
+    {
+        self.require_same_module(catch_switch)?;
+        let arg_ids: Vec<crate::value::ValueId> =
+            args.into_iter().map(|a| a.as_value().id).collect();
+        let payload = crate::instr_types::CatchPadInstData::new(Some(catch_switch.id), arg_ids);
+        let token_ty = self.module.token_type().as_type().id();
+        let inst = self.append_instruction(token_ty, InstructionKindData::CatchPad(payload), name);
+        Ok(crate::instructions::CatchPadInst::from_raw(
+            inst.as_value().id,
+            self.module,
+            token_ty,
+        ))
+    }
+
+    /// Produce `catchret from <catchpad> to label <bb>`. Mirrors
+    /// `IRBuilder::CreateCatchRet`.
+    pub fn build_catch_ret<S2>(
+        self,
+        catch_pad: Value<'ctx>,
+        target: BasicBlock<'ctx, R, S2>,
+        name: impl AsRef<str>,
+    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>)>
+    where
+        S2: BlockSealState,
+    {
+        self.require_same_module(catch_pad)?;
+        if target.as_value().module().id() != self.module.id() {
+            return Err(IrError::ForeignValue);
+        }
+        let bb = self.insert_block();
+        let void_ty = self.module.void_type().as_type().id();
+        let payload =
+            crate::instr_types::CatchReturnInstData::new(catch_pad.id, target.as_value().id);
+        let inst =
+            self.append_instruction(void_ty, InstructionKindData::CatchReturn(payload), name);
+        Ok((bb.retag_seal::<Sealed>(), inst))
+    }
+
+    /// Produce `cleanupret from <cleanuppad> unwind [to caller |
+    /// label <bb>]`. Mirrors `IRBuilder::CreateCleanupRet`.
+    pub fn build_cleanup_ret<S2>(
+        self,
+        cleanup_pad: Value<'ctx>,
+        unwind_dest: Option<BasicBlock<'ctx, R, S2>>,
+        name: impl AsRef<str>,
+    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>)>
+    where
+        S2: BlockSealState,
+    {
+        self.require_same_module(cleanup_pad)?;
+        let unwind_id = match unwind_dest {
+            Some(b) => {
+                if b.as_value().module().id() != self.module.id() {
+                    return Err(IrError::ForeignValue);
+                }
+                Some(b.as_value().id)
+            }
+            None => None,
+        };
+        let bb = self.insert_block();
+        let void_ty = self.module.void_type().as_type().id();
+        let payload = crate::instr_types::CleanupReturnInstData::new(cleanup_pad.id, unwind_id);
+        let inst =
+            self.append_instruction(void_ty, InstructionKindData::CleanupReturn(payload), name);
+        Ok((bb.retag_seal::<Sealed>(), inst))
+    }
+
+    /// Produce `catchswitch within <parent> [...] unwind [to caller |
+    /// label <bb>]`. Mirrors `IRBuilder::CreateCatchSwitch`.
+    ///
+    /// Returns the sealed block plus an
+    /// [`Open`](crate::term_open_state::Open)-typestate
+    /// [`CatchSwitchInst`](crate::instructions::CatchSwitchInst); the
+    /// caller adds handler blocks via
+    /// [`CatchSwitchInst::add_handler`](crate::instructions::CatchSwitchInst::add_handler)
+    /// `finish`.
+    pub fn build_catch_switch<S2>(
+        self,
+        parent_pad: Option<Value<'ctx>>,
+        unwind_dest: Option<BasicBlock<'ctx, R, S2>>,
+        name: impl AsRef<str>,
+    ) -> IrResult<(
+        BasicBlock<'ctx, R, Sealed>,
+        crate::instructions::CatchSwitchInst<'ctx, crate::term_open_state::Open>,
+    )>
+    where
+        S2: BlockSealState,
+    {
+        let parent_id = match parent_pad {
+            Some(v) => {
+                self.require_same_module(v)?;
+                Some(v.id)
+            }
+            None => None,
+        };
+        let unwind_id = match unwind_dest {
+            Some(b) => {
+                if b.as_value().module().id() != self.module.id() {
+                    return Err(IrError::ForeignValue);
+                }
+                Some(b.as_value().id)
+            }
+            None => None,
+        };
+        let bb = self.insert_block();
+        let token_ty = self.module.token_type().as_type().id();
+        let payload = crate::instr_types::CatchSwitchInstData::new(parent_id, unwind_id);
+        let inst =
+            self.append_instruction(token_ty, InstructionKindData::CatchSwitch(payload), name);
+        Ok((
+            bb.retag_seal::<Sealed>(),
+            crate::instructions::CatchSwitchInst::from_raw(
+                inst.as_value().id,
+                self.module,
+                token_ty,
+            ),
+        ))
+    }
+
     pub fn build_unreachable(self) -> (BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>) {
         let payload = crate::instr_types::UnreachableInstData;
         let void_ty = self.module.void_type().as_type().id();
@@ -2420,4 +3177,54 @@ where
         let inst = self.append_instruction(true_ty, InstructionKindData::Select(payload), name);
         Ok(A::from_select_value(inst.as_value()))
     }
+}
+
+// --------------------------------------------------------------------------
+// Aggregate path resolution helper
+// --------------------------------------------------------------------------
+
+/// Walk the aggregate `root` by `indices` and return the leaf type.
+/// Mirrors `ExtractValueInst::getIndexedType` in `Instructions.cpp`.
+fn walk_aggregate_for_builder(m: &Module<'_>, root: TypeId, indices: &[u32]) -> IrResult<TypeId> {
+    let mut cur = root;
+    for &idx in indices {
+        let d = m.context().type_data(cur);
+        match d {
+            crate::r#type::TypeData::Array { elem, n } => {
+                let n_u32 = u32::try_from(*n).unwrap_or(u32::MAX);
+                if idx >= n_u32 {
+                    return Err(IrError::ArgumentIndexOutOfRange {
+                        index: idx,
+                        count: n_u32,
+                    });
+                }
+                cur = *elem;
+            }
+            crate::r#type::TypeData::Struct(s) => {
+                let body = s.body.borrow();
+                match body.as_ref() {
+                    Some(b) => {
+                        let count = u32::try_from(b.elements.len()).unwrap_or(u32::MAX);
+                        if idx >= count {
+                            return Err(IrError::ArgumentIndexOutOfRange { index: idx, count });
+                        }
+                        cur = b.elements[idx as usize];
+                    }
+                    None => {
+                        return Err(IrError::TypeMismatch {
+                            expected: crate::error::TypeKindLabel::Struct,
+                            got: crate::r#type::Type::new(cur, m).kind_label(),
+                        });
+                    }
+                }
+            }
+            _ => {
+                return Err(IrError::TypeMismatch {
+                    expected: crate::error::TypeKindLabel::Struct,
+                    got: crate::r#type::Type::new(cur, m).kind_label(),
+                });
+            }
+        }
+    }
+    Ok(cur)
 }

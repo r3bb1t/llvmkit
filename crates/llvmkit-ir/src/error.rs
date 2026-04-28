@@ -218,6 +218,52 @@ pub enum VerifierRule {
     /// In-block use-before-def: an operand whose defining instruction
     /// follows the use in the same basic block.
     /// Mirrors `Verifier::verifyDominatesUse`.
+    /// `fneg` operand or result is not floating-point, or result type
+    /// does not match operand type. Mirrors `Verifier::visitFNeg`.
+    FNegTypeMismatch,
+    /// `freeze` result type differs from operand type. Mirrors
+    /// `Verifier::visitFreeze` ("Freeze should produce its operand's
+    /// type").
+    FreezeTypeMismatch,
+    /// `va_arg` source operand is not a pointer. Mirrors
+    /// `Verifier::visitVAArgInst`.
+    VAArgNonPointerOperand,
+    /// `extractvalue` / `insertvalue` aggregate operand is not
+    /// struct- or array-typed. Mirrors `Verifier::visitExtractValueInst`
+    /// / `Verifier::visitInsertValueInst`.
+    AggregateOpNonAggregate,
+    /// `extractvalue` / `insertvalue` index walks past the leaves of
+    /// the aggregate. Mirrors the same C++ visitors.
+    AggregateIndexOutOfRange,
+    /// `insertvalue` inserted-value type does not match the aggregate's
+    /// leaf type at the index path.
+    InsertValueLeafTypeMismatch,
+    /// `extractelement` / `insertelement` operand is not vector-typed,
+    /// or `extractelement` result type does not match the vector's
+    /// element type. Mirrors `Verifier::visitExtractElementInst` /
+    /// `Verifier::visitInsertElementInst`.
+    VectorElementOpTypeMismatch,
+    /// `shufflevector` operands disagree in element type, or the result
+    /// type does not match the mask length. Mirrors
+    /// `Verifier::visitShuffleVectorInst`.
+    ShuffleVectorTypeMismatch,
+    /// Atomic op (`fence`, `cmpxchg`, `atomicrmw`, `load atomic`, `store
+    /// atomic`) given an invalid memory ordering. Mirrors
+    /// `Verifier::visitFenceInst` / `visitAtomicCmpXchgInst` /
+    /// `visitAtomicRMWInst`.
+    AtomicInvalidOrdering,
+    /// `cmpxchg` / `atomicrmw` pointer operand is not a pointer.
+    AtomicNonPointerOperand,
+    /// `atomicrmw` operand value type does not match the operation's
+    /// expected element type, or the FP-only ops were given a non-FP
+    /// operand.
+    AtomicRMWOperandTypeMismatch,
+    /// `switch` condition is not integer-typed, or a case value type
+    /// disagrees with the condition. Mirrors `Verifier::visitSwitchInst`.
+    SwitchOperandTypeMismatch,
+    /// `indirectbr` address operand is not a pointer. Mirrors
+    /// `Verifier::visitIndirectBrInst`.
+    IndirectBrNonPointerAddress,
     UseBeforeDef,
 }
 
@@ -268,6 +314,29 @@ impl fmt::Display for VerifierRule {
             Self::CastTypeMismatch => "cast source/destination kind constraint failed",
             Self::CastWidthMismatch => "cast width relationship is invalid",
             Self::SelfReference => "only PHI nodes may reference their own value",
+            Self::FNegTypeMismatch => "fneg operand/result is not floating-point or types differ",
+            Self::FreezeTypeMismatch => "freeze result type does not match operand type",
+            Self::VAArgNonPointerOperand => "va_arg source operand is not a pointer",
+            Self::AggregateOpNonAggregate => {
+                "extractvalue/insertvalue aggregate is not struct- or array-typed"
+            }
+            Self::AggregateIndexOutOfRange => {
+                "extractvalue/insertvalue index walks past the leaves"
+            }
+            Self::InsertValueLeafTypeMismatch => {
+                "insertvalue leaf type does not match inserted value"
+            }
+            Self::VectorElementOpTypeMismatch => {
+                "extractelement/insertelement operand types are inconsistent with the vector"
+            }
+            Self::ShuffleVectorTypeMismatch => {
+                "shufflevector operand or result type does not match mask"
+            }
+            Self::AtomicInvalidOrdering => "atomic op given an invalid memory ordering",
+            Self::AtomicNonPointerOperand => "atomic op pointer operand is not a pointer",
+            Self::AtomicRMWOperandTypeMismatch => "atomicrmw operand type does not match operation",
+            Self::SwitchOperandTypeMismatch => "switch operand types disagree",
+            Self::IndirectBrNonPointerAddress => "indirectbr address operand is not a pointer",
             Self::UseBeforeDef => "instruction does not dominate all uses",
         };
         f.write_str(s)

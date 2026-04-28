@@ -132,11 +132,35 @@ fn produces_named_result(inst: &Instruction<'_>) -> bool {
         | InstructionKindData::Select(_)
         | InstructionKindData::Cast(_)
         | InstructionKindData::ICmp(_)
+        | InstructionKindData::FNeg(_)
+        | InstructionKindData::Freeze(_)
+        | InstructionKindData::VAArg(_)
+        | InstructionKindData::ExtractValue(_)
+        | InstructionKindData::InsertValue(_)
+        | InstructionKindData::ExtractElement(_)
+        | InstructionKindData::InsertElement(_)
+        | InstructionKindData::ShuffleVector(_)
+        | InstructionKindData::AtomicCmpXchg(_)
+        | InstructionKindData::AtomicRMW(_)
         | InstructionKindData::Phi(_) => true,
+        InstructionKindData::Fence(_) => false,
         InstructionKindData::Ret(_)
         | InstructionKindData::Store(_)
         | InstructionKindData::Br(_)
+        | InstructionKindData::Switch(_)
+        | InstructionKindData::IndirectBr(_)
+        | InstructionKindData::CallBr(_)
+        | InstructionKindData::Resume(_)
+        | InstructionKindData::CatchReturn(_)
+        | InstructionKindData::CleanupReturn(_)
         | InstructionKindData::Unreachable(_) => false,
+        InstructionKindData::Invoke(_) => {
+            !matches!(inst.ty().data(), crate::r#type::TypeData::Void)
+        }
+        InstructionKindData::CleanupPad(_) => true,
+        InstructionKindData::CatchPad(_) => true,
+        InstructionKindData::CatchSwitch(_) => true,
+        InstructionKindData::LandingPad(_) => true,
         InstructionKindData::Call(_) => {
             // Void-returning calls don't get a `%name = ` prefix.
             !matches!(inst.ty().data(), crate::r#type::TypeData::Void)
@@ -367,7 +391,33 @@ pub(crate) fn fmt_instruction(
         InstructionKindData::Cast(c) => fmt_cast(f, inst, c, slots),
         InstructionKindData::ICmp(c) => fmt_icmp(f, inst, c, slots),
         InstructionKindData::Phi(p) => fmt_phi(f, inst, p, slots),
+        InstructionKindData::Switch(d) => fmt_switch(f, inst, d, slots),
+        InstructionKindData::IndirectBr(d) => fmt_indirectbr(f, inst, d, slots),
+        InstructionKindData::Invoke(d) => fmt_invoke(f, inst, d, slots),
+        InstructionKindData::CallBr(d) => fmt_callbr(f, inst, d, slots),
+        InstructionKindData::LandingPad(d) => fmt_landingpad(f, inst, d, slots),
+        InstructionKindData::Resume(d) => fmt_resume(f, inst, d, slots),
+        InstructionKindData::CleanupPad(d) => {
+            fmt_funclet_pad(f, inst, "cleanuppad", &d.parent_pad, &d.args, slots)
+        }
+        InstructionKindData::CatchPad(d) => {
+            fmt_funclet_pad(f, inst, "catchpad", &d.parent_pad, &d.args, slots)
+        }
+        InstructionKindData::CatchReturn(d) => fmt_catchret(f, inst, d, slots),
+        InstructionKindData::CleanupReturn(d) => fmt_cleanupret(f, inst, d, slots),
+        InstructionKindData::CatchSwitch(d) => fmt_catchswitch(f, inst, d, slots),
         InstructionKindData::Br(b) => fmt_br(f, inst, b, slots),
+        InstructionKindData::FNeg(u) => fmt_fneg(f, inst, u, slots),
+        InstructionKindData::Freeze(u) => fmt_freeze(f, inst, u, slots),
+        InstructionKindData::VAArg(u) => fmt_va_arg(f, inst, u, slots),
+        InstructionKindData::ExtractValue(d) => fmt_extract_value(f, inst, d, slots),
+        InstructionKindData::InsertValue(d) => fmt_insert_value(f, inst, d, slots),
+        InstructionKindData::ExtractElement(d) => fmt_extract_element(f, inst, d, slots),
+        InstructionKindData::InsertElement(d) => fmt_insert_element(f, inst, d, slots),
+        InstructionKindData::ShuffleVector(d) => fmt_shuffle_vector(f, inst, d, slots),
+        InstructionKindData::Fence(d) => fmt_fence(f, d),
+        InstructionKindData::AtomicCmpXchg(d) => fmt_cmpxchg(f, inst, d, slots),
+        InstructionKindData::AtomicRMW(d) => fmt_atomicrmw(f, inst, d, slots),
         InstructionKindData::Unreachable(_) => f.write_str("unreachable"),
         InstructionKindData::Ret(r) => fmt_ret(f, inst, r, slots),
     }
@@ -417,6 +467,320 @@ fn fmt_cast(
     write!(f, "{} ", src.ty())?;
     fmt_operand_ref(f, src, Some(slots))?;
     write!(f, " to {}", inst.ty())
+}
+
+fn fmt_fneg(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    u: &crate::instr_types::FNegInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // `fneg [<fmf>] <ty> <src>` --- mirrors `printInstruction` /
+    // `writeOptimizationInfo` in `lib/IR/AsmWriter.cpp`.
+    f.write_str("fneg")?;
+    if !u.fmf.is_empty() {
+        f.write_str(" ")?;
+        write!(f, "{}", u.fmf)?;
+    }
+    let module = inst.module();
+    let src_data = module.context().value_data(u.src.get());
+    let src = Value::from_parts(u.src.get(), module, src_data.ty);
+    write!(f, " {} ", src.ty())?;
+    fmt_operand_ref(f, src, Some(slots))
+}
+
+fn fmt_freeze(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    u: &crate::instr_types::FreezeInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // `freeze <ty> <src>`
+    f.write_str("freeze ")?;
+    let module = inst.module();
+    let src_data = module.context().value_data(u.src.get());
+    let src = Value::from_parts(u.src.get(), module, src_data.ty);
+    write!(f, "{} ", src.ty())?;
+    fmt_operand_ref(f, src, Some(slots))
+}
+
+fn fmt_va_arg(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    u: &crate::instr_types::VAArgInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // `va_arg <list-ty> <list-val>, <result-ty>`
+    f.write_str("va_arg ")?;
+    let module = inst.module();
+    let src_data = module.context().value_data(u.src.get());
+    let src = Value::from_parts(u.src.get(), module, src_data.ty);
+    write!(f, "{} ", src.ty())?;
+    fmt_operand_ref(f, src, Some(slots))?;
+    write!(f, ", {}", inst.ty())
+}
+
+fn fmt_extract_value(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    d: &crate::instr_types::ExtractValueInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // `extractvalue <agg-ty> <agg>, idx0, idx1, ...`
+    // Mirrors the `dyn_cast<ExtractValueInst>` branch of
+    // `printInstruction` in `lib/IR/AsmWriter.cpp`.
+    f.write_str("extractvalue ")?;
+    let module = inst.module();
+    let agg_id = d.aggregate.get();
+    let agg_data = module.context().value_data(agg_id);
+    let agg = Value::from_parts(agg_id, module, agg_data.ty);
+    write!(f, "{} ", agg.ty())?;
+    fmt_operand_ref(f, agg, Some(slots))?;
+    for idx in d.indices.iter() {
+        write!(f, ", {idx}")?;
+    }
+    Ok(())
+}
+
+fn fmt_insert_value(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    d: &crate::instr_types::InsertValueInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // `insertvalue <agg-ty> <agg>, <elt-ty> <elt>, idx0, idx1, ...`
+    f.write_str("insertvalue ")?;
+    let module = inst.module();
+    let agg_id = d.aggregate.get();
+    let agg_data = module.context().value_data(agg_id);
+    let agg = Value::from_parts(agg_id, module, agg_data.ty);
+    write!(f, "{} ", agg.ty())?;
+    fmt_operand_ref(f, agg, Some(slots))?;
+    f.write_str(", ")?;
+    let val_id = d.value.get();
+    let val_data = module.context().value_data(val_id);
+    let val = Value::from_parts(val_id, module, val_data.ty);
+    write!(f, "{} ", val.ty())?;
+    fmt_operand_ref(f, val, Some(slots))?;
+    for idx in d.indices.iter() {
+        write!(f, ", {idx}")?;
+    }
+    Ok(())
+}
+
+fn fmt_extract_element(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    d: &crate::instr_types::ExtractElementInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // `extractelement <vec-ty> <vec>, <idx-ty> <idx>`
+    // Falls through `printInstruction`'s default branch with
+    // PrintAllTypes=true (vector type != index type).
+    f.write_str("extractelement ")?;
+    let module = inst.module();
+    let vec_id = d.vector.get();
+    let vec_data = module.context().value_data(vec_id);
+    let vec = Value::from_parts(vec_id, module, vec_data.ty);
+    write!(f, "{} ", vec.ty())?;
+    fmt_operand_ref(f, vec, Some(slots))?;
+    f.write_str(", ")?;
+    let idx_id = d.index.get();
+    let idx_data = module.context().value_data(idx_id);
+    let idx = Value::from_parts(idx_id, module, idx_data.ty);
+    write!(f, "{} ", idx.ty())?;
+    fmt_operand_ref(f, idx, Some(slots))
+}
+
+fn fmt_insert_element(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    d: &crate::instr_types::InsertElementInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // `insertelement <vec-ty> <vec>, <elt-ty> <elt>, <idx-ty> <idx>`
+    f.write_str("insertelement ")?;
+    let module = inst.module();
+    let vec_id = d.vector.get();
+    let vec_data = module.context().value_data(vec_id);
+    let vec = Value::from_parts(vec_id, module, vec_data.ty);
+    write!(f, "{} ", vec.ty())?;
+    fmt_operand_ref(f, vec, Some(slots))?;
+    f.write_str(", ")?;
+    let val_id = d.value.get();
+    let val_data = module.context().value_data(val_id);
+    let val = Value::from_parts(val_id, module, val_data.ty);
+    write!(f, "{} ", val.ty())?;
+    fmt_operand_ref(f, val, Some(slots))?;
+    f.write_str(", ")?;
+    let idx_id = d.index.get();
+    let idx_data = module.context().value_data(idx_id);
+    let idx = Value::from_parts(idx_id, module, idx_data.ty);
+    write!(f, "{} ", idx.ty())?;
+    fmt_operand_ref(f, idx, Some(slots))
+}
+
+fn fmt_shuffle_vector(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    d: &crate::instr_types::ShuffleVectorInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // `shufflevector <ty> <v1>, <ty> <v2>, <mask>` --- the mask is
+    // emitted via `printShuffleMask` in `lib/IR/AsmWriter.cpp`. The
+    // result type is `<N x i32>` where N == mask length.
+    f.write_str("shufflevector ")?;
+    let module = inst.module();
+    let l_id = d.lhs.get();
+    let l_data = module.context().value_data(l_id);
+    let l = Value::from_parts(l_id, module, l_data.ty);
+    write!(f, "{} ", l.ty())?;
+    fmt_operand_ref(f, l, Some(slots))?;
+    f.write_str(", ")?;
+    let r_id = d.rhs.get();
+    let r_data = module.context().value_data(r_id);
+    let r = Value::from_parts(r_id, module, r_data.ty);
+    write!(f, "{} ", r.ty())?;
+    fmt_operand_ref(f, r, Some(slots))?;
+    print_shuffle_mask(f, inst.ty(), &d.mask)
+}
+
+fn print_shuffle_mask(
+    f: &mut fmt::Formatter<'_>,
+    result_ty: crate::r#type::Type<'_>,
+    mask: &[i32],
+) -> fmt::Result {
+    // Mirrors `printShuffleMask` in `lib/IR/AsmWriter.cpp`.
+    f.write_str(", <")?;
+    if matches!(
+        result_ty.data(),
+        crate::r#type::TypeData::ScalableVector { .. }
+    ) {
+        f.write_str("vscale x ")?;
+    }
+    write!(f, "{} x i32> ", mask.len())?;
+    let all_zero = !mask.is_empty() && mask.iter().all(|&e| e == 0);
+    let all_poison = !mask.is_empty()
+        && mask
+            .iter()
+            .all(|&e| e == crate::instr_types::POISON_MASK_ELEM);
+    if all_zero {
+        f.write_str("zeroinitializer")?;
+    } else if all_poison {
+        f.write_str("poison")?;
+    } else {
+        f.write_str("<")?;
+        for (i, &e) in mask.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str("i32 ")?;
+            if e == crate::instr_types::POISON_MASK_ELEM {
+                f.write_str("poison")?;
+            } else {
+                write!(f, "{e}")?;
+            }
+        }
+        f.write_str(">")?;
+    }
+    Ok(())
+}
+
+fn write_atomic_suffix(
+    f: &mut fmt::Formatter<'_>,
+    ordering: crate::atomic_ordering::AtomicOrdering,
+    sync_scope: &crate::sync_scope::SyncScope,
+) -> fmt::Result {
+    // Mirrors `AssemblyWriter::writeAtomic` in `lib/IR/AsmWriter.cpp`:
+    //   ` syncscope("...") <ordering>` (system scope omits the qualifier).
+    if matches!(ordering, crate::atomic_ordering::AtomicOrdering::NotAtomic) {
+        return Ok(());
+    }
+    if !sync_scope.is_default() {
+        write!(f, " {sync_scope}")?;
+    }
+    write!(f, " {ordering}")
+}
+
+fn fmt_fence(f: &mut fmt::Formatter<'_>, d: &crate::instr_types::FenceInstData) -> fmt::Result {
+    // `fence [syncscope("...")] <ordering>`
+    f.write_str("fence")?;
+    write_atomic_suffix(f, d.ordering, &d.sync_scope)
+}
+
+fn fmt_cmpxchg(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    d: &crate::instr_types::AtomicCmpXchgInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // `cmpxchg [weak] [volatile] <ptr-ty> <ptr>, <cmp-ty> <cmp>, <new-ty> <new>
+    //          [syncscope("...")] <success-ord> <failure-ord>, align N`
+    f.write_str("cmpxchg")?;
+    if d.weak {
+        f.write_str(" weak")?;
+    }
+    if d.volatile {
+        f.write_str(" volatile")?;
+    }
+    let module = inst.module();
+    let ptr_id = d.ptr.get();
+    let ptr_data = module.context().value_data(ptr_id);
+    let ptr = Value::from_parts(ptr_id, module, ptr_data.ty);
+    write!(f, " {} ", ptr.ty())?;
+    fmt_operand_ref(f, ptr, Some(slots))?;
+    f.write_str(", ")?;
+    let cmp_id = d.cmp.get();
+    let cmp_data = module.context().value_data(cmp_id);
+    let cmp = Value::from_parts(cmp_id, module, cmp_data.ty);
+    write!(f, "{} ", cmp.ty())?;
+    fmt_operand_ref(f, cmp, Some(slots))?;
+    f.write_str(", ")?;
+    let new_id = d.new_val.get();
+    let new_data = module.context().value_data(new_id);
+    let new_v = Value::from_parts(new_id, module, new_data.ty);
+    write!(f, "{} ", new_v.ty())?;
+    fmt_operand_ref(f, new_v, Some(slots))?;
+    if !d.sync_scope.is_default() {
+        write!(f, " {}", d.sync_scope)?;
+    }
+    write!(f, " {} {}", d.success_ordering, d.failure_ordering)?;
+    if let Some(a) = d.align.align() {
+        write!(f, ", align {}", a.value())?;
+    }
+    Ok(())
+}
+
+fn fmt_atomicrmw(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    d: &crate::instr_types::AtomicRMWInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // `atomicrmw [volatile] <op> <ptr-ty> <ptr>, <val-ty> <val>
+    //           [syncscope("...")] <ordering>, align N`
+    f.write_str("atomicrmw")?;
+    if d.volatile {
+        f.write_str(" volatile")?;
+    }
+    write!(f, " {} ", d.op)?;
+    let module = inst.module();
+    let ptr_id = d.ptr.get();
+    let ptr_data = module.context().value_data(ptr_id);
+    let ptr = Value::from_parts(ptr_id, module, ptr_data.ty);
+    write!(f, "{} ", ptr.ty())?;
+    fmt_operand_ref(f, ptr, Some(slots))?;
+    f.write_str(", ")?;
+    let val_id = d.value.get();
+    let val_data = module.context().value_data(val_id);
+    let val = Value::from_parts(val_id, module, val_data.ty);
+    write!(f, "{} ", val.ty())?;
+    fmt_operand_ref(f, val, Some(slots))?;
+    write_atomic_suffix(f, d.ordering, &d.sync_scope)?;
+    if let Some(a) = d.align.align() {
+        write!(f, ", align {}", a.value())?;
+    }
+    Ok(())
 }
 
 fn fmt_ret(
@@ -604,6 +968,275 @@ fn fmt_call(
     f.write_str(")")
 }
 
+fn fmt_landingpad(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    d: &crate::instr_types::LandingPadInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // Mirrors `printInstruction`'s `LandingPadInst` arm:
+    //   `landingpad <ty>`
+    //   followed by `\n          cleanup` and `\n          catch <ty> <val>` /
+    //   `\n          filter <ty> <val>` lines.
+    f.write_str("landingpad ")?;
+    write!(f, "{}", inst.ty())?;
+    let cleanup = d.cleanup.get();
+    let clauses = d.clauses.borrow();
+    if cleanup || !clauses.is_empty() {
+        f.write_str("\n")?;
+    }
+    if cleanup {
+        f.write_str("          cleanup")?;
+    }
+    let module = inst.module();
+    for (i, (kind, op_cell)) in clauses.iter().enumerate() {
+        if i != 0 || cleanup {
+            f.write_str("\n")?;
+        }
+        let kw = match kind {
+            crate::instr_types::LandingPadClauseKind::Catch => "          catch ",
+            crate::instr_types::LandingPadClauseKind::Filter => "          filter ",
+        };
+        f.write_str(kw)?;
+        let op_id = op_cell.get();
+        let op_data = module.context().value_data(op_id);
+        let op_v = Value::from_parts(op_id, module, op_data.ty);
+        write!(f, "{} ", op_v.ty())?;
+        fmt_operand_ref(f, op_v, Some(slots))?;
+    }
+    Ok(())
+}
+
+fn fmt_resume(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    d: &crate::instr_types::ResumeInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // `resume <ty> <value>`
+    f.write_str("resume ")?;
+    let module = inst.module();
+    let v_id = d.value.get();
+    let v_data = module.context().value_data(v_id);
+    let v = Value::from_parts(v_id, module, v_data.ty);
+    write!(f, "{} ", v.ty())?;
+    fmt_operand_ref(f, v, Some(slots))
+}
+
+fn fmt_funclet_pad(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    keyword: &str,
+    parent_pad: &core::cell::Cell<Option<crate::value::ValueId>>,
+    args: &[core::cell::Cell<crate::value::ValueId>],
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // `<keyword> within <parent> [<arg-ty> <arg>, ...]`
+    f.write_str(keyword)?;
+    f.write_str(" within ")?;
+    let module = inst.module();
+    match parent_pad.get() {
+        None => f.write_str("none")?,
+        Some(id) => {
+            let pd = module.context().value_data(id);
+            let pv = Value::from_parts(id, module, pd.ty);
+            fmt_operand_ref(f, pv, Some(slots))?;
+        }
+    }
+    f.write_str(" [")?;
+    let mut first = true;
+    for arg_cell in args.iter() {
+        if !first {
+            f.write_str(", ")?;
+        }
+        first = false;
+        let aid = arg_cell.get();
+        let ad = module.context().value_data(aid);
+        let av = Value::from_parts(aid, module, ad.ty);
+        write!(f, "{} ", av.ty())?;
+        fmt_operand_ref(f, av, Some(slots))?;
+    }
+    f.write_str("]")
+}
+
+fn fmt_catchret(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    d: &crate::instr_types::CatchReturnInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // `catchret from <catchpad> to label <bb>`
+    f.write_str("catchret from ")?;
+    let module = inst.module();
+    let cp_id = d.catch_pad.get();
+    let cp_data = module.context().value_data(cp_id);
+    let cp = Value::from_parts(cp_id, module, cp_data.ty);
+    fmt_operand_ref(f, cp, Some(slots))?;
+    f.write_str(" to ")?;
+    let bb_data = module.context().value_data(d.target_bb);
+    let bb = Value::from_parts(d.target_bb, module, bb_data.ty);
+    write!(f, "{} ", bb.ty())?;
+    fmt_operand_ref(f, bb, Some(slots))
+}
+
+fn fmt_cleanupret(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    d: &crate::instr_types::CleanupReturnInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // `cleanupret from <cleanuppad> unwind [to caller | label <bb>]`
+    f.write_str("cleanupret from ")?;
+    let module = inst.module();
+    let cp_id = d.cleanup_pad.get();
+    let cp_data = module.context().value_data(cp_id);
+    let cp = Value::from_parts(cp_id, module, cp_data.ty);
+    fmt_operand_ref(f, cp, Some(slots))?;
+    f.write_str(" unwind ")?;
+    match d.unwind_dest {
+        None => f.write_str("to caller"),
+        Some(bb_id) => {
+            let bb_data = module.context().value_data(bb_id);
+            let bb = Value::from_parts(bb_id, module, bb_data.ty);
+            write!(f, "{} ", bb.ty())?;
+            fmt_operand_ref(f, bb, Some(slots))
+        }
+    }
+}
+
+fn fmt_catchswitch(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    d: &crate::instr_types::CatchSwitchInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // `catchswitch within <parent> [label <h1>, label <h2>, ...] unwind [to caller | label <bb>]`
+    f.write_str("catchswitch within ")?;
+    let module = inst.module();
+    match d.parent_pad.get() {
+        None => f.write_str("none")?,
+        Some(id) => {
+            let pd = module.context().value_data(id);
+            let pv = Value::from_parts(id, module, pd.ty);
+            fmt_operand_ref(f, pv, Some(slots))?;
+        }
+    }
+    f.write_str(" [")?;
+    let handlers = d.handlers.borrow();
+    let mut first = true;
+    for &h_id in handlers.iter() {
+        if !first {
+            f.write_str(", ")?;
+        }
+        first = false;
+        let hd = module.context().value_data(h_id);
+        let hv = Value::from_parts(h_id, module, hd.ty);
+        write!(f, "{} ", hv.ty())?;
+        fmt_operand_ref(f, hv, Some(slots))?;
+    }
+    f.write_str("] unwind ")?;
+    match d.unwind_dest.get() {
+        None => f.write_str("to caller"),
+        Some(bb_id) => {
+            let bb_data = module.context().value_data(bb_id);
+            let bb = Value::from_parts(bb_id, module, bb_data.ty);
+            write!(f, "{} ", bb.ty())?;
+            fmt_operand_ref(f, bb, Some(slots))
+        }
+    }
+}
+
+fn fmt_invoke(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    d: &crate::instr_types::InvokeInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // `invoke [<cc>] <ret-ty> <callee>(<args>)\n          to label %normal unwind label %unwind`
+    f.write_str("invoke ")?;
+    if d.calling_conv != crate::CallingConv::C {
+        write!(f, "{} ", d.calling_conv)?;
+    }
+    let module = inst.module();
+    write!(f, "{} ", inst.ty())?;
+    let callee_data = module.context().value_data(d.callee.get());
+    let callee = Value::from_parts(d.callee.get(), module, callee_data.ty);
+    fmt_operand_ref(f, callee, Some(slots))?;
+    f.write_str("(")?;
+    let mut first = true;
+    for arg_cell in d.args.iter() {
+        if !first {
+            f.write_str(", ")?;
+        }
+        first = false;
+        let aid = arg_cell.get();
+        let ad = module.context().value_data(aid);
+        let av = Value::from_parts(aid, module, ad.ty);
+        write!(f, "{} ", av.ty())?;
+        fmt_operand_ref(f, av, Some(slots))?;
+    }
+    f.write_str(")\n          to ")?;
+    let nd = module.context().value_data(d.normal_dest.get());
+    let nbb = Value::from_parts(d.normal_dest.get(), module, nd.ty);
+    write!(f, "{} ", nbb.ty())?;
+    fmt_operand_ref(f, nbb, Some(slots))?;
+    f.write_str(" unwind ")?;
+    let ud = module.context().value_data(d.unwind_dest.get());
+    let ubb = Value::from_parts(d.unwind_dest.get(), module, ud.ty);
+    write!(f, "{} ", ubb.ty())?;
+    fmt_operand_ref(f, ubb, Some(slots))
+}
+
+fn fmt_callbr(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    d: &crate::instr_types::CallBrInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // `callbr [<cc>] <ret-ty> <callee>(<args>)\n          to label %default [label %indirect1, ...]`
+    f.write_str("callbr ")?;
+    if d.calling_conv != crate::CallingConv::C {
+        write!(f, "{} ", d.calling_conv)?;
+    }
+    let module = inst.module();
+    write!(f, "{} ", inst.ty())?;
+    let callee_data = module.context().value_data(d.callee.get());
+    let callee = Value::from_parts(d.callee.get(), module, callee_data.ty);
+    fmt_operand_ref(f, callee, Some(slots))?;
+    f.write_str("(")?;
+    let mut first = true;
+    for arg_cell in d.args.iter() {
+        if !first {
+            f.write_str(", ")?;
+        }
+        first = false;
+        let aid = arg_cell.get();
+        let ad = module.context().value_data(aid);
+        let av = Value::from_parts(aid, module, ad.ty);
+        write!(f, "{} ", av.ty())?;
+        fmt_operand_ref(f, av, Some(slots))?;
+    }
+    f.write_str(")\n          to ")?;
+    let dd = module.context().value_data(d.default_dest.get());
+    let dbb = Value::from_parts(d.default_dest.get(), module, dd.ty);
+    write!(f, "{} ", dbb.ty())?;
+    fmt_operand_ref(f, dbb, Some(slots))?;
+    f.write_str(" [")?;
+    let mut first = true;
+    for ic in d.indirect_dests.iter() {
+        if !first {
+            f.write_str(", ")?;
+        }
+        first = false;
+        let ind_id = ic.get();
+        let ind_data = module.context().value_data(ind_id);
+        let ibb = Value::from_parts(ind_id, module, ind_data.ty);
+        write!(f, "{} ", ibb.ty())?;
+        fmt_operand_ref(f, ibb, Some(slots))?;
+    }
+    f.write_str("]")
+}
+
 fn fmt_phi(
     f: &mut fmt::Formatter<'_>,
     inst: &Instruction<'_>,
@@ -630,6 +1263,73 @@ fn fmt_phi(
         f.write_str(" ]")?;
     }
     Ok(())
+}
+
+fn fmt_switch(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    d: &crate::instr_types::SwitchInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // Mirrors the `SwitchInst` arm of `printInstruction`
+    // (`lib/IR/AsmWriter.cpp`):
+    //   `switch <cond-ty> <cond>, label <default> [\n    <case-ty> <val>, label <bb> ...\n  ]`
+    f.write_str("switch ")?;
+    let module = inst.module();
+    let cond_id = d.cond.get();
+    let cond_data = module.context().value_data(cond_id);
+    let cond = Value::from_parts(cond_id, module, cond_data.ty);
+    write!(f, "{} ", cond.ty())?;
+    fmt_operand_ref(f, cond, Some(slots))?;
+    f.write_str(", ")?;
+    let default_id = d.default_bb.get();
+    let default_data = module.context().value_data(default_id);
+    let default = Value::from_parts(default_id, module, default_data.ty);
+    write!(f, "{} ", default.ty())?;
+    fmt_operand_ref(f, default, Some(slots))?;
+    f.write_str(" [")?;
+    for (case_v, case_bb) in d.cases.borrow().iter() {
+        f.write_str("\n    ")?;
+        let v_id = case_v.get();
+        let v_data = module.context().value_data(v_id);
+        let v = Value::from_parts(v_id, module, v_data.ty);
+        write!(f, "{} ", v.ty())?;
+        fmt_operand_ref(f, v, Some(slots))?;
+        f.write_str(", ")?;
+        let bb_data = module.context().value_data(*case_bb);
+        let bb_v = Value::from_parts(*case_bb, module, bb_data.ty);
+        write!(f, "{} ", bb_v.ty())?;
+        fmt_operand_ref(f, bb_v, Some(slots))?;
+    }
+    f.write_str("\n  ]")
+}
+
+fn fmt_indirectbr(
+    f: &mut fmt::Formatter<'_>,
+    inst: &Instruction<'_>,
+    d: &crate::instr_types::IndirectBrInstData,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    // `indirectbr <addr-ty> <addr>, [label <bb1>, label <bb2>, ...]`
+    f.write_str("indirectbr ")?;
+    let module = inst.module();
+    let addr_id = d.addr.get();
+    let addr_data = module.context().value_data(addr_id);
+    let addr = Value::from_parts(addr_id, module, addr_data.ty);
+    write!(f, "{} ", addr.ty())?;
+    fmt_operand_ref(f, addr, Some(slots))?;
+    f.write_str(", [")?;
+    let dests = d.destinations.borrow();
+    for (i, &bb_id) in dests.iter().enumerate() {
+        if i > 0 {
+            f.write_str(", ")?;
+        }
+        let bb_data = module.context().value_data(bb_id);
+        let bb_v = Value::from_parts(bb_id, module, bb_data.ty);
+        write!(f, "{} ", bb_v.ty())?;
+        fmt_operand_ref(f, bb_v, Some(slots))?;
+    }
+    f.write_str("]")
 }
 
 fn fmt_br(
