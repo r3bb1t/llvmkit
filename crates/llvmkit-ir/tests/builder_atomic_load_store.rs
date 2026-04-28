@@ -280,6 +280,38 @@ fn verifier_rejects_atomic_load_non_power_of_two_size() -> Result<(), IrError> {
     Ok(())
 }
 
+/// Mirrors `test/Verifier/atomics.ll` (lines 1-15): an atomic load/store of a
+/// struct type must be rejected with "atomic load/store operand must have
+/// integer, pointer, floating point, or vector type!". Direct port of the
+/// upstream `; CHECK:` negative-test fixture.
+#[test]
+fn verifier_rejects_atomic_load_struct_operand() -> Result<(), IrError> {
+    let m = Module::new("a");
+    let i32_ty = m.i32_type();
+    let struct_ty = m.struct_type([i32_ty.as_type()], false);
+    let ptr_ty = m.ptr_type(0);
+    let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
+    let f = m.add_function::<()>("f", fn_ty, Linkage::External)?;
+    let entry = f.append_basic_block("entry");
+    let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+    let ptr: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
+    let cfg = AtomicLoadConfig::new(
+        AtomicOrdering::Unordered,
+        SyncScope::System,
+        Align::new(8).expect("align 8"),
+    );
+    let _ = b.build_load_atomic(struct_ty, ptr, cfg, "v")?;
+    b.build_ret_void();
+    let err = m
+        .verify_borrowed()
+        .expect_err("verifier must reject atomic load of struct type");
+    let IrError::VerifierFailure { rule, .. } = err else {
+        panic!("expected IrError::VerifierFailure, got {err:?}");
+    };
+    assert_eq!(rule, VerifierRule::AtomicLoadStoreInvalidType);
+    Ok(())
+}
+
 // --- bitcast methods ---------------------------------------------------
 
 /// Adaptation of `unittests/IR/PatternMatch.cpp::TEST_F(PatternMatchTest,

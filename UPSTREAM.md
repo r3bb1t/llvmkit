@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 370.
+Total `#[test]` functions: 374.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -392,3 +392,7 @@ Total `#[test]` functions: 370.
 | `crates/llvmkit-ir/tests/builder_convenience.rs::build_vector_splat_expands_to_insertelement_plus_shuffle` | `unittests/Analysis/VectorUtilsTest.cpp` line 92 (`IRB.CreateVectorSplat(5, ScalarC)`) + `lib/IR/IRBuilder.cpp::IRBuilderBase::CreateVectorSplat` lines 1141-1158 | mirror |
 | `crates/llvmkit-ir/tests/builder_convenience.rs::build_ptr_add_emits_gep_i8` | `unittests/Analysis/MemorySSATest.cpp` line 1117 (`B.CreatePtrAdd(Foo, B.getInt64(1), "bar")`) + `test/Assembler/opaque-ptr.ll` line 62 | mirror |
 | `crates/llvmkit-ir/tests/builder_convenience.rs::build_inbounds_ptr_add_emits_gep_inbounds_i8` | `test/Assembler/flags.ll` line 322 (`getelementptr inbounds i8, ptr %p, i64 %idx`) + `IRBuilder.h::CreateInBoundsPtrAdd` | mirror |
+| `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::verifier_rejects_atomic_load_struct_operand` | `test/Verifier/atomics.ll` lines 1-15 (`atomic load/store operand must have integer, pointer, floating point, or vector type!`) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_save_and_restore_round_trip` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, RAIIHelpersTest)` lines 833-844 (FastMathFlagGuard arm) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fneg_emits_default_then_fmf_form` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, UnaryOperators)` lines 535-555 (`CreateUnOp(FNeg)` + `CreateFNegFMF`) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_accumulates_contract_approx_reassoc_on_fmul` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` lines 663-697 (AllowContract / ApproxFunc / AllowReassoc arm) | mirror |
