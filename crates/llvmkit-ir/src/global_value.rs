@@ -74,3 +74,119 @@ impl fmt::Display for Linkage {
         f.write_str(self.keyword())
     }
 }
+
+/// Visibility marker. Mirrors `GlobalValue::VisibilityTypes`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum Visibility {
+    /// The GV is visible (default).
+    #[default]
+    Default,
+    /// The GV is hidden.
+    Hidden,
+    /// The GV is protected.
+    Protected,
+}
+
+impl Visibility {
+    /// `.ll` keyword for this visibility, or `None` for
+    /// [`Self::Default`] (no keyword in textual IR).
+    pub const fn keyword(self) -> Option<&'static str> {
+        match self {
+            Self::Default => None,
+            Self::Hidden => Some("hidden"),
+            Self::Protected => Some("protected"),
+        }
+    }
+}
+
+impl fmt::Display for Visibility {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.keyword() {
+            Some(s) => f.write_str(s),
+            None => Ok(()),
+        }
+    }
+}
+
+/// DLL storage class. Mirrors `GlobalValue::DLLStorageClassTypes`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum DllStorageClass {
+    /// No DLL storage class (default).
+    #[default]
+    Default,
+    /// `dllimport` -- to be imported from a DLL.
+    DllImport,
+    /// `dllexport` -- to be accessible from a DLL.
+    DllExport,
+}
+
+impl DllStorageClass {
+    /// `.ll` keyword for this DLL storage class, or `None` for
+    /// [`Self::Default`] (no keyword in textual IR).
+    pub const fn keyword(self) -> Option<&'static str> {
+        match self {
+            Self::Default => None,
+            Self::DllImport => Some("dllimport"),
+            Self::DllExport => Some("dllexport"),
+        }
+    }
+}
+
+impl fmt::Display for DllStorageClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.keyword() {
+            Some(s) => f.write_str(s),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Thread-local mode. Mirrors `GlobalValue::ThreadLocalMode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum ThreadLocalMode {
+    /// Not thread-local (default).
+    #[default]
+    NotThreadLocal,
+    /// `thread_local` -- general-dynamic TLS model.
+    GeneralDynamic,
+    /// `thread_local(localdynamic)`.
+    LocalDynamic,
+    /// `thread_local(initialexec)`.
+    InitialExec,
+    /// `thread_local(localexec)`.
+    LocalExec,
+}
+
+impl ThreadLocalMode {
+    /// `.ll` keyword for this TLS mode, or `None` for
+    /// [`Self::NotThreadLocal`] (no keyword in textual IR). Mirrors
+    /// `printThreadLocalModel` in `lib/IR/AsmWriter.cpp`.
+    pub const fn keyword(self) -> Option<&'static str> {
+        match self {
+            Self::NotThreadLocal => None,
+            Self::GeneralDynamic => Some("thread_local"),
+            Self::LocalDynamic => Some("thread_local(localdynamic)"),
+            Self::InitialExec => Some("thread_local(initialexec)"),
+            Self::LocalExec => Some("thread_local(localexec)"),
+        }
+    }
+
+    /// Returns `true` if this is any flavour of thread-local. Mirrors
+    /// `GlobalValue::isThreadLocal`.
+    #[inline]
+    pub const fn is_thread_local(self) -> bool {
+        !matches!(self, Self::NotThreadLocal)
+    }
+}
+
+impl fmt::Display for ThreadLocalMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.keyword() {
+            Some(s) => f.write_str(s),
+            None => Ok(()),
+        }
+    }
+}

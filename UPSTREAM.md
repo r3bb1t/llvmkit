@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 374.
+Total `#[test]` functions: 417.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -396,3 +396,46 @@ Total `#[test]` functions: 374.
 | `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_save_and_restore_round_trip` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, RAIIHelpersTest)` lines 833-844 (FastMathFlagGuard arm) | mirror |
 | `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fneg_emits_default_then_fmf_form` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, UnaryOperators)` lines 535-555 (`CreateUnOp(FNeg)` + `CreateFNegFMF`) | mirror |
 | `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_accumulates_contract_approx_reassoc_on_fmul` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` lines 663-697 (AllowContract / ApproxFunc / AllowReassoc arm) | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::simple_global_i32_zero` | `test/Bitcode/compatibility.ll` line 88-89 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::simple_global_constant_i32_zero` | `test/Bitcode/compatibility.ll` line 90-91 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::external_declaration_global` | `test/Bitcode/compatibility.ll` line 114-115 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_private` | `test/Bitcode/compatibility.ll` line 94-95 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_internal` | `test/Bitcode/compatibility.ll` line 96-97 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_available_externally` | `test/Bitcode/compatibility.ll` line 98-99 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_linkonce` | `test/Bitcode/compatibility.ll` line 100-101 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_linkonce_odr` | `test/Bitcode/compatibility.ll` line 110-111 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_weak` | `test/Bitcode/compatibility.ll` line 102-103 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_weak_odr` | `test/Bitcode/compatibility.ll` line 112-113 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_extern_weak_declaration` | `test/Bitcode/compatibility.ll` line 108-109 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::linkage_common_zero_init` | `test/Bitcode/compatibility.ll` line 104-105 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::visibility_hidden` | `test/Bitcode/compatibility.ll` line 120-121 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::visibility_protected` | `test/Bitcode/compatibility.ll` line 122-123 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::dll_export` | `test/Bitcode/compatibility.ll` line 130-131 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::dll_import_declaration` | `test/Bitcode/compatibility.ll` line 128-129 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::tls_general_dynamic` | `test/Bitcode/compatibility.ll` line 136-137 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::tls_local_dynamic` | `test/Bitcode/compatibility.ll` line 138-139 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::tls_initial_exec` | `test/Bitcode/compatibility.ll` line 140-141 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::tls_local_exec` | `test/Bitcode/compatibility.ll` line 142-143 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::unnamed_addr_global` | `test/Bitcode/compatibility.ll` line 146-147 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::unnamed_addr_local` | `test/Bitcode/compatibility.ll` line 148-149 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::address_space_one` | `test/Bitcode/compatibility.ll` line 152-153 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::externally_initialized_declaration` | `test/Bitcode/compatibility.ll` line 156-157 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::section_attribute` | `test/Bitcode/compatibility.ll` line 160-161 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::partition_attribute` | `test/Bitcode/compatibility.ll` line 164-165 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::align_attribute` | `test/Bitcode/compatibility.ll` line 188-189 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::comdat_any_emission` | `test/Bitcode/compatibility.ll` line 22-23 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::comdat_all_selection_kinds` | `test/Bitcode/compatibility.ll` line 22-31 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::comdat_attached_implicit_name` | `test/Bitcode/compatibility.ll` line 168-169 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::comdat_attached_explicit_name_with_section` | `test/Bitcode/compatibility.ll` line 182-185 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::const_struct_initializer` | `test/Bitcode/compatibility.ll` line 47 + `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, AsInstructionsTest)` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::const_array_i32_initializer` | `test/Bitcode/compatibility.ll` line 55-56 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::const_array_i8_prints_as_cstring` | `test/Bitcode/compatibility.ll` line 51-52 + `lib/IR/AsmWriter.cpp::ConstantDataArray::isString` arm (line 1730) | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::appending_global_cstring` | `test/Bitcode/compatibility.ll` line 106-107 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::const_vector_initializer` | `test/Bitcode/compatibility.ll` line 70-71 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::initializer_type_mismatch_rejected_at_construction` | `lib/IR/Verifier.cpp::Verifier::visitGlobalVariable` ("Global variable initializer type does not match global variable type!") | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::common_linkage_nonzero_initializer_rejected` | `lib/IR/Verifier.cpp::Verifier::visitGlobalVariable` (`hasCommonLinkage` arm: "'common' global must have a zero initializer!") | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::common_linkage_constant_rejected` | `lib/IR/Verifier.cpp::Verifier::visitGlobalVariable` (`hasCommonLinkage` arm: "'common' global may not be marked constant!") | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::scalable_vector_global_rejected` | `lib/IR/Verifier.cpp::Verifier::visitGlobalVariable` ("Globals cannot contain scalable types") | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::module_named_global_lookup_round_trip` | `unittests/IR/ModuleTest.cpp::TEST(ModuleTest, GlobalList)` (the `M->getNamedValue("GV")` round-trip) | port |
+| `crates/llvmkit-ir/tests/globals_basic.rs::module_iter_globals_preserves_order` | `unittests/IR/ModuleTest.cpp::TEST(ModuleTest, GlobalList)` (the `Range.begin()` walk) | port |
+| `crates/llvmkit-ir/tests/globals_basic.rs::comdat_get_or_insert_is_idempotent` | `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, ComdatUserTracking)` (second `getOrInsertComdat("comdat")` is identity-stable) | port |

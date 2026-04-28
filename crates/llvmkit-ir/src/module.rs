@@ -150,6 +150,20 @@ pub struct Module<'ctx> {
     functions: core::cell::RefCell<Vec<crate::value::ValueId>>,
     /// Module-level name -> function value-id table.
     function_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueId>>,
+    /// Globals defined in this module, in declaration order.
+    /// Mirrors `Module::GlobalList`. Stored under the same shape as
+    /// `functions` so the AsmWriter can iterate in source order.
+    globals: core::cell::RefCell<Vec<crate::value::ValueId>>,
+    /// Module-level name -> global value-id table.
+    global_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueId>>,
+    /// Module-level COMDAT entries. Mirrors `Module::ComdatSymTab`.
+    /// Stored in a `boxcar::Vec` for stable `&ComdatData` references
+    /// under `&self`, so [`ComdatRef`](crate::comdat::ComdatRef) can
+    /// hand out borrows without runtime cell juggling.
+    comdats: boxcar::Vec<crate::comdat::ComdatData>,
+    /// Name -> comdat-id table. Mirrors
+    /// `Module::ComdatSymTab` lookup.
+    comdat_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::comdat::ComdatId>>,
     /// Brand carrier. Without it, `Module<'ctx>` would have no use of
     /// `'ctx` in its fields (since `Context` is lifetime-free) and the
     /// parameter would be unconstrained.
@@ -166,6 +180,10 @@ impl<'ctx> Module<'ctx> {
             ctx: Context::new(),
             functions: core::cell::RefCell::new(Vec::new()),
             function_by_name: core::cell::RefCell::new(std::collections::HashMap::new()),
+            globals: core::cell::RefCell::new(Vec::new()),
+            global_by_name: core::cell::RefCell::new(std::collections::HashMap::new()),
+            comdats: boxcar::Vec::new(),
+            comdat_by_name: core::cell::RefCell::new(std::collections::HashMap::new()),
             _brand: PhantomData,
         }
     }
@@ -693,6 +711,191 @@ impl<'ctx> Module<'ctx> {
         Ok(VerifiedModule {
             inner: self,
             _brand: core::marker::PhantomData,
+        })
+    }
+
+    // ---- Globals ----
+
+    /// Add a `global` definition with an initializer. Mirrors the
+    /// in-module `GlobalVariable::GlobalVariable(Module&, Type*,
+    /// bool, LinkageTypes, Constant*, ...)` ctor.
+    ///
+    /// Returns `Err(IrError::DuplicateFunctionName)` if `name` is
+    /// already bound at module scope (the same table covers
+    /// functions and globals; mirrors LLVM's
+    /// `Module::getValueSymbolTable`). Returns
+    /// [`IrError::TypeMismatch`] when the initializer's type does
+    /// not match `value_type`.
+    pub fn add_global(
+        &'ctx self,
+        name: impl AsRef<str>,
+        value_type: Type<'ctx>,
+        initializer: impl crate::constant::IsConstant<'ctx>,
+    ) -> IrResult<crate::global_variable::GlobalVariable<'ctx>> {
+        crate::global_variable::GlobalBuilder::new(self, name.as_ref().to_owned(), value_type)
+            .initializer(initializer)
+            .build()
+    }
+
+    /// Add a `constant` (immutable) global with an initializer.
+    /// Mirrors the same ctor with `isConstant=true`.
+    pub fn add_global_constant(
+        &'ctx self,
+        name: impl AsRef<str>,
+        value_type: Type<'ctx>,
+        initializer: impl crate::constant::IsConstant<'ctx>,
+    ) -> IrResult<crate::global_variable::GlobalVariable<'ctx>> {
+        crate::global_variable::GlobalBuilder::new(self, name.as_ref().to_owned(), value_type)
+            .constant(true)
+            .initializer(initializer)
+            .build()
+    }
+
+    /// Add an external global declaration (no initializer).
+    /// Mirrors `Module::getOrInsertGlobal` in its declaration-form.
+    pub fn add_external_global(
+        &'ctx self,
+        name: impl AsRef<str>,
+        value_type: Type<'ctx>,
+    ) -> IrResult<crate::global_variable::GlobalVariable<'ctx>> {
+        crate::global_variable::GlobalBuilder::new(self, name.as_ref().to_owned(), value_type)
+            .linkage(crate::global_value::Linkage::External)
+            .build()
+    }
+
+    /// Begin a chainable [`GlobalBuilder`](crate::global_variable::GlobalBuilder)
+    /// for full control over linkage, visibility, address space,
+    /// alignment, comdat, etc.
+    pub fn global_builder(
+        &'ctx self,
+        name: impl Into<String>,
+        value_type: Type<'ctx>,
+    ) -> crate::global_variable::GlobalBuilder<'ctx> {
+        crate::global_variable::GlobalBuilder::new(self, name, value_type)
+    }
+
+    /// Look up a global by name. Mirrors `Module::getNamedGlobal`.
+    pub fn get_global(
+        &'ctx self,
+        name: &str,
+    ) -> Option<crate::global_variable::GlobalVariable<'ctx>> {
+        let id = self.global_by_name.borrow().get(name).copied()?;
+        let value_data = self.ctx.value_data(id);
+        Some(crate::global_variable::GlobalVariable::from_parts_unchecked(id, self, value_data.ty))
+    }
+
+    /// Iterate the module's globals in declaration order. Mirrors
+    /// `Module::globals`.
+    pub fn iter_globals(
+        &'ctx self,
+    ) -> impl ExactSizeIterator<Item = crate::global_variable::GlobalVariable<'ctx>> + 'ctx {
+        let ids: Vec<crate::value::ValueId> = self.globals.borrow().clone();
+        ids.into_iter().map(move |id| {
+            let value_data = self.ctx.value_data(id);
+            crate::global_variable::GlobalVariable::from_parts_unchecked(id, self, value_data.ty)
+        })
+    }
+
+    /// `true` if the module contains no globals. Mirrors
+    /// `Module::global_empty`.
+    #[inline]
+    pub fn global_empty(&self) -> bool {
+        self.globals.borrow().is_empty()
+    }
+
+    /// Crate-internal: install a built [`GlobalBuilder`] into the
+    /// module. Performs the duplicate-name check and the comdat
+    /// existence check, then pushes to the value arena.
+    pub(crate) fn install_global_variable(
+        &'ctx self,
+        builder: crate::global_variable::GlobalBuilder<'ctx>,
+    ) -> IrResult<crate::global_variable::GlobalVariable<'ctx>> {
+        let (name, data, _initializer, address_space, value_type) = builder.into_data();
+        if self.function_by_name.borrow().contains_key(&name)
+            || self.global_by_name.borrow().contains_key(&name)
+        {
+            return Err(IrError::DuplicateFunctionName { name });
+        }
+        let pointer_ty = self.ctx.ptr_type(address_space);
+        // Sanity: value_type must already be in the same context. Use
+        // the cached id directly. (Construction APIs only hand out
+        // typed ids belonging to this module.)
+        let _ = value_type;
+        let value_id = self.ctx.push_value(crate::value::ValueData {
+            ty: pointer_ty,
+            name: core::cell::RefCell::new(Some(name.clone())),
+            debug_loc: None,
+            kind: crate::value::ValueKindData::GlobalVariable(data),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        self.globals.borrow_mut().push(value_id);
+        self.global_by_name.borrow_mut().insert(name, value_id);
+        Ok(
+            crate::global_variable::GlobalVariable::from_parts_unchecked(
+                value_id, self, pointer_ty,
+            ),
+        )
+    }
+
+    // ---- Comdats ----
+
+    /// Get or create a [`ComdatRef`](crate::comdat::ComdatRef) of
+    /// the given name. Mirrors `Module::getOrInsertComdat`.
+    ///
+    /// On first lookup the selection kind defaults to
+    /// [`SelectionKind::Any`](crate::comdat::SelectionKind::Any);
+    /// callers can refine via
+    /// [`ComdatRef::set_selection_kind`](crate::comdat::ComdatRef::set_selection_kind).
+    pub fn get_or_insert_comdat(
+        &'ctx self,
+        name: impl AsRef<str>,
+    ) -> crate::comdat::ComdatRef<'ctx> {
+        let name = name.as_ref();
+        if let Some(&id) = self.comdat_by_name.borrow().get(name) {
+            return crate::comdat::ComdatRef {
+                module: ModuleRef::new(self),
+                id,
+            };
+        }
+        let index = self.comdats.push(crate::comdat::ComdatData::new(
+            name.to_owned(),
+            crate::comdat::SelectionKind::Any,
+        ));
+        let id = crate::comdat::ComdatId::from_index(index);
+        self.comdat_by_name.borrow_mut().insert(name.to_owned(), id);
+        crate::comdat::ComdatRef {
+            module: ModuleRef::new(self),
+            id,
+        }
+    }
+
+    /// Look up an existing comdat by name. Returns `None` when not
+    /// present.
+    pub fn get_comdat(&'ctx self, name: &str) -> Option<crate::comdat::ComdatRef<'ctx>> {
+        let id = *self.comdat_by_name.borrow().get(name)?;
+        Some(crate::comdat::ComdatRef {
+            module: ModuleRef::new(self),
+            id,
+        })
+    }
+
+    /// Crate-internal: borrow the underlying [`ComdatData`] by id.
+    /// Mirrors `Module::comdat_at`.
+    pub(crate) fn comdat_at(&self, id: crate::comdat::ComdatId) -> &crate::comdat::ComdatData {
+        self.comdats
+            .get(id.arena_index())
+            .unwrap_or_else(|| unreachable!("ComdatId is always valid for the owning module"))
+    }
+
+    /// Iterate comdat refs in insertion order. Mirrors
+    /// `Module::getComdatSymbolTable` (insertion-order traversal).
+    pub fn iter_comdats(
+        &'ctx self,
+    ) -> impl ExactSizeIterator<Item = crate::comdat::ComdatRef<'ctx>> + 'ctx {
+        let count = self.comdats.count();
+        (0..count).map(move |i| crate::comdat::ComdatRef {
+            module: ModuleRef::new(self),
+            id: crate::comdat::ComdatId::from_index(i),
         })
     }
 }

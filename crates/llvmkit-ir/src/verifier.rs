@@ -77,10 +77,98 @@ impl<'ctx> Verifier<'ctx> {
     /// `IrError` single-shot; future sessions can add a multi-error
     /// collecting variant if pass infrastructure needs it.
     pub(crate) fn run(&self) -> IrResult<()> {
+        for g in self.module.iter_globals() {
+            self.visit_global_variable(g)?;
+        }
         for f in self.module.iter_functions() {
             self.visit_function(f)?;
         }
         Ok(())
+    }
+
+    /// Mirrors `Verifier::visitGlobalVariable` for the constructive
+    /// subset shipped today (initializer type/sized, common-linkage
+    /// invariants, scalable-type rejection). The intrinsic-globals
+    /// (`llvm.global_ctors` / `llvm.used` / etc.) and metadata
+    /// attachment rules are deferred -- they need the metadata layer.
+    fn visit_global_variable(
+        &self,
+        g: crate::global_variable::GlobalVariable<'ctx>,
+    ) -> IrResult<()> {
+        let value_ty = g.value_type();
+
+        // Globals cannot contain scalable types.
+        if type_contains_scalable(self.module, value_ty.id()) {
+            return Err(self.fail_global(
+                g,
+                VerifierRule::GlobalScalableType,
+                format!("@{}: globals cannot contain scalable types", g.name()),
+            ));
+        }
+
+        if let Some(init) = g.initializer() {
+            // Initializer type must equal the global's value type.
+            if init.ty() != value_ty {
+                return Err(self.fail_global(
+                    g,
+                    VerifierRule::GlobalInitializerTypeMismatch,
+                    format!(
+                        "@{}: initializer type {} does not match value type {}",
+                        g.name(),
+                        init.ty().kind_label(),
+                        value_ty.kind_label(),
+                    ),
+                ));
+            }
+            // Initializer must be sized.
+            if !value_ty.is_sized() {
+                return Err(self.fail_global(
+                    g,
+                    VerifierRule::GlobalInitializerUnsized,
+                    format!("@{}: initializer must be sized", g.name()),
+                ));
+            }
+            // `common` linkage: zero init, not constant, no comdat.
+            if g.linkage() == crate::global_value::Linkage::Common {
+                let init_data = self.module.context().value_data(init.as_value().id);
+                let zero = matches!(
+                    &init_data.kind,
+                    ValueKindData::Constant(crate::constant::ConstantData::Int(words))
+                        if words.iter().all(|w| *w == 0)
+                ) || matches!(
+                    &init_data.kind,
+                    ValueKindData::Constant(crate::constant::ConstantData::Float(0))
+                ) || matches!(
+                    &init_data.kind,
+                    ValueKindData::Constant(crate::constant::ConstantData::PointerNull)
+                );
+                if !zero || g.is_constant() || g.comdat().is_some() {
+                    return Err(self.fail_global(
+                        g,
+                        VerifierRule::CommonLinkageInvariantViolated,
+                        format!(
+                            "@{}: common-linkage global must have a zero initializer, must not be constant, and must not be in a comdat",
+                            g.name()
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn fail_global(
+        &self,
+        g: crate::global_variable::GlobalVariable<'ctx>,
+        rule: VerifierRule,
+        message: String,
+    ) -> IrError {
+        IrError::VerifierFailure {
+            rule,
+            function: Some(format!("@{}", g.name())),
+            block: None,
+            message,
+        }
     }
 
     // ------------------------------------------------------------------
@@ -2155,6 +2243,22 @@ fn build_predecessors(f: FunctionValue<'_, Dyn>) -> HashMap<ValueId, Vec<ValueId
 // --------------------------------------------------------------------------
 // Type predicates (lifetime-free, operate on TypeId via the context)
 // --------------------------------------------------------------------------
+
+/// Recursively detects whether a type contains any scalable vector.
+/// Mirrors `Type::isScalableTy` in `llvm/lib/IR/Type.cpp`.
+fn type_contains_scalable(m: &Module<'_>, ty: TypeId) -> bool {
+    match m.context().type_data(ty) {
+        TypeData::ScalableVector { .. } => true,
+        TypeData::FixedVector { elem, .. } | TypeData::Array { elem, .. } => {
+            type_contains_scalable(m, *elem)
+        }
+        TypeData::Struct(s) => match s.body.borrow().as_ref() {
+            None => false,
+            Some(body) => body.elements.iter().any(|e| type_contains_scalable(m, *e)),
+        },
+        _ => false,
+    }
+}
 
 fn is_int_or_int_vector(m: &Module<'_>, ty: TypeId) -> bool {
     let d = m.context().type_data(ty);

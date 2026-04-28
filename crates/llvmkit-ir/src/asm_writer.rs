@@ -214,6 +214,9 @@ pub(crate) fn fmt_operand_ref(
                 None => f.write_str("%<unnumbered>"),
             },
         },
+        ValueKindData::GlobalVariable(_) => {
+            write!(f, "@{}", v.name().unwrap_or_default())
+        }
         ValueKindData::Constant(c) => fmt_constant(f, v, c),
     }
 }
@@ -309,6 +312,56 @@ fn fmt_float_constant(f: &mut fmt::Formatter<'_>, ty: Type<'_>, bits: u128) -> f
     }
 }
 
+/// Mirrors `llvm::printEscapedString` in
+/// `lib/Support/StringExtras.cpp`. Used both for c-string array
+/// constants and for `section`/`partition` attributes on globals.
+fn print_escaped_string(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
+    for &c in bytes {
+        if c == b'\\' {
+            f.write_str("\\\\")?;
+        } else if (0x20..=0x7e).contains(&c) && c != b'"' {
+            f.write_str(
+                core::str::from_utf8(&[c])
+                    .unwrap_or_else(|_| unreachable!("printable ASCII is valid UTF-8")),
+            )?;
+        } else {
+            write!(f, "\\{:02x}", c)?;
+        }
+    }
+    Ok(())
+}
+
+/// If the aggregate is `[N x i8]` and every element is a
+/// `ConstantInt`, return the underlying byte sequence; else `None`.
+/// Mirrors `ConstantDataArray::isString` (in C++ this is a runtime
+/// downcast plus a per-element check).
+fn collect_byte_string<'ctx>(
+    module: &'ctx crate::module::Module<'ctx>,
+    ty: Type<'_>,
+    elem_ids: &[ValueId],
+) -> Option<Vec<u8>> {
+    match ty.data() {
+        TypeData::Array { elem, .. } => match module.context().type_data(*elem) {
+            TypeData::Integer { bits: 8 } => {
+                let mut bytes = Vec::with_capacity(elem_ids.len());
+                for id in elem_ids {
+                    let data = module.context().value_data(*id);
+                    match &data.kind {
+                        ValueKindData::Constant(ConstantData::Int(words)) => {
+                            let v = words.first().copied().unwrap_or(0);
+                            bytes.push(v as u8);
+                        }
+                        _ => return None,
+                    }
+                }
+                Some(bytes)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn fmt_aggregate_constant(
     f: &mut fmt::Formatter<'_>,
     host: Value<'_>,
@@ -316,6 +369,11 @@ fn fmt_aggregate_constant(
 ) -> fmt::Result {
     let module = host.module();
     let ty = host.ty();
+    if let Some(bytes) = collect_byte_string(module, ty, elem_ids) {
+        f.write_str("c\"")?;
+        print_escaped_string(f, &bytes)?;
+        return f.write_str("\"");
+    }
     let (open, close) = match ty.data() {
         TypeData::Array { .. } => ("[", "]"),
         TypeData::Struct(s) => {
@@ -1540,13 +1598,136 @@ pub(crate) fn fmt_function(
 
 pub(crate) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &Module<'_>) -> fmt::Result {
     writeln!(f, "; ModuleID = '{}'", m.name())?;
+
+    // Comdats. Mirrors `AssemblyWriter::printModuleSummaryIndex`'s
+    // comdat-emission loop in `lib/IR/AsmWriter.cpp` (the bare-module
+    // path: a leading blank line if any comdats exist, then one line
+    // per comdat).
+    let mut comdats_iter = m.iter_comdats();
+    if comdats_iter.len() > 0 {
+        f.write_str("\n")?;
+        for c in comdats_iter.by_ref() {
+            fmt_comdat(f, c)?;
+        }
+    }
+
+    // Globals. Mirrors the `for (const GlobalVariable &GV :
+    // M->globals())` loop in `printModule`.
+    if !m.global_empty() {
+        f.write_str("\n")?;
+        for g in m.iter_globals() {
+            fmt_global(f, g)?;
+            f.write_str("\n")?;
+        }
+    }
+
     let mut first = true;
     for func in m.iter_functions() {
-        if !first {
+        if !first || !m.global_empty() || m.iter_comdats().len() > 0 {
             f.write_str("\n")?;
         }
         first = false;
         fmt_function(f, func)?;
+    }
+    Ok(())
+}
+
+fn fmt_comdat(f: &mut fmt::Formatter<'_>, c: crate::comdat::ComdatRef<'_>) -> fmt::Result {
+    // `$<name> = comdat <kind>\n`. Mirrors
+    // `Comdat::print` in `lib/IR/AsmWriter.cpp`.
+    writeln!(f, "${} = comdat {}", c.name(), c.selection_kind())
+}
+
+fn fmt_global(
+    f: &mut fmt::Formatter<'_>,
+    g: crate::global_variable::GlobalVariable<'_>,
+) -> fmt::Result {
+    // Mirrors `AssemblyWriter::printGlobal` in
+    // `lib/IR/AsmWriter.cpp`.
+    write!(f, "@{} = ", g.name())?;
+
+    // `external` keyword in front of decl-only globals with
+    // External linkage. Mirrors the special case in `printGlobal`.
+    if !g.has_initializer() && g.linkage() == crate::global_value::Linkage::External {
+        f.write_str("external ")?;
+    }
+
+    // Linkage keyword (with trailing space) -- empty for External.
+    let linkage_kw = g.linkage().keyword();
+    if !linkage_kw.is_empty() {
+        f.write_str(linkage_kw)?;
+        f.write_str(" ")?;
+    }
+
+    // Visibility / DLL / TLS / unnamed-addr. Each prints with a
+    // trailing space when present. Order mirrors `printGlobal`.
+    if let Some(s) = g.visibility().keyword() {
+        f.write_str(s)?;
+        f.write_str(" ")?;
+    }
+    if let Some(s) = g.dll_storage_class().keyword() {
+        f.write_str(s)?;
+        f.write_str(" ")?;
+    }
+    if let Some(s) = g.thread_local_mode().keyword() {
+        f.write_str(s)?;
+        f.write_str(" ")?;
+    }
+    if let Some(s) = g.unnamed_addr().keyword() {
+        f.write_str(s)?;
+        f.write_str(" ")?;
+    }
+
+    // Address space. Mirrors `printAddressSpace(M, AS, Out, "",
+    // " ")` for non-zero AS.
+    if g.address_space() != 0 {
+        write!(f, "addrspace({}) ", g.address_space())?;
+    }
+
+    if g.is_externally_initialized() {
+        f.write_str("externally_initialized ")?;
+    }
+    f.write_str(if g.is_constant() {
+        "constant "
+    } else {
+        "global "
+    })?;
+    write!(f, "{}", g.value_type())?;
+
+    // Initializer.
+    if let Some(init) = g.initializer() {
+        f.write_str(" ")?;
+        let v = init.as_value();
+        fmt_operand_ref(f, v, None)?;
+    }
+
+    // Section.
+    if let Some(section) = g.section() {
+        f.write_str(", section \"")?;
+        print_escaped_string(f, section.as_bytes())?;
+        f.write_str("\"")?;
+    }
+
+    // Partition.
+    if let Some(partition) = g.partition() {
+        f.write_str(", partition \"")?;
+        print_escaped_string(f, partition.as_bytes())?;
+        f.write_str("\"")?;
+    }
+
+    // Comdat. Mirrors `maybePrintComdat` (with leading `,` for a
+    // GlobalVariable host).
+    if let Some(c) = g.comdat() {
+        f.write_str(", comdat")?;
+        if c.name() != g.name() {
+            write!(f, "(${})", c.name())?;
+        }
+    }
+
+    // Alignment. Mirrors `if (MaybeAlign A = GV->getAlign()) Out
+    // << ", align " << A->value();`.
+    if let Some(a) = g.align().align() {
+        write!(f, ", align {}", a.value())?;
     }
     Ok(())
 }

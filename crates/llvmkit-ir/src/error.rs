@@ -80,6 +80,7 @@ pub enum ValueCategoryLabel {
     BasicBlock,
     Function,
     Instruction,
+    GlobalVariable,
 }
 
 impl fmt::Display for ValueCategoryLabel {
@@ -90,6 +91,7 @@ impl fmt::Display for ValueCategoryLabel {
             ValueCategoryLabel::BasicBlock => "basic-block",
             ValueCategoryLabel::Function => "function",
             ValueCategoryLabel::Instruction => "instruction",
+            ValueCategoryLabel::GlobalVariable => "global-variable",
         };
         f.write_str(s)
     }
@@ -281,6 +283,24 @@ pub enum VerifierRule {
     /// `indirectbr` address operand is not a pointer. Mirrors
     /// `Verifier::visitIndirectBrInst`.
     IndirectBrNonPointerAddress,
+    /// Global variable initializer type does not match the global's
+    /// value type. Mirrors `Verifier::visitGlobalVariable`
+    /// ("Global variable initializer type does not match global
+    /// variable type!").
+    GlobalInitializerTypeMismatch,
+    /// Global variable initializer is unsized. Mirrors
+    /// `Verifier::visitGlobalVariable` ("Global variable initializer
+    /// must be sized").
+    GlobalInitializerUnsized,
+    /// `common`-linkage global has a non-zero initializer, is
+    /// `constant`, or is in a comdat. Mirrors
+    /// `Verifier::visitGlobalVariable` (`hasCommonLinkage` arm).
+    CommonLinkageInvariantViolated,
+    /// Global value type contains a scalable vector. Mirrors
+    /// `Verifier::visitGlobalVariable` ("Globals cannot contain
+    /// scalable types").
+    GlobalScalableType,
+
     UseBeforeDef,
 }
 
@@ -365,6 +385,14 @@ impl fmt::Display for VerifierRule {
             Self::AtomicRMWOperandTypeMismatch => "atomicrmw operand type does not match operation",
             Self::SwitchOperandTypeMismatch => "switch operand types disagree",
             Self::IndirectBrNonPointerAddress => "indirectbr address operand is not a pointer",
+            Self::GlobalInitializerTypeMismatch => {
+                "global variable initializer type does not match value type"
+            }
+            Self::GlobalInitializerUnsized => "global variable initializer must be sized",
+            Self::CommonLinkageInvariantViolated => {
+                "common-linkage global must have a zero initializer, must not be constant, and must not be in a comdat"
+            }
+            Self::GlobalScalableType => "globals cannot contain scalable types",
             Self::UseBeforeDef => "instruction does not dominate all uses",
         };
         f.write_str(s)

@@ -24,6 +24,7 @@ pub mod basic_block;
 pub mod block_state;
 pub mod calling_conv;
 pub mod cmp_predicate;
+pub mod comdat;
 pub mod constant;
 pub mod constants;
 pub mod debug_loc;
@@ -34,6 +35,7 @@ pub mod fmf;
 pub mod function;
 pub mod gep_no_wrap_flags;
 pub mod global_value;
+pub mod global_variable;
 pub mod instr_types;
 pub mod instruction;
 pub mod instructions;
@@ -68,6 +70,7 @@ pub use basic_block::BasicBlock;
 pub use block_state::{BlockSealState, Sealed, Unsealed};
 pub use calling_conv::CallingConv;
 pub use cmp_predicate::{FloatPredicate, IntPredicate};
+pub use comdat::{ComdatRef, SelectionKind};
 pub use constant::{Constant, IsConstant};
 pub use constants::{
     ConstantAggregate, ConstantFloatValue, ConstantIntValue, ConstantPointerNull, PoisonValue,
@@ -84,6 +87,8 @@ pub use fmf::FastMathFlags;
 pub use function::{FunctionBuilder, FunctionValue};
 pub use gep_no_wrap_flags::GepNoWrapFlags;
 pub use global_value::Linkage;
+pub use global_value::{DllStorageClass, ThreadLocalMode, Visibility};
+pub use global_variable::{GlobalBuilder, GlobalVariable};
 pub use instr_types::{
     AShrFlags, AddFlags, AtomicCmpXchgConfig, AtomicLoadConfig, AtomicRMWConfig, AtomicRMWFlags,
     AtomicStoreConfig, CmpXchgFlags, LShrFlags, MulFlags, SDivFlags, ShlFlags, SubFlags,

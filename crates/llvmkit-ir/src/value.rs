@@ -122,6 +122,7 @@ pub(crate) enum ValueKindData {
     BasicBlock(BasicBlockData),
     Function(FunctionData),
     Instruction(InstructionData),
+    GlobalVariable(crate::global_variable::GlobalVariableData),
 }
 
 // --------------------------------------------------------------------------
@@ -203,6 +204,7 @@ impl<'ctx> Value<'ctx> {
             ValueKindData::BasicBlock(_) => ValueCategory::BasicBlock,
             ValueKindData::Function(_) => ValueCategory::Function,
             ValueKindData::Instruction(_) => ValueCategory::Instruction,
+            ValueKindData::GlobalVariable(_) => ValueCategory::GlobalVariable,
         }
     }
 
@@ -247,6 +249,7 @@ pub enum ValueCategory {
     BasicBlock,
     Function,
     Instruction,
+    GlobalVariable,
 }
 
 impl From<ValueCategory> for crate::error::ValueCategoryLabel {
@@ -257,6 +260,7 @@ impl From<ValueCategory> for crate::error::ValueCategoryLabel {
             ValueCategory::BasicBlock => Self::BasicBlock,
             ValueCategory::Function => Self::Function,
             ValueCategory::Instruction => Self::Instruction,
+            ValueCategory::GlobalVariable => Self::GlobalVariable,
         }
     }
 }
