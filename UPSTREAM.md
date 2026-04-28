@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 367.
+Total `#[test]` functions: 370.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -389,3 +389,6 @@ Total `#[test]` functions: 367.
 | `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_ueq_emits_ueq` | `test/Bitcode/compatibility.ll` line 1691 | mirror |
 | `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fp_phi_emits_phi_with_double_kind` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, FPMathOperator)` line 539 (`Builder.CreatePHI(getDoubleTy(), 0)`) | mirror |
 | `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_pointer_phi_emits_phi_with_ptr` | `test/Verifier/inalloca2.ll` line 35 (`%args = phi ptr [ %a, %if ], [ %b, %else ]`) | llvmkit-specific |
+| `crates/llvmkit-ir/tests/builder_convenience.rs::build_vector_splat_expands_to_insertelement_plus_shuffle` | `unittests/Analysis/VectorUtilsTest.cpp` line 92 (`IRB.CreateVectorSplat(5, ScalarC)`) + `lib/IR/IRBuilder.cpp::IRBuilderBase::CreateVectorSplat` lines 1141-1158 | mirror |
+| `crates/llvmkit-ir/tests/builder_convenience.rs::build_ptr_add_emits_gep_i8` | `unittests/Analysis/MemorySSATest.cpp` line 1117 (`B.CreatePtrAdd(Foo, B.getInt64(1), "bar")`) + `test/Assembler/opaque-ptr.ll` line 62 | mirror |
+| `crates/llvmkit-ir/tests/builder_convenience.rs::build_inbounds_ptr_add_emits_gep_inbounds_i8` | `test/Assembler/flags.ll` line 322 (`getelementptr inbounds i8, ptr %p, i64 %idx`) + `IRBuilder.h::CreateInBoundsPtrAdd` | mirror |

@@ -2783,6 +2783,105 @@ where
         Ok(IntValue::<bool>::from_value_unchecked(inst.as_value()))
     }
 
+    // ---- Vector splat / ptr arithmetic / aggregate ret convenience ----
+
+    /// Broadcast `scalar` across a fixed-width vector of `count` lanes.
+    /// Mirrors `IRBuilderBase::CreateVectorSplat(unsigned NumElts, Value*,
+    /// const Twine&)` (`lib/IR/IRBuilder.cpp` line 1141), which expands to
+    /// `insertelement <count x T> poison, <T> %v, i64 0` followed by
+    /// `shufflevector ..., <count x T> poison, <count x i32> zeroinitializer`.
+    /// The result is named `<name>.splat`; the intermediate insertelement
+    /// is `<name>.splatinsert`.
+    pub fn build_vector_splat<V>(
+        &self,
+        count: u32,
+        scalar: V,
+        name: impl AsRef<str>,
+    ) -> IrResult<super::value::VectorValue<'ctx>>
+    where
+        V: super::value::IsValue<'ctx>,
+    {
+        if count == 0 {
+            return Err(IrError::InvalidOperation {
+                message: "build_vector_splat requires at least one lane",
+            });
+        }
+        let scalar_value = scalar.as_value();
+        self.require_same_module(scalar_value)?;
+        let elem_ty = scalar_value.ty();
+        let vec_ty = self.module.vector_type(elem_ty, count, false);
+        let poison = vec_ty.as_type().get_poison();
+        let i64_ty = self.module.i64_type();
+        let zero_idx = i64_ty.const_int(0_u32);
+        let name_ref = name.as_ref();
+        let insert_name = if name_ref.is_empty() {
+            String::from("splatinsert")
+        } else {
+            format!("{name_ref}.splatinsert")
+        };
+        let inserted =
+            self.build_insert_element::<_, _, i64, _>(poison, scalar, zero_idx, insert_name)?;
+        let mask = vec![0_i32; usize::try_from(count).unwrap_or(usize::MAX)];
+        let splat_name = if name_ref.is_empty() {
+            String::from("splat")
+        } else {
+            format!("{name_ref}.splat")
+        };
+        let shuf = self.build_shuffle_vector(
+            inserted.as_instruction().as_value(),
+            poison,
+            &mask,
+            splat_name,
+        )?;
+        Ok(super::value::VectorValue::from_value_unchecked(
+            shuf.as_instruction().as_value(),
+        ))
+    }
+
+    // ---- ptr_add / inbounds_ptr_add ----
+
+    /// `getelementptr i8, ptr <ptr>, <offset>` -- byte-offset pointer
+    /// arithmetic. Mirrors `IRBuilder::CreatePtrAdd` in `IRBuilder.h`
+    /// (line 2039), which expands to `CreateGEP(getInt8Ty(), Ptr, Offset, ...)`.
+    pub fn build_ptr_add<P, O, W>(
+        &self,
+        ptr: P,
+        offset: O,
+        name: impl AsRef<str>,
+    ) -> IrResult<super::value::PointerValue<'ctx>>
+    where
+        P: super::value::IntoPointerValue<'ctx>,
+        W: super::int_width::IntWidth,
+        O: super::int_width::IntoIntValue<'ctx, W>,
+    {
+        let i8_ty = self.module.i8_type();
+        let p = ptr.into_pointer_value(self.module)?;
+        let offset_v = offset.into_int_value(self.module)?;
+        let offset_value = super::value::IsValue::as_value(offset_v);
+        self.build_gep(i8_ty, p, core::iter::once(offset_value), name)
+    }
+
+    /// `getelementptr inbounds i8, ptr <ptr>, <offset>`. Mirrors
+    /// `IRBuilder::CreateInBoundsPtrAdd` (`IRBuilder.h` line 2044), which
+    /// expands to `CreateGEP(getInt8Ty(), Ptr, Offset, Name, GEPNoWrapFlags::inBounds())`.
+    pub fn build_inbounds_ptr_add<P, O, W>(
+        &self,
+        ptr: P,
+        offset: O,
+        name: impl AsRef<str>,
+    ) -> IrResult<super::value::PointerValue<'ctx>>
+    where
+        P: super::value::IntoPointerValue<'ctx>,
+        W: super::int_width::IntWidth,
+        O: super::int_width::IntoIntValue<'ctx, W>,
+    {
+        let i8_ty = self.module.i8_type();
+        let p = ptr.into_pointer_value(self.module)?;
+        let offset_v = offset.into_int_value(self.module)?;
+        let offset_value = super::value::IsValue::as_value(offset_v);
+        self.build_inbounds_gep(i8_ty, p, core::iter::once(offset_value), name)
+    }
+
     // ---- Integer comparison ----
 
     /// Produce `icmp <pred> <ty> <lhs>, <rhs>`. Mirrors

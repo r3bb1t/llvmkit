@@ -496,6 +496,20 @@ decl_value_handle!(
         TypeData::FixedVector { .. } | TypeData::ScalableVector { .. }
     )
 );
+impl<'ctx> VectorValue<'ctx> {
+    /// Crate-internal: wrap a [`Value`] known to have a vector type.
+    /// The IR builder uses this when it just produced a vector-result
+    /// instruction (insertelement / shufflevector / splat).
+    #[inline]
+    pub(crate) fn from_value_unchecked(v: Value<'ctx>) -> Self {
+        Self {
+            id: v.id,
+            module: v.module,
+            ty: v.ty,
+        }
+    }
+}
+
 decl_value_handle!(
     /// Value whose type is a function signature. Mostly seen as a
     /// `FunctionValue` operand, but the concrete category is checked
