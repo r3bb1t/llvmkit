@@ -625,6 +625,45 @@ impl<'ctx, W: IntWidth> ConstantIntValue<'ctx, W> {
             _ => None,
         }
     }
+
+    /// Sign-extend the constant to a 128-bit signed integer. Mirrors
+    /// `ConstantInt::getSExtValue` (`lib/IR/Constants.h`). Returns
+    /// `None` if the constant's bit width does not fit in 128 bits;
+    /// every llvmkit-shipped width (`bool`, `i8`..`i128`, and the
+    /// `Width<const N>` form for `N <= 128`) round-trips losslessly.
+    ///
+    /// Differs from [`Self::value_zext_u128`] only when the high bit
+    /// of the type's width is set: this method propagates it across
+    /// the upper bits, [`Self::value_zext_u128`] zero-fills.
+    pub fn value_sext_i128(self) -> Option<i128> {
+        let w = self.words();
+        let n = self.bit_width();
+        if n > 128 {
+            return None;
+        }
+        let raw = match w.len() {
+            0 => 0u128,
+            1 => u128::from(w[0]),
+            2 => u128::from(w[0]) | (u128::from(w[1]) << 64),
+            _ => return None,
+        };
+        let extended = if n == 128 {
+            // Width matches; the bit pattern *is* the i128 value.
+            raw
+        } else {
+            let sign_bit = 1u128 << (n - 1);
+            let mask = (1u128 << n) - 1;
+            let lo = raw & mask;
+            if (lo & sign_bit) != 0 {
+                // High bit set -> propagate ones across the upper bits.
+                lo | !mask
+            } else {
+                lo
+            }
+        };
+        // Reinterpret the u128 bit pattern as i128 without `as`.
+        Some(i128::from_ne_bytes(extended.to_ne_bytes()))
+    }
 }
 
 // --------------------------------------------------------------------------

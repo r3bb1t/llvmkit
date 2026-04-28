@@ -7,6 +7,21 @@
 //! expects an integer predicate is a compile error. The raw discriminants
 //! match the upstream `CmpInst::Predicate` enum so a downstream parser /
 //! AsmWriter port can round-trip via `as u8` / `from_raw`.
+//!
+//! ## Why signedness lives on the predicate, not on values
+//!
+//! LLVM IR values are sign-agnostic --- a 32-bit register's bit pattern
+//! can be interpreted either way (`lib/IR/Constants.h` canonicalises
+//! every `ConstantInt` to an unsigned `APInt` internally). The
+//! signedness of an integer comparison therefore lives in the
+//! *predicate*, not in the operands. [`IntPredicate`] separates the
+//! signedness-irrelevant predicates (`Eq`, `Ne`) from the unsigned
+//! family (`Ult`/`Ule`/`Ugt`/`Uge`) and the signed family
+//! (`Slt`/`Sle`/`Sgt`/`Sge`). For ergonomics,
+//! [`crate::IRBuilder`] also ships per-predicate convenience methods
+//! (`build_icmp_eq`, `build_icmp_slt`, ...) that bake the predicate
+//! into the method name --- see `IRBuilder::CreateICmp{EQ,SLT,...}` in
+//! `IRBuilder.h` for the upstream parallel.
 
 use core::fmt;
 

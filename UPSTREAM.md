@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 285.
+Total `#[test]` functions: 292.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -305,3 +305,10 @@ Total `#[test]` functions: 285.
 | `crates/llvmkit-ir/tests/struct_typestate.rs::named_struct_retains_name` | `unittests/IR/TypesTest.cpp::TEST(TypesTest, StructType)` | port |
 | `crates/llvmkit-ir/tests/struct_typestate.rs::opaque_to_body_set_transition` | `unittests/IR/TypesTest.cpp::TEST(TypesTest, LayoutIdenticalEmptyStructs)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/struct_typestate.rs::double_set_body_runtime_path_rejects` | `unittests/IR/TypesTest.cpp::TEST(TypesTest, StructType)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/constant_int_signs.rs::int_signs_i8_round_trips` | `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, IntSigns)` | port |
+| `crates/llvmkit-ir/tests/constant_int_signs.rs::int_signs_i32_propagates_sign` | `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, IntSigns)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/constant_int_signs.rs::int_signs_i1_sign_extends_to_minus_one` | `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, IntSigns)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/builder_icmp_named.rs::build_icmp_eq_emits_icmp_eq` | `test/Assembler/2007-03-18-InvalidNumberedVar.ll` | mirror |
+| `crates/llvmkit-ir/tests/builder_icmp_named.rs::build_icmp_ne_emits_icmp_ne` | `test/Assembler/auto_upgrade_nvvm_intrinsics.ll` | mirror |
+| `crates/llvmkit-ir/tests/builder_icmp_named.rs::build_icmp_slt_emits_icmp_slt` | `test/Assembler/2004-02-27-SelfUseAssertError.ll` | mirror |
+| `crates/llvmkit-ir/tests/builder_icmp_named.rs::build_icmp_sge_emits_icmp_sge` | `test/Assembler/auto_upgrade_nvvm_intrinsics.ll` | mirror |

@@ -1669,6 +1669,185 @@ where
         Ok(IntValue::<bool>::from_value_unchecked(inst.as_value()))
     }
 
+    // Per-predicate convenience wrappers. Mirror the LLVM C++
+    // `IRBuilder::CreateICmp{EQ,NE,SLT,...}` family (`IRBuilder.h`):
+    // each one bakes the predicate into the method name so the call
+    // site spells signedness intent explicitly. The predicate is
+    // signedness-agnostic at the LLVM IR value level (the `i32` bit
+    // pattern is the same either way) -- the *operation* is what
+    // carries the sign, and these methods make that visible without a
+    // free-floating `IntPredicate::Slt` token.
+
+    /// `icmp eq` -- equal. Signedness-irrelevant. Mirrors
+    /// `IRBuilder::CreateICmpEQ`.
+    #[inline]
+    pub fn build_icmp_eq<W, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        W: IntWidth,
+        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+    {
+        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Eq, lhs, rhs, name)
+    }
+
+    /// `icmp ne` -- not equal. Signedness-irrelevant. Mirrors
+    /// `IRBuilder::CreateICmpNE`.
+    #[inline]
+    pub fn build_icmp_ne<W, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        W: IntWidth,
+        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+    {
+        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Ne, lhs, rhs, name)
+    }
+
+    /// `icmp ult` -- unsigned less than. Mirrors
+    /// `IRBuilder::CreateICmpULT`.
+    #[inline]
+    pub fn build_icmp_ult<W, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        W: IntWidth,
+        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+    {
+        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Ult, lhs, rhs, name)
+    }
+
+    /// `icmp ule` -- unsigned less than or equal. Mirrors
+    /// `IRBuilder::CreateICmpULE`.
+    #[inline]
+    pub fn build_icmp_ule<W, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        W: IntWidth,
+        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+    {
+        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Ule, lhs, rhs, name)
+    }
+
+    /// `icmp ugt` -- unsigned greater than. Mirrors
+    /// `IRBuilder::CreateICmpUGT`.
+    #[inline]
+    pub fn build_icmp_ugt<W, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        W: IntWidth,
+        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+    {
+        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Ugt, lhs, rhs, name)
+    }
+
+    /// `icmp uge` -- unsigned greater than or equal. Mirrors
+    /// `IRBuilder::CreateICmpUGE`.
+    #[inline]
+    pub fn build_icmp_uge<W, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        W: IntWidth,
+        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+    {
+        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Uge, lhs, rhs, name)
+    }
+
+    /// `icmp slt` -- signed less than. Mirrors
+    /// `IRBuilder::CreateICmpSLT`.
+    #[inline]
+    pub fn build_icmp_slt<W, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        W: IntWidth,
+        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+    {
+        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Slt, lhs, rhs, name)
+    }
+
+    /// `icmp sle` -- signed less than or equal. Mirrors
+    /// `IRBuilder::CreateICmpSLE`.
+    #[inline]
+    pub fn build_icmp_sle<W, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        W: IntWidth,
+        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+    {
+        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Sle, lhs, rhs, name)
+    }
+
+    /// `icmp sgt` -- signed greater than. Mirrors
+    /// `IRBuilder::CreateICmpSGT`.
+    #[inline]
+    pub fn build_icmp_sgt<W, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        W: IntWidth,
+        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+    {
+        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Sgt, lhs, rhs, name)
+    }
+
+    /// `icmp sge` -- signed greater than or equal. Mirrors
+    /// `IRBuilder::CreateICmpSGE`.
+    #[inline]
+    pub fn build_icmp_sge<W, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        W: IntWidth,
+        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+    {
+        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Sge, lhs, rhs, name)
+    }
+
     // ---- Phi ----
 
     /// Produce `phi <ty>` with no initial incoming edges. Marker-only
