@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 417.
+Total `#[test]` functions: 500.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -439,3 +439,86 @@ Total `#[test]` functions: 417.
 | `crates/llvmkit-ir/tests/globals_basic.rs::module_named_global_lookup_round_trip` | `unittests/IR/ModuleTest.cpp::TEST(ModuleTest, GlobalList)` (the `M->getNamedValue("GV")` round-trip) | port |
 | `crates/llvmkit-ir/tests/globals_basic.rs::module_iter_globals_preserves_order` | `unittests/IR/ModuleTest.cpp::TEST(ModuleTest, GlobalList)` (the `Range.begin()` walk) | port |
 | `crates/llvmkit-ir/tests/globals_basic.rs::comdat_get_or_insert_is_idempotent` | `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, ComdatUserTracking)` (second `getOrInsertComdat("comdat")` is identity-stable) | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::layout_string_format_accepts_well_formed` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, LayoutStringFormat)` | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::layout_string_format_rejects_empty_specs` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, LayoutStringFormat)` (rejection arm) | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::invalid_specifier_rejected` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, InvalidSpecifier)` | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_endianness_round_trip` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseEndianness)` | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_endianness_rejects_extra_chars` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseEndianness)` (rejection arm) | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_mangling_modes` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseMangling)` | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_mangling_rejects_malformed` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseMangling)` (malformed arm) | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_mangling_rejects_unknown_mode` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseMangling)` (unknown-mode arm) | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_stack_natural_align_accepts` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseStackNaturalAlign)` | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_stack_natural_align_rejects_empty` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseStackNaturalAlign)` (empty arm) | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_stack_natural_align_rejects_bad_int` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseStackNaturalAlign)` (bad-int arm) | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_stack_natural_align_rejects_zero` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseStackNaturalAlign)` (zero arm) | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_stack_natural_align_rejects_non_power_of_two_byte_multiple` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseStackNaturalAlign)` (non-pow2 arm) | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_addr_space_specifiers` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseAddrSpace)` | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_addr_space_rejects_missing_value` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseAddrSpace)` (missing-value arm) | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_addr_space_rejects_bad_value` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseAddrSpace)` (bad-value arm) | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_func_ptr_spec` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseFuncPtrSpec)` | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_native_integers_spec_accepts` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseNativeIntegersSpec)` | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_native_integers_spec_rejects_empty_components` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseNativeIntegersSpec)` (empty arm) | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_native_integers_spec_rejects_zero_or_huge` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseNativeIntegersSpec)` (zero/huge arm) | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_non_integral_addr_space_accepts` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, ParseNonIntegralAddrSpace)` | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_non_integral_addr_space_rejects_zero` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, ParseNonIntegralAddrSpace)` (zero arm) | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_non_integral_addr_space_rejects_empty_components` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, ParseNonIntegralAddrSpace)` (empty arm) | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_non_integral_addr_space_rejects_bad_int` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, ParseNonIntegralAddrSpace)` (bad-int arm) | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::get_stack_alignment_default_unset` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, GetStackAlignment)` (default arm) | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::get_stack_alignment_table` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, GetStackAlignment)` (table arm) | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::get_pointer_size_in_bits_table` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, GetPointerSizeInBits)` | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::get_pointer_size_table` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, GetPointerSize)` | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::get_index_size_in_bits_table` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, GetIndexSizeInBits)` | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::get_index_size_table` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, GetIndexSize)` | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::get_pointer_abi_alignment_table` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, GetPointerABIAlignment)` | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::get_pointer_pref_alignment_table` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, GetPointerPrefAlignment)` | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::address_space_name` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, AddressSpaceName)` | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::is_non_integral_address_space` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, IsNonIntegralAddressSpace)` | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::x86_64_linux_round_trip` | `lib/IR/AsmWriter.cpp::printModule` (`target datalayout` line round-trips through `getStringRepresentation`) | llvmkit-specific |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::aarch64_darwin_round_trip` | `lib/Target/AArch64/AArch64TargetMachine.cpp` (Triple -> layout-string mapping) | llvmkit-specific |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::wasm32_round_trip` | `lib/Target/WebAssembly/WebAssemblyTargetMachine.cpp` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::module_emits_target_datalayout_directive` | `lib/IR/AsmWriter.cpp::printModule` (`target datalayout` emission) | mirror |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::module_emits_target_triple_directive` | `lib/IR/AsmWriter.cpp::printModule` (`target triple` emission) | mirror |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::module_emits_module_asm_directive` | `lib/IR/AsmWriter.cpp::printModule` (module asm loop) | mirror |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::type_size_in_bits_basic_types` | `IR/DataLayout.h::DataLayout::getTypeSizeInBits` (per-type case table) | mirror |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::type_store_size_non_power_of_two` | `IR/DataLayout.h::DataLayout::getTypeStoreSize` (i36/x86_fp80 example in the doc-comment) | mirror |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::type_alloc_size_i64_default` | `lib/IR/DataLayout.cpp::DataLayout::getTypeAllocSize` (integer arm) | mirror |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::abi_type_align_i32_default` | `lib/IR/DataLayout.cpp::DataLayout::getABITypeAlign` (integer + float arms) | mirror |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::struct_layout_simple` | `lib/IR/DataLayout.cpp::StructLayout::StructLayout` | mirror |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::struct_layout_packed` | `lib/IR/DataLayout.cpp::StructLayout::StructLayout` (packed arm) | mirror |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::default_layout_is_default` | `IR/DataLayout.h::DataLayout::isDefault` | mirror |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::value_or_abi_type_align` | `IR/DataLayout.h::DataLayout::getValueOrABITypeAlignment` | mirror |
+| `crates/llvmkit-ir/tests/cfg_basic.rs::unconditional_branch_cfg_edges` | `IR/CFG.h` successors/predecessors over `BranchInst`; `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)` | mirror |
+| `crates/llvmkit-ir/tests/cfg_basic.rs::conditional_branch_preserves_duplicate_edges` | `IR/CFG.h` successor iteration over duplicate branch edges; `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)` | mirror |
+| `crates/llvmkit-ir/tests/cfg_basic.rs::switch_cfg_edges_include_default_then_cases` | `IR/CFG.h` successors; `IR/Instructions.h::SwitchInst` case destination semantics | mirror |
+| `crates/llvmkit-ir/tests/cfg_basic.rs::indirectbr_cfg_edges_are_listed_destinations` | `IR/CFG.h` successors; `IR/Instructions.h::IndirectBrInst` destination semantics | mirror |
+| `crates/llvmkit-ir/tests/cfg_basic.rs::invoke_cfg_edges_are_normal_then_unwind` | `IR/CFG.h` successors; `llvm/lib/IR/Verifier.cpp` invoke unwind destination validation | mirror |
+| `crates/llvmkit-ir/tests/cfg_basic.rs::callbr_cfg_edges_are_default_then_indirect_dests` | `IR/CFG.h` successors; `test/Assembler/callbr.ll` destination order | mirror |
+| `crates/llvmkit-ir/tests/cfg_basic.rs::catchret_cfg_edge_is_target_block` | `IR/CFG.h` successors; `IR/Instructions.h::CatchReturnInst::getSuccessor` | mirror |
+| `crates/llvmkit-ir/tests/cfg_basic.rs::cleanupret_cfg_edge_is_optional_unwind_dest` | `IR/CFG.h` successors; `llvm/lib/IR/Verifier.cpp` cleanupret unwind destination validation | mirror |
+| `crates/llvmkit-ir/tests/cfg_basic.rs::catchswitch_cfg_edges_are_handlers_then_unwind_dest` | `IR/CFG.h` successors; `IR/Instructions.h::CatchSwitchInst` handler/unwind destination semantics | mirror |
+| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_phi_predecessors_through_switch_passes` | `llvm/lib/IR/Verifier.cpp::visitPHINode`; `IR/CFG.h` switch successor semantics | mirror |
+| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_phi_predecessors_through_switch_rejects_missing_edge` | `llvm/lib/IR/Verifier.cpp::visitPHINode`; `IR/CFG.h` switch successor semantics | mirror |
+| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_phi_predecessors_through_invoke_passes` | `llvm/lib/IR/Verifier.cpp::visitPHINode`; `IR/CFG.h` invoke successor semantics | mirror |
+| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_phi_predecessors_through_invoke_rejects_wrong_block` | `llvm/lib/IR/Verifier.cpp::visitPHINode`; `IR/CFG.h` invoke successor semantics | mirror |
+| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_phi_predecessors_through_callbr_passes` | `llvm/lib/IR/Verifier.cpp::visitPHINode`; `IR/CFG.h` callbr successor semantics | mirror |
+| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_phi_predecessors_through_callbr_rejects_missing_edge` | `llvm/lib/IR/Verifier.cpp::visitPHINode`; `IR/CFG.h` callbr successor semantics | mirror |
+| `crates/llvmkit-ir/tests/dominator_tree_basic.rs::reachable_and_unreachable_block_dominance` | `unittests/IR/DominatorTreeTest.cpp::TEST(DominatorTree, Unreachable)` | port |
+| `crates/llvmkit-ir/tests/dominator_tree_basic.rs::same_block_instruction_order_and_unreachable_use_semantics` | `unittests/IR/DominatorTreeTest.cpp::TEST(DominatorTree, Unreachable)` | port |
+| `crates/llvmkit-ir/tests/dominator_tree_basic.rs::phi_operands_are_dominated_on_incoming_edges` | `unittests/IR/DominatorTreeTest.cpp::TEST(DominatorTree, PHIs)`; `llvm/lib/IR/Dominators.cpp::DominatorTree::dominates(const BasicBlock*, const Use&)` | port |
+| `crates/llvmkit-ir/tests/dominator_tree_basic.rs::invoke_result_dominates_normal_destination_but_not_unwind` | `unittests/IR/DominatorTreeTest.cpp::TEST(DominatorTree, Unreachable)` invoke assertions; `llvm/lib/IR/Dominators.cpp` | port |
+| `crates/llvmkit-ir/tests/dominator_tree_basic.rs::duplicate_edges_do_not_dominate_successor` | `unittests/IR/DominatorTreeTest.cpp::TEST(DominatorTree, NonUniqueEdges)`; `llvm/lib/IR/Dominators.cpp::BasicBlockEdge::isSingleEdge` | port |
+| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_cross_block_dominated_use_passes` | `llvm/lib/IR/Verifier.cpp::verifyDominatesUse`; `llvm/lib/IR/Dominators.cpp` | mirror |
+| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_cross_block_branch_value_used_after_join_fails` | `llvm/lib/IR/Verifier.cpp::verifyDominatesUse`; `llvm/lib/IR/Dominators.cpp` | mirror |
+| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_phi_incoming_edge_dominance_passes` | `llvm/lib/IR/Verifier.cpp::verifyDominatesUse`; `llvm/lib/IR/Dominators.cpp` PHI incoming-edge semantics | mirror |
+| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_phi_incoming_edge_dominance_fails` | `llvm/lib/IR/Verifier.cpp::verifyDominatesUse`; `llvm/lib/IR/Dominators.cpp` PHI incoming-edge semantics | mirror |
+| `crates/llvmkit-ir/tests/verifier_basic.rs::verify_invoke_result_used_on_unwind_edge_fails` | `llvm/lib/IR/Verifier.cpp::verifyDominatesUse`; `llvm/lib/IR/Dominators.cpp` invoke normal-edge semantics | mirror |
+| `crates/llvmkit-ir/tests/analysis_basic.rs::preserved_analyses_checker_behavior` | `unittests/IR/PassManagerTest.cpp::TEST(PreservedAnalysesTest, Basic)` plus `Preserve`/`PreserveSets`/`Abandon` | port |
+| `crates/llvmkit-ir/tests/analysis_basic.rs::function_analysis_runs_once_caches_and_invalidates` | `unittests/IR/PassManagerTest.cpp` local `TestFunctionAnalysis` cache/invalidation behavior | port |
+| `crates/llvmkit-ir/tests/analysis_basic.rs::module_analysis_runs_once_caches_and_invalidates` | `unittests/IR/PassManagerTest.cpp` local `TestModuleAnalysis` cache/invalidation behavior | port |
+| `crates/llvmkit-ir/tests/analysis_basic.rs::dominator_tree_analysis_caches_and_cfg_preserves` | `llvm/lib/IR/Dominators.cpp::DominatorTreeAnalysis::run` and `DominatorTree::invalidate` | port |
+| `crates/llvmkit-ir/tests/pass_manager_basic.rs::module_pass_manager_runs_in_order` | `unittests/IR/PassManagerTest.cpp::TEST_F(PassManagerTest, Basic)` | port |
+| `crates/llvmkit-ir/tests/pass_manager_basic.rs::module_to_function_adaptor_runs_defined_functions_only` | `unittests/IR/PassManagerTest.cpp` module-to-function adaptor behavior | port |
+| `crates/llvmkit-ir/tests/pass_manager_basic.rs::function_pass_can_query_dominator_tree_analysis` | `unittests/IR/PassManagerTest.cpp` function pass analysis query/preservation behavior | port |
+| `crates/llvmkit-ir/tests/pass_instrumentation_basic.rs::instrumentation_orders_and_skips_optional_passes` | `unittests/IR/PassBuilderCallbacksTest.cpp` before/after pass callback and optional skip behavior | port |
+| `crates/llvmkit-ir/tests/pass_instrumentation_basic.rs::required_passes_cannot_be_skipped` | `unittests/IR/PassBuilderCallbacksTest.cpp` required-pass skip behavior | port |
+| `crates/llvmkit-ir/tests/pass_instrumentation_basic.rs::analysis_callbacks_fire_only_on_computation` | `unittests/IR/PassBuilderCallbacksTest.cpp` before/after analysis callback behavior | port |

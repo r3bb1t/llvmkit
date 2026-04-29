@@ -476,6 +476,14 @@ pub enum IrError {
     /// flag on `add`, non-power-of-two alignment).
     #[error("invalid operation: {message}")]
     InvalidOperation { message: &'static str },
+    /// `target datalayout = "..."` directive could not be parsed.
+    /// Mirrors the `Error` returns of
+    /// `lib/IR/DataLayout.cpp::DataLayout::parseLayoutString`.
+    #[error("invalid datalayout: {reason}")]
+    InvalidDataLayout { reason: String },
+    /// An analysis result was requested before its analysis pass was registered.
+    #[error("analysis {name} is not registered")]
+    AnalysisNotRegistered { name: &'static str },
     /// IR validation failure detected by [`Module::verify`](crate::Module::verify) /
     /// [`Module::verify_borrowed`](crate::Module::verify_borrowed). The
     /// `rule` discriminator names the LangRef invariant that was

@@ -1,19 +1,20 @@
 #![forbid(unsafe_code)]
 //! LLVM IR data model in pure safe Rust.
 //!
-//! This crate mirrors `llvm/lib/IR/` and `llvm/include/llvm/IR/` from the
-//! reference C++ tree (LLVM 22.1.4). One Rust file per C++ translation unit;
-//! header-only C++ files map to a Rust file of the same stem.
+//! This crate mirrors the relevant `llvm/lib/IR/` and `llvm/include/llvm/IR/`
+//! surfaces from LLVM 22.1.4. The currently shipped layer includes typed IR
+//! construction, AsmWriter support, structural verification, shared CFG
+//! queries, recompute-on-demand dominance, and a minimal new-pass-manager-
+//! inspired analysis / pass substrate.
 //!
-//! See `local://IR_FOUNDATION_PLAN.md` for the design rationale and
-//! per-phase deliverables. The current shipped surface is **Phase A**
-//! (types, predicates, flags, calling conventions), **Phase B
-//! attributes** subset, the **value-layer foundation**, **minimum
-//! function/argument/basic-block/instruction layer** (`add`/`sub`/`mul`/
-//! `ret`), and a **minimum [`IRBuilder`]**
-//! with type-state insertion-point invariants.
+//! The surface is intentionally incomplete: the `.ll` parser, bitcode, and
+//! built-in optimization pipelines are still ahead. See [`crate::analysis`],
+//! [`crate::pass_manager`], [`crate::pass_instrumentation`],
+//! [`crate::cfg`], and [`crate::dominator_tree`] for the pass-readiness slice
+//! that now ships.
 
 pub mod align;
+pub mod analysis;
 pub mod argument;
 pub mod asm_writer;
 pub mod atomic_ordering;
@@ -23,12 +24,15 @@ pub mod attributes;
 pub mod basic_block;
 pub mod block_state;
 pub mod calling_conv;
+pub mod cfg;
 pub mod cmp_predicate;
 pub mod comdat;
 pub mod constant;
 pub mod constants;
+pub mod data_layout;
 pub mod debug_loc;
 pub mod derived_types;
+pub mod dominator_tree;
 pub mod error;
 pub mod float_kind;
 pub mod fmf;
@@ -46,6 +50,8 @@ pub(crate) mod llvm_context;
 pub mod marker;
 pub mod module;
 pub mod operator;
+pub mod pass_instrumentation;
+pub mod pass_manager;
 pub mod phi_state;
 pub mod sized_element;
 pub mod struct_body_state;
@@ -61,6 +67,11 @@ pub mod vector_element;
 pub mod verifier;
 
 pub mod unnamed_addr;
+pub use analysis::{
+    AllAnalysesOnFunction, AllAnalysesOnModule, CFGAnalyses, FunctionAnalysis,
+    FunctionAnalysisManager, FunctionAnalysisResult, ModuleAnalysis, ModuleAnalysisManager,
+    ModuleAnalysisResult, PreservedAnalyses, PreservedAnalysisChecker,
+};
 pub use argument::Argument;
 pub use atomic_ordering::AtomicOrdering;
 pub use atomicrmw_binop::AtomicRMWBinOp;
@@ -69,6 +80,7 @@ pub use attributes::{AttrIndex, AttrKind, Attribute, AttributeList, AttributeSet
 pub use basic_block::BasicBlock;
 pub use block_state::{BlockSealState, Sealed, Unsealed};
 pub use calling_conv::CallingConv;
+pub use cfg::{BasicBlockEdge, FunctionCfg};
 pub use cmp_predicate::{FloatPredicate, IntPredicate};
 pub use comdat::{ComdatRef, SelectionKind};
 pub use constant::{Constant, IsConstant};
@@ -76,12 +88,16 @@ pub use constants::{
     ConstantAggregate, ConstantFloatValue, ConstantIntValue, ConstantPointerNull, PoisonValue,
     UndefValue,
 };
+pub use data_layout::{
+    DataLayout, FunctionPtrAlignType, ManglingMode, PointerSpec, PrimitiveSpec, StructLayoutInfo,
+};
 pub use debug_loc::DebugLoc;
 pub use derived_types::{
     AggregateType, AnyTypeEnum, ArrayType, BasicMetadataTypeEnum, BasicTypeEnum, FloatType,
     FunctionType, IntType, LabelType, MetadataType, PointerType, SizedType, StructType,
     TargetExtType, TokenType, VectorType, VoidType,
 };
+pub use dominator_tree::{DominatorTree, DominatorTreeAnalysis};
 pub use error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel, VerifierRule};
 pub use fmf::FastMathFlags;
 pub use function::{FunctionBuilder, FunctionValue};
@@ -112,6 +128,10 @@ pub use ir_builder::{CallBuilder, IRBuilder, Positioned, SelectArm, Unpositioned
 pub use marker::{Dyn, Ptr, ReturnMarker};
 pub use module::{Module, ModuleId, ModuleRef, VerifiedModule};
 pub use operator::OverflowingBinaryOperator;
+pub use pass_instrumentation::{PassInstrumentationAnalysis, PassInstrumentationCallbacks};
+pub use pass_manager::{
+    FunctionPass, FunctionPassManager, ModulePass, ModulePassManager, ModuleToFunctionPassAdaptor,
+};
 pub use phi_state::{Closed, Open, PhiState};
 pub use sized_element::{ArrayDyn, SizedElement};
 pub use struct_body_state::{BodySet, Opaque, StructBodyDyn, StructBodyState};

@@ -245,6 +245,12 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
         ))
     }
 
+    /// Successor blocks of this block's terminator, preserving duplicate CFG edges.
+    /// Returns an empty list for unterminated blocks and terminators without successors.
+    pub fn successors(self) -> Vec<BasicBlock<'ctx, Dyn>> {
+        crate::cfg::block_successors(self)
+    }
+
     /// Append an instruction value-id to the block. Crate-internal:
     /// only the IR builder calls this.
     pub(crate) fn append_instruction(self, instr: ValueId) {

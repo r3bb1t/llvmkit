@@ -350,3 +350,420 @@ fn verify_function_with_empty_block_fails_missing_terminator() -> Result<(), IrE
     );
     Ok(())
 }
+
+/// Mirrors `llvm/lib/IR/Verifier.cpp::visitPHINode` predecessor checks
+/// using `IR/CFG.h` switch successors: default and case edges both reach
+/// the PHI block, so duplicate incoming entries from the same predecessor
+/// are valid when they carry the same value.
+#[test]
+fn verify_phi_predecessors_through_switch_passes() -> Result<(), IrError> {
+    let m = Module::new("phi_switch_ok");
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function::<i32>("f", fn_ty, Linkage::External)?;
+    let entry = f.append_basic_block("entry");
+    let join = f.append_basic_block("join");
+
+    let x: IntValue<i32> = f.param(0)?.try_into()?;
+    let (_sealed, switch) = IRBuilder::new_for::<i32>(&m)
+        .position_at_end(entry)
+        .build_switch(x, join, "")?;
+    let _closed = switch.add_case(i32_ty.const_int(0_i32), join)?.finish();
+
+    let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
+    let phi = b
+        .build_int_phi::<i32>("p")?
+        .add_incoming(x, entry)?
+        .add_incoming(x, entry)?;
+    b.build_ret(phi.as_int_value())?;
+
+    m.verify_borrowed()?;
+    Ok(())
+}
+
+/// Mirrors `llvm/lib/IR/Verifier.cpp::visitPHINode` predecessor-count
+/// rejection through `SwitchInst` CFG edges.
+#[test]
+fn verify_phi_predecessors_through_switch_rejects_missing_edge() -> Result<(), IrError> {
+    let m = Module::new("phi_switch_bad");
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function::<i32>("f", fn_ty, Linkage::External)?;
+    let entry = f.append_basic_block("entry");
+    let join = f.append_basic_block("join");
+
+    let x: IntValue<i32> = f.param(0)?.try_into()?;
+    let (_sealed, switch) = IRBuilder::new_for::<i32>(&m)
+        .position_at_end(entry)
+        .build_switch(x, join, "")?;
+    let _closed = switch.add_case(i32_ty.const_int(0_i32), join)?.finish();
+
+    let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
+    let phi = b.build_int_phi::<i32>("p")?.add_incoming(x, entry)?;
+    b.build_ret(phi.as_int_value())?;
+
+    let err = m
+        .verify_borrowed()
+        .expect_err("missing switch incoming must fail");
+    assert!(
+        matches!(
+            err,
+            IrError::VerifierFailure {
+                rule: VerifierRule::PhiPredecessorMismatch,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+    Ok(())
+}
+
+/// Mirrors `llvm/lib/IR/Verifier.cpp::visitPHINode` predecessor checks
+/// using `InvokeInst` normal-edge CFG semantics from `IR/CFG.h`.
+#[test]
+fn verify_phi_predecessors_through_invoke_passes() -> Result<(), IrError> {
+    let m = Module::new("phi_invoke_ok");
+    let i32_ty = m.i32_type();
+    let void_ty = m.void_type();
+    let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+    let callee = m.add_function::<()>("callee", callee_ty, Linkage::External)?;
+    let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function::<i32>("f", caller_ty, Linkage::External)?;
+    let entry = f.append_basic_block("entry");
+    let join = f.append_basic_block("join");
+    let unwind = f.append_basic_block("unwind");
+    let x: IntValue<i32> = f.param(0)?.try_into()?;
+
+    IRBuilder::new_for::<i32>(&m)
+        .position_at_end(entry)
+        .build_invoke(callee, Vec::<llvmkit_ir::Value>::new(), join, unwind, "")?;
+    IRBuilder::new_for::<i32>(&m)
+        .position_at_end(unwind)
+        .build_ret(x)?;
+
+    let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
+    let phi = b.build_int_phi::<i32>("p")?.add_incoming(x, entry)?;
+    b.build_ret(phi.as_int_value())?;
+
+    m.verify_borrowed()?;
+    Ok(())
+}
+
+/// Mirrors `llvm/lib/IR/Verifier.cpp::visitPHINode` predecessor-block
+/// rejection for an `InvokeInst` normal destination.
+#[test]
+fn verify_phi_predecessors_through_invoke_rejects_wrong_block() -> Result<(), IrError> {
+    let m = Module::new("phi_invoke_bad");
+    let i32_ty = m.i32_type();
+    let void_ty = m.void_type();
+    let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+    let callee = m.add_function::<()>("callee", callee_ty, Linkage::External)?;
+    let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function::<i32>("f", caller_ty, Linkage::External)?;
+    let entry = f.append_basic_block("entry");
+    let join = f.append_basic_block("join");
+    let unwind = f.append_basic_block("unwind");
+    let other = f.append_basic_block("other");
+    let x: IntValue<i32> = f.param(0)?.try_into()?;
+
+    IRBuilder::new_for::<i32>(&m)
+        .position_at_end(entry)
+        .build_invoke(callee, Vec::<llvmkit_ir::Value>::new(), join, unwind, "")?;
+    IRBuilder::new_for::<i32>(&m)
+        .position_at_end(unwind)
+        .build_ret(x)?;
+    IRBuilder::new_for::<i32>(&m)
+        .position_at_end(other)
+        .build_ret(x)?;
+
+    let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
+    let phi = b.build_int_phi::<i32>("p")?.add_incoming(x, other)?;
+    b.build_ret(phi.as_int_value())?;
+
+    let err = m
+        .verify_borrowed()
+        .expect_err("wrong invoke incoming block must fail");
+    assert!(
+        matches!(
+            err,
+            IrError::VerifierFailure {
+                rule: VerifierRule::PhiPredecessorMismatch,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+    Ok(())
+}
+
+/// Mirrors `llvm/lib/IR/Verifier.cpp::visitPHINode` predecessor checks
+/// using `CallBrInst` default-plus-indirect CFG edges from `IR/CFG.h`.
+#[test]
+fn verify_phi_predecessors_through_callbr_passes() -> Result<(), IrError> {
+    let m = Module::new("phi_callbr_ok");
+    let i32_ty = m.i32_type();
+    let void_ty = m.void_type();
+    let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+    let callee = m.add_function::<()>("callee", callee_ty, Linkage::External)?;
+    let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function::<i32>("f", caller_ty, Linkage::External)?;
+    let entry = f.append_basic_block("entry");
+    let join = f.append_basic_block("join");
+    let x: IntValue<i32> = f.param(0)?.try_into()?;
+
+    IRBuilder::new_for::<i32>(&m)
+        .position_at_end(entry)
+        .build_callbr(callee, Vec::<llvmkit_ir::Value>::new(), join, &[join], "")?;
+
+    let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
+    let phi = b
+        .build_int_phi::<i32>("p")?
+        .add_incoming(x, entry)?
+        .add_incoming(x, entry)?;
+    b.build_ret(phi.as_int_value())?;
+
+    m.verify_borrowed()?;
+    Ok(())
+}
+
+/// Mirrors `llvm/lib/IR/Verifier.cpp::visitPHINode` predecessor-count
+/// rejection through duplicate `CallBrInst` CFG edges.
+#[test]
+fn verify_phi_predecessors_through_callbr_rejects_missing_edge() -> Result<(), IrError> {
+    let m = Module::new("phi_callbr_bad");
+    let i32_ty = m.i32_type();
+    let void_ty = m.void_type();
+    let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+    let callee = m.add_function::<()>("callee", callee_ty, Linkage::External)?;
+    let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function::<i32>("f", caller_ty, Linkage::External)?;
+    let entry = f.append_basic_block("entry");
+    let join = f.append_basic_block("join");
+    let x: IntValue<i32> = f.param(0)?.try_into()?;
+
+    IRBuilder::new_for::<i32>(&m)
+        .position_at_end(entry)
+        .build_callbr(callee, Vec::<llvmkit_ir::Value>::new(), join, &[join], "")?;
+
+    let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
+    let phi = b.build_int_phi::<i32>("p")?.add_incoming(x, entry)?;
+    b.build_ret(phi.as_int_value())?;
+
+    let err = m
+        .verify_borrowed()
+        .expect_err("missing callbr incoming must fail");
+    assert!(
+        matches!(
+            err,
+            IrError::VerifierFailure {
+                rule: VerifierRule::PhiPredecessorMismatch,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+    Ok(())
+}
+
+/// Mirrors `llvm/lib/IR/Verifier.cpp::verifyDominatesUse`: a value
+/// defined in an entry block dominates ordinary uses in reachable successors.
+#[test]
+fn verify_cross_block_dominated_use_passes() -> Result<(), IrError> {
+    let m = Module::new("dom_use_ok");
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function::<i32>("f", fn_ty, Linkage::External)?;
+    let entry = f.append_basic_block("entry");
+    let next = f.append_basic_block("next");
+    let x: IntValue<i32> = f.param(0)?.try_into()?;
+
+    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let y = b.build_int_add(x, 1_i32, "y")?;
+    b.build_br(next)?;
+    let bn = IRBuilder::new_for::<i32>(&m).position_at_end(next);
+    let z = bn.build_int_add(y, 1_i32, "z")?;
+    bn.build_ret(z)?;
+
+    m.verify_borrowed()?;
+    Ok(())
+}
+
+/// Mirrors `llvm/lib/IR/Verifier.cpp::verifyDominatesUse`: a value
+/// defined on only one branch does not dominate an ordinary use after a join.
+#[test]
+fn verify_cross_block_branch_value_used_after_join_fails() -> Result<(), IrError> {
+    let m = Module::new("dom_use_bad");
+    let i32_ty = m.i32_type();
+    let bool_ty = m.bool_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()], false);
+    let f = m.add_function::<i32>("f", fn_ty, Linkage::External)?;
+    let entry = f.append_basic_block("entry");
+    let then_bb = f.append_basic_block("then");
+    let else_bb = f.append_basic_block("else");
+    let join = f.append_basic_block("join");
+    let x: IntValue<i32> = f.param(0)?.try_into()?;
+    let cond: IntValue<bool> = f.param(1)?.try_into()?;
+
+    IRBuilder::new_for::<i32>(&m)
+        .position_at_end(entry)
+        .build_cond_br(cond, then_bb, else_bb)?;
+    let bt = IRBuilder::new_for::<i32>(&m).position_at_end(then_bb);
+    let y = bt.build_int_add(x, 1_i32, "y")?;
+    bt.build_br(join)?;
+    IRBuilder::new_for::<i32>(&m)
+        .position_at_end(else_bb)
+        .build_br(join)?;
+    let bj = IRBuilder::new_for::<i32>(&m).position_at_end(join);
+    let z = bj.build_int_add(y, 1_i32, "z")?;
+    bj.build_ret(z)?;
+
+    let err = m
+        .verify_borrowed()
+        .expect_err("non-dominating branch value must fail");
+    assert!(
+        matches!(
+            err,
+            IrError::VerifierFailure {
+                rule: VerifierRule::UseBeforeDef,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+    Ok(())
+}
+
+/// Mirrors `llvm/lib/IR/Verifier.cpp::verifyDominatesUse` and
+/// `llvm/lib/IR/Dominators.cpp`: PHI incoming values are checked on their
+/// incoming predecessor edge.
+#[test]
+fn verify_phi_incoming_edge_dominance_passes() -> Result<(), IrError> {
+    let m = Module::new("dom_phi_ok");
+    let i32_ty = m.i32_type();
+    let bool_ty = m.bool_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()], false);
+    let f = m.add_function::<i32>("f", fn_ty, Linkage::External)?;
+    let entry = f.append_basic_block("entry");
+    let then_bb = f.append_basic_block("then");
+    let else_bb = f.append_basic_block("else");
+    let join = f.append_basic_block("join");
+    let x: IntValue<i32> = f.param(0)?.try_into()?;
+    let cond: IntValue<bool> = f.param(1)?.try_into()?;
+
+    IRBuilder::new_for::<i32>(&m)
+        .position_at_end(entry)
+        .build_cond_br(cond, then_bb, else_bb)?;
+    let bt = IRBuilder::new_for::<i32>(&m).position_at_end(then_bb);
+    let y = bt.build_int_add(x, 1_i32, "y")?;
+    bt.build_br(join)?;
+    IRBuilder::new_for::<i32>(&m)
+        .position_at_end(else_bb)
+        .build_br(join)?;
+    let bj = IRBuilder::new_for::<i32>(&m).position_at_end(join);
+    let phi = bj
+        .build_int_phi::<i32>("p")?
+        .add_incoming(y, then_bb)?
+        .add_incoming(x, else_bb)?;
+    bj.build_ret(phi.as_int_value())?;
+
+    m.verify_borrowed()?;
+    Ok(())
+}
+
+/// Mirrors `llvm/lib/IR/Verifier.cpp::verifyDominatesUse` and
+/// `llvm/lib/IR/Dominators.cpp`: a PHI incoming value must dominate the
+/// edge from its listed predecessor, not just some other predecessor.
+#[test]
+fn verify_phi_incoming_edge_dominance_fails() -> Result<(), IrError> {
+    let m = Module::new("dom_phi_bad");
+    let i32_ty = m.i32_type();
+    let bool_ty = m.bool_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()], false);
+    let f = m.add_function::<i32>("f", fn_ty, Linkage::External)?;
+    let entry = f.append_basic_block("entry");
+    let then_bb = f.append_basic_block("then");
+    let else_bb = f.append_basic_block("else");
+    let join = f.append_basic_block("join");
+    let x: IntValue<i32> = f.param(0)?.try_into()?;
+    let cond: IntValue<bool> = f.param(1)?.try_into()?;
+
+    IRBuilder::new_for::<i32>(&m)
+        .position_at_end(entry)
+        .build_cond_br(cond, then_bb, else_bb)?;
+    let bt = IRBuilder::new_for::<i32>(&m).position_at_end(then_bb);
+    let y = bt.build_int_add(x, 1_i32, "y")?;
+    bt.build_br(join)?;
+    IRBuilder::new_for::<i32>(&m)
+        .position_at_end(else_bb)
+        .build_br(join)?;
+    let bj = IRBuilder::new_for::<i32>(&m).position_at_end(join);
+    let phi = bj
+        .build_int_phi::<i32>("p")?
+        .add_incoming(x, then_bb)?
+        .add_incoming(y, else_bb)?;
+    bj.build_ret(phi.as_int_value())?;
+
+    let err = m
+        .verify_borrowed()
+        .expect_err("non-dominating phi incoming value must fail");
+    assert!(
+        matches!(
+            err,
+            IrError::VerifierFailure {
+                rule: VerifierRule::UseBeforeDef,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+    Ok(())
+}
+
+/// Mirrors `llvm/lib/IR/Verifier.cpp::verifyDominatesUse` and
+/// `llvm/lib/IR/Dominators.cpp`: invoke return values are defined on the
+/// normal edge and do not dominate the unwind destination.
+#[test]
+fn verify_invoke_result_used_on_unwind_edge_fails() -> Result<(), IrError> {
+    let m = Module::new("dom_invoke_bad");
+    let i32_ty = m.i32_type();
+    let callee_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
+    let callee = m.add_function::<i32>("callee", callee_ty, Linkage::External)?;
+    let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function::<i32>("f", caller_ty, Linkage::External)?;
+    let entry = f.append_basic_block("entry");
+    let normal = f.append_basic_block("normal");
+    let unwind = f.append_basic_block("unwind");
+    let x: IntValue<i32> = f.param(0)?.try_into()?;
+
+    let (_sealed, invoke) = IRBuilder::new_for::<i32>(&m)
+        .position_at_end(entry)
+        .build_invoke(
+            callee,
+            Vec::<llvmkit_ir::Value>::new(),
+            normal,
+            unwind,
+            "iv",
+        )?;
+    let invoke_value: IntValue<i32> = invoke.as_instruction().as_value().try_into()?;
+    IRBuilder::new_for::<i32>(&m)
+        .position_at_end(normal)
+        .build_ret(invoke_value)?;
+    let bu = IRBuilder::new_for::<i32>(&m).position_at_end(unwind);
+    let bad = bu.build_int_add(invoke_value, x, "bad")?;
+    bu.build_ret(bad)?;
+
+    let err = m
+        .verify_borrowed()
+        .expect_err("invoke result used on unwind must fail");
+    assert!(
+        matches!(
+            err,
+            IrError::VerifierFailure {
+                rule: VerifierRule::UseBeforeDef,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+    Ok(())
+}

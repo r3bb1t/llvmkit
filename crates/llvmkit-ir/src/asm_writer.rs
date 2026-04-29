@@ -1599,6 +1599,39 @@ pub(crate) fn fmt_function(
 pub(crate) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &Module<'_>) -> fmt::Result {
     writeln!(f, "; ModuleID = '{}'", m.name())?;
 
+    // `target datalayout = "..."`. Mirrors
+    // `AssemblyWriter::printModule`'s `M->getDataLayout()` arm. Only
+    // emitted when the directive is non-empty (matches upstream's
+    // `if (!DL.empty())` guard).
+    {
+        let dl = m.data_layout();
+        if !dl.is_default() {
+            writeln!(f, "target datalayout = \"{}\"", dl)?;
+        }
+    }
+
+    // `target triple = "..."`.
+    if let Some(triple) = m.target_triple() {
+        writeln!(f, "target triple = \"{triple}\"")?;
+    }
+
+    // Module-level inline assembly: one `module asm "<line>"` per
+    // newline-split entry. Mirrors the `do { ... } while (!Asm.empty())`
+    // loop in `printModule`.
+    {
+        let asm = m.module_asm();
+        if !asm.is_empty() {
+            for line in asm.split('\n') {
+                if line.is_empty() {
+                    continue;
+                }
+                f.write_str("module asm \"")?;
+                print_escaped_string(f, line.as_bytes())?;
+                f.write_str("\"\n")?;
+            }
+        }
+    }
+
     // Comdats. Mirrors `AssemblyWriter::printModuleSummaryIndex`'s
     // comdat-emission loop in `lib/IR/AsmWriter.cpp` (the bare-module
     // path: a leading blank line if any comdats exist, then one line

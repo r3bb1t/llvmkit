@@ -164,6 +164,16 @@ pub struct Module<'ctx> {
     /// Name -> comdat-id table. Mirrors
     /// `Module::ComdatSymTab` lookup.
     comdat_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::comdat::ComdatId>>,
+    /// Parsed `target datalayout = "..."` directive. Default
+    /// (empty string) when the module has no directive. Mirrors
+    /// `Module::DL` in `IR/Module.h`.
+    data_layout: core::cell::RefCell<crate::data_layout::DataLayout>,
+    /// `target triple = "..."` directive. Optional.
+    target_triple: core::cell::RefCell<Option<String>>,
+    /// Module-level inline assembly. Mirrors `Module::ModuleAsm`.
+    /// Stored as a single `String` joined by newlines (one entry
+    /// per `module asm "..."` directive).
+    module_asm: core::cell::RefCell<String>,
     /// Brand carrier. Without it, `Module<'ctx>` would have no use of
     /// `'ctx` in its fields (since `Context` is lifetime-free) and the
     /// parameter would be unconstrained.
@@ -184,6 +194,9 @@ impl<'ctx> Module<'ctx> {
             global_by_name: core::cell::RefCell::new(std::collections::HashMap::new()),
             comdats: boxcar::Vec::new(),
             comdat_by_name: core::cell::RefCell::new(std::collections::HashMap::new()),
+            data_layout: core::cell::RefCell::new(crate::data_layout::DataLayout::default()),
+            target_triple: core::cell::RefCell::new(None),
+            module_asm: core::cell::RefCell::new(String::new()),
             _brand: PhantomData,
         }
     }
@@ -835,6 +848,65 @@ impl<'ctx> Module<'ctx> {
                 value_id, self, pointer_ty,
             ),
         )
+    }
+
+    // ---- DataLayout / target triple / module asm ----
+
+    /// Borrow the parsed [`DataLayout`](crate::data_layout::DataLayout).
+    /// Mirrors `Module::getDataLayout`. Returns the default (empty)
+    /// layout when no directive has been set.
+    pub fn data_layout(&self) -> core::cell::Ref<'_, crate::data_layout::DataLayout> {
+        self.data_layout.borrow()
+    }
+
+    /// Replace the data layout with a parsed copy of the given
+    /// string. Mirrors `Module::setDataLayout(StringRef)`.
+    pub fn set_data_layout(&self, layout: impl AsRef<str>) -> IrResult<()> {
+        let parsed = crate::data_layout::DataLayout::parse(layout.as_ref())?;
+        *self.data_layout.borrow_mut() = parsed;
+        Ok(())
+    }
+
+    /// Replace the data layout with an already-parsed
+    /// [`DataLayout`](crate::data_layout::DataLayout). Mirrors
+    /// `Module::setDataLayout(const DataLayout &)`.
+    pub fn set_data_layout_value(&self, layout: crate::data_layout::DataLayout) {
+        *self.data_layout.borrow_mut() = layout;
+    }
+
+    /// `target triple = "..."` directive. Mirrors
+    /// `Module::getTargetTriple` (post-Triple-class API: returns the
+    /// stored string).
+    pub fn target_triple(&self) -> Option<String> {
+        self.target_triple.borrow().clone()
+    }
+
+    /// Set or clear the `target triple` directive. Mirrors
+    /// `Module::setTargetTriple`.
+    pub fn set_target_triple(&self, triple: Option<impl Into<String>>) {
+        *self.target_triple.borrow_mut() = triple.map(Into::into);
+    }
+
+    /// Module-level inline assembly. Mirrors
+    /// `Module::getModuleInlineAsm`.
+    pub fn module_asm(&self) -> String {
+        self.module_asm.borrow().clone()
+    }
+
+    /// Replace the module-level inline assembly. Mirrors
+    /// `Module::setModuleInlineAsm`. Pass an empty string to clear.
+    pub fn set_module_asm(&self, asm: impl Into<String>) {
+        *self.module_asm.borrow_mut() = asm.into();
+    }
+
+    /// Append one line of module-level inline assembly. Mirrors
+    /// `Module::appendModuleInlineAsm`.
+    pub fn append_module_asm(&self, line: impl AsRef<str>) {
+        let mut buf = self.module_asm.borrow_mut();
+        if !buf.is_empty() && !buf.ends_with('\n') {
+            buf.push('\n');
+        }
+        buf.push_str(line.as_ref());
     }
 
     // ---- Comdats ----

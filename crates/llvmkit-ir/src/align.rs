@@ -14,7 +14,7 @@ use crate::IrResult;
 /// Alignment in bytes, always a power of two. Stored as the log2
 /// shift amount (so `Align::new(8)?` stores `3`). Mirrors LLVM's
 /// `Align` in `Support/Alignment.h`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Align(NonZeroU8);
 
 impl Align {

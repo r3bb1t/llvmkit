@@ -35,6 +35,7 @@ use std::collections::HashMap;
 
 use crate::basic_block::BasicBlock;
 use crate::derived_types::SizedType;
+use crate::dominator_tree::DominatorTree;
 use crate::error::{IrError, IrResult, VerifierRule};
 use crate::function::FunctionValue;
 use crate::instr_types::{
@@ -59,6 +60,8 @@ struct FunctionContext<'a> {
     predecessors: &'a HashMap<ValueId, Vec<ValueId>>,
     /// Declaration-order index of every block in the parent function.
     block_index: &'a HashMap<ValueId, usize>,
+    /// Recomputed dominator tree for cross-block SSA dominance checks.
+    dom_tree: &'a DominatorTree,
 }
 
 /// Module verifier. Stateless apart from the per-function CFG cache
@@ -192,9 +195,11 @@ impl<'ctx> Verifier<'ctx> {
             .map(|(i, id)| (id, i))
             .collect();
 
+        let dom_tree = DominatorTree::new(f);
         let cx = FunctionContext {
             predecessors: &predecessors,
             block_index: &block_index,
+            dom_tree: &dom_tree,
         };
         for bb in f.basic_blocks() {
             self.visit_block(f, bb, &cx)?;
@@ -307,6 +312,7 @@ impl<'ctx> Verifier<'ctx> {
             index_in_block,
             block_instructions,
         )?;
+        self.check_dominates_uses(f, bb, inst, cx.dom_tree)?;
 
         // Per-opcode dispatch. Reaches into the storage payload
         // directly because every typed handle re-narrows the same
@@ -2102,6 +2108,38 @@ impl<'ctx> Verifier<'ctx> {
         Ok(())
     }
 
+    /// Cross-block SSA dominance. Mirrors `Verifier::verifyDominatesUse`,
+    /// using `DominatorTree` directly rather than the analysis manager.
+    fn check_dominates_uses(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        inst: &Instruction<'ctx>,
+        dom_tree: &DominatorTree,
+    ) -> IrResult<()> {
+        let operands = inst.operand_ids();
+        for (index, op_id) in operands.into_iter().enumerate() {
+            let op_data = self.module.context().value_data(op_id);
+            let operand = crate::Value::from_parts(op_id, self.module, op_data.ty);
+            let index = u32::try_from(index)
+                .unwrap_or_else(|_| unreachable!("instruction operand index exceeds u32::MAX"));
+            let use_edge = crate::Use::new(inst.as_value(), operand, index);
+            if !dom_tree.dominates_use(operand, use_edge) {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::UseBeforeDef,
+                    format!(
+                        "operand %{} does not dominate its use in block %{}",
+                        slot_label(self.module, op_id),
+                        slot_label(self.module, bb.as_value().id)
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     // ------------------------------------------------------------------
     // Universal in-block invariants
     // ------------------------------------------------------------------
@@ -2213,29 +2251,16 @@ impl<'ctx> Verifier<'ctx> {
 // --------------------------------------------------------------------------
 
 /// CFG predecessor map for one function. Mirrors LLVM's `pred_iterator`
-/// exposed via `BasicBlock::pred_begin`.
+/// exposed via `BasicBlock::pred_begin`; shared successor semantics live in
+/// [`crate::cfg::FunctionCfg`] so every terminator family is handled in one place.
 fn build_predecessors(f: FunctionValue<'_, Dyn>) -> HashMap<ValueId, Vec<ValueId>> {
+    let cfg = crate::cfg::FunctionCfg::new(f);
     let mut preds: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
-    for bb in f.basic_blocks() {
-        let bb_id = bb.as_value().id;
-        let Some(term) = bb.terminator() else {
-            continue;
-        };
-        if let ValueKindData::Instruction(i) = &term.as_value().data().kind
-            && let InstructionKindData::Br(b) = &i.kind
-        {
-            match &b.kind {
-                BranchKind::Unconditional(t) => {
-                    preds.entry(*t).or_default().push(bb_id);
-                }
-                BranchKind::Conditional {
-                    then_bb, else_bb, ..
-                } => {
-                    preds.entry(*then_bb).or_default().push(bb_id);
-                    preds.entry(*else_bb).or_default().push(bb_id);
-                }
-            }
-        }
+    for edge in cfg.edges() {
+        preds
+            .entry(edge.end().as_value().id)
+            .or_default()
+            .push(edge.start().as_value().id);
     }
     preds
 }
