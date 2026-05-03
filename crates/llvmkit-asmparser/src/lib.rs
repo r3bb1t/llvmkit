@@ -10,19 +10,26 @@
 //! |------------------------------|----------------------------------------|----------|
 //! | [`ll_lexer`]                 | `LLLexer.h` + `LLLexer.cpp`            | done     |
 //! | [`ll_token`]                 | `LLToken.h`                            | done     |
+//! | [`file_loc`]                 | `FileLoc.h`                            | done     |
+//! | [`numbered_values`]          | `NumberedValues.h`                     | done     |
+//! | [`slot_mapping`]             | `SlotMapping.h`                        | done     |
+//! | [`asm_parser_context`]       | `AsmParserContext.h` + `.cpp`          | done     |
+//! | [`parse_error`]              | `LLParser.{h,cpp}` diagnostic surface  | seeded   |
 //! | `ll_parser` (planned)        | `LLParser.h` + `LLParser.cpp`          | future   |
 //! | `parser` (planned)           | `Parser.h` + `Parser.cpp`              | future   |
-//! | `asm_parser_context` (plan.) | `AsmParserContext.h` + `.cpp`          | future   |
-//! | `file_loc` (planned)         | `FileLoc.h`                            | future   |
-//! | `slot_mapping` (planned)     | `SlotMapping.h`                        | future   |
-//! | `numbered_values` (planned)  | `NumberedValues.h`                     | future   |
 //!
-//! The "future" entries are deliberately absent — `LLLexer` itself does not
-//! depend on any of them (verified by grep), so adding empty stubs would
-//! lie about the crate's capabilities. They land alongside the parser work.
+//! The substrate listed as `done` is the support layer the parser-first
+//! roadmap pulls in alongside `LLParser`; it ships before the parser core
+//! so Sessions 2-3 can wire their resolution / location pipelines against
+//! a stable interface (Roadmap section 10.5 forward-reference typestate).
 
+pub mod asm_parser_context;
+pub mod file_loc;
 pub mod ll_lexer;
 pub mod ll_token;
+pub mod numbered_values;
+pub mod parse_error;
+pub mod slot_mapping;
 
 use std::io::{self, Read};
 

@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 500.
+Total `#[test]` functions: 518.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -522,3 +522,21 @@ Total `#[test]` functions: 500.
 | `crates/llvmkit-ir/tests/pass_instrumentation_basic.rs::instrumentation_orders_and_skips_optional_passes` | `unittests/IR/PassBuilderCallbacksTest.cpp` before/after pass callback and optional skip behavior | port |
 | `crates/llvmkit-ir/tests/pass_instrumentation_basic.rs::required_passes_cannot_be_skipped` | `unittests/IR/PassBuilderCallbacksTest.cpp` required-pass skip behavior | port |
 | `crates/llvmkit-ir/tests/pass_instrumentation_basic.rs::analysis_callbacks_fire_only_on_computation` | `unittests/IR/PassBuilderCallbacksTest.cpp` before/after analysis callback behavior | port |
+| `crates/llvmkit-asmparser/src/file_loc.rs::tests::file_loc_orderings` | `llvm/include/llvm/AsmParser/FileLoc.h::FileLoc::operator<` / `operator<=` / `operator==` | mirror |
+| `crates/llvmkit-asmparser/src/file_loc.rs::tests::range_contains_loc_is_half_open` | `llvm/include/llvm/AsmParser/FileLoc.h::FileLocRange::contains(FileLoc)` | mirror |
+| `crates/llvmkit-asmparser/src/file_loc.rs::tests::range_contains_range` | `llvm/include/llvm/AsmParser/FileLoc.h::FileLocRange::contains(FileLocRange)` | mirror |
+| `crates/llvmkit-asmparser/src/file_loc.rs::tests::try_new_rejects_inverted_range` | `llvm/include/llvm/AsmParser/FileLoc.h::FileLocRange::FileLocRange` constructor `assert(Start <= End)` | llvmkit-specific |
+| `crates/llvmkit-asmparser/src/numbered_values.rs::tests::empty_registry_starts_at_zero` | `llvm/include/llvm/AsmParser/NumberedValues.h::NumberedValues::getNext` | mirror |
+| `crates/llvmkit-asmparser/src/numbered_values.rs::tests::add_advances_next_unused` | `llvm/include/llvm/AsmParser/NumberedValues.h::NumberedValues::add` | mirror |
+| `crates/llvmkit-asmparser/src/numbered_values.rs::tests::add_stale_id_is_typed_error` | `llvm/include/llvm/AsmParser/NumberedValues.h::NumberedValues::add` (`assert(ID >= NextUnusedID)`) | llvmkit-specific |
+| `crates/llvmkit-asmparser/src/numbered_values.rs::tests::slot_mapping_shape_matches_upstream_test` | `llvm/unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, SlotMappingTest)` | mirror |
+| `crates/llvmkit-asmparser/src/numbered_values.rs::tests::forward_ref_state_transition` | `llvm/lib/AsmParser/LLParser.cpp` `ForwardRefVals` map populated via `LLParser::GetVal` | llvmkit-specific |
+| `crates/llvmkit-asmparser/src/slot_mapping.rs::tests::fresh_mapping_is_empty` | `llvm/unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, SlotMappingTest)` (parser-free shape arm) | mirror |
+| `crates/llvmkit-asmparser/src/slot_mapping.rs::tests::slot_mapping_records_typed_globals` | `llvm/include/llvm/AsmParser/SlotMapping.h` field shape | llvmkit-specific |
+| `crates/llvmkit-asmparser/src/asm_parser_context.rs::tests::locmap_round_trip` | `llvm/lib/AsmParser/AsmParserContext.cpp::AsmParserContext::addFunctionLocation` / `getFunctionLocation` | mirror |
+| `crates/llvmkit-asmparser/src/asm_parser_context.rs::tests::locmap_reverse_lookup_is_half_open` | `llvm/lib/AsmParser/AsmParserContext.cpp::AsmParserContext::getFunctionAtLocation(const FileLoc &)` | mirror |
+| `crates/llvmkit-asmparser/src/asm_parser_context.rs::tests::locmap_reverse_range_lookup` | `llvm/lib/AsmParser/AsmParserContext.cpp::AsmParserContext::getFunctionAtLocation(const FileLocRange &)` | mirror |
+| `crates/llvmkit-asmparser/src/parse_error.rs::tests::expected_carries_location` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::tokError` "expected ..." diagnostics | mirror |
+| `crates/llvmkit-asmparser/src/parse_error.rs::tests::redefinition_records_symbol` | `llvm/lib/AsmParser/LLParser.cpp` "redefinition of ..." diagnostic family | mirror |
+| `crates/llvmkit-asmparser/src/parse_error.rs::tests::lex_error_passes_through` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::error` propagation of `Lex.Error(...)` | llvmkit-specific |
+| `crates/llvmkit-asmparser/src/parse_error.rs::tests::integer_width_out_of_range_is_typed` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType` integer-width range check (`MAX_INT_BITS`) | mirror |
