@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 518.
+Total `#[test]` functions: 539.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -540,3 +540,24 @@ Total `#[test]` functions: 518.
 | `crates/llvmkit-asmparser/src/parse_error.rs::tests::redefinition_records_symbol` | `llvm/lib/AsmParser/LLParser.cpp` "redefinition of ..." diagnostic family | mirror |
 | `crates/llvmkit-asmparser/src/parse_error.rs::tests::lex_error_passes_through` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::error` propagation of `Lex.Error(...)` | llvmkit-specific |
 | `crates/llvmkit-asmparser/src/parse_error.rs::tests::integer_width_out_of_range_is_typed` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType` integer-width range check (`MAX_INT_BITS`) | mirror |
+| `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_target_datalayout` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseTargetDefinition` (`datalayout` arm) | mirror |
+| `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_target_triple` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseTargetDefinition` (`triple` arm) | mirror |
+| `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_module_asm` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseModuleAsm` | mirror |
+| `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_named_struct_definition` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseNamedType` | mirror |
+| `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_numbered_struct_definition` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseUnnamedType` | mirror |
+| `crates/llvmkit-asmparser/src/ll_parser.rs::tests::rejects_legacy_typed_pointer_suffix` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType` (`Type ::= Type '*'` arm; LLVM 17+ rejects typed pointers) | mirror |
+| `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_simple_global_int` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseGlobal` (integer initializer) | mirror |
+| `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_simple_global_constant` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseGlobal` (`constant` keyword) | mirror |
+| `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_function_declaration` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDeclare` | mirror |
+| `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_variadic_declaration` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDeclare` (varargs arm) | mirror |
+| `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_source_filename_directive` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseSourceFileName` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::target_directives_round_trip_through_asm_writer` | `llvm/test/Assembler/datalayout.ll` and `target-triple.ll` round-trip | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::module_asm_directives_accumulate` | `llvm/test/Assembler/module-asm.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::named_struct_forward_reference_resolves` | `llvm/test/Assembler/named-types.ll`; `LLParser::parseNamedType` body resolution | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::array_and_vector_types_parse` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseArrayVectorType` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::scalable_vector_type_parses` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseArrayVectorType` (vscale arm) | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::variadic_declaration_round_trips` | `llvm/test/Assembler/declare.ll` (variadic) | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::numbered_global_records_in_slot_mapping` | `llvm/unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, SlotMappingTest)` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::void_in_value_position_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType` "void only allowed for function results" | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::legacy_typed_pointer_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType` typed-pointer rejection | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::unknown_top_level_entity_is_typed_error` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseTopLevelEntities` default `tokError("expected top-level entity")` | mirror |

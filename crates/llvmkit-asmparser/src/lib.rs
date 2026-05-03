@@ -15,7 +15,7 @@
 //! | [`slot_mapping`]             | `SlotMapping.h`                        | done     |
 //! | [`asm_parser_context`]       | `AsmParserContext.h` + `.cpp`          | done     |
 //! | [`parse_error`]              | `LLParser.{h,cpp}` diagnostic surface  | seeded   |
-//! | `ll_parser` (planned)        | `LLParser.h` + `LLParser.cpp`          | future   |
+//! | [`ll_parser`]                | `LLParser.h` + `LLParser.cpp` (subset) | seeded   |
 //! | `parser` (planned)           | `Parser.h` + `Parser.cpp`              | future   |
 //!
 //! The substrate listed as `done` is the support layer the parser-first
@@ -26,6 +26,7 @@
 pub mod asm_parser_context;
 pub mod file_loc;
 pub mod ll_lexer;
+pub mod ll_parser;
 pub mod ll_token;
 pub mod numbered_values;
 pub mod parse_error;
