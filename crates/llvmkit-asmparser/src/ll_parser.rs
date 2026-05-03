@@ -1200,6 +1200,14 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                     self.parse_br(state, b)?;
                     return Ok(());
                 }
+                Token::Instruction(crate::ll_token::Opcode::Store) => {
+                    let b_ref = builder
+                        .as_ref()
+                        .expect("builder still alive in non-terminator path");
+                    self.bump()?;
+                    self.parse_store(state, b_ref)?;
+                    continue;
+                }
                 _ => {}
             }
             // Non-terminator: an `%lhs = OP ...` or a void-result
@@ -1270,6 +1278,25 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                 crate::ll_token::Opcode::IntToPtr => {
                     self.parse_int_to_ptr(state, b_ref, &result_name)?
                 }
+                crate::ll_token::Opcode::FNeg => self.parse_fneg(state, b_ref, &result_name)?,
+                crate::ll_token::Opcode::FAdd => {
+                    self.parse_fp_binop(state, b_ref, FpBinOp::Add, &result_name)?
+                }
+                crate::ll_token::Opcode::FSub => {
+                    self.parse_fp_binop(state, b_ref, FpBinOp::Sub, &result_name)?
+                }
+                crate::ll_token::Opcode::FMul => {
+                    self.parse_fp_binop(state, b_ref, FpBinOp::Mul, &result_name)?
+                }
+                crate::ll_token::Opcode::FDiv => {
+                    self.parse_fp_binop(state, b_ref, FpBinOp::Div, &result_name)?
+                }
+                crate::ll_token::Opcode::FRem => {
+                    self.parse_fp_binop(state, b_ref, FpBinOp::Rem, &result_name)?
+                }
+                crate::ll_token::Opcode::FCmp => self.parse_fcmp(state, b_ref, &result_name)?,
+                crate::ll_token::Opcode::Alloca => self.parse_alloca(b_ref, &result_name)?,
+                crate::ll_token::Opcode::Load => self.parse_load(state, b_ref, &result_name)?,
                 _ => {
                     return Err(ParseError::Expected {
                         expected: format!(
@@ -1592,6 +1619,173 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         Ok(v.as_value())
     }
 
+    /// `fneg TYPE VALUE`. Mirrors `LLParser::parseUnaryOp` for `Instruction::FNeg`.
+    fn parse_fneg(
+        &mut self,
+        state: &PerFunctionState<'ctx>,
+        b: &ParsedBlockBuilder<'ctx>,
+        result_name: &LocalLhs,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
+        let ty = self.parse_type(false)?;
+        let v = self.parse_value(state, ty)?;
+        let f: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn> = v
+            .try_into()
+            .map_err(|_| self.expected("float-typed fneg operand"))?;
+        let r = b
+            .build_float_neg::<llvmkit_ir::FloatDyn, _>(f, result_name.as_str())
+            .map_err(|e| self.builder_err("fneg", e))?;
+        Ok(r.as_value())
+    }
+
+    /// `OP TYPE LHS, RHS` for fadd/fsub/fmul/fdiv/frem.
+    /// Mirrors `LLParser::parseArithmetic` FP arm.
+    fn parse_fp_binop(
+        &mut self,
+        state: &PerFunctionState<'ctx>,
+        b: &ParsedBlockBuilder<'ctx>,
+        op: FpBinOp,
+        result_name: &LocalLhs,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
+        let ty = self.parse_type(false)?;
+        let lhs_v = self.parse_value(state, ty)?;
+        self.expect_punct(PunctKind::Comma, "',' between FP binop operands")?;
+        let rhs_v = self.parse_value_no_type(state, ty)?;
+        let lhs: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn> = lhs_v
+            .try_into()
+            .map_err(|_| self.expected("float-typed lhs"))?;
+        let rhs: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn> = rhs_v
+            .try_into()
+            .map_err(|_| self.expected("float-typed rhs"))?;
+        let name = result_name.as_str();
+        let v = match op {
+            FpBinOp::Add => b
+                .build_fp_add::<llvmkit_ir::FloatDyn, _, _>(lhs, rhs, name)
+                .map_err(|e| self.builder_err("fadd", e))?
+                .as_value(),
+            FpBinOp::Sub => b
+                .build_fp_sub::<llvmkit_ir::FloatDyn, _, _>(lhs, rhs, name)
+                .map_err(|e| self.builder_err("fsub", e))?
+                .as_value(),
+            FpBinOp::Mul => b
+                .build_fp_mul::<llvmkit_ir::FloatDyn, _, _>(lhs, rhs, name)
+                .map_err(|e| self.builder_err("fmul", e))?
+                .as_value(),
+            FpBinOp::Div => b
+                .build_fp_div::<llvmkit_ir::FloatDyn, _, _>(lhs, rhs, name)
+                .map_err(|e| self.builder_err("fdiv", e))?
+                .as_value(),
+            FpBinOp::Rem => b
+                .build_fp_rem::<llvmkit_ir::FloatDyn, _, _>(lhs, rhs, name)
+                .map_err(|e| self.builder_err("frem", e))?
+                .as_value(),
+        };
+        Ok(v)
+    }
+
+    /// `fcmp PRED TYPE LHS, RHS`. Mirrors `LLParser::parseCompare` FP arm.
+    fn parse_fcmp(
+        &mut self,
+        state: &PerFunctionState<'ctx>,
+        b: &ParsedBlockBuilder<'ctx>,
+        result_name: &LocalLhs,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
+        use llvmkit_ir::FloatPredicate as P;
+        let pred = match self.peek() {
+            Token::Kw(Keyword::Oeq) => P::Oeq,
+            Token::Kw(Keyword::Ogt) => P::Ogt,
+            Token::Kw(Keyword::Oge) => P::Oge,
+            Token::Kw(Keyword::Olt) => P::Olt,
+            Token::Kw(Keyword::Ole) => P::Ole,
+            Token::Kw(Keyword::One) => P::One,
+            Token::Kw(Keyword::Ord) => P::Ord,
+            Token::Kw(Keyword::Uno) => P::Uno,
+            Token::Kw(Keyword::Ueq) => P::Ueq,
+            Token::Kw(Keyword::Ugt) => P::Ugt,
+            Token::Kw(Keyword::Uge) => P::Uge,
+            Token::Kw(Keyword::Ult) => P::Ult,
+            Token::Kw(Keyword::Ule) => P::Ule,
+            Token::Kw(Keyword::Une) => P::Une,
+            Token::Kw(Keyword::True) => P::True,
+            Token::Kw(Keyword::False) => P::False,
+            _ => return Err(self.expected("floating-point compare predicate")),
+        };
+        self.bump()?;
+        let ty = self.parse_type(false)?;
+        let lhs_v = self.parse_value(state, ty)?;
+        self.expect_punct(PunctKind::Comma, "',' between fcmp operands")?;
+        let rhs_v = self.parse_value_no_type(state, ty)?;
+        let lhs: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn> = lhs_v
+            .try_into()
+            .map_err(|_| self.expected("float-typed lhs"))?;
+        let rhs: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn> = rhs_v
+            .try_into()
+            .map_err(|_| self.expected("float-typed rhs"))?;
+        let r = b
+            .build_fp_cmp::<llvmkit_ir::FloatDyn, _, _>(pred, lhs, rhs, result_name.as_str())
+            .map_err(|e| self.builder_err("fcmp", e))?;
+        Ok(r.as_value())
+    }
+
+    /// `alloca TYPE [, TYPE COUNT] [, align N]`. Session 4 will extend
+    /// this with addrspace / inalloca / swift / volatile slots; for now
+    /// we ship the plain "type only" form, which is by far the most
+    /// common in real-world IR. Mirrors `LLParser::parseAlloc`.
+    fn parse_alloca(
+        &mut self,
+        b: &ParsedBlockBuilder<'ctx>,
+        result_name: &LocalLhs,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
+        let ty = self.parse_type(false)?;
+        // TODO(parser, follow-up): array-size + align suffix.
+        let r = b
+            .build_alloca(ty, result_name.as_str())
+            .map_err(|e| self.builder_err("alloca", e))?;
+        Ok(r.as_value())
+    }
+
+    /// `load TYPE, ptr POINTER`. Plain form (no atomic / volatile / align
+    /// yet — Session 4 lifts those slots through the existing
+    /// `AtomicLoadConfig`). Mirrors `LLParser::parseLoad`.
+    fn parse_load(
+        &mut self,
+        state: &PerFunctionState<'ctx>,
+        b: &ParsedBlockBuilder<'ctx>,
+        result_name: &LocalLhs,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
+        let ty = self.parse_type(false)?;
+        self.expect_punct(PunctKind::Comma, "',' between load type and pointer")?;
+        let ptr_ty = self.parse_type(false)?;
+        let ptr_v = self.parse_value(state, ptr_ty)?;
+        let ptr: llvmkit_ir::PointerValue<'ctx> = ptr_v
+            .try_into()
+            .map_err(|_| self.expected("ptr-typed load operand"))?;
+        let v = b
+            .build_load(ty, ptr, result_name.as_str())
+            .map_err(|e| self.builder_err("load", e))?;
+        Ok(v)
+    }
+
+    /// `store TYPE VALUE, ptr POINTER`. Mirrors `LLParser::parseStore`.
+    /// Returns no value.
+    fn parse_store(
+        &mut self,
+        state: &PerFunctionState<'ctx>,
+        b: &ParsedBlockBuilder<'ctx>,
+    ) -> ParseResult<()> {
+        let val_ty = self.parse_type(false)?;
+        let val_v = self.parse_value(state, val_ty)?;
+        self.expect_punct(PunctKind::Comma, "',' between store value and pointer")?;
+        let ptr_ty = self.parse_type(false)?;
+        let ptr_v = self.parse_value(state, ptr_ty)?;
+        let ptr: llvmkit_ir::PointerValue<'ctx> = ptr_v
+            .try_into()
+            .map_err(|_| self.expected("ptr-typed store target"))?;
+        let _ = b
+            .build_store(val_v, ptr)
+            .map_err(|e| self.builder_err("store", e))?;
+        Ok(())
+    }
+
     fn builder_err(&self, label: &str, e: IrError) -> ParseError {
         ParseError::Expected {
             expected: format!("valid {label}: {e}"),
@@ -1835,6 +2029,14 @@ enum IntCast {
     Trunc,
     ZExt,
     SExt,
+}
+
+enum FpBinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
 }
 
 /// Alias for the dyn-positioned, dyn-return IRBuilder we drive while
