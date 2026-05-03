@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 547.
+Total `#[test]` functions: 551.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -569,3 +569,7 @@ Total `#[test]` functions: 547.
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_forward_block_reference` | `llvm/lib/AsmParser/LLParser.cpp::PerFunctionState::getBB` forward-reference path | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_sub_and_mul` | loop-body shape from `crates/llvmkit-ir/examples/factorial.rs`; `LLParser::parseInstruction` sub/mul arms | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::unsupported_opcode_is_typed_error` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseInstruction` `tokError("expected instruction opcode")` default arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_div_and_rem_opcodes` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseInstruction` `Instruction::{UDiv,SDiv,URem,SRem}` arms | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_shift_and_bitwise_opcodes` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseInstruction` `Instruction::{Shl,LShr,AShr,And,Or,Xor}` arms | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_int_casts` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCast` integer arm; `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, CastInst)` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_ptr_int_casts` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCast` `Instruction::{PtrToInt,IntToPtr}` arms | mirror |

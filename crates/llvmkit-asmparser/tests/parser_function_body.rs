@@ -118,7 +118,79 @@ fn unsupported_opcode_is_typed_error() {
     let err = parser.parse_module().unwrap_err();
     let msg = format!("{err}");
     assert!(
-        msg.contains("instruction opcode supported by Session 3"),
+        msg.contains("instruction opcode supported by this session"),
         "got: {msg}"
     );
+}
+
+/// Ports the udiv / sdiv / urem / srem arms of
+/// `LLParser::parseInstruction` (`Instruction::UDiv`, etc.).
+#[test]
+fn parses_div_and_rem_opcodes() {
+    let printed = parse_and_print(
+        "define i32 @divrem(i32 %a, i32 %b) {\nentry:\n  \
+           %u = udiv i32 %a, %b\n  \
+           %s = sdiv i32 %a, %b\n  \
+           %ur = urem i32 %a, %b\n  \
+           %sr = srem i32 %a, %b\n  \
+           ret i32 %sr\n\
+         }\n",
+    );
+    assert!(printed.contains("udiv i32 %a, %b"));
+    assert!(printed.contains("sdiv i32 %a, %b"));
+    assert!(printed.contains("urem i32 %a, %b"));
+    assert!(printed.contains("srem i32 %a, %b"));
+}
+
+/// Ports the bitwise / shift arms of `LLParser::parseInstruction`
+/// (`Instruction::Shl` / `LShr` / `AShr` / `And` / `Or` / `Xor`).
+#[test]
+fn parses_shift_and_bitwise_opcodes() {
+    let printed = parse_and_print(
+        "define i32 @bits(i32 %a, i32 %b) {\nentry:\n  \
+           %s1 = shl i32 %a, 1\n  \
+           %s2 = lshr i32 %s1, 1\n  \
+           %s3 = ashr i32 %s2, 1\n  \
+           %s4 = and i32 %s3, %b\n  \
+           %s5 = or i32 %s4, %b\n  \
+           %s6 = xor i32 %s5, %b\n  \
+           ret i32 %s6\n\
+         }\n",
+    );
+    for op in ["shl", "lshr", "ashr", "and", "or", "xor"] {
+        assert!(printed.contains(op), "missing opcode {op}: {printed}");
+    }
+}
+
+/// Ports `LLParser::parseCast` integer arm: `trunc` / `zext` / `sext`.
+/// Mirrors `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, CastInst)`.
+#[test]
+fn parses_int_casts() {
+    let printed = parse_and_print(
+        "define i64 @widen(i32 %a) {\nentry:\n  \
+           %t = trunc i32 %a to i16\n  \
+           %z = zext i16 %t to i32\n  \
+           %s = sext i32 %z to i64\n  \
+           ret i64 %s\n\
+         }\n",
+    );
+    assert!(printed.contains("trunc i32 %a to i16"));
+    assert!(printed.contains("zext i16 %t to i32"));
+    assert!(printed.contains("sext i32 %z to i64"));
+}
+
+/// Ports `LLParser::parseCast`'s `Instruction::PtrToInt` /
+/// `Instruction::IntToPtr` arms.
+#[test]
+fn parses_ptr_int_casts() {
+    let printed = parse_and_print(
+        "define i64 @addr(ptr %p) {\nentry:\n  \
+           %i = ptrtoint ptr %p to i64\n  \
+           %q = inttoptr i64 %i to ptr\n  \
+           %j = ptrtoint ptr %q to i64\n  \
+           ret i64 %j\n\
+         }\n",
+    );
+    assert!(printed.contains("ptrtoint ptr %p to i64"));
+    assert!(printed.contains("inttoptr i64 %i to ptr"));
 }
