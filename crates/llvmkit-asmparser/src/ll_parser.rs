@@ -1224,12 +1224,56 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                 crate::ll_token::Opcode::Mul => {
                     self.parse_int_binop(state, b_ref, IntBinOp::Mul, &result_name)?
                 }
+                crate::ll_token::Opcode::UDiv => {
+                    self.parse_int_binop(state, b_ref, IntBinOp::UDiv, &result_name)?
+                }
+                crate::ll_token::Opcode::SDiv => {
+                    self.parse_int_binop(state, b_ref, IntBinOp::SDiv, &result_name)?
+                }
+                crate::ll_token::Opcode::URem => {
+                    self.parse_int_binop(state, b_ref, IntBinOp::URem, &result_name)?
+                }
+                crate::ll_token::Opcode::SRem => {
+                    self.parse_int_binop(state, b_ref, IntBinOp::SRem, &result_name)?
+                }
+                crate::ll_token::Opcode::Shl => {
+                    self.parse_int_binop(state, b_ref, IntBinOp::Shl, &result_name)?
+                }
+                crate::ll_token::Opcode::LShr => {
+                    self.parse_int_binop(state, b_ref, IntBinOp::LShr, &result_name)?
+                }
+                crate::ll_token::Opcode::AShr => {
+                    self.parse_int_binop(state, b_ref, IntBinOp::AShr, &result_name)?
+                }
+                crate::ll_token::Opcode::And => {
+                    self.parse_int_binop(state, b_ref, IntBinOp::And, &result_name)?
+                }
+                crate::ll_token::Opcode::Or => {
+                    self.parse_int_binop(state, b_ref, IntBinOp::Or, &result_name)?
+                }
+                crate::ll_token::Opcode::Xor => {
+                    self.parse_int_binop(state, b_ref, IntBinOp::Xor, &result_name)?
+                }
                 crate::ll_token::Opcode::ICmp => self.parse_icmp(state, b_ref, &result_name)?,
+                crate::ll_token::Opcode::Trunc => {
+                    self.parse_int_cast(state, b_ref, IntCast::Trunc, &result_name)?
+                }
+                crate::ll_token::Opcode::ZExt => {
+                    self.parse_int_cast(state, b_ref, IntCast::ZExt, &result_name)?
+                }
+                crate::ll_token::Opcode::SExt => {
+                    self.parse_int_cast(state, b_ref, IntCast::SExt, &result_name)?
+                }
+                crate::ll_token::Opcode::PtrToInt => {
+                    self.parse_ptr_to_int(state, b_ref, &result_name)?
+                }
+                crate::ll_token::Opcode::IntToPtr => {
+                    self.parse_int_to_ptr(state, b_ref, &result_name)?
+                }
                 _ => {
                     return Err(ParseError::Expected {
                         expected: format!(
-                            "instruction opcode supported by Session 3 (got {:?})",
-                            opcode
+                            "instruction opcode supported by this session (got {opcode:?})"
                         ),
                         loc: DiagLoc::span(result_loc),
                     });
@@ -1375,6 +1419,46 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                 .build_int_mul::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, name)
                 .map_err(|e| self.builder_err("mul", e))?
                 .as_value(),
+            IntBinOp::UDiv => b
+                .build_int_udiv::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, name)
+                .map_err(|e| self.builder_err("udiv", e))?
+                .as_value(),
+            IntBinOp::SDiv => b
+                .build_int_sdiv::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, name)
+                .map_err(|e| self.builder_err("sdiv", e))?
+                .as_value(),
+            IntBinOp::URem => b
+                .build_int_urem::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, name)
+                .map_err(|e| self.builder_err("urem", e))?
+                .as_value(),
+            IntBinOp::SRem => b
+                .build_int_srem::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, name)
+                .map_err(|e| self.builder_err("srem", e))?
+                .as_value(),
+            IntBinOp::Shl => b
+                .build_int_shl::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, name)
+                .map_err(|e| self.builder_err("shl", e))?
+                .as_value(),
+            IntBinOp::LShr => b
+                .build_int_lshr::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, name)
+                .map_err(|e| self.builder_err("lshr", e))?
+                .as_value(),
+            IntBinOp::AShr => b
+                .build_int_ashr::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, name)
+                .map_err(|e| self.builder_err("ashr", e))?
+                .as_value(),
+            IntBinOp::And => b
+                .build_int_and::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, name)
+                .map_err(|e| self.builder_err("and", e))?
+                .as_value(),
+            IntBinOp::Or => b
+                .build_int_or::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, name)
+                .map_err(|e| self.builder_err("or", e))?
+                .as_value(),
+            IntBinOp::Xor => b
+                .build_int_xor::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, name)
+                .map_err(|e| self.builder_err("xor", e))?
+                .as_value(),
         };
         Ok(v)
     }
@@ -1415,6 +1499,97 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             .build_int_cmp::<llvmkit_ir::IntDyn, _, _>(pred, lhs, rhs, name)
             .map_err(|e| self.builder_err("icmp", e))?;
         Ok(r.as_value())
+    }
+
+    /// `OP TYPE VALUE to TYPE`. Used by `trunc` / `zext` / `sext`.
+    /// Mirrors `LLParser::parseCast`'s integer-cast arm.
+    fn parse_int_cast(
+        &mut self,
+        state: &PerFunctionState<'ctx>,
+        b: &ParsedBlockBuilder<'ctx>,
+        op: IntCast,
+        result_name: &LocalLhs,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
+        let src_ty = self.parse_type(false)?;
+        let src_v = self.parse_value(state, src_ty)?;
+        self.expect_keyword(
+            Keyword::To,
+            "'to' between cast operand and destination type",
+        )?;
+        let dst_ty = self.parse_type(false)?;
+        let src_int: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn> = src_v
+            .try_into()
+            .map_err(|_| self.expected("integer-typed cast source"))?;
+        let dst_int = match dst_ty.into_type_enum() {
+            AnyTypeEnum::Int(t) => t,
+            _ => return Err(self.expected("integer destination type for trunc/zext/sext")),
+        };
+        let name = result_name.as_str();
+        let v = match op {
+            IntCast::Trunc => b
+                .build_trunc_dyn(src_int, dst_int, name)
+                .map_err(|e| self.builder_err("trunc", e))?
+                .as_value(),
+            IntCast::ZExt => b
+                .build_zext_dyn(src_int, dst_int, name)
+                .map_err(|e| self.builder_err("zext", e))?
+                .as_value(),
+            IntCast::SExt => b
+                .build_sext_dyn(src_int, dst_int, name)
+                .map_err(|e| self.builder_err("sext", e))?
+                .as_value(),
+        };
+        Ok(v)
+    }
+
+    /// `ptrtoint TYPE VALUE to TYPE`. Mirrors `LLParser::parseCast`
+    /// `Instruction::PtrToInt` arm.
+    fn parse_ptr_to_int(
+        &mut self,
+        state: &PerFunctionState<'ctx>,
+        b: &ParsedBlockBuilder<'ctx>,
+        result_name: &LocalLhs,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
+        let src_ty = self.parse_type(false)?;
+        let src_v = self.parse_value(state, src_ty)?;
+        self.expect_keyword(Keyword::To, "'to' in ptrtoint")?;
+        let dst_ty = self.parse_type(false)?;
+        let src_ptr: llvmkit_ir::PointerValue<'ctx> = src_v
+            .try_into()
+            .map_err(|_| self.expected("ptr-typed ptrtoint source"))?;
+        let dst_int = match dst_ty.into_type_enum() {
+            AnyTypeEnum::Int(t) => t,
+            _ => return Err(self.expected("integer destination type for ptrtoint")),
+        };
+        let v = b
+            .build_ptr_to_int(src_ptr, dst_int, result_name.as_str())
+            .map_err(|e| self.builder_err("ptrtoint", e))?;
+        Ok(v.as_value())
+    }
+
+    /// `inttoptr TYPE VALUE to TYPE`. Mirrors `LLParser::parseCast`
+    /// `Instruction::IntToPtr` arm.
+    fn parse_int_to_ptr(
+        &mut self,
+        state: &PerFunctionState<'ctx>,
+        b: &ParsedBlockBuilder<'ctx>,
+        result_name: &LocalLhs,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
+        let src_ty = self.parse_type(false)?;
+        let src_v = self.parse_value(state, src_ty)?;
+        self.expect_keyword(Keyword::To, "'to' in inttoptr")?;
+        let dst_ty = self.parse_type(false)?;
+        let src_int: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn> = src_v
+            .try_into()
+            .map_err(|_| self.expected("integer-typed inttoptr source"))?;
+        let dst_ptr = match dst_ty.into_type_enum() {
+            AnyTypeEnum::Pointer(t) => t,
+            _ => return Err(self.expected("pointer destination type for inttoptr")),
+        };
+        let v = b
+            .build_int_to_ptr(src_int, dst_ptr, result_name.as_str())
+            .map_err(|e| self.builder_err("inttoptr", e))?;
+        Ok(v.as_value())
     }
 
     fn builder_err(&self, label: &str, e: IrError) -> ParseError {
@@ -1644,6 +1819,22 @@ enum IntBinOp {
     Add,
     Sub,
     Mul,
+    UDiv,
+    SDiv,
+    URem,
+    SRem,
+    Shl,
+    LShr,
+    AShr,
+    And,
+    Or,
+    Xor,
+}
+
+enum IntCast {
+    Trunc,
+    ZExt,
+    SExt,
 }
 
 /// Alias for the dyn-positioned, dyn-return IRBuilder we drive while
