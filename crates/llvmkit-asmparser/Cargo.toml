@@ -13,4 +13,5 @@ categories.workspace   = true
 
 [dependencies]
 llvmkit-support = { workspace = true }
+llvmkit-ir      = { workspace = true }
 thiserror       = { workspace = true }
