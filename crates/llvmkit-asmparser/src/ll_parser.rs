@@ -220,6 +220,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                 Token::LocalVarId(_) => self.parse_unnamed_type_definition()?,
                 Token::GlobalVar(_) | Token::GlobalId(_) => self.parse_global_or_function()?,
                 Token::Kw(Keyword::Declare) => self.parse_declare()?,
+                Token::Kw(Keyword::Define) => self.parse_define()?,
                 _ => return Err(self.token_error("top-level entity")),
             }
         }
@@ -308,6 +309,18 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
 
     fn expect_keyword(&mut self, k: Keyword, expected: &str) -> ParseResult<Span> {
         if matches!(self.peek(), Token::Kw(got) if *got == k) {
+            self.bump()
+        } else {
+            Err(self.expected(expected))
+        }
+    }
+
+    fn expect_primitive(
+        &mut self,
+        p: crate::ll_token::PrimitiveTy,
+        expected: &str,
+    ) -> ParseResult<Span> {
+        if matches!(self.peek(), Token::PrimitiveType(got) if *got == p) {
             self.bump()
         } else {
             Err(self.expected(expected))
@@ -1007,9 +1020,645 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             })?;
         Ok(())
     }
+
+    // ── define ──────────────────────────────────────────────────────────
+
+    /// `define RET @name(PARAMS) { ... }` — full function definition with
+    /// a body. Mirrors `LLParser::parseDefine` for the constructive
+    /// instruction subset Session 3 ships (ret / unreachable / br /
+    /// cond_br / icmp / add / sub / mul). Linkage, calling conv, and
+    /// attributes are deferred.
+    fn parse_define(&mut self) -> ParseResult<()> {
+        self.expect_keyword(Keyword::Define, "'define'")?;
+        let ret_ty = self.parse_type(true)?;
+        let name = match self.peek() {
+            Token::GlobalVar(_) => self
+                .current_str_payload()
+                .ok_or_else(|| self.expected("function name"))?,
+            Token::GlobalId(n) => format!("{n}"),
+            _ => return Err(self.expected("function name after return type")),
+        };
+        let decl_loc = self.loc();
+        self.bump()?;
+        self.expect_punct(PunctKind::LParen, "'(' in function header")?;
+
+        // Parse parameter (type, optional name) list.
+        let mut param_types = Vec::new();
+        let mut param_names: Vec<Option<ParamName>> = Vec::new();
+        let mut var_args = false;
+        if !matches!(self.peek(), Token::RParen) {
+            loop {
+                if matches!(self.peek(), Token::DotDotDot) {
+                    self.bump()?;
+                    var_args = true;
+                    break;
+                }
+                let p_ty = self.parse_type(false)?;
+                let p_name = match self.peek() {
+                    Token::LocalVar(_) => {
+                        let s = self.current_str_payload().expect("LocalVar payload");
+                        self.bump()?;
+                        Some(ParamName::Named(s))
+                    }
+                    Token::LocalVarId(id) => {
+                        let id = *id;
+                        self.bump()?;
+                        Some(ParamName::Numbered(id))
+                    }
+                    _ => None,
+                };
+                param_types.push(p_ty);
+                param_names.push(p_name);
+                if !self.eat_punct(PunctKind::Comma)? {
+                    break;
+                }
+            }
+        }
+        self.expect_punct(PunctKind::RParen, "')' to close function header")?;
+
+        let fn_ty = self.module.fn_type(ret_ty, param_types, var_args);
+        let mut fb = self
+            .module
+            .function_builder::<llvmkit_ir::Dyn>(name.clone(), fn_ty)
+            .linkage(Linkage::External);
+        for (slot, p) in param_names.iter().enumerate() {
+            if let Some(ParamName::Named(n)) = p {
+                let slot_u32 = u32::try_from(slot).map_err(|_| ParseError::Expected {
+                    expected: "parameter slot fits in u32".into(),
+                    loc: DiagLoc::span(decl_loc),
+                })?;
+                fb = fb.param_name(slot_u32, n.clone());
+            }
+        }
+        let f = fb.build().map_err(|e| ParseError::Expected {
+            expected: format!("valid function definition: {e}"),
+            loc: DiagLoc::span(decl_loc),
+        })?;
+
+        // `{ ... }` body.
+        self.expect_punct(PunctKind::LBrace, "'{' to open function body")?;
+
+        let mut state = PerFunctionState::new(f);
+        // Seed the local-value tables with each parameter handle so
+        // `%name` / `%N` references inside the body resolve. Mirrors
+        // upstream `PerFunctionState::PerFunctionState`'s parameter
+        // pre-population.
+        for (slot, name) in param_names.into_iter().enumerate() {
+            let slot_u32 = u32::try_from(slot).map_err(|_| ParseError::Expected {
+                expected: "parameter slot fits in u32".into(),
+                loc: DiagLoc::span(decl_loc),
+            })?;
+            let arg = f.param(slot_u32).map_err(|e| ParseError::Expected {
+                expected: format!("function parameter slot {slot}: {e}"),
+                loc: DiagLoc::span(decl_loc),
+            })?;
+            let v = arg.as_value();
+            match name {
+                Some(ParamName::Named(n)) => {
+                    state.local_named.insert(n, v);
+                }
+                Some(ParamName::Numbered(id)) => {
+                    state.local_numbered.insert(id, v);
+                    state.next_unnamed_value_id = state.next_unnamed_value_id.max(id + 1);
+                }
+                None => {
+                    let id = state.next_unnamed_value_id;
+                    state.local_numbered.insert(id, v);
+                    state.next_unnamed_value_id = id.saturating_add(1);
+                }
+            }
+        }
+
+        self.parse_function_body(&mut state)?;
+        self.expect_punct(PunctKind::RBrace, "'}' to close function body")?;
+        Ok(())
+    }
+
+    // ── Function body driver ─────────────────────────────────────────────
+
+    fn parse_function_body(&mut self, state: &mut PerFunctionState<'ctx>) -> ParseResult<()> {
+        // First block: optional explicit label, otherwise default-named.
+        // Mirrors `LLParser::parseBasicBlock`: a body must contain at
+        // least one block.
+        loop {
+            match self.peek() {
+                Token::RBrace => break,
+                Token::LabelStr(_) => {
+                    let label = self
+                        .current_label_str()
+                        .ok_or_else(|| self.expected("basic-block label"))?;
+                    self.bump()?;
+                    self.parse_basic_block(state, BlockHeader::Named(label))?;
+                }
+                _ => {
+                    // Implicit entry block ("entry" by convention) when no
+                    // explicit label opens the body.
+                    self.parse_basic_block(state, BlockHeader::Implicit)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn current_label_str(&self) -> Option<String> {
+        match self.peek() {
+            Token::LabelStr(bytes) => std::str::from_utf8(bytes.as_ref()).ok().map(str::to_owned),
+            _ => None,
+        }
+    }
+
+    fn parse_basic_block(
+        &mut self,
+        state: &mut PerFunctionState<'ctx>,
+        header: BlockHeader,
+    ) -> ParseResult<()> {
+        let bb_name = match header {
+            BlockHeader::Named(n) => n,
+            BlockHeader::Implicit => "".to_owned(),
+        };
+        let bb = state.ensure_block(self.module, &bb_name);
+        // Drive the typed builder for this block.
+        let builder = llvmkit_ir::IRBuilder::new(self.module).position_at_end(bb);
+        // Emit instructions until a terminator consumes `builder`.
+        let mut builder = Some(builder);
+        loop {
+            // Terminator — these consume the builder.
+            match self.peek() {
+                Token::Instruction(crate::ll_token::Opcode::Ret) => {
+                    let b = builder.take().expect("builder live until terminator");
+                    self.parse_ret(state, b)?;
+                    return Ok(());
+                }
+                Token::Instruction(crate::ll_token::Opcode::Unreachable) => {
+                    let b = builder.take().expect("builder live until terminator");
+                    self.bump()?;
+                    let _ = b.build_unreachable();
+                    return Ok(());
+                }
+                Token::Instruction(crate::ll_token::Opcode::Br) => {
+                    let b = builder.take().expect("builder live until terminator");
+                    self.parse_br(state, b)?;
+                    return Ok(());
+                }
+                _ => {}
+            }
+            // Non-terminator: an `%lhs = OP ...` or a void-result
+            // instruction. Session 3 ships only result-producing arms.
+            let result_name = self.parse_lhs_assignment()?;
+            let result_loc = self.loc();
+            let opcode = match self.peek() {
+                Token::Instruction(op) => *op,
+                _ => return Err(self.expected("instruction opcode")),
+            };
+            self.bump()?;
+            let b_ref = builder
+                .as_ref()
+                .expect("builder still alive in non-terminator path");
+            let value = match opcode {
+                crate::ll_token::Opcode::Add => {
+                    self.parse_int_binop(state, b_ref, IntBinOp::Add, &result_name)?
+                }
+                crate::ll_token::Opcode::Sub => {
+                    self.parse_int_binop(state, b_ref, IntBinOp::Sub, &result_name)?
+                }
+                crate::ll_token::Opcode::Mul => {
+                    self.parse_int_binop(state, b_ref, IntBinOp::Mul, &result_name)?
+                }
+                crate::ll_token::Opcode::ICmp => self.parse_icmp(state, b_ref, &result_name)?,
+                _ => {
+                    return Err(ParseError::Expected {
+                        expected: format!(
+                            "instruction opcode supported by Session 3 (got {:?})",
+                            opcode
+                        ),
+                        loc: DiagLoc::span(result_loc),
+                    });
+                }
+            };
+            state.bind_local(&result_name, value);
+        }
+    }
+
+    /// Parse an optional `%name = ` / `%N = ` LHS introduction. When the
+    /// next instruction has no LHS (terminator-only), this returns
+    /// [`LocalLhs::None`]; otherwise it consumes the local var and `=`.
+    fn parse_lhs_assignment(&mut self) -> ParseResult<LocalLhs> {
+        match self.peek() {
+            Token::LocalVar(_) => {
+                let name = self
+                    .current_str_payload()
+                    .ok_or_else(|| self.expected("local SSA name"))?;
+                self.bump()?;
+                self.expect_punct(PunctKind::Equal, "'=' after local SSA name")?;
+                Ok(LocalLhs::Named(name))
+            }
+            Token::LocalVarId(id) => {
+                let id = *id;
+                self.bump()?;
+                self.expect_punct(PunctKind::Equal, "'=' after local SSA id")?;
+                Ok(LocalLhs::Numbered(id))
+            }
+            _ => Ok(LocalLhs::None),
+        }
+    }
+
+    /// `ret void` or `ret TYPE VALUE`. Mirrors `LLParser::parseRet`.
+    fn parse_ret(
+        &mut self,
+        state: &PerFunctionState<'ctx>,
+        b: ParsedBlockBuilder<'ctx>,
+    ) -> ParseResult<()> {
+        self.bump()?; // eat `ret`
+        if let Token::PrimitiveType(crate::ll_token::PrimitiveTy::Void) = self.peek() {
+            self.bump()?;
+            let _ = b.build_ret_void().map_err(|e| ParseError::Expected {
+                expected: format!("valid ret void: {e}"),
+                loc: DiagLoc::span(self.loc()),
+            })?;
+            return Ok(());
+        }
+        let ty = self.parse_type(false)?;
+        let v = self.parse_value(state, ty)?;
+        let _ = b.build_ret(v).map_err(|e| ParseError::Expected {
+            expected: format!("valid ret: {e}"),
+            loc: DiagLoc::span(self.loc()),
+        })?;
+        Ok(())
+    }
+
+    /// `br label %t` or `br i1 %c, label %t, label %f`. Mirrors
+    /// `LLParser::parseBr`.
+    fn parse_br(
+        &mut self,
+        state: &mut PerFunctionState<'ctx>,
+        b: ParsedBlockBuilder<'ctx>,
+    ) -> ParseResult<()> {
+        self.bump()?; // eat `br`
+        if matches!(
+            self.peek(),
+            Token::PrimitiveType(crate::ll_token::PrimitiveTy::Label)
+        ) {
+            self.bump()?;
+            let target = self.parse_block_ref(state)?;
+            let _ = b.build_br(target).map_err(|e| ParseError::Expected {
+                expected: format!("valid br: {e}"),
+                loc: DiagLoc::span(self.loc()),
+            })?;
+            return Ok(());
+        }
+        // Conditional: `i1 %cond, label %t, label %f`.
+        let cond_ty = self.parse_type(false)?;
+        if !matches!(
+            cond_ty.into_type_enum(),
+            AnyTypeEnum::Int(t) if t.bit_width() == 1
+        ) {
+            return Err(self.expected("'i1' condition for cond-br"));
+        }
+        let cond_v = self.parse_value(state, cond_ty)?;
+        self.expect_punct(PunctKind::Comma, "',' after br condition")?;
+        self.expect_primitive(
+            crate::ll_token::PrimitiveTy::Label,
+            "'label' for then-target",
+        )?;
+        let then_bb = self.parse_block_ref(state)?;
+        self.expect_punct(PunctKind::Comma, "',' between br targets")?;
+        self.expect_primitive(
+            crate::ll_token::PrimitiveTy::Label,
+            "'label' for else-target",
+        )?;
+        let else_bb = self.parse_block_ref(state)?;
+        let cond_iv: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn> = cond_v
+            .try_into()
+            .map_err(|_| self.expected("i1 condition"))?;
+        let cond_i1: llvmkit_ir::IntValue<'ctx, bool> = cond_iv
+            .try_into()
+            .map_err(|_| self.expected("i1 condition"))?;
+        let _ = b
+            .build_cond_br(cond_i1, then_bb, else_bb)
+            .map_err(|e| ParseError::Expected {
+                expected: format!("valid cond_br: {e}"),
+                loc: DiagLoc::span(self.loc()),
+            })?;
+        Ok(())
+    }
+
+    /// `OP TYPE LHS, RHS`. Used by add/sub/mul (and trivially extends to
+    /// the rest of the integer binops in follow-on commits).
+    fn parse_int_binop(
+        &mut self,
+        state: &PerFunctionState<'ctx>,
+        b: &ParsedBlockBuilder<'ctx>,
+        op: IntBinOp,
+        result_name: &LocalLhs,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
+        let ty = self.parse_type(false)?;
+        let lhs_v = self.parse_value(state, ty)?;
+        self.expect_punct(PunctKind::Comma, "',' between binop operands")?;
+        let rhs_v = self.parse_value_no_type(state, ty)?;
+        let lhs: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn> = lhs_v
+            .try_into()
+            .map_err(|_| self.expected("integer-typed lhs"))?;
+        let rhs: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn> = rhs_v
+            .try_into()
+            .map_err(|_| self.expected("integer-typed rhs"))?;
+        let name = result_name.as_str();
+        let v = match op {
+            IntBinOp::Add => b
+                .build_int_add::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, name)
+                .map_err(|e| self.builder_err("add", e))?
+                .as_value(),
+            IntBinOp::Sub => b
+                .build_int_sub::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, name)
+                .map_err(|e| self.builder_err("sub", e))?
+                .as_value(),
+            IntBinOp::Mul => b
+                .build_int_mul::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, name)
+                .map_err(|e| self.builder_err("mul", e))?
+                .as_value(),
+        };
+        Ok(v)
+    }
+
+    /// `icmp PRED TYPE LHS, RHS`. Mirrors `LLParser::parseCompare`.
+    fn parse_icmp(
+        &mut self,
+        state: &PerFunctionState<'ctx>,
+        b: &ParsedBlockBuilder<'ctx>,
+        result_name: &LocalLhs,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
+        let pred = match self.peek() {
+            Token::Kw(Keyword::Eq) => llvmkit_ir::IntPredicate::Eq,
+            Token::Kw(Keyword::Ne) => llvmkit_ir::IntPredicate::Ne,
+            Token::Kw(Keyword::Slt) => llvmkit_ir::IntPredicate::Slt,
+            Token::Kw(Keyword::Sle) => llvmkit_ir::IntPredicate::Sle,
+            Token::Kw(Keyword::Sgt) => llvmkit_ir::IntPredicate::Sgt,
+            Token::Kw(Keyword::Sge) => llvmkit_ir::IntPredicate::Sge,
+            Token::Kw(Keyword::Ult) => llvmkit_ir::IntPredicate::Ult,
+            Token::Kw(Keyword::Ule) => llvmkit_ir::IntPredicate::Ule,
+            Token::Kw(Keyword::Ugt) => llvmkit_ir::IntPredicate::Ugt,
+            Token::Kw(Keyword::Uge) => llvmkit_ir::IntPredicate::Uge,
+            _ => return Err(self.expected("integer compare predicate")),
+        };
+        self.bump()?;
+        let ty = self.parse_type(false)?;
+        let lhs_v = self.parse_value(state, ty)?;
+        self.expect_punct(PunctKind::Comma, "',' between icmp operands")?;
+        let rhs_v = self.parse_value_no_type(state, ty)?;
+        let lhs: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn> = lhs_v
+            .try_into()
+            .map_err(|_| self.expected("integer-typed lhs"))?;
+        let rhs: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn> = rhs_v
+            .try_into()
+            .map_err(|_| self.expected("integer-typed rhs"))?;
+        let name = result_name.as_str();
+        let r = b
+            .build_int_cmp::<llvmkit_ir::IntDyn, _, _>(pred, lhs, rhs, name)
+            .map_err(|e| self.builder_err("icmp", e))?;
+        Ok(r.as_value())
+    }
+
+    fn builder_err(&self, label: &str, e: IrError) -> ParseError {
+        ParseError::Expected {
+            expected: format!("valid {label}: {e}"),
+            loc: DiagLoc::span(self.loc()),
+        }
+    }
+
+    /// Resolve a `label %name` / `label %N` reference, ensuring the
+    /// target block exists (creating an empty unsealed block if it's a
+    /// forward reference).
+    fn parse_block_ref(
+        &mut self,
+        state: &mut PerFunctionState<'ctx>,
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed>> {
+        let name = match self.peek() {
+            Token::LocalVar(_) => self
+                .current_str_payload()
+                .ok_or_else(|| self.expected("block label name"))?,
+            Token::LocalVarId(n) => format!("{n}"),
+            _ => return Err(self.expected("block label after 'label'")),
+        };
+        self.bump()?;
+        Ok(state.ensure_block(self.module, &name))
+    }
+
+    /// Parse a value of the given type. Accepts local SSA references,
+    /// integer literals, and `null`/`zeroinitializer`/`true`/`false`.
+    fn parse_value(
+        &mut self,
+        state: &PerFunctionState<'ctx>,
+        ty: Type<'ctx>,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
+        self.parse_value_no_type(state, ty)
+    }
+
+    fn parse_value_no_type(
+        &mut self,
+        state: &PerFunctionState<'ctx>,
+        ty: Type<'ctx>,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
+        match self.peek() {
+            Token::LocalVar(_) => {
+                let n = self
+                    .current_str_payload()
+                    .ok_or_else(|| self.expected("local SSA name"))?;
+                self.bump()?;
+                state
+                    .local_named
+                    .get(&n)
+                    .copied()
+                    .ok_or_else(|| ParseError::UndefinedSymbol {
+                        kind: SYMBOL_KIND_LOCAL,
+                        id: crate::parse_error::SymbolId::Named(n),
+                        loc: DiagLoc::span(self.loc()),
+                    })
+            }
+            Token::LocalVarId(id) => {
+                let id = *id;
+                self.bump()?;
+                state
+                    .local_numbered
+                    .get(&id)
+                    .copied()
+                    .ok_or_else(|| ParseError::UndefinedSymbol {
+                        kind: SYMBOL_KIND_LOCAL,
+                        id: crate::parse_error::SymbolId::Numbered(id),
+                        loc: DiagLoc::span(self.loc()),
+                    })
+            }
+            Token::IntegerLit(_) => {
+                let int_ty = match ty.into_type_enum() {
+                    AnyTypeEnum::Int(t) => t,
+                    _ => return Err(self.expected("integer constant only valid for int type")),
+                };
+                let (negative, value) = self.parse_int_literal()?;
+                let raw = if negative {
+                    value.wrapping_neg()
+                } else {
+                    value
+                };
+                let c = int_ty
+                    .const_int_raw(raw, negative)
+                    .map_err(|e| self.builder_err("integer constant", e))?;
+                Ok(c.as_value())
+            }
+            Token::Kw(Keyword::True) => {
+                let _ = ty; // type already consumed
+                self.bump()?;
+                Ok(self
+                    .module
+                    .i1_type()
+                    .const_int_raw(1, false)
+                    .unwrap()
+                    .as_value())
+            }
+            Token::Kw(Keyword::False) => {
+                let _ = ty;
+                self.bump()?;
+                Ok(self
+                    .module
+                    .i1_type()
+                    .const_int_raw(0, false)
+                    .unwrap()
+                    .as_value())
+            }
+            Token::Kw(Keyword::Null) => {
+                let pty = match ty.into_type_enum() {
+                    AnyTypeEnum::Pointer(t) => t,
+                    _ => return Err(self.expected("'null' is only valid for pointer types")),
+                };
+                self.bump()?;
+                Ok(pty.const_null().as_value())
+            }
+            Token::Kw(Keyword::Zeroinitializer) => {
+                self.bump()?;
+                match ty.into_type_enum() {
+                    AnyTypeEnum::Int(t) => Ok(t.const_zero().as_value()),
+                    AnyTypeEnum::Pointer(t) => Ok(t.const_null().as_value()),
+                    _ => Err(self
+                        .expected("zeroinitializer for the modeled scalar types (int / pointer)")),
+                }
+            }
+            _ => Err(self.expected("operand value")),
+        }
+    }
 }
 
 // ── Helper enums ────────────────────────────────────────────────────────────
+
+// ── Function-body helper types ──────────────────────────────────────────────
+
+/// Per-function symbol tables. Mirrors `LLParser::PerFunctionState`'s
+/// named/numbered value tables and the basic-block lookup map.
+struct PerFunctionState<'ctx> {
+    func: llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn>,
+    /// `%name` to the bound SSA value.
+    local_named: std::collections::HashMap<String, llvmkit_ir::Value<'ctx>>,
+    /// `%N` to the bound SSA value.
+    local_numbered: std::collections::HashMap<u32, llvmkit_ir::Value<'ctx>>,
+    /// Slot id of the next anonymous SSA value (used for `%lhs = ...`
+    /// assignments without an explicit name).
+    next_unnamed_value_id: u32,
+    /// `label` to the (Unsealed) basic-block handle. Created on first
+    /// reference to support `br label %later` forward references.
+    blocks: std::collections::HashMap<
+        String,
+        llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed>,
+    >,
+}
+
+impl<'ctx> PerFunctionState<'ctx> {
+    fn new(func: llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn>) -> Self {
+        Self {
+            func,
+            local_named: std::collections::HashMap::new(),
+            local_numbered: std::collections::HashMap::new(),
+            next_unnamed_value_id: 0,
+            blocks: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Look up or lazily create the named basic block. Mirrors
+    /// `PerFunctionState::defineBB` / `getBB` for the constructive subset
+    /// where forward references just create the block in advance and
+    /// fill it in when the label is later observed.
+    fn ensure_block(
+        &mut self,
+        _module: &'ctx llvmkit_ir::Module<'ctx>,
+        name: &str,
+    ) -> llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed> {
+        if let Some(bb) = self.blocks.get(name) {
+            return *bb;
+        }
+        let bb = self.func.append_basic_block(name);
+        self.blocks.insert(name.to_owned(), bb);
+        bb
+    }
+
+    fn bind_local(&mut self, lhs: &LocalLhs, v: llvmkit_ir::Value<'ctx>) {
+        match lhs {
+            LocalLhs::Named(n) => {
+                self.local_named.insert(n.clone(), v);
+            }
+            LocalLhs::Numbered(id) => {
+                self.local_numbered.insert(*id, v);
+                self.next_unnamed_value_id = self.next_unnamed_value_id.max(id.saturating_add(1));
+            }
+            LocalLhs::None => {
+                let id = self.next_unnamed_value_id;
+                self.local_numbered.insert(id, v);
+                self.next_unnamed_value_id = id.saturating_add(1);
+            }
+        }
+    }
+}
+
+enum BlockHeader {
+    Named(String),
+    Implicit,
+}
+
+enum ParamName {
+    Named(String),
+    Numbered(u32),
+}
+
+enum LocalLhs {
+    Named(String),
+    Numbered(u32),
+    None,
+}
+
+impl LocalLhs {
+    fn as_str(&self) -> &str {
+        match self {
+            LocalLhs::Named(n) => n.as_str(),
+            // For numbered / unnamed LHS, pass an empty name; the
+            // AsmWriter slot tracker will emit `%N` automatically.
+            _ => "",
+        }
+    }
+}
+
+enum IntBinOp {
+    Add,
+    Sub,
+    Mul,
+}
+
+/// Alias for the dyn-positioned, dyn-return IRBuilder we drive while
+/// emitting one block's instructions. The terminator-emitting calls
+/// (`build_ret` / `build_br` / etc.) take this by value, so the parser
+/// stores it inside an `Option<Self>` for the duration of the block.
+type ParsedBlockBuilder<'ctx> = llvmkit_ir::IRBuilder<
+    'ctx,
+    llvmkit_ir::ConstantFolder,
+    llvmkit_ir::Positioned,
+    llvmkit_ir::Dyn,
+>;
+
+/// Local symbol kind label used in [`crate::parse_error::ParseError::UndefinedSymbol`].
+const SYMBOL_KIND_LOCAL: crate::parse_error::SymbolKind = crate::parse_error::SymbolKind::Local;
 
 #[derive(Clone, Debug)]
 enum NameOrId {

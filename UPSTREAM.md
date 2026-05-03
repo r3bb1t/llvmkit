@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 539.
+Total `#[test]` functions: 547.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -561,3 +561,11 @@ Total `#[test]` functions: 539.
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::void_in_value_position_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType` "void only allowed for function results" | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::legacy_typed_pointer_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType` typed-pointer rejection | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::unknown_top_level_entity_is_typed_error` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseTopLevelEntities` default `tokError("expected top-level entity")` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_void_function_body` | `llvm/test/Assembler/return-void.ll`; `LLParser::parseRet` (void arm) | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_int_add_and_ret` | `llvm/unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, ...)` add+ret shape | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_numbered_params` | `llvm/lib/AsmParser/LLParser.cpp::PerFunctionState` numbered-value bookkeeping | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_unreachable_terminator` | `llvm/test/Assembler/unreachable.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_icmp_and_cond_br` | entry-block of `crates/llvmkit-ir/examples/factorial.rs`; mirrors `LLParser::parseCompare` + `parseBr` cond-br arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_forward_block_reference` | `llvm/lib/AsmParser/LLParser.cpp::PerFunctionState::getBB` forward-reference path | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_sub_and_mul` | loop-body shape from `crates/llvmkit-ir/examples/factorial.rs`; `LLParser::parseInstruction` sub/mul arms | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::unsupported_opcode_is_typed_error` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseInstruction` `tokError("expected instruction opcode")` default arm | mirror |
