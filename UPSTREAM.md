@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 551.
+Total `#[test]` functions: 555.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -573,3 +573,7 @@ Total `#[test]` functions: 551.
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_shift_and_bitwise_opcodes` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseInstruction` `Instruction::{Shl,LShr,AShr,And,Or,Xor}` arms | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_int_casts` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCast` integer arm; `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, CastInst)` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_ptr_int_casts` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCast` `Instruction::{PtrToInt,IntToPtr}` arms | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_fp_arith_opcodes` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseArithmetic` FP arm; `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_fneg_opcode` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseUnaryOp` `Instruction::FNeg` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_fcmp_opcodes` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCompare` FP arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_alloca_load_store` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseAlloc` / `parseLoad` / `parseStore` | mirror |

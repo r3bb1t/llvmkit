@@ -111,7 +111,7 @@ fn parses_sub_and_mul() {
 fn unsupported_opcode_is_typed_error() {
     let m = Module::new("unsupported_opcode");
     let parser = Parser::new(
-        b"define void @f() {\nentry:\n  %x = alloca i32\n  ret void\n}\n",
+        b"define i32 @f(i32 %a) {\nentry:\n  %x = phi i32 [ %a, %entry ]\n  ret i32 %x\n}\n",
         &m,
     )
     .unwrap();
@@ -193,4 +193,63 @@ fn parses_ptr_int_casts() {
     );
     assert!(printed.contains("ptrtoint ptr %p to i64"));
     assert!(printed.contains("inttoptr i64 %i to ptr"));
+}
+
+/// Ports the FP arithmetic arms of `LLParser::parseArithmetic`.
+/// Mirrors `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)`
+/// shape (no FMF here).
+#[test]
+fn parses_fp_arith_opcodes() {
+    let printed = parse_and_print(
+        "define float @fmath(float %a, float %b) {\nentry:\n  \
+           %x = fadd float %a, %b\n  \
+           %y = fsub float %x, %a\n  \
+           %z = fmul float %y, %b\n  \
+           %w = fdiv float %z, %a\n  \
+           %r = frem float %w, %b\n  \
+           ret float %r\n\
+         }\n",
+    );
+    for op in ["fadd", "fsub", "fmul", "fdiv", "frem"] {
+        assert!(printed.contains(op), "missing {op}: {printed}");
+    }
+}
+
+/// Ports `LLParser::parseUnaryOp` `Instruction::FNeg` arm.
+#[test]
+fn parses_fneg_opcode() {
+    let printed = parse_and_print(
+        "define float @neg(float %a) {\nentry:\n  %r = fneg float %a\n  ret float %r\n}\n",
+    );
+    assert!(printed.contains("fneg float %a"));
+}
+
+/// Ports `LLParser::parseCompare` FP arm. Predicate spelling matches
+/// the LangRef table.
+#[test]
+fn parses_fcmp_opcodes() {
+    let printed = parse_and_print(
+        "define i1 @ord(float %a, float %b) {\nentry:\n  \
+           %r = fcmp oeq float %a, %b\n  \
+           ret i1 %r\n\
+         }\n",
+    );
+    assert!(printed.contains("fcmp oeq float %a, %b"));
+}
+
+/// Ports the `alloca` / `load` / `store` arms of `LLParser::parseAlloc`
+/// / `parseLoad` / `parseStore`.
+#[test]
+fn parses_alloca_load_store() {
+    let printed = parse_and_print(
+        "define i32 @rw(i32 %v) {\nentry:\n  \
+           %slot = alloca i32\n  \
+           store i32 %v, ptr %slot\n  \
+           %r = load i32, ptr %slot\n  \
+           ret i32 %r\n\
+         }\n",
+    );
+    assert!(printed.contains("alloca i32"));
+    assert!(printed.contains("store i32 %v, ptr %slot"));
+    assert!(printed.contains("load i32, ptr %slot"));
 }
