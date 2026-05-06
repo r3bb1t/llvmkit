@@ -253,3 +253,75 @@ fn parses_alloca_load_store() {
     assert!(printed.contains("store i32 %v, ptr %slot"));
     assert!(printed.contains("load i32, ptr %slot"));
 }
+
+/// Ports `LLParser::parseGetElementPtr` plain + inbounds arms.
+/// Mirrors `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, GEPIndices)`.
+#[test]
+fn parses_gep_plain_and_inbounds() {
+    let printed = parse_and_print(
+        "define ptr @walk(ptr %p, i64 %i) {\nentry:\n  \
+           %a = getelementptr i32, ptr %p, i64 %i\n  \
+           %b = getelementptr inbounds i32, ptr %p, i64 %i\n  \
+           ret ptr %b\n\
+         }\n",
+    );
+    assert!(printed.contains("getelementptr i32, ptr %p, i64 %i"));
+    assert!(printed.contains("getelementptr inbounds i32, ptr %p, i64 %i"));
+}
+
+/// Ports `LLParser::parseSelect` for the int / fp / ptr arm categories.
+/// Mirrors `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, SelectMask)`.
+#[test]
+fn parses_select_int_fp_ptr() {
+    let printed = parse_and_print(
+        "define void @sel(i1 %c, i32 %a, i32 %b, float %fa, float %fb, ptr %pa, ptr %pb) {\nentry:\n  \
+           %ri = select i1 %c, i32 %a, i32 %b\n  \
+           %rf = select i1 %c, float %fa, float %fb\n  \
+           %rp = select i1 %c, ptr %pa, ptr %pb\n  \
+           ret void\n\
+         }\n",
+    );
+    assert!(printed.contains("select i1 %c, i32 %a, i32 %b"));
+    assert!(printed.contains("select i1 %c, float %fa, float %fb"));
+    assert!(printed.contains("select i1 %c, ptr %pa, ptr %pb"));
+}
+
+/// Ports `LLParser::parseCast` `Instruction::{FPToSI,FPToUI}` arms.
+#[test]
+fn parses_fp_to_int_casts() {
+    let printed = parse_and_print(
+        "define void @to_int(float %f) {\nentry:\n  \
+           %s = fptosi float %f to i32\n  \
+           %u = fptoui float %f to i32\n  \
+           ret void\n\
+         }\n",
+    );
+    assert!(printed.contains("fptosi float %f to i32"));
+    assert!(printed.contains("fptoui float %f to i32"));
+}
+
+/// Ports `LLParser::parseCast` `Instruction::{SIToFP,UIToFP}` arms.
+#[test]
+fn parses_int_to_fp_casts() {
+    let printed = parse_and_print(
+        "define void @to_fp(i32 %i) {\nentry:\n  \
+           %s = sitofp i32 %i to float\n  \
+           %u = uitofp i32 %i to float\n  \
+           ret void\n\
+         }\n",
+    );
+    assert!(printed.contains("sitofp i32 %i to float"));
+    assert!(printed.contains("uitofp i32 %i to float"));
+}
+
+/// Ports `LLParser::parseCast` `Instruction::AddrSpaceCast` arm.
+#[test]
+fn parses_addrspacecast() {
+    let printed = parse_and_print(
+        "define ptr addrspace(1) @as_cast(ptr %p) {\nentry:\n  \
+           %r = addrspacecast ptr %p to ptr addrspace(1)\n  \
+           ret ptr addrspace(1) %r\n\
+         }\n",
+    );
+    assert!(printed.contains("addrspacecast ptr %p to ptr addrspace(1)"));
+}

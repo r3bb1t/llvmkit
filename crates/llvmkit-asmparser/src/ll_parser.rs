@@ -1297,6 +1297,25 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                 crate::ll_token::Opcode::FCmp => self.parse_fcmp(state, b_ref, &result_name)?,
                 crate::ll_token::Opcode::Alloca => self.parse_alloca(b_ref, &result_name)?,
                 crate::ll_token::Opcode::Load => self.parse_load(state, b_ref, &result_name)?,
+                crate::ll_token::Opcode::GetElementPtr => {
+                    self.parse_gep(state, b_ref, &result_name)?
+                }
+                crate::ll_token::Opcode::Select => self.parse_select(state, b_ref, &result_name)?,
+                crate::ll_token::Opcode::FPToUI => {
+                    self.parse_fp_to_int(state, b_ref, FpToInt::FpToUI, &result_name)?
+                }
+                crate::ll_token::Opcode::FPToSI => {
+                    self.parse_fp_to_int(state, b_ref, FpToInt::FpToSI, &result_name)?
+                }
+                crate::ll_token::Opcode::UIToFP => {
+                    self.parse_int_to_fp(state, b_ref, IntToFp::UIToFp, &result_name)?
+                }
+                crate::ll_token::Opcode::SIToFP => {
+                    self.parse_int_to_fp(state, b_ref, IntToFp::SIToFp, &result_name)?
+                }
+                crate::ll_token::Opcode::AddrSpaceCast => {
+                    self.parse_addrspace_cast(state, b_ref, &result_name)?
+                }
                 _ => {
                     return Err(ParseError::Expected {
                         expected: format!(
@@ -1786,6 +1805,208 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         Ok(())
     }
 
+    /// `getelementptr [inbounds] SOURCE_TY, ptr P, INDEX, INDEX, ...`.
+    /// Mirrors `LLParser::parseGetElementPtr`. The `inbounds` flag and
+    /// the trailing nuw/nusw GEP flags map to
+    /// [`llvmkit_ir::GepNoWrapFlags`]; for now we only ship the plain
+    /// and `inbounds` forms (the bulk of real-world GEP shapes).
+    fn parse_gep(
+        &mut self,
+        state: &PerFunctionState<'ctx>,
+        b: &ParsedBlockBuilder<'ctx>,
+        result_name: &LocalLhs,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
+        let inbounds = self.eat_keyword(Keyword::Inbounds)?;
+        let source_ty = self.parse_type(false)?;
+        self.expect_punct(PunctKind::Comma, "',' after GEP source type")?;
+        let ptr_ty = self.parse_type(false)?;
+        let ptr_v = self.parse_value(state, ptr_ty)?;
+        let ptr: llvmkit_ir::PointerValue<'ctx> = ptr_v
+            .try_into()
+            .map_err(|_| self.expected("ptr-typed GEP base"))?;
+        let mut indices: Vec<llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn>> = Vec::new();
+        while self.eat_punct(PunctKind::Comma)? {
+            let idx_ty = self.parse_type(false)?;
+            let idx_v = self.parse_value(state, idx_ty)?;
+            let idx: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn> = idx_v
+                .try_into()
+                .map_err(|_| self.expected("integer GEP index"))?;
+            indices.push(idx);
+        }
+        let name = result_name.as_str();
+        let v = if inbounds {
+            b.build_inbounds_gep(source_ty, ptr, indices, name)
+        } else {
+            b.build_gep(source_ty, ptr, indices, name)
+        }
+        .map_err(|e| self.builder_err("getelementptr", e))?;
+        Ok(v.as_value())
+    }
+
+    /// `select i1 COND, TYPE TRUE, TYPE FALSE`. Dispatches to
+    /// [`llvmkit_ir::IRBuilder::build_select`] on the appropriate
+    /// [`llvmkit_ir::SelectArm`] depending on the arm category. Mirrors
+    /// `LLParser::parseSelect`.
+    fn parse_select(
+        &mut self,
+        state: &PerFunctionState<'ctx>,
+        b: &ParsedBlockBuilder<'ctx>,
+        result_name: &LocalLhs,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
+        let cond_ty = self.parse_type(false)?;
+        let cond_v = self.parse_value(state, cond_ty)?;
+        let cond_iv: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn> = cond_v
+            .try_into()
+            .map_err(|_| self.expected("integer-typed select condition"))?;
+        let cond_i1: llvmkit_ir::IntValue<'ctx, bool> = cond_iv
+            .try_into()
+            .map_err(|_| self.expected("i1 select condition"))?;
+        self.expect_punct(PunctKind::Comma, "',' after select condition")?;
+        let true_ty = self.parse_type(false)?;
+        let true_v = self.parse_value(state, true_ty)?;
+        self.expect_punct(PunctKind::Comma, "',' between select arms")?;
+        let false_ty = self.parse_type(false)?;
+        let false_v = self.parse_value(state, false_ty)?;
+        if true_ty != false_ty {
+            return Err(self.expected("matching arm types in select"));
+        }
+        let name = result_name.as_str();
+        let v = match true_ty.into_type_enum() {
+            AnyTypeEnum::Int(_) => {
+                let t: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn> = true_v
+                    .try_into()
+                    .map_err(|_| self.expected("int-typed select arm"))?;
+                let f: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn> = false_v
+                    .try_into()
+                    .map_err(|_| self.expected("int-typed select arm"))?;
+                b.build_select(cond_i1, t, f, name)
+                    .map_err(|e| self.builder_err("select", e))?
+                    .as_value()
+            }
+            AnyTypeEnum::Float(_) => {
+                let t: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn> = true_v
+                    .try_into()
+                    .map_err(|_| self.expected("float-typed select arm"))?;
+                let f: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn> = false_v
+                    .try_into()
+                    .map_err(|_| self.expected("float-typed select arm"))?;
+                b.build_select(cond_i1, t, f, name)
+                    .map_err(|e| self.builder_err("select", e))?
+                    .as_value()
+            }
+            AnyTypeEnum::Pointer(_) => {
+                let t: llvmkit_ir::PointerValue<'ctx> = true_v
+                    .try_into()
+                    .map_err(|_| self.expected("ptr-typed select arm"))?;
+                let f: llvmkit_ir::PointerValue<'ctx> = false_v
+                    .try_into()
+                    .map_err(|_| self.expected("ptr-typed select arm"))?;
+                b.build_select(cond_i1, t, f, name)
+                    .map_err(|e| self.builder_err("select", e))?
+                    .as_value()
+            }
+            _ => {
+                return Err(
+                    self.expected("select arm category supported by this session (int/fp/ptr)")
+                );
+            }
+        };
+        Ok(v)
+    }
+
+    /// `fptosi`/`fptoui TYPE VALUE to TYPE`. Mirrors `LLParser::parseCast`
+    /// for `Instruction::FPToSI` / `FPToUI`.
+    fn parse_fp_to_int(
+        &mut self,
+        state: &PerFunctionState<'ctx>,
+        b: &ParsedBlockBuilder<'ctx>,
+        op: FpToInt,
+        result_name: &LocalLhs,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
+        let src_ty = self.parse_type(false)?;
+        let src_v = self.parse_value(state, src_ty)?;
+        self.expect_keyword(Keyword::To, "'to' in fp->int cast")?;
+        let dst_ty = self.parse_type(false)?;
+        let src_fp: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn> = src_v
+            .try_into()
+            .map_err(|_| self.expected("float-typed source for fp->int cast"))?;
+        let dst_int = match dst_ty.into_type_enum() {
+            AnyTypeEnum::Int(t) => t,
+            _ => return Err(self.expected("integer destination for fp->int cast")),
+        };
+        let name = result_name.as_str();
+        let v = match op {
+            FpToInt::FpToSI => b
+                .build_fp_to_si(src_fp, dst_int, name)
+                .map_err(|e| self.builder_err("fptosi", e))?
+                .as_value(),
+            FpToInt::FpToUI => b
+                .build_fp_to_ui(src_fp, dst_int, name)
+                .map_err(|e| self.builder_err("fptoui", e))?
+                .as_value(),
+        };
+        Ok(v)
+    }
+
+    /// `sitofp`/`uitofp TYPE VALUE to TYPE`. Mirrors `LLParser::parseCast`
+    /// for `Instruction::SIToFP` / `UIToFP`.
+    fn parse_int_to_fp(
+        &mut self,
+        state: &PerFunctionState<'ctx>,
+        b: &ParsedBlockBuilder<'ctx>,
+        op: IntToFp,
+        result_name: &LocalLhs,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
+        let src_ty = self.parse_type(false)?;
+        let src_v = self.parse_value(state, src_ty)?;
+        self.expect_keyword(Keyword::To, "'to' in int->fp cast")?;
+        let dst_ty = self.parse_type(false)?;
+        let src_int: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn> = src_v
+            .try_into()
+            .map_err(|_| self.expected("integer-typed source for int->fp cast"))?;
+        let dst_fp = match dst_ty.into_type_enum() {
+            AnyTypeEnum::Float(t) => t,
+            _ => return Err(self.expected("float destination for int->fp cast")),
+        };
+        let name = result_name.as_str();
+        let v = match op {
+            IntToFp::SIToFp => b
+                .build_si_to_fp(src_int, dst_fp, name)
+                .map_err(|e| self.builder_err("sitofp", e))?
+                .as_value(),
+            IntToFp::UIToFp => b
+                .build_ui_to_fp(src_int, dst_fp, name)
+                .map_err(|e| self.builder_err("uitofp", e))?
+                .as_value(),
+        };
+        Ok(v)
+    }
+
+    /// `addrspacecast ptr VALUE to ptr`. Mirrors `LLParser::parseCast`
+    /// for `Instruction::AddrSpaceCast`.
+    fn parse_addrspace_cast(
+        &mut self,
+        state: &PerFunctionState<'ctx>,
+        b: &ParsedBlockBuilder<'ctx>,
+        result_name: &LocalLhs,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
+        let src_ty = self.parse_type(false)?;
+        let src_v = self.parse_value(state, src_ty)?;
+        self.expect_keyword(Keyword::To, "'to' in addrspacecast")?;
+        let dst_ty = self.parse_type(false)?;
+        let src_ptr: llvmkit_ir::PointerValue<'ctx> = src_v
+            .try_into()
+            .map_err(|_| self.expected("ptr-typed source for addrspacecast"))?;
+        let dst_ptr = match dst_ty.into_type_enum() {
+            AnyTypeEnum::Pointer(t) => t,
+            _ => return Err(self.expected("ptr destination for addrspacecast")),
+        };
+        let v = b
+            .build_addrspace_cast(src_ptr, dst_ptr, result_name.as_str())
+            .map_err(|e| self.builder_err("addrspacecast", e))?;
+        Ok(v.as_value())
+    }
+
     fn builder_err(&self, label: &str, e: IrError) -> ParseError {
         ParseError::Expected {
             expected: format!("valid {label}: {e}"),
@@ -2037,6 +2258,16 @@ enum FpBinOp {
     Mul,
     Div,
     Rem,
+}
+
+enum FpToInt {
+    FpToSI,
+    FpToUI,
+}
+
+enum IntToFp {
+    SIToFp,
+    UIToFp,
 }
 
 /// Alias for the dyn-positioned, dyn-return IRBuilder we drive while

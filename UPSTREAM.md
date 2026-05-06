@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 555.
+Total `#[test]` functions: 560.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -577,3 +577,8 @@ Total `#[test]` functions: 555.
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_fneg_opcode` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseUnaryOp` `Instruction::FNeg` arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_fcmp_opcodes` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCompare` FP arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_alloca_load_store` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseAlloc` / `parseLoad` / `parseStore` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_gep_plain_and_inbounds` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseGetElementPtr`; `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, GEPIndices)` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_select_int_fp_ptr` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseSelect`; `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, SelectMask)` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_fp_to_int_casts` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCast` `Instruction::{FPToSI,FPToUI}` arms | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_int_to_fp_casts` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCast` `Instruction::{SIToFP,UIToFP}` arms | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_addrspacecast` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCast` `Instruction::AddrSpaceCast` arm | mirror |
