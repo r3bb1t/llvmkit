@@ -30,7 +30,8 @@ use crate::basic_block::BasicBlock;
 use crate::constant::ConstantData;
 use crate::function::FunctionValue;
 use crate::instr_types::{
-    BinaryOpData, BranchInstData, BranchKind, CastOpData, CmpInstData, PhiData, ReturnOpData,
+    BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData, PhiData,
+    ReturnOpData,
 };
 use crate::instruction::{Instruction, InstructionKindData};
 use crate::marker::Dyn;
@@ -498,6 +499,9 @@ fn fmt_binop(
     if b.is_exact {
         f.write_str(" exact")?;
     }
+    if b.disjoint {
+        f.write_str(" disjoint")?;
+    }
     // Mirrors `writeOptimizationInfo` in `lib/IR/AsmWriter.cpp`: an
     // `FPMathOperator` prints its FMF (` <flags>`) before the operands.
     if !b.fmf.is_empty() {
@@ -523,6 +527,16 @@ fn fmt_cast(
 ) -> fmt::Result {
     // `<keyword> <src-ty> <src-ref> to <dst-ty>`
     f.write_str(c.kind.keyword())?;
+    match c.kind {
+        CastOpcode::Trunc => {
+            if c.nuw { f.write_str(" nuw")?; }
+            if c.nsw { f.write_str(" nsw")?; }
+        }
+        CastOpcode::ZExt | CastOpcode::UIToFp if c.nneg => {
+            f.write_str(" nneg")?;
+        }
+        _ => {}
+    }
     f.write_str(" ")?;
     let module = inst.module();
     let src_data = module.context().value_data(c.src.get());
@@ -873,7 +887,11 @@ fn fmt_icmp(
     let module = inst.module();
     let lhs_data = module.context().value_data(c.lhs.get());
     let lhs = Value::from_parts(c.lhs.get(), module, lhs_data.ty);
-    write!(f, "icmp {} {} ", c.predicate.name(), lhs.ty())?;
+    if c.samesign {
+        write!(f, "icmp samesign {} {} ", c.predicate.name(), lhs.ty())?;
+    } else {
+        write!(f, "icmp {} {} ", c.predicate.name(), lhs.ty())?;
+    }
     fmt_operand_ref(f, lhs, Some(slots))?;
     f.write_str(", ")?;
     let rhs_data = module.context().value_data(c.rhs.get());
@@ -1662,7 +1680,72 @@ pub(crate) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &Module<'_>) -> fmt::Res
         first = false;
         fmt_function(f, func)?;
     }
+
+    // Numbered metadata nodes. Mirrors the
+    // `for (const auto &[Slot, Node] : ...NumberedMetadata())`
+    // loop in `printModule`. Emitted as `!N = !{...}` or `!N = !""`.
+    {
+        let md = m.metadata_store();
+        let nodes = md.nodes();
+        if !nodes.is_empty() {
+            f.write_str("\n")?;
+            for (i, node) in nodes.iter().enumerate() {
+                write!(f, "!{i} = ")?;
+                fmt_metadata_node(f, node, &md)?;
+                f.write_str("\n")?;
+            }
+        }
+    }
+
+    // Named metadata. Mirrors the `for (const NamedMDNode &NMD :
+    // M->named_metadata())` loop in `printModule`.
+    {
+        let nmd = m.named_metadata_list();
+        if !nmd.is_empty() {
+            for node in nmd.iter() {
+                write!(f, "!{} = !{{", node.name())?;
+                for (j, op) in node.operands().iter().enumerate() {
+                    if j > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "!{}", op.0.index())?;
+                }
+                f.write_str("}\n")?;
+            }
+        }
+    }
+
     Ok(())
+}
+
+/// Print one metadata node body. Mirrors `WriteMDNodeBodyInternal` in
+/// `lib/IR/AsmWriter.cpp`.
+fn fmt_metadata_node(
+    f: &mut fmt::Formatter<'_>,
+    node: &crate::metadata::MetadataKind,
+    _store: &crate::metadata::MetadataStore,
+) -> fmt::Result {
+    use crate::metadata::MetadataKind;
+    match node {
+        MetadataKind::String(s) => {
+            f.write_str("!\"")?;
+            print_escaped_string(f, s.as_bytes())?;
+            f.write_str("\"")
+        }
+        MetadataKind::Tuple(operands) => {
+            f.write_str("!{")?;
+            for (i, op) in operands.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "!{}", op.0.index())?;
+            }
+            f.write_str("}")
+        }
+        MetadataKind::Ref(id) => {
+            write!(f, "!{}", id.index())
+        }
+    }
 }
 
 fn fmt_comdat(f: &mut fmt::Formatter<'_>, c: crate::comdat::ComdatRef<'_>) -> fmt::Result {

@@ -40,6 +40,7 @@ use crate::int_width::IntDyn;
 use crate::llvm_context::Context;
 use crate::r#type::{MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeId};
 use crate::typed_pointer_type::TypedPointerType;
+use crate::named_md_node::NamedMDNode;
 
 // --------------------------------------------------------------------------
 // ModuleId
@@ -174,6 +175,12 @@ pub struct Module<'ctx> {
     /// Stored as a single `String` joined by newlines (one entry
     /// per `module asm "..."` directive).
     module_asm: core::cell::RefCell<String>,
+    /// Module-level metadata node arena. Mirrors `LLVMContextImpl`'s
+    /// metadata store (scoped to the module for simplicity).
+    metadata: core::cell::RefCell<crate::metadata::MetadataStore>,
+    /// Named metadata nodes (`!llvm.module.flags`, `!llvm.ident`, ...).
+    /// Mirrors `Module::NamedMDList`. Insertion order is preserved.
+    named_metadata: core::cell::RefCell<Vec<NamedMDNode>>,
     /// Brand carrier. Without it, `Module<'ctx>` would have no use of
     /// `'ctx` in its fields (since `Context` is lifetime-free) and the
     /// parameter would be unconstrained.
@@ -197,6 +204,8 @@ impl<'ctx> Module<'ctx> {
             data_layout: core::cell::RefCell::new(crate::data_layout::DataLayout::default()),
             target_triple: core::cell::RefCell::new(None),
             module_asm: core::cell::RefCell::new(String::new()),
+            metadata: core::cell::RefCell::new(crate::metadata::MetadataStore::default()),
+            named_metadata: core::cell::RefCell::new(Vec::new()),
             _brand: PhantomData,
         }
     }
@@ -907,6 +916,84 @@ impl<'ctx> Module<'ctx> {
             buf.push('\n');
         }
         buf.push_str(line.as_ref());
+    }
+
+    // ---- Metadata ----
+
+    /// Intern a metadata string node. Returns an existing id if an
+    /// identical string was already interned. Mirrors `MDString::get`.
+    pub fn metadata_string(&self, s: impl Into<String>) -> crate::metadata::MetadataId {
+        self.metadata.borrow_mut().get_string(s)
+    }
+
+    /// Create a metadata tuple node. Mirrors `MDTuple::get` (distinct).
+    pub fn metadata_tuple(
+        &self,
+        operands: Vec<crate::metadata::MetadataRef>,
+    ) -> crate::metadata::MetadataId {
+        self.metadata.borrow_mut().get_tuple(operands)
+    }
+
+    /// Look up a metadata node by id.
+    pub fn metadata_get(
+        &self,
+        id: crate::metadata::MetadataId,
+    ) -> Option<crate::metadata::MetadataKind> {
+        self.metadata.borrow().get(id).cloned()
+    }
+
+    /// Number of interned metadata nodes.
+    pub fn metadata_count(&self) -> usize {
+        self.metadata.borrow().len()
+    }
+
+    /// Crate-internal: borrow the metadata store.
+    pub(crate) fn metadata_store(&self) -> core::cell::Ref<'_, crate::metadata::MetadataStore> {
+        self.metadata.borrow()
+    }
+
+    /// Crate-internal: mutably borrow the metadata store.
+    #[allow(dead_code)]
+    pub(crate) fn metadata_store_mut(
+        &self,
+    ) -> core::cell::RefMut<'_, crate::metadata::MetadataStore> {
+        self.metadata.borrow_mut()
+    }
+
+    /// Get or create a named metadata node with the given name.
+    /// Mirrors `Module::getOrInsertNamedMetadata`.
+    pub fn get_or_insert_named_metadata(&self, name: impl Into<String>) -> usize {
+        let name = name.into();
+        let mut nmd = self.named_metadata.borrow_mut();
+        for (i, node) in nmd.iter().enumerate() {
+            if node.name() == name {
+                return i;
+            }
+        }
+        let idx = nmd.len();
+        nmd.push(NamedMDNode::new(name));
+        idx
+    }
+
+    /// Append an operand to a named metadata node (by index).
+    pub fn named_metadata_add_operand(
+        &self,
+        index: usize,
+        op: crate::metadata::MetadataRef,
+    ) {
+        self.named_metadata.borrow_mut()[index].add_operand(op);
+    }
+
+    /// Number of named metadata nodes.
+    pub fn named_metadata_count(&self) -> usize {
+        self.named_metadata.borrow().len()
+    }
+
+    /// Crate-internal: borrow named metadata list for printing.
+    pub(crate) fn named_metadata_list(
+        &self,
+    ) -> core::cell::Ref<'_, Vec<NamedMDNode>> {
+        self.named_metadata.borrow()
     }
 
     // ---- Comdats ----

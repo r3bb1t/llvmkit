@@ -1,9 +1,8 @@
 # llvmkit
 
 A from-scratch Rust reimplementation of [LLVM](https://llvm.org/) IR APIs.
-Today `llvmkit` can lex, build, verify, analyze, and print LLVM IR without
-linking against `libLLVM`; the `.ll` parser and bitcode support are still
-ahead.
+Today `llvmkit` can lex, parse, build, verify, analyze, and print LLVM IR
+without linking against `libLLVM`; bitcode support is still ahead.
 
 ## Status
 
@@ -14,6 +13,13 @@ Shipped today:
 - **`.ll` lexer** — done. `llvmkit-asmparser` ports
   `llvm/lib/AsmParser/LLLexer.cpp` and borrows directly from the source slice,
   allocating only when escape decoding actually changes bytes.
+- **`.ll` parser** — done for the constructive subset. Parses module-level
+  directives (target datalayout/triple, module asm, type definitions, globals,
+  function declarations and definitions), all 42 instruction opcodes, metadata
+  (standalone numbered nodes, named metadata, instruction trailing attachments),
+  and value forms (integer/float literals, undef, poison, null,
+  zeroinitializer, global/function references). Round-trip tested via
+  `format!("{module}")`.
 - **Typed IR data model** — done. `llvmkit-ir` ships interned types, typed
   values, typed constants, functions, basic blocks, globals, comdats, data
   layout, target triple, and module asm directives.
@@ -36,7 +42,8 @@ Shipped today:
 
 Not shipped yet:
 
-- **`.ll` parser**
+- **Metadata propagation to instructions** (parsed and accepted, not yet stored
+  per-instruction)
 - **Bitcode reader / writer**
 - **Built-in optimization transforms and pipeline builders** (`PassBuilder`,
   loop PM, CGSCC PM, legacy PM, textual pipelines)
@@ -185,7 +192,7 @@ transform passes yet.
 ├── llvmkit/                         # umbrella crate
 └── crates/
     ├── llvmkit-support/             # Span, Spanned<T>, SourceMap
-    ├── llvmkit-asmparser/           # Lexer today, parser later
+    ├── llvmkit-asmparser/           # Lexer + .ll parser
     └── llvmkit-ir/                  # Typed IR model, builder, verifier, passes
 ```
 

@@ -45,6 +45,9 @@ pub(crate) struct BinaryOpData {
     /// opcodes. Mirrors the `FastMathFlags` slot on `FPMathOperator`
     /// (`Operator.h`).
     pub(crate) fmf: crate::fmf::FastMathFlags,
+    /// `disjoint` flag for `or`. Mirrors `PossiblyDisjointOperator` in
+    /// `Operator.h`. When set, the two operands have no bits in common.
+    pub(crate) disjoint: bool,
 }
 
 impl BinaryOpData {
@@ -56,6 +59,7 @@ impl BinaryOpData {
             no_signed_wrap: false,
             is_exact: false,
             fmf: crate::fmf::FastMathFlags::empty(),
+            disjoint: false,
         }
     }
 }
@@ -73,6 +77,7 @@ impl Clone for BinaryOpData {
             no_signed_wrap: self.no_signed_wrap,
             is_exact: self.is_exact,
             fmf: self.fmf,
+            disjoint: self.disjoint,
         }
     }
 }
@@ -84,6 +89,7 @@ impl PartialEq for BinaryOpData {
             && self.no_signed_wrap == other.no_signed_wrap
             && self.is_exact == other.is_exact
             && self.fmf == other.fmf
+            && self.disjoint == other.disjoint
     }
 }
 impl Eq for BinaryOpData {}
@@ -95,6 +101,7 @@ impl core::hash::Hash for BinaryOpData {
         self.no_signed_wrap.hash(h);
         self.is_exact.hash(h);
         self.fmf.bits().hash(h);
+        self.disjoint.hash(h);
     }
 }
 
@@ -194,6 +201,14 @@ impl CastOpcode {
 pub(crate) struct CastOpData {
     pub(crate) kind: CastOpcode,
     pub(crate) src: Cell<ValueId>,
+    /// `nneg` flag: applies to `zext` and `uitofp`. When set, the source
+    /// value is guaranteed non-negative. Mirrors `PossiblyNonNegInst` in
+    /// `Operator.h`.
+    pub(crate) nneg: bool,
+    /// `nuw` flag: applies to `trunc`. Mirrors `PossiblyNoUnsignedWrapInst`.
+    pub(crate) nuw: bool,
+    /// `nsw` flag: applies to `trunc`. Mirrors `PossiblyNoSignedWrapInst`.
+    pub(crate) nsw: bool,
 }
 
 impl CastOpData {
@@ -201,6 +216,9 @@ impl CastOpData {
         Self {
             kind,
             src: Cell::new(src),
+            nneg: false,
+            nuw: false,
+            nsw: false,
         }
     }
 }
@@ -209,12 +227,19 @@ impl Clone for CastOpData {
         Self {
             kind: self.kind,
             src: Cell::new(self.src.get()),
+            nneg: self.nneg,
+            nuw: self.nuw,
+            nsw: self.nsw,
         }
     }
 }
 impl PartialEq for CastOpData {
     fn eq(&self, other: &Self) -> bool {
-        self.kind == other.kind && self.src.get() == other.src.get()
+        self.kind == other.kind
+            && self.src.get() == other.src.get()
+            && self.nneg == other.nneg
+            && self.nuw == other.nuw
+            && self.nsw == other.nsw
     }
 }
 impl Eq for CastOpData {}
@@ -222,6 +247,9 @@ impl core::hash::Hash for CastOpData {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.kind.hash(h);
         self.src.get().hash(h);
+        self.nneg.hash(h);
+        self.nuw.hash(h);
+        self.nsw.hash(h);
     }
 }
 
@@ -356,6 +384,9 @@ pub(crate) struct CmpInstData {
     pub(crate) predicate: crate::cmp_predicate::IntPredicate,
     pub(crate) lhs: Cell<ValueId>,
     pub(crate) rhs: Cell<ValueId>,
+    /// `samesign` flag. LLVM 19+: asserts both operands have the same sign.
+    /// Mirrors `ICmpInst::hasSameSign` / `setSameSign`.
+    pub(crate) samesign: bool,
 }
 
 impl CmpInstData {
@@ -368,6 +399,7 @@ impl CmpInstData {
             predicate,
             lhs: Cell::new(lhs),
             rhs: Cell::new(rhs),
+            samesign: false,
         }
     }
 }
@@ -377,6 +409,7 @@ impl Clone for CmpInstData {
             predicate: self.predicate,
             lhs: Cell::new(self.lhs.get()),
             rhs: Cell::new(self.rhs.get()),
+            samesign: self.samesign,
         }
     }
 }
@@ -385,6 +418,7 @@ impl PartialEq for CmpInstData {
         self.predicate == other.predicate
             && self.lhs.get() == other.lhs.get()
             && self.rhs.get() == other.rhs.get()
+            && self.samesign == other.samesign
     }
 }
 impl Eq for CmpInstData {}
@@ -393,6 +427,7 @@ impl core::hash::Hash for CmpInstData {
         self.predicate.hash(h);
         self.lhs.get().hash(h);
         self.rhs.get().hash(h);
+        self.samesign.hash(h);
     }
 }
 
@@ -747,6 +782,98 @@ impl_exact_flags_writer!(UDivFlags);
 impl_exact_flags_writer!(SDivFlags);
 impl_exact_flags_writer!(LShrFlags);
 impl_exact_flags_writer!(AShrFlags);
+
+/// Flags for `or`. The `disjoint` flag asserts the two operands have no set
+/// bits in common. Mirrors `PossiblyDisjointOperator` in `Operator.h`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct OrFlags {
+    pub(crate) disjoint: bool,
+}
+impl OrFlags {
+    #[inline]
+    pub const fn new() -> Self { Self { disjoint: false } }
+    /// Set the `disjoint` flag.
+    #[inline]
+    #[must_use]
+    pub const fn disjoint(mut self) -> Self { self.disjoint = true; self }
+}
+impl WriteBinopFlags for OrFlags {
+    #[inline]
+    fn apply(self, payload: &mut BinaryOpData) { payload.disjoint = self.disjoint; }
+}
+
+// --------------------------------------------------------------------------
+// Cast-instruction flag types
+// --------------------------------------------------------------------------
+
+/// Flags for `zext`. The `nneg` flag asserts the source value is non-negative.
+/// Mirrors `PossiblyNonNegInst` in `Operator.h`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ZExtFlags {
+    pub(crate) nneg: bool,
+}
+impl ZExtFlags {
+    #[inline]
+    pub const fn new() -> Self { Self { nneg: false } }
+    /// Set the `nneg` (non-negative) flag.
+    #[inline]
+    #[must_use]
+    pub const fn nneg(mut self) -> Self { self.nneg = true; self }
+}
+
+/// Flags for `trunc`. `nuw` / `nsw` assert no unsigned / signed wrap.
+/// Mirrors `PossiblyNoUnsignedWrapInst` / `PossiblyNoSignedWrapInst`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct TruncFlags {
+    pub(crate) nuw: bool,
+    pub(crate) nsw: bool,
+}
+impl TruncFlags {
+    #[inline]
+    pub const fn new() -> Self { Self { nuw: false, nsw: false } }
+    /// Set the `nuw` (no-unsigned-wrap) flag.
+    #[inline]
+    #[must_use]
+    pub const fn nuw(mut self) -> Self { self.nuw = true; self }
+    /// Set the `nsw` (no-signed-wrap) flag.
+    #[inline]
+    #[must_use]
+    pub const fn nsw(mut self) -> Self { self.nsw = true; self }
+}
+
+/// Flags for `uitofp`. The `nneg` flag asserts the source is non-negative.
+/// Mirrors `PossiblyNonNegInst` in `Operator.h`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct UIToFpFlags {
+    pub(crate) nneg: bool,
+}
+impl UIToFpFlags {
+    #[inline]
+    pub const fn new() -> Self { Self { nneg: false } }
+    /// Set the `nneg` (non-negative) flag.
+    #[inline]
+    #[must_use]
+    pub const fn nneg(mut self) -> Self { self.nneg = true; self }
+}
+
+// --------------------------------------------------------------------------
+// icmp flag type
+// --------------------------------------------------------------------------
+
+/// Flags for `icmp`. The `samesign` flag asserts both operands carry the same
+/// sign. Mirrors `ICmpInst::hasSameSign` / `setSameSign` (LLVM 19+).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ICmpFlags {
+    pub(crate) samesign: bool,
+}
+impl ICmpFlags {
+    #[inline]
+    pub const fn new() -> Self { Self { samesign: false } }
+    /// Set the `samesign` flag.
+    #[inline]
+    #[must_use]
+    pub const fn samesign(mut self) -> Self { self.samesign = true; self }
+}
 
 // --------------------------------------------------------------------------
 // Memory ops: alloca / load / store

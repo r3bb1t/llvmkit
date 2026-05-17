@@ -107,18 +107,19 @@ fn parses_sub_and_mul() {
 /// Negative test: an unsupported opcode in this session is reported as a
 /// typed parse error, not a silent miss. Mirrors `LLParser`'s
 /// `tokError("expected instruction opcode")` site for the default arm.
+/// Uses `store` (no result) with an LHS `%x =` to trigger the `_` arm.
 #[test]
 fn unsupported_opcode_is_typed_error() {
     let m = Module::new("unsupported_opcode");
     let parser = Parser::new(
-        b"define i32 @f(i32 %a) {\nentry:\n  %x = phi i32 [ %a, %entry ]\n  ret i32 %x\n}\n",
+        b"define i32 @f(i32 %a) {\nentry:\n  %x = store i32 %a, ptr null\n  ret i32 %a\n}\n",
         &m,
     )
     .unwrap();
     let err = parser.parse_module().unwrap_err();
     let msg = format!("{err}");
     assert!(
-        msg.contains("instruction opcode supported by this session"),
+        msg.contains("instruction opcode supported by this parser"),
         "got: {msg}"
     );
 }

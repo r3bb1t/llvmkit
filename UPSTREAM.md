@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 560.
+Total `#[test]` functions: 611.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -582,3 +582,54 @@ Total `#[test]` functions: 560.
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_fp_to_int_casts` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCast` `Instruction::{FPToSI,FPToUI}` arms | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_int_to_fp_casts` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCast` `Instruction::{SIToFP,UIToFP}` arms | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_addrspacecast` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCast` `Instruction::AddrSpaceCast` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::nuw_nsw_add_round_trips` | `test/Assembler/flags.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseArithmetic` `nuw`/`nsw` arms | mirror |
+| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::nuw_nsw_sub_round_trips` | `test/Assembler/flags.ll`; `LLParser::parseArithmetic` `nuw`/`nsw` arms | mirror |
+| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::exact_udiv_round_trips` | `test/Assembler/flags.ll`; `LLParser::parseArithmetic` `exact` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::fmf_fadd_round_trips` | `test/Assembler/fast-math-flags.ll`; `LLParser::parseArithmetic` FMF arms | mirror |
+| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::fmf_fneg_round_trips` | `test/Assembler/fast-math-flags.ll`; `LLParser::parseUnaryOp` FMF arms | mirror |
+| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::alloca_align_round_trips` | `test/Assembler/align-inst-alloca.ll`; `LLParser::parseAlloc` align arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::load_align_round_trips` | `test/Assembler/align-inst.ll`; `LLParser::parseLoad` align arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::gep_inbounds_nuw_round_trips` | `test/Assembler/getelementptr.ll`; `LLParser::parseGetElementPtr` inbounds/nuw arms | mirror |
+| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::samesign_icmp_round_trips` | `test/Assembler/flags.ll`; `LLParser::parseCompare` `samesign` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::disjoint_or_round_trips` | `test/Assembler/disjoint-or.ll`; `LLParser::parseArithmetic` `disjoint` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::landingpad_round_trips` | `test/Assembler/landingpad.ll`; `LLParser::parseLandingPad` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::resume_round_trips` | `test/Assembler/resume.ll`; `LLParser::parseResume` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::invoke_round_trips` | `test/Assembler/invoke.ll`; `LLParser::parseInvoke` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::cleanuppad_cleanupret_round_trips` | `test/Assembler/cleanuppad.ll`; `LLParser::parseCleanupPad` / `parseCleanupRet` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::bitcast_round_trips` | `test/Assembler/bitcast.ll`; `LLParser::parseCast` `Instruction::BitCast` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::fptrunc_round_trips` | `test/Assembler/fptrunc.ll`; `LLParser::parseCast` `Instruction::FPTrunc` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::fpext_round_trips` | `test/Assembler/fpext.ll`; `LLParser::parseCast` `Instruction::FPExt` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::extractelement_round_trips` | `test/Assembler/extractelement.ll`; `LLParser::parseExtractElement` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::insertelement_round_trips` | `test/Assembler/insertelement.ll`; `LLParser::parseInsertElement` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::shufflevector_round_trips` | `test/Assembler/shufflevector.ll`; `LLParser::parseShuffleVector` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::extractvalue_round_trips` | `test/Assembler/extractvalue.ll`; `LLParser::parseExtractValue` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::insertvalue_round_trips` | `test/Assembler/insertvalue.ll`; `LLParser::parseInsertValue` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::phi_int_round_trips` | `test/Assembler/phi.ll`; `LLParser::parsePHI` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::call_function_round_trips` | `test/Assembler/call.ll`; `LLParser::parseCall` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::freeze_round_trips` | `test/Assembler/freeze.ll`; `LLParser::parseFreeze` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::switch_round_trips` | `test/Assembler/switch.ll`; `LLParser::parseSwitch` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::indirectbr_round_trips` | `test/Assembler/indirectbr.ll`; `LLParser::parseIndirectBr` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::fence_round_trips` | `test/Assembler/fence.ll`; `LLParser::parseFence` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::cmpxchg_round_trips` | `test/Assembler/cmpxchg.ll`; `LLParser::parseCmpXchg` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::atomicrmw_round_trips` | `test/Assembler/atomicrmw.ll`; `LLParser::parseAtomicRMW` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_string` | `test/Assembler/metadata.ll`; `LLParser::parseStandaloneMetadata` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_multiple_strings` | `test/Assembler/metadata.ll`; `LLParser::parseStandaloneMetadata` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_empty_tuple` | `test/Assembler/metadata.ll`; `LLParser::parseStandaloneMetadata` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_tuple_with_ref` | `test/Assembler/metadata.ll`; `LLParser::parseStandaloneMetadata` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_tuple_multi_operand` | `test/Assembler/metadata.ll`; `LLParser::parseStandaloneMetadata` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_distinct` | `test/Assembler/distinct-mdnode.ll`; `LLParser::parseStandaloneMetadata` `distinct` keyword | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::named_metadata_basic` | `test/Assembler/named-metadata.ll`; `LLParser::parseNamedMetadata` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::named_metadata_multiple` | `test/Assembler/named-metadata.ll`; `LLParser::parseNamedMetadata` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::named_metadata_multi_operand` | `test/Assembler/named-metadata.ll`; `LLParser::parseNamedMetadata` multi-operand arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::named_metadata_empty` | `test/Assembler/named-metadata.ll`; `LLParser::parseNamedMetadata` empty body | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::metadata_after_function` | `test/Assembler/metadata.ll`; module-level metadata after function definitions | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::instruction_trailing_metadata` | `test/Assembler/metadata.ll`; `LLParser::parseInstructionMetadata` trailing `!dbg !N` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::instruction_multiple_trailing_metadata` | `test/Assembler/metadata.ll`; `LLParser::parseInstructionMetadata` multiple attachments | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::instruction_trailing_metadata_no_comma` | `test/Assembler/metadata.ll`; `LLParser::parseInstructionMetadata` no-comma variant | mirror |
+| `crates/llvmkit-asmparser/tests/parser_value_forms.rs::undef_operand` | `test/Assembler/undef.ll`; `LLParser::parseValID` `lltok::kw_undef` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_value_forms.rs::poison_operand` | `test/Assembler/poison.ll`; `LLParser::parseValID` `lltok::kw_poison` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_value_forms.rs::float_decimal_literal` | `test/Assembler/float.ll`; `LLParser::parseValID` decimal FP literal arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_value_forms.rs::float_hex_literal` | `test/Assembler/float-hex.ll`; `LLParser::parseValID` hex FP literal arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_value_forms.rs::zeroinitializer_float` | `test/Assembler/zeroinitializer.ll`; `LLParser::parseValID` `zeroinitializer` for float type | mirror |
+| `crates/llvmkit-asmparser/tests/parser_value_forms.rs::global_variable_reference` | `test/Assembler/globalvariable.ll`; `LLParser::parseValID` `@global` resolution | mirror |
+| `crates/llvmkit-asmparser/tests/parser_value_forms.rs::function_call_global_reference` | `test/Assembler/call.ll`; `LLParser::parseCall` with `@func` callee reference | mirror |

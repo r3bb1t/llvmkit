@@ -48,6 +48,8 @@ pub mod ir_builder;
 pub mod iter;
 pub(crate) mod llvm_context;
 pub mod marker;
+pub mod metadata;
+pub mod named_md_node;
 pub mod module;
 pub mod operator;
 pub mod pass_instrumentation;
@@ -107,8 +109,8 @@ pub use global_value::{DllStorageClass, ThreadLocalMode, Visibility};
 pub use global_variable::{GlobalBuilder, GlobalVariable};
 pub use instr_types::{
     AShrFlags, AddFlags, AtomicCmpXchgConfig, AtomicLoadConfig, AtomicRMWConfig, AtomicRMWFlags,
-    AtomicStoreConfig, CmpXchgFlags, LShrFlags, MulFlags, SDivFlags, ShlFlags, SubFlags,
-    TailCallKind, UDivFlags,
+    AtomicStoreConfig, CmpXchgFlags, ICmpFlags, LShrFlags, MulFlags, OrFlags, SDivFlags, ShlFlags,
+    SubFlags, TailCallKind, TruncFlags, UDivFlags, UIToFpFlags, ZExtFlags,
 };
 pub use instruction::{Instruction, InstructionKind, TerminatorKind};
 pub use instructions::{

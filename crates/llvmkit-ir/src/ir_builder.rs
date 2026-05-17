@@ -281,6 +281,57 @@ where
             _state: PhantomData,
         }
     }
+
+    /// Add an incoming `(value, block)` pair to a phi instruction identified
+    /// by its erased [`crate::value::Value`] handle. This is the dynamic
+    /// counterpart to [`crate::instructions::PhiInst::add_incoming`] for
+    /// use by parsers and passes where compile-time type markers are
+    /// unavailable.
+    ///
+    /// Errors if `phi_val` does not refer to a phi instruction, or if
+    /// `val`/`block` belong to different modules.
+    pub fn phi_add_incoming_from_value<RBb, SBb>(
+        &self,
+        phi_val: crate::value::Value<'ctx>,
+        val: crate::value::Value<'ctx>,
+        block: crate::basic_block::BasicBlock<'ctx, RBb, SBb>,
+    ) -> IrResult<()>
+    where
+        RBb: crate::marker::ReturnMarker,
+        SBb: crate::block_state::BlockSealState,
+    {
+        if phi_val.module().id() != self.module.id() {
+            return Err(IrError::ForeignValue);
+        }
+        if val.module().id() != self.module.id() {
+            return Err(IrError::ForeignValue);
+        }
+        if block.as_value().module().id() != self.module.id() {
+            return Err(IrError::ForeignValue);
+        }
+        // Access the phi payload via the module's instruction data.
+        let inst_data = self.module.context().value_data(phi_val.id);
+        let inst_kind_data = match &inst_data.kind {
+            crate::value::ValueKindData::Instruction(i) => &i.kind,
+            _ => return Err(IrError::InvalidOperation {
+                message: "phi_add_incoming_from_value: target is not an instruction",
+            }),
+        };
+        let phi_payload = match inst_kind_data {
+            InstructionKindData::Phi(p) => p,
+            _ => return Err(IrError::InvalidOperation {
+                message: "phi_add_incoming_from_value: instruction is not a phi",
+            }),
+        };
+        phi_payload.incoming.borrow_mut().push((
+            core::cell::Cell::new(val.id),
+            block.as_value().id,
+        ));
+        // Register phi as a user of the incoming value.
+        self.module.context().value_data(val.id)
+            .use_list.borrow_mut().push(phi_val.id);
+        Ok(())
+    }
 }
 
 impl<'ctx, F, R> IRBuilder<'ctx, F, Positioned, R>
@@ -572,6 +623,24 @@ where
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
     {
         self.build_int_binop(lhs, rhs, name, InstructionKindData::Or)
+    }
+
+    /// Produce `or disjoint lhs, rhs` with explicit [`crate::OrFlags`].
+    /// The `disjoint` flag asserts the operands have no bits in common.
+    /// Mirrors `IRBuilder::CreateOr` with `IsDisjoint` set.
+    pub fn build_int_or_with_flags<W, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        flags: crate::instr_types::OrFlags,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, W>>
+    where
+        W: IntWidth,
+        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+    {
+        self.build_int_binop_flagged(lhs, rhs, name, flags, InstructionKindData::Or)
     }
 
     /// Produce `xor lhs, rhs`. Mirrors `IRBuilder::CreateXor`.
@@ -932,6 +1001,148 @@ where
         Ok(crate::value::FloatValue::<K>::from_value_unchecked(
             inst.as_value(),
         ))
+    }
+
+    /// Crate-internal helper for float binops with an explicit
+    /// [`crate::fmf::FastMathFlags`] parameter rather than the builder-context
+    /// FMF. Used by the `build_fp_*_fmf` family.
+    fn build_fp_binop_with_fmf<K, Lhs, Rhs, F2>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        fmf: crate::fmf::FastMathFlags,
+        name: impl AsRef<str>,
+        kind_ctor: F2,
+    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    where
+        K: crate::float_kind::FloatKind,
+        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        F2: FnOnce(BinaryOpData) -> InstructionKindData,
+    {
+        let lhs = lhs.into_float_value(self.module)?;
+        let rhs = rhs.into_float_value(self.module)?;
+        self.require_same_module(crate::value::IsValue::as_value(lhs))?;
+        self.require_same_module(crate::value::IsValue::as_value(rhs))?;
+        let mut payload = BinaryOpData::new(
+            crate::value::IsValue::as_value(lhs).id,
+            crate::value::IsValue::as_value(rhs).id,
+        );
+        payload.fmf = fmf;
+        let inst =
+            self.append_instruction(crate::value::Typed::ty(lhs).id(), kind_ctor(payload), name);
+        Ok(crate::value::FloatValue::<K>::from_value_unchecked(inst.as_value()))
+    }
+
+    /// `fadd` with an explicit [`crate::fmf::FastMathFlags`] parameter.
+    /// Bypasses the builder-context FMF; caller supplies the exact flags.
+    pub fn build_fp_add_fmf<K, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        fmf: crate::fmf::FastMathFlags,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    where
+        K: crate::float_kind::FloatKind,
+        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_fp_binop_with_fmf(lhs, rhs, fmf, name, InstructionKindData::FAdd)
+    }
+
+    /// `fsub` with an explicit [`crate::fmf::FastMathFlags`] parameter.
+    pub fn build_fp_sub_fmf<K, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        fmf: crate::fmf::FastMathFlags,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    where
+        K: crate::float_kind::FloatKind,
+        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_fp_binop_with_fmf(lhs, rhs, fmf, name, InstructionKindData::FSub)
+    }
+
+    /// `fmul` with an explicit [`crate::fmf::FastMathFlags`] parameter.
+    pub fn build_fp_mul_fmf<K, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        fmf: crate::fmf::FastMathFlags,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    where
+        K: crate::float_kind::FloatKind,
+        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_fp_binop_with_fmf(lhs, rhs, fmf, name, InstructionKindData::FMul)
+    }
+
+    /// `fdiv` with an explicit [`crate::fmf::FastMathFlags`] parameter.
+    pub fn build_fp_div_fmf<K, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        fmf: crate::fmf::FastMathFlags,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    where
+        K: crate::float_kind::FloatKind,
+        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_fp_binop_with_fmf(lhs, rhs, fmf, name, InstructionKindData::FDiv)
+    }
+
+    /// `frem` with an explicit [`crate::fmf::FastMathFlags`] parameter.
+    pub fn build_fp_rem_fmf<K, Lhs, Rhs>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        fmf: crate::fmf::FastMathFlags,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    where
+        K: crate::float_kind::FloatKind,
+        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        self.build_fp_binop_with_fmf(lhs, rhs, fmf, name, InstructionKindData::FRem)
+    }
+
+    /// `fcmp` with an explicit [`crate::fmf::FastMathFlags`] parameter.
+    /// Bypasses the builder-context FMF. Result is `i1`.
+    pub fn build_fp_cmp_fmf<K, Lhs, Rhs>(
+        &self,
+        pred: crate::cmp_predicate::FloatPredicate,
+        lhs: Lhs,
+        rhs: Rhs,
+        fmf: crate::fmf::FastMathFlags,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        K: crate::float_kind::FloatKind,
+        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+    {
+        let lhs = lhs.into_float_value(self.module)?;
+        let rhs = rhs.into_float_value(self.module)?;
+        self.require_same_module(crate::value::IsValue::as_value(lhs))?;
+        self.require_same_module(crate::value::IsValue::as_value(rhs))?;
+        let mut payload = crate::instr_types::FCmpInstData::new(
+            pred,
+            crate::value::IsValue::as_value(lhs).id,
+            crate::value::IsValue::as_value(rhs).id,
+        );
+        payload.fmf = fmf;
+        let i1_ty = self.module.bool_type().as_type().id();
+        let inst = self.append_instruction(i1_ty, InstructionKindData::FCmp(payload), name);
+        Ok(IntValue::<bool>::from_value_unchecked(inst.as_value()))
     }
 
     /// Produce `fcmp <pred> lhs, rhs`. Mirrors
@@ -1664,6 +1875,39 @@ where
         ))
     }
 
+    /// `trunc nuw/nsw` with explicit [`crate::TruncFlags`]. Runtime-checked
+    /// like [`Self::build_trunc_dyn`]; additionally sets `nuw`/`nsw` on the
+    /// cast payload.
+    pub fn build_trunc_with_flags_dyn(
+        &self,
+        value: IntValue<'ctx, crate::int_width::IntDyn>,
+        dst_ty: IntType<'ctx, crate::int_width::IntDyn>,
+        flags: crate::instr_types::TruncFlags,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>> {
+        self.require_same_module(value.as_value())?;
+        let src_w = value.ty().bit_width();
+        let dst_w = dst_ty.bit_width();
+        if dst_w >= src_w {
+            return Err(IrError::OperandWidthMismatch {
+                lhs: src_w,
+                rhs: dst_w,
+            });
+        }
+        let mut payload =
+            CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.as_value().id);
+        payload.nuw = flags.nuw;
+        payload.nsw = flags.nsw;
+        let inst = self.append_instruction(
+            dst_ty.as_type().id(),
+            InstructionKindData::Cast(payload),
+            name,
+        );
+        Ok(IntValue::<crate::int_width::IntDyn>::from_value_unchecked(
+            inst.as_value(),
+        ))
+    }
+
     /// Runtime-checked `zext` for `IntValue<Dyn>` operands.
     /// Errors with [`IrError::OperandWidthMismatch`] if `dst_ty` is
     /// not strictly wider than `value`'s runtime width.
@@ -1674,6 +1918,38 @@ where
         name: impl AsRef<str>,
     ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>> {
         self.build_int_extend_dyn(value, dst_ty, name, crate::instr_types::CastOpcode::ZExt)
+    }
+
+    /// `zext nneg` with explicit [`crate::ZExtFlags`]. Runtime-checked
+    /// like [`Self::build_zext_dyn`]; additionally sets `nneg` on the cast
+    /// payload.
+    pub fn build_zext_with_flags_dyn(
+        &self,
+        src: IntValue<'ctx, crate::int_width::IntDyn>,
+        dst: crate::derived_types::IntType<'ctx, crate::int_width::IntDyn>,
+        flags: crate::instr_types::ZExtFlags,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>> {
+        self.require_same_module(src.as_value())?;
+        let src_w = src.ty().bit_width();
+        let dst_w = dst.bit_width();
+        if dst_w <= src_w {
+            return Err(IrError::OperandWidthMismatch {
+                lhs: src_w,
+                rhs: dst_w,
+            });
+        }
+        let mut payload =
+            CastOpData::new(crate::instr_types::CastOpcode::ZExt, src.as_value().id);
+        payload.nneg = flags.nneg;
+        let inst = self.append_instruction(
+            dst.as_type().id(),
+            InstructionKindData::Cast(payload),
+            name,
+        );
+        Ok(IntValue::<crate::int_width::IntDyn>::from_value_unchecked(
+            inst.as_value(),
+        ))
     }
 
     /// Runtime-checked `sext` for `IntValue<Dyn>` operands.
@@ -1805,6 +2081,33 @@ where
             ty_id,
             super::value::IsValue::as_value(p).id,
             MaybeAlign::NONE,
+            false,
+            AtomicOrdering::NotAtomic,
+            SyncScope::System,
+        );
+        let inst = self.build_load_inner(p, payload, name)?;
+        Ok(inst.as_value())
+    }
+
+    /// `load <ty>, ptr <ptr>, align N`. Non-volatile non-atomic load with explicit
+    /// alignment. Mirrors `IRBuilder::CreateLoad` with an explicit `Align` slot.
+    pub fn build_load_with_align<T, P>(
+        &self,
+        ty: T,
+        ptr: P,
+        align: Align,
+        name: impl AsRef<str>,
+    ) -> IrResult<Value<'ctx>>
+    where
+        T: crate::r#type::IrType<'ctx>,
+        P: crate::value::IntoPointerValue<'ctx>,
+    {
+        let ty_id = ty.as_type().id();
+        let p = ptr.into_pointer_value(self.module)?;
+        let payload = LoadInstData::new(
+            ty_id,
+            super::value::IsValue::as_value(p).id,
+            MaybeAlign::new(align),
             false,
             AtomicOrdering::NotAtomic,
             SyncScope::System,
@@ -1979,6 +2282,59 @@ where
         Ok(self.append_instruction(pointee_ty, InstructionKindData::Load(payload), name))
     }
 
+    /// `load volatile <ty>, ptr <ptr>`. Non-atomic volatile load.
+    /// Mirrors `IRBuilder::CreateLoad` with `isVolatile = true`.
+    pub fn build_load_volatile<T, P>(
+        &self,
+        ty: T,
+        ptr: P,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::Value<'ctx>>
+    where
+        T: crate::r#type::IrType<'ctx>,
+        P: crate::value::IntoPointerValue<'ctx>,
+    {
+        let ty_id = ty.as_type().id();
+        let p = ptr.into_pointer_value(self.module)?;
+        let payload = LoadInstData::new(
+            ty_id,
+            super::value::IsValue::as_value(p).id,
+            MaybeAlign::NONE,
+            true,
+            AtomicOrdering::NotAtomic,
+            SyncScope::System,
+        );
+        let inst = self.build_load_inner(p, payload, name)?;
+        Ok(inst.as_value())
+    }
+
+    /// `load volatile <ty>, ptr <ptr>, align N`. Volatile load with explicit
+    /// alignment.
+    pub fn build_load_volatile_with_align<T, P>(
+        &self,
+        ty: T,
+        ptr: P,
+        align: Align,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::Value<'ctx>>
+    where
+        T: crate::r#type::IrType<'ctx>,
+        P: crate::value::IntoPointerValue<'ctx>,
+    {
+        let ty_id = ty.as_type().id();
+        let p = ptr.into_pointer_value(self.module)?;
+        let payload = LoadInstData::new(
+            ty_id,
+            super::value::IsValue::as_value(p).id,
+            MaybeAlign::new(align),
+            true,
+            AtomicOrdering::NotAtomic,
+            SyncScope::System,
+        );
+        let inst = self.build_load_inner(p, payload, name)?;
+        Ok(inst.as_value())
+    }
+
     /// Produce `store <value>, ptr <ptr>`. Mirrors
     /// `IRBuilder::CreateStore`.
     pub fn build_store<V, P>(
@@ -2017,6 +2373,51 @@ where
             ptr,
             MaybeAlign::new(align),
             false,
+            AtomicOrdering::NotAtomic,
+            SyncScope::System,
+        )?;
+        self.build_store_inner(payload)
+    }
+
+    /// `store volatile <value>, ptr <ptr>`. Non-atomic volatile store.
+    /// Mirrors `IRBuilder::CreateStore(V, P, /*isVolatile=*/true)`.
+    pub fn build_store_volatile<V, P>(
+        &self,
+        value: V,
+        ptr: P,
+    ) -> IrResult<crate::instructions::StoreInst<'ctx>>
+    where
+        V: crate::value::IsValue<'ctx>,
+        P: crate::value::IntoPointerValue<'ctx>,
+    {
+        let payload = self.store_payload(
+            value,
+            ptr,
+            MaybeAlign::NONE,
+            true,
+            AtomicOrdering::NotAtomic,
+            SyncScope::System,
+        )?;
+        self.build_store_inner(payload)
+    }
+
+    /// `store volatile <value>, ptr <ptr>, align N`. Volatile store with
+    /// explicit alignment.
+    pub fn build_store_volatile_with_align<V, P>(
+        &self,
+        value: V,
+        ptr: P,
+        align: Align,
+    ) -> IrResult<crate::instructions::StoreInst<'ctx>>
+    where
+        V: crate::value::IsValue<'ctx>,
+        P: crate::value::IntoPointerValue<'ctx>,
+    {
+        let payload = self.store_payload(
+            value,
+            ptr,
+            MaybeAlign::new(align),
+            true,
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         )?;
@@ -2280,6 +2681,26 @@ where
         )
     }
 
+    /// `getelementptr` with explicit [`crate::GepNoWrapFlags`]. Use this
+    /// when the parser has decoded `inbounds`, `nuw`, or `nusw` flags directly.
+    /// Mirrors `IRBuilder::CreateGEP` with the full flags bitfield.
+    pub fn build_gep_with_flags<T, P, I, V>(
+        &self,
+        source_ty: T,
+        ptr: P,
+        indices: I,
+        flags: crate::gep_no_wrap_flags::GepNoWrapFlags,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::PointerValue<'ctx>>
+    where
+        T: crate::r#type::IrType<'ctx>,
+        P: crate::value::IntoPointerValue<'ctx>,
+        I: IntoIterator<Item = V>,
+        V: crate::int_width::IntoIntValue<'ctx, crate::int_width::IntDyn>,
+    {
+        self.build_gep_inner(source_ty, ptr, indices, flags, name)
+    }
+
     fn build_gep_inner<T, P, I, V>(
         &self,
         source_ty: T,
@@ -2346,6 +2767,58 @@ where
         Dst: crate::float_kind::FloatKind,
     {
         self.build_fp_cast(value, dst_ty, name, crate::instr_types::CastOpcode::FpTrunc)
+    }
+
+    /// Runtime-kind `fptrunc`. Mirrors [`Self::build_fp_trunc`] but
+    /// accepts dynamically-typed operands so the parser can call it
+    /// without static `FloatWiderThan` bounds.
+    ///
+    /// No compile-time width ordering check is performed; the LLVM
+    /// verifier will reject `fptrunc` where `src` is not strictly wider
+    /// than `dst`.
+    pub fn build_fp_trunc_dyn(
+        &self,
+        value: crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>,
+        dst_ty: crate::derived_types::FloatType<'ctx, crate::float_kind::FloatDyn>,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>> {
+        let v = crate::value::IsValue::as_value(value);
+        self.require_same_module(v)?;
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::FpTrunc, v.id);
+        let inst = self.append_instruction(
+            dst_ty.as_type().id(),
+            InstructionKindData::Cast(payload),
+            name,
+        );
+        Ok(crate::value::FloatValue::<crate::float_kind::FloatDyn>::from_value_unchecked(
+            inst.as_value(),
+        ))
+    }
+
+    /// Runtime-kind `fpext`. Mirrors [`Self::build_fp_ext`] but accepts
+    /// dynamically-typed operands so the parser can call it without
+    /// static `FloatWiderThan` bounds.
+    ///
+    /// No compile-time width ordering check is performed; the LLVM
+    /// verifier will reject `fpext` where `dst` is not strictly wider
+    /// than `src`.
+    pub fn build_fp_ext_dyn(
+        &self,
+        value: crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>,
+        dst_ty: crate::derived_types::FloatType<'ctx, crate::float_kind::FloatDyn>,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>> {
+        let v = crate::value::IsValue::as_value(value);
+        self.require_same_module(v)?;
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::FpExt, v.id);
+        let inst = self.append_instruction(
+            dst_ty.as_type().id(),
+            InstructionKindData::Cast(payload),
+            name,
+        );
+        Ok(crate::value::FloatValue::<crate::float_kind::FloatDyn>::from_value_unchecked(
+            inst.as_value(),
+        ))
     }
 
     /// Crate-internal helper for `build_fp_ext` / `build_fp_trunc`.
@@ -2453,6 +2926,30 @@ where
         K: crate::float_kind::FloatKind,
     {
         self.build_int_to_fp(value, dst_ty, name, crate::instr_types::CastOpcode::SIToFp)
+    }
+
+    /// `uitofp nneg` with explicit [`crate::UIToFpFlags`]. The `nneg` flag
+    /// asserts the source value is non-negative. Both source and destination
+    /// types are erased (dyn variants).
+    pub fn build_ui_to_fp_with_flags_dyn(
+        &self,
+        src: IntValue<'ctx, crate::int_width::IntDyn>,
+        dst: crate::derived_types::FloatType<'ctx, crate::float_kind::FloatDyn>,
+        flags: crate::instr_types::UIToFpFlags,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>> {
+        self.require_same_module(src.as_value())?;
+        let mut payload =
+            CastOpData::new(crate::instr_types::CastOpcode::UIToFp, src.as_value().id);
+        payload.nneg = flags.nneg;
+        let inst = self.append_instruction(
+            dst.as_type().id(),
+            InstructionKindData::Cast(payload),
+            name,
+        );
+        Ok(crate::value::FloatValue::<crate::float_kind::FloatDyn>::from_value_unchecked(
+            inst.as_value(),
+        ))
     }
 
     fn build_int_to_fp<W, K>(
@@ -2669,6 +3166,28 @@ where
         Ok(super::value::FloatValue::<Dst>::from_value_unchecked(
             inst.as_value(),
         ))
+    }
+
+    /// Runtime-typed bitcast: produce `bitcast <src> to <dst>` with both
+    /// types erased to [`crate::r#type::Type`]. The caller is responsible for
+    /// ensuring `src` and `dst` have the same bit width; the LLVM verifier
+    /// will reject ill-formed bitcasts.
+    ///
+    /// Used by the parser where compile-time static markers are unavailable.
+    pub fn build_bitcast_dyn(
+        &self,
+        value: crate::value::Value<'ctx>,
+        dst_ty: crate::r#type::Type<'ctx>,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::Value<'ctx>> {
+        self.require_same_module(value)?;
+        let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, value.id);
+        let inst = self.append_instruction(
+            dst_ty.id(),
+            InstructionKindData::Cast(payload),
+            name,
+        );
+        Ok(inst.as_value())
     }
 
     /// Produce `addrspacecast <value> to <dst>`. Mirrors
@@ -2907,6 +3426,27 @@ where
         self.require_same_module(rhs.as_value())?;
         let payload =
             crate::instr_types::CmpInstData::new(pred, lhs.as_value().id, rhs.as_value().id);
+        let i1_ty = self.module.bool_type().as_type().id();
+        let inst = self.append_instruction(i1_ty, InstructionKindData::ICmp(payload), name);
+        Ok(IntValue::<bool>::from_value_unchecked(inst.as_value()))
+    }
+
+    /// `icmp samesign` with explicit [`crate::ICmpFlags`]. Both operands
+    /// must be dynamically-typed (`IntDyn`). The `samesign` flag asserts
+    /// both operands carry the same sign (LLVM 19+).
+    pub fn build_int_cmp_with_flags_dyn(
+        &self,
+        flags: crate::instr_types::ICmpFlags,
+        pred: crate::cmp_predicate::IntPredicate,
+        lhs: IntValue<'ctx, crate::int_width::IntDyn>,
+        rhs: IntValue<'ctx, crate::int_width::IntDyn>,
+        name: impl AsRef<str>,
+    ) -> IrResult<IntValue<'ctx, bool>> {
+        self.require_same_module(lhs.as_value())?;
+        self.require_same_module(rhs.as_value())?;
+        let mut payload =
+            crate::instr_types::CmpInstData::new(pred, lhs.as_value().id, rhs.as_value().id);
+        payload.samesign = flags.samesign;
         let i1_ty = self.module.bool_type().as_type().id();
         let inst = self.append_instruction(i1_ty, InstructionKindData::ICmp(payload), name);
         Ok(IntValue::<bool>::from_value_unchecked(inst.as_value()))
@@ -3211,6 +3751,7 @@ where
             inst.ty().id(),
         ))
     }
+
 
     // ---- Branch / Unreachable ----
 
