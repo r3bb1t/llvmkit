@@ -10,8 +10,17 @@ Tracking **LLVM 22.1.4**.
 
 - **`.ll` lexer** — borrows from a pre-loaded `&[u8]`; tokens carry `Cow<[u8]>`
   payloads that allocate only when an escape sequence actually changes bytes.
+- **`.ll` parser (module-level slice)** — recursive-descent, one-token
+  lookahead. Builds into an existing `llvmkit_ir::Module<'ctx>`; the `'ctx`
+  brand prevents cross-module mixing at compile time. Covers `target
+  datalayout` / `target triple`, `source_filename`, `module asm`, named /
+  numbered struct type definitions, simple `@name = global TY CONST` /
+  `constant` globals, `declare` declarations, and `define` function bodies
+  for every shipped opcode. Function-body details, attribute groups,
+  metadata, comdats, aliases, and use-list directives land in later
+  sessions.
 
-Parser, IR data model, and bitcode are out of scope for this crate today; see
+Bitcode is out of scope for this crate today; see
 the workspace [`README`](../../README.md) for the roadmap.
 
 ## Usage
@@ -36,7 +45,13 @@ let lex   = Lexer::new(&bytes);
 # Ok::<_, std::io::Error>(())
 ```
 
-End-to-end example: `cargo run --example lex_file -- examples/demo.ll`.
+End-to-end examples:
+
+- `cargo run --example lex_file   -- examples/demo.ll`
+- `cargo run --example parse_file -- examples/parser_demo.ll`
+
+The parser example prints the round-tripped module via the AsmWriter on
+success and a `(line:col)` diagnostic with a caret underline on failure.
 
 ## License
 
