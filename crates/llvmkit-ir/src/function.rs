@@ -367,6 +367,53 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
     pub(crate) fn register_value_name(self, name: &str, id: ValueId) -> bool {
         self.data().symbol_table.insert(name, id)
     }
+
+    /// View this function as a `ptr`-typed [`Constant`] referencing it by
+    /// name — i.e. the constant `ptr @<name>`, suitable as a global
+    /// initializer.
+    ///
+    /// There is no in-arena `ConstantExpr` here, so a function's address
+    /// cannot be spelled `ptrtoint (ptr @f to i64)`. But a function symbol
+    /// *is* a constant pointer (`@f` has pointer type at any use site), and
+    /// the assembly writer prints any value whose arena kind is `Function`
+    /// by name (`@f`) regardless of the handle's reported type. This returns
+    /// a [`Constant`](crate::constant::Constant) handle carrying the
+    /// function's value-id (so it prints as `@<name>`) but reporting type
+    /// `ptr addrspace(addr_space)` — exactly what
+    /// `Module::add_global_constant(name, ptr_ty, this)` needs to emit
+    /// `@g = constant ptr @f`. Load that global as a `ptr` at run time to
+    /// recover the linker-resolved address.
+    #[inline]
+    pub fn as_global_constant_ptr(self, addr_space: u32) -> crate::constant::Constant<'ctx> {
+        let ptr_ty = self.module.module().ptr_type(addr_space).as_type().id();
+        crate::constant::Constant {
+            id: self.id,
+            module: self.module,
+            ty: ptr_ty,
+        }
+    }
+
+    /// A `ptr`-typed constant referencing this function, as a *distinct* arena
+    /// node (`getelementptr inbounds (i8, ptr @<self>, i64 0)`).
+    ///
+    /// Unlike [`Self::as_global_constant_ptr`] (which reuses the function's own
+    /// value-id, so its arena type is the function *signature*), this interns a
+    /// separate `ptr`-typed constant. Needed inside an **aggregate** initializer,
+    /// where the assembly writer prints each element's type from the element
+    /// value's arena type: a bare function reference would print as `void () @f`
+    /// (invalid — "functions are not values"), whereas this prints as a proper
+    /// `ptr getelementptr (...)` element. The byte offset is always 0 (the
+    /// function entry).
+    pub fn as_aggregate_ptr(self, addr_space: u32) -> crate::constant::Constant<'ctx> {
+        let module = self.module.module();
+        let ptr_ty = module.ptr_type(addr_space).as_type().id();
+        let id = module.context().intern_constant_gep_offset(ptr_ty, self.id, 0);
+        crate::constant::Constant {
+            id,
+            module: self.module,
+            ty: ptr_ty,
+        }
+    }
 }
 
 // --------------------------------------------------------------------------

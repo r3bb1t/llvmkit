@@ -60,6 +60,14 @@ pub(crate) enum ConstantData {
     /// `ConstantVector`. Element categorisation is determined by the
     /// owning aggregate type.
     Aggregate(Box<[ValueId]>),
+    /// A byte-offset into a global, printed as the constant expression
+    /// `getelementptr inbounds (i8, ptr @<base>, i64 <off>)`. `base_id` is the
+    /// value-id of the host global/function; `off` is the byte offset. This is
+    /// the one `ConstantExpr` form llvmkit materialises — added for
+    /// symbol-relative initializers that point into the *middle* of another
+    /// global (e.g. a relocated pointer slot inside an embedded section). The
+    /// owning value's type is `ptr`.
+    GepOffset { base_id: ValueId, off: i64 },
     /// `undef` of any first-class type.
     Undef,
     /// `poison` of any first-class type. Distinct from `undef` per

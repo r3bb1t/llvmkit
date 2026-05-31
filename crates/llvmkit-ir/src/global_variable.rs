@@ -116,6 +116,28 @@ impl<'ctx> GlobalVariable<'ctx> {
         }
     }
 
+    /// A `ptr`-typed constant pointing `off` bytes into this global, printed as
+    /// `getelementptr inbounds (i8, ptr @<self>, i64 off)`.
+    ///
+    /// llvmkit has no general `ConstantExpr`, so a pointer into the *middle* of
+    /// a global cannot be spelled directly; this materialises the one offset
+    /// form needed for symbol-relative initializers (a relocated pointer slot
+    /// inside an embedded data section that targets another section's interior).
+    /// `off == 0` is equivalent to [`Self::as_constant`] but always prints the
+    /// gep form; prefer `as_constant` for the zero case.
+    pub fn as_global_constant_ptr_offset(self, off: i64, addr_space: u32) -> Constant<'ctx> {
+        let module = self.module.module();
+        let ptr_ty = module.ptr_type(addr_space).as_type().id();
+        let id = module
+            .context()
+            .intern_constant_gep_offset(ptr_ty, self.id, off);
+        Constant {
+            id,
+            module: self.module,
+            ty: ptr_ty,
+        }
+    }
+
     fn data(self) -> &'ctx GlobalVariableData {
         match &self.module.value_data(self.id).kind {
             ValueKindData::GlobalVariable(g) => g,

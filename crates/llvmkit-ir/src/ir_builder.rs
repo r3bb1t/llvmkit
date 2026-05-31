@@ -2603,6 +2603,54 @@ where
         }
     }
 
+    /// Produce an indirect `call` through a function-pointer **value** (not a
+    /// named `@function`), with the callee's function type given explicitly.
+    /// Mirrors `IRBuilder::CreateCall(FunctionType*, Value* callee, args)` — the
+    /// opaque-pointer form where the pointee type is supplied separately. Used
+    /// to lower a computed code pointer (`call rax`, a vtable slot) to a real
+    /// indirect call rather than routing through a named dispatcher.
+    ///
+    /// `fn_ty` is the callee's signature; `callee` is the function pointer; the
+    /// caller picks the return marker `R2` to match `fn_ty`'s return type.
+    pub fn build_indirect_call<R2, I, V>(
+        &self,
+        fn_ty: crate::derived_types::FunctionType<'ctx>,
+        callee: crate::value::PointerValue<'ctx>,
+        args: I,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::instructions::CallInst<'ctx, R2>>
+    where
+        R2: crate::marker::ReturnMarker,
+        I: IntoIterator<Item = V>,
+        V: crate::value::IsValue<'ctx>,
+    {
+        let callee_v = crate::value::IsValue::as_value(callee);
+        self.require_same_module(callee_v)?;
+        let mut arg_ids: Vec<crate::value::ValueId> = Vec::new();
+        for arg in args {
+            let v = arg.as_value();
+            self.require_same_module(v)?;
+            arg_ids.push(v.id);
+        }
+        let payload = crate::instr_types::CallInstData::new(
+            callee_v.id,
+            fn_ty.as_type().id(),
+            arg_ids.into_boxed_slice(),
+            crate::CallingConv::C,
+            crate::instr_types::TailCallKind::None,
+        );
+        let inst = self.append_instruction(
+            fn_ty.return_type().id(),
+            InstructionKindData::Call(payload),
+            name,
+        );
+        Ok(crate::instructions::CallInst::<R2>::from_raw(
+            inst.as_value().id,
+            inst.module(),
+            inst.ty().id(),
+        ))
+    }
+
     // ---- GEP ----
 
     /// Produce `getelementptr <source-ty>, ptr <ptr>, <indices>`.

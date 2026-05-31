@@ -238,6 +238,17 @@ pub(crate) fn fmt_constant(
         ConstantData::Undef => f.write_str("undef"),
         ConstantData::Poison => f.write_str("poison"),
         ConstantData::Aggregate(elems) => fmt_aggregate_constant(f, host, elems),
+        ConstantData::GepOffset { base_id, off } => {
+            // `getelementptr inbounds (i8, ptr @<base>, i64 <off>)` — the lone
+            // ConstantExpr form we materialise. The base value (a global or
+            // function) prints by name; the i8 element type makes the offset a
+            // raw byte count.
+            let module = host.module.module();
+            let base = Value::from_parts(*base_id, module, module.context().value_data(*base_id).ty);
+            f.write_str("getelementptr inbounds (i8, ptr ")?;
+            fmt_operand_ref(f, base, None)?;
+            write!(f, ", i64 {off})")
+        }
     }
 }
 
@@ -273,6 +284,12 @@ fn fmt_int_constant(f: &mut fmt::Formatter<'_>, ty: Type<'_>, words: &[u64]) -> 
     // prefix to mark unsigned. Mirrors LLVM's APInt textual fallback
     // for widths >64.
     f.write_str("u0x")?;
+    // A zero magnitude normalises to an empty `words` slice; emit a single
+    // `0` digit so the result is `u0x0` (a valid token) rather than the bare
+    // `u0x` the parser rejects.
+    if words.iter().all(|&w| w == 0) {
+        return f.write_str("0");
+    }
     for word in words.iter().rev() {
         write!(f, "{word:016x}")?;
     }

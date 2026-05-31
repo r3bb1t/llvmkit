@@ -489,6 +489,24 @@ impl Context {
         id
     }
 
+    /// Materialise a `getelementptr inbounds (i8, ptr @<base>, i64 <off>)`
+    /// constant of pointer type `ty`. Not interned (each offset-pointer is
+    /// effectively unique and cheap); a fresh value-arena node each call.
+    pub(crate) fn intern_constant_gep_offset(
+        &self,
+        ty: TypeId,
+        base_id: ValueId,
+        off: i64,
+    ) -> ValueId {
+        self.push_value(ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: ValueKindData::Constant(ConstantData::GepOffset { base_id, off }),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        })
+    }
+
     pub(crate) fn intern_constant_aggregate(
         &self,
         ty: TypeId,
