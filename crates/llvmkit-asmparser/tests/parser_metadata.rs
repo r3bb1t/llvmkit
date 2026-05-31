@@ -54,6 +54,11 @@ fn standalone_metadata_empty_tuple() {
 }
 
 /// `!0 = !"str"` followed by `!1 = !{!0}` — tuple referencing a string.
+///
+/// An `MDString` operand is printed inline in the tuple body
+/// (`!1 = !{!"hello"}`) rather than as a numbered `!0` reference: LLVM
+/// never numbers `MDString`s as standalone nodes, and a top-level
+/// `!0 = !"hello"` is rejected by `clang`/`llvm-as`.
 #[test]
 fn standalone_metadata_tuple_with_ref() {
     let src = r#"
@@ -62,10 +67,12 @@ fn standalone_metadata_tuple_with_ref() {
 "#;
     let (m, text) = parse_snippet(src);
     assert_eq!(m.metadata_count(), 2);
-    assert!(text.contains("!1 = !{!0}"), "output: {text}");
+    assert!(text.contains(r#"!1 = !{!"hello"}"#), "output: {text}");
+    // The inlined string is not emitted as a standalone numbered node.
+    assert!(!text.contains(r#"!0 = !"hello""#), "output: {text}");
 }
 
-/// Multi-operand tuple.
+/// Multi-operand tuple. `MDString` operands inline into the tuple body.
 #[test]
 fn standalone_metadata_tuple_multi_operand() {
     let src = r#"
@@ -75,7 +82,7 @@ fn standalone_metadata_tuple_multi_operand() {
 "#;
     let (m, text) = parse_snippet(src);
     assert_eq!(m.metadata_count(), 3);
-    assert!(text.contains("!2 = !{!0, !1}"), "output: {text}");
+    assert!(text.contains(r#"!2 = !{!"a", !"b"}"#), "output: {text}");
 }
 
 /// `distinct` keyword is accepted and transparent.
@@ -207,4 +214,118 @@ define i32 @f(i32 %x) {
 !0 = !{}
 "#;
     let (_, _text) = parse_snippet(src);
+}
+
+// ── `metadata` as a call argument (MetadataAsValue) ──────────────────────
+
+/// A `call` whose argument is a `metadata` node — the shape the
+/// named-register intrinsics (`@llvm.read_register`,
+/// `@llvm.write_register`) require. The `metadata !N` operand parses
+/// back to a `MetadataAsValue` and re-prints unchanged.
+/// Mirrors `test/CodeGen/Generic/read-write-register.ll`.
+#[test]
+fn call_with_metadata_argument_roundtrip() {
+    let src = r#"
+declare i64 @llvm.read_register.i64(metadata)
+
+define i64 @get_sp() {
+  %rsp = call i64 @llvm.read_register.i64(metadata !0)
+  ret i64 %rsp
+}
+
+!0 = !{}
+"#;
+    let (_, text) = parse_snippet(src);
+    assert!(
+        text.contains("call i64 @llvm.read_register.i64(metadata !0)"),
+        "output: {text}"
+    );
+}
+
+/// `void`-returning `write_register` variant: a `metadata` argument
+/// followed by a normal SSA value argument.
+#[test]
+fn call_with_metadata_and_value_argument_roundtrip() {
+    let src = r#"
+declare void @llvm.write_register.i64(metadata, i64)
+
+define void @set_sp(i64 %v) {
+  call void @llvm.write_register.i64(metadata !0, i64 %v)
+  ret void
+}
+
+!0 = !{}
+"#;
+    let (_, text) = parse_snippet(src);
+    assert!(
+        text.contains("call void @llvm.write_register.i64(metadata !0, i64 %v)"),
+        "output: {text}"
+    );
+}
+
+// ── Writer/parser round-trip robustness ──────────────────────────────────
+
+/// The AsmWriter inlines `MDString` tuple operands as `!{!"hello"}`; the
+/// parser must read that form back, so the writer's own output reparses.
+/// Regression test for the inline-string emission.
+#[test]
+fn inline_string_tuple_reparses() {
+    let src = "!0 = !\"hello\"\n!1 = !{!0}\n";
+    let (_, text) = parse_snippet(src);
+    assert!(text.contains(r#"!1 = !{!"hello"}"#), "output: {text}");
+    // Re-parse the writer's output: it must be accepted, and re-printing
+    // it must reproduce the same inline-string node (stable round-trip).
+    let m2 = Module::new("test");
+    Parser::new(text.as_bytes(), &m2)
+        .expect("ctor")
+        .parse_module()
+        .expect("writer output must reparse");
+    assert_eq!(format!("{m2}"), text, "round-trip must be stable");
+}
+
+/// Textual metadata slots need not be dense or 0-based: a `metadata !3`
+/// reference with `!3` defined later resolves to a real node (not a
+/// dangling `!3`). The slot is remapped to its arena id on print.
+/// Regression test for the slot/arena-index decoupling.
+#[test]
+fn nonzero_metadata_slot_resolves() {
+    let src = r#"
+declare i64 @g(metadata)
+define i64 @f() {
+  %r = call i64 @g(metadata !3)
+  ret i64 %r
+}
+!3 = !{}
+"#;
+    let (_, text) = parse_snippet(src);
+    // The reference and its definition agree on a single slot number, and
+    // re-parsing succeeds (no dangling reference).
+    let m2 = Module::new("rt");
+    Parser::new(text.as_bytes(), &m2)
+        .expect("ctor")
+        .parse_module()
+        .expect("output must reparse with a resolvable metadata slot");
+    // The node the call references is actually defined in the output.
+    assert!(text.contains("@g(metadata !0)"), "output: {text}");
+    assert!(text.contains("!0 = !{}"), "output: {text}");
+}
+
+/// A `!N` token is only a valid operand where the declared type is
+/// `metadata`; a stray metadata reference in a non-metadata slot is a
+/// parse error rather than a silently mistyped value.
+#[test]
+fn metadata_ref_in_non_metadata_type_is_rejected() {
+    let src = r#"
+declare void @g(i64)
+define void @f() {
+  call void @g(i64 !0)
+  ret void
+}
+!0 = !{}
+"#;
+    let m = Module::new("t");
+    let res = Parser::new(src.as_bytes(), &m)
+        .expect("ctor")
+        .parse_module();
+    assert!(res.is_err(), "i64 !0 must be rejected, got: {res:?}");
 }

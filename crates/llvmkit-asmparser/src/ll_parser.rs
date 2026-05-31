@@ -175,6 +175,13 @@ pub struct Parser<'src, 'ctx> {
 
     /// Numbered global / function table. Exposed via [`Parser::take_slot_mapping`].
     numbered_globals: NumberedValues<GlobalRef<'ctx>>,
+
+    /// Maps a textual metadata slot (`!N`) to the `MetadataId` it names.
+    /// Decouples textual slot numbers from arena indices: definitions can
+    /// appear out of order, be non-contiguous, or dedup (identical
+    /// strings), and forward references reserve a placeholder id that the
+    /// later `!N = ...` definition fills in.
+    metadata_slots: HashMap<u32, llvmkit_ir::metadata::MetadataId>,
 }
 
 /// What the parser produces at end-of-module. Successful runs return the
@@ -200,7 +207,20 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             numbered_types: HashMap::new(),
             next_unnamed_type_id: 0,
             numbered_globals: NumberedValues::new(),
+            metadata_slots: HashMap::new(),
         })
+    }
+
+    /// Resolve a textual metadata slot `!slot` to its `MetadataId`,
+    /// reserving a placeholder node on first sight so forward references
+    /// (`!N` before `!N = ...`) bind to a stable id.
+    fn resolve_md_slot(&mut self, slot: u32) -> llvmkit_ir::metadata::MetadataId {
+        if let Some(&id) = self.metadata_slots.get(&slot) {
+            return id;
+        }
+        let id = self.module.metadata_reserve();
+        self.metadata_slots.insert(slot, id);
+        id
     }
 
     /// Drive the parser to EOF. Mirrors `LLParser::Run` over the
@@ -606,12 +626,11 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     ///   `!0 = !"string"`
     ///   `!0 = distinct !{...}`
     fn parse_standalone_metadata(&mut self) -> ParseResult<()> {
-
         // Eat `!`
         self.bump()?; // consume Token::Exclaim
 
-        // Parse the numeric id
-        let md_id = self.parse_uint32("metadata slot number after '!'")?;
+        // Parse the textual slot number.
+        let slot = self.parse_uint32("metadata slot number after '!'")?;
 
         self.expect_punct(PunctKind::Equal, "'=' after metadata id")?;
 
@@ -621,19 +640,19 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             self.bump()?;
         }
 
-        let node_id = self.parse_md_node()?;
-
-        // Ensure the metadata id matches the next slot. For now we just
-        // accept any id — the module arena assigns sequential ids anyway.
-        let _ = md_id;
-        let _ = node_id;
+        let content = self.parse_md_node_content()?;
+        // Bind the textual slot to a stable id (reserving one if this slot
+        // was forward-referenced) and fill in the parsed content. This
+        // keeps `!N` references correct regardless of definition order.
+        let id = self.resolve_md_slot(slot);
+        self.module.metadata_set(id, content);
 
         Ok(())
     }
 
     /// `!name = !{ !N, !N, ... }`. Mirrors `LLParser::parseNamedMetadata`.
     fn parse_named_metadata(&mut self) -> ParseResult<()> {
-        use llvmkit_ir::metadata::{MetadataId, MetadataRef};
+        use llvmkit_ir::metadata::MetadataRef;
 
         let name = match self.peek() {
             Token::MetadataVar(bytes) => {
@@ -658,7 +677,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             loop {
                 self.expect_exclaim("'!' before metadata operand")?;
                 let slot = self.parse_uint32("metadata operand number")?;
-                let id = MetadataId::from_index(slot as usize);
+                let id = self.resolve_md_slot(slot);
                 self.module
                     .named_metadata_add_operand(nmd_idx, MetadataRef(id));
                 if !self.eat_punct(PunctKind::Comma)? {
@@ -671,35 +690,55 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         Ok(())
     }
 
-    /// Parse a metadata node body: `!{...}` or `!"string"`.
-    /// Returns the interned `MetadataId`.
-    fn parse_md_node(&mut self) -> ParseResult<llvmkit_ir::metadata::MetadataId> {
-        use llvmkit_ir::metadata::{MetadataId, MetadataRef};
+    /// Parse a metadata node body into its content: `!"string"` or
+    /// `!{ operand, ... }`. Tuple operands may be inline `!"string"`
+    /// (an interned MDString) or numbered `!N` references.
+    fn parse_md_node_content(&mut self) -> ParseResult<llvmkit_ir::metadata::MetadataKind> {
+        use llvmkit_ir::metadata::MetadataKind;
 
         self.expect_exclaim("'!' before metadata node body")?;
 
         match self.peek() {
             Token::StringConstant(_) => {
                 let s = self.parse_string_constant("metadata string")?;
-                Ok(self.module.metadata_string(s))
+                Ok(MetadataKind::String(s))
             }
             Token::LBrace => {
                 self.bump()?; // eat '{'
                 let mut operands = Vec::new();
                 if !matches!(self.peek(), Token::RBrace) {
                     loop {
-                        self.expect_exclaim("'!' in metadata tuple operand")?;
-                        let slot = self.parse_uint32("metadata operand number")?;
-                        operands.push(MetadataRef(MetadataId::from_index(slot as usize)));
+                        operands.push(self.parse_md_tuple_operand()?);
                         if !self.eat_punct(PunctKind::Comma)? {
                             break;
                         }
                     }
                 }
                 self.expect_punct(PunctKind::RBrace, "'}' closing metadata tuple")?;
-                Ok(self.module.metadata_tuple(operands))
+                Ok(MetadataKind::Tuple(operands))
             }
             _ => Err(self.expected("metadata string or tuple")),
+        }
+    }
+
+    /// Parse a single metadata tuple operand: an inline `!"string"`
+    /// (interned and referenced) or a numbered `!N` reference. The
+    /// inline-string form is what the AsmWriter emits for `MDString`
+    /// tuple operands (`!{!"rsp"}`), so this keeps writer output
+    /// round-trippable.
+    fn parse_md_tuple_operand(&mut self) -> ParseResult<llvmkit_ir::metadata::MetadataRef> {
+        use llvmkit_ir::metadata::MetadataRef;
+
+        self.expect_exclaim("'!' in metadata tuple operand")?;
+        match self.peek() {
+            Token::StringConstant(_) => {
+                let s = self.parse_string_constant("metadata string operand")?;
+                Ok(MetadataRef(self.module.metadata_string(s)))
+            }
+            _ => {
+                let slot = self.parse_uint32("metadata operand number")?;
+                Ok(MetadataRef(self.resolve_md_slot(slot)))
+            }
         }
     }
 
@@ -4096,6 +4135,28 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                         loc: DiagLoc::span(self.loc()),
                     })
                 }
+            }
+            // `metadata !N` / `metadata !"str"` — a metadata node used as
+            // a value (LLVM's `MetadataAsValue`), e.g. a `call` argument to
+            // `@llvm.read_register` / `@llvm.write_register`. Only valid
+            // when the operand's declared type is `metadata`; otherwise a
+            // stray `!N` in (say) an `i64` slot is a type error.
+            Token::Exclaim => {
+                if !ty.is_metadata() {
+                    return Err(self.expected("`metadata` type for a metadata operand"));
+                }
+                self.bump()?; // consume '!'
+                let id = match self.peek() {
+                    Token::StringConstant(_) => {
+                        let s = self.parse_string_constant("metadata string")?;
+                        self.module.metadata_string(s)
+                    }
+                    _ => {
+                        let slot = self.parse_uint32("metadata slot number after '!'")?;
+                        self.resolve_md_slot(slot)
+                    }
+                };
+                Ok(self.module.metadata_as_value(id))
             }
             _ => Err(self.expected("operand value")),
         }

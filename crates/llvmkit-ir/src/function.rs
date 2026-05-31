@@ -262,6 +262,31 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
         *self.data().unnamed_addr.borrow_mut() = value;
     }
 
+    /// Add an attribute at `index` to an already-created function.
+    /// Mirrors `Function::addAttributeAtIndex`. Complements the
+    /// build-time [`function_builder().attribute`](crate::function::FunctionBuilder::attribute)
+    /// path for the common case where a function is forward-declared
+    /// with [`add_function`](crate::Module::add_function) and gains
+    /// attributes only once its body is being emitted. De-duplicates by
+    /// structural equality.
+    #[inline]
+    pub fn add_attribute(self, index: AttrIndex, attr: crate::Attribute<'ctx>) {
+        self.data().attributes.borrow_mut().add(index, attr);
+    }
+
+    /// Convenience: add a string-valued attribute (`"key"="value"`) at
+    /// `index`. Mirrors `Function::addAttributeAtIndex` with a string
+    /// attribute, e.g. `"frame-pointer"="all"`.
+    #[inline]
+    pub fn set_string_attribute(
+        self,
+        index: AttrIndex,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) {
+        self.add_attribute(index, crate::Attribute::string(key, value));
+    }
+
     /// Number of parameters.
     #[inline]
     pub fn arg_count(self) -> u32 {

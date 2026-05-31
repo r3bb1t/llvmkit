@@ -128,6 +128,7 @@ pub use ir_builder::folder::IRBuilderFolder;
 pub use ir_builder::no_folder::NoFolder;
 pub use ir_builder::{CallBuilder, IRBuilder, Positioned, SelectArm, Unpositioned};
 pub use marker::{Dyn, Ptr, ReturnMarker};
+pub use metadata::{MetadataId, MetadataKind, MetadataRef};
 pub use module::{Module, ModuleId, ModuleRef, VerifiedModule};
 pub use operator::OverflowingBinaryOperator;
 pub use pass_instrumentation::{PassInstrumentationAnalysis, PassInstrumentationCallbacks};

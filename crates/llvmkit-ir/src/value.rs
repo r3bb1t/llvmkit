@@ -123,6 +123,13 @@ pub(crate) enum ValueKindData {
     Function(FunctionData),
     Instruction(InstructionData),
     GlobalVariable(crate::global_variable::GlobalVariableData),
+    /// A metadata node used in a value context. Mirrors LLVM's
+    /// `MetadataAsValue` (`llvm/include/llvm/IR/Metadata.h`): it lets a
+    /// metadata node (e.g. `!0`) appear where a `Value` is expected,
+    /// such as a `call` argument of `metadata` type. Like a constant,
+    /// it is context-global — it has no function-local SSA definition
+    /// and is never assigned a `%N` slot.
+    MetadataAsValue(crate::metadata::MetadataId),
 }
 
 // --------------------------------------------------------------------------
@@ -205,6 +212,7 @@ impl<'ctx> Value<'ctx> {
             ValueKindData::Function(_) => ValueCategory::Function,
             ValueKindData::Instruction(_) => ValueCategory::Instruction,
             ValueKindData::GlobalVariable(_) => ValueCategory::GlobalVariable,
+            ValueKindData::MetadataAsValue(_) => ValueCategory::MetadataAsValue,
         }
     }
 
@@ -250,6 +258,7 @@ pub enum ValueCategory {
     Function,
     Instruction,
     GlobalVariable,
+    MetadataAsValue,
 }
 
 impl From<ValueCategory> for crate::error::ValueCategoryLabel {
@@ -261,6 +270,7 @@ impl From<ValueCategory> for crate::error::ValueCategoryLabel {
             ValueCategory::Function => Self::Function,
             ValueCategory::Instruction => Self::Instruction,
             ValueCategory::GlobalVariable => Self::GlobalVariable,
+            ValueCategory::MetadataAsValue => Self::MetadataAsValue,
         }
     }
 }

@@ -447,6 +447,7 @@ impl<'ctx> TryFrom<Value<'ctx>> for GlobalVariable<'ctx> {
                     ValueKindData::Function(_) => ValueCategoryLabel::Function,
                     ValueKindData::Instruction(_) => ValueCategoryLabel::Instruction,
                     ValueKindData::GlobalVariable(_) => ValueCategoryLabel::GlobalVariable,
+                    ValueKindData::MetadataAsValue(_) => ValueCategoryLabel::MetadataAsValue,
                 };
                 Err(IrError::ValueCategoryMismatch {
                     expected: ValueCategoryLabel::GlobalVariable,

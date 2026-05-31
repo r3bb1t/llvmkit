@@ -181,6 +181,12 @@ pub struct Module<'ctx> {
     /// Named metadata nodes (`!llvm.module.flags`, `!llvm.ident`, ...).
     /// Mirrors `Module::NamedMDList`. Insertion order is preserved.
     named_metadata: core::cell::RefCell<Vec<NamedMDNode>>,
+    /// Uniquing cache for [`metadata_as_value`](Self::metadata_as_value):
+    /// maps a metadata node to its wrapping value so repeated wraps of the
+    /// same node return the identical `Value`. Mirrors LLVM's uniqued
+    /// `MetadataAsValue::get`.
+    metadata_as_value_cache:
+        core::cell::RefCell<std::collections::HashMap<crate::metadata::MetadataId, crate::value::ValueId>>,
     /// Brand carrier. Without it, `Module<'ctx>` would have no use of
     /// `'ctx` in its fields (since `Context` is lifetime-free) and the
     /// parameter would be unconstrained.
@@ -206,6 +212,7 @@ impl<'ctx> Module<'ctx> {
             module_asm: core::cell::RefCell::new(String::new()),
             metadata: core::cell::RefCell::new(crate::metadata::MetadataStore::default()),
             named_metadata: core::cell::RefCell::new(Vec::new()),
+            metadata_as_value_cache: core::cell::RefCell::new(std::collections::HashMap::new()),
             _brand: PhantomData,
         }
     }
@@ -935,11 +942,59 @@ impl<'ctx> Module<'ctx> {
     }
 
     /// Create a metadata tuple node. Mirrors `MDTuple::get` (distinct).
+    ///
+    /// Accepts anything that borrows as a slice of
+    /// [`MetadataRef`](crate::metadata::MetadataRef) — both an owned
+    /// `Vec` and a borrowed `&[..]` work.
     pub fn metadata_tuple(
         &self,
-        operands: Vec<crate::metadata::MetadataRef>,
+        operands: impl AsRef<[crate::metadata::MetadataRef]>,
     ) -> crate::metadata::MetadataId {
-        self.metadata.borrow_mut().get_tuple(operands)
+        self.metadata.borrow_mut().get_tuple(operands.as_ref().to_vec())
+    }
+
+    /// Wrap a metadata node as a [`Value`](crate::value::Value) so it can
+    /// be used where a value is expected — e.g. as a `metadata`-typed
+    /// argument to a `call` (the named-register intrinsics
+    /// `@llvm.read_register` / `@llvm.write_register`). Mirrors LLVM's
+    /// `MetadataAsValue::get`.
+    ///
+    /// The returned value has the module's `metadata` type, implements
+    /// [`IsValue`](crate::value::IsValue), and can be passed straight into
+    /// [`build_call`](crate::ir_builder::IRBuilder::build_call). It is
+    /// context-global: it carries no function-local SSA definition and is
+    /// never assigned a `%N` slot; it prints as the bare `!N` reference.
+    pub fn metadata_as_value(&'ctx self, md: crate::metadata::MetadataId) -> crate::value::Value<'ctx> {
+        let ty = self.ctx.metadata();
+        // Unique by metadata node, mirroring `MetadataAsValue::get`: the
+        // same node always yields the identical `Value` (one arena entry,
+        // one use-list), so value identity/equality stays meaningful.
+        if let Some(&id) = self.metadata_as_value_cache.borrow().get(&md) {
+            return crate::value::Value::from_parts(id, self, ty);
+        }
+        let id = self.ctx.push_value(crate::value::ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: crate::value::ValueKindData::MetadataAsValue(md),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        self.metadata_as_value_cache.borrow_mut().insert(md, id);
+        crate::value::Value::from_parts(id, self, ty)
+    }
+
+    /// Reserve a fresh metadata node id with placeholder content, to be
+    /// filled via [`metadata_set`](Self::metadata_set). Used by the parser
+    /// to resolve forward references without assuming textual `!N` slots
+    /// equal arena indices.
+    pub fn metadata_reserve(&self) -> crate::metadata::MetadataId {
+        self.metadata.borrow_mut().reserve()
+    }
+
+    /// Overwrite a reserved metadata node with concrete content. Pairs
+    /// with [`metadata_reserve`](Self::metadata_reserve).
+    pub fn metadata_set(&self, id: crate::metadata::MetadataId, kind: crate::metadata::MetadataKind) {
+        self.metadata.borrow_mut().set(id, kind);
     }
 
     /// Look up a metadata node by id.
