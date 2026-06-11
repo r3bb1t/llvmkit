@@ -118,11 +118,28 @@ pub(crate) struct ValueData {
 #[derive(Debug)]
 pub(crate) enum ValueKindData {
     Constant(ConstantData),
-    Argument { parent_fn: ValueId, slot: u32 },
+    Argument {
+        parent_fn: ValueId,
+        slot: u32,
+    },
     BasicBlock(BasicBlockData),
     Function(FunctionData),
     Instruction(InstructionData),
     GlobalVariable(crate::global_variable::GlobalVariableData),
+    /// A metadata node used in a value context. Mirrors LLVM's
+    /// `MetadataAsValue` (`llvm/include/llvm/IR/Metadata.h`): it lets a
+    /// metadata node (e.g. `!0`) appear where a `Value` is expected,
+    /// such as a `call` argument of `metadata` type. Like a constant,
+    /// it is context-global — it has no function-local SSA definition
+    /// and is never assigned a `%N` slot.
+    MetadataAsValue(crate::metadata::MetadataId),
+    /// An inline-assembly value used as a `call` callee. Mirrors LLVM's
+    /// `InlineAsm` (`llvm/include/llvm/IR/InlineAsm.h`). Like a
+    /// `Function` or `Constant`, it is context-global — it has no
+    /// function-local SSA definition and is never assigned a `%N` slot;
+    /// a `call` whose callee is one of these prints the `asm ...` form
+    /// instead of an `@name` operand.
+    InlineAsm(crate::inline_asm::InlineAsmData),
 }
 
 // --------------------------------------------------------------------------
@@ -205,6 +222,8 @@ impl<'ctx> Value<'ctx> {
             ValueKindData::Function(_) => ValueCategory::Function,
             ValueKindData::Instruction(_) => ValueCategory::Instruction,
             ValueKindData::GlobalVariable(_) => ValueCategory::GlobalVariable,
+            ValueKindData::MetadataAsValue(_) => ValueCategory::MetadataAsValue,
+            ValueKindData::InlineAsm(_) => ValueCategory::InlineAsm,
         }
     }
 
@@ -250,6 +269,8 @@ pub enum ValueCategory {
     Function,
     Instruction,
     GlobalVariable,
+    MetadataAsValue,
+    InlineAsm,
 }
 
 impl From<ValueCategory> for crate::error::ValueCategoryLabel {
@@ -261,6 +282,8 @@ impl From<ValueCategory> for crate::error::ValueCategoryLabel {
             ValueCategory::Function => Self::Function,
             ValueCategory::Instruction => Self::Instruction,
             ValueCategory::GlobalVariable => Self::GlobalVariable,
+            ValueCategory::MetadataAsValue => Self::MetadataAsValue,
+            ValueCategory::InlineAsm => Self::InlineAsm,
         }
     }
 }

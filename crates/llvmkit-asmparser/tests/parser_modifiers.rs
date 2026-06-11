@@ -126,7 +126,10 @@ ret ptr %g
 }
 "#,
     );
-    assert!(text.contains("inbounds") && text.contains("nuw"), "got: {text}");
+    assert!(
+        text.contains("inbounds") && text.contains("nuw"),
+        "got: {text}"
+    );
 }
 
 // ── samesign on icmp ──────────────────────────────────────────────────────

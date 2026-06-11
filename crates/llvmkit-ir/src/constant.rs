@@ -54,12 +54,49 @@ pub(crate) enum ConstantData {
     /// `FloatType`. Stored as a `u128` so every IEEE width up to
     /// `fp128` fits without a discriminant tag.
     Float(u128),
+    /// A pointer-typed constant reference to a function or global value.
+    /// Mirrors `GlobalValue` being a `Constant` whose `getType()` is the
+    /// pointer type while `getValueType()` stores the pointee/function type.
+    GlobalValueRef { value: ValueId },
     /// `null` of a pointer or typed-pointer type.
     PointerNull,
     /// Aggregate constant — `ConstantArray`, `ConstantStruct`, or
     /// `ConstantVector`. Element categorisation is determined by the
     /// owning aggregate type.
     Aggregate(Box<[ValueId]>),
+    /// A byte-offset into a global, printed as the constant expression
+    /// `getelementptr inbounds (i8, ptr @<base>, i64 <off>)`. `base_id` is the
+    /// value-id of the host global/function; `off` is the byte offset. This is
+    /// the one `ConstantExpr` form llvmkit materialises — added for
+    /// symbol-relative initializers that point into the *middle* of another
+    /// global (e.g. a relocated pointer slot inside an embedded section). The
+    /// owning value's type is `ptr`.
+    GepOffset { base_id: ValueId, off: i64 },
+    /// Link-time difference of two symbol addresses, printed as the constant
+    /// expression `sub (i64 ptrtoint (ptr @hi to i64), i64 ptrtoint (ptr @lo to
+    /// i64))`. Both ids are globals/functions; the owning value's type is `i64`.
+    /// The subtraction is resolved by the linker (a section-relative
+    /// relocation), so neither operand's absolute address need be known at
+    /// emit time. This is the second `ConstantExpr` form llvmkit materialises —
+    /// added for symbol-relative obfuscation, where a real address is reached as
+    /// `anchor + (real - anchor)` and only the delta lives in data. The two ids
+    /// must differ (a self-delta would be a constant zero; callers should use
+    /// `Int(0)` for that).
+    SymbolDelta { hi_id: ValueId, lo_id: ValueId },
+    /// Link-time symbol difference plus a constant addend, printed as
+    /// `add (i64 sub (i64 ptrtoint (ptr @hi to i64), i64 ptrtoint (ptr @lo to
+    /// i64)), i64 <addend>)`. Like [`ConstantData::SymbolDelta`] but with a
+    /// baked-in integer `addend` the linker folds into the same relocation
+    /// (additive relocations compose). Used to bake an *encrypted* delta —
+    /// `(real - anchor) + K` — so the recovered value is `enc - K` rather than
+    /// the bare delta, giving the runtime decrypt a genuine (non-identity)
+    /// computation the optimizer cannot fold away. The two symbol ids must
+    /// differ; the owning value's type is `i64`.
+    SymbolDeltaPlus {
+        hi_id: ValueId,
+        lo_id: ValueId,
+        addend: i64,
+    },
     /// `undef` of any first-class type.
     Undef,
     /// `poison` of any first-class type. Distinct from `undef` per

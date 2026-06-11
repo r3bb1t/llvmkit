@@ -116,6 +116,114 @@ impl<'ctx> GlobalVariable<'ctx> {
         }
     }
 
+    /// View this global as a pointer-typed constant reference. Mirrors
+    /// `GlobalValue::getType`: the global's stored value type is separate from
+    /// the `ptr addrspace(N)` type used when its address appears as a constant.
+    #[inline]
+    pub fn as_global_constant_ptr(self) -> Constant<'ctx> {
+        let module = self.module.module();
+        let ptr_ty = module.ptr_type(self.address_space()).as_type().id();
+        let id = module
+            .context()
+            .intern_constant_global_value_ref(ptr_ty, self.id);
+        Constant {
+            id,
+            module: self.module,
+            ty: ptr_ty,
+        }
+    }
+
+    /// A `ptr`-typed constant pointing `off` bytes into this global, printed as
+    /// `getelementptr inbounds (i8, ptr @<self>, i64 off)`.
+    ///
+    /// llvmkit has no general `ConstantExpr`, so a pointer into the *middle* of
+    /// a global cannot be spelled directly; this materialises the one offset
+    /// form needed for symbol-relative initializers (a relocated pointer slot
+    /// inside an embedded data section that targets another section's interior).
+    /// `off == 0` is equivalent to [`Self::as_constant`] but always prints the
+    /// gep form; prefer `as_constant` for the zero case.
+    pub fn as_global_constant_ptr_offset(self, off: i64, addr_space: u32) -> Constant<'ctx> {
+        let module = self.module.module();
+        let ptr_ty = module.ptr_type(addr_space).as_type().id();
+        let id = module
+            .context()
+            .intern_constant_gep_offset(ptr_ty, self.id, off);
+        Constant {
+            id,
+            module: self.module,
+            ty: ptr_ty,
+        }
+    }
+
+    /// A `ptr`-typed constant pointing `off` bytes into this global, preserving
+    /// this global's address space in both the GEP result and pointer operand.
+    pub fn ptr_offset(self, off: i64) -> Constant<'ctx> {
+        let module = self.module.module();
+        let ptr_ty = module.ptr_type(self.address_space()).as_type().id();
+        let id = module
+            .context()
+            .intern_constant_gep_offset(ptr_ty, self.id, off);
+        Constant {
+            id,
+            module: self.module,
+            ty: ptr_ty,
+        }
+    }
+
+    /// An `i64` constant equal to `self_addr - other_addr`, printed as the
+    /// const-expr `sub (i64 ptrtoint (ptr @self to i64), i64 ptrtoint (ptr
+    /// @other to i64))`.
+    ///
+    /// llvmkit has no general `ConstantExpr`; this materialises the one
+    /// two-symbol difference form needed to bake a link-time delta into a
+    /// global initializer. lld resolves the subtraction at link time, so the
+    /// delta is a real constant in the image without either absolute address
+    /// being known at emit time. Use it to express an address as
+    /// store `real.try_delta_from(anchor)?` in a data global and add it to
+    /// `ptrtoint @anchor` at the use site. Both globals must be defined symbols
+    /// in the final image.
+    pub fn try_delta_from(
+        self,
+        other: GlobalVariable<'ctx>,
+    ) -> IrResult<crate::ConstantIntValue<'ctx, i64>> {
+        if self.module != other.module {
+            return Err(IrError::ForeignValue);
+        }
+        let module = self.module.module();
+        let i64_ty = module.i64_type().as_type().id();
+        let id = module
+            .context()
+            .intern_constant_symbol_delta(i64_ty, self.id, other.id);
+        Ok(crate::ConstantIntValue::from_parts_typed(Constant {
+            id,
+            module: self.module,
+            ty: i64_ty,
+        }))
+    }
+
+    /// An `i64` constant equal to `(self_addr - other_addr) + addend`, printed
+    /// as `add (i64 sub (i64 ptrtoint(@real), i64 ptrtoint(@anchor)),
+    /// i64 K)` -- the encrypted-delta form.
+    pub fn try_delta_from_plus(
+        self,
+        other: GlobalVariable<'ctx>,
+        addend: i64,
+    ) -> IrResult<crate::ConstantIntValue<'ctx, i64>> {
+        if self.module != other.module {
+            return Err(IrError::ForeignValue);
+        }
+        let module = self.module.module();
+        let i64_ty = module.i64_type().as_type().id();
+        let id = module
+            .context()
+            .intern_constant_symbol_delta_plus(i64_ty, self.id, other.id, addend);
+        Ok(crate::ConstantIntValue::from_parts_typed(Constant {
+            id,
+            module: self.module,
+            ty: i64_ty,
+        }))
+    }
+
     fn data(self) -> &'ctx GlobalVariableData {
         match &self.module.value_data(self.id).kind {
             ValueKindData::GlobalVariable(g) => g,
@@ -425,6 +533,8 @@ impl<'ctx> TryFrom<Value<'ctx>> for GlobalVariable<'ctx> {
                     ValueKindData::Function(_) => ValueCategoryLabel::Function,
                     ValueKindData::Instruction(_) => ValueCategoryLabel::Instruction,
                     ValueKindData::GlobalVariable(_) => ValueCategoryLabel::GlobalVariable,
+                    ValueKindData::MetadataAsValue(_) => ValueCategoryLabel::MetadataAsValue,
+                    ValueKindData::InlineAsm(_) => ValueCategoryLabel::InlineAsm,
                 };
                 Err(IrError::ValueCategoryMismatch {
                     expected: ValueCategoryLabel::GlobalVariable,

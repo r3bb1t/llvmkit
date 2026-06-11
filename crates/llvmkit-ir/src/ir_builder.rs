@@ -313,23 +313,31 @@ where
         let inst_data = self.module.context().value_data(phi_val.id);
         let inst_kind_data = match &inst_data.kind {
             crate::value::ValueKindData::Instruction(i) => &i.kind,
-            _ => return Err(IrError::InvalidOperation {
-                message: "phi_add_incoming_from_value: target is not an instruction",
-            }),
+            _ => {
+                return Err(IrError::InvalidOperation {
+                    message: "phi_add_incoming_from_value: target is not an instruction",
+                });
+            }
         };
         let phi_payload = match inst_kind_data {
             InstructionKindData::Phi(p) => p,
-            _ => return Err(IrError::InvalidOperation {
-                message: "phi_add_incoming_from_value: instruction is not a phi",
-            }),
+            _ => {
+                return Err(IrError::InvalidOperation {
+                    message: "phi_add_incoming_from_value: instruction is not a phi",
+                });
+            }
         };
-        phi_payload.incoming.borrow_mut().push((
-            core::cell::Cell::new(val.id),
-            block.as_value().id,
-        ));
+        phi_payload
+            .incoming
+            .borrow_mut()
+            .push((core::cell::Cell::new(val.id), block.as_value().id));
         // Register phi as a user of the incoming value.
-        self.module.context().value_data(val.id)
-            .use_list.borrow_mut().push(phi_val.id);
+        self.module
+            .context()
+            .value_data(val.id)
+            .use_list
+            .borrow_mut()
+            .push(phi_val.id);
         Ok(())
     }
 }
@@ -892,6 +900,139 @@ where
         Ok(IntValue::<W>::from_value_unchecked(inst.as_value()))
     }
 
+    // ---- Type-erased integer binops (scalar OR integer-vector operands) ----
+    //
+    // The typed `build_int_*` family routes both operands through
+    // `IntoIntValue<W>`, whose `TryFrom<Value>` impls accept only scalar
+    // `iN` types and reject integer *vectors* (`<N x iM>`). Element-wise
+    // vector arithmetic (`xor <2 x i64> ...`) is legal IR the verifier
+    // already accepts (`is_int_or_int_vector`), but there was no builder
+    // path to emit it. These `_dyn` wrappers take erased [`Value`] operands
+    // and skip the scalar-only `IntoIntValue` conversion, mirroring the
+    // untyped cast builder [`build_bitcast_dyn`]. The result type is the
+    // LHS operand's type; the caller is responsible for operand-type
+    // agreement (the LLVM verifier rejects ill-formed binops).
+
+    /// Crate-internal: emit an integer binop on erased [`Value`] operands
+    /// (scalar `iN` or integer vector `<N x iM>`), the result taking the LHS
+    /// operand's type. Skips the scalar-only `IntoIntValue` conversion the
+    /// typed `build_int_*` family performs, so it accepts vector operands.
+    fn build_int_binop_dyn<F2>(
+        &self,
+        lhs: crate::value::Value<'ctx>,
+        rhs: crate::value::Value<'ctx>,
+        name: impl AsRef<str>,
+        kind_ctor: F2,
+    ) -> IrResult<crate::value::Value<'ctx>>
+    where
+        F2: FnOnce(BinaryOpData) -> InstructionKindData,
+    {
+        self.require_same_module(lhs)?;
+        self.require_same_module(rhs)?;
+        let payload = BinaryOpData::new(lhs.id, rhs.id);
+        let inst = self.append_instruction(lhs.ty().id(), kind_ctor(payload), name);
+        Ok(inst.as_value())
+    }
+
+    /// `add lhs, rhs` on erased operands (scalar or integer vector).
+    /// See [`build_int_binop_dyn`](Self::build_int_binop_dyn).
+    pub fn build_int_add_dyn(
+        &self,
+        lhs: crate::value::Value<'ctx>,
+        rhs: crate::value::Value<'ctx>,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::Value<'ctx>> {
+        self.build_int_binop_dyn(lhs, rhs, name, InstructionKindData::Add)
+    }
+
+    /// `sub lhs, rhs` on erased operands (scalar or integer vector).
+    /// See [`build_int_binop_dyn`](Self::build_int_binop_dyn).
+    pub fn build_int_sub_dyn(
+        &self,
+        lhs: crate::value::Value<'ctx>,
+        rhs: crate::value::Value<'ctx>,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::Value<'ctx>> {
+        self.build_int_binop_dyn(lhs, rhs, name, InstructionKindData::Sub)
+    }
+
+    /// `mul lhs, rhs` on erased operands (scalar or integer vector).
+    /// See [`build_int_binop_dyn`](Self::build_int_binop_dyn).
+    pub fn build_int_mul_dyn(
+        &self,
+        lhs: crate::value::Value<'ctx>,
+        rhs: crate::value::Value<'ctx>,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::Value<'ctx>> {
+        self.build_int_binop_dyn(lhs, rhs, name, InstructionKindData::Mul)
+    }
+
+    /// `xor lhs, rhs` on erased operands (scalar or integer vector).
+    /// See [`build_int_binop_dyn`](Self::build_int_binop_dyn).
+    pub fn build_int_xor_dyn(
+        &self,
+        lhs: crate::value::Value<'ctx>,
+        rhs: crate::value::Value<'ctx>,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::Value<'ctx>> {
+        self.build_int_binop_dyn(lhs, rhs, name, InstructionKindData::Xor)
+    }
+
+    /// `and lhs, rhs` on erased operands (scalar or integer vector).
+    /// See [`build_int_binop_dyn`](Self::build_int_binop_dyn).
+    pub fn build_int_and_dyn(
+        &self,
+        lhs: crate::value::Value<'ctx>,
+        rhs: crate::value::Value<'ctx>,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::Value<'ctx>> {
+        self.build_int_binop_dyn(lhs, rhs, name, InstructionKindData::And)
+    }
+
+    /// `or lhs, rhs` on erased operands (scalar or integer vector).
+    /// See [`build_int_binop_dyn`](Self::build_int_binop_dyn).
+    pub fn build_int_or_dyn(
+        &self,
+        lhs: crate::value::Value<'ctx>,
+        rhs: crate::value::Value<'ctx>,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::Value<'ctx>> {
+        self.build_int_binop_dyn(lhs, rhs, name, InstructionKindData::Or)
+    }
+
+    /// `shl lhs, rhs` on erased operands (scalar or integer vector).
+    /// See [`build_int_binop_dyn`](Self::build_int_binop_dyn).
+    pub fn build_int_shl_dyn(
+        &self,
+        lhs: crate::value::Value<'ctx>,
+        rhs: crate::value::Value<'ctx>,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::Value<'ctx>> {
+        self.build_int_binop_dyn(lhs, rhs, name, InstructionKindData::Shl)
+    }
+
+    /// `lshr lhs, rhs` on erased operands (scalar or integer vector).
+    /// See [`build_int_binop_dyn`](Self::build_int_binop_dyn).
+    pub fn build_int_lshr_dyn(
+        &self,
+        lhs: crate::value::Value<'ctx>,
+        rhs: crate::value::Value<'ctx>,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::Value<'ctx>> {
+        self.build_int_binop_dyn(lhs, rhs, name, InstructionKindData::LShr)
+    }
+
+    /// `ashr lhs, rhs` on erased operands (scalar or integer vector).
+    /// See [`build_int_binop_dyn`](Self::build_int_binop_dyn).
+    pub fn build_int_ashr_dyn(
+        &self,
+        lhs: crate::value::Value<'ctx>,
+        rhs: crate::value::Value<'ctx>,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::value::Value<'ctx>> {
+        self.build_int_binop_dyn(lhs, rhs, name, InstructionKindData::AShr)
+    }
+
     // ---- Floating-point arithmetic ----
 
     /// Produce `fadd lhs, rhs`. Mirrors `IRBuilder::CreateFAdd`.
@@ -1031,7 +1172,9 @@ where
         payload.fmf = fmf;
         let inst =
             self.append_instruction(crate::value::Typed::ty(lhs).id(), kind_ctor(payload), name);
-        Ok(crate::value::FloatValue::<K>::from_value_unchecked(inst.as_value()))
+        Ok(crate::value::FloatValue::<K>::from_value_unchecked(
+            inst.as_value(),
+        ))
     }
 
     /// `fadd` with an explicit [`crate::fmf::FastMathFlags`] parameter.
@@ -1939,14 +2082,10 @@ where
                 rhs: dst_w,
             });
         }
-        let mut payload =
-            CastOpData::new(crate::instr_types::CastOpcode::ZExt, src.as_value().id);
+        let mut payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, src.as_value().id);
         payload.nneg = flags.nneg;
-        let inst = self.append_instruction(
-            dst.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
+        let inst =
+            self.append_instruction(dst.as_type().id(), InstructionKindData::Cast(payload), name);
         Ok(IntValue::<crate::int_width::IntDyn>::from_value_unchecked(
             inst.as_value(),
         ))
@@ -2603,6 +2742,121 @@ where
         }
     }
 
+    /// Produce an indirect `call` through a function-pointer **value** (not a
+    /// named `@function`), with the callee's function type given explicitly.
+    /// Mirrors `IRBuilder::CreateCall(FunctionType*, Value* callee, args)` — the
+    /// opaque-pointer form where the pointee type is supplied separately. Used
+    /// to lower a computed code pointer (`call rax`, a vtable slot) to a real
+    /// indirect call rather than routing through a named dispatcher.
+    ///
+    /// `fn_ty` is the callee's signature; `callee` is the function pointer; the
+    /// caller picks the return marker `R2` to match `fn_ty`'s return type.
+    pub fn build_indirect_call<R2, I, V>(
+        &self,
+        fn_ty: crate::derived_types::FunctionType<'ctx>,
+        callee: crate::value::PointerValue<'ctx>,
+        args: I,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::instructions::CallInst<'ctx, R2>>
+    where
+        R2: crate::marker::ReturnMarker,
+        I: IntoIterator<Item = V>,
+        V: crate::value::IsValue<'ctx>,
+    {
+        let callee_v = crate::value::IsValue::as_value(callee);
+        let ret_data = self.module.context().type_data(fn_ty.return_type().id());
+        if !crate::function::signature_matches_marker::<R2>(ret_data) {
+            return Err(IrError::ReturnTypeMismatch {
+                expected: fn_ty.return_type().kind_label(),
+                got: fn_ty.return_type().kind_label(),
+            });
+        }
+        self.require_same_module(callee_v)?;
+        let mut arg_ids: Vec<crate::value::ValueId> = Vec::new();
+        for arg in args {
+            let v = arg.as_value();
+            self.require_same_module(v)?;
+            arg_ids.push(v.id);
+        }
+        let payload = crate::instr_types::CallInstData::new(
+            callee_v.id,
+            fn_ty.as_type().id(),
+            arg_ids.into_boxed_slice(),
+            crate::CallingConv::C,
+            crate::instr_types::TailCallKind::None,
+        );
+        let inst = self.append_instruction(
+            fn_ty.return_type().id(),
+            InstructionKindData::Call(payload),
+            name,
+        );
+        Ok(crate::instructions::CallInst::<R2>::from_raw(
+            inst.as_value().id,
+            inst.module(),
+            inst.ty().id(),
+        ))
+    }
+
+    /// Produce a `call` whose callee is an inline-assembly value. Mirrors
+    /// `IRBuilder::CreateCall(InlineAsm*, args)` — the asm carries its own
+    /// function type, so the call's return / argument shape comes from
+    /// [`InlineAsm::function_type`](crate::inline_asm::InlineAsm). The
+    /// result prints as the `asm` form, e.g.
+    /// `call i64 asm sideeffect "...", "=r,r,r"(i64 %a, i64 %b)`, instead
+    /// of an `@name` operand.
+    ///
+    /// The caller picks the return marker `R2` to match the asm's wrapped
+    /// return type; a mismatch fails with
+    /// [`IrError::ReturnTypeMismatch`]. The calling convention is `C`,
+    /// matching what LLVM emits for an inline-asm call.
+    pub fn build_inline_asm_call<R2, I, V>(
+        &self,
+        asm: crate::inline_asm::InlineAsm<'ctx>,
+        args: I,
+        name: impl AsRef<str>,
+    ) -> IrResult<crate::instructions::CallInst<'ctx, R2>>
+    where
+        R2: crate::marker::ReturnMarker,
+        I: IntoIterator<Item = V>,
+        V: crate::value::IsValue<'ctx>,
+    {
+        let asm_v = asm.as_value();
+        self.require_same_module(asm_v)?;
+        let fn_ty = asm.function_type();
+        // Reject a return-marker / signature mismatch up front, mirroring
+        // `Module::add_function`'s `signature_matches_marker` gate.
+        let ret_data = self.module.context().type_data(fn_ty.return_type().id());
+        if !crate::function::signature_matches_marker::<R2>(ret_data) {
+            return Err(IrError::ReturnTypeMismatch {
+                expected: fn_ty.return_type().kind_label(),
+                got: fn_ty.return_type().kind_label(),
+            });
+        }
+        let mut arg_ids: Vec<crate::value::ValueId> = Vec::new();
+        for arg in args {
+            let v = arg.as_value();
+            self.require_same_module(v)?;
+            arg_ids.push(v.id);
+        }
+        let payload = crate::instr_types::CallInstData::new(
+            asm_v.id,
+            fn_ty.as_type().id(),
+            arg_ids.into_boxed_slice(),
+            crate::CallingConv::C,
+            crate::instr_types::TailCallKind::None,
+        );
+        let inst = self.append_instruction(
+            fn_ty.return_type().id(),
+            InstructionKindData::Call(payload),
+            name,
+        );
+        Ok(crate::instructions::CallInst::<R2>::from_raw(
+            inst.as_value().id,
+            inst.module(),
+            inst.ty().id(),
+        ))
+    }
+
     // ---- GEP ----
 
     /// Produce `getelementptr <source-ty>, ptr <ptr>, <indices>`.
@@ -2790,9 +3044,11 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(crate::value::FloatValue::<crate::float_kind::FloatDyn>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(
+            crate::value::FloatValue::<crate::float_kind::FloatDyn>::from_value_unchecked(
+                inst.as_value(),
+            ),
+        )
     }
 
     /// Runtime-kind `fpext`. Mirrors [`Self::build_fp_ext`] but accepts
@@ -2816,9 +3072,11 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(crate::value::FloatValue::<crate::float_kind::FloatDyn>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(
+            crate::value::FloatValue::<crate::float_kind::FloatDyn>::from_value_unchecked(
+                inst.as_value(),
+            ),
+        )
     }
 
     /// Crate-internal helper for `build_fp_ext` / `build_fp_trunc`.
@@ -2942,14 +3200,13 @@ where
         let mut payload =
             CastOpData::new(crate::instr_types::CastOpcode::UIToFp, src.as_value().id);
         payload.nneg = flags.nneg;
-        let inst = self.append_instruction(
-            dst.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(crate::value::FloatValue::<crate::float_kind::FloatDyn>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        let inst =
+            self.append_instruction(dst.as_type().id(), InstructionKindData::Cast(payload), name);
+        Ok(
+            crate::value::FloatValue::<crate::float_kind::FloatDyn>::from_value_unchecked(
+                inst.as_value(),
+            ),
+        )
     }
 
     fn build_int_to_fp<W, K>(
@@ -3182,11 +3439,7 @@ where
     ) -> IrResult<crate::value::Value<'ctx>> {
         self.require_same_module(value)?;
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, value.id);
-        let inst = self.append_instruction(
-            dst_ty.id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
+        let inst = self.append_instruction(dst_ty.id(), InstructionKindData::Cast(payload), name);
         Ok(inst.as_value())
     }
 
@@ -3751,7 +4004,6 @@ where
             inst.ty().id(),
         ))
     }
-
 
     // ---- Branch / Unreachable ----
 

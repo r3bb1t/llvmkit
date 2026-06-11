@@ -36,7 +36,7 @@ use crate::instr_types::{
 use crate::instruction::{Instruction, InstructionKindData};
 use crate::marker::Dyn;
 use crate::module::Module;
-use crate::r#type::{Type, TypeData};
+use crate::r#type::{StructBody, Type, TypeData};
 use crate::value::{Value, ValueId, ValueKindData};
 
 // --------------------------------------------------------------------------
@@ -219,7 +219,44 @@ pub(crate) fn fmt_operand_ref(
             write!(f, "@{}", v.name().unwrap_or_default())
         }
         ValueKindData::Constant(c) => fmt_constant(f, v, c),
+        // `MetadataAsValue` delegates to the metadata printer. MDStrings
+        // print inline as `!"..."`; MDNodes print as their numbered slot.
+        ValueKindData::MetadataAsValue(id) => {
+            let md = v.module().metadata_store();
+            fmt_metadata_operand(f, *id, &md, &metadata_slot_map(md.nodes()))
+        }
+        // An inline-asm value only ever appears as a `call` callee, where
+        // `fmt_call` short-circuits to the `asm "...", "..."` form before
+        // reaching here. If one is reached as a bare operand (it should
+        // not be), print the `asm` body so the output is still
+        // self-describing rather than panicking.
+        ValueKindData::InlineAsm(d) => fmt_inline_asm(f, d),
     }
+}
+
+/// Print the `asm`-callee body shared by `fmt_operand_ref` and
+/// `fmt_call`:
+/// `asm [sideeffect ][alignstack ][inteldialect ]"<asm>", "<constraints>"`.
+/// The leading `asm` token and the keyword set mirror
+/// `AssemblyWriter::writeOperand`'s `InlineAsm` arm in
+/// `lib/IR/AsmWriter.cpp`; the strings are escaped exactly like a
+/// `module asm` line (see [`print_escaped_string`]).
+fn fmt_inline_asm(f: &mut fmt::Formatter<'_>, d: &crate::inline_asm::InlineAsmData) -> fmt::Result {
+    f.write_str("asm ")?;
+    if d.has_side_effects {
+        f.write_str("sideeffect ")?;
+    }
+    if d.is_align_stack {
+        f.write_str("alignstack ")?;
+    }
+    if matches!(d.dialect, crate::inline_asm::AsmDialect::Intel) {
+        f.write_str("inteldialect ")?;
+    }
+    f.write_str("\"")?;
+    print_escaped_string(f, d.asm_string.as_bytes())?;
+    f.write_str("\", \"")?;
+    print_escaped_string(f, d.constraint_string.as_bytes())?;
+    f.write_str("\"")
 }
 
 // --------------------------------------------------------------------------
@@ -233,11 +270,74 @@ pub(crate) fn fmt_constant(
 ) -> fmt::Result {
     match c {
         ConstantData::Int(words) => fmt_int_constant(f, host.ty(), words),
+        ConstantData::GlobalValueRef { value } => {
+            let module = host.module.module();
+            let global = Value::from_parts(*value, module, module.context().value_data(*value).ty);
+            fmt_operand_ref(f, global, None)
+        }
         ConstantData::Float(bits) => fmt_float_constant(f, host.ty(), *bits),
         ConstantData::PointerNull => f.write_str("null"),
         ConstantData::Undef => f.write_str("undef"),
         ConstantData::Poison => f.write_str("poison"),
         ConstantData::Aggregate(elems) => fmt_aggregate_constant(f, host, elems),
+        ConstantData::GepOffset { base_id, off } => {
+            // `getelementptr inbounds (i8, <ptr-ty> @<base>, i64 <off>)`.
+            // Mirrors `writeConstantInternal` printing each ConstantExpr
+            // operand with its true type.
+            let module = host.module.module();
+            let base =
+                Value::from_parts(*base_id, module, module.context().value_data(*base_id).ty);
+            write!(
+                f,
+                "getelementptr inbounds (i8, {} ",
+                constant_ptr_operand_type(base)
+            )?;
+            fmt_operand_ref(f, base, None)?;
+            write!(f, ", i64 {off})")
+        }
+        ConstantData::SymbolDelta { hi_id, lo_id } => {
+            let module = host.module.module();
+            let hi = Value::from_parts(*hi_id, module, module.context().value_data(*hi_id).ty);
+            let lo = Value::from_parts(*lo_id, module, module.context().value_data(*lo_id).ty);
+            write!(f, "sub (i64 ptrtoint ({} ", constant_ptr_operand_type(hi))?;
+            fmt_operand_ref(f, hi, None)?;
+            write!(
+                f,
+                " to i64), i64 ptrtoint ({} ",
+                constant_ptr_operand_type(lo)
+            )?;
+            fmt_operand_ref(f, lo, None)?;
+            f.write_str(" to i64))")
+        }
+        ConstantData::SymbolDeltaPlus {
+            hi_id,
+            lo_id,
+            addend,
+        } => {
+            let module = host.module.module();
+            let hi = Value::from_parts(*hi_id, module, module.context().value_data(*hi_id).ty);
+            let lo = Value::from_parts(*lo_id, module, module.context().value_data(*lo_id).ty);
+            write!(
+                f,
+                "add (i64 sub (i64 ptrtoint ({} ",
+                constant_ptr_operand_type(hi)
+            )?;
+            fmt_operand_ref(f, hi, None)?;
+            write!(
+                f,
+                " to i64), i64 ptrtoint ({} ",
+                constant_ptr_operand_type(lo)
+            )?;
+            fmt_operand_ref(f, lo, None)?;
+            write!(f, " to i64)), i64 {addend})")
+        }
+    }
+}
+
+fn constant_ptr_operand_type<'ctx>(value: Value<'ctx>) -> Type<'ctx> {
+    match &value.data().kind {
+        ValueKindData::Function(_) => value.module().ptr_type(0).as_type(),
+        _ => value.ty(),
     }
 }
 
@@ -273,6 +373,12 @@ fn fmt_int_constant(f: &mut fmt::Formatter<'_>, ty: Type<'_>, words: &[u64]) -> 
     // prefix to mark unsigned. Mirrors LLVM's APInt textual fallback
     // for widths >64.
     f.write_str("u0x")?;
+    // A zero magnitude normalises to an empty `words` slice; emit a single
+    // `0` digit so the result is `u0x0` (a valid token) rather than the bare
+    // `u0x` the parser rejects.
+    if words.iter().all(|&w| w == 0) {
+        return f.write_str("0");
+    }
     for word in words.iter().rev() {
         write!(f, "{word:016x}")?;
     }
@@ -529,8 +635,12 @@ fn fmt_cast(
     f.write_str(c.kind.keyword())?;
     match c.kind {
         CastOpcode::Trunc => {
-            if c.nuw { f.write_str(" nuw")?; }
-            if c.nsw { f.write_str(" nsw")?; }
+            if c.nuw {
+                f.write_str(" nuw")?;
+            }
+            if c.nsw {
+                f.write_str(" nsw")?;
+            }
         }
         CastOpcode::ZExt | CastOpcode::UIToFp if c.nneg => {
             f.write_str(" nneg")?;
@@ -1049,11 +1159,23 @@ fn fmt_call(
     }
     let module = inst.module();
     // Print the return type. Mirrors AsmWriter's
-    // `printType(I.getType())`.
+    // `printType(I.getType())`. This is the *call result* type
+    // (`inst.ty()`), not the callee's pointer type — important for the
+    // inline-asm case, where the callee value is `ptr`-typed but the call
+    // yields the asm's wrapped return type.
     write!(f, "{} ", inst.ty())?;
     let cd = module.context().value_data(c.callee.get());
-    let callee = Value::from_parts(c.callee.get(), module, cd.ty);
-    fmt_operand_ref(f, callee, Some(slots))?;
+    // An inline-asm callee prints the `asm "...", "..."` form in place of
+    // an `@name` / SSA operand. Mirrors `AssemblyWriter`'s `CallInst`
+    // path, which routes an `InlineAsm` callee through `writeOperand`'s
+    // `asm` printer rather than emitting a symbolic callee.
+    match &cd.kind {
+        ValueKindData::InlineAsm(d) => fmt_inline_asm(f, d)?,
+        _ => {
+            let callee = Value::from_parts(c.callee.get(), module, cd.ty);
+            fmt_operand_ref(f, callee, Some(slots))?;
+        }
+    }
     f.write_str("(")?;
     let mut first = true;
     for arg_cell in c.args.iter() {
@@ -1602,6 +1724,10 @@ pub(crate) fn fmt_function(
     if let Some(kw) = func.unnamed_addr().keyword() {
         write!(f, " {kw}")?;
     }
+    // Function-level attribute slot. Printed inline after the signature,
+    // e.g. `define void @f() naked "frame-pointer"="all" {`. Mirrors the
+    // function-attribute portion of `AsmWriter::printFunction`.
+    fmt_attribute_set(f, &attrs, AttrIndex::Function, true)?;
     if header == "declare" {
         return f.write_str("\n");
     }
@@ -1612,6 +1738,31 @@ pub(crate) fn fmt_function(
         first_block = false;
     }
     f.write_str("}\n")
+}
+
+/// Print a struct body inline: `{ <elem>, ... }` (or `<{ ... }>` when
+/// packed). Mirrors the literal-struct arm of `Type`'s `Display`
+/// (`type.rs`), recursing into elements via `Type::new` — which renders a
+/// *named* element as `%Name` and any other type structurally.
+fn fmt_struct_body(f: &mut fmt::Formatter<'_>, body: &StructBody, m: &Module<'_>) -> fmt::Result {
+    if body.packed {
+        f.write_str("<{ ")?;
+    } else {
+        f.write_str("{ ")?;
+    }
+    let mut first = true;
+    for e in body.elements.iter() {
+        if !first {
+            f.write_str(", ")?;
+        }
+        first = false;
+        write!(f, "{}", Type::new(*e, m))?;
+    }
+    if body.packed {
+        f.write_str(" }>")
+    } else {
+        f.write_str(" }")
+    }
 }
 
 pub(crate) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &Module<'_>) -> fmt::Result {
@@ -1662,6 +1813,33 @@ pub(crate) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &Module<'_>) -> fmt::Res
         }
     }
 
+    // Named-struct type identities. Mirrors the `printTypeIdentities`
+    // call in `AssemblyWriter::printModule`, emitted between comdats and
+    // globals: a leading blank line if any exist, then one
+    // `%Name = type {...}` (or `%Name = type opaque`) line per struct in
+    // declaration order.
+    {
+        let struct_ids = m.iter_named_struct_ids();
+        if !struct_ids.is_empty() {
+            f.write_str("\n")?;
+            for id in struct_ids {
+                let data = m.context().type_data(id);
+                let s = data
+                    .as_struct()
+                    .expect("iter_named_struct_ids yields only struct ids");
+                let name = s.name.as_ref().expect("named struct must have a name");
+                write!(f, "%{name} = type ")?;
+                match s.body.borrow().as_ref() {
+                    Some(body) => fmt_struct_body(f, body, m)?,
+                    // KirpiIR never creates opaque structs, but be faithful
+                    // to LLVM, which prints those as `%Name = type opaque`.
+                    None => f.write_str("opaque")?,
+                }
+                f.write_str("\n")?;
+            }
+        }
+    }
+
     // Globals. Mirrors the `for (const GlobalVariable &GV :
     // M->globals())` loop in `printModule`.
     if !m.global_empty() {
@@ -1683,16 +1861,20 @@ pub(crate) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &Module<'_>) -> fmt::Res
 
     // Numbered metadata nodes. Mirrors the
     // `for (const auto &[Slot, Node] : ...NumberedMetadata())`
-    // loop in `printModule`. Emitted as `!N = !{...}` or `!N = !""`.
+    // loop in `printModule`. MDStrings are not numbered; they print inline
+    // when referenced from MDNodes or MetadataAsValue operands.
     {
         let md = m.metadata_store();
         let nodes = md.nodes();
-        if !nodes.is_empty() {
+        let slots = metadata_slot_map(nodes);
+        if slots.iter().any(Option::is_some) {
             f.write_str("\n")?;
             for (i, node) in nodes.iter().enumerate() {
-                write!(f, "!{i} = ")?;
-                fmt_metadata_node(f, node, &md)?;
-                f.write_str("\n")?;
+                if let Some(slot) = slots[i] {
+                    write!(f, "!{slot} = ")?;
+                    fmt_metadata_node(f, node, &md, &slots)?;
+                    f.write_str("\n")?;
+                }
             }
         }
     }
@@ -1702,13 +1884,15 @@ pub(crate) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &Module<'_>) -> fmt::Res
     {
         let nmd = m.named_metadata_list();
         if !nmd.is_empty() {
+            let md = m.metadata_store();
+            let slots = metadata_slot_map(md.nodes());
             for node in nmd.iter() {
                 write!(f, "!{} = !{{", node.name())?;
                 for (j, op) in node.operands().iter().enumerate() {
                     if j > 0 {
                         f.write_str(", ")?;
                     }
-                    write!(f, "!{}", op.0.index())?;
+                    fmt_metadata_operand(f, op.0, &md, &slots)?;
                 }
                 f.write_str("}\n")?;
             }
@@ -1718,34 +1902,69 @@ pub(crate) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &Module<'_>) -> fmt::Res
     Ok(())
 }
 
+/// Print an `MDString` body: `!"..."`. Shared by the standalone-node and
+/// inline-operand paths.
+fn fmt_md_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
+    f.write_str("!\"")?;
+    print_escaped_string(f, s.as_bytes())?;
+    f.write_str("\"")
+}
+
 /// Print one metadata node body. Mirrors `WriteMDNodeBodyInternal` in
 /// `lib/IR/AsmWriter.cpp`.
+///
+/// Tuple MDString operands are printed *inline* (`!{!"rsp"}`) because LLVM
+/// never assigns standalone metadata slots to `MDString`s.
 fn fmt_metadata_node(
     f: &mut fmt::Formatter<'_>,
     node: &crate::metadata::MetadataKind,
-    _store: &crate::metadata::MetadataStore,
+    store: &crate::metadata::MetadataStore,
+    slots: &[Option<usize>],
 ) -> fmt::Result {
     use crate::metadata::MetadataKind;
     match node {
-        MetadataKind::String(s) => {
-            f.write_str("!\"")?;
-            print_escaped_string(f, s.as_bytes())?;
-            f.write_str("\"")
-        }
+        MetadataKind::String(s) => fmt_md_string(f, s),
         MetadataKind::Tuple(operands) => {
             f.write_str("!{")?;
             for (i, op) in operands.iter().enumerate() {
                 if i > 0 {
                     f.write_str(", ")?;
                 }
-                write!(f, "!{}", op.0.index())?;
+                fmt_metadata_operand(f, op.0, store, slots)?;
             }
             f.write_str("}")
         }
-        MetadataKind::Ref(id) => {
-            write!(f, "!{}", id.index())
+        MetadataKind::Ref(id) => fmt_metadata_operand(f, *id, store, slots),
+    }
+}
+
+/// Print a single metadata operand. `MDString` operands are inline; MDNodes
+/// are referenced by the renumbered slot map.
+fn fmt_metadata_operand(
+    f: &mut fmt::Formatter<'_>,
+    id: crate::metadata::MetadataId,
+    store: &crate::metadata::MetadataStore,
+    slots: &[Option<usize>],
+) -> fmt::Result {
+    if let Some(crate::metadata::MetadataKind::String(s)) = store.get(id) {
+        return fmt_md_string(f, s);
+    }
+    match slots.get(id.index()).and_then(|slot| *slot) {
+        Some(slot) => write!(f, "!{slot}"),
+        None => write!(f, "!{}", id.index()),
+    }
+}
+
+fn metadata_slot_map(nodes: &[crate::metadata::MetadataKind]) -> Vec<Option<usize>> {
+    let mut slots = vec![None; nodes.len()];
+    let mut next = 0;
+    for (i, node) in nodes.iter().enumerate() {
+        if !matches!(node, crate::metadata::MetadataKind::String(_)) {
+            slots[i] = Some(next);
+            next += 1;
         }
     }
+    slots
 }
 
 fn fmt_comdat(f: &mut fmt::Formatter<'_>, c: crate::comdat::ComdatRef<'_>) -> fmt::Result {

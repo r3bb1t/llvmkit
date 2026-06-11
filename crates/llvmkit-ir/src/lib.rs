@@ -40,6 +40,7 @@ pub mod function;
 pub mod gep_no_wrap_flags;
 pub mod global_value;
 pub mod global_variable;
+pub mod inline_asm;
 pub mod instr_types;
 pub mod instruction;
 pub mod instructions;
@@ -49,8 +50,8 @@ pub mod iter;
 pub(crate) mod llvm_context;
 pub mod marker;
 pub mod metadata;
-pub mod named_md_node;
 pub mod module;
+pub mod named_md_node;
 pub mod operator;
 pub mod pass_instrumentation;
 pub mod pass_manager;
@@ -107,6 +108,7 @@ pub use gep_no_wrap_flags::GepNoWrapFlags;
 pub use global_value::Linkage;
 pub use global_value::{DllStorageClass, ThreadLocalMode, Visibility};
 pub use global_variable::{GlobalBuilder, GlobalVariable};
+pub use inline_asm::{AsmDialect, InlineAsm};
 pub use instr_types::{
     AShrFlags, AddFlags, AtomicCmpXchgConfig, AtomicLoadConfig, AtomicRMWConfig, AtomicRMWFlags,
     AtomicStoreConfig, CmpXchgFlags, ICmpFlags, LShrFlags, MulFlags, OrFlags, SDivFlags, ShlFlags,
@@ -128,6 +130,7 @@ pub use ir_builder::folder::IRBuilderFolder;
 pub use ir_builder::no_folder::NoFolder;
 pub use ir_builder::{CallBuilder, IRBuilder, Positioned, SelectArm, Unpositioned};
 pub use marker::{Dyn, Ptr, ReturnMarker};
+pub use metadata::{MetadataId, MetadataKind, MetadataRef};
 pub use module::{Module, ModuleId, ModuleRef, VerifiedModule};
 pub use operator::OverflowingBinaryOperator;
 pub use pass_instrumentation::{PassInstrumentationAnalysis, PassInstrumentationCallbacks};

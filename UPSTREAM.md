@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 611.
+Total `#[test]` functions: 641.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -396,6 +396,8 @@ Total `#[test]` functions: 611.
 | `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_save_and_restore_round_trip` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, RAIIHelpersTest)` lines 833-844 (FastMathFlagGuard arm) | mirror |
 | `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fneg_emits_default_then_fmf_form` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, UnaryOperators)` lines 535-555 (`CreateUnOp(FNeg)` + `CreateFNegFMF`) | mirror |
 | `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_accumulates_contract_approx_reassoc_on_fmul` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` lines 663-697 (AllowContract / ApproxFunc / AllowReassoc arm) | mirror |
+| `crates/llvmkit-ir/tests/builder_vector_binop_dyn.rs::vector_binops_emit_elementwise_ir` | `lib/IR/Verifier.cpp::Verifier::visitBinaryOperator` vector operand type rule | mirror |
+| `crates/llvmkit-ir/tests/builder_vector_binop_dyn.rs::scalar_binop_dyn_still_works` | `lib/IR/Verifier.cpp::Verifier::visitBinaryOperator` scalar operand type rule | mirror |
 | `crates/llvmkit-ir/tests/globals_basic.rs::simple_global_i32_zero` | `test/Bitcode/compatibility.ll` line 88-89 | mirror |
 | `crates/llvmkit-ir/tests/globals_basic.rs::simple_global_constant_i32_zero` | `test/Bitcode/compatibility.ll` line 90-91 | mirror |
 | `crates/llvmkit-ir/tests/globals_basic.rs::external_declaration_global` | `test/Bitcode/compatibility.ll` line 114-115 | mirror |
@@ -432,6 +434,13 @@ Total `#[test]` functions: 611.
 | `crates/llvmkit-ir/tests/globals_basic.rs::const_array_i8_prints_as_cstring` | `test/Bitcode/compatibility.ll` line 51-52 + `lib/IR/AsmWriter.cpp::ConstantDataArray::isString` arm (line 1730) | mirror |
 | `crates/llvmkit-ir/tests/globals_basic.rs::appending_global_cstring` | `test/Bitcode/compatibility.ll` line 106-107 | mirror |
 | `crates/llvmkit-ir/tests/globals_basic.rs::const_vector_initializer` | `test/Bitcode/compatibility.ll` line 70-71 | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::function_pointer_global_initializer_verifies` | `include/llvm/IR/GlobalValue.h::GlobalValue`; `GlobalValue::getType`; `GlobalValue::getValueType` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::function_pointer_aggregate_initializer_prints_ptr_base` | `include/llvm/IR/GlobalValue.h::GlobalValue`; `lib/IR/Constants.cpp::ConstantExpr::getGetElementPtr` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::global_pointer_global_initializer_verifies` | `include/llvm/IR/GlobalValue.h::GlobalValue`; `GlobalValue::getType`; `GlobalValue::getValueType` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::ptr_offset_preserves_global_address_space` | `lib/IR/Constants.cpp::ConstantExpr::getGetElementPtr`; `include/llvm/IR/Instructions.h::GetElementPtrInst::getGEPReturnType` | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::symbol_delta_rejects_cross_module_globals` | `lib/IR/AsmWriter.cpp::writeConstantInternal` ConstantExpr operand printing; llvmkit `ModuleRef` ownership invariant | llvmkit-specific |
+| `crates/llvmkit-ir/tests/globals_basic.rs::symbol_delta_constexpr_initializer` | `lib/IR/AsmWriter.cpp::writeConstantInternal` ConstantExpr operand printing (`ptrtoint` / `sub`) | mirror |
+| `crates/llvmkit-ir/tests/globals_basic.rs::symbol_delta_plus_constexpr_initializer` | `lib/IR/AsmWriter.cpp::writeConstantInternal` ConstantExpr operand printing (`ptrtoint` / `sub` / `add`) | mirror |
 | `crates/llvmkit-ir/tests/globals_basic.rs::initializer_type_mismatch_rejected_at_construction` | `lib/IR/Verifier.cpp::Verifier::visitGlobalVariable` ("Global variable initializer type does not match global variable type!") | mirror |
 | `crates/llvmkit-ir/tests/globals_basic.rs::common_linkage_nonzero_initializer_rejected` | `lib/IR/Verifier.cpp::Verifier::visitGlobalVariable` (`hasCommonLinkage` arm: "'common' global must have a zero initializer!") | mirror |
 | `crates/llvmkit-ir/tests/globals_basic.rs::common_linkage_constant_rejected` | `lib/IR/Verifier.cpp::Verifier::visitGlobalVariable` (`hasCommonLinkage` arm: "'common' global may not be marked constant!") | mirror |
@@ -439,6 +448,17 @@ Total `#[test]` functions: 611.
 | `crates/llvmkit-ir/tests/globals_basic.rs::module_named_global_lookup_round_trip` | `unittests/IR/ModuleTest.cpp::TEST(ModuleTest, GlobalList)` (the `M->getNamedValue("GV")` round-trip) | port |
 | `crates/llvmkit-ir/tests/globals_basic.rs::module_iter_globals_preserves_order` | `unittests/IR/ModuleTest.cpp::TEST(ModuleTest, GlobalList)` (the `Range.begin()` walk) | port |
 | `crates/llvmkit-ir/tests/globals_basic.rs::comdat_get_or_insert_is_idempotent` | `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, ComdatUserTracking)` (second `getOrInsertComdat("comdat")` is identity-stable) | port |
+| `crates/llvmkit-ir/tests/inline_asm.rs::inline_asm_call_with_side_effects` | `lib/IR/AsmWriter.cpp::writeAsOperandInternal(Value*)` inline-asm arm; `include/llvm/IR/InlineAsm.h` | mirror |
+| `crates/llvmkit-ir/tests/inline_asm.rs::inline_asm_call_without_side_effects` | `lib/IR/AsmWriter.cpp::writeAsOperandInternal(Value*)` inline-asm arm; `include/llvm/IR/InlineAsm.h` | mirror |
+| `crates/llvmkit-ir/tests/inline_asm.rs::inline_asm_multiline_escapes_newline` | `lib/IR/AsmWriter.cpp::writeAsOperandInternal(Value*)` inline-asm arm; string escaping via `printEscapedString` | mirror |
+| `crates/llvmkit-ir/tests/inline_asm.rs::indirect_call_rejects_wrong_return_marker` | `include/llvm/IR/IRBuilder.h::CreateCall(FunctionType*, Value*, ...)` | mirror |
+| `crates/llvmkit-ir/tests/inline_asm.rs::inline_asm_call_rejects_label_constraint` | `lib/IR/Verifier.cpp::Verifier::verifyInlineAsmCall` label constraint check | mirror |
+| `crates/llvmkit-ir/tests/inline_asm.rs::inline_asm_intel_dialect_keyword` | `lib/IR/AsmWriter.cpp::writeAsOperandInternal(Value*)` inline-asm dialect keyword arm; `include/llvm/IR/InlineAsm.h` | mirror |
+| `crates/llvmkit-ir/tests/metadata_call.rs::call_with_metadata_argument` | `lib/IR/AsmWriter.cpp::writeAsOperandInternal(Value*)`; `MetadataAsValue::get`; `test/CodeGen/X86/read-register.ll` | mirror |
+| `crates/llvmkit-ir/tests/metadata_call.rs::post_construction_function_attributes` | `lib/IR/Function.cpp::Function::addAttribute`; `include/llvm/IR/Attributes.h` | mirror |
+| `crates/llvmkit-ir/tests/metadata_call.rs::metadata_as_value_is_uniqued` | `MetadataAsValue::get` uniquing behavior | port |
+| `crates/llvmkit-ir/tests/metadata_call.rs::metadata_string_as_value_prints_inline` | `lib/IR/AsmWriter.cpp::writeAsOperandInternal(Metadata*)` MDString arm; `lib/IR/AsmWriter.cpp::writeAllMDNodes` | mirror |
+| `crates/llvmkit-ir/tests/metadata_call.rs::string_referenced_by_named_metadata_is_not_dangling` | `lib/IR/AsmWriter.cpp::writeAllMDNodes`; `lib/IR/AsmWriter.cpp::writeAsOperandInternal(Metadata*)` | mirror |
 | `crates/llvmkit-ir/tests/data_layout_round_trip.rs::layout_string_format_accepts_well_formed` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, LayoutStringFormat)` | port |
 | `crates/llvmkit-ir/tests/data_layout_round_trip.rs::layout_string_format_rejects_empty_specs` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, LayoutStringFormat)` (rejection arm) | port |
 | `crates/llvmkit-ir/tests/data_layout_round_trip.rs::invalid_specifier_rejected` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, InvalidSpecifier)` | port |
@@ -612,11 +632,11 @@ Total `#[test]` functions: 611.
 | `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::fence_round_trips` | `test/Assembler/fence.ll`; `LLParser::parseFence` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::cmpxchg_round_trips` | `test/Assembler/cmpxchg.ll`; `LLParser::parseCmpXchg` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::atomicrmw_round_trips` | `test/Assembler/atomicrmw.ll`; `LLParser::parseAtomicRMW` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_string` | `test/Assembler/metadata.ll`; `LLParser::parseStandaloneMetadata` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_multiple_strings` | `test/Assembler/metadata.ll`; `LLParser::parseStandaloneMetadata` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_string_is_rejected` | `lib/AsmParser/LLParser.cpp::LLParser::parseStandaloneMetadata`; `LLParser::parseMDString` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_tuple_with_inline_string` | `test/Assembler/metadata.ll`; `lib/AsmParser/LLParser.cpp::LLParser::parseStandaloneMetadata` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_empty_tuple` | `test/Assembler/metadata.ll`; `LLParser::parseStandaloneMetadata` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_tuple_with_ref` | `test/Assembler/metadata.ll`; `LLParser::parseStandaloneMetadata` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_tuple_multi_operand` | `test/Assembler/metadata.ll`; `LLParser::parseStandaloneMetadata` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_tuple_with_ref` | `test/Assembler/metadata.ll`; `LLParser::parseStandaloneMetadata` tuple operand arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_tuple_multi_operand` | `test/Assembler/metadata.ll`; `LLParser::parseStandaloneMetadata` tuple operand arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_distinct` | `test/Assembler/distinct-mdnode.ll`; `LLParser::parseStandaloneMetadata` `distinct` keyword | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::named_metadata_basic` | `test/Assembler/named-metadata.ll`; `LLParser::parseNamedMetadata` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::named_metadata_multiple` | `test/Assembler/named-metadata.ll`; `LLParser::parseNamedMetadata` | mirror |
@@ -625,7 +645,17 @@ Total `#[test]` functions: 611.
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::metadata_after_function` | `test/Assembler/metadata.ll`; module-level metadata after function definitions | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::instruction_trailing_metadata` | `test/Assembler/metadata.ll`; `LLParser::parseInstructionMetadata` trailing `!dbg !N` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::instruction_multiple_trailing_metadata` | `test/Assembler/metadata.ll`; `LLParser::parseInstructionMetadata` multiple attachments | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::undefined_trailing_metadata_operand_is_rejected` | `lib/AsmParser/LLParser.cpp::LLParser::validateEndOfModule` undefined metadata diagnostic | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::instruction_trailing_metadata_no_comma` | `test/Assembler/metadata.ll`; `LLParser::parseInstructionMetadata` no-comma variant | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::call_with_metadata_argument_roundtrip` | `test/CodeGen/X86/read-register.ll`; `LLParser::parseMetadataAsValue` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::call_with_metadata_and_value_argument_roundtrip` | `test/CodeGen/X86/write-register.ll`; `LLParser::parseMetadataAsValue` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::call_metadata_inline_tuple_operand_round_trips` | `lib/AsmParser/LLParser.cpp::LLParser::parseMetadataAsValue`; `LLParser::parseMetadata` tuple arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::call_metadata_inline_string_operand_round_trips` | `lib/AsmParser/LLParser.cpp::LLParser::parseMetadataAsValue`; `LLParser::parseMetadata` MDString arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::inline_string_tuple_reparses` | `lib/IR/AsmWriter.cpp::writeAsOperandInternal(Metadata*)`; `LLParser::parseMetadata` MDString arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::nonzero_metadata_slot_resolves` | `lib/AsmParser/LLParser.cpp::LLParser::parseMDNodeID` forward-reference handling | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::undefined_named_metadata_operand_is_rejected` | `lib/AsmParser/LLParser.cpp::LLParser::validateEndOfModule` undefined metadata diagnostic | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::undefined_metadata_value_operand_is_rejected` | `lib/AsmParser/LLParser.cpp::LLParser::validateEndOfModule` undefined metadata diagnostic | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::metadata_ref_in_non_metadata_type_is_rejected` | `lib/AsmParser/LLParser.cpp::LLParser::parseMetadataAsValue` metadata-typed operand path | mirror |
 | `crates/llvmkit-asmparser/tests/parser_value_forms.rs::undef_operand` | `test/Assembler/undef.ll`; `LLParser::parseValID` `lltok::kw_undef` arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_value_forms.rs::poison_operand` | `test/Assembler/poison.ll`; `LLParser::parseValID` `lltok::kw_poison` arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_value_forms.rs::float_decimal_literal` | `test/Assembler/float.ll`; `LLParser::parseValID` decimal FP literal arm | mirror |

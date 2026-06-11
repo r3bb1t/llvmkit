@@ -68,6 +68,26 @@ impl MetadataStore {
         id
     }
 
+    /// Reserve a fresh node id with placeholder content, to be filled in
+    /// later via [`set`](Self::set). Used by the parser to resolve forward
+    /// references (`!N` used before `!N = ...` is seen) without assuming a
+    /// textual-slot/arena-index identity. The placeholder is an empty
+    /// tuple so an unresolved reference still prints as a valid `!{}`.
+    pub fn reserve(&mut self) -> MetadataId {
+        let id = MetadataId(self.nodes.len());
+        self.nodes.push(MetadataKind::Tuple(Vec::new()));
+        id
+    }
+
+    /// Overwrite the node at `id` with `kind`. Pairs with
+    /// [`reserve`](Self::reserve) to fill a forward-referenced slot.
+    /// No-op if `id` is out of range.
+    pub fn set(&mut self, id: MetadataId, kind: MetadataKind) {
+        if let Some(slot) = self.nodes.get_mut(id.0) {
+            *slot = kind;
+        }
+    }
+
     /// Total number of interned metadata nodes.
     pub fn len(&self) -> usize {
         self.nodes.len()

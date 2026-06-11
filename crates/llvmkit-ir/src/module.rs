@@ -38,9 +38,9 @@ use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::float_kind::{BFloat, Fp128, Half, PpcFp128, X86Fp80};
 use crate::int_width::IntDyn;
 use crate::llvm_context::Context;
+use crate::named_md_node::NamedMDNode;
 use crate::r#type::{MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeId};
 use crate::typed_pointer_type::TypedPointerType;
-use crate::named_md_node::NamedMDNode;
 
 // --------------------------------------------------------------------------
 // ModuleId
@@ -181,6 +181,13 @@ pub struct Module<'ctx> {
     /// Named metadata nodes (`!llvm.module.flags`, `!llvm.ident`, ...).
     /// Mirrors `Module::NamedMDList`. Insertion order is preserved.
     named_metadata: core::cell::RefCell<Vec<NamedMDNode>>,
+    /// Uniquing cache for [`metadata_as_value`](Self::metadata_as_value):
+    /// maps a metadata node to its wrapping value so repeated wraps of the
+    /// same node return the identical `Value`. Mirrors LLVM's uniqued
+    /// `MetadataAsValue::get`.
+    metadata_as_value_cache: core::cell::RefCell<
+        std::collections::HashMap<crate::metadata::MetadataId, crate::value::ValueId>,
+    >,
     /// Brand carrier. Without it, `Module<'ctx>` would have no use of
     /// `'ctx` in its fields (since `Context` is lifetime-free) and the
     /// parameter would be unconstrained.
@@ -206,6 +213,7 @@ impl<'ctx> Module<'ctx> {
             module_asm: core::cell::RefCell::new(String::new()),
             metadata: core::cell::RefCell::new(crate::metadata::MetadataStore::default()),
             named_metadata: core::cell::RefCell::new(Vec::new()),
+            metadata_as_value_cache: core::cell::RefCell::new(std::collections::HashMap::new()),
             _brand: PhantomData,
         }
     }
@@ -226,6 +234,14 @@ impl<'ctx> Module<'ctx> {
     #[inline]
     pub(crate) fn context(&self) -> &Context {
         &self.ctx
+    }
+
+    /// Named-struct type ids in declaration order. The printer turns each
+    /// into a [`Type`](crate::r#type::Type) via `Type::new(id, self)` to emit
+    /// the `%Name = type {...}` identity block.
+    #[inline]
+    pub(crate) fn iter_named_struct_ids(&self) -> Vec<crate::r#type::TypeId> {
+        self.ctx.iter_named_structs()
     }
 
     // ---- Primitive type constructors ----
@@ -918,6 +934,56 @@ impl<'ctx> Module<'ctx> {
         buf.push_str(line.as_ref());
     }
 
+    /// Create an inline-assembly value usable as a `call` callee. Mirrors
+    /// `InlineAsm::get` in `llvm/include/llvm/IR/InlineAsm.h`.
+    ///
+    /// `fn_ty` is the conceptual function type the asm wraps — it governs
+    /// the return type and argument types of any `call` through this
+    /// value. `asm` is the assembly template (e.g. `"add $1, $0"`), and
+    /// `constraints` is the constraint string (e.g. `"=r,r,r"`). The
+    /// boolean flags map to the `sideeffect` / `alignstack` keywords, and
+    /// `dialect` selects AT&T (default) or Intel syntax (the latter prints
+    /// the `inteldialect` keyword).
+    ///
+    /// The returned [`InlineAsm`](crate::inline_asm::InlineAsm) value's
+    /// [`ty`](crate::value::Value::ty) is the module's `ptr` type — LLVM
+    /// types inline asm as a pointer — while the wrapped function type is
+    /// recovered via
+    /// [`InlineAsm::function_type`](crate::inline_asm::InlineAsm::function_type).
+    /// It is context-global: it carries no function-local SSA definition,
+    /// is never assigned a `%N` slot, and is not registered in the
+    /// function-by-name table. Pass it to
+    /// [`build_inline_asm_call`](crate::ir_builder::IRBuilder::build_inline_asm_call).
+    pub fn inline_asm(
+        &'ctx self,
+        fn_ty: FunctionType<'ctx>,
+        asm: impl Into<String>,
+        constraints: impl Into<String>,
+        has_side_effects: bool,
+        is_align_stack: bool,
+        dialect: crate::inline_asm::AsmDialect,
+    ) -> crate::inline_asm::InlineAsm<'ctx> {
+        // LLVM types inline asm as a plain pointer; the function type the
+        // asm wraps is carried in the payload for the call to consume.
+        let ptr_ty = self.ptr_type(0).as_type().id();
+        let data = crate::inline_asm::InlineAsmData {
+            asm_string: asm.into(),
+            constraint_string: constraints.into(),
+            fn_ty: fn_ty.as_type().id(),
+            has_side_effects,
+            is_align_stack,
+            dialect,
+        };
+        let id = self.ctx.push_value(crate::value::ValueData {
+            ty: ptr_ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: crate::value::ValueKindData::InlineAsm(data),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        crate::inline_asm::InlineAsm::from_parts(id, self, ptr_ty)
+    }
+
     // ---- Metadata ----
 
     /// Intern a metadata string node. Returns an existing id if an
@@ -927,11 +993,68 @@ impl<'ctx> Module<'ctx> {
     }
 
     /// Create a metadata tuple node. Mirrors `MDTuple::get` (distinct).
+    ///
+    /// Accepts anything that borrows as a slice of
+    /// [`MetadataRef`](crate::metadata::MetadataRef) — both an owned
+    /// `Vec` and a borrowed `&[..]` work.
     pub fn metadata_tuple(
         &self,
-        operands: Vec<crate::metadata::MetadataRef>,
+        operands: impl AsRef<[crate::metadata::MetadataRef]>,
     ) -> crate::metadata::MetadataId {
-        self.metadata.borrow_mut().get_tuple(operands)
+        self.metadata
+            .borrow_mut()
+            .get_tuple(operands.as_ref().to_vec())
+    }
+
+    /// Wrap a metadata node as a [`Value`](crate::value::Value) so it can
+    /// be used where a value is expected — e.g. as a `metadata`-typed
+    /// argument to a `call` (the named-register intrinsics
+    /// `@llvm.read_register` / `@llvm.write_register`). Mirrors LLVM's
+    /// `MetadataAsValue::get`.
+    ///
+    /// The returned value has the module's `metadata` type, implements
+    /// [`IsValue`](crate::value::IsValue), and can be passed straight into
+    /// [`build_call`](crate::ir_builder::IRBuilder::build_call). It is
+    /// context-global: it carries no function-local SSA definition and is
+    /// never assigned a `%N` slot; it prints as the bare `!N` reference.
+    pub fn metadata_as_value(
+        &'ctx self,
+        md: crate::metadata::MetadataId,
+    ) -> crate::value::Value<'ctx> {
+        let ty = self.ctx.metadata();
+        // Unique by metadata node, mirroring `MetadataAsValue::get`: the
+        // same node always yields the identical `Value` (one arena entry,
+        // one use-list), so value identity/equality stays meaningful.
+        if let Some(&id) = self.metadata_as_value_cache.borrow().get(&md) {
+            return crate::value::Value::from_parts(id, self, ty);
+        }
+        let id = self.ctx.push_value(crate::value::ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: crate::value::ValueKindData::MetadataAsValue(md),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        self.metadata_as_value_cache.borrow_mut().insert(md, id);
+        crate::value::Value::from_parts(id, self, ty)
+    }
+
+    /// Reserve a fresh metadata node id with placeholder content, to be
+    /// filled via [`metadata_set`](Self::metadata_set). Used by the parser
+    /// to resolve forward references without assuming textual `!N` slots
+    /// equal arena indices.
+    pub fn metadata_reserve(&self) -> crate::metadata::MetadataId {
+        self.metadata.borrow_mut().reserve()
+    }
+
+    /// Overwrite a reserved metadata node with concrete content. Pairs
+    /// with [`metadata_reserve`](Self::metadata_reserve).
+    pub fn metadata_set(
+        &self,
+        id: crate::metadata::MetadataId,
+        kind: crate::metadata::MetadataKind,
+    ) {
+        self.metadata.borrow_mut().set(id, kind);
     }
 
     /// Look up a metadata node by id.
@@ -942,22 +1065,20 @@ impl<'ctx> Module<'ctx> {
         self.metadata.borrow().get(id).cloned()
     }
 
-    /// Number of interned metadata nodes.
+    /// Number of numbered metadata nodes. `MDString`s are uniqued metadata
+    /// operands, but LLVM does not assign them standalone `!N` slots.
     pub fn metadata_count(&self) -> usize {
-        self.metadata.borrow().len()
+        self.metadata
+            .borrow()
+            .nodes()
+            .iter()
+            .filter(|node| !matches!(node, crate::metadata::MetadataKind::String(_)))
+            .count()
     }
 
     /// Crate-internal: borrow the metadata store.
     pub(crate) fn metadata_store(&self) -> core::cell::Ref<'_, crate::metadata::MetadataStore> {
         self.metadata.borrow()
-    }
-
-    /// Crate-internal: mutably borrow the metadata store.
-    #[allow(dead_code)]
-    pub(crate) fn metadata_store_mut(
-        &self,
-    ) -> core::cell::RefMut<'_, crate::metadata::MetadataStore> {
-        self.metadata.borrow_mut()
     }
 
     /// Get or create a named metadata node with the given name.
@@ -976,11 +1097,7 @@ impl<'ctx> Module<'ctx> {
     }
 
     /// Append an operand to a named metadata node (by index).
-    pub fn named_metadata_add_operand(
-        &self,
-        index: usize,
-        op: crate::metadata::MetadataRef,
-    ) {
+    pub fn named_metadata_add_operand(&self, index: usize, op: crate::metadata::MetadataRef) {
         self.named_metadata.borrow_mut()[index].add_operand(op);
     }
 
@@ -990,9 +1107,7 @@ impl<'ctx> Module<'ctx> {
     }
 
     /// Crate-internal: borrow named metadata list for printing.
-    pub(crate) fn named_metadata_list(
-        &self,
-    ) -> core::cell::Ref<'_, Vec<NamedMDNode>> {
+    pub(crate) fn named_metadata_list(&self) -> core::cell::Ref<'_, Vec<NamedMDNode>> {
         self.named_metadata.borrow()
     }
 

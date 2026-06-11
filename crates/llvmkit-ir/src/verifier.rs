@@ -1703,6 +1703,24 @@ impl<'ctx> Verifier<'ctx> {
                 ));
             }
         }
+        if let ValueKindData::InlineAsm(_) = &self.module.context().value_data(c.callee.get()).kind
+        {
+            let inline_asm =
+                crate::inline_asm::InlineAsm::from_parts(c.callee.get(), self.module, callee_ty);
+            let summary = inline_asm.constraint_summary();
+            let _arg_constraints = summary.arg_constraints;
+            if summary.label_count != 0 {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::CallArgCountMismatch,
+                    "Label constraints can only be used with callbr".to_owned(),
+                ));
+            }
+            // Full indirect-constraint / elementtype parity is deferred: the
+            // current call surface cannot spell per-operand elementtype attrs.
+        }
+
         Ok(())
     }
 

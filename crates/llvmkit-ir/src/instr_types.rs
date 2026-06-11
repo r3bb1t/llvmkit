@@ -791,15 +791,22 @@ pub struct OrFlags {
 }
 impl OrFlags {
     #[inline]
-    pub const fn new() -> Self { Self { disjoint: false } }
+    pub const fn new() -> Self {
+        Self { disjoint: false }
+    }
     /// Set the `disjoint` flag.
     #[inline]
     #[must_use]
-    pub const fn disjoint(mut self) -> Self { self.disjoint = true; self }
+    pub const fn disjoint(mut self) -> Self {
+        self.disjoint = true;
+        self
+    }
 }
 impl WriteBinopFlags for OrFlags {
     #[inline]
-    fn apply(self, payload: &mut BinaryOpData) { payload.disjoint = self.disjoint; }
+    fn apply(self, payload: &mut BinaryOpData) {
+        payload.disjoint = self.disjoint;
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -814,11 +821,16 @@ pub struct ZExtFlags {
 }
 impl ZExtFlags {
     #[inline]
-    pub const fn new() -> Self { Self { nneg: false } }
+    pub const fn new() -> Self {
+        Self { nneg: false }
+    }
     /// Set the `nneg` (non-negative) flag.
     #[inline]
     #[must_use]
-    pub const fn nneg(mut self) -> Self { self.nneg = true; self }
+    pub const fn nneg(mut self) -> Self {
+        self.nneg = true;
+        self
+    }
 }
 
 /// Flags for `trunc`. `nuw` / `nsw` assert no unsigned / signed wrap.
@@ -830,15 +842,26 @@ pub struct TruncFlags {
 }
 impl TruncFlags {
     #[inline]
-    pub const fn new() -> Self { Self { nuw: false, nsw: false } }
+    pub const fn new() -> Self {
+        Self {
+            nuw: false,
+            nsw: false,
+        }
+    }
     /// Set the `nuw` (no-unsigned-wrap) flag.
     #[inline]
     #[must_use]
-    pub const fn nuw(mut self) -> Self { self.nuw = true; self }
+    pub const fn nuw(mut self) -> Self {
+        self.nuw = true;
+        self
+    }
     /// Set the `nsw` (no-signed-wrap) flag.
     #[inline]
     #[must_use]
-    pub const fn nsw(mut self) -> Self { self.nsw = true; self }
+    pub const fn nsw(mut self) -> Self {
+        self.nsw = true;
+        self
+    }
 }
 
 /// Flags for `uitofp`. The `nneg` flag asserts the source is non-negative.
@@ -849,11 +872,16 @@ pub struct UIToFpFlags {
 }
 impl UIToFpFlags {
     #[inline]
-    pub const fn new() -> Self { Self { nneg: false } }
+    pub const fn new() -> Self {
+        Self { nneg: false }
+    }
     /// Set the `nneg` (non-negative) flag.
     #[inline]
     #[must_use]
-    pub const fn nneg(mut self) -> Self { self.nneg = true; self }
+    pub const fn nneg(mut self) -> Self {
+        self.nneg = true;
+        self
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -868,11 +896,16 @@ pub struct ICmpFlags {
 }
 impl ICmpFlags {
     #[inline]
-    pub const fn new() -> Self { Self { samesign: false } }
+    pub const fn new() -> Self {
+        Self { samesign: false }
+    }
     /// Set the `samesign` flag.
     #[inline]
     #[must_use]
-    pub const fn samesign(mut self) -> Self { self.samesign = true; self }
+    pub const fn samesign(mut self) -> Self {
+        self.samesign = true;
+        self
+    }
 }
 
 // --------------------------------------------------------------------------

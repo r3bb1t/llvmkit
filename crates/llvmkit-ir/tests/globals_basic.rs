@@ -656,6 +656,191 @@ fn const_vector_initializer() {
     );
 }
 
+/// Function values are pointer-typed constants when used as global initializers.
+/// Mirrors `GlobalValue::getType` returning `PointerType`, while function
+/// signature lives separately as `getValueType`.
+#[test]
+fn function_pointer_global_initializer_verifies() -> Result<(), IrError> {
+    let m = Module::new("fnptr_init");
+    let void_ty = m.void_type();
+    let ptr_ty = m.ptr_type(0);
+    let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+    let callee = m.add_function::<()>("callee", callee_ty, Linkage::External)?;
+    let init = callee.as_global_constant_ptr();
+    m.add_global_constant("slot", ptr_ty.as_type(), init)?;
+    m.verify_borrowed()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("@slot = constant ptr @callee"),
+        "output:\n{text}"
+    );
+    Ok(())
+}
+
+/// Function-address GEP constants keep a pointer-typed base operand when used
+/// inside aggregates.
+/// Mirrors `GlobalValue::getType` and `ConstantExpr::getGetElementPtr`.
+#[test]
+fn function_pointer_aggregate_initializer_prints_ptr_base() -> Result<(), IrError> {
+    let m = Module::new("fnptr_agg");
+    let void_ty = m.void_type();
+    let ptr_ty = m.ptr_type(0);
+    let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+    let callee = m.add_function::<()>("callee", callee_ty, Linkage::External)?;
+    let arr_ty = m.array_type(ptr_ty.as_type(), 1);
+    let elem = callee.as_aggregate_ptr(0);
+    let init = arr_ty.const_array([elem])?;
+    m.add_global_constant("table", arr_ty.as_type(), init)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains(
+            "@table = constant [1 x ptr] [ptr getelementptr inbounds (i8, ptr @callee, i64 0)]"
+        ),
+        "output:\n{text}"
+    );
+    Ok(())
+}
+
+/// Global variables are pointer-typed constants when used as initializers.
+/// Mirrors `GlobalValue::getType` for globals.
+#[test]
+fn global_pointer_global_initializer_verifies() -> Result<(), IrError> {
+    let m = Module::new("gptr_init");
+    let i8_ty = m.i8_type();
+    let ptr_ty = m.ptr_type(0);
+    let zero = i8_ty.const_int(0i8);
+    let target = m.add_global_constant("target", i8_ty.as_type(), zero)?;
+    let init = target.as_global_constant_ptr();
+    m.add_global_constant("slot", ptr_ty.as_type(), init)?;
+    m.verify_borrowed()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("@slot = constant ptr @target"),
+        "output:\n{text}"
+    );
+    Ok(())
+}
+
+/// `ptr_offset` preserves the global's pointer address space in the printed
+/// ConstantExpr operand and result type.
+/// Mirrors `ConstantExpr::getGetElementPtr` deriving result type from pointer operand.
+#[test]
+fn ptr_offset_preserves_global_address_space() -> Result<(), IrError> {
+    let m = Module::new("gptr_addrspace");
+    let i8_ty = m.i8_type();
+    let ptr1_ty = m.ptr_type(1);
+    let zero = i8_ty.const_int(0i8);
+    let target = m
+        .global_builder("target", i8_ty.as_type())
+        .address_space(1)
+        .initializer(zero)
+        .build()?;
+    let init = target.ptr_offset(4);
+    m.add_global_constant("slot", ptr1_ty.as_type(), init)?;
+    m.verify_borrowed()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("@slot = constant ptr addrspace(1) getelementptr inbounds (i8, ptr addrspace(1) @target, i64 4)"),
+        "output:\n{text}"
+    );
+    Ok(())
+}
+
+/// Symbol-difference helpers reject globals from different modules instead
+/// of storing foreign `ValueId`s.
+#[test]
+fn symbol_delta_rejects_cross_module_globals() {
+    let left = Module::new("left");
+    let right = Module::new("right");
+    let i8_left = left.i8_type();
+    let i8_right = right.i8_type();
+    let a = left
+        .add_global_constant("a", i8_left.as_type(), i8_left.const_int(0i8))
+        .expect("a");
+    let b = right
+        .add_global_constant("b", i8_right.as_type(), i8_right.const_int(0i8))
+        .expect("b");
+    let err = a
+        .try_delta_from(b)
+        .expect_err("cross-module delta must fail");
+    assert!(
+        err.to_string().contains("does not belong to this module"),
+        "unexpected error: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Symbol-difference ConstantExpr (the link-time `sub(ptrtoint, ptrtoint)` form)
+// ---------------------------------------------------------------------------
+
+/// Mirrors `test/Bitcode/compatibility.ll` constant-expression coverage for
+/// `sub (i64 ptrtoint (ptr @a to i64), i64 ptrtoint (ptr @b to i64))`: the
+/// two-symbol difference materialised by `GlobalVariable::delta_from`, used as
+/// a global initializer so the linker computes the delta. Asserts the exact
+/// const-expr serialization.
+#[test]
+fn symbol_delta_constexpr_initializer() {
+    let m = Module::new("m");
+    let i8_ty = m.i8_type();
+    let i64_ty = m.i64_type();
+    let zero8 = i8_ty.const_int(0i8);
+    // Two real defined symbols: a "real" target and an "anchor".
+    let real = m
+        .add_global_constant("real", i8_ty.as_type(), zero8)
+        .expect("real");
+    let anchor = m
+        .add_global_constant("anchor", i8_ty.as_type(), zero8)
+        .expect("anchor");
+    // @delta = constant i64 sub(ptrtoint(@real), ptrtoint(@anchor)).
+    let delta = real.try_delta_from(anchor).expect("delta");
+    m.add_global_constant("delta", i64_ty.as_type(), delta)
+        .expect("delta");
+    let text = module_text(&m);
+    assert!(
+        text.contains(
+            "@delta = constant i64 sub (i64 ptrtoint (ptr @real to i64), \
+             i64 ptrtoint (ptr @anchor to i64))\n"
+        ),
+        "got:\n{text}"
+    );
+}
+
+/// `GlobalVariable::delta_from_plus` materialises the symbol difference with a
+/// constant addend, `add (i64 sub (i64 ptrtoint(@real), i64 ptrtoint(@anchor)),
+/// i64 K)` — the encrypted-delta form. Asserts the exact const-expr.
+#[test]
+fn symbol_delta_plus_constexpr_initializer() {
+    let m = Module::new("m");
+    let i8_ty = m.i8_type();
+    let i64_ty = m.i64_type();
+    let zero8 = i8_ty.const_int(0i8);
+    let real = m
+        .add_global_constant("real", i8_ty.as_type(), zero8)
+        .expect("real");
+    let anchor = m
+        .add_global_constant("anchor", i8_ty.as_type(), zero8)
+        .expect("anchor");
+    // @enc = constant i64 (sub(ptrtoint(@real), ptrtoint(@anchor)) + 12345).
+    let enc = real.try_delta_from_plus(anchor, 12345).expect("delta plus");
+    m.add_global_constant("enc", i64_ty.as_type(), enc)
+        .expect("enc");
+    let text = module_text(&m);
+    assert!(
+        text.contains(
+            "@enc = constant i64 add (i64 sub (i64 ptrtoint (ptr @real to i64), \
+             i64 ptrtoint (ptr @anchor to i64)), i64 12345)\n"
+        ),
+        "got:\n{text}"
+    );
+
+    // A negative addend prints with a leading minus.
+    let enc2 = real.try_delta_from_plus(anchor, -7).expect("delta plus");
+    m.add_global_constant("enc2", i64_ty.as_type(), enc2)
+        .expect("enc2");
+    let text2 = module_text(&m);
+    assert!(text2.contains(", i64 -7)\n"), "got:\n{text2}");
+}
+
 // ---------------------------------------------------------------------------
 // Verifier negatives
 // ---------------------------------------------------------------------------

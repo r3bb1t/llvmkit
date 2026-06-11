@@ -262,6 +262,31 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
         *self.data().unnamed_addr.borrow_mut() = value;
     }
 
+    /// Add an attribute at `index` to an already-created function.
+    /// Mirrors `Function::addAttributeAtIndex`. Complements the
+    /// build-time [`function_builder().attribute`](crate::function::FunctionBuilder::attribute)
+    /// path for the common case where a function is forward-declared
+    /// with [`add_function`](crate::Module::add_function) and gains
+    /// attributes only once its body is being emitted. De-duplicates by
+    /// structural equality.
+    #[inline]
+    pub fn add_attribute(self, index: AttrIndex, attr: crate::Attribute<'ctx>) {
+        self.data().attributes.borrow_mut().add(index, attr);
+    }
+
+    /// Convenience: add a string-valued attribute (`"key"="value"`) at
+    /// `index`. Mirrors `Function::addAttributeAtIndex` with a string
+    /// attribute, e.g. `"frame-pointer"="all"`.
+    #[inline]
+    pub fn set_string_attribute(
+        self,
+        index: AttrIndex,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) {
+        self.add_attribute(index, crate::Attribute::string(key, value));
+    }
+
     /// Number of parameters.
     #[inline]
     pub fn arg_count(self) -> u32 {
@@ -366,6 +391,51 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
     /// well-formed first inserts; conflicts return `false`.
     pub(crate) fn register_value_name(self, name: &str, id: ValueId) -> bool {
         self.data().symbol_table.insert(name, id)
+    }
+
+    /// View this function as a `ptr`-typed [`Constant`] referencing it by
+    /// name — i.e. the constant `ptr @<name>`, suitable as a global
+    /// initializer.
+    ///
+    /// Mirrors LLVM's `GlobalValue`: the function's value type remains its
+    /// signature, while the constant's type is the default-address-space
+    /// pointer returned by `GlobalValue::getType`.
+    #[inline]
+    pub fn as_global_constant_ptr(self) -> crate::constant::Constant<'ctx> {
+        let module = self.module.module();
+        let ptr_ty = module.ptr_type(0).as_type().id();
+        let id = module
+            .context()
+            .intern_constant_global_value_ref(ptr_ty, self.id);
+        crate::constant::Constant {
+            id,
+            module: self.module,
+            ty: ptr_ty,
+        }
+    }
+
+    /// A `ptr`-typed constant referencing this function, as a *distinct* arena
+    /// node (`getelementptr inbounds (i8, ptr @<self>, i64 0)`).
+    ///
+    /// Unlike [`Self::as_global_constant_ptr`] (which reuses the function's own
+    /// value-id, so its arena type is the function *signature*), this interns a
+    /// separate `ptr`-typed constant. Needed inside an **aggregate** initializer,
+    /// where the assembly writer prints each element's type from the element
+    /// value's arena type: a bare function reference would print as `void () @f`
+    /// (invalid — "functions are not values"), whereas this prints as a proper
+    /// `ptr getelementptr (...)` element. The byte offset is always 0 (the
+    /// function entry).
+    pub fn as_aggregate_ptr(self, addr_space: u32) -> crate::constant::Constant<'ctx> {
+        let module = self.module.module();
+        let ptr_ty = module.ptr_type(addr_space).as_type().id();
+        let id = module
+            .context()
+            .intern_constant_gep_offset(ptr_ty, self.id, 0);
+        crate::constant::Constant {
+            id,
+            module: self.module,
+            ty: ptr_ty,
+        }
     }
 }
 

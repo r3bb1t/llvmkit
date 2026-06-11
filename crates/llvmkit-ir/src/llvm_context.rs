@@ -55,6 +55,10 @@ pub(crate) struct Context {
     function_types: RefCell<HashMap<FunctionKey, TypeId>>,
     literal_struct_types: RefCell<HashMap<LiteralStructKey, TypeId>>,
     named_struct_types: RefCell<HashMap<String, TypeId>>,
+    /// Insertion-ordered list of named-struct ids, parallel to
+    /// `named_struct_types` (which is unordered). Lets the printer emit the
+    /// `%Name = type {...}` identity block in declaration order.
+    named_struct_order: RefCell<Vec<TypeId>>,
     typed_pointer_types: RefCell<HashMap<(TypeId, u32), TypeId>>,
     target_ext_types: RefCell<HashMap<TargetExtKey, TypeId>>,
 
@@ -130,6 +134,7 @@ impl Context {
             function_types: RefCell::new(HashMap::new()),
             literal_struct_types: RefCell::new(HashMap::new()),
             named_struct_types: RefCell::new(HashMap::new()),
+            named_struct_order: RefCell::new(Vec::new()),
             typed_pointer_types: RefCell::new(HashMap::new()),
             target_ext_types: RefCell::new(HashMap::new()),
             values: boxcar::Vec::new(),
@@ -341,11 +346,19 @@ impl Context {
         self.named_struct_types
             .borrow_mut()
             .insert(name.to_owned(), id);
+        self.named_struct_order.borrow_mut().push(id);
         (id, false)
     }
 
     pub(crate) fn get_named_struct(&self, name: &str) -> Option<TypeId> {
         self.named_struct_types.borrow().get(name).copied()
+    }
+
+    /// Named-struct ids in insertion (declaration) order. Cloned out of the
+    /// `RefCell` to avoid holding a borrow across the caller's work, matching
+    /// the `iter_functions`/`iter_globals` snapshot pattern.
+    pub(crate) fn iter_named_structs(&self) -> Vec<TypeId> {
+        self.named_struct_order.borrow().clone()
     }
 
     pub(crate) fn set_named_struct_body(
@@ -474,6 +487,69 @@ impl Context {
         });
         self.poison_constants.borrow_mut().insert(ty, id);
         id
+    }
+
+    pub(crate) fn intern_constant_global_value_ref(&self, ty: TypeId, value: ValueId) -> ValueId {
+        self.push_value(ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: ValueKindData::Constant(ConstantData::GlobalValueRef { value }),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        })
+    }
+
+    /// Materialise a `getelementptr inbounds (i8, ptr @<base>, i64 <off>)`
+    /// constant of pointer type `ty`. Not interned (each offset-pointer is
+    /// effectively unique and cheap); a fresh value-arena node each call.
+    pub(crate) fn intern_constant_gep_offset(
+        &self,
+        ty: TypeId,
+        base_id: ValueId,
+        off: i64,
+    ) -> ValueId {
+        self.push_value(ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: ValueKindData::Constant(ConstantData::GepOffset { base_id, off }),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        })
+    }
+
+    pub(crate) fn intern_constant_symbol_delta(
+        &self,
+        ty: TypeId,
+        hi_id: ValueId,
+        lo_id: ValueId,
+    ) -> ValueId {
+        self.push_value(ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: ValueKindData::Constant(ConstantData::SymbolDelta { hi_id, lo_id }),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        })
+    }
+
+    pub(crate) fn intern_constant_symbol_delta_plus(
+        &self,
+        ty: TypeId,
+        hi_id: ValueId,
+        lo_id: ValueId,
+        addend: i64,
+    ) -> ValueId {
+        self.push_value(ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: ValueKindData::Constant(ConstantData::SymbolDeltaPlus {
+                hi_id,
+                lo_id,
+                addend,
+            }),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        })
     }
 
     pub(crate) fn intern_constant_aggregate(

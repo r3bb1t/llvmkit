@@ -13,7 +13,10 @@ pub struct NamedMDNode {
 impl NamedMDNode {
     /// Construct an empty named metadata node with the given name.
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), operands: Vec::new() }
+        Self {
+            name: name.into(),
+            operands: Vec::new(),
+        }
     }
 
     /// The bare name of this node (without leading `!`).
