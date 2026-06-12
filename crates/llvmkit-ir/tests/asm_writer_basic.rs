@@ -139,3 +139,26 @@ fn unnamed_basic_block_uses_slot_label() -> Result<(), IrError> {
     );
     Ok(())
 }
+
+/// Mirrors `llvm/lib/IR/Module.cpp::Module::setSourceFileName` and
+/// `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printModule`: source filename
+/// is stored by the module, exposed as a borrowed string view, and omitted
+/// again after clearing.
+#[test]
+fn source_filename_api_borrows_and_clears() {
+    let m = Module::new("source_filename_api");
+
+    assert!(m.source_filename().is_none());
+    m.set_source_filename("dir/file.c");
+
+    let borrowed: core::cell::Ref<'_, str> = m.source_filename().expect("source filename");
+    assert_eq!(&*borrowed, "dir/file.c");
+    assert_eq!(
+        format!("{m}"),
+        "; ModuleID = 'source_filename_api'\nsource_filename = \"dir/file.c\"\n"
+    );
+    drop(borrowed);
+    m.clear_source_filename();
+    assert!(m.source_filename().is_none());
+    assert_eq!(format!("{m}"), "; ModuleID = 'source_filename_api'\n");
+}

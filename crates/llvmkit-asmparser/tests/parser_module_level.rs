@@ -29,6 +29,129 @@ fn target_directives_round_trip_through_asm_writer() {
     assert!(printed.contains("target datalayout = \"e-m:e-i64:64\""));
     assert!(printed.contains("target triple = \"x86_64-unknown-linux-gnu\""));
 }
+/// Mirrors `LLParser::parseSourceFileName` and `AsmWriter.cpp`'s
+/// `getSourceFileName()` print arm: the directive is stored on the
+/// module and re-emitted immediately after the `ModuleID` comment.
+#[test]
+fn source_filename_round_trips_through_asm_writer() {
+    let m = Module::new("source_file");
+    parse_into("source_filename = \"dir/file.c\"\n", &m);
+    let printed = format!("{m}");
+    assert!(
+        printed.contains("; ModuleID = 'source_file'\nsource_filename = \"dir/file.c\"\n"),
+        "AsmWriter output: {printed}"
+    );
+}
+/// Mirrors `LLParser::parseComdat`: a top-level `$name = comdat <kind>`
+/// directive creates the module COMDAT entry and AsmWriter re-emits it.
+#[test]
+fn top_level_comdat_round_trips() {
+    let m = Module::new("comdat_module");
+    parse_into("$foo = comdat largest\n", &m);
+    let printed = format!("{m}");
+    assert!(
+        printed.contains("$foo = comdat largest\n"),
+        "AsmWriter output: {printed}"
+    );
+}
+/// Mirrors the `externally_initialized` flag in `LLParser::parseGlobal`.
+#[test]
+fn global_externally_initialized_round_trips() {
+    let m = Module::new("global_externally_initialized");
+    parse_into("@g = externally_initialized global i32 0\n", &m);
+    let printed = format!("{m}");
+    assert!(
+        printed.contains("@g = externally_initialized global i32 0\n"),
+        "AsmWriter output: {printed}"
+    );
+}
+/// Mirrors the full linkage-prefix arm of `LLParser::parseGlobal`.
+#[test]
+fn global_linkage_round_trips() {
+    let m = Module::new("global_linkage");
+    parse_into("@g = weak_odr global i32 0\n", &m);
+    let printed = format!("{m}");
+    assert!(
+        printed.contains("@g = weak_odr global i32 0\n"),
+        "AsmWriter output: {printed}"
+    );
+}
+
+/// Mirrors the visibility-prefix arm of `LLParser::parseGlobal`.
+#[test]
+fn global_visibility_round_trips() {
+    let m = Module::new("global_visibility");
+    parse_into("@g = hidden global i32 0\n", &m);
+    let printed = format!("{m}");
+    assert!(
+        printed.contains("@g = hidden global i32 0\n"),
+        "AsmWriter output: {printed}"
+    );
+}
+/// Mirrors the DLL storage class prefix arm of `LLParser::parseGlobal`.
+#[test]
+fn global_dll_storage_round_trips() {
+    let m = Module::new("global_dll_storage");
+    parse_into("@g = dllexport global i32 0\n", &m);
+    let printed = format!("{m}");
+    assert!(
+        printed.contains("@g = dllexport global i32 0\n"),
+        "AsmWriter output: {printed}"
+    );
+}
+/// Mirrors the thread-local mode prefix arm of `LLParser::parseGlobal`.
+#[test]
+fn global_tls_mode_round_trips() {
+    let m = Module::new("global_tls");
+    parse_into("@g = thread_local(initialexec) global i32 0\n", &m);
+    let printed = format!("{m}");
+    assert!(
+        printed.contains("@g = thread_local(initialexec) global i32 0\n"),
+        "AsmWriter output: {printed}"
+    );
+}
+
+/// Mirrors the unnamed-address prefix arm of `LLParser::parseGlobal`.
+#[test]
+fn global_unnamed_addr_round_trips() {
+    let m = Module::new("global_unnamed_addr");
+    parse_into("@g = local_unnamed_addr global i32 0\n", &m);
+    let printed = format!("{m}");
+    assert!(
+        printed.contains("@g = local_unnamed_addr global i32 0\n"),
+        "AsmWriter output: {printed}"
+    );
+}
+
+/// Mirrors the address-space prefix arm of `LLParser::parseGlobal`.
+#[test]
+fn global_addrspace_round_trips() {
+    let m = Module::new("global_addrspace");
+    parse_into("@g = addrspace(3) global i32 0\n", &m);
+    let printed = format!("{m}");
+    assert!(
+        printed.contains("@g = addrspace(3) global i32 0\n"),
+        "AsmWriter output: {printed}"
+    );
+}
+
+/// Mirrors the global-object suffix loop in `LLParser::parseGlobal` for
+/// section, partition, explicit COMDAT attachment, and alignment.
+#[test]
+fn global_trailing_attributes_round_trip() {
+    let m = Module::new("global_trailing_attrs");
+    parse_into(
+        "$foo = comdat any\n@g = global i32 0, section \".data\", partition \"part\", comdat($foo), align 8\n",
+        &m,
+    );
+    let printed = format!("{m}");
+    assert!(
+        printed.contains(
+            "@g = global i32 0, section \".data\", partition \"part\", comdat($foo), align 8\n"
+        ),
+        "AsmWriter output: {printed}"
+    );
+}
 
 /// Ports the `module asm` arm of `test/Assembler/module-asm.ll`. Multiple
 /// directives accumulate, separated by newlines as upstream's

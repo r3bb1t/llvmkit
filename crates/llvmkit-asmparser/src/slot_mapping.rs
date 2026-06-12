@@ -29,14 +29,14 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 
-use llvmkit_ir::{Dyn, FunctionValue, GlobalVariable, Type};
+use llvmkit_ir::{
+    Dyn, FunctionValue, GlobalAlias, GlobalIFunc, GlobalVariable, Type, metadata::MetadataId,
+};
 
 use crate::numbered_values::NumberedValues;
 
 /// Erased handle for a slot-numbered global. Mirrors the `GlobalValue *`
-/// payload of upstream `SlotMapping::GlobalValues`. Aliases / IFuncs are not
-/// modeled in `llvmkit-ir` yet; the enum is `non_exhaustive` so adding their
-/// arms later is non-breaking.
+/// payload of upstream `SlotMapping::GlobalValues`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum GlobalRef<'ctx> {
@@ -46,6 +46,10 @@ pub enum GlobalRef<'ctx> {
     Function(FunctionValue<'ctx, Dyn>),
     /// Module-level data — `@x = global ...` / `@x = constant ...`.
     Variable(GlobalVariable<'ctx>),
+    /// Module-level alias — `@x = alias ...`.
+    Alias(GlobalAlias<'ctx>),
+    /// Module-level indirect function — `@x = ifunc ...`.
+    IFunc(GlobalIFunc<'ctx>),
 }
 
 impl<'ctx> From<FunctionValue<'ctx, Dyn>> for GlobalRef<'ctx> {
@@ -59,6 +63,20 @@ impl<'ctx> From<GlobalVariable<'ctx>> for GlobalRef<'ctx> {
     #[inline]
     fn from(v: GlobalVariable<'ctx>) -> Self {
         GlobalRef::Variable(v)
+    }
+}
+
+impl<'ctx> From<GlobalAlias<'ctx>> for GlobalRef<'ctx> {
+    #[inline]
+    fn from(v: GlobalAlias<'ctx>) -> Self {
+        GlobalRef::Alias(v)
+    }
+}
+
+impl<'ctx> From<GlobalIFunc<'ctx>> for GlobalRef<'ctx> {
+    #[inline]
+    fn from(v: GlobalIFunc<'ctx>) -> Self {
+        GlobalRef::IFunc(v)
     }
 }
 
@@ -80,8 +98,8 @@ pub struct SlotMapping<'ctx> {
     /// Numbered types — `%0`, `%1`, ... — sorted by slot id to match
     /// upstream's `std::map<unsigned, Type *>` ordering.
     pub numbered_types: BTreeMap<u32, Type<'ctx>>,
-    // Metadata slot (`MetadataNodes`) is deliberately deferred. Lands with the
-    // metadata substrate in the parser arc (Session 4).
+    /// Numbered metadata nodes — `!0`, `!1`, ...
+    pub metadata_nodes: NumberedValues<MetadataId>,
 }
 
 impl<'ctx> Default for SlotMapping<'ctx> {
@@ -91,6 +109,7 @@ impl<'ctx> Default for SlotMapping<'ctx> {
             global_values: NumberedValues::new(),
             named_types: HashMap::new(),
             numbered_types: BTreeMap::new(),
+            metadata_nodes: NumberedValues::new(),
         }
     }
 }
@@ -121,6 +140,7 @@ mod tests {
         assert!(m.global_values.is_empty());
         assert!(m.named_types.is_empty());
         assert!(m.numbered_types.is_empty());
+        assert!(m.metadata_nodes.is_empty());
     }
 
     /// llvmkit-specific: a `SlotMapping<'ctx>` borrows handles from a single

@@ -125,6 +125,8 @@ pub(crate) enum ValueKindData {
     BasicBlock(BasicBlockData),
     Function(FunctionData),
     Instruction(InstructionData),
+    GlobalAlias(crate::global_alias::GlobalAliasData),
+    GlobalIFunc(crate::global_ifunc::GlobalIFuncData),
     GlobalVariable(crate::global_variable::GlobalVariableData),
     /// A metadata node used in a value context. Mirrors LLVM's
     /// `MetadataAsValue` (`llvm/include/llvm/IR/Metadata.h`): it lets a
@@ -222,6 +224,8 @@ impl<'ctx> Value<'ctx> {
             ValueKindData::Function(_) => ValueCategory::Function,
             ValueKindData::Instruction(_) => ValueCategory::Instruction,
             ValueKindData::GlobalVariable(_) => ValueCategory::GlobalVariable,
+            ValueKindData::GlobalAlias(_) => ValueCategory::GlobalAlias,
+            ValueKindData::GlobalIFunc(_) => ValueCategory::GlobalIFunc,
             ValueKindData::MetadataAsValue(_) => ValueCategory::MetadataAsValue,
             ValueKindData::InlineAsm(_) => ValueCategory::InlineAsm,
         }
@@ -260,8 +264,6 @@ impl<'ctx> Value<'ctx> {
     }
 }
 
-/// Read-only discriminator over the closed value-category set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ValueCategory {
     Constant,
     Argument,
@@ -269,6 +271,8 @@ pub enum ValueCategory {
     Function,
     Instruction,
     GlobalVariable,
+    GlobalAlias,
+    GlobalIFunc,
     MetadataAsValue,
     InlineAsm,
 }
@@ -282,9 +286,26 @@ impl From<ValueCategory> for crate::error::ValueCategoryLabel {
             ValueCategory::Function => Self::Function,
             ValueCategory::Instruction => Self::Instruction,
             ValueCategory::GlobalVariable => Self::GlobalVariable,
+            ValueCategory::GlobalAlias => Self::GlobalAlias,
+            ValueCategory::GlobalIFunc => Self::GlobalIFunc,
             ValueCategory::MetadataAsValue => Self::MetadataAsValue,
             ValueCategory::InlineAsm => Self::InlineAsm,
         }
+    }
+}
+
+pub(crate) fn category_label_for_kind(kind: &ValueKindData) -> crate::error::ValueCategoryLabel {
+    match kind {
+        ValueKindData::Constant(_) => crate::error::ValueCategoryLabel::Constant,
+        ValueKindData::Argument { .. } => crate::error::ValueCategoryLabel::Argument,
+        ValueKindData::BasicBlock(_) => crate::error::ValueCategoryLabel::BasicBlock,
+        ValueKindData::Function(_) => crate::error::ValueCategoryLabel::Function,
+        ValueKindData::Instruction(_) => crate::error::ValueCategoryLabel::Instruction,
+        ValueKindData::GlobalVariable(_) => crate::error::ValueCategoryLabel::GlobalVariable,
+        ValueKindData::GlobalAlias(_) => crate::error::ValueCategoryLabel::GlobalAlias,
+        ValueKindData::GlobalIFunc(_) => crate::error::ValueCategoryLabel::GlobalIFunc,
+        ValueKindData::MetadataAsValue(_) => crate::error::ValueCategoryLabel::MetadataAsValue,
+        ValueKindData::InlineAsm(_) => crate::error::ValueCategoryLabel::InlineAsm,
     }
 }
 

@@ -72,6 +72,7 @@ pub(crate) struct FunctionData {
     pub(crate) args: RefCell<Box<[ValueId]>>,
     pub(crate) basic_blocks: RefCell<Vec<ValueId>>,
     pub(crate) attributes: RefCell<AttributeStorage>,
+    pub(crate) use_list_orders: RefCell<Vec<String>>,
     pub(crate) symbol_table: ValueSymbolTable,
 }
 
@@ -91,6 +92,7 @@ impl FunctionData {
             args: RefCell::new(Box::new([])),
             basic_blocks: RefCell::new(Vec::new()),
             attributes: RefCell::new(AttributeStorage::new()),
+            use_list_orders: RefCell::new(Vec::new()),
             symbol_table: ValueSymbolTable::new(),
         }
     }
@@ -376,6 +378,17 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
     }
 
     /// Entry block, or `None` for a function with no body.
+    pub fn append_use_list_order(self, directive: impl Into<String>) {
+        self.data()
+            .use_list_orders
+            .borrow_mut()
+            .push(directive.into());
+    }
+
+    pub(crate) fn use_list_orders(self) -> Vec<String> {
+        self.data().use_list_orders.borrow().clone()
+    }
+
     pub fn entry_block(self) -> Option<BasicBlock<'ctx, R>> {
         let id = *self.data().basic_blocks.borrow().first()?;
         let module = self.module.module();

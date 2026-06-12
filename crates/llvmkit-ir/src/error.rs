@@ -81,6 +81,8 @@ pub enum ValueCategoryLabel {
     Function,
     Instruction,
     GlobalVariable,
+    GlobalAlias,
+    GlobalIFunc,
     MetadataAsValue,
     InlineAsm,
 }
@@ -94,6 +96,8 @@ impl fmt::Display for ValueCategoryLabel {
             ValueCategoryLabel::Function => "function",
             ValueCategoryLabel::Instruction => "instruction",
             ValueCategoryLabel::GlobalVariable => "global-variable",
+            ValueCategoryLabel::GlobalAlias => "global-alias",
+            ValueCategoryLabel::GlobalIFunc => "global-ifunc",
             ValueCategoryLabel::MetadataAsValue => "metadata-as-value",
             ValueCategoryLabel::InlineAsm => "inline-asm",
         };

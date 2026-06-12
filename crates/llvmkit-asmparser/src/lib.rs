@@ -16,7 +16,7 @@
 //! | [`asm_parser_context`]       | `AsmParserContext.h` + `.cpp`          | done     |
 //! | [`parse_error`]              | `LLParser.{h,cpp}` diagnostic surface  | seeded   |
 //! | [`ll_parser`]                | `LLParser.h` + `LLParser.cpp` (subset) | seeded   |
-//! | `parser` (planned)           | `Parser.h` + `Parser.cpp`              | future   |
+//! | [`parser`]                   | `Parser.h` + `Parser.cpp`              | seeded   |
 //!
 //! The substrate listed as `done` is the support layer the parser-first
 //! roadmap pulls in alongside `LLParser`; it ships before the parser core
@@ -30,6 +30,7 @@ pub mod ll_parser;
 pub mod ll_token;
 pub mod numbered_values;
 pub mod parse_error;
+pub mod parser;
 pub mod slot_mapping;
 
 use std::io::{self, Read};

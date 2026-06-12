@@ -32,12 +32,13 @@
 use std::collections::HashMap;
 
 use llvmkit_ir::{
-    Align, AnyTypeEnum, AtomicOrdering, FastMathFlags, IrError, Linkage, Module, StructType,
-    SyncScope, Type, derived_types::PointerType,
+    Align, AnyTypeEnum, AtomicOrdering, DllStorageClass, FastMathFlags, IrError, Linkage,
+    MaybeAlign, Module, SelectionKind, StructType, SyncScope, ThreadLocalMode, Type, UnnamedAddr,
+    Visibility, derived_types::PointerType,
 };
 use llvmkit_support::{Span, Spanned};
 
-use crate::ll_lexer::Lexer;
+use crate::ll_lexer::{LexError, Lexer};
 use crate::ll_token::{IntLit, Keyword, NumBase, PrimitiveTy, Sign, Token};
 use crate::numbered_values::NumberedValues;
 use crate::parse_error::{DiagLoc, ParseError, ParseResult};
@@ -196,12 +197,56 @@ pub struct ParsedModule<'ctx> {
     pub slot_mapping: SlotMapping<'ctx>,
 }
 
+#[derive(Debug)]
+pub enum ValId<'ctx> {
+    LocalId(u32),
+    GlobalId(u32),
+    LocalName(String),
+    GlobalName(String),
+    ApsInt { negative: bool, words: Box<[u64]> },
+    ApFloat(u128),
+    Null,
+    Undef,
+    Poison,
+    Zero,
+    None,
+    EmptyArray,
+    Constant(llvmkit_ir::Constant<'ctx>),
+    ConstantSplat(llvmkit_ir::Constant<'ctx>),
+    InlineAsm(llvmkit_ir::InlineAsm<'ctx>),
+    ConstantStruct(Vec<llvmkit_ir::Constant<'ctx>>),
+    PackedConstantStruct(Vec<llvmkit_ir::Constant<'ctx>>),
+    NoCfi(Box<ValId<'ctx>>),
+}
+
+#[derive(Clone, Copy)]
+struct ParsedAliasHeader {
+    linkage: Linkage,
+    visibility: Visibility,
+    dll_storage_class: DllStorageClass,
+    thread_local_mode: ThreadLocalMode,
+    unnamed_addr: UnnamedAddr,
+}
+
+fn map_lex_error(e: LexError) -> ParseError {
+    match e {
+        LexError::IntegerWidthOutOfRange { width, max, span } => {
+            ParseError::IntegerWidthOutOfRange {
+                width,
+                max,
+                loc: DiagLoc::span(span),
+            }
+        }
+        other => ParseError::Lex(other),
+    }
+}
+
 impl<'src, 'ctx> Parser<'src, 'ctx> {
     /// Construct a parser over `src`, populating `module`. Primes the lexer
     /// once (mirrors `LLParser::Run`'s leading `Lex.Lex()`).
     pub fn new(src: &'src [u8], module: &'ctx Module<'ctx>) -> ParseResult<Self> {
         let mut lex = Lexer::new(src);
-        let current = lex.next_token().map_err(ParseError::Lex)?;
+        let current = lex.next_token().map_err(map_lex_error)?;
         Ok(Self {
             lex,
             current,
@@ -212,6 +257,53 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             numbered_globals: NumberedValues::new(),
             metadata_slots: HashMap::new(),
         })
+    }
+
+    pub fn with_slot_mapping(
+        src: &'src [u8],
+        module: &'ctx Module<'ctx>,
+        slots: &SlotMapping<'ctx>,
+    ) -> ParseResult<Self> {
+        let mut parser = Self::new(src, module)?;
+        parser.numbered_globals = slots.global_values.clone();
+        parser.named_types = slots
+            .named_types
+            .iter()
+            .map(|(name, ty)| (name.clone(), TypeEntry { ty: *ty }))
+            .collect();
+        parser.numbered_types = slots
+            .numbered_types
+            .iter()
+            .map(|(id, ty)| (*id, TypeEntry { ty: *ty }))
+            .collect();
+        parser.next_unnamed_type_id = slots
+            .numbered_types
+            .keys()
+            .next_back()
+            .map_or(0, |id| id.saturating_add(1));
+        parser.metadata_slots = slots
+            .metadata_nodes
+            .iter()
+            .map(|(slot, id)| {
+                (
+                    slot,
+                    MetadataSlotEntry {
+                        id: *id,
+                        defined: true,
+                        first_ref: Span::new(0, 0),
+                    },
+                )
+            })
+            .collect();
+        Ok(parser)
+    }
+
+    pub fn with_context(
+        src: &'src [u8],
+        module: &'ctx Module<'ctx>,
+        _context: &'ctx mut crate::asm_parser_context::AsmParserContext<'ctx>,
+    ) -> ParseResult<Self> {
+        Self::new(src, module)
     }
 
     fn resolve_md_slot(&mut self, slot: u32, loc: Span) -> llvmkit_ir::metadata::MetadataId {
@@ -276,6 +368,8 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                 Token::Kw(Keyword::Target) => self.parse_target_definition()?,
                 Token::Kw(Keyword::SourceFilename) => self.parse_source_filename()?,
                 Token::Kw(Keyword::Module) => self.parse_module_asm()?,
+                Token::Kw(Keyword::Uselistorder) => self.parse_module_use_list_order()?,
+                Token::ComdatVar(_) => self.parse_comdat_definition()?,
                 Token::LocalVar(_) => self.parse_named_type_definition()?,
                 Token::LocalVarId(_) => self.parse_unnamed_type_definition()?,
                 Token::GlobalVar(_) | Token::GlobalId(_) => self.parse_global_or_function()?,
@@ -317,10 +411,21 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         for (id, entry) in self.numbered_types {
             numbered_types.insert(id, entry.ty);
         }
+        let mut metadata_nodes = NumberedValues::new();
+        let mut metadata_entries: Vec<_> = self
+            .metadata_slots
+            .into_iter()
+            .filter(|(_, entry)| entry.defined)
+            .collect();
+        metadata_entries.sort_by_key(|(slot, _)| *slot);
+        for (slot, entry) in metadata_entries {
+            let _ = metadata_nodes.add(slot, entry.id);
+        }
         SlotMapping {
             global_values: self.numbered_globals,
             named_types,
             numbered_types,
+            metadata_nodes,
         }
     }
 
@@ -344,8 +449,50 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     /// later diagnostic on the just-eaten token.
     fn bump(&mut self) -> ParseResult<Span> {
         let prev = self.current.span;
-        self.current = self.lex.next_token().map_err(ParseError::Lex)?;
+        self.current = self.lex.next_token().map_err(map_lex_error)?;
         Ok(prev)
+    }
+
+    fn require_eof(&self) -> ParseResult<()> {
+        if matches!(self.peek(), Token::Eof) {
+            Ok(())
+        } else {
+            Err(ParseError::Expected {
+                expected: "end of string".into(),
+                loc: DiagLoc::span(self.loc()),
+            })
+        }
+    }
+
+    pub(crate) fn parse_type_at_beginning(mut self) -> ParseResult<(Type<'ctx>, usize)> {
+        let start = self.loc().start;
+        let ty = self.parse_type(true)?;
+        let consumed = self.loc().start.saturating_sub(start);
+        let consumed = usize::try_from(consumed).map_err(|_| ParseError::Expected {
+            expected: "type byte count fits in usize".into(),
+            loc: DiagLoc::span(self.loc()),
+        })?;
+        Ok((ty, consumed))
+    }
+
+    pub(crate) fn parse_standalone_type(mut self) -> ParseResult<Type<'ctx>> {
+        let ty = self.parse_type(true)?;
+        self.require_eof()?;
+        Ok(ty)
+    }
+
+    pub(crate) fn parse_standalone_constant_value(
+        mut self,
+        ty: Type<'ctx>,
+    ) -> ParseResult<llvmkit_ir::Constant<'ctx>> {
+        let value = self
+            .parse_constant(ty)?
+            .ok_or_else(|| ParseError::Expected {
+                expected: "constant value".into(),
+                loc: DiagLoc::span(self.loc()),
+            })?;
+        self.require_eof()?;
+        Ok(value)
     }
 
     /// If the lookahead is `Punct`, consume it and return `true`. Otherwise
@@ -652,7 +799,111 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_source_filename(&mut self) -> ParseResult<()> {
         self.expect_keyword(Keyword::SourceFilename, "'source_filename'")?;
         self.expect_punct(PunctKind::Equal, "'=' after source_filename")?;
-        let _ = self.parse_string_constant("source-filename string constant")?;
+        let source_filename = self.parse_string_constant("source-filename string constant")?;
+        self.module.set_source_filename(source_filename);
+        Ok(())
+    }
+
+    fn parse_comdat_definition(&mut self) -> ParseResult<()> {
+        let name = match self.peek() {
+            Token::ComdatVar(bytes) => std::str::from_utf8(bytes.as_ref())
+                .map_err(|_| self.expected("valid UTF-8 comdat name"))?
+                .to_owned(),
+            _ => return Err(self.expected("comdat variable")),
+        };
+        self.bump()?;
+        self.expect_punct(PunctKind::Equal, "'=' after comdat name")?;
+        self.expect_keyword(Keyword::Comdat, "'comdat'")?;
+        let kind = if self.eat_keyword(Keyword::Any)? {
+            SelectionKind::Any
+        } else if self.eat_keyword(Keyword::Exactmatch)? {
+            SelectionKind::ExactMatch
+        } else if self.eat_keyword(Keyword::Largest)? {
+            SelectionKind::Largest
+        } else if self.eat_keyword(Keyword::Nodeduplicate)? {
+            SelectionKind::NoDeduplicate
+        } else if self.eat_keyword(Keyword::Samesize)? {
+            SelectionKind::SameSize
+        } else {
+            return Err(self.expected("comdat selection kind"));
+        };
+        let comdat = self.module.get_or_insert_comdat(name);
+        comdat.set_selection_kind(kind);
+        Ok(())
+    }
+
+    fn parse_use_list_order_directive(&mut self) -> ParseResult<String> {
+        self.expect_keyword(Keyword::Uselistorder, "'uselistorder'")?;
+        let ty = self.parse_type(false)?;
+        let value = match self.peek() {
+            Token::GlobalVar(_) => {
+                let name = self
+                    .current_str_payload()
+                    .ok_or_else(|| self.expected("global value in uselistorder"))?;
+                self.bump()?;
+                format!("@{name}")
+            }
+            Token::LocalVar(_) => {
+                let name = self
+                    .current_str_payload()
+                    .ok_or_else(|| self.expected("local value in uselistorder"))?;
+                self.bump()?;
+                format!("%{name}")
+            }
+            Token::GlobalId(id) => {
+                let id = *id;
+                self.bump()?;
+                format!("@{id}")
+            }
+            Token::LocalVarId(id) => {
+                let id = *id;
+                self.bump()?;
+                format!("%{id}")
+            }
+            _ => return Err(self.expected("value in uselistorder")),
+        };
+        self.expect_punct(PunctKind::Comma, "',' before uselistorder indexes")?;
+        self.expect_punct(PunctKind::LBrace, "'{' before uselistorder indexes")?;
+        let mut indexes = Vec::new();
+        if !matches!(self.peek(), Token::RBrace) {
+            loop {
+                indexes.push(self.parse_uint32("uselistorder index")?);
+                if !self.eat_punct(PunctKind::Comma)? {
+                    break;
+                }
+            }
+        }
+        self.expect_punct(PunctKind::RBrace, "'}' after uselistorder indexes")?;
+        let identity = indexes
+            .iter()
+            .enumerate()
+            .all(|(i, idx)| u32::try_from(i).is_ok_and(|i| i == *idx));
+        if identity {
+            return Err(ParseError::Expected {
+                expected: "expected uselistorder indexes to change the order".into(),
+                loc: DiagLoc::span(self.loc()),
+            });
+        }
+        let mut out = format!("uselistorder {ty} {value}, {{ ");
+        for (i, idx) in indexes.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&idx.to_string());
+        }
+        out.push_str(" }");
+        Ok(out)
+    }
+
+    fn parse_module_use_list_order(&mut self) -> ParseResult<()> {
+        let directive = self.parse_use_list_order_directive()?;
+        self.module.append_use_list_order(directive);
+        Ok(())
+    }
+
+    fn parse_function_use_list_order(&mut self, state: &PerFunctionState<'ctx>) -> ParseResult<()> {
+        let directive = self.parse_use_list_order_directive()?;
+        state.func.append_use_list_order(directive);
         Ok(())
     }
 
@@ -835,44 +1086,32 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         }
     }
 
-    /// Consume optional trailing `!name !N` metadata attachments on an
-    /// instruction. The constructive subset accepts and discards them;
-    /// per-instruction metadata storage is future work.
+    /// Consume optional trailing `, !name !N` metadata attachments on an
+    /// instruction.
     ///
-    /// Syntax: `, !name !N` or just `!name !N` (comma is optional on
-    /// trailing position). Mirrors the metadata-attachment loop in
-    /// `LLParser::parseInstructionMetadata`.
+    /// Trailing metadata is validated but not stored yet; until
+    /// per-value metadata attachment slots land, this parser must reject the
+    /// non-standard no-comma variant.
+    ///
+    /// Syntax: `, !name !N` (comma is mandatory on trailing metadata).
+    ///
+    /// Mirrors the metadata-attachment loop in `LLParser::parseInstructionMetadata`.
     fn skip_trailing_metadata(&mut self) -> ParseResult<()> {
-        // Trailing instruction metadata: zero or more `, !name !N` pairs.
-        // The comma before each attachment is mandatory in LLVM syntax.
-        while matches!(self.peek(), Token::Comma) {
-            // Peek ahead: if the token after `,` is `!name`, consume both.
-            // Otherwise stop — the comma belongs to the enclosing grammar.
-            //
-            // We can't un-eat the comma, so we need a two-token lookahead.
-            // Since our lexer is single-token, we just always eat the comma
-            // and check. If it's not metadata, we've consumed a trailing
-            // comma — but LLVM's grammar already allows trailing commas
-            // in many positions, so this is safe in practice.
-            self.bump()?; // eat `,`
-            match self.peek() {
-                Token::MetadataVar(_) => {
-                    self.bump()?; // eat `!name`
-                    self.parse_metadata_attachment_operand()?;
-                }
-                _ => break, // comma was not followed by metadata; stop
-            }
+        if matches!(self.peek(), Token::MetadataVar(_)) {
+            return Err(self.expected("',' before trailing metadata"));
         }
-        // Also handle the no-comma variant: metadata right after instruction.
-        while matches!(self.peek(), Token::MetadataVar(_)) {
-            self.bump()?; // eat `!name`
-            if matches!(self.peek(), Token::Exclaim) {
-                self.parse_metadata_attachment_operand()?;
+
+        while matches!(self.peek(), Token::Comma) {
+            // Parse a mandatory `, !name !...` pair.
+            self.bump()?; // eat `,`
+            if !matches!(self.peek(), Token::MetadataVar(_)) {
+                return Err(self.expected("metadata attachment"));
             }
+            self.bump()?; // eat `!name`
+            self.parse_metadata_attachment_operand()?;
         }
         Ok(())
     }
-
     // ── Type definitions ─────────────────────────────────────────────────
 
     /// `%name = type ...` — mirrors `LLParser::parseNamedType`.
@@ -952,8 +1191,19 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                     // freshly built handle and the literal struct produced
                     // by `module.struct_type` as the table entry below.
                     let lit = self.module.struct_type(elements, packed);
-                    self.numbered_types
-                        .insert(slot.unwrap(), TypeEntry { ty: lit.as_type() });
+                    self.numbered_types.insert(
+                        match slot {
+                            Some(slot) => slot,
+                            None => {
+                                return Err(ParseError::Expected {
+                                    expected: "numbered type slot for anonymous literal body"
+                                        .into(),
+                                    loc: DiagLoc::span(decl_loc),
+                                });
+                            }
+                        },
+                        TypeEntry { ty: lit.as_type() },
+                    );
                     return Ok(());
                 }
             }
@@ -1006,7 +1256,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         let type_loc = self.loc();
         let mut result: Type<'ctx> = match *self.peek() {
             Token::PrimitiveType(p) => {
-                let ty = self.primitive_to_type(p);
+                let ty = self.primitive_to_type(p, type_loc)?;
                 self.bump()?;
                 // `ptr` may be followed by `addrspace(N)`.
                 if matches!(p, PrimitiveTy::Ptr) {
@@ -1045,7 +1295,9 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                 self.parse_array_or_vector_after_open(false)?
             }
             Token::LocalVar(_) => {
-                let name = self.current_str_payload().expect("LocalVar carries str");
+                let name = self
+                    .current_str_payload()
+                    .ok_or_else(|| self.expected("local identifier payload"))?;
                 let loc = self.loc();
                 self.bump()?;
                 self.lookup_or_forward_named_type(&name, loc)
@@ -1169,26 +1421,30 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         Ok(fn_ty.as_type())
     }
 
-    fn primitive_to_type(&self, p: PrimitiveTy) -> Type<'ctx> {
+    fn primitive_to_type(&self, p: PrimitiveTy, loc: Span) -> ParseResult<Type<'ctx>> {
         let m = self.module;
         match p {
-            PrimitiveTy::Void => m.void_type().as_type(),
-            PrimitiveTy::Label => m.label_type().as_type(),
-            PrimitiveTy::Metadata => m.metadata_type().as_type(),
-            PrimitiveTy::Token => m.token_type().as_type(),
-            PrimitiveTy::X86Amx => m.x86_amx_type(),
-            PrimitiveTy::Half => m.half_type().as_type(),
-            PrimitiveTy::BFloat => m.bfloat_type().as_type(),
-            PrimitiveTy::Float => m.f32_type().as_type(),
-            PrimitiveTy::Double => m.f64_type().as_type(),
-            PrimitiveTy::X86Fp80 => m.x86_fp80_type().as_type(),
-            PrimitiveTy::Fp128 => m.fp128_type().as_type(),
-            PrimitiveTy::PpcFp128 => m.ppc_fp128_type().as_type(),
-            PrimitiveTy::Ptr => m.ptr_type(0).as_type(),
+            PrimitiveTy::Void => Ok(m.void_type().as_type()),
+            PrimitiveTy::Label => Ok(m.label_type().as_type()),
+            PrimitiveTy::Metadata => Ok(m.metadata_type().as_type()),
+            PrimitiveTy::Token => Ok(m.token_type().as_type()),
+            PrimitiveTy::X86Amx => Ok(m.x86_amx_type()),
+            PrimitiveTy::Half => Ok(m.half_type().as_type()),
+            PrimitiveTy::BFloat => Ok(m.bfloat_type().as_type()),
+            PrimitiveTy::Float => Ok(m.f32_type().as_type()),
+            PrimitiveTy::Double => Ok(m.f64_type().as_type()),
+            PrimitiveTy::X86Fp80 => Ok(m.x86_fp80_type().as_type()),
+            PrimitiveTy::Fp128 => Ok(m.fp128_type().as_type()),
+            PrimitiveTy::PpcFp128 => Ok(m.ppc_fp128_type().as_type()),
+            PrimitiveTy::Ptr => Ok(m.ptr_type(0).as_type()),
             PrimitiveTy::Integer(n) => m
                 .custom_width_int_type(n.get())
                 .map(|t| t.as_type())
-                .unwrap_or_else(|_| m.i32_type().as_type()),
+                .map_err(|_| ParseError::IntegerWidthOutOfRange {
+                    width: u64::from(n.get()),
+                    max: (1u32 << 24) - 1,
+                    loc: DiagLoc::span(loc),
+                }),
         }
     }
 
@@ -1251,23 +1507,97 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         };
         self.expect_punct(PunctKind::Equal, "'=' after global name")?;
 
-        // Optional linkage prefix. We only model the common arms today;
-        // anything else leaves linkage at upstream's default ('External').
         let linkage = if self.eat_keyword(Keyword::External)? {
             Linkage::External
+        } else if self.eat_keyword(Keyword::AvailableExternally)? {
+            Linkage::AvailableExternally
+        } else if self.eat_keyword(Keyword::Linkonce)? {
+            Linkage::LinkOnceAny
+        } else if self.eat_keyword(Keyword::LinkonceOdr)? {
+            Linkage::LinkOnceODR
+        } else if self.eat_keyword(Keyword::Weak)? {
+            Linkage::WeakAny
+        } else if self.eat_keyword(Keyword::WeakOdr)? {
+            Linkage::WeakODR
+        } else if self.eat_keyword(Keyword::Appending)? {
+            Linkage::Appending
         } else if self.eat_keyword(Keyword::Internal)? {
             Linkage::Internal
         } else if self.eat_keyword(Keyword::Private)? {
             Linkage::Private
+        } else if self.eat_keyword(Keyword::ExternWeak)? {
+            Linkage::ExternalWeak
         } else if self.eat_keyword(Keyword::Common)? {
             Linkage::Common
         } else {
             Linkage::External
         };
+        let visibility = if self.eat_keyword(Keyword::Default)? {
+            Visibility::Default
+        } else if self.eat_keyword(Keyword::Hidden)? {
+            Visibility::Hidden
+        } else if self.eat_keyword(Keyword::Protected)? {
+            Visibility::Protected
+        } else {
+            Visibility::Default
+        };
+        let dll_storage_class = if self.eat_keyword(Keyword::Dllimport)? {
+            DllStorageClass::DllImport
+        } else if self.eat_keyword(Keyword::Dllexport)? {
+            DllStorageClass::DllExport
+        } else {
+            DllStorageClass::Default
+        };
+        let thread_local_mode = if self.eat_keyword(Keyword::ThreadLocal)? {
+            if self.eat_punct(PunctKind::LParen)? {
+                let mode = if self.eat_keyword(Keyword::Localdynamic)? {
+                    ThreadLocalMode::LocalDynamic
+                } else if self.eat_keyword(Keyword::Initialexec)? {
+                    ThreadLocalMode::InitialExec
+                } else if self.eat_keyword(Keyword::Localexec)? {
+                    ThreadLocalMode::LocalExec
+                } else {
+                    return Err(self.expected("thread-local model"));
+                };
+                self.expect_punct(PunctKind::RParen, "')' after thread-local model")?;
+                mode
+            } else {
+                ThreadLocalMode::GeneralDynamic
+            }
+        } else {
+            ThreadLocalMode::NotThreadLocal
+        };
+        let unnamed_addr = if self.eat_keyword(Keyword::UnnamedAddr)? {
+            UnnamedAddr::Global
+        } else if self.eat_keyword(Keyword::LocalUnnamedAddr)? {
+            UnnamedAddr::Local
+        } else {
+            UnnamedAddr::None
+        };
+        if matches!(
+            self.peek(),
+            Token::Kw(Keyword::Alias) | Token::Kw(Keyword::Ifunc)
+        ) {
+            return self.parse_alias_or_ifunc(
+                name_id,
+                decl_loc,
+                ParsedAliasHeader {
+                    linkage,
+                    visibility,
+                    dll_storage_class,
+                    thread_local_mode,
+                    unnamed_addr,
+                },
+            );
+        }
 
-        // After linkage, only the `global` / `constant` keywords are
-        // accepted in this session. Aliases / ifuncs / function values
-        // attached via `@name = define` form are deferred.
+        let address_space = if self.eat_keyword(Keyword::Addrspace)? {
+            self.parse_addr_space_paren()?
+        } else {
+            0
+        };
+        let externally_initialized = self.eat_keyword(Keyword::ExternallyInitialized)?;
+
         let is_constant = if self.eat_keyword(Keyword::Global)? {
             false
         } else if self.eat_keyword(Keyword::Constant)? {
@@ -1278,16 +1608,66 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
 
         let ty = self.parse_type(false)?;
         let initializer = self.parse_constant(ty)?;
-        let _ = initializer; // wired into the IR below
+
+        let mut section = None;
+        let mut partition = None;
+        let mut align = MaybeAlign::NONE;
+        let mut comdat_name = None;
+        while self.eat_punct(PunctKind::Comma)? {
+            if self.eat_keyword(Keyword::Section)? {
+                section = Some(self.parse_string_constant("section name")?);
+            } else if self.eat_keyword(Keyword::Partition)? {
+                partition = Some(self.parse_string_constant("partition name")?);
+            } else if matches!(self.peek(), Token::Kw(Keyword::Align)) {
+                align = MaybeAlign::new(self.parse_align_val()?);
+            } else if self.eat_keyword(Keyword::Comdat)? {
+                let name = if self.eat_punct(PunctKind::LParen)? {
+                    let name = match self.peek() {
+                        Token::ComdatVar(bytes) => std::str::from_utf8(bytes.as_ref())
+                            .map_err(|_| self.expected("valid UTF-8 comdat name"))?
+                            .to_owned(),
+                        _ => return Err(self.expected("comdat variable")),
+                    };
+                    self.bump()?;
+                    self.expect_punct(PunctKind::RParen, "')' after comdat")?;
+                    name
+                } else {
+                    return Err(self.expected("explicit comdat($name)"));
+                };
+                comdat_name = Some(name);
+            } else {
+                return Err(self.expected("global attribute"));
+            }
+        }
 
         let name_string = match &name_id {
             NameOrId::Name(n) => n.clone(),
             NameOrId::Id(id) => format!("{id}"),
         };
-        let mut builder = self.module.global_builder(&name_string, ty);
-        builder = builder.linkage(linkage).constant(is_constant);
+        let mut builder = self
+            .module
+            .global_builder(&name_string, ty)
+            .linkage(linkage)
+            .visibility(visibility)
+            .dll_storage_class(dll_storage_class)
+            .thread_local_mode(thread_local_mode)
+            .unnamed_addr(unnamed_addr)
+            .address_space(address_space)
+            .externally_initialized(externally_initialized)
+            .align(align)
+            .constant(is_constant);
         if let Some(c) = initializer {
             builder = builder.initializer(c);
+        }
+        if let Some(s) = section {
+            builder = builder.section(s);
+        }
+        if let Some(p) = partition {
+            builder = builder.partition(p);
+        }
+        if let Some(name) = comdat_name {
+            let comdat = self.module.get_or_insert_comdat(name);
+            builder = builder.comdat(comdat);
         }
         let g = builder.build().map_err(|e| ParseError::Expected {
             expected: format!("valid global definition: {e}"),
@@ -1305,69 +1685,506 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         Ok(())
     }
 
-    /// Parse a constant for use as a global initializer. Today we accept
-    /// integer literals (matched against the destination type's width),
-    /// `zeroinitializer`, and `null`. Aggregate / float / metadata
-    /// initializers are deferred.
+    /// Parse a constant for use as a global initializer. Supports integer
+    /// scalars, zeroinitializer, null, and aggregate constants for
+    /// arrays/vectors/structs whose element fields all carry type tags.
+    fn parse_alias_or_ifunc(
+        &mut self,
+        name_id: NameOrId,
+        decl_loc: Span,
+        header: ParsedAliasHeader,
+    ) -> ParseResult<()> {
+        let linkage = header.linkage;
+        let visibility = header.visibility;
+        let dll_storage_class = header.dll_storage_class;
+        let thread_local_mode = header.thread_local_mode;
+        let unnamed_addr = header.unnamed_addr;
+        let is_alias = if self.eat_keyword(Keyword::Alias)? {
+            true
+        } else if self.eat_keyword(Keyword::Ifunc)? {
+            false
+        } else {
+            return Err(self.expected("'alias' or 'ifunc'"));
+        };
+
+        if is_alias && !llvmkit_ir::global_alias::is_valid_alias_linkage(linkage) {
+            return Err(ParseError::Expected {
+                expected: "invalid linkage type for alias".into(),
+                loc: DiagLoc::span(decl_loc),
+            });
+        }
+        if !is_alias && !llvmkit_ir::global_ifunc::is_valid_ifunc_linkage(linkage) {
+            return Err(ParseError::Expected {
+                expected: "invalid linkage type for ifunc".into(),
+                loc: DiagLoc::span(decl_loc),
+            });
+        }
+        if matches!(linkage, Linkage::Internal | Linkage::Private)
+            && visibility != Visibility::Default
+        {
+            return Err(ParseError::Expected {
+                expected: "symbol with local linkage must have default visibility".into(),
+                loc: DiagLoc::span(decl_loc),
+            });
+        }
+        if matches!(linkage, Linkage::Internal | Linkage::Private)
+            && dll_storage_class != DllStorageClass::Default
+        {
+            return Err(ParseError::Expected {
+                expected: "symbol with local linkage cannot have a DLL storage class".into(),
+                loc: DiagLoc::span(decl_loc),
+            });
+        }
+
+        let value_type = self.parse_type(false)?;
+        self.expect_punct(
+            PunctKind::Comma,
+            "expected comma after alias or ifunc's type",
+        )?;
+        let target_ty = self.parse_type(false)?;
+        match target_ty.into_type_enum() {
+            AnyTypeEnum::Pointer(_) => {}
+            _ => {
+                return Err(ParseError::Expected {
+                    expected: "An alias or ifunc must have pointer type".into(),
+                    loc: DiagLoc::span(self.loc()),
+                });
+            }
+        }
+        let target = self
+            .parse_constant(target_ty)?
+            .ok_or_else(|| self.expected("alias or ifunc target constant"))?;
+
+        let mut partition = None;
+        while self.eat_punct(PunctKind::Comma)? {
+            if self.eat_keyword(Keyword::Partition)? {
+                partition = Some(self.parse_string_constant("partition name")?);
+            } else {
+                return Err(self.expected("unknown alias or ifunc property"));
+            }
+        }
+
+        let name_string = match &name_id {
+            NameOrId::Name(n) => n.clone(),
+            NameOrId::Id(id) => format!("{id}"),
+        };
+
+        if is_alias {
+            let mut builder = self
+                .module
+                .alias_builder(&name_string, value_type, target)
+                .linkage(linkage)
+                .visibility(visibility)
+                .dll_storage_class(dll_storage_class)
+                .thread_local_mode(thread_local_mode)
+                .unnamed_addr(unnamed_addr);
+            if let Some(p) = partition {
+                builder = builder.partition(p);
+            }
+            let a = builder.build().map_err(|e| ParseError::Expected {
+                expected: format!("valid alias definition: {e}"),
+                loc: DiagLoc::span(decl_loc),
+            })?;
+            if let NameOrId::Id(id) = name_id {
+                self.numbered_globals
+                    .add(id, GlobalRef::Alias(a))
+                    .map_err(|source| ParseError::InvalidSlotId {
+                        source,
+                        loc: DiagLoc::span(decl_loc),
+                    })?;
+            }
+        } else {
+            let mut builder = self
+                .module
+                .ifunc_builder(&name_string, value_type, target)
+                .linkage(linkage)
+                .visibility(visibility);
+            if let Some(p) = partition {
+                builder = builder.partition(p);
+            }
+            let i = builder.build().map_err(|e| ParseError::Expected {
+                expected: format!("valid ifunc definition: {e}"),
+                loc: DiagLoc::span(decl_loc),
+            })?;
+            if let NameOrId::Id(id) = name_id {
+                self.numbered_globals
+                    .add(id, GlobalRef::IFunc(i))
+                    .map_err(|source| ParseError::InvalidSlotId {
+                        source,
+                        loc: DiagLoc::span(decl_loc),
+                    })?;
+            }
+        }
+        Ok(())
+    }
+
     fn parse_constant(
         &mut self,
         dst: Type<'ctx>,
     ) -> ParseResult<Option<llvmkit_ir::Constant<'ctx>>> {
         let category = dst.into_type_enum();
-        match self.peek() {
-            Token::Kw(Keyword::Zeroinitializer) => {
-                self.bump()?;
-                match category {
-                    AnyTypeEnum::Int(ty) => Ok(Some(ty.const_zero().as_constant())),
-                    AnyTypeEnum::Pointer(ty) => Ok(Some(ty.const_null().as_constant())),
-                    _ => Err(self
-                        .expected("zeroinitializer for the modeled scalar types (int / pointer)")),
+        match category {
+            AnyTypeEnum::Array(array_ty) => {
+                self.expect_punct(PunctKind::LSquare, "'[' to open array constant")?;
+                let mut values = Vec::new();
+                if !matches!(self.peek(), Token::RSquare) {
+                    loop {
+                        let element_ty = self.parse_type(false)?;
+                        values.push(
+                            self.parse_constant(element_ty)?
+                                .ok_or_else(|| self.expected("array element constant"))?,
+                        );
+                        if !self.eat_punct(PunctKind::Comma)? {
+                            break;
+                        }
+                    }
                 }
-            }
-            Token::Kw(Keyword::Null) => {
-                let ty = match category {
-                    AnyTypeEnum::Pointer(t) => t,
-                    _ => return Err(self.expected("'null' is only valid for pointer types")),
-                };
-                self.bump()?;
-                Ok(Some(ty.const_null().as_constant()))
-            }
-            Token::IntegerLit(_) => {
-                let int_ty = match category {
-                    AnyTypeEnum::Int(ty) => ty,
-                    _ => return Err(self.expected("integer constant for non-integer type")),
-                };
-                let (negative, value) = self.parse_int_literal()?;
-                let raw = if negative {
-                    value.wrapping_neg()
-                } else {
-                    value
-                };
-                let c = int_ty
-                    .const_int_raw(raw, negative)
+                self.expect_punct(PunctKind::RSquare, "']' to close array constant")?;
+                let c = array_ty
+                    .const_array(values)
                     .map_err(|e| ParseError::Expected {
-                        expected: format!("valid integer constant: {e}"),
+                        expected: format!("valid array constant: {e}"),
                         loc: DiagLoc::span(self.loc()),
                     })?;
                 Ok(Some(c.as_constant()))
             }
-            _ => Err(self.expected("constant initializer")),
+            AnyTypeEnum::Vector(vec_ty) => {
+                self.expect_punct(PunctKind::Less, "'<' to open vector constant")?;
+                let mut values = Vec::new();
+                if !matches!(self.peek(), Token::Greater) {
+                    loop {
+                        let element_ty = self.parse_type(false)?;
+                        values.push(
+                            self.parse_constant(element_ty)?
+                                .ok_or_else(|| self.expected("vector element constant"))?,
+                        );
+                        if !self.eat_punct(PunctKind::Comma)? {
+                            break;
+                        }
+                    }
+                }
+                self.expect_punct(PunctKind::Greater, "'>' to close vector constant")?;
+                let c = vec_ty
+                    .const_vector(values)
+                    .map_err(|e| ParseError::Expected {
+                        expected: format!("valid vector constant: {e}"),
+                        loc: DiagLoc::span(self.loc()),
+                    })?;
+                Ok(Some(c.as_constant()))
+            }
+            AnyTypeEnum::Struct(struct_ty) => {
+                if struct_ty.is_opaque() {
+                    return Err(self.expected("non-opaque struct type for struct constant"));
+                }
+                if struct_ty.is_packed() {
+                    self.expect_punct(PunctKind::Less, "'<' to open packed struct constant")?;
+                }
+                self.expect_punct(PunctKind::LBrace, "'{' to open struct constant")?;
+                let mut values = Vec::new();
+                if !matches!(self.peek(), Token::RBrace) {
+                    loop {
+                        let element_ty = self.parse_type(false)?;
+                        values.push(
+                            self.parse_constant(element_ty)?
+                                .ok_or_else(|| self.expected("struct element constant"))?,
+                        );
+                        if !self.eat_punct(PunctKind::Comma)? {
+                            break;
+                        }
+                    }
+                }
+                self.expect_punct(PunctKind::RBrace, "'}' to close struct constant")?;
+                if struct_ty.is_packed() {
+                    self.expect_punct(PunctKind::Greater, "'>' to close packed struct constant")?;
+                }
+                let c = struct_ty
+                    .const_struct(values)
+                    .map_err(|e| ParseError::Expected {
+                        expected: format!("valid struct constant: {e}"),
+                        loc: DiagLoc::span(self.loc()),
+                    })?;
+                Ok(Some(c.as_constant()))
+            }
+            _ => match self.peek() {
+                Token::Instruction(crate::ll_token::Opcode::GetElementPtr) => {
+                    self.parse_gep_offset_constant(dst).map(Some)
+                }
+                Token::Kw(Keyword::Zeroinitializer) => {
+                    self.bump()?;
+                    match category {
+                        AnyTypeEnum::Int(ty) => Ok(Some(ty.const_zero().as_constant())),
+                        AnyTypeEnum::Pointer(ty) => Ok(Some(ty.const_null().as_constant())),
+                        _ => Err(self.expected(
+                            "zeroinitializer for the modeled scalar types (int / pointer)",
+                        )),
+                    }
+                }
+                Token::Kw(Keyword::Null) => {
+                    let ty = match category {
+                        AnyTypeEnum::Pointer(t) => t,
+                        _ => return Err(self.expected("'null' is only valid for pointer types")),
+                    };
+                    self.bump()?;
+                    Ok(Some(ty.const_null().as_constant()))
+                }
+                Token::IntegerLit(_) => {
+                    let int_ty = match category {
+                        AnyTypeEnum::Int(ty) => ty,
+                        _ => return Err(self.expected("integer constant for non-integer type")),
+                    };
+                    let (negative, value) = self.parse_int_literal()?;
+                    let raw = if negative {
+                        value.wrapping_neg()
+                    } else {
+                        value
+                    };
+                    let c =
+                        int_ty
+                            .const_int_raw(raw, negative)
+                            .map_err(|e| ParseError::Expected {
+                                expected: format!("valid integer constant: {e}"),
+                                loc: DiagLoc::span(self.loc()),
+                            })?;
+                    Ok(Some(c.as_constant()))
+                }
+                Token::GlobalVar(_) | Token::GlobalId(_) => {
+                    match category {
+                        AnyTypeEnum::Pointer(_) => {}
+                        _ => return Err(self.expected("global reference for pointer constant")),
+                    }
+                    let c = self.parse_global_ref_constant()?;
+                    Ok(Some(c))
+                }
+                _ => Err(self.expected("constant initializer")),
+            },
+        }
+    }
+
+    fn parse_global_ref_constant(&mut self) -> ParseResult<llvmkit_ir::Constant<'ctx>> {
+        let loc = self.loc();
+        match self.peek() {
+            Token::GlobalVar(_) => {
+                let name = self
+                    .current_str_payload()
+                    .ok_or_else(|| self.expected("global name"))?;
+                self.bump()?;
+                if let Some(g) = self.module.get_global(&name) {
+                    Ok(g.as_global_constant_ptr())
+                } else if let Some(f) = self.module.function_by_name(&name) {
+                    Ok(f.as_global_constant_ptr())
+                } else if let Some(a) = self.module.get_alias(&name) {
+                    Ok(a.as_global_constant_ptr())
+                } else if let Some(i) = self.module.get_ifunc(&name) {
+                    Ok(i.as_global_constant_ptr())
+                } else {
+                    Err(ParseError::UndefinedSymbol {
+                        kind: crate::parse_error::SymbolKind::Global,
+                        id: crate::parse_error::SymbolId::Named(name),
+                        loc: DiagLoc::span(loc),
+                    })
+                }
+            }
+            Token::GlobalId(id) => {
+                let id = *id;
+                self.bump()?;
+                self.numbered_globals
+                    .get(id)
+                    .copied()
+                    .map(|r| self.global_ref_to_constant(r))
+                    .ok_or_else(|| ParseError::UndefinedSymbol {
+                        kind: crate::parse_error::SymbolKind::Global,
+                        id: crate::parse_error::SymbolId::Numbered(id),
+                        loc: DiagLoc::span(loc),
+                    })
+            }
+            _ => Err(self.expected("global reference")),
+        }
+    }
+
+    fn global_ref_to_constant(&self, r: GlobalRef<'ctx>) -> llvmkit_ir::Constant<'ctx> {
+        match r {
+            GlobalRef::Function(f) => f.as_global_constant_ptr(),
+            GlobalRef::Variable(g) => g.as_global_constant_ptr(),
+            GlobalRef::Alias(a) => a.as_global_constant_ptr(),
+            GlobalRef::IFunc(i) => i.as_global_constant_ptr(),
+        }
+    }
+
+    fn parse_gep_offset_constant(
+        &mut self,
+        dst: Type<'ctx>,
+    ) -> ParseResult<llvmkit_ir::Constant<'ctx>> {
+        let dst_ptr = match dst.into_type_enum() {
+            AnyTypeEnum::Pointer(t) => t,
+            _ => return Err(self.expected("pointer result type for getelementptr constantexpr")),
+        };
+
+        match self.peek() {
+            Token::Instruction(crate::ll_token::Opcode::GetElementPtr) => {
+                self.bump()?;
+            }
+            _ => return Err(self.expected("getelementptr constantexpr")),
+        }
+
+        if !self.eat_keyword(Keyword::Inbounds)? {
+            return Err(self.expected("'inbounds' for modeled getelementptr constantexpr"));
+        }
+        self.expect_punct(PunctKind::LParen, "'(' in getelementptr constantexpr")?;
+
+        let source_ty = self.parse_type(false)?;
+        if source_ty != self.module.i8_type().as_type() {
+            return Err(self.expected("i8 source type for modeled getelementptr constantexpr"));
+        }
+        self.expect_punct(PunctKind::Comma, "',' after getelementptr source type")?;
+
+        let base_ty = self.parse_type(false)?;
+        let base_ptr = match base_ty.into_type_enum() {
+            AnyTypeEnum::Pointer(t) => t,
+            _ => return Err(self.expected("ptr base type for getelementptr constantexpr")),
+        };
+        if base_ptr.address_space() != dst_ptr.address_space() {
+            return Err(self.expected("matching getelementptr result/base address spaces"));
+        }
+        let base = self.parse_global_variable_ref(base_ty)?;
+
+        self.expect_punct(PunctKind::Comma, "',' before getelementptr index")?;
+        let index_ty = self.parse_type(false)?;
+        if index_ty != self.module.i64_type().as_type() {
+            return Err(self.expected("i64 index for modeled getelementptr constantexpr"));
+        }
+        let (negative, magnitude) = self.parse_int_literal()?;
+        let offset = if negative {
+            if magnitude == (1_u64 << 63) {
+                i64::MIN
+            } else {
+                let positive = i64::try_from(magnitude)
+                    .map_err(|_| self.expected("i64 getelementptr offset magnitude"))?;
+                -positive
+            }
+        } else {
+            i64::try_from(magnitude).map_err(|_| self.expected("i64 getelementptr offset"))?
+        };
+
+        self.expect_punct(PunctKind::RParen, "')' after getelementptr constantexpr")?;
+        Ok(base.ptr_offset(offset))
+    }
+
+    fn parse_global_variable_ref(
+        &mut self,
+        expected_ty: Type<'ctx>,
+    ) -> ParseResult<llvmkit_ir::GlobalVariable<'ctx>> {
+        let loc = self.loc();
+        let name = match self.peek() {
+            Token::GlobalVar(_) => self
+                .current_str_payload()
+                .ok_or_else(|| self.expected("global variable name"))?,
+            Token::GlobalId(n) => format!("{n}"),
+            _ => return Err(self.expected("global variable reference")),
+        };
+        self.bump()?;
+
+        let global = self
+            .module
+            .get_global(&name)
+            .ok_or_else(|| ParseError::UndefinedSymbol {
+                kind: crate::parse_error::SymbolKind::Global,
+                id: crate::parse_error::SymbolId::Named(name),
+                loc: DiagLoc::span(loc),
+            })?;
+        if global.as_value().ty() != expected_ty {
+            return Err(ParseError::Expected {
+                expected: format!("global variable reference with type {expected_ty}"),
+                loc: DiagLoc::span(loc),
+            });
+        }
+        Ok(global)
+    }
+
+    fn parse_optional_function_linkage(&mut self, is_define: bool) -> ParseResult<Linkage> {
+        let loc = self.loc();
+        let linkage = if self.eat_keyword(Keyword::External)? {
+            Linkage::External
+        } else if self.eat_keyword(Keyword::AvailableExternally)? {
+            Linkage::AvailableExternally
+        } else if self.eat_keyword(Keyword::Linkonce)? {
+            Linkage::LinkOnceAny
+        } else if self.eat_keyword(Keyword::LinkonceOdr)? {
+            Linkage::LinkOnceODR
+        } else if self.eat_keyword(Keyword::Weak)? {
+            Linkage::WeakAny
+        } else if self.eat_keyword(Keyword::WeakOdr)? {
+            Linkage::WeakODR
+        } else if self.eat_keyword(Keyword::Appending)? {
+            Linkage::Appending
+        } else if self.eat_keyword(Keyword::Internal)? {
+            Linkage::Internal
+        } else if self.eat_keyword(Keyword::Private)? {
+            Linkage::Private
+        } else if self.eat_keyword(Keyword::ExternWeak)? {
+            Linkage::ExternalWeak
+        } else if self.eat_keyword(Keyword::Common)? {
+            Linkage::Common
+        } else {
+            Linkage::External
+        };
+
+        match linkage {
+            Linkage::Appending | Linkage::Common => Err(ParseError::Expected {
+                expected: "invalid function linkage type".into(),
+                loc: DiagLoc::span(loc),
+            }),
+            Linkage::ExternalWeak if is_define => Err(ParseError::Expected {
+                expected: "invalid linkage for function definition".into(),
+                loc: DiagLoc::span(loc),
+            }),
+            Linkage::Private
+            | Linkage::Internal
+            | Linkage::AvailableExternally
+            | Linkage::LinkOnceAny
+            | Linkage::LinkOnceODR
+            | Linkage::WeakAny
+            | Linkage::WeakODR
+                if !is_define =>
+            {
+                Err(ParseError::Expected {
+                    expected: "invalid linkage for function declaration".into(),
+                    loc: DiagLoc::span(loc),
+                })
+            }
+            _ => Ok(linkage),
+        }
+    }
+
+    fn parse_optional_function_unnamed_addr(&mut self) -> ParseResult<UnnamedAddr> {
+        if self.eat_keyword(Keyword::UnnamedAddr)? {
+            Ok(UnnamedAddr::Global)
+        } else if self.eat_keyword(Keyword::LocalUnnamedAddr)? {
+            Ok(UnnamedAddr::Local)
+        } else {
+            Ok(UnnamedAddr::None)
         }
     }
 
     // ── declare ─────────────────────────────────────────────────────────
 
-    /// `declare RET @name(PARAMS)` — the simplest function-declaration
-    /// form. Calling conventions, attributes, address spaces, and `gc`
-    /// strings are deferred to later sessions.
+    /// `declare [linkage] RET @name(PARAMS) [unnamed_addr]`.
+    /// Mirrors the `LLParser::parseFunctionHeader` linkage and
+    /// unnamed-address arms that have concrete `FunctionData` storage today.
     fn parse_declare(&mut self) -> ParseResult<()> {
         self.expect_keyword(Keyword::Declare, "'declare'")?;
+        let linkage = self.parse_optional_function_linkage(false)?;
         let ret_ty = self.parse_type(true)?;
-        let name = match self.peek() {
-            Token::GlobalVar(_) => self
-                .current_str_payload()
-                .ok_or_else(|| self.expected("function name"))?,
-            Token::GlobalId(n) => format!("{n}"),
+        let (name_id, name) = match self.peek() {
+            Token::GlobalVar(_) => {
+                let name = self
+                    .current_str_payload()
+                    .ok_or_else(|| self.expected("function name"))?;
+                (NameOrId::Name(name.clone()), name)
+            }
+            Token::GlobalId(n) => {
+                let id = *n;
+                (NameOrId::Id(id), format!("{id}"))
+            }
             _ => return Err(self.expected("function name after return type")),
         };
         let decl_loc = self.loc();
@@ -1394,14 +2211,27 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             }
         }
         self.expect_punct(PunctKind::RParen, "')' to close function declaration")?;
+        let unnamed_addr = self.parse_optional_function_unnamed_addr()?;
 
         let fn_ty = self.module.fn_type(ret_ty, params, var_args);
-        self.module
-            .add_function::<llvmkit_ir::Dyn>(&name, fn_ty, Linkage::External)
+        let f = self
+            .module
+            .function_builder::<llvmkit_ir::Dyn>(name, fn_ty)
+            .linkage(linkage)
+            .unnamed_addr(unnamed_addr)
+            .build()
             .map_err(|e| ParseError::Expected {
                 expected: format!("valid function declaration: {e}"),
                 loc: DiagLoc::span(decl_loc),
             })?;
+        if let NameOrId::Id(id) = name_id {
+            self.numbered_globals
+                .add(id, GlobalRef::Function(f))
+                .map_err(|source| ParseError::InvalidSlotId {
+                    source,
+                    loc: DiagLoc::span(decl_loc),
+                })?;
+        }
         Ok(())
     }
 
@@ -1410,10 +2240,11 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     /// `define RET @name(PARAMS) { ... }` — full function definition with
     /// a body. Mirrors `LLParser::parseDefine` for the constructive
     /// instruction subset Session 3 ships (ret / unreachable / br /
-    /// cond_br / icmp / add / sub / mul). Linkage, calling conv, and
-    /// attributes are deferred.
+    /// cond_br / icmp / add / sub / mul). Function linkage and
+    /// unnamed-address markers are preserved when present.
     fn parse_define(&mut self) -> ParseResult<()> {
         self.expect_keyword(Keyword::Define, "'define'")?;
+        let linkage = self.parse_optional_function_linkage(true)?;
         let ret_ty = self.parse_type(true)?;
         let name = match self.peek() {
             Token::GlobalVar(_) => self
@@ -1440,7 +2271,9 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                 let p_ty = self.parse_type(false)?;
                 let p_name = match self.peek() {
                     Token::LocalVar(_) => {
-                        let s = self.current_str_payload().expect("LocalVar payload");
+                        let s = self
+                            .current_str_payload()
+                            .ok_or_else(|| self.expected("local identifier payload"))?;
                         self.bump()?;
                         Some(ParamName::Named(s))
                     }
@@ -1459,12 +2292,14 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             }
         }
         self.expect_punct(PunctKind::RParen, "')' to close function header")?;
+        let unnamed_addr = self.parse_optional_function_unnamed_addr()?;
 
         let fn_ty = self.module.fn_type(ret_ty, param_types, var_args);
         let mut fb = self
             .module
             .function_builder::<llvmkit_ir::Dyn>(name.clone(), fn_ty)
-            .linkage(Linkage::External);
+            .linkage(linkage)
+            .unnamed_addr(unnamed_addr);
         for (slot, p) in param_names.iter().enumerate() {
             if let Some(ParamName::Named(n)) = p {
                 let slot_u32 = u32::try_from(slot).map_err(|_| ParseError::Expected {
@@ -1528,6 +2363,9 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         loop {
             match self.peek() {
                 Token::RBrace => break,
+                Token::Kw(Keyword::Uselistorder) => {
+                    self.parse_function_use_list_order(state)?;
+                }
                 Token::LabelStr(_) => {
                     let label = self
                         .current_label_str()
@@ -1561,6 +2399,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             BlockHeader::Named(n) => n,
             BlockHeader::Implicit => "".to_owned(),
         };
+        state.defined_blocks.insert(bb_name.clone());
         let bb = state.ensure_block(self.module, &bb_name);
         // Drive the typed builder for this block.
         let builder = llvmkit_ir::IRBuilder::new(self.module).position_at_end(bb);
@@ -1570,99 +2409,98 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             // Terminator — these consume the builder.
             match self.peek() {
                 Token::Instruction(crate::ll_token::Opcode::Ret) => {
-                    let b = builder.take().expect("builder live until terminator");
+                    let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_ret(state, b)?;
                     self.skip_trailing_metadata()?;
                     return Ok(());
                 }
                 Token::Instruction(crate::ll_token::Opcode::Unreachable) => {
-                    let b = builder.take().expect("builder live until terminator");
+                    let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     let _ = b.build_unreachable();
                     self.skip_trailing_metadata()?;
                     return Ok(());
                 }
                 Token::Instruction(crate::ll_token::Opcode::Br) => {
-                    let b = builder.take().expect("builder live until terminator");
+                    let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_br(state, b)?;
                     self.skip_trailing_metadata()?;
                     return Ok(());
                 }
                 Token::Instruction(crate::ll_token::Opcode::Store) => {
-                    let b_ref = builder
-                        .as_ref()
-                        .expect("builder still alive in non-terminator path");
+                    let b_ref = borrow_live_builder(&builder, self.loc())?;
                     self.bump()?;
                     self.parse_store(state, b_ref)?;
                     self.skip_trailing_metadata()?;
                     continue;
                 }
                 Token::Instruction(crate::ll_token::Opcode::Fence) => {
-                    let b_ref = builder
-                        .as_ref()
-                        .expect("builder still alive in non-terminator path");
+                    let b_ref = borrow_live_builder(&builder, self.loc())?;
                     self.bump()?;
                     self.parse_fence(b_ref)?;
                     self.skip_trailing_metadata()?;
                     continue;
                 }
                 Token::Instruction(crate::ll_token::Opcode::Switch) => {
-                    let b = builder.take().expect("builder live until terminator");
+                    let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_switch(state, b)?;
                     self.skip_trailing_metadata()?;
                     return Ok(());
                 }
                 Token::Instruction(crate::ll_token::Opcode::IndirectBr) => {
-                    let b = builder.take().expect("builder live until terminator");
+                    let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_indirectbr(state, b)?;
                     self.skip_trailing_metadata()?;
                     return Ok(());
                 }
                 Token::Instruction(crate::ll_token::Opcode::Invoke) => {
-                    let b = builder.take().expect("builder live until terminator");
+                    let b = take_live_builder(&mut builder, self.loc())?;
+                    let result_loc = self.loc();
                     let result_name = self.parse_lhs_before_invoke()?;
                     let v = self.parse_invoke(state, b, &result_name)?;
                     self.skip_trailing_metadata()?;
                     if let Some(val) = v {
-                        state.bind_local(&result_name, val);
+                        state.bind_local(&result_name, val, result_loc)?;
                     }
                     return Ok(());
                 }
                 Token::Instruction(crate::ll_token::Opcode::Resume) => {
-                    let b = builder.take().expect("builder live until terminator");
+                    let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     self.parse_resume(state, b)?;
                     self.skip_trailing_metadata()?;
                     return Ok(());
                 }
                 Token::Instruction(crate::ll_token::Opcode::CleanupRet) => {
-                    let b = builder.take().expect("builder live until terminator");
+                    let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     self.parse_cleanupret(state, b)?;
                     self.skip_trailing_metadata()?;
                     return Ok(());
                 }
                 Token::Instruction(crate::ll_token::Opcode::CatchRet) => {
-                    let b = builder.take().expect("builder live until terminator");
+                    let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     self.parse_catchret(state, b)?;
                     self.skip_trailing_metadata()?;
                     return Ok(());
                 }
                 Token::Instruction(crate::ll_token::Opcode::CatchSwitch) => {
-                    let b = builder.take().expect("builder live until terminator");
+                    let b = take_live_builder(&mut builder, self.loc())?;
+                    let result_loc = self.loc();
                     let result_name = self.parse_lhs_assignment()?;
                     let v = self.parse_catchswitch(state, b, &result_name)?;
                     self.skip_trailing_metadata()?;
-                    state.bind_local(&result_name, v);
+                    state.bind_local(&result_name, v, result_loc)?;
                     return Ok(());
                 }
                 Token::Instruction(crate::ll_token::Opcode::CallBr) => {
-                    let b = builder.take().expect("builder live until terminator");
+                    let b = take_live_builder(&mut builder, self.loc())?;
+                    let result_loc = self.loc();
                     let result_name = self.parse_lhs_assignment()?;
                     let v = self.parse_callbr(state, b, &result_name)?;
                     self.skip_trailing_metadata()?;
-                    state.bind_local(&result_name, v);
+                    state.bind_local(&result_name, v, result_loc)?;
                     return Ok(());
                 }
                 _ => {}
@@ -1676,9 +2514,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                 _ => return Err(self.expected("instruction opcode")),
             };
             self.bump()?;
-            let b_ref = builder
-                .as_ref()
-                .expect("builder still alive in non-terminator path");
+            let b_ref = borrow_live_builder(&builder, self.loc())?;
             let value = match opcode {
                 crate::ll_token::Opcode::Add => {
                     self.parse_int_binop(state, b_ref, IntBinOp::Add, &result_name)?
@@ -1827,7 +2663,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                 }
             };
             self.skip_trailing_metadata()?;
-            state.bind_local(&result_name, value);
+            state.bind_local(&result_name, value, result_loc)?;
         }
     }
 
@@ -2899,16 +3735,43 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             return Ok(vec![POISON_MASK_ELEM]);
         }
         self.expect_punct(PunctKind::Less, "'<' to open shuffle mask")?;
+        if matches!(
+            self.peek(),
+            Token::IntegerLit(_) | Token::Kw(Keyword::Vscale)
+        ) {
+            let _mask_ty = self.parse_array_or_vector_after_open(true)?;
+            self.expect_punct(PunctKind::Less, "'<' to open shuffle mask elements")?;
+        }
         let mut mask = Vec::new();
         loop {
-            let _ety = self.parse_type(false)?;
-            let (neg, val) = self
-                .parse_int_literal()
-                .unwrap_or((false, POISON_MASK_ELEM as u64));
-            let entry: i32 = if neg {
-                -(val as i32)
+            let _ety = self.parse_type(false).map_err(|err| match err {
+                ParseError::Lex(LexError::UnknownToken { span }) => ParseError::Expected {
+                    expected: "valid shufflevector mask element".into(),
+                    loc: DiagLoc::span(span),
+                },
+                other => other,
+            })?;
+            let elem_loc = self.loc();
+            let (neg, val) = self.parse_int_literal().map_err(|_| ParseError::Expected {
+                expected: "valid shufflevector mask element".into(),
+                loc: DiagLoc::span(elem_loc),
+            })?;
+            let entry = if neg {
+                let magnitude = i32::try_from(val).map_err(|_| ParseError::Expected {
+                    expected: "valid shufflevector mask element".into(),
+                    loc: DiagLoc::span(elem_loc),
+                })?;
+                magnitude
+                    .checked_neg()
+                    .ok_or_else(|| ParseError::Expected {
+                        expected: "valid shufflevector mask element".into(),
+                        loc: DiagLoc::span(elem_loc),
+                    })?
             } else {
-                i32::try_from(val).unwrap_or(POISON_MASK_ELEM)
+                i32::try_from(val).map_err(|_| ParseError::Expected {
+                    expected: "valid shufflevector mask element".into(),
+                    loc: DiagLoc::span(elem_loc),
+                })?
             };
             mask.push(entry);
             if !self.eat_punct(PunctKind::Comma)? {
@@ -3357,7 +4220,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                     .get(id)
                     .and_then(|r| match r {
                         GlobalRef::Function(f) => Some(*f),
-                        GlobalRef::Variable(_) => None,
+                        _ => None,
                     })
                     .ok_or_else(|| ParseError::UndefinedSymbol {
                         kind: crate::parse_error::SymbolKind::Global,
@@ -3565,9 +4428,10 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                 }
                 f
             },
-            align: align
-                .map(llvmkit_ir::align::MaybeAlign::from)
-                .unwrap_or(llvmkit_ir::align::MaybeAlign::NONE),
+            align: match align {
+                Some(value) => llvmkit_ir::align::MaybeAlign::from(value),
+                None => llvmkit_ir::align::MaybeAlign::NONE,
+            },
         };
         let v = b
             .build_atomic_cmpxchg(ptr, cmp_v, new_v, config, result_name.as_str())
@@ -3609,9 +4473,10 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                 }
                 f
             },
-            align: align
-                .map(llvmkit_ir::align::MaybeAlign::from)
-                .unwrap_or(llvmkit_ir::align::MaybeAlign::NONE),
+            align: match align {
+                Some(value) => llvmkit_ir::align::MaybeAlign::from(value),
+                None => llvmkit_ir::align::MaybeAlign::NONE,
+            },
         };
         let v = b
             .build_atomicrmw(op, ptr, val_v, config, result_name.as_str())
@@ -4037,6 +4902,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         &mut self,
         state: &mut PerFunctionState<'ctx>,
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed>> {
+        let loc = self.loc();
         let name = match self.peek() {
             Token::LocalVar(_) => self
                 .current_str_payload()
@@ -4045,6 +4911,9 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             _ => return Err(self.expected("block label after 'label'")),
         };
         self.bump()?;
+        if !state.defined_blocks.contains(&name) {
+            state.block_refs.entry(name.clone()).or_insert(loc);
+        }
         Ok(state.ensure_block(self.module, &name))
     }
 
@@ -4111,22 +4980,12 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             Token::Kw(Keyword::True) => {
                 let _ = ty; // type already consumed
                 self.bump()?;
-                Ok(self
-                    .module
-                    .i1_type()
-                    .const_int_raw(1, false)
-                    .unwrap()
-                    .as_value())
+                Ok(self.module.i1_type().const_int(true).as_value())
             }
             Token::Kw(Keyword::False) => {
                 let _ = ty;
                 self.bump()?;
-                Ok(self
-                    .module
-                    .i1_type()
-                    .const_int_raw(0, false)
-                    .unwrap()
-                    .as_value())
+                Ok(self.module.i1_type().const_int(false).as_value())
             }
             Token::Kw(Keyword::Null) => {
                 let pty = match ty.into_type_enum() {
@@ -4176,6 +5035,10 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                     Ok(gv.as_value())
                 } else if let Some(fv) = self.module.function_by_name(&name) {
                     Ok(fv.as_value())
+                } else if let Some(a) = self.module.get_alias(&name) {
+                    Ok(a.as_value())
+                } else if let Some(i) = self.module.get_ifunc(&name) {
+                    Ok(i.as_value())
                 } else {
                     Err(ParseError::UndefinedSymbol {
                         kind: crate::parse_error::SymbolKind::Global,
@@ -4288,6 +5151,8 @@ struct PerFunctionState<'ctx> {
         String,
         llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed>,
     >,
+    block_refs: std::collections::HashMap<String, Span>,
+    defined_blocks: std::collections::HashSet<String>,
     /// Deferred phi incoming edges for forward references. Resolved by
     /// `finish()` after all blocks in the function have been parsed.
     deferred_phi: Vec<DeferredPhiEdge<'ctx>>,
@@ -4301,6 +5166,8 @@ impl<'ctx> PerFunctionState<'ctx> {
             local_numbered: std::collections::HashMap::new(),
             next_unnamed_value_id: 0,
             blocks: std::collections::HashMap::new(),
+            block_refs: std::collections::HashMap::new(),
+            defined_blocks: std::collections::HashSet::new(),
             deferred_phi: Vec::new(),
         }
     }
@@ -4322,12 +5189,32 @@ impl<'ctx> PerFunctionState<'ctx> {
         bb
     }
 
-    fn bind_local(&mut self, lhs: &LocalLhs, v: llvmkit_ir::Value<'ctx>) {
+    fn bind_local(
+        &mut self,
+        lhs: &LocalLhs,
+        v: llvmkit_ir::Value<'ctx>,
+        loc: Span,
+    ) -> ParseResult<()> {
         match lhs {
             LocalLhs::Named(n) => {
-                self.local_named.insert(n.clone(), v);
+                if self.local_named.insert(n.clone(), v).is_some() {
+                    return Err(ParseError::Redefinition {
+                        kind: SYMBOL_KIND_LOCAL,
+                        id: crate::parse_error::SymbolId::Named(n.clone()),
+                        loc: DiagLoc::span(loc),
+                    });
+                }
             }
             LocalLhs::Numbered(id) => {
+                if self.local_numbered.contains_key(id) {
+                    return Err(ParseError::InvalidSlotId {
+                        source: crate::numbered_values::AddError::StaleId {
+                            id: *id,
+                            next: self.next_unnamed_value_id,
+                        },
+                        loc: DiagLoc::span(loc),
+                    });
+                }
                 self.local_numbered.insert(*id, v);
                 self.next_unnamed_value_id = self.next_unnamed_value_id.max(id.saturating_add(1));
             }
@@ -4337,14 +5224,24 @@ impl<'ctx> PerFunctionState<'ctx> {
                 self.next_unnamed_value_id = id.saturating_add(1);
             }
         }
+        Ok(())
     }
 
     /// Resolve all deferred phi incoming edges after the function body has
     /// been fully parsed. Called by `Parser::parse_define` before `}`.
     fn finish(
-        &mut self,
+        mut self,
         module: &'ctx llvmkit_ir::Module<'ctx>,
     ) -> crate::parse_error::ParseResult<()> {
+        for (name, loc) in &self.block_refs {
+            if !self.defined_blocks.contains(name) {
+                return Err(ParseError::UndefinedSymbol {
+                    kind: crate::parse_error::SymbolKind::Block,
+                    id: crate::parse_error::SymbolId::Named(name.clone()),
+                    loc: DiagLoc::span(*loc),
+                });
+            }
+        }
         let edges = std::mem::take(&mut self.deferred_phi);
         for edge in edges {
             let val = match edge.val_ref {
@@ -4466,6 +5363,27 @@ type ParsedBlockBuilder<'ctx> = llvmkit_ir::IRBuilder<
     llvmkit_ir::Positioned,
     llvmkit_ir::Dyn,
 >;
+
+fn live_builder_error(loc: Span) -> ParseError {
+    ParseError::Expected {
+        expected: "live insertion builder before terminator".into(),
+        loc: DiagLoc::span(loc),
+    }
+}
+
+fn take_live_builder<'ctx>(
+    builder: &mut Option<ParsedBlockBuilder<'ctx>>,
+    loc: Span,
+) -> ParseResult<ParsedBlockBuilder<'ctx>> {
+    builder.take().ok_or_else(|| live_builder_error(loc))
+}
+
+fn borrow_live_builder<'b, 'ctx>(
+    builder: &'b Option<ParsedBlockBuilder<'ctx>>,
+    loc: Span,
+) -> ParseResult<&'b ParsedBlockBuilder<'ctx>> {
+    builder.as_ref().ok_or_else(|| live_builder_error(loc))
+}
 
 /// Local symbol kind label used in [`crate::parse_error::ParseError::UndefinedSymbol`].
 const SYMBOL_KIND_LOCAL: crate::parse_error::SymbolKind = crate::parse_error::SymbolKind::Local;

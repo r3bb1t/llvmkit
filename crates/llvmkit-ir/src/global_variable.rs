@@ -526,16 +526,7 @@ impl<'ctx> TryFrom<Value<'ctx>> for GlobalVariable<'ctx> {
                 ty: v.ty,
             }),
             other => {
-                let got = match other {
-                    ValueKindData::Constant(_) => ValueCategoryLabel::Constant,
-                    ValueKindData::Argument { .. } => ValueCategoryLabel::Argument,
-                    ValueKindData::BasicBlock(_) => ValueCategoryLabel::BasicBlock,
-                    ValueKindData::Function(_) => ValueCategoryLabel::Function,
-                    ValueKindData::Instruction(_) => ValueCategoryLabel::Instruction,
-                    ValueKindData::GlobalVariable(_) => ValueCategoryLabel::GlobalVariable,
-                    ValueKindData::MetadataAsValue(_) => ValueCategoryLabel::MetadataAsValue,
-                    ValueKindData::InlineAsm(_) => ValueCategoryLabel::InlineAsm,
-                };
+                let got = crate::value::category_label_for_kind(other);
                 Err(IrError::ValueCategoryMismatch {
                     expected: ValueCategoryLabel::GlobalVariable,
                     got,

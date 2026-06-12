@@ -222,7 +222,8 @@ define void @f() {
         "unexpected error: {err}"
     );
 }
-/// Trailing metadata without comma (no-comma variant).
+/// Trailing metadata attachments require a preceding comma.
+/// Upstream `LLParser` rejects the no-comma variant.
 #[test]
 fn instruction_trailing_metadata_no_comma() {
     let src = r#"
@@ -233,7 +234,11 @@ define i32 @f(i32 %x) {
 
 !0 = !{}
 "#;
-    let (_, _text) = parse_snippet(src);
+    let err = parse_fails(src);
+    assert!(
+        err.contains("expected ',' before trailing metadata"),
+        "unexpected error: {err}"
+    );
 }
 
 // ── `metadata` as a call argument (MetadataAsValue) ──────────────────────

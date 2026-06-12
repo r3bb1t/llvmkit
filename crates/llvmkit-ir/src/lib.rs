@@ -38,6 +38,8 @@ pub mod float_kind;
 pub mod fmf;
 pub mod function;
 pub mod gep_no_wrap_flags;
+pub mod global_alias;
+pub mod global_ifunc;
 pub mod global_value;
 pub mod global_variable;
 pub mod inline_asm;
@@ -105,6 +107,8 @@ pub use error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel, VerifierRu
 pub use fmf::FastMathFlags;
 pub use function::{FunctionBuilder, FunctionValue};
 pub use gep_no_wrap_flags::GepNoWrapFlags;
+pub use global_alias::{GlobalAlias, GlobalAliasBuilder};
+pub use global_ifunc::{GlobalIFunc, GlobalIFuncBuilder};
 pub use global_value::Linkage;
 pub use global_value::{DllStorageClass, ThreadLocalMode, Visibility};
 pub use global_variable::{GlobalBuilder, GlobalVariable};

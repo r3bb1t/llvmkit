@@ -1,0 +1,3 @@
+# Parser corpus fixtures (valid subset that current rust parser supports)
+# Format: <fixture>.ll | <upstream citation>
+facade_minimal.ll | unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, ParseAssemblyString)

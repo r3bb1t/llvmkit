@@ -215,7 +215,9 @@ pub(crate) fn fmt_operand_ref(
                 None => f.write_str("%<unnumbered>"),
             },
         },
-        ValueKindData::GlobalVariable(_) => {
+        ValueKindData::GlobalVariable(_)
+        | ValueKindData::GlobalAlias(_)
+        | ValueKindData::GlobalIFunc(_) => {
             write!(f, "@{}", v.name().unwrap_or_default())
         }
         ValueKindData::Constant(c) => fmt_constant(f, v, c),
@@ -337,6 +339,7 @@ pub(crate) fn fmt_constant(
 fn constant_ptr_operand_type<'ctx>(value: Value<'ctx>) -> Type<'ctx> {
     match &value.data().kind {
         ValueKindData::Function(_) => value.module().ptr_type(0).as_type(),
+        ValueKindData::GlobalAlias(_) | ValueKindData::GlobalIFunc(_) => value.ty(),
         _ => value.ty(),
     }
 }
@@ -1737,6 +1740,9 @@ pub(crate) fn fmt_function(
         fmt_basic_block(f, bb, &slots, first_block)?;
         first_block = false;
     }
+    for directive in func.use_list_orders() {
+        writeln!(f, "  {directive}")?;
+    }
     f.write_str("}\n")
 }
 
@@ -1767,6 +1773,11 @@ fn fmt_struct_body(f: &mut fmt::Formatter<'_>, body: &StructBody, m: &Module<'_>
 
 pub(crate) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &Module<'_>) -> fmt::Result {
     writeln!(f, "; ModuleID = '{}'", m.name())?;
+    if let Some(source_filename) = m.source_filename() {
+        f.write_str("source_filename = \"")?;
+        print_escaped_string(f, source_filename.as_bytes())?;
+        f.write_str("\"\n")?;
+    }
 
     // `target datalayout = "..."`. Mirrors
     // `AssemblyWriter::printModule`'s `M->getDataLayout()` arm. Only
@@ -1850,13 +1861,36 @@ pub(crate) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &Module<'_>) -> fmt::Res
         }
     }
 
+    if !m.alias_empty() {
+        f.write_str("\n")?;
+        for a in m.iter_aliases() {
+            fmt_alias(f, a)?;
+        }
+    }
+
+    if !m.ifunc_empty() {
+        f.write_str("\n")?;
+        for i in m.iter_ifuncs() {
+            fmt_ifunc(f, i)?;
+        }
+    }
+
     let mut first = true;
     for func in m.iter_functions() {
-        if !first || !m.global_empty() || m.iter_comdats().len() > 0 {
+        if !first
+            || !m.global_empty()
+            || !m.alias_empty()
+            || !m.ifunc_empty()
+            || m.iter_comdats().len() > 0
+        {
             f.write_str("\n")?;
         }
         first = false;
         fmt_function(f, func)?;
+    }
+
+    for directive in m.use_list_orders() {
+        writeln!(f, "{directive}")?;
     }
 
     // Numbered metadata nodes. Mirrors the
@@ -2065,6 +2099,62 @@ fn fmt_global(
         write!(f, ", align {}", a.value())?;
     }
     Ok(())
+}
+
+pub(crate) fn fmt_alias(f: &mut fmt::Formatter<'_>, a: crate::GlobalAlias<'_>) -> fmt::Result {
+    write!(f, "@{} = ", a.name())?;
+    let linkage_kw = a.linkage().keyword();
+    if !linkage_kw.is_empty() {
+        f.write_str(linkage_kw)?;
+        f.write_str(" ")?;
+    }
+    if let Some(s) = a.visibility().keyword() {
+        f.write_str(s)?;
+        f.write_str(" ")?;
+    }
+    if let Some(s) = a.dll_storage_class().keyword() {
+        f.write_str(s)?;
+        f.write_str(" ")?;
+    }
+    if let Some(s) = a.thread_local_mode().keyword() {
+        f.write_str(s)?;
+        f.write_str(" ")?;
+    }
+    if let Some(s) = a.unnamed_addr().keyword() {
+        f.write_str(s)?;
+        f.write_str(" ")?;
+    }
+    f.write_str("alias ")?;
+    write!(f, "{}, ", a.value_type())?;
+    fmt_operand(f, a.aliasee().as_value(), None)?;
+    if let Some(partition) = a.partition() {
+        f.write_str(", partition \"")?;
+        print_escaped_string(f, partition.as_bytes())?;
+        f.write_str("\"")?;
+    }
+    f.write_str("\n")
+}
+
+pub(crate) fn fmt_ifunc(f: &mut fmt::Formatter<'_>, i: crate::GlobalIFunc<'_>) -> fmt::Result {
+    write!(f, "@{} = ", i.name())?;
+    let linkage_kw = i.linkage().keyword();
+    if !linkage_kw.is_empty() {
+        f.write_str(linkage_kw)?;
+        f.write_str(" ")?;
+    }
+    if let Some(s) = i.visibility().keyword() {
+        f.write_str(s)?;
+        f.write_str(" ")?;
+    }
+    f.write_str("ifunc ")?;
+    write!(f, "{}, ", i.value_type())?;
+    fmt_operand(f, i.resolver().as_value(), None)?;
+    if let Some(partition) = i.partition() {
+        f.write_str(", partition \"")?;
+        print_escaped_string(f, partition.as_bytes())?;
+        f.write_str("\"")?;
+    }
+    f.write_str("\n")
 }
 
 fn fmt_select(

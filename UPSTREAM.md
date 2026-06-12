@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 641.
+Total `#[test]` functions: 678.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -24,6 +24,7 @@ Total `#[test]` functions: 641.
 | `crates/llvmkit-ir/tests/asm_writer_basic.rs::function_print_standalone_matches_module_section` | `unittests/IR/AsmWriterTest.cpp::TEST(AsmWriterTest, DebugPrintDetachedInstruction)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/asm_writer_basic.rs::declare_form_for_empty_function` | `unittests/IR/AsmWriterTest.cpp` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/asm_writer_basic.rs::unnamed_basic_block_uses_slot_label` | `unittests/IR/AsmWriterTest.cpp::TEST(AsmWriterTest, DebugPrintDetachedArgument)` | mirror |
+| `crates/llvmkit-ir/tests/asm_writer_basic.rs::source_filename_api_borrows_and_clears` | `llvm/lib/IR/Module.cpp::Module::setSourceFileName`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printModule` source filename arm | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_alloca.rs::alloca_plain` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, Lifetime)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_alloca.rs::alloca_array_size` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, Lifetime)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_alloca.rs::alloca_aligned` | `test/Assembler/align-inst-alloca.ll` | mirror |
@@ -296,7 +297,6 @@ Total `#[test]` functions: 641.
 | `crates/llvmkit-support/src/span.rs::span_indexes_slice` | `-` | llvmkit-specific |
 | `crates/llvmkit-support/src/span.rs::spanned_map_preserves_span` | `-` | llvmkit-specific |
 | `crates/llvmkit-support/src/span.rs::spanned_as_ref_borrows` | `-` | llvmkit-specific |
-
 | `crates/llvmkit-ir/tests/builder_typestate_seal.rs::cond_br_terminator_seals_block` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)` | port |
 | `crates/llvmkit-ir/tests/builder_typestate_seal.rs::phi_range_iterates_three_phis` | `unittests/IR/BasicBlockTest.cpp::TEST(BasicBlockTest, PhiRange)` | port |
 | `crates/llvmkit-ir/tests/builder_typestate_seal.rs::seal_typestate_does_not_change_asm_output` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)` | llvmkit-specific |
@@ -312,8 +312,6 @@ Total `#[test]` functions: 641.
 | `crates/llvmkit-ir/tests/builder_icmp_named.rs::build_icmp_ne_emits_icmp_ne` | `test/Assembler/auto_upgrade_nvvm_intrinsics.ll` | mirror |
 | `crates/llvmkit-ir/tests/builder_icmp_named.rs::build_icmp_slt_emits_icmp_slt` | `test/Assembler/2004-02-27-SelfUseAssertError.ll` | mirror |
 | `crates/llvmkit-ir/tests/builder_icmp_named.rs::build_icmp_sge_emits_icmp_sge` | `test/Assembler/auto_upgrade_nvvm_intrinsics.ll` | mirror |
-
-<!-- Parser-1: Session 1 instruction-set completion -->
 | `crates/llvmkit-ir/tests/builder_unary_ops.rs::build_fneg_round_trip` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, UnaryOperators)` | port |
 | `crates/llvmkit-ir/tests/builder_unary_ops.rs::fneg_with_fmf_prints_canonical_form` | `test/Bitcode/compatibility.ll::fastmathflags_unop` | mirror |
 | `crates/llvmkit-ir/tests/builder_unary_ops.rs::fneg_double_no_flags_unnamed_result` | `test/Bitcode/compatibility.ll::instructions.unops` | mirror |
@@ -572,6 +570,16 @@ Total `#[test]` functions: 641.
 | `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_variadic_declaration` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDeclare` (varargs arm) | mirror |
 | `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_source_filename_directive` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseSourceFileName` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::target_directives_round_trip_through_asm_writer` | `llvm/test/Assembler/datalayout.ll` and `target-triple.ll` round-trip | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::source_filename_round_trips_through_asm_writer` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseSourceFileName`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printModule` source filename arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::top_level_comdat_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseComdat` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::global_externally_initialized_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseGlobal` externally_initialized flag; `llvm/test/Bitcode/compatibility.ll` global attributes | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::global_linkage_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseGlobal` linkage prefix | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::global_visibility_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseGlobal` visibility prefix | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::global_dll_storage_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseGlobal` DLL storage class prefix | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::global_tls_mode_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseGlobal` thread-local mode prefix | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::global_unnamed_addr_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseGlobal` unnamed-address prefix | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::global_trailing_attributes_round_trip` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseGlobal` global-object suffix loop | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::global_addrspace_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseGlobal` address-space prefix | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::module_asm_directives_accumulate` | `llvm/test/Assembler/module-asm.ll` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::named_struct_forward_reference_resolves` | `llvm/test/Assembler/named-types.ll`; `LLParser::parseNamedType` body resolution | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::array_and_vector_types_parse` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseArrayVectorType` | mirror |
@@ -663,3 +671,29 @@ Total `#[test]` functions: 641.
 | `crates/llvmkit-asmparser/tests/parser_value_forms.rs::zeroinitializer_float` | `test/Assembler/zeroinitializer.ll`; `LLParser::parseValID` `zeroinitializer` for float type | mirror |
 | `crates/llvmkit-asmparser/tests/parser_value_forms.rs::global_variable_reference` | `test/Assembler/globalvariable.ll`; `LLParser::parseValID` `@global` resolution | mirror |
 | `crates/llvmkit-asmparser/tests/parser_value_forms.rs::function_call_global_reference` | `test/Assembler/call.ll`; `LLParser::parseCall` with `@func` callee reference | mirror |
+| `crates/llvmkit-asmparser/tests/parser_errors.rs::malformed_integer_type_rejects_width_overflow` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType` integer width rejection | mirror |
+| `crates/llvmkit-asmparser/tests/parser_errors.rs::malformed_shuffle_mask_rejects_bad_element` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` shufflevector mask element parsing | mirror |
+| `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_assembly_string_into_round_trips_module` | `unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, ParseAssemblyString)` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_assembly_file_into_reads_file` | `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_type_at_beginning_reports_read_count` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseTypeAtBeginning` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_type_requires_end` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType` EOF wrapper | mirror |
+| `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_constant_value_uses_slot_mapping` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseStandaloneConstantValue` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_facade.rs::parser_context_records_function_block_instruction_locations` | `llvm/lib/AsmParser/AsmParserContext.cpp`; `llvm/lib/AsmParser/Parser.cpp` context plumbing | mirror |
+| `crates/llvmkit-asmparser/tests/parser_forward_refs.rs::skip_value_numbers_invalid_is_rejected` | `test/Assembler/skip-value-numbers-invalid.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_forward_refs.rs::invalid_numbered_var_is_rejected` | `test/Assembler/2007-03-18-InvalidNumberedVar.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_forward_refs.rs::unnamed_forward_ref_is_rejected` | `test/Assembler/2009-02-01-UnnamedForwardRef.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_forward_refs.rs::unresolved_global_reference_is_rejected` | `test/Assembler/2002-08-15-UnresolvedGlobalReference.ll`; `test/Assembler/2003-04-25-UnresolvedGlobalReference.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_forward_refs.rs::undefined_block_label_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::PerFunctionState::finishFunction` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_forward_refs.rs::numbered_declare_records_slot_mapping` | `unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, SlotMappingTest)` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::array_constant_initializer_round_trips` | `test/Assembler/aggregate-constant-values.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::struct_constant_initializer_round_trips` | `test/Assembler/aggregate-constant-values.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::getelementptr_constant_expr_initializer_round_trips` | `test/Assembler/getelementptr.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` getelementptr constant-expression arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_corpus.rs::parser_corpus_round_trips_checked_in_fixtures` | `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_linkage_definition_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` linkage prefix | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_local_unnamed_addr_round_trips` | `test/Assembler/unnamed-addr.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` optional unnamed-address arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_headers.rs::extern_weak_declaration_with_unnamed_addr_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` declaration linkage validation | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_headers.rs::global_alias_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseAliasOrIFunc`; `test/Assembler/alias-redefinition.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_headers.rs::common_function_linkage_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` invalid function linkage diagnostic | mirror |
+| `crates/llvmkit-asmparser/tests/parser_use_list.rs::module_uselistorder_round_trips_global_callee` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseUseListOrder`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printUseListOrder` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_use_list.rs::function_uselistorder_round_trips_local_value` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseUseListOrder(PerFunctionState*)`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printUseListOrder` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_use_list.rs::ordered_uselistorder_indexes_are_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseUseListOrderIndexes` identity-order rejection | mirror |

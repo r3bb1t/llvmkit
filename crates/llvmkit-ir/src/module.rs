@@ -144,6 +144,10 @@ impl core::fmt::Debug for ModuleRef<'_> {
 pub struct Module<'ctx> {
     id: ModuleId,
     name: String,
+    /// `source_filename = "..."` directive. Optional; upstream stores an
+    /// empty string for absence, but `Option` keeps the missing directive
+    /// explicit on the Rust side.
+    source_filename: core::cell::RefCell<Option<String>>,
     ctx: Context,
     /// Functions defined in this module, in declaration order.
     /// Stored as a `RefCell<Vec<ValueId>>` so `add_function` can mutate
@@ -157,6 +161,10 @@ pub struct Module<'ctx> {
     globals: core::cell::RefCell<Vec<crate::value::ValueId>>,
     /// Module-level name -> global value-id table.
     global_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueId>>,
+    aliases: core::cell::RefCell<Vec<crate::value::ValueId>>,
+    alias_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueId>>,
+    ifuncs: core::cell::RefCell<Vec<crate::value::ValueId>>,
+    ifunc_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueId>>,
     /// Module-level COMDAT entries. Mirrors `Module::ComdatSymTab`.
     /// Stored in a `boxcar::Vec` for stable `&ComdatData` references
     /// under `&self`, so [`ComdatRef`](crate::comdat::ComdatRef) can
@@ -175,6 +183,7 @@ pub struct Module<'ctx> {
     /// Stored as a single `String` joined by newlines (one entry
     /// per `module asm "..."` directive).
     module_asm: core::cell::RefCell<String>,
+    use_list_orders: core::cell::RefCell<Vec<String>>,
     /// Module-level metadata node arena. Mirrors `LLVMContextImpl`'s
     /// metadata store (scoped to the module for simplicity).
     metadata: core::cell::RefCell<crate::metadata::MetadataStore>,
@@ -201,16 +210,22 @@ impl<'ctx> Module<'ctx> {
         Self {
             id: ModuleId::fresh(),
             name: name.into(),
+            source_filename: core::cell::RefCell::new(None),
             ctx: Context::new(),
             functions: core::cell::RefCell::new(Vec::new()),
             function_by_name: core::cell::RefCell::new(std::collections::HashMap::new()),
             globals: core::cell::RefCell::new(Vec::new()),
             global_by_name: core::cell::RefCell::new(std::collections::HashMap::new()),
+            aliases: core::cell::RefCell::new(Vec::new()),
+            alias_by_name: core::cell::RefCell::new(std::collections::HashMap::new()),
+            ifuncs: core::cell::RefCell::new(Vec::new()),
+            ifunc_by_name: core::cell::RefCell::new(std::collections::HashMap::new()),
             comdats: boxcar::Vec::new(),
             comdat_by_name: core::cell::RefCell::new(std::collections::HashMap::new()),
             data_layout: core::cell::RefCell::new(crate::data_layout::DataLayout::default()),
             target_triple: core::cell::RefCell::new(None),
             module_asm: core::cell::RefCell::new(String::new()),
+            use_list_orders: core::cell::RefCell::new(Vec::new()),
             metadata: core::cell::RefCell::new(crate::metadata::MetadataStore::default()),
             named_metadata: core::cell::RefCell::new(Vec::new()),
             metadata_as_value_cache: core::cell::RefCell::new(std::collections::HashMap::new()),
@@ -222,6 +237,22 @@ impl<'ctx> Module<'ctx> {
     #[inline]
     pub fn name(&self) -> &str {
         &self.name
+    }
+    /// `source_filename = "..."` directive. Mirrors
+    /// `Module::getSourceFileName`.
+    pub fn source_filename(&self) -> Option<core::cell::Ref<'_, str>> {
+        core::cell::Ref::filter_map(self.source_filename.borrow(), Option::as_deref).ok()
+    }
+
+    /// Set the `source_filename` directive. Mirrors
+    /// `Module::setSourceFileName`.
+    pub fn set_source_filename(&self, filename: impl Into<String>) {
+        *self.source_filename.borrow_mut() = Some(filename.into());
+    }
+
+    /// Clear the `source_filename` directive.
+    pub fn clear_source_filename(&self) {
+        *self.source_filename.borrow_mut() = None;
     }
 
     /// This module's globally-unique id.
@@ -568,7 +599,7 @@ impl<'ctx> Module<'ctx> {
         R: crate::marker::ReturnMarker,
     {
         let name = name.as_ref();
-        if self.function_by_name.borrow().contains_key(name) {
+        if self.global_name_exists(name) {
             return Err(IrError::DuplicateFunctionName {
                 name: name.to_owned(),
             });
@@ -837,6 +868,72 @@ impl<'ctx> Module<'ctx> {
     /// `true` if the module contains no globals. Mirrors
     /// `Module::global_empty`.
     #[inline]
+    pub fn alias_builder<C: crate::constant::IsConstant<'ctx>>(
+        &'ctx self,
+        name: impl Into<String>,
+        value_type: Type<'ctx>,
+        aliasee: C,
+    ) -> crate::global_alias::GlobalAliasBuilder<'ctx> {
+        crate::global_alias::GlobalAliasBuilder::new(self, name, value_type, aliasee)
+    }
+
+    pub fn get_alias(&'ctx self, name: &str) -> Option<crate::global_alias::GlobalAlias<'ctx>> {
+        let id = self.alias_by_name.borrow().get(name).copied()?;
+        let value_data = self.ctx.value_data(id);
+        Some(crate::global_alias::GlobalAlias::from_parts_unchecked(
+            id,
+            self,
+            value_data.ty,
+        ))
+    }
+
+    pub fn iter_aliases(
+        &'ctx self,
+    ) -> impl ExactSizeIterator<Item = crate::global_alias::GlobalAlias<'ctx>> + 'ctx {
+        let ids: Vec<crate::value::ValueId> = self.aliases.borrow().clone();
+        ids.into_iter().map(move |id| {
+            let value_data = self.ctx.value_data(id);
+            crate::global_alias::GlobalAlias::from_parts_unchecked(id, self, value_data.ty)
+        })
+    }
+
+    pub fn alias_empty(&self) -> bool {
+        self.aliases.borrow().is_empty()
+    }
+
+    pub fn ifunc_builder<C: crate::constant::IsConstant<'ctx>>(
+        &'ctx self,
+        name: impl Into<String>,
+        value_type: Type<'ctx>,
+        resolver: C,
+    ) -> crate::global_ifunc::GlobalIFuncBuilder<'ctx> {
+        crate::global_ifunc::GlobalIFuncBuilder::new(self, name, value_type, resolver)
+    }
+
+    pub fn get_ifunc(&'ctx self, name: &str) -> Option<crate::global_ifunc::GlobalIFunc<'ctx>> {
+        let id = self.ifunc_by_name.borrow().get(name).copied()?;
+        let value_data = self.ctx.value_data(id);
+        Some(crate::global_ifunc::GlobalIFunc::from_parts_unchecked(
+            id,
+            self,
+            value_data.ty,
+        ))
+    }
+
+    pub fn iter_ifuncs(
+        &'ctx self,
+    ) -> impl ExactSizeIterator<Item = crate::global_ifunc::GlobalIFunc<'ctx>> + 'ctx {
+        let ids: Vec<crate::value::ValueId> = self.ifuncs.borrow().clone();
+        ids.into_iter().map(move |id| {
+            let value_data = self.ctx.value_data(id);
+            crate::global_ifunc::GlobalIFunc::from_parts_unchecked(id, self, value_data.ty)
+        })
+    }
+
+    pub fn ifunc_empty(&self) -> bool {
+        self.ifuncs.borrow().is_empty()
+    }
+
     pub fn global_empty(&self) -> bool {
         self.globals.borrow().is_empty()
     }
@@ -849,9 +946,7 @@ impl<'ctx> Module<'ctx> {
         builder: crate::global_variable::GlobalBuilder<'ctx>,
     ) -> IrResult<crate::global_variable::GlobalVariable<'ctx>> {
         let (name, data, _initializer, address_space, value_type) = builder.into_data();
-        if self.function_by_name.borrow().contains_key(&name)
-            || self.global_by_name.borrow().contains_key(&name)
-        {
+        if self.global_name_exists(&name) {
             return Err(IrError::DuplicateFunctionName { name });
         }
         let pointer_ty = self.ctx.ptr_type(address_space);
@@ -873,6 +968,59 @@ impl<'ctx> Module<'ctx> {
                 value_id, self, pointer_ty,
             ),
         )
+    }
+
+    pub(crate) fn install_global_alias(
+        &'ctx self,
+        builder: crate::global_alias::GlobalAliasBuilder<'ctx>,
+    ) -> IrResult<crate::global_alias::GlobalAlias<'ctx>> {
+        let (name, data, address_space) = builder.into_data();
+        if self.global_name_exists(&name) {
+            return Err(IrError::DuplicateFunctionName { name });
+        }
+        let pointer_ty = self.ctx.ptr_type(address_space);
+        let value_id = self.ctx.push_value(crate::value::ValueData {
+            ty: pointer_ty,
+            name: core::cell::RefCell::new(Some(name.clone())),
+            debug_loc: None,
+            kind: crate::value::ValueKindData::GlobalAlias(data),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        self.aliases.borrow_mut().push(value_id);
+        self.alias_by_name.borrow_mut().insert(name, value_id);
+        Ok(crate::global_alias::GlobalAlias::from_parts_unchecked(
+            value_id, self, pointer_ty,
+        ))
+    }
+
+    pub(crate) fn install_global_ifunc(
+        &'ctx self,
+        builder: crate::global_ifunc::GlobalIFuncBuilder<'ctx>,
+    ) -> IrResult<crate::global_ifunc::GlobalIFunc<'ctx>> {
+        let (name, data, address_space) = builder.into_data();
+        if self.global_name_exists(&name) {
+            return Err(IrError::DuplicateFunctionName { name });
+        }
+        let pointer_ty = self.ctx.ptr_type(address_space);
+        let value_id = self.ctx.push_value(crate::value::ValueData {
+            ty: pointer_ty,
+            name: core::cell::RefCell::new(Some(name.clone())),
+            debug_loc: None,
+            kind: crate::value::ValueKindData::GlobalIFunc(data),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        self.ifuncs.borrow_mut().push(value_id);
+        self.ifunc_by_name.borrow_mut().insert(name, value_id);
+        Ok(crate::global_ifunc::GlobalIFunc::from_parts_unchecked(
+            value_id, self, pointer_ty,
+        ))
+    }
+
+    fn global_name_exists(&self, name: &str) -> bool {
+        self.function_by_name.borrow().contains_key(name)
+            || self.global_by_name.borrow().contains_key(name)
+            || self.alias_by_name.borrow().contains_key(name)
+            || self.ifunc_by_name.borrow().contains_key(name)
     }
 
     // ---- DataLayout / target triple / module asm ----
@@ -932,6 +1080,13 @@ impl<'ctx> Module<'ctx> {
             buf.push('\n');
         }
         buf.push_str(line.as_ref());
+    }
+    pub fn append_use_list_order(&self, directive: impl Into<String>) {
+        self.use_list_orders.borrow_mut().push(directive.into());
+    }
+
+    pub(crate) fn use_list_orders(&self) -> Vec<String> {
+        self.use_list_orders.borrow().clone()
     }
 
     /// Create an inline-assembly value usable as a `call` callee. Mirrors
