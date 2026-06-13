@@ -347,10 +347,10 @@ impl MetadataStore {
     pub fn get_string(&mut self, s: impl Into<String>) -> MetadataId {
         let s = s.into();
         for (i, node) in self.nodes.iter().enumerate() {
-            if let MetadataKind::String(existing) = node {
-                if *existing == s {
-                    return MetadataId(i);
-                }
+            if let MetadataKind::String(existing) = node
+                && *existing == s
+            {
+                return MetadataId(i);
             }
         }
         let id = MetadataId(self.nodes.len());

@@ -52,12 +52,12 @@ pub(super) fn unescape(input: &[u8]) -> Cow<'_, [u8]> {
             continue;
         }
         // 2. "\HH" with two hex digits → that byte.
-        if i + 2 < input.len() {
-            if let (Some(hi), Some(lo)) = (hex_digit(input[i + 1]), hex_digit(input[i + 2])) {
-                out.push(hi * 16 + lo);
-                i += 3;
-                continue;
-            }
+        if i + 2 < input.len()
+            && let (Some(hi), Some(lo)) = (hex_digit(input[i + 1]), hex_digit(input[i + 2]))
+        {
+            out.push(hi * 16 + lo);
+            i += 3;
+            continue;
         }
         // 3. Lenient: keep the literal '\' and advance one byte.
         out.push(b'\\');

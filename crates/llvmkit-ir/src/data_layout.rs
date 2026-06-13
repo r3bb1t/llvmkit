@@ -774,7 +774,7 @@ impl DataLayout {
             } else {
                 self.alignment(module, elem, true)
             };
-            if size_bytes % ty_align.value() != 0 {
+            if !size_bytes.is_multiple_of(ty_align.value()) {
                 is_padded = true;
                 size_bytes = align_to(size_bytes, ty_align);
             }
@@ -784,7 +784,7 @@ impl DataLayout {
             member_offsets.push(size_bytes);
             size_bytes = size_bytes.saturating_add(self.type_alloc_size_inner(module, elem));
         }
-        if size_bytes % alignment.value() != 0 {
+        if !size_bytes.is_multiple_of(alignment.value()) {
             is_padded = true;
             size_bytes = align_to(size_bytes, alignment);
         }
@@ -1286,7 +1286,7 @@ fn parse_alignment(s: &str, name: &str, allow_zero: bool) -> IrResult<Align> {
         }
         return Ok(Align::ONE);
     }
-    if v % 8 != 0 || !is_power_of_two(v / 8) {
+    if !v.is_multiple_of(8) || !is_power_of_two(v / 8) {
         return Err(invalid(format!(
             "{name} alignment must be a power of two times the byte width"
         )));

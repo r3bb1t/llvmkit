@@ -4779,12 +4779,11 @@ where
             }
             None => bb.append_instruction(id),
         }
-        if !name.is_empty() {
-            if let Some(parent_fn_id) = bb.parent_id() {
-                let parent_fn =
-                    FunctionValue::<Dyn>::from_parts_unchecked(parent_fn_id, self.module);
-                parent_fn.register_value_name(name, id);
-            }
+        if !name.is_empty()
+            && let Some(parent_fn_id) = bb.parent_id()
+        {
+            let parent_fn = FunctionValue::<Dyn>::from_parts_unchecked(parent_fn_id, self.module);
+            parent_fn.register_value_name(name, id);
         }
         Instruction::from_parts(id, self.module)
     }

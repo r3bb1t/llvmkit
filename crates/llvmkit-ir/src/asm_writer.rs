@@ -2331,17 +2331,17 @@ pub(crate) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &Module<'_>) -> fmt::Res
             f.write_str("\n")?;
             for (slot, storage) in groups {
                 write!(f, "attributes #{slot} = {{")?;
-                if let Some(attrs) = storage.get(AttrIndex::Function) {
-                    if !attrs.is_empty() {
-                        f.write_str(" ")?;
-                        for (i, attr) in attrs.iter().enumerate() {
-                            if i != 0 {
-                                f.write_str(" ")?;
-                            }
-                            write!(f, "{attr}")?;
+                if let Some(attrs) = storage.get(AttrIndex::Function)
+                    && !attrs.is_empty()
+                {
+                    f.write_str(" ")?;
+                    for (i, attr) in attrs.iter().enumerate() {
+                        if i != 0 {
+                            f.write_str(" ")?;
                         }
-                        f.write_str(" ")?;
+                        write!(f, "{attr}")?;
                     }
+                    f.write_str(" ")?;
                 }
                 f.write_str("}\n")?;
             }

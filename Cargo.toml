@@ -15,7 +15,7 @@ version      = "0.0.1"
 license      = "Apache-2.0 WITH LLVM-exception"
 repository   = "https://github.com/r3bb1t/rllvm"
 homepage     = "https://github.com/r3bb1t/rllvm"
-rust-version = "1.85"
+rust-version = "1.96"
 keywords     = ["llvm", "ir", "lexer", "parser", "compiler"]
 categories   = ["compilers", "parser-implementations", "development-tools"]
 
