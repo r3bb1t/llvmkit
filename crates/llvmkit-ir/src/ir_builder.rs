@@ -83,6 +83,33 @@ pub struct InsertPoint<'ctx, R: ReturnMarker> {
     pub(crate) before: Option<super::value::ValueId>,
 }
 
+#[derive(Debug, Clone)]
+pub struct CallSiteConfig {
+    pub name: String,
+    pub calling_conv: crate::CallingConv,
+    pub attrs: crate::instr_types::CallAttributeData,
+}
+
+impl CallSiteConfig {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            calling_conv: crate::CallingConv::C,
+            attrs: crate::instr_types::CallAttributeData::default(),
+        }
+    }
+
+    pub fn calling_conv(mut self, calling_conv: crate::CallingConv) -> Self {
+        self.calling_conv = calling_conv;
+        self
+    }
+
+    pub fn attrs(mut self, attrs: crate::instr_types::CallAttributeData) -> Self {
+        self.attrs = attrs;
+        self
+    }
+}
+
 /// Builder for a chain of [`Instruction`]s appended to a
 /// [`BasicBlock`].
 ///
@@ -935,7 +962,7 @@ where
     }
 
     /// `add lhs, rhs` on erased operands (scalar or integer vector).
-    /// See [`build_int_binop_dyn`](Self::build_int_binop_dyn).
+    /// Uses the shared erased integer-binop validation path.
     pub fn build_int_add_dyn(
         &self,
         lhs: crate::value::Value<'ctx>,
@@ -946,7 +973,7 @@ where
     }
 
     /// `sub lhs, rhs` on erased operands (scalar or integer vector).
-    /// See [`build_int_binop_dyn`](Self::build_int_binop_dyn).
+    /// Uses the shared erased integer-binop validation path.
     pub fn build_int_sub_dyn(
         &self,
         lhs: crate::value::Value<'ctx>,
@@ -957,7 +984,7 @@ where
     }
 
     /// `mul lhs, rhs` on erased operands (scalar or integer vector).
-    /// See [`build_int_binop_dyn`](Self::build_int_binop_dyn).
+    /// Uses the shared erased integer-binop validation path.
     pub fn build_int_mul_dyn(
         &self,
         lhs: crate::value::Value<'ctx>,
@@ -968,7 +995,7 @@ where
     }
 
     /// `xor lhs, rhs` on erased operands (scalar or integer vector).
-    /// See [`build_int_binop_dyn`](Self::build_int_binop_dyn).
+    /// Uses the shared erased integer-binop validation path.
     pub fn build_int_xor_dyn(
         &self,
         lhs: crate::value::Value<'ctx>,
@@ -979,7 +1006,7 @@ where
     }
 
     /// `and lhs, rhs` on erased operands (scalar or integer vector).
-    /// See [`build_int_binop_dyn`](Self::build_int_binop_dyn).
+    /// Uses the shared erased integer-binop validation path.
     pub fn build_int_and_dyn(
         &self,
         lhs: crate::value::Value<'ctx>,
@@ -990,7 +1017,7 @@ where
     }
 
     /// `or lhs, rhs` on erased operands (scalar or integer vector).
-    /// See [`build_int_binop_dyn`](Self::build_int_binop_dyn).
+    /// Uses the shared erased integer-binop validation path.
     pub fn build_int_or_dyn(
         &self,
         lhs: crate::value::Value<'ctx>,
@@ -1001,7 +1028,7 @@ where
     }
 
     /// `shl lhs, rhs` on erased operands (scalar or integer vector).
-    /// See [`build_int_binop_dyn`](Self::build_int_binop_dyn).
+    /// Uses the shared erased integer-binop validation path.
     pub fn build_int_shl_dyn(
         &self,
         lhs: crate::value::Value<'ctx>,
@@ -1012,7 +1039,7 @@ where
     }
 
     /// `lshr lhs, rhs` on erased operands (scalar or integer vector).
-    /// See [`build_int_binop_dyn`](Self::build_int_binop_dyn).
+    /// Uses the shared erased integer-binop validation path.
     pub fn build_int_lshr_dyn(
         &self,
         lhs: crate::value::Value<'ctx>,
@@ -1023,7 +1050,7 @@ where
     }
 
     /// `ashr lhs, rhs` on erased operands (scalar or integer vector).
-    /// See [`build_int_binop_dyn`](Self::build_int_binop_dyn).
+    /// Uses the shared erased integer-binop validation path.
     pub fn build_int_ashr_dyn(
         &self,
         lhs: crate::value::Value<'ctx>,
@@ -2736,6 +2763,7 @@ where
             args: Vec::new(),
             calling_conv: callee.calling_conv(),
             tail_kind: crate::instr_types::TailCallKind::None,
+            attrs: crate::instr_types::CallAttributeData::default(),
             name: String::new(),
             _rp: PhantomData,
             _rc: PhantomData,
@@ -2838,12 +2866,13 @@ where
             self.require_same_module(v)?;
             arg_ids.push(v.id);
         }
-        let payload = crate::instr_types::CallInstData::new(
+        let payload = crate::instr_types::CallInstData::new_with_attrs(
             asm_v.id,
             fn_ty.as_type().id(),
             arg_ids.into_boxed_slice(),
             crate::CallingConv::C,
             crate::instr_types::TailCallKind::None,
+            crate::instr_types::CallAttributeData::default(),
         );
         let inst = self.append_instruction(
             fn_ty.return_type().id(),
@@ -3426,7 +3455,7 @@ where
     }
 
     /// Runtime-typed bitcast: produce `bitcast <src> to <dst>` with both
-    /// types erased to [`crate::r#type::Type`]. The caller is responsible for
+    /// types erased to [`Type`](crate::Type). The caller is responsible for
     /// ensuring `src` and `dst` have the same bit width; the LLVM verifier
     /// will reject ill-formed bitcasts.
     ///
@@ -4135,10 +4164,6 @@ where
 
     /// Produce `invoke <ret-ty> <callee>(<args>) to label %normal
     /// unwind label %unwind`. Mirrors `IRBuilder::CreateInvoke`.
-    ///
-    /// The result-type marker `R2` flows from the callee's
-    /// `FunctionValue<'ctx, R2>` so the returned `InvokeInst<R2>`
-    /// exposes typed-return accessors (Doctrine D4).
     pub fn build_invoke<R2, I, V, S2, SU>(
         self,
         callee: FunctionValue<'ctx, R2>,
@@ -4146,6 +4171,34 @@ where
         normal_dest: BasicBlock<'ctx, R, S2>,
         unwind_dest: BasicBlock<'ctx, R, SU>,
         name: impl AsRef<str>,
+    ) -> IrResult<(
+        BasicBlock<'ctx, R, Sealed>,
+        crate::instructions::InvokeInst<'ctx, R2>,
+    )>
+    where
+        R2: ReturnMarker,
+        I: IntoIterator<Item = V>,
+        V: crate::value::IsValue<'ctx>,
+        S2: BlockSealState,
+        SU: BlockSealState,
+    {
+        self.build_invoke_with_config(
+            callee,
+            args,
+            normal_dest,
+            unwind_dest,
+            CallSiteConfig::new(name.as_ref()),
+        )
+    }
+
+    /// Produce `invoke` with explicit call-site configuration.
+    pub fn build_invoke_with_config<R2, I, V, S2, SU>(
+        self,
+        callee: FunctionValue<'ctx, R2>,
+        args: I,
+        normal_dest: BasicBlock<'ctx, R, S2>,
+        unwind_dest: BasicBlock<'ctx, R, SU>,
+        config: CallSiteConfig,
     ) -> IrResult<(
         BasicBlock<'ctx, R, Sealed>,
         crate::instructions::InvokeInst<'ctx, R2>,
@@ -4175,15 +4228,109 @@ where
         let bb = self.insert_block();
         let arg_ids: Vec<crate::value::ValueId> =
             args.into_iter().map(|a| a.as_value().id).collect();
-        let payload = crate::instr_types::InvokeInstData::new(
+        let payload = crate::instr_types::InvokeInstData::new_with_attrs(
             callee_v.id,
             fn_ty,
             arg_ids,
-            crate::CallingConv::C,
+            config.calling_conv,
             normal_dest.as_value().id,
             unwind_dest.as_value().id,
+            config.attrs,
         );
-        let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
+        let inst =
+            self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), &config.name);
+        Ok((
+            bb.retag_seal::<Sealed>(),
+            crate::instructions::InvokeInst::<crate::marker::Dyn>::from_raw(
+                inst.as_value().id,
+                self.module,
+                ret_ty,
+            )
+            .retag::<R2>(),
+        ))
+    }
+
+    /// Produce an `invoke` whose callee is an inline-assembly value.
+    pub fn build_inline_asm_invoke<R2, I, V, S2, SU>(
+        self,
+        asm: crate::inline_asm::InlineAsm<'ctx>,
+        args: I,
+        normal_dest: BasicBlock<'ctx, R, S2>,
+        unwind_dest: BasicBlock<'ctx, R, SU>,
+        name: impl AsRef<str>,
+    ) -> IrResult<(
+        BasicBlock<'ctx, R, Sealed>,
+        crate::instructions::InvokeInst<'ctx, R2>,
+    )>
+    where
+        R2: ReturnMarker,
+        I: IntoIterator<Item = V>,
+        V: crate::value::IsValue<'ctx>,
+        S2: BlockSealState,
+        SU: BlockSealState,
+    {
+        self.build_inline_asm_invoke_with_config(
+            asm,
+            args,
+            normal_dest,
+            unwind_dest,
+            CallSiteConfig::new(name.as_ref()),
+        )
+    }
+
+    /// Produce an inline-assembly `invoke` with explicit call-site configuration.
+    pub fn build_inline_asm_invoke_with_config<R2, I, V, S2, SU>(
+        self,
+        asm: crate::inline_asm::InlineAsm<'ctx>,
+        args: I,
+        normal_dest: BasicBlock<'ctx, R, S2>,
+        unwind_dest: BasicBlock<'ctx, R, SU>,
+        config: CallSiteConfig,
+    ) -> IrResult<(
+        BasicBlock<'ctx, R, Sealed>,
+        crate::instructions::InvokeInst<'ctx, R2>,
+    )>
+    where
+        R2: ReturnMarker,
+        I: IntoIterator<Item = V>,
+        V: crate::value::IsValue<'ctx>,
+        S2: BlockSealState,
+        SU: BlockSealState,
+    {
+        if normal_dest.as_value().module().id() != self.module.id()
+            || unwind_dest.as_value().module().id() != self.module.id()
+        {
+            return Err(IrError::ForeignValue);
+        }
+        let asm_v = asm.as_value();
+        self.require_same_module(asm_v)?;
+        let fn_ty = asm.function_type();
+        let ret_ty = fn_ty.return_type().id();
+        let ret_data = self.module.context().type_data(ret_ty);
+        if !crate::function::signature_matches_marker::<R2>(ret_data) {
+            return Err(IrError::ReturnTypeMismatch {
+                expected: fn_ty.return_type().kind_label(),
+                got: fn_ty.return_type().kind_label(),
+            });
+        }
+        let mut arg_ids: Vec<crate::value::ValueId> = Vec::new();
+        for arg in args {
+            let v = arg.as_value();
+            self.require_same_module(v)?;
+            arg_ids.push(v.id);
+        }
+        let bb = self.insert_block();
+        let payload = crate::instr_types::InvokeInstData::new_with_attrs(
+            asm_v.id,
+            fn_ty.as_type().id(),
+            arg_ids,
+            config.calling_conv,
+            normal_dest.as_value().id,
+            unwind_dest.as_value().id,
+            config.attrs,
+        );
+        let inst =
+            self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), &config.name);
         Ok((
             bb.retag_seal::<Sealed>(),
             crate::instructions::InvokeInst::<crate::marker::Dyn>::from_raw(
@@ -4204,6 +4351,33 @@ where
         default_dest: BasicBlock<'ctx, R, S2>,
         indirect_dests: &[BasicBlock<'ctx, R, S2>],
         name: impl AsRef<str>,
+    ) -> IrResult<(
+        BasicBlock<'ctx, R, Sealed>,
+        crate::instructions::CallBrInst<'ctx>,
+    )>
+    where
+        R2: ReturnMarker,
+        I: IntoIterator<Item = V>,
+        V: crate::value::IsValue<'ctx>,
+        S2: BlockSealState,
+    {
+        self.build_callbr_with_config(
+            callee,
+            args,
+            default_dest,
+            indirect_dests,
+            CallSiteConfig::new(name.as_ref()),
+        )
+    }
+
+    /// Produce `callbr` with explicit call-site configuration.
+    pub fn build_callbr_with_config<R2, I, V, S2>(
+        self,
+        callee: FunctionValue<'ctx, R2>,
+        args: I,
+        default_dest: BasicBlock<'ctx, R, S2>,
+        indirect_dests: &[BasicBlock<'ctx, R, S2>],
+        config: CallSiteConfig,
     ) -> IrResult<(
         BasicBlock<'ctx, R, Sealed>,
         crate::instructions::CallBrInst<'ctx>,
@@ -4237,15 +4411,107 @@ where
             args.into_iter().map(|a| a.as_value().id).collect();
         let indirect_ids: Vec<crate::value::ValueId> =
             indirect_dests.iter().map(|d| d.as_value().id).collect();
-        let payload = crate::instr_types::CallBrInstData::new(
+        let payload = crate::instr_types::CallBrInstData::new_with_attrs(
             callee_v.id,
             fn_ty,
             arg_ids,
-            crate::CallingConv::C,
+            config.calling_conv,
             default_dest.as_value().id,
             indirect_ids,
+            config.attrs,
         );
-        let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name);
+        let inst =
+            self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), &config.name);
+        Ok((
+            bb.retag_seal::<Sealed>(),
+            crate::instructions::CallBrInst::from_raw(inst.as_value().id, self.module, ret_ty),
+        ))
+    }
+
+    /// Produce a `callbr` whose callee is an inline-assembly value.
+    pub fn build_inline_asm_callbr<R2, I, V, S2>(
+        self,
+        asm: crate::inline_asm::InlineAsm<'ctx>,
+        args: I,
+        default_dest: BasicBlock<'ctx, R, S2>,
+        indirect_dests: &[BasicBlock<'ctx, R, S2>],
+        name: impl AsRef<str>,
+    ) -> IrResult<(
+        BasicBlock<'ctx, R, Sealed>,
+        crate::instructions::CallBrInst<'ctx>,
+    )>
+    where
+        R2: ReturnMarker,
+        I: IntoIterator<Item = V>,
+        V: crate::value::IsValue<'ctx>,
+        S2: BlockSealState,
+    {
+        self.build_inline_asm_callbr_with_config::<R2, _, _, _>(
+            asm,
+            args,
+            default_dest,
+            indirect_dests,
+            CallSiteConfig::new(name.as_ref()),
+        )
+    }
+
+    /// Produce an inline-assembly `callbr` with explicit call-site configuration.
+    pub fn build_inline_asm_callbr_with_config<R2, I, V, S2>(
+        self,
+        asm: crate::inline_asm::InlineAsm<'ctx>,
+        args: I,
+        default_dest: BasicBlock<'ctx, R, S2>,
+        indirect_dests: &[BasicBlock<'ctx, R, S2>],
+        config: CallSiteConfig,
+    ) -> IrResult<(
+        BasicBlock<'ctx, R, Sealed>,
+        crate::instructions::CallBrInst<'ctx>,
+    )>
+    where
+        R2: ReturnMarker,
+        I: IntoIterator<Item = V>,
+        V: crate::value::IsValue<'ctx>,
+        S2: BlockSealState,
+    {
+        if default_dest.as_value().module().id() != self.module.id() {
+            return Err(IrError::ForeignValue);
+        }
+        for d in indirect_dests {
+            if d.as_value().module().id() != self.module.id() {
+                return Err(IrError::ForeignValue);
+            }
+        }
+        let asm_v = asm.as_value();
+        self.require_same_module(asm_v)?;
+        let fn_ty = asm.function_type();
+        let ret_ty = fn_ty.return_type().id();
+        let ret_data = self.module.context().type_data(ret_ty);
+        if !crate::function::signature_matches_marker::<R2>(ret_data) {
+            return Err(IrError::ReturnTypeMismatch {
+                expected: fn_ty.return_type().kind_label(),
+                got: fn_ty.return_type().kind_label(),
+            });
+        }
+        let mut arg_ids: Vec<crate::value::ValueId> = Vec::new();
+        for arg in args {
+            let v = arg.as_value();
+            self.require_same_module(v)?;
+            arg_ids.push(v.id);
+        }
+        let indirect_ids: Vec<crate::value::ValueId> =
+            indirect_dests.iter().map(|d| d.as_value().id).collect();
+        let bb = self.insert_block();
+        let payload = crate::instr_types::CallBrInstData::new_with_attrs(
+            asm_v.id,
+            fn_ty.as_type().id(),
+            arg_ids,
+            config.calling_conv,
+            default_dest.as_value().id,
+            indirect_ids,
+            config.attrs,
+        );
+        let inst =
+            self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), &config.name);
         Ok((
             bb.retag_seal::<Sealed>(),
             crate::instructions::CallBrInst::from_raw(inst.as_value().id, self.module, ret_ty),
@@ -4752,6 +5018,7 @@ where
     args: Vec<crate::value::ValueId>,
     calling_conv: crate::CallingConv,
     tail_kind: crate::instr_types::TailCallKind,
+    attrs: crate::instr_types::CallAttributeData,
     name: String,
     _rp: PhantomData<RP>,
     _rc: PhantomData<RC>,
@@ -4792,6 +5059,10 @@ where
         self.calling_conv = cc;
         self
     }
+    pub fn call_attributes(mut self, attrs: crate::instr_types::CallAttributeData) -> Self {
+        self.attrs = attrs;
+        self
+    }
 
     pub fn name(mut self, name: impl AsRef<str>) -> Self {
         self.name = name.as_ref().to_owned();
@@ -4809,12 +5080,13 @@ where
                 return Err(IrError::ForeignValue);
             }
         }
-        let payload = crate::instr_types::CallInstData::new(
+        let payload = crate::instr_types::CallInstData::new_with_attrs(
             self.callee_id,
             self.fn_ty,
             self.args.into_boxed_slice(),
             self.calling_conv,
             self.tail_kind,
+            self.attrs,
         );
         let inst = self.parent.append_instruction(
             self.return_ty,

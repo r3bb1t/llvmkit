@@ -43,10 +43,10 @@ pub const MAX_INT_BITS: u32 = 1 << 23;
 // Type id
 // --------------------------------------------------------------------------
 
-/// Crate-internal index into the type arena. `NonZeroU32` so
-/// `Option<TypeId>` stays 4 bytes.
+/// Stable index into the type arena. The numeric contents are opaque; callers
+/// may store and pass the handle back to this crate, but cannot construct one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct TypeId(NonZeroU32);
+pub struct TypeId(NonZeroU32);
 
 impl TypeId {
     /// Build from a 0-based arena index. Stored as `index + 1` so the
@@ -272,9 +272,10 @@ impl<'ctx> Type<'ctx> {
         self.module.type_data(self.id)
     }
 
-    /// Crate-internal id accessor.
+    /// Opaque arena id for structured side tables such as use-list order
+    /// records.
     #[inline]
-    pub(crate) fn id(self) -> TypeId {
+    pub fn id(self) -> TypeId {
         self.id
     }
 

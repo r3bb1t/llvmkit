@@ -13,6 +13,7 @@ use crate::file_loc::{FileLoc, FileLocRange};
 
 use crate::asm_parser_context::AsmParserContext;
 use crate::ll_parser::{ParsedModule, Parser};
+use crate::module_summary::{self, ModuleSummaryIndex};
 use crate::parse_error::{ParseError, ParseResult};
 use crate::slot_mapping::SlotMapping;
 
@@ -39,6 +40,19 @@ pub fn parse_assembly_file_into<'ctx>(
 ) -> ParseResult<ParsedModule<'ctx>> {
     let bytes = std::fs::read(path).map_err(|e| ParseError::Io(e.to_string()))?;
     parse_assembly_into(&bytes, module)
+}
+
+/// Parse a textual LLVM module summary index from bytes.
+pub fn parse_summary_index_assembly(src: &[u8]) -> ParseResult<ModuleSummaryIndex> {
+    module_summary::parse_summary_index(src)
+}
+
+/// Read and parse a textual LLVM module summary index.
+pub fn parse_summary_index_assembly_file(
+    path: impl AsRef<Path>,
+) -> ParseResult<ModuleSummaryIndex> {
+    let bytes = std::fs::read(path).map_err(|e| ParseError::Io(e.to_string()))?;
+    parse_summary_index_assembly(&bytes)
 }
 pub fn parse_assembly_into_with_context<'ctx>(
     src: &[u8],

@@ -30,7 +30,8 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 use llvmkit_ir::{
-    Dyn, FunctionValue, GlobalAlias, GlobalIFunc, GlobalVariable, Type, metadata::MetadataId,
+    Dyn, FunctionValue, GlobalAlias, GlobalIFunc, GlobalVariable, Type,
+    attributes::AttributeStorage, metadata::MetadataId,
 };
 
 use crate::numbered_values::NumberedValues;
@@ -98,6 +99,8 @@ pub struct SlotMapping<'ctx> {
     /// Numbered types — `%0`, `%1`, ... — sorted by slot id to match
     /// upstream's `std::map<unsigned, Type *>` ordering.
     pub numbered_types: BTreeMap<u32, Type<'ctx>>,
+    /// Numbered attribute groups — `#0`, `#1`, ...
+    pub attribute_groups: NumberedValues<AttributeStorage>,
     /// Numbered metadata nodes — `!0`, `!1`, ...
     pub metadata_nodes: NumberedValues<MetadataId>,
 }
@@ -110,6 +113,7 @@ impl<'ctx> Default for SlotMapping<'ctx> {
             named_types: HashMap::new(),
             numbered_types: BTreeMap::new(),
             metadata_nodes: NumberedValues::new(),
+            attribute_groups: NumberedValues::new(),
         }
     }
 }

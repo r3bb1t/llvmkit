@@ -19,6 +19,7 @@ pub(crate) struct GlobalIFuncData {
     pub(crate) linkage: Cell<Linkage>,
     pub(crate) visibility: Cell<Visibility>,
     pub(crate) partition: RefCell<Option<String>>,
+    pub(crate) metadata: RefCell<crate::metadata::MetadataAttachmentSet>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -146,6 +147,18 @@ impl<'ctx> GlobalIFunc<'ctx> {
     #[inline]
     pub fn set_visibility(self, visibility: Visibility) {
         self.data().visibility.set(visibility);
+    }
+
+    pub fn metadata(self) -> core::cell::Ref<'ctx, crate::metadata::MetadataAttachmentSet> {
+        self.data().metadata.borrow()
+    }
+
+    pub fn set_metadata(
+        self,
+        kind: crate::metadata::MetadataAttachmentKind,
+        id: crate::metadata::MetadataId,
+    ) {
+        self.data().metadata.borrow_mut().insert(kind, id);
     }
 
     pub fn partition(self) -> Option<String> {
@@ -311,6 +324,7 @@ impl<'ctx> GlobalIFuncBuilder<'ctx> {
             linkage: Cell::new(linkage),
             visibility: Cell::new(visibility),
             partition: RefCell::new(partition),
+            metadata: RefCell::new(crate::metadata::MetadataAttachmentSet::new()),
         };
         (name, data, address_space)
     }

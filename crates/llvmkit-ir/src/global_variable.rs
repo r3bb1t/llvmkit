@@ -56,6 +56,7 @@ pub(crate) struct GlobalVariableData {
     /// Comdat name (no leading `$`). The actual `ComdatData` lives in
     /// the owning module's comdat storage.
     pub(crate) comdat: RefCell<Option<String>>,
+    pub(crate) metadata: RefCell<crate::metadata::MetadataAttachmentSet>,
 }
 
 // Construction goes through `GlobalBuilder::into_data`.
@@ -466,6 +467,17 @@ impl<'ctx> GlobalVariable<'ctx> {
             }
         }
     }
+    pub fn metadata(self) -> core::cell::Ref<'ctx, crate::metadata::MetadataAttachmentSet> {
+        self.data().metadata.borrow()
+    }
+
+    pub fn set_metadata(
+        self,
+        kind: crate::metadata::MetadataAttachmentKind,
+        id: crate::metadata::MetadataId,
+    ) {
+        self.data().metadata.borrow_mut().insert(kind, id);
+    }
 }
 
 impl<'ctx> sealed::Sealed for GlobalVariable<'ctx> {}
@@ -742,6 +754,7 @@ impl<'ctx> GlobalBuilder<'ctx> {
             section: RefCell::new(section),
             partition: RefCell::new(partition),
             comdat: RefCell::new(comdat),
+            metadata: RefCell::new(crate::metadata::MetadataAttachmentSet::new()),
         };
         (name, data, initializer, address_space, value_type)
     }

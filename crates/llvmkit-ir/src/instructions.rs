@@ -479,7 +479,6 @@ impl<'ctx, R: crate::marker::ReturnMarker> CallInst<'ctx, R> {
             _ => unreachable!("CallInst invariant: kind is Instruction"),
         }
     }
-    /// Callee operand (typically a `FunctionValue`, but a function-
     /// pointer value also fits here).
     pub fn callee(self) -> Value<'ctx> {
         let id = self.payload().callee.get();

@@ -4,10 +4,10 @@
 //! ## What's shipped
 //!
 //! Phase D minimum: enough to model `define <ret> @name(<params>) { ... }`
-//! with `Linkage`, calling convention, [`UnnamedAddr`], and per-index
-//! attribute slots. Visibility, DLL storage class, GC, comdat, prefix
-//! data, prologue data, personality, and section/partition controls
-//! are deferred to the full Phase D session.
+//! with `Linkage`, visibility, DLL storage class, DSO locality, calling
+//! convention, [`UnnamedAddr`], address space, section/partition, comdat,
+//! alignment, GC, prefix/prologue/personality data, metadata attachments, and
+//! per-index attribute slots.
 //!
 //! ## Storage shape
 //!
@@ -29,22 +29,25 @@
 //! basic blocks and to any [`IRBuilder`](crate::IRBuilder) positioned
 //! inside them, so the builder's `build_ret` can be statically typed.
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
 
 use crate::AttrIndex;
 use crate::DebugLoc;
+use crate::align::MaybeAlign;
 use crate::argument::Argument;
 use crate::attributes::AttributeStorage;
 use crate::basic_block::{BasicBlock, BasicBlockData};
 use crate::calling_conv::CallingConv;
+use crate::comdat::ComdatRef;
+use crate::constant::{Constant, IsConstant};
 use crate::derived_types::FunctionType;
 use crate::error::{IrError, IrResult};
 use crate::float_kind::FloatKind;
-use crate::global_value::Linkage;
+use crate::global_value::{DllStorageClass, DsoLocality, Linkage, Visibility};
 use crate::int_width::IntWidth;
 use crate::marker::{Dyn, ReturnMarker};
-use crate::module::{Module, ModuleRef};
+use crate::module::{Module, ModuleRef, UseListOrderRecord, validate_use_list_order_indexes};
 use crate::r#type::{Type, TypeData, TypeId};
 use crate::unnamed_addr::UnnamedAddr;
 use crate::value::{
@@ -63,8 +66,20 @@ pub(crate) struct FunctionData {
     pub(crate) name: String,
     pub(crate) signature: TypeId,
     pub(crate) linkage: RefCell<Linkage>,
+    pub(crate) visibility: RefCell<Visibility>,
+    pub(crate) dll_storage_class: RefCell<DllStorageClass>,
+    pub(crate) dso_locality: RefCell<DsoLocality>,
     pub(crate) calling_conv: RefCell<CallingConv>,
     pub(crate) unnamed_addr: RefCell<UnnamedAddr>,
+    pub(crate) address_space: RefCell<u32>,
+    pub(crate) section: RefCell<Option<String>>,
+    pub(crate) partition: RefCell<Option<String>>,
+    pub(crate) align: RefCell<MaybeAlign>,
+    pub(crate) gc: RefCell<Option<String>>,
+    pub(crate) prefix_data: Cell<Option<ValueId>>,
+    pub(crate) prologue_data: Cell<Option<ValueId>>,
+    pub(crate) personality_fn: Cell<Option<ValueId>>,
+    pub(crate) comdat: RefCell<Option<String>>,
     /// One value-id per parameter, in declaration order. Set once at
     /// function-creation time after every argument value-id is known;
     /// LLVM does not allow adding parameters in place afterwards, so
@@ -72,7 +87,9 @@ pub(crate) struct FunctionData {
     pub(crate) args: RefCell<Box<[ValueId]>>,
     pub(crate) basic_blocks: RefCell<Vec<ValueId>>,
     pub(crate) attributes: RefCell<AttributeStorage>,
-    pub(crate) use_list_orders: RefCell<Vec<String>>,
+    pub(crate) function_attr_groups: RefCell<Vec<u32>>,
+    pub(crate) use_list_orders: RefCell<Vec<UseListOrderRecord>>,
+    pub(crate) metadata: RefCell<crate::metadata::MetadataAttachmentSet>,
     pub(crate) symbol_table: ValueSymbolTable,
 }
 
@@ -87,12 +104,26 @@ impl FunctionData {
             name,
             signature,
             linkage: RefCell::new(linkage),
+            visibility: RefCell::new(Visibility::Default),
+            dll_storage_class: RefCell::new(DllStorageClass::Default),
+            dso_locality: RefCell::new(DsoLocality::Default),
             calling_conv: RefCell::new(calling_conv),
             unnamed_addr: RefCell::new(UnnamedAddr::None),
+            address_space: RefCell::new(0),
+            section: RefCell::new(None),
+            partition: RefCell::new(None),
+            align: RefCell::new(MaybeAlign::NONE),
+            gc: RefCell::new(None),
+            prefix_data: Cell::new(None),
+            prologue_data: Cell::new(None),
+            personality_fn: Cell::new(None),
+            comdat: RefCell::new(None),
             args: RefCell::new(Box::new([])),
             basic_blocks: RefCell::new(Vec::new()),
             attributes: RefCell::new(AttributeStorage::new()),
+            function_attr_groups: RefCell::new(Vec::new()),
             use_list_orders: RefCell::new(Vec::new()),
+            metadata: RefCell::new(crate::metadata::MetadataAttachmentSet::new()),
             symbol_table: ValueSymbolTable::new(),
         }
     }
@@ -239,6 +270,36 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
         *self.data().linkage.borrow_mut() = linkage;
     }
 
+    #[inline]
+    pub fn visibility(self) -> Visibility {
+        *self.data().visibility.borrow()
+    }
+
+    #[inline]
+    pub fn set_visibility(self, visibility: Visibility) {
+        *self.data().visibility.borrow_mut() = visibility;
+    }
+
+    #[inline]
+    pub fn dll_storage_class(self) -> DllStorageClass {
+        *self.data().dll_storage_class.borrow()
+    }
+
+    #[inline]
+    pub fn set_dll_storage_class(self, cls: DllStorageClass) {
+        *self.data().dll_storage_class.borrow_mut() = cls;
+    }
+
+    #[inline]
+    pub fn dso_locality(self) -> DsoLocality {
+        *self.data().dso_locality.borrow()
+    }
+
+    #[inline]
+    pub fn set_dso_locality(self, locality: DsoLocality) {
+        *self.data().dso_locality.borrow_mut() = locality;
+    }
+
     /// Calling convention.
     #[inline]
     pub fn calling_conv(self) -> CallingConv {
@@ -264,6 +325,147 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
         *self.data().unnamed_addr.borrow_mut() = value;
     }
 
+    #[inline]
+    pub fn address_space(self) -> u32 {
+        *self.data().address_space.borrow()
+    }
+
+    #[inline]
+    pub fn set_address_space(self, address_space: u32) {
+        *self.data().address_space.borrow_mut() = address_space;
+    }
+
+    pub fn section(self) -> Option<String> {
+        self.data().section.borrow().clone()
+    }
+
+    pub fn set_section(self, section: Option<impl Into<String>>) {
+        *self.data().section.borrow_mut() = section.map(Into::into);
+    }
+
+    pub fn partition(self) -> Option<String> {
+        self.data().partition.borrow().clone()
+    }
+
+    pub fn set_partition(self, partition: Option<impl Into<String>>) {
+        *self.data().partition.borrow_mut() = partition.map(Into::into);
+    }
+
+    #[inline]
+    pub fn align(self) -> MaybeAlign {
+        *self.data().align.borrow()
+    }
+
+    #[inline]
+    pub fn set_align(self, align: MaybeAlign) {
+        *self.data().align.borrow_mut() = align;
+    }
+
+    pub fn gc(self) -> Option<String> {
+        self.data().gc.borrow().clone()
+    }
+
+    pub fn set_gc(self, gc: Option<impl Into<String>>) {
+        *self.data().gc.borrow_mut() = gc.map(Into::into);
+    }
+    pub fn prefix_data(self) -> Option<Constant<'ctx>> {
+        self.data().prefix_data.get().map(|id| {
+            let data = self.module.module().context().value_data(id);
+            Constant {
+                id,
+                module: self.module,
+                ty: data.ty,
+            }
+        })
+    }
+
+    pub fn set_prefix_data(self, data: Option<impl IsConstant<'ctx>>) -> IrResult<()> {
+        let id = self.checked_constant_id(data)?;
+        self.data().prefix_data.set(id);
+        Ok(())
+    }
+
+    pub fn prologue_data(self) -> Option<Constant<'ctx>> {
+        self.data().prologue_data.get().map(|id| {
+            let data = self.module.module().context().value_data(id);
+            Constant {
+                id,
+                module: self.module,
+                ty: data.ty,
+            }
+        })
+    }
+
+    pub fn set_prologue_data(self, data: Option<impl IsConstant<'ctx>>) -> IrResult<()> {
+        let id = self.checked_constant_id(data)?;
+        self.data().prologue_data.set(id);
+        Ok(())
+    }
+
+    pub fn personality_fn(self) -> Option<Constant<'ctx>> {
+        self.data().personality_fn.get().map(|id| {
+            let data = self.module.module().context().value_data(id);
+            Constant {
+                id,
+                module: self.module,
+                ty: data.ty,
+            }
+        })
+    }
+
+    pub fn set_personality_fn(self, data: Option<impl IsConstant<'ctx>>) -> IrResult<()> {
+        let id = self.checked_constant_id(data)?;
+        self.data().personality_fn.set(id);
+        Ok(())
+    }
+
+    fn checked_constant_id(self, data: Option<impl IsConstant<'ctx>>) -> IrResult<Option<ValueId>> {
+        match data {
+            None => Ok(None),
+            Some(value) => {
+                let constant = value.as_constant();
+                if constant.module != self.module {
+                    return Err(IrError::ForeignValue);
+                }
+                Ok(Some(constant.as_value().id))
+            }
+        }
+    }
+
+    pub fn comdat(self) -> Option<ComdatRef<'ctx>> {
+        let name = self.data().comdat.borrow().clone()?;
+        self.module.module().get_comdat(&name)
+    }
+
+    pub fn set_comdat(self, comdat: Option<ComdatRef<'ctx>>) -> IrResult<()> {
+        match comdat {
+            None => {
+                *self.data().comdat.borrow_mut() = None;
+                Ok(())
+            }
+            Some(c) => {
+                if c.module != self.module {
+                    return Err(IrError::InvalidOperation {
+                        message: "comdat does not belong to this module",
+                    });
+                }
+                *self.data().comdat.borrow_mut() = Some(c.name().to_owned());
+                Ok(())
+            }
+        }
+    }
+    pub fn metadata(self) -> core::cell::Ref<'ctx, crate::metadata::MetadataAttachmentSet> {
+        self.data().metadata.borrow()
+    }
+
+    pub fn set_metadata(
+        self,
+        kind: crate::metadata::MetadataAttachmentKind,
+        id: crate::metadata::MetadataId,
+    ) {
+        self.data().metadata.borrow_mut().insert(kind, id);
+    }
+
     /// Add an attribute at `index` to an already-created function.
     /// Mirrors `Function::addAttributeAtIndex`. Complements the
     /// build-time [`function_builder().attribute`](crate::function::FunctionBuilder::attribute)
@@ -274,6 +476,20 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
     #[inline]
     pub fn add_attribute(self, index: AttrIndex, attr: crate::Attribute<'ctx>) {
         self.data().attributes.borrow_mut().add(index, attr);
+    }
+
+    pub fn add_function_attr_group(self, group: u32) {
+        let mut groups = self.data().function_attr_groups.borrow_mut();
+        if !groups.contains(&group) {
+            groups.push(group);
+        }
+    }
+    pub fn set_attributes(self, attributes: AttributeStorage) {
+        *self.data().attributes.borrow_mut() = attributes;
+    }
+
+    pub(crate) fn function_attr_groups(self) -> Vec<u32> {
+        self.data().function_attr_groups.borrow().clone()
     }
 
     /// Convenience: add a string-valued attribute (`"key"="value"`) at
@@ -377,15 +593,14 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
             .map(move |id| BasicBlock::from_parts(id, module, label_ty))
     }
 
-    /// Entry block, or `None` for a function with no body.
-    pub fn append_use_list_order(self, directive: impl Into<String>) {
-        self.data()
-            .use_list_orders
-            .borrow_mut()
-            .push(directive.into());
+    /// Append a function-local `uselistorder` record.
+    pub fn append_use_list_order(self, record: UseListOrderRecord) -> IrResult<()> {
+        validate_use_list_order_indexes(&record.indexes)?;
+        self.data().use_list_orders.borrow_mut().push(record);
+        Ok(())
     }
 
-    pub(crate) fn use_list_orders(self) -> Vec<String> {
+    pub(crate) fn use_list_orders(self) -> Vec<UseListOrderRecord> {
         self.data().use_list_orders.borrow().clone()
     }
 
@@ -579,9 +794,22 @@ pub struct FunctionBuilder<'ctx, R: ReturnMarker> {
     name: String,
     signature: FunctionType<'ctx>,
     linkage: Linkage,
+    visibility: Visibility,
+    dll_storage_class: DllStorageClass,
+    dso_locality: DsoLocality,
     calling_conv: CallingConv,
     unnamed_addr: UnnamedAddr,
+    address_space: u32,
+    section: Option<String>,
+    partition: Option<String>,
+    align: MaybeAlign,
+    gc: Option<String>,
+    prefix_data: Option<Constant<'ctx>>,
+    prologue_data: Option<Constant<'ctx>>,
+    personality_fn: Option<Constant<'ctx>>,
+    comdat: Option<ComdatRef<'ctx>>,
     attributes: AttributeStorage,
+    function_attr_groups: Vec<u32>,
     /// Pending `(slot, name)` pairs to apply after the function value
     /// exists. Slots out of range error at `build()` time.
     param_names: Vec<(u32, String)>,
@@ -601,9 +829,22 @@ impl<'ctx, R: ReturnMarker> FunctionBuilder<'ctx, R> {
             name: name.into(),
             signature,
             linkage: Linkage::default(),
+            visibility: Visibility::Default,
+            dll_storage_class: DllStorageClass::Default,
+            dso_locality: DsoLocality::Default,
             calling_conv: CallingConv::default(),
             unnamed_addr: UnnamedAddr::None,
+            address_space: 0,
+            section: None,
+            partition: None,
+            align: MaybeAlign::NONE,
+            gc: None,
+            prefix_data: None,
+            prologue_data: None,
+            personality_fn: None,
+            comdat: None,
             attributes: AttributeStorage::new(),
+            function_attr_groups: Vec::new(),
             param_names: Vec::new(),
             _r: PhantomData,
         }
@@ -612,6 +853,21 @@ impl<'ctx, R: ReturnMarker> FunctionBuilder<'ctx, R> {
     /// Override the linkage.
     pub fn linkage(mut self, linkage: Linkage) -> Self {
         self.linkage = linkage;
+        self
+    }
+
+    pub fn visibility(mut self, visibility: Visibility) -> Self {
+        self.visibility = visibility;
+        self
+    }
+
+    pub fn dll_storage_class(mut self, cls: DllStorageClass) -> Self {
+        self.dll_storage_class = cls;
+        self
+    }
+
+    pub fn dso_locality(mut self, locality: DsoLocality) -> Self {
+        self.dso_locality = locality;
         self
     }
 
@@ -627,9 +883,64 @@ impl<'ctx, R: ReturnMarker> FunctionBuilder<'ctx, R> {
         self
     }
 
-    /// Add an attribute at `index`.
+    pub fn address_space(mut self, address_space: u32) -> Self {
+        self.address_space = address_space;
+        self
+    }
+
+    pub fn section(mut self, section: impl Into<String>) -> Self {
+        self.section = Some(section.into());
+        self
+    }
+
+    pub fn partition(mut self, partition: impl Into<String>) -> Self {
+        self.partition = Some(partition.into());
+        self
+    }
+
+    pub fn align(mut self, align: MaybeAlign) -> Self {
+        self.align = align;
+        self
+    }
+
+    pub fn gc(mut self, gc: impl Into<String>) -> Self {
+        self.gc = Some(gc.into());
+        self
+    }
+    pub fn prefix_data(mut self, data: impl IsConstant<'ctx>) -> Self {
+        self.prefix_data = Some(data.as_constant());
+        self
+    }
+
+    pub fn prologue_data(mut self, data: impl IsConstant<'ctx>) -> Self {
+        self.prologue_data = Some(data.as_constant());
+        self
+    }
+
+    pub fn personality_fn(mut self, data: impl IsConstant<'ctx>) -> Self {
+        self.personality_fn = Some(data.as_constant());
+        self
+    }
+
+    pub fn comdat(mut self, comdat: ComdatRef<'ctx>) -> Self {
+        self.comdat = Some(comdat);
+        self
+    }
+
     pub fn attribute(mut self, index: AttrIndex, attr: crate::Attribute<'ctx>) -> Self {
         self.attributes.add(index, attr);
+        self
+    }
+
+    pub fn attribute_storage(mut self, attributes: AttributeStorage) -> Self {
+        self.attributes = attributes;
+        self
+    }
+
+    pub fn function_attr_group(mut self, group: u32) -> Self {
+        if !self.function_attr_groups.contains(&group) {
+            self.function_attr_groups.push(group);
+        }
         self
     }
 
@@ -665,10 +976,39 @@ impl<'ctx, R: ReturnMarker> FunctionBuilder<'ctx, R> {
         let f = self
             .module
             .add_function::<R>(&self.name, self.signature, self.linkage)?;
+        f.set_visibility(self.visibility);
+        f.set_dll_storage_class(self.dll_storage_class);
+        f.set_dso_locality(self.dso_locality);
         f.set_calling_conv(self.calling_conv);
         f.set_unnamed_addr(self.unnamed_addr);
+        f.set_address_space(self.address_space);
+        if let Some(section) = self.section {
+            f.set_section(Some(section));
+        }
+        if let Some(partition) = self.partition {
+            f.set_partition(Some(partition));
+        }
+        f.set_align(self.align);
+        if let Some(gc) = self.gc {
+            f.set_gc(Some(gc));
+        }
+        if let Some(prefix_data) = self.prefix_data {
+            f.set_prefix_data(Some(prefix_data))?;
+        }
+        if let Some(prologue_data) = self.prologue_data {
+            f.set_prologue_data(Some(prologue_data))?;
+        }
+        if let Some(personality_fn) = self.personality_fn {
+            f.set_personality_fn(Some(personality_fn))?;
+        }
+        if let Some(comdat) = self.comdat {
+            f.set_comdat(Some(comdat))?;
+        }
         // Move the accumulated attribute set into the function.
         *f.data().attributes.borrow_mut() = self.attributes;
+        for group in self.function_attr_groups {
+            f.add_function_attr_group(group);
+        }
         // Apply parameter names.
         for (slot, name) in self.param_names {
             let arg = f.param(slot)?;

@@ -67,3 +67,68 @@ fn common_function_linkage_is_rejected() {
         other => panic!("unexpected error: {other:?}"),
     }
 }
+
+/// Mirrors `LLParser.cpp::parseUnnamedAttrGroup`: attribute groups are parsed
+/// once and referenced from declarations by `#N`.
+#[test]
+fn attribute_group_round_trips() {
+    let module = parse_module(
+        "attributes #0 = { nounwind \"frame-pointer\"=\"all\" }\ndeclare void @f() #0\n",
+    );
+    let printed = format!("{module}");
+    assert!(
+        printed.contains("attributes #0 = { nounwind \"frame-pointer\"=\"all\" }"),
+        "output: {printed}"
+    );
+    assert!(
+        printed.contains("declare void @f() #0"),
+        "output: {printed}"
+    );
+}
+
+/// Mirrors `LLParser.cpp::parseFunctionHeader` for stored function header
+/// modifiers that llvmkit models today.
+#[test]
+fn function_full_header_round_trips() {
+    let module = parse_module(
+        "attributes #0 = { nounwind }\n\
+define hidden dllimport fastcc zeroext i32 @f(i32 zeroext %x) unnamed_addr addrspace(1) #0 section \".text\" partition \"part\" align 4 gc \"statepoint-example\" !dbg !0 {\n\
+entry:\n\
+  ret i32 %x, !dbg !1\n\
+}\n\
+!0 = !DISubprogram(name: \"f\")\n\
+!1 = !DILocation(line: 1, column: 1, scope: !0)\n",
+    );
+    let printed = format!("{module}");
+    assert!(printed.contains("define hidden dllimport fastcc zeroext i32 @f(i32 zeroext %x) unnamed_addr addrspace(1) #0"), "output: {printed}");
+    assert!(printed.contains("section \".text\""), "output: {printed}");
+    assert!(printed.contains("partition \"part\""), "output: {printed}");
+    assert!(printed.contains("align 4"), "output: {printed}");
+    assert!(
+        printed.contains("gc \"statepoint-example\""),
+        "output: {printed}"
+    );
+    assert!(printed.contains("!dbg !0"), "output: {printed}");
+    assert!(printed.contains("ret i32 %x, !dbg !1"), "output: {printed}");
+}
+
+/// Mirrors `test/Assembler/function-operand-uselistorder.ll`: function
+/// headers preserve comdat plus prefix/prologue/personality operands.
+#[test]
+fn function_operand_header_fields_round_trip() {
+    let module = parse_module(
+        "$foo = comdat any\n\
+@g = global i32 0\n\
+define void @f() comdat($foo) prefix ptr @g prologue ptr @g personality ptr @g {\n\
+entry:\n\
+  ret void\n\
+}\n",
+    );
+    let printed = format!("{module}");
+    assert!(
+        printed.contains(
+            "define void @f() comdat($foo) prefix ptr @g prologue ptr @g personality ptr @g"
+        ),
+        "output: {printed}"
+    );
+}

@@ -938,6 +938,30 @@ impl<'src> Lexer<'src> {
             return Some(token);
         }
 
+        if matches!(
+            s,
+            "DIFile"
+                | "DICompileUnit"
+                | "DISubprogram"
+                | "DILocation"
+                | "DILocalVariable"
+                | "DIBasicType"
+                | "DIDerivedType"
+                | "DICompositeType"
+                | "DISubrange"
+                | "DINamespace"
+                | "DIExpression"
+                | "DIGlobalVariable"
+                | "DIGlobalVariableExpression"
+                | "DISubroutineType"
+                | "DIEnumerator"
+                | "DIModule"
+                | "DITemplateTypeParameter"
+                | "DITemplateValueParameter"
+        ) {
+            return Some(Token::SpecializedMetadata(s));
+        }
+
         if s.starts_with("DIFlag") {
             return Some(Token::DiFlag(s));
         }

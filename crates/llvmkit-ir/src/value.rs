@@ -49,12 +49,10 @@ use crate::int_width::{IntDyn, IntWidth};
 // ValueId
 // --------------------------------------------------------------------------
 
-/// Crate-internal index into the value arena. `NonZeroUsize` so
-/// `Option<ValueId>` stays the same size and so `idx + 1` is
-/// overflow-free for every realistic input — the only way to wrap is
-/// allocating `usize::MAX` values, which exceeds addressable memory.
+/// Stable index into the value arena. The numeric contents are opaque; callers
+/// may store and pass the handle back to this crate, but cannot construct one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct ValueId(NonZeroUsize);
+pub struct ValueId(NonZeroUsize);
 
 impl ValueId {
     /// Build from a 0-based arena index.
@@ -123,7 +121,7 @@ pub(crate) enum ValueKindData {
         slot: u32,
     },
     BasicBlock(BasicBlockData),
-    Function(FunctionData),
+    Function(Box<FunctionData>),
     Instruction(InstructionData),
     GlobalAlias(crate::global_alias::GlobalAliasData),
     GlobalIFunc(crate::global_ifunc::GlobalIFuncData),
@@ -188,6 +186,13 @@ impl<'ctx> Value<'ctx> {
     #[inline]
     pub fn module(self) -> &'ctx Module<'ctx> {
         self.module.module()
+    }
+
+    /// Opaque arena id for structured side tables such as use-list order
+    /// records.
+    #[inline]
+    pub fn id(self) -> ValueId {
+        self.id
     }
 
     /// Cached IR type of this value.

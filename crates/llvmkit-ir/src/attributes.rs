@@ -527,23 +527,39 @@ impl AttributeStored {
         }
     }
 }
+impl fmt::Display for AttributeStored {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Enum(k) => f.write_str(k.name()),
+            Self::Int(k, v) => write!(f, "{}({v})", k.name()),
+            Self::Type(_, _) => {
+                unreachable!("type-valued attributes need a module context to print")
+            }
+            Self::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
+            Self::String { key, value } => write!(f, "\"{key}\"=\"{value}\""),
+        }
+    }
+}
 
 /// Lifetime-free counterpart of [`AttributeList`] used inside the
-/// value arena. Stored on each [`crate::function::FunctionData`].
-#[derive(Debug, Default, Clone)]
-pub(crate) struct AttributeStorage {
+/// value arena for function payloads.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+pub struct AttributeStorage {
     entries: Vec<(AttrIndex, Vec<AttributeStored>)>,
 }
 
 impl AttributeStorage {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
     /// Insert `attr` at `index`. De-duplicates by structural
     /// equality.
-    pub(crate) fn add(&mut self, index: AttrIndex, attr: Attribute<'_>) {
-        let stored = AttributeStored::from_attribute(attr);
+    pub fn add(&mut self, index: AttrIndex, attr: Attribute<'_>) {
+        self.add_stored(index, AttributeStored::from_attribute(attr));
+    }
+
+    pub(crate) fn add_stored(&mut self, index: AttrIndex, stored: AttributeStored) {
         if let Some(pos) = self.entries.iter().position(|(i, _)| *i == index) {
             let set = &mut self.entries[pos].1;
             if !set.contains(&stored) {
@@ -552,6 +568,10 @@ impl AttributeStorage {
             return;
         }
         self.entries.push((index, vec![stored]));
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.iter().all(|(_, attrs)| attrs.is_empty())
     }
 
     /// Borrow the slice of stored attributes at `index`, or `None`

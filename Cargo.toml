@@ -20,7 +20,7 @@ keywords     = ["llvm", "ir", "lexer", "parser", "compiler"]
 categories   = ["compilers", "parser-implementations", "development-tools"]
 
 [workspace.dependencies]
-llvmkit-support   = { path = "crates/llvmkit-support" }
-llvmkit-asmparser = { path = "crates/llvmkit-asmparser" }
-llvmkit-ir        = { path = "crates/llvmkit-ir" }
+llvmkit-support   = { version = "0.0.1", path = "crates/llvmkit-support" }
+llvmkit-asmparser = { version = "0.0.1", path = "crates/llvmkit-asmparser" }
+llvmkit-ir        = { version = "0.0.1", path = "crates/llvmkit-ir" }
 thiserror         = "2"

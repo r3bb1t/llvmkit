@@ -22,9 +22,8 @@
 //!   `ConstantVector` element list.
 //! - `Undef` / `Poison` — kind-erased markers.
 //!
-//! The richer shapes (`ConstantExpr`, `BlockAddress`, `TokenNone`,
-//! `PtrAuth`, `DSOLocalEquivalent`, `NoCFIValue`, target-extension
-//! `none`) land in their own focused sessions per the foundation plan.
+//! Session 2 models the LLVM 22.1.4 parser-needed constant subset;
+//! unsupported legacy `ConstantExpr` opcodes remain parser errors.
 //!
 
 //! [`ConstantIntValue`]: crate::constants::ConstantIntValue
@@ -35,6 +34,77 @@ use crate::r#type::{Type, TypeId};
 use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, sealed};
 use crate::{DebugLoc, IrError, IrResult};
 
+/// Opcode carried by a parser-needed LLVM `ConstantExpr`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConstantExprOpcode {
+    GetElementPtr,
+    InBoundsGetElementPtr,
+    Trunc,
+    PtrToAddr,
+    PtrToInt,
+    IntToPtr,
+    BitCast,
+    AddrSpaceCast,
+    ExtractElement,
+    InsertElement,
+    ShuffleVector,
+    Add,
+    Sub,
+    Xor,
+}
+
+impl ConstantExprOpcode {
+    pub(crate) fn keyword(self) -> &'static str {
+        match self {
+            Self::GetElementPtr | Self::InBoundsGetElementPtr => "getelementptr",
+            Self::Trunc => "trunc",
+            Self::PtrToAddr => "ptrtoaddr",
+            Self::PtrToInt => "ptrtoint",
+            Self::IntToPtr => "inttoptr",
+            Self::BitCast => "bitcast",
+            Self::AddrSpaceCast => "addrspacecast",
+            Self::ExtractElement => "extractelement",
+            Self::InsertElement => "insertelement",
+            Self::ShuffleVector => "shufflevector",
+            Self::Add => "add",
+            Self::Sub => "sub",
+            Self::Xor => "xor",
+        }
+    }
+
+    pub(crate) fn is_cast(self) -> bool {
+        matches!(
+            self,
+            Self::Trunc
+                | Self::PtrToAddr
+                | Self::PtrToInt
+                | Self::IntToPtr
+                | Self::BitCast
+                | Self::AddrSpaceCast
+        )
+    }
+}
+
+/// Optional optimization and predicate flags attached to a constant expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ConstantExprFlags {
+    pub inbounds: bool,
+    pub nuw: bool,
+    pub nsw: bool,
+}
+
+/// Lifetime-free payload for a `ConstantExpr`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ConstantExprData {
+    pub(crate) opcode: ConstantExprOpcode,
+    pub(crate) result_ty: TypeId,
+    pub(crate) source_ty: Option<TypeId>,
+    pub(crate) operands: Box<[ValueId]>,
+    pub(crate) indices: Box<[u32]>,
+    pub(crate) mask: Box<[i32]>,
+    pub(crate) flags: ConstantExprFlags,
+}
+
 // --------------------------------------------------------------------------
 // Storage payload
 // --------------------------------------------------------------------------
@@ -43,6 +113,8 @@ use crate::{DebugLoc, IrError, IrResult};
 /// [`ValueKindData::Constant`](crate::value::ValueKindData::Constant).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum ConstantData {
+    /// Parser-needed LLVM `ConstantExpr` storage.
+    Expr(ConstantExprData),
     /// Arbitrary-precision integer. Magnitude words are little-endian
     /// (`words[0]` is the least significant 64-bit limb), normalised so
     /// trailing zero limbs are stripped. The sign is encoded by the
@@ -96,6 +168,24 @@ pub(crate) enum ConstantData {
         hi_id: ValueId,
         lo_id: ValueId,
         addend: i64,
+    },
+    /// `blockaddress(@function, %block)`.
+    BlockAddress { function: ValueId, block: ValueId },
+    /// `dso_local_equivalent @function`.
+    DSOLocalEquivalent { function: ValueId },
+    /// `no_cfi @function`.
+    NoCfi { function: ValueId },
+    /// `token none`.
+    TokenNone,
+    /// `target(...) none`.
+    TargetExtNone,
+    /// `ptrauth (...)`.
+    PtrAuth {
+        pointer: ValueId,
+        key: ValueId,
+        discriminator: ValueId,
+        addr_discriminator: ValueId,
+        deactivation_symbol: ValueId,
     },
     /// `undef` of any first-class type.
     Undef,

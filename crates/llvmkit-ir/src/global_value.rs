@@ -143,6 +143,37 @@ impl fmt::Display for DllStorageClass {
     }
 }
 
+/// DSO locality marker. Mirrors `GlobalValue::DSOLocalEquivalent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum DsoLocality {
+    /// No explicit DSO-locality marker.
+    #[default]
+    Default,
+    /// `dso_local`.
+    Local,
+    /// `dso_preemptable`.
+    Preemptable,
+}
+
+impl DsoLocality {
+    pub const fn keyword(self) -> Option<&'static str> {
+        match self {
+            Self::Default => None,
+            Self::Local => Some("dso_local"),
+            Self::Preemptable => Some("dso_preemptable"),
+        }
+    }
+}
+
+impl fmt::Display for DsoLocality {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.keyword() {
+            Some(s) => f.write_str(s),
+            None => Ok(()),
+        }
+    }
+}
+
 /// Thread-local mode. Mirrors `GlobalValue::ThreadLocalMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]

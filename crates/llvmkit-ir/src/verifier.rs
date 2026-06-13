@@ -100,7 +100,6 @@ impl<'ctx> Verifier<'ctx> {
     ) -> IrResult<()> {
         let value_ty = g.value_type();
 
-        // Globals cannot contain scalable types.
         if type_contains_scalable(self.module, value_ty.id()) {
             return Err(self.fail_global(
                 g,
@@ -110,7 +109,6 @@ impl<'ctx> Verifier<'ctx> {
         }
 
         if let Some(init) = g.initializer() {
-            // Initializer type must equal the global's value type.
             if init.ty() != value_ty {
                 return Err(self.fail_global(
                     g,
@@ -123,7 +121,6 @@ impl<'ctx> Verifier<'ctx> {
                     ),
                 ));
             }
-            // Initializer must be sized.
             if !value_ty.is_sized() {
                 return Err(self.fail_global(
                     g,
@@ -131,7 +128,6 @@ impl<'ctx> Verifier<'ctx> {
                     format!("@{}: initializer must be sized", g.name()),
                 ));
             }
-            // `common` linkage: zero init, not constant, no comdat.
             if g.linkage() == crate::global_value::Linkage::Common {
                 let init_data = self.module.context().value_data(init.as_value().id);
                 let zero = matches!(
@@ -156,6 +152,166 @@ impl<'ctx> Verifier<'ctx> {
                     ));
                 }
             }
+            self.verify_constant_tree(init)?;
+        }
+        Ok(())
+    }
+
+    fn verify_constant_tree(&self, constant: crate::constant::Constant<'ctx>) -> IrResult<()> {
+        let value_data = self.module.context().value_data(constant.as_value().id);
+        let ValueKindData::Constant(data) = &value_data.kind else {
+            return Ok(());
+        };
+        match data {
+            crate::constant::ConstantData::Expr(expr) => {
+                crate::constants::verify_constant_expr_data(self.module, expr)?;
+                for operand in expr.operands.iter() {
+                    let operand_data = self.module.context().value_data(*operand);
+                    if matches!(operand_data.kind, ValueKindData::Constant(_)) {
+                        self.verify_constant_tree(crate::constant::Constant::try_from(
+                            crate::value::Value::from_parts(*operand, self.module, operand_data.ty),
+                        )?)?;
+                    }
+                }
+            }
+            crate::constant::ConstantData::BlockAddress { function, block } => {
+                let block = crate::basic_block::BasicBlock::<'ctx, crate::marker::Dyn>::from_parts(
+                    *block,
+                    self.module,
+                    self.module.label_type().as_type().id(),
+                );
+                if block.parent_function().map(|f| f.as_value().id) != Some(*function) {
+                    return Err(IrError::InvalidOperation {
+                        message: "blockaddress block must belong to referenced function",
+                    });
+                }
+            }
+            crate::constant::ConstantData::DSOLocalEquivalent { function } => {
+                let value = crate::value::Value::from_parts(
+                    *function,
+                    self.module,
+                    self.value_type(*function),
+                );
+                match &value.data().kind {
+                    ValueKindData::Function(_) => {}
+                    ValueKindData::GlobalAlias(_) => {
+                        if !crate::GlobalAlias::try_from(value)?
+                            .value_type()
+                            .is_function()
+                        {
+                            return Err(IrError::InvalidOperation {
+                                message: "dso_local_equivalent expects a function, alias to function, or ifunc",
+                            });
+                        }
+                    }
+                    ValueKindData::GlobalIFunc(_) => {
+                        if !crate::GlobalIFunc::try_from(value)?
+                            .value_type()
+                            .is_function()
+                        {
+                            return Err(IrError::InvalidOperation {
+                                message: "dso_local_equivalent expects a function, alias to function, or ifunc",
+                            });
+                        }
+                    }
+                    _ => {
+                        return Err(IrError::InvalidOperation {
+                            message: "dso_local_equivalent expects a function, alias to function, or ifunc",
+                        });
+                    }
+                }
+            }
+            crate::constant::ConstantData::NoCfi { function } => {
+                let value = crate::value::Value::from_parts(
+                    *function,
+                    self.module,
+                    self.value_type(*function),
+                );
+                match &value.data().kind {
+                    ValueKindData::Function(_)
+                    | ValueKindData::GlobalVariable(_)
+                    | ValueKindData::GlobalAlias(_)
+                    | ValueKindData::GlobalIFunc(_) => {}
+                    _ => {
+                        return Err(IrError::InvalidOperation {
+                            message: "no_cfi expects a global value",
+                        });
+                    }
+                }
+            }
+            crate::constant::ConstantData::TokenNone => {
+                if !constant.ty().is_token() {
+                    return Err(IrError::InvalidOperation {
+                        message: "token none must have token type",
+                    });
+                }
+            }
+            crate::constant::ConstantData::TargetExtNone => {
+                if !constant.ty().is_target_ext() {
+                    return Err(IrError::InvalidOperation {
+                        message: "target extension none must have target extension type",
+                    });
+                }
+            }
+            crate::constant::ConstantData::PtrAuth {
+                pointer,
+                key,
+                discriminator,
+                addr_discriminator,
+                deactivation_symbol,
+            } => {
+                let pointer = crate::value::Value::from_parts(
+                    *pointer,
+                    self.module,
+                    self.value_type(*pointer),
+                );
+                let key = crate::value::Value::from_parts(*key, self.module, self.value_type(*key));
+                let discriminator = crate::value::Value::from_parts(
+                    *discriminator,
+                    self.module,
+                    self.value_type(*discriminator),
+                );
+                let addr_discriminator = crate::value::Value::from_parts(
+                    *addr_discriminator,
+                    self.module,
+                    self.value_type(*addr_discriminator),
+                );
+                let deactivation_symbol = crate::value::Value::from_parts(
+                    *deactivation_symbol,
+                    self.module,
+                    self.value_type(*deactivation_symbol),
+                );
+                if !pointer.ty().is_pointer()
+                    || !addr_discriminator.ty().is_pointer()
+                    || !deactivation_symbol.ty().is_pointer()
+                    || key.ty() != self.module.i32_type().as_type()
+                    || discriminator.ty() != self.module.i64_type().as_type()
+                    || constant.ty() != pointer.ty()
+                {
+                    return Err(IrError::InvalidOperation {
+                        message: "invalid ptrauth constant",
+                    });
+                }
+            }
+            crate::constant::ConstantData::Aggregate(ids) => {
+                for id in ids.iter() {
+                    let operand_data = self.module.context().value_data(*id);
+                    if matches!(operand_data.kind, ValueKindData::Constant(_)) {
+                        self.verify_constant_tree(crate::constant::Constant::try_from(
+                            crate::value::Value::from_parts(*id, self.module, operand_data.ty),
+                        )?)?;
+                    }
+                }
+            }
+            crate::constant::ConstantData::GlobalValueRef { .. }
+            | crate::constant::ConstantData::PointerNull
+            | crate::constant::ConstantData::GepOffset { .. }
+            | crate::constant::ConstantData::SymbolDelta { .. }
+            | crate::constant::ConstantData::SymbolDeltaPlus { .. }
+            | crate::constant::ConstantData::Int(_)
+            | crate::constant::ConstantData::Float(_)
+            | crate::constant::ConstantData::Undef
+            | crate::constant::ConstantData::Poison => {}
         }
         Ok(())
     }
@@ -179,6 +335,7 @@ impl<'ctx> Verifier<'ctx> {
     // ------------------------------------------------------------------
 
     fn visit_function(&self, f: FunctionValue<'ctx, Dyn>) -> IrResult<()> {
+        self.verify_intrinsic_function(f)?;
         // Build a CFG predecessor map for this function so phi-validation
         // and use-before-def checks can consult it without re-walking
         // every terminator. Mirrors `Verifier::predecessorMultiset`
@@ -203,6 +360,27 @@ impl<'ctx> Verifier<'ctx> {
         };
         for bb in f.basic_blocks() {
             self.visit_block(f, bb, &cx)?;
+        }
+        Ok(())
+    }
+
+    fn verify_intrinsic_function(&self, f: FunctionValue<'ctx, Dyn>) -> IrResult<()> {
+        let name = f.name();
+        if !name.starts_with("llvm.") {
+            return Ok(());
+        }
+        let id = crate::intrinsics::IntrinsicId::lookup(name).ok_or(IrError::InvalidOperation {
+            message: "unknown intrinsic",
+        })?;
+        let expected =
+            id.function_type(self.module, name)
+                .map_err(|_| IrError::InvalidOperation {
+                    message: "intrinsic signature mismatch",
+                })?;
+        if f.signature() != expected {
+            return Err(IrError::InvalidOperation {
+                message: "intrinsic signature mismatch",
+            });
         }
         Ok(())
     }

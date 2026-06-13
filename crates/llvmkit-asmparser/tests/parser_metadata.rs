@@ -39,6 +39,18 @@ fn standalone_metadata_string_is_rejected() {
     );
 }
 
+/// Specialized standalone metadata definitions also require the `!` metadata
+/// sigil before the node kind.
+/// Mirrors `LLParser::parseStandaloneMetadata` rejecting non-metadata tokens.
+#[test]
+fn standalone_metadata_bare_dieexpression_is_rejected() {
+    let err = parse_fails(r#"!0 = DIExpression()"#);
+    assert!(
+        err.contains("metadata string or tuple") || err.contains("'!'"),
+        "unexpected error: {err}"
+    );
+}
+
 /// `!0 = !{!"hello"}` is the LLVM-valid form for a tuple containing an
 /// MDString operand.
 /// Mirrors `test/Assembler/metadata.ll` tuple metadata coverage.
@@ -86,6 +98,27 @@ fn standalone_metadata_tuple_multi_operand() {
     assert!(text.contains(r#"!0 = !{!"a", !"b"}"#), "output: {text}");
 }
 
+/// Tuple operands accept specialized metadata only in LLVM's bang-bearing form.
+/// Mirrors `LLParser::parseMDTuple` delegating to `parseMetadata`.
+#[test]
+fn standalone_metadata_tuple_with_inline_dieexpression() {
+    let src = r#"!0 = !{!DIExpression()}"#;
+    let (m, text) = parse_snippet(src);
+    assert_eq!(m.metadata_count(), 2);
+    assert!(text.contains("!0 = !{!DIExpression()}"), "output: {text}");
+}
+
+/// Bare specialized metadata is not a metadata tuple operand.
+/// Mirrors `LLParser::parseMDTuple` rejecting non-metadata tokens.
+#[test]
+fn standalone_metadata_tuple_bare_dieexpression_is_rejected() {
+    let err = parse_fails(r#"!0 = !{DIExpression()}"#);
+    assert!(
+        err.contains("'!' in metadata tuple operand") || err.contains("metadata tuple operand"),
+        "unexpected error: {err}"
+    );
+}
+
 /// `distinct` keyword is accepted and transparent.
 /// Mirrors `test/Assembler/distinct-mdnode.ll`.
 #[test]
@@ -93,8 +126,7 @@ fn standalone_metadata_distinct() {
     let src = r#"!0 = distinct !{}"#;
     let (m, text) = parse_snippet(src);
     assert_eq!(m.metadata_count(), 1);
-    // We don't print `distinct` in the constructive subset
-    assert!(text.contains("!0 = !{}"), "output: {text}");
+    assert!(text.contains("!0 = distinct !{}"), "output: {text}");
 }
 
 // ── Named metadata ───────────────────────────────────────────────────────
@@ -186,9 +218,7 @@ define i32 @f(i32 %x, i32 %y) {
 !0 = !{}
 "#;
     let (_, text) = parse_snippet(src);
-    // The metadata attachment is silently consumed; the instruction prints
-    // without it (per-instruction metadata storage is future work).
-    assert!(text.contains("add i32 %x, %y"), "output: {text}");
+    assert!(text.contains("add i32 %x, %y, !dbg !0"), "output: {text}");
 }
 
 /// Multiple trailing metadata attachments on one instruction.
@@ -202,8 +232,29 @@ define void @f() {
 !0 = !{}
 !1 = !{}
 "#;
-    let (_, _text) = parse_snippet(src);
-    // Parses without error — that's the assertion.
+    let (_, text) = parse_snippet(src);
+    assert!(
+        text.contains("ret void, !dbg !0, !tbaa !1"),
+        "output: {text}"
+    );
+}
+
+/// Trailing metadata attachments require the metadata sigil before specialized
+/// metadata operands.
+/// Mirrors `LLParser::parseInstructionMetadata` metadata operand parsing.
+#[test]
+fn trailing_metadata_bare_dieexpression_is_rejected() {
+    let err = parse_fails(
+        r#"
+define void @f() {
+  ret void, !dbg DIExpression()
+}
+"#,
+    );
+    assert!(
+        err.contains("metadata attachment operand") || err.contains("metadata field value"),
+        "unexpected error: {err}"
+    );
 }
 
 /// Undefined trailing instruction metadata references are rejected at end of
@@ -321,6 +372,77 @@ entry:
     assert!(
         text.contains(r#"call void @g(metadata !"rsp")"#),
         "output: {text}"
+    );
+}
+
+/// Inline specialized metadata operands in `metadata`-typed call arguments are legal.
+/// Mirrors `LLParser::parseMetadataAsValue` delegating to `parseMetadata`.
+#[test]
+fn call_metadata_inline_dieexpression_operand_round_trips() {
+    let src = r#"
+declare void @g(metadata)
+define void @f() {
+entry:
+  call void @g(metadata !DIExpression())
+  ret void
+}
+"#;
+    let (_, text) = parse_snippet(src);
+    assert!(
+        text.contains("call void @g(metadata !DIExpression())"),
+        "output: {text}"
+    );
+}
+
+/// Inline specialized metadata field values keep the leading `!` form accepted
+/// by LLVM's metadata parser.
+/// Mirrors `LLParser::parseMDField` delegating to `parseMetadata`.
+#[test]
+fn specialized_metadata_field_inline_dieexpression_round_trips() {
+    let src = r#"
+!0 = !DIGlobalVariable(name: "g")
+!1 = !DIGlobalVariableExpression(var: !0, expr: !DIExpression())
+"#;
+    let (_, text) = parse_snippet(src);
+    assert!(
+        text.contains("!1 = !DIGlobalVariableExpression(var: !0, expr: !DIExpression())"),
+        "output: {text}"
+    );
+}
+
+/// A specialized metadata value still requires LLVM's `!` metadata sigil.
+/// Mirrors `LLParser::parseMetadataAsValue` rejecting non-metadata tokens.
+#[test]
+fn call_metadata_bare_dieexpression_operand_is_rejected() {
+    let err = parse_fails(
+        r#"
+declare void @g(metadata)
+define void @f() {
+entry:
+  call void @g(metadata DIExpression())
+  ret void
+}
+"#,
+    );
+    assert!(
+        err.contains("constant initializer"),
+        "unexpected error: {err}"
+    );
+}
+
+/// Metadata fields likewise require the leading `!` for specialized metadata.
+/// Mirrors `LLParser::parseMDField` rejecting non-metadata tokens.
+#[test]
+fn specialized_metadata_field_bare_dieexpression_is_rejected() {
+    let err = parse_fails(
+        r#"
+!0 = !DIGlobalVariable(name: "g")
+!1 = !DIGlobalVariableExpression(var: !0, expr: DIExpression())
+"#,
+    );
+    assert!(
+        err.contains("metadata field value") || err.contains("metadata node"),
+        "unexpected error: {err}"
     );
 }
 

@@ -23,6 +23,7 @@ pub(crate) struct GlobalAliasData {
     pub(crate) thread_local_mode: Cell<ThreadLocalMode>,
     pub(crate) unnamed_addr: Cell<UnnamedAddr>,
     pub(crate) partition: RefCell<Option<String>>,
+    pub(crate) metadata: RefCell<crate::metadata::MetadataAttachmentSet>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -180,6 +181,18 @@ impl<'ctx> GlobalAlias<'ctx> {
     #[inline]
     pub fn set_unnamed_addr(self, value: UnnamedAddr) {
         self.data().unnamed_addr.set(value);
+    }
+
+    pub fn metadata(self) -> core::cell::Ref<'ctx, crate::metadata::MetadataAttachmentSet> {
+        self.data().metadata.borrow()
+    }
+
+    pub fn set_metadata(
+        self,
+        kind: crate::metadata::MetadataAttachmentKind,
+        id: crate::metadata::MetadataId,
+    ) {
+        self.data().metadata.borrow_mut().insert(kind, id);
     }
 
     pub fn partition(self) -> Option<String> {
@@ -372,6 +385,7 @@ impl<'ctx> GlobalAliasBuilder<'ctx> {
             thread_local_mode: Cell::new(thread_local_mode),
             unnamed_addr: Cell::new(unnamed_addr),
             partition: RefCell::new(partition),
+            metadata: RefCell::new(crate::metadata::MetadataAttachmentSet::new()),
         };
         (name, data, address_space)
     }

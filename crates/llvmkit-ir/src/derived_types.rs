@@ -823,6 +823,15 @@ impl<'ctx, B: crate::struct_body_state::StructBodyState> StructType<'ctx, B> {
 // TargetExtType — accessors
 // --------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TargetExtProperty {
+    HasZeroInit,
+    CanBeGlobal,
+    CanBeLocal,
+    CanBeVectorElement,
+    IsTokenLike,
+}
+
 impl<'ctx> TargetExtType<'ctx> {
     pub fn name(self) -> &'ctx str {
         self.module
@@ -848,6 +857,51 @@ impl<'ctx> TargetExtType<'ctx> {
             .as_target_ext()
             .expect("TargetExtType invariant: wraps TargetExt");
         t.int_params.iter().copied()
+    }
+    pub fn has_property(self, property: TargetExtProperty) -> bool {
+        let name = self.name();
+        match name {
+            "spirv.Image" | "spirv.SignedImage" | "spirv.Type" => {
+                matches!(
+                    property,
+                    TargetExtProperty::CanBeGlobal | TargetExtProperty::CanBeLocal
+                )
+            }
+            "spirv.IntegralConstant" | "spirv.Literal" => false,
+            "spirv.Padding" => matches!(property, TargetExtProperty::CanBeGlobal),
+            "aarch64.svcount" | "riscv.vector.tuple" => {
+                matches!(
+                    property,
+                    TargetExtProperty::HasZeroInit | TargetExtProperty::CanBeLocal
+                )
+            }
+            "dx.Padding" | "amdgcn.named.barrier" => {
+                matches!(property, TargetExtProperty::CanBeGlobal)
+            }
+            "llvm.test.vectorelement" => {
+                matches!(
+                    property,
+                    TargetExtProperty::CanBeLocal | TargetExtProperty::CanBeVectorElement
+                )
+            }
+            _ if name.starts_with("spirv.") => {
+                matches!(
+                    property,
+                    TargetExtProperty::HasZeroInit
+                        | TargetExtProperty::CanBeGlobal
+                        | TargetExtProperty::CanBeLocal
+                )
+            }
+            _ if name.starts_with("dx.") => {
+                matches!(
+                    property,
+                    TargetExtProperty::CanBeGlobal
+                        | TargetExtProperty::CanBeLocal
+                        | TargetExtProperty::IsTokenLike
+                )
+            }
+            _ => false,
+        }
     }
 }
 

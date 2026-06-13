@@ -6,17 +6,16 @@
 //! An inline-asm value is a **context-global** value, just like a
 //! [`Function`](crate::function::FunctionValue) or a
 //! [`Constant`](crate::constant::Constant): it has no function-local SSA
-//! definition and is never assigned a `%N` slot. It lives in the value
-//! arena under
-//! [`ValueKindData::InlineAsm`](crate::value::ValueKindData::InlineAsm).
+//! definition and is never assigned a `%N` slot. It lives in the same value
+//! arena as globals, constants, and functions.
 //!
 //! LLVM types an inline-asm value as a **pointer** (the asm "address"),
 //! while the *function type* it conceptually wraps is carried separately
 //! so a `call` through it knows the argument / return shape. This module
 //! follows that split: the [`InlineAsm`] handle's [`Value::ty`] is the
-//! module's `ptr` type, and the wrapped [`FunctionType`] id is stored in
-//! the payload for the [`IRBuilder`](crate::ir_builder::IRBuilder) to
-//! consume when it emits the call.
+//! module's `ptr` type, and the wrapped [`FunctionType`](crate::FunctionType)
+//! id is stored in the payload for the [`IRBuilder`](crate::ir_builder::IRBuilder)
+//! to consume when it emits the call.
 //!
 //! The textual form a `call` prints is, e.g.:
 //!
@@ -47,6 +46,40 @@ pub enum AsmDialect {
     ATT,
     /// Intel syntax; prints the `inteldialect` keyword.
     Intel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct InlineAsmOptions {
+    pub has_side_effects: bool,
+    pub is_align_stack: bool,
+    pub dialect: AsmDialect,
+    pub can_unwind: bool,
+}
+
+impl InlineAsmOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn side_effects(mut self, value: bool) -> Self {
+        self.has_side_effects = value;
+        self
+    }
+
+    pub fn align_stack(mut self, value: bool) -> Self {
+        self.is_align_stack = value;
+        self
+    }
+
+    pub fn dialect(mut self, value: AsmDialect) -> Self {
+        self.dialect = value;
+        self
+    }
+
+    pub fn can_unwind(mut self, value: bool) -> Self {
+        self.can_unwind = value;
+        self
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -80,6 +113,9 @@ pub(crate) struct InlineAsmData {
     /// `alignstack` keyword: the asm needs the stack aligned. Mirrors
     /// `InlineAsm::isAlignStack()`.
     pub(crate) is_align_stack: bool,
+    /// `unwind` keyword: the asm may unwind. Mirrors
+    /// `InlineAsm::canThrow()`.
+    pub(crate) can_unwind: bool,
     /// Source syntax of the template. Mirrors `InlineAsm::getDialect()`.
     pub(crate) dialect: AsmDialect,
 }
@@ -159,6 +195,11 @@ impl<'ctx> InlineAsm<'ctx> {
     pub fn constraint_string(&self) -> &'ctx str {
         &self.payload().constraint_string
     }
+    /// Number of label constraints (`!`) in the constraint string.
+    #[inline]
+    pub fn label_constraint_count(&self) -> usize {
+        self.constraint_summary().label_count
+    }
 
     pub(crate) fn constraint_summary(&self) -> InlineAsmConstraintSummary {
         let label_count = self
@@ -184,6 +225,13 @@ impl<'ctx> InlineAsm<'ctx> {
     #[inline]
     pub fn is_align_stack(self) -> bool {
         self.payload().is_align_stack
+    }
+
+    /// `true` when the `unwind` keyword is set. Mirrors
+    /// `InlineAsm::canThrow()`.
+    #[inline]
+    pub fn can_unwind(self) -> bool {
+        self.payload().can_unwind
     }
 
     /// The template's source dialect. Mirrors `InlineAsm::getDialect()`.

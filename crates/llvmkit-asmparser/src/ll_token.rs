@@ -114,6 +114,8 @@ pub enum Token<'src> {
     NameTableKind(&'src str),
     /// `Binary` / `Decimal` / `Rational`.
     FixedPointKind(&'src str),
+    /// `DIFile`, `DILocation`, and sibling specialized metadata node names.
+    SpecializedMetadata(&'src str),
     /// `dbg_*` — payload is the **suffix** (`value`, `declare`, …),
     /// matching `LLLexer::DBGRECORDTYPEKEYWORD` (LLLexer.cpp:998).
     DbgRecordType(&'src str),

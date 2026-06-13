@@ -29,9 +29,7 @@ fn inline_asm_call_with_side_effects() -> Result<(), IrError> {
         asm_fn_ty,
         "add $1, $0",
         "=r,r,r",
-        /* has_side_effects */ true,
-        /* is_align_stack */ false,
-        AsmDialect::ATT,
+        llvmkit_ir::InlineAsmOptions::new().side_effects(true),
     );
 
     let r = b.build_inline_asm_call::<i64, _, _>(asm, [a, bb], "r")?;
@@ -82,9 +80,7 @@ fn inline_asm_call_without_side_effects() -> Result<(), IrError> {
         asm_fn_ty,
         "neg $0",
         "=r,0",
-        /* has_side_effects */ false,
-        /* is_align_stack */ false,
-        AsmDialect::ATT,
+        llvmkit_ir::InlineAsmOptions::new(),
     );
 
     let r = b.build_inline_asm_call::<i32, _, _>(asm, [x], "r")?;
@@ -124,9 +120,7 @@ fn inline_asm_multiline_escapes_newline() -> Result<(), IrError> {
         asm_fn_ty,
         "nop\nnop",
         "",
-        /* has_side_effects */ true,
-        /* is_align_stack */ false,
-        AsmDialect::ATT,
+        llvmkit_ir::InlineAsmOptions::new().side_effects(true),
     );
 
     b.build_inline_asm_call::<(), _, _>(asm, Vec::<llvmkit_ir::Value>::new(), "")?;
@@ -189,7 +183,7 @@ fn inline_asm_call_rejects_label_constraint() -> Result<(), IrError> {
     let entry = host.append_basic_block("entry");
     let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
     let asm_ty = m.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
-    let asm = m.inline_asm(asm_ty, "", "!i", false, false, AsmDialect::ATT);
+    let asm = m.inline_asm(asm_ty, "", "!i", llvmkit_ir::InlineAsmOptions::new());
     b.build_inline_asm_call::<(), _, _>(asm, Vec::<llvmkit_ir::Value>::new(), "")?;
     b.build_ret_void();
     let err = m
@@ -222,9 +216,7 @@ fn inline_asm_intel_dialect_keyword() -> Result<(), IrError> {
         asm_fn_ty,
         "mov $0, $1",
         "=r,r",
-        /* has_side_effects */ false,
-        /* is_align_stack */ false,
-        AsmDialect::Intel,
+        llvmkit_ir::InlineAsmOptions::new().dialect(AsmDialect::Intel),
     );
 
     let r = b.build_inline_asm_call::<i64, _, _>(asm, [x], "r")?;

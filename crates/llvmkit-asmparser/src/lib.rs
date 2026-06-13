@@ -28,6 +28,7 @@ pub mod file_loc;
 pub mod ll_lexer;
 pub mod ll_parser;
 pub mod ll_token;
+pub mod module_summary;
 pub mod numbered_values;
 pub mod parse_error;
 pub mod parser;

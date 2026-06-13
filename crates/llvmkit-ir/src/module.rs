@@ -41,6 +41,7 @@ use crate::llvm_context::Context;
 use crate::named_md_node::NamedMDNode;
 use crate::r#type::{MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeId};
 use crate::typed_pointer_type::TypedPointerType;
+use crate::value::ValueId;
 
 // --------------------------------------------------------------------------
 // ModuleId
@@ -140,6 +141,35 @@ impl core::fmt::Debug for ModuleRef<'_> {
 // Module
 // --------------------------------------------------------------------------
 
+/// Structured `uselistorder Type Value, { ... }` record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UseListOrderRecord {
+    pub value: ValueId,
+    pub value_ty: TypeId,
+    pub indexes: Box<[u32]>,
+}
+
+/// Structured `uselistorder_bb @function, %block, { ... }` record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UseListOrderBBRecord {
+    pub function: ValueId,
+    pub block: ValueId,
+    pub indexes: Box<[u32]>,
+}
+
+pub(crate) fn validate_use_list_order_indexes(indexes: &[u32]) -> IrResult<()> {
+    let identity = indexes
+        .iter()
+        .enumerate()
+        .all(|(i, idx)| u32::try_from(i).is_ok_and(|i| i == *idx));
+    if identity {
+        return Err(IrError::InvalidOperation {
+            message: "expected uselistorder indexes to change the order",
+        });
+    }
+    Ok(())
+}
+
 /// Top-level IR container.
 pub struct Module<'ctx> {
     id: ModuleId,
@@ -183,7 +213,9 @@ pub struct Module<'ctx> {
     /// Stored as a single `String` joined by newlines (one entry
     /// per `module asm "..."` directive).
     module_asm: core::cell::RefCell<String>,
-    use_list_orders: core::cell::RefCell<Vec<String>>,
+    use_list_orders: core::cell::RefCell<Vec<UseListOrderRecord>>,
+    attribute_groups: core::cell::RefCell<Vec<(u32, crate::attributes::AttributeStorage)>>,
+    use_list_order_bbs: core::cell::RefCell<Vec<UseListOrderBBRecord>>,
     /// Module-level metadata node arena. Mirrors `LLVMContextImpl`'s
     /// metadata store (scoped to the module for simplicity).
     metadata: core::cell::RefCell<crate::metadata::MetadataStore>,
@@ -226,6 +258,8 @@ impl<'ctx> Module<'ctx> {
             target_triple: core::cell::RefCell::new(None),
             module_asm: core::cell::RefCell::new(String::new()),
             use_list_orders: core::cell::RefCell::new(Vec::new()),
+            use_list_order_bbs: core::cell::RefCell::new(Vec::new()),
+            attribute_groups: core::cell::RefCell::new(Vec::new()),
             metadata: core::cell::RefCell::new(crate::metadata::MetadataStore::default()),
             named_metadata: core::cell::RefCell::new(Vec::new()),
             metadata_as_value_cache: core::cell::RefCell::new(std::collections::HashMap::new()),
@@ -629,7 +663,7 @@ impl<'ctx> Module<'ctx> {
             ty: signature_id,
             name: core::cell::RefCell::new(Some(name.to_owned())),
             debug_loc: None,
-            kind: crate::value::ValueKindData::Function(fn_data),
+            kind: crate::value::ValueKindData::Function(Box::new(fn_data)),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
 
@@ -1081,12 +1115,45 @@ impl<'ctx> Module<'ctx> {
         }
         buf.push_str(line.as_ref());
     }
-    pub fn append_use_list_order(&self, directive: impl Into<String>) {
-        self.use_list_orders.borrow_mut().push(directive.into());
+    pub fn append_use_list_order(&self, record: UseListOrderRecord) -> IrResult<()> {
+        validate_use_list_order_indexes(&record.indexes)?;
+        self.use_list_orders.borrow_mut().push(record);
+        Ok(())
     }
 
-    pub(crate) fn use_list_orders(&self) -> Vec<String> {
-        self.use_list_orders.borrow().clone()
+    pub fn append_use_list_order_bb(&self, record: UseListOrderBBRecord) -> IrResult<()> {
+        validate_use_list_order_indexes(&record.indexes)?;
+        self.use_list_order_bbs.borrow_mut().push(record);
+        Ok(())
+    }
+
+    pub fn iter_use_list_orders(&self) -> impl ExactSizeIterator<Item = UseListOrderRecord> {
+        self.use_list_orders.borrow().clone().into_iter()
+    }
+
+    pub fn iter_use_list_order_bbs(&self) -> impl ExactSizeIterator<Item = UseListOrderBBRecord> {
+        self.use_list_order_bbs.borrow().clone().into_iter()
+    }
+
+    pub fn set_attribute_group(&self, id: u32, storage: crate::attributes::AttributeStorage) {
+        let mut groups = self.attribute_groups.borrow_mut();
+        if let Some((_, existing)) = groups.iter_mut().find(|(slot, _)| *slot == id) {
+            *existing = storage;
+            return;
+        }
+        groups.push((id, storage));
+        groups.sort_by_key(|(slot, _)| *slot);
+    }
+
+    pub fn attribute_group(&self, id: u32) -> Option<crate::attributes::AttributeStorage> {
+        self.attribute_groups
+            .borrow()
+            .iter()
+            .find_map(|(slot, storage)| (*slot == id).then(|| storage.clone()))
+    }
+
+    pub fn attribute_groups(&self) -> Vec<(u32, crate::attributes::AttributeStorage)> {
+        self.attribute_groups.borrow().clone()
     }
 
     /// Create an inline-assembly value usable as a `call` callee. Mirrors
@@ -1114,9 +1181,7 @@ impl<'ctx> Module<'ctx> {
         fn_ty: FunctionType<'ctx>,
         asm: impl Into<String>,
         constraints: impl Into<String>,
-        has_side_effects: bool,
-        is_align_stack: bool,
-        dialect: crate::inline_asm::AsmDialect,
+        options: crate::inline_asm::InlineAsmOptions,
     ) -> crate::inline_asm::InlineAsm<'ctx> {
         // LLVM types inline asm as a plain pointer; the function type the
         // asm wraps is carried in the payload for the call to consume.
@@ -1125,9 +1190,10 @@ impl<'ctx> Module<'ctx> {
             asm_string: asm.into(),
             constraint_string: constraints.into(),
             fn_ty: fn_ty.as_type().id(),
-            has_side_effects,
-            is_align_stack,
-            dialect,
+            has_side_effects: options.has_side_effects,
+            is_align_stack: options.is_align_stack,
+            can_unwind: options.can_unwind,
+            dialect: options.dialect,
         };
         let id = self.ctx.push_value(crate::value::ValueData {
             ty: ptr_ty,
@@ -1159,6 +1225,44 @@ impl<'ctx> Module<'ctx> {
         self.metadata
             .borrow_mut()
             .get_tuple(operands.as_ref().to_vec())
+    }
+    /// Create a tuple node with explicit distinctness.
+    pub fn metadata_tuple_with_distinct(
+        &self,
+        distinct: bool,
+        operands: impl AsRef<[crate::metadata::MetadataRef]>,
+    ) -> crate::metadata::MetadataId {
+        self.metadata
+            .borrow_mut()
+            .get_tuple_with_distinct(distinct, operands.as_ref().to_vec())
+    }
+
+    /// Create a specialized debug metadata node.
+    pub fn metadata_specialized(
+        &self,
+        node: crate::metadata::SpecializedMetadataNode,
+    ) -> crate::metadata::MetadataId {
+        self.metadata.borrow_mut().get_specialized(node)
+    }
+    /// Store an already-parsed metadata node and return its id.
+    pub fn metadata_node(
+        &self,
+        kind: crate::metadata::MetadataKind,
+    ) -> crate::metadata::MetadataId {
+        let mut store = self.metadata.borrow_mut();
+        match kind {
+            crate::metadata::MetadataKind::String(s) => store.get_string(s),
+            crate::metadata::MetadataKind::Tuple { distinct, operands } => {
+                store.get_tuple_with_distinct(distinct, operands)
+            }
+            crate::metadata::MetadataKind::Specialized(node) => store.get_specialized(node),
+            crate::metadata::MetadataKind::Ref(id) => id,
+            crate::metadata::MetadataKind::Null => {
+                let id = store.reserve();
+                store.set(id, crate::metadata::MetadataKind::Null);
+                id
+            }
+        }
     }
 
     /// Wrap a metadata node as a [`Value`](crate::value::Value) so it can

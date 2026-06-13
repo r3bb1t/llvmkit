@@ -10,15 +10,14 @@ Tracking **LLVM 22.1.4**.
 
 - **`.ll` lexer** — borrows from a pre-loaded `&[u8]`; tokens carry `Cow<[u8]>`
   payloads that allocate only when an escape sequence actually changes bytes.
-- **`.ll` parser (module-level slice)** — recursive-descent, one-token
-  lookahead. Builds into an existing `llvmkit_ir::Module<'ctx>`; the `'ctx`
-  brand prevents cross-module mixing at compile time. Covers `target
-  datalayout` / `target triple`, `source_filename`, `module asm`, named /
-  numbered struct type definitions, simple `@name = global TY CONST` /
-  `constant` globals, `declare` declarations, and `define` function bodies
-  for every shipped opcode. Function-body details, attribute groups,
-  metadata, comdats, aliases, and use-list directives land in later
-  sessions.
+- **`.ll` parser** — recursive-descent, one-token lookahead. Builds into an
+  existing `llvmkit_ir::Module<'ctx>`; the `'ctx` brand prevents cross-module
+  mixing at compile time. Covers `target datalayout` / `target triple`,
+  `source_filename`, `module asm`, type definitions, globals, declarations,
+  definitions, function attributes/comdats/header operands, metadata and
+  debug records, use-list directives, summaries, and every shipped opcode.
+  Remaining parser work is tracked by the workspace roadmap rather than by
+  empty parser stubs.
 
 Bitcode is out of scope for this crate today; see
 the workspace [`README`](../../README.md) for the roadmap.
@@ -52,6 +51,18 @@ End-to-end examples:
 
 The parser example prints the round-tripped module via the AsmWriter on
 success and a `(line:col)` diagnostic with a caret underline on failure.
+
+
+## Parser corpus
+
+`tests/parser_corpus.rs` reads `tests/fixtures/parser_corpus_manifest.txt`.
+Each row names an llvmkit fixture, its upstream provenance, optional
+`expect=<file>` canonical AsmWriter output, and `status=pass|xfail-parse|xfail-verify`.
+The `xfail-*` rows are the explicit allowlist for upstream-negative or
+not-yet-supported shapes; passing rows must parse, verify, and match the
+checked-in expected output when one is listed. Fixture comments cite upstream
+inputs as provenance, not as a claim that upstream's FileCheck text is identical
+to llvmkit's current expected output.
 
 ## License
 

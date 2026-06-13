@@ -17,6 +17,8 @@ use core::cell::Cell;
 
 use crate::value::ValueId;
 
+use crate::attributes::AttributeStorage;
+
 /// Storage payload for the binary-operator opcodes (`add`, `sub`,
 /// `mul`, ...). Mirrors the operand/flag layout of `BinaryOperator`
 /// (`InstrTypes.h`).
@@ -1213,8 +1215,85 @@ impl TailCallKind {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum OperandBundleTag {
+    Deopt,
+    Funclet,
+    GcTransition,
+    CfGuardTarget,
+    Preallocated,
+    GcLive,
+    ClangArcAttachedCall,
+    PtrAuth,
+    Kcfi,
+    ConvergenceCtrl,
+    Align,
+    DeactivationSymbol,
+    Custom(String),
+}
+
+#[derive(Debug)]
+pub struct OperandBundleData {
+    pub tag: OperandBundleTag,
+    pub inputs: Box<[Cell<ValueId>]>,
+}
+
+impl Clone for OperandBundleData {
+    fn clone(&self) -> Self {
+        Self {
+            tag: self.tag.clone(),
+            inputs: self.inputs.iter().map(|v| Cell::new(v.get())).collect(),
+        }
+    }
+}
+
+impl PartialEq for OperandBundleData {
+    fn eq(&self, other: &Self) -> bool {
+        self.tag == other.tag
+            && self.inputs.len() == other.inputs.len()
+            && self
+                .inputs
+                .iter()
+                .zip(other.inputs.iter())
+                .all(|(a, b)| a.get() == b.get())
+    }
+}
+impl Eq for OperandBundleData {}
+
+impl core::hash::Hash for OperandBundleData {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.tag.hash(h);
+        for input in self.inputs.iter() {
+            input.get().hash(h);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CallAttributeData {
+    pub return_attrs: AttributeStorage,
+    pub arg_attrs: Box<[AttributeStorage]>,
+    pub function_attrs: AttributeStorage,
+    pub function_attr_groups: Box<[u32]>,
+    pub operand_bundles: Box<[OperandBundleData]>,
+    pub fmf: crate::fmf::FastMathFlags,
+}
+
+impl Default for CallAttributeData {
+    fn default() -> Self {
+        Self {
+            return_attrs: AttributeStorage::new(),
+            arg_attrs: Box::new([]),
+            function_attrs: AttributeStorage::new(),
+            function_attr_groups: Box::new([]),
+            operand_bundles: Box::new([]),
+            fmf: crate::fmf::FastMathFlags::empty(),
+        }
+    }
+}
+
 /// Storage payload for `call`. Mirrors `CallInst`
-/// (`Instructions.h`). Per-arg / per-fn attributes deferred.
+/// (`Instructions.h`).
 #[derive(Debug)]
 pub(crate) struct CallInstData {
     pub(crate) callee: Cell<ValueId>,
@@ -1222,6 +1301,7 @@ pub(crate) struct CallInstData {
     pub(crate) args: Box<[Cell<ValueId>]>,
     pub(crate) calling_conv: crate::CallingConv,
     pub(crate) tail_kind: TailCallKind,
+    pub(crate) attrs: CallAttributeData,
 }
 
 impl CallInstData {
@@ -1232,12 +1312,31 @@ impl CallInstData {
         calling_conv: crate::CallingConv,
         tail_kind: TailCallKind,
     ) -> Self {
+        Self::new_with_attrs(
+            callee,
+            fn_ty,
+            args,
+            calling_conv,
+            tail_kind,
+            CallAttributeData::default(),
+        )
+    }
+
+    pub(crate) fn new_with_attrs(
+        callee: ValueId,
+        fn_ty: crate::r#type::TypeId,
+        args: impl IntoIterator<Item = ValueId>,
+        calling_conv: crate::CallingConv,
+        tail_kind: TailCallKind,
+        attrs: CallAttributeData,
+    ) -> Self {
         Self {
             callee: Cell::new(callee),
             fn_ty,
             args: args.into_iter().map(Cell::new).collect(),
             calling_conv,
             tail_kind,
+            attrs,
         }
     }
 }
@@ -1249,6 +1348,7 @@ impl Clone for CallInstData {
             args: self.args.iter().map(|c| Cell::new(c.get())).collect(),
             calling_conv: self.calling_conv,
             tail_kind: self.tail_kind,
+            attrs: self.attrs.clone(),
         }
     }
 }
@@ -1258,6 +1358,7 @@ impl PartialEq for CallInstData {
             || self.fn_ty != other.fn_ty
             || self.calling_conv != other.calling_conv
             || self.tail_kind != other.tail_kind
+            || self.attrs != other.attrs
             || self.args.len() != other.args.len()
         {
             return false;
@@ -1278,6 +1379,7 @@ impl core::hash::Hash for CallInstData {
         }
         self.calling_conv.hash(h);
         self.tail_kind.hash(h);
+        self.attrs.hash(h);
     }
 }
 
@@ -1898,16 +2000,18 @@ pub(crate) struct InvokeInstData {
     pub(crate) calling_conv: crate::CallingConv,
     pub(crate) normal_dest: Cell<ValueId>,
     pub(crate) unwind_dest: Cell<ValueId>,
+    pub(crate) attrs: CallAttributeData,
 }
 
 impl InvokeInstData {
-    pub(crate) fn new(
+    pub(crate) fn new_with_attrs(
         callee: ValueId,
         fn_ty: crate::r#type::TypeId,
         args: impl IntoIterator<Item = ValueId>,
         calling_conv: crate::CallingConv,
         normal_dest: ValueId,
         unwind_dest: ValueId,
+        attrs: CallAttributeData,
     ) -> Self {
         Self {
             callee: Cell::new(callee),
@@ -1916,6 +2020,7 @@ impl InvokeInstData {
             calling_conv,
             normal_dest: Cell::new(normal_dest),
             unwind_dest: Cell::new(unwind_dest),
+            attrs,
         }
     }
 }
@@ -1928,6 +2033,7 @@ impl Clone for InvokeInstData {
             calling_conv: self.calling_conv,
             normal_dest: Cell::new(self.normal_dest.get()),
             unwind_dest: Cell::new(self.unwind_dest.get()),
+            attrs: self.attrs.clone(),
         }
     }
 }
@@ -1938,6 +2044,7 @@ impl PartialEq for InvokeInstData {
             || self.calling_conv != other.calling_conv
             || self.normal_dest.get() != other.normal_dest.get()
             || self.unwind_dest.get() != other.unwind_dest.get()
+            || self.attrs != other.attrs
             || self.args.len() != other.args.len()
         {
             return false;
@@ -1959,6 +2066,7 @@ impl core::hash::Hash for InvokeInstData {
         self.calling_conv.hash(h);
         self.normal_dest.get().hash(h);
         self.unwind_dest.get().hash(h);
+        self.attrs.hash(h);
     }
 }
 
@@ -1973,16 +2081,18 @@ pub(crate) struct CallBrInstData {
     pub(crate) calling_conv: crate::CallingConv,
     pub(crate) default_dest: Cell<ValueId>,
     pub(crate) indirect_dests: Box<[Cell<ValueId>]>,
+    pub(crate) attrs: CallAttributeData,
 }
 
 impl CallBrInstData {
-    pub(crate) fn new(
+    pub(crate) fn new_with_attrs(
         callee: ValueId,
         fn_ty: crate::r#type::TypeId,
         args: impl IntoIterator<Item = ValueId>,
         calling_conv: crate::CallingConv,
         default_dest: ValueId,
         indirect_dests: impl IntoIterator<Item = ValueId>,
+        attrs: CallAttributeData,
     ) -> Self {
         Self {
             callee: Cell::new(callee),
@@ -1991,6 +2101,7 @@ impl CallBrInstData {
             calling_conv,
             default_dest: Cell::new(default_dest),
             indirect_dests: indirect_dests.into_iter().map(Cell::new).collect(),
+            attrs,
         }
     }
 }
@@ -2007,6 +2118,7 @@ impl Clone for CallBrInstData {
                 .iter()
                 .map(|c| Cell::new(c.get()))
                 .collect(),
+            attrs: self.attrs.clone(),
         }
     }
 }
@@ -2016,6 +2128,7 @@ impl PartialEq for CallBrInstData {
             || self.fn_ty != other.fn_ty
             || self.calling_conv != other.calling_conv
             || self.default_dest.get() != other.default_dest.get()
+            || self.attrs != other.attrs
             || self.args.len() != other.args.len()
             || self.indirect_dests.len() != other.indirect_dests.len()
         {
@@ -2045,6 +2158,7 @@ impl core::hash::Hash for CallBrInstData {
         for d in self.indirect_dests.iter() {
             d.get().hash(h);
         }
+        self.attrs.hash(h);
     }
 }
 

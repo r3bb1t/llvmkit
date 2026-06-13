@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use crate::AttrIndex;
 use crate::attributes::{AttributeStorage, AttributeStored};
 use crate::basic_block::BasicBlock;
-use crate::constant::ConstantData;
+use crate::constant::{ConstantData, ConstantExprData, ConstantExprOpcode};
 use crate::function::FunctionValue;
 use crate::instr_types::{
     BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData, PhiData,
@@ -35,7 +35,7 @@ use crate::instr_types::{
 };
 use crate::instruction::{Instruction, InstructionKindData};
 use crate::marker::Dyn;
-use crate::module::Module;
+use crate::module::{Module, UseListOrderBBRecord, UseListOrderRecord};
 use crate::r#type::{StructBody, Type, TypeData};
 use crate::value::{Value, ValueId, ValueKindData};
 
@@ -235,6 +235,53 @@ pub(crate) fn fmt_operand_ref(
         ValueKindData::InlineAsm(d) => fmt_inline_asm(f, d),
     }
 }
+fn fmt_indexes(f: &mut fmt::Formatter<'_>, indexes: &[u32]) -> fmt::Result {
+    f.write_str("{ ")?;
+    for (i, idx) in indexes.iter().enumerate() {
+        if i > 0 {
+            f.write_str(", ")?;
+        }
+        write!(f, "{idx}")?;
+    }
+    f.write_str(" }")
+}
+
+fn fmt_use_list_order(
+    f: &mut fmt::Formatter<'_>,
+    m: &Module<'_>,
+    record: &UseListOrderRecord,
+    slots: Option<&SlotTracker>,
+) -> fmt::Result {
+    write!(f, "uselistorder {} ", Type::new(record.value_ty, m))?;
+    let value = Value::from_parts(record.value, m, record.value_ty);
+    fmt_operand_ref(f, value, slots)?;
+    f.write_str(", ")?;
+    fmt_indexes(f, &record.indexes)
+}
+
+fn fmt_use_list_order_bb(
+    f: &mut fmt::Formatter<'_>,
+    m: &Module<'_>,
+    record: &UseListOrderBBRecord,
+) -> fmt::Result {
+    let function_data = m.context().value_data(record.function);
+    let function_ty = function_data.ty;
+    let block_ty = m.label_type().as_type().id();
+    let function = Value::from_parts(record.function, m, function_ty);
+    let block = Value::from_parts(record.block, m, block_ty);
+    let slots = match &function_data.kind {
+        ValueKindData::Function(_) => Some(SlotTracker::for_function(
+            FunctionValue::<Dyn>::from_parts_unchecked(record.function, m),
+        )),
+        _ => None,
+    };
+    f.write_str("uselistorder_bb ")?;
+    fmt_operand_ref(f, function, None)?;
+    f.write_str(", ")?;
+    fmt_operand_ref(f, block, slots.as_ref())?;
+    f.write_str(", ")?;
+    fmt_indexes(f, &record.indexes)
+}
 
 /// Print the `asm`-callee body shared by `fmt_operand_ref` and
 /// `fmt_call`:
@@ -254,6 +301,9 @@ fn fmt_inline_asm(f: &mut fmt::Formatter<'_>, d: &crate::inline_asm::InlineAsmDa
     if matches!(d.dialect, crate::inline_asm::AsmDialect::Intel) {
         f.write_str("inteldialect ")?;
     }
+    if d.can_unwind {
+        f.write_str("unwind ")?;
+    }
     f.write_str("\"")?;
     print_escaped_string(f, d.asm_string.as_bytes())?;
     f.write_str("\", \"")?;
@@ -272,6 +322,7 @@ pub(crate) fn fmt_constant(
 ) -> fmt::Result {
     match c {
         ConstantData::Int(words) => fmt_int_constant(f, host.ty(), words),
+        ConstantData::Expr(expr) => fmt_constant_expr(f, host, expr),
         ConstantData::GlobalValueRef { value } => {
             let module = host.module.module();
             let global = Value::from_parts(*value, module, module.context().value_data(*value).ty);
@@ -282,6 +333,71 @@ pub(crate) fn fmt_constant(
         ConstantData::Undef => f.write_str("undef"),
         ConstantData::Poison => f.write_str("poison"),
         ConstantData::Aggregate(elems) => fmt_aggregate_constant(f, host, elems),
+        ConstantData::BlockAddress { function, block } => {
+            let module = host.module.module();
+            let fval =
+                Value::from_parts(*function, module, module.context().value_data(*function).ty);
+            let bval = Value::from_parts(*block, module, module.context().value_data(*block).ty);
+            f.write_str("blockaddress(")?;
+            fmt_operand_ref(f, fval, None)?;
+            f.write_str(", ")?;
+            fmt_operand_ref(f, bval, None)?;
+            f.write_str(")")
+        }
+        ConstantData::DSOLocalEquivalent { function } => {
+            let module = host.module.module();
+            let fval =
+                Value::from_parts(*function, module, module.context().value_data(*function).ty);
+            f.write_str("dso_local_equivalent ")?;
+            fmt_operand_ref(f, fval, None)
+        }
+        ConstantData::NoCfi { function } => {
+            let module = host.module.module();
+            let fval =
+                Value::from_parts(*function, module, module.context().value_data(*function).ty);
+            f.write_str("no_cfi ")?;
+            fmt_operand_ref(f, fval, None)
+        }
+        ConstantData::TokenNone => f.write_str("none"),
+        ConstantData::TargetExtNone => f.write_str("zeroinitializer"),
+        ConstantData::PtrAuth {
+            pointer,
+            key,
+            discriminator,
+            addr_discriminator,
+            deactivation_symbol,
+        } => {
+            let module = host.module.module();
+            let disc_is_default = is_zero_int_constant(module, *discriminator);
+            let addr_is_default = is_null_pointer_constant(module, *addr_discriminator);
+            let ds_is_default = is_null_pointer_constant(module, *deactivation_symbol);
+            let ids = [
+                *pointer,
+                *key,
+                *discriminator,
+                *addr_discriminator,
+                *deactivation_symbol,
+            ];
+            let count = if disc_is_default && addr_is_default && ds_is_default {
+                2
+            } else if addr_is_default && ds_is_default {
+                3
+            } else if ds_is_default {
+                4
+            } else {
+                5
+            };
+            f.write_str("ptrauth (")?;
+            for (i, id) in ids[..count].iter().enumerate() {
+                if i != 0 {
+                    f.write_str(", ")?;
+                }
+                let data = module.context().value_data(*id);
+                let value = Value::from_parts(*id, module, data.ty);
+                fmt_operand(f, value, None)?;
+            }
+            f.write_str(")")
+        }
         ConstantData::GepOffset { base_id, off } => {
             // `getelementptr inbounds (i8, <ptr-ty> @<base>, i64 <off>)`.
             // Mirrors `writeConstantInternal` printing each ConstantExpr
@@ -334,6 +450,82 @@ pub(crate) fn fmt_constant(
             write!(f, " to i64)), i64 {addend})")
         }
     }
+}
+
+fn is_zero_int_constant(module: &Module<'_>, id: ValueId) -> bool {
+    matches!(
+        &module.context().value_data(id).kind,
+        ValueKindData::Constant(ConstantData::Int(words)) if words.iter().all(|word| *word == 0)
+    )
+}
+
+fn is_null_pointer_constant(module: &Module<'_>, id: ValueId) -> bool {
+    matches!(
+        &module.context().value_data(id).kind,
+        ValueKindData::Constant(ConstantData::PointerNull)
+    )
+}
+
+fn fmt_constant_expr(
+    f: &mut fmt::Formatter<'_>,
+    host: Value<'_>,
+    expr: &ConstantExprData,
+) -> fmt::Result {
+    let module = host.module();
+    f.write_str(expr.opcode.keyword())?;
+    if expr.flags.inbounds || matches!(expr.opcode, ConstantExprOpcode::InBoundsGetElementPtr) {
+        f.write_str(" inbounds")?;
+    }
+    if expr.flags.nuw {
+        f.write_str(" nuw")?;
+    }
+    if expr.flags.nsw {
+        f.write_str(" nsw")?;
+    }
+    f.write_str(" (")?;
+    if matches!(
+        expr.opcode,
+        ConstantExprOpcode::GetElementPtr | ConstantExprOpcode::InBoundsGetElementPtr
+    ) {
+        let source_ty = expr
+            .source_ty
+            .unwrap_or_else(|| infer_gep_source_ty(module, expr));
+        write!(f, "{}, ", Type::new(source_ty, module))?;
+    }
+    let mut first = true;
+    for op_id in expr.operands.iter() {
+        if !first {
+            f.write_str(", ")?;
+        }
+        first = false;
+        let data = module.context().value_data(*op_id);
+        let value = Value::from_parts(*op_id, module, data.ty);
+        fmt_operand(f, value, None)?;
+    }
+    if expr.opcode.is_cast() {
+        write!(f, " to {}", Type::new(expr.result_ty, module))?;
+    }
+    if matches!(expr.opcode, ConstantExprOpcode::ShuffleVector) && !expr.mask.is_empty() {
+        f.write_str(", <")?;
+        for (i, m) in expr.mask.iter().enumerate() {
+            if i != 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "i32 {m}")?;
+        }
+        f.write_str(">")?;
+    }
+    f.write_str(")")
+}
+fn infer_gep_source_ty(module: &Module<'_>, expr: &ConstantExprData) -> crate::r#type::TypeId {
+    let Some(first) = expr.operands.first() else {
+        return expr.result_ty;
+    };
+    let first_data = module.context().value_data(*first);
+    if let ValueKindData::Constant(ConstantData::GlobalValueRef { value }) = &first_data.kind {
+        return module.context().value_data(*value).ty;
+    }
+    expr.result_ty
 }
 
 fn constant_ptr_operand_type<'ctx>(value: Value<'ctx>) -> Type<'ctx> {
@@ -588,7 +780,10 @@ pub(crate) fn fmt_instruction(
         InstructionKindData::AtomicRMW(d) => fmt_atomicrmw(f, inst, d, slots),
         InstructionKindData::Unreachable(_) => f.write_str("unreachable"),
         InstructionKindData::Ret(r) => fmt_ret(f, inst, r, slots),
-    }
+    }?;
+    let md = inst.module().metadata_store();
+    let md_slots = metadata_slot_map(md.nodes());
+    fmt_metadata_attachments(f, &inst.metadata(), &md, &md_slots)
 }
 
 fn fmt_binop(
@@ -1160,6 +1355,10 @@ fn fmt_call(
     if c.calling_conv != crate::CallingConv::C {
         write!(f, "{} ", c.calling_conv)?;
     }
+    fmt_attribute_set(f, &c.attrs.return_attrs, AttrIndex::Return, false)?;
+    if c.attrs.return_attrs.get(AttrIndex::Return).is_some() {
+        f.write_str(" ")?;
+    }
     let module = inst.module();
     // Print the return type. Mirrors AsmWriter's
     // `printType(I.getType())`. This is the *call result* type
@@ -1181,7 +1380,7 @@ fn fmt_call(
     }
     f.write_str("(")?;
     let mut first = true;
-    for arg_cell in c.args.iter() {
+    for (idx, arg_cell) in c.args.iter().enumerate() {
         let aid = arg_cell.get();
         if !first {
             f.write_str(", ")?;
@@ -1190,9 +1389,69 @@ fn fmt_call(
         let ad = module.context().value_data(aid);
         let av = Value::from_parts(aid, module, ad.ty);
         write!(f, "{} ", av.ty())?;
+        if let Some(arg_attr) = c.attrs.arg_attrs.get(idx) {
+            fmt_attribute_set(f, arg_attr, AttrIndex::Param(0), false)?;
+            if arg_attr.get(AttrIndex::Param(0)).is_some() {
+                f.write_str(" ")?;
+            }
+        }
         fmt_operand_ref(f, av, Some(slots))?;
     }
-    f.write_str(")")
+    f.write_str(")")?;
+    fmt_attribute_set(f, &c.attrs.function_attrs, AttrIndex::Function, true)?;
+    for group in c.attrs.function_attr_groups.iter() {
+        write!(f, " #{group}")?;
+    }
+    fmt_operand_bundles(f, &c.attrs.operand_bundles, module, slots)
+}
+
+fn operand_bundle_tag_name(tag: &crate::instr_types::OperandBundleTag) -> &str {
+    match tag {
+        crate::instr_types::OperandBundleTag::Deopt => "deopt",
+        crate::instr_types::OperandBundleTag::Funclet => "funclet",
+        crate::instr_types::OperandBundleTag::GcTransition => "gc-transition",
+        crate::instr_types::OperandBundleTag::CfGuardTarget => "cfguardtarget",
+        crate::instr_types::OperandBundleTag::Preallocated => "preallocated",
+        crate::instr_types::OperandBundleTag::GcLive => "gc-live",
+        crate::instr_types::OperandBundleTag::ClangArcAttachedCall => "clang.arc.attachedcall",
+        crate::instr_types::OperandBundleTag::PtrAuth => "ptrauth",
+        crate::instr_types::OperandBundleTag::Kcfi => "kcfi",
+        crate::instr_types::OperandBundleTag::ConvergenceCtrl => "convergencectrl",
+        crate::instr_types::OperandBundleTag::Align => "align",
+        crate::instr_types::OperandBundleTag::DeactivationSymbol => "deactivation",
+        crate::instr_types::OperandBundleTag::Custom(name) => name.as_str(),
+    }
+}
+
+fn fmt_operand_bundles(
+    f: &mut fmt::Formatter<'_>,
+    bundles: &[crate::instr_types::OperandBundleData],
+    module: &crate::Module<'_>,
+    slots: &SlotTracker,
+) -> fmt::Result {
+    if bundles.is_empty() {
+        return Ok(());
+    }
+    f.write_str(" [")?;
+    for (idx, bundle) in bundles.iter().enumerate() {
+        if idx != 0 {
+            f.write_str(", ")?;
+        }
+        f.write_str("\"")?;
+        print_escaped_string(f, operand_bundle_tag_name(&bundle.tag).as_bytes())?;
+        f.write_str("\"(")?;
+        for (input_idx, input) in bundle.inputs.iter().enumerate() {
+            if input_idx != 0 {
+                f.write_str(", ")?;
+            }
+            let id = input.get();
+            let data = module.context().value_data(id);
+            let value = Value::from_parts(id, module, data.ty);
+            fmt_operand(f, value, Some(slots))?;
+        }
+        f.write_str(")")?;
+    }
+    f.write_str("]")
 }
 
 fn fmt_landingpad(
@@ -1384,14 +1643,24 @@ fn fmt_invoke(
     if d.calling_conv != crate::CallingConv::C {
         write!(f, "{} ", d.calling_conv)?;
     }
+    fmt_attribute_set(f, &d.attrs.return_attrs, AttrIndex::Return, false)?;
+    if d.attrs.return_attrs.get(AttrIndex::Return).is_some() {
+        f.write_str(" ")?;
+    }
     let module = inst.module();
     write!(f, "{} ", inst.ty())?;
     let callee_data = module.context().value_data(d.callee.get());
-    let callee = Value::from_parts(d.callee.get(), module, callee_data.ty);
-    fmt_operand_ref(f, callee, Some(slots))?;
+    let inline_asm_callee = matches!(&callee_data.kind, ValueKindData::InlineAsm(_));
+    match &callee_data.kind {
+        ValueKindData::InlineAsm(data) => fmt_inline_asm(f, data)?,
+        _ => {
+            let callee = Value::from_parts(d.callee.get(), module, callee_data.ty);
+            fmt_operand_ref(f, callee, Some(slots))?;
+        }
+    }
     f.write_str("(")?;
     let mut first = true;
-    for arg_cell in d.args.iter() {
+    for (idx, arg_cell) in d.args.iter().enumerate() {
         if !first {
             f.write_str(", ")?;
         }
@@ -1400,9 +1669,25 @@ fn fmt_invoke(
         let ad = module.context().value_data(aid);
         let av = Value::from_parts(aid, module, ad.ty);
         write!(f, "{} ", av.ty())?;
+        if let Some(arg_attr) = d.attrs.arg_attrs.get(idx) {
+            fmt_attribute_set(f, arg_attr, AttrIndex::Param(0), false)?;
+            if arg_attr.get(AttrIndex::Param(0)).is_some() {
+                f.write_str(" ")?;
+            }
+        }
         fmt_operand_ref(f, av, Some(slots))?;
     }
-    f.write_str(")\n          to ")?;
+    f.write_str(")")?;
+    fmt_attribute_set(f, &d.attrs.function_attrs, AttrIndex::Function, true)?;
+    for group in d.attrs.function_attr_groups.iter() {
+        write!(f, " #{group}")?;
+    }
+    fmt_operand_bundles(f, &d.attrs.operand_bundles, module, slots)?;
+    f.write_str(if inline_asm_callee {
+        " to "
+    } else {
+        "\n          to "
+    })?;
     let nd = module.context().value_data(d.normal_dest.get());
     let nbb = Value::from_parts(d.normal_dest.get(), module, nd.ty);
     write!(f, "{} ", nbb.ty())?;
@@ -1425,14 +1710,24 @@ fn fmt_callbr(
     if d.calling_conv != crate::CallingConv::C {
         write!(f, "{} ", d.calling_conv)?;
     }
+    fmt_attribute_set(f, &d.attrs.return_attrs, AttrIndex::Return, false)?;
+    if d.attrs.return_attrs.get(AttrIndex::Return).is_some() {
+        f.write_str(" ")?;
+    }
     let module = inst.module();
     write!(f, "{} ", inst.ty())?;
     let callee_data = module.context().value_data(d.callee.get());
-    let callee = Value::from_parts(d.callee.get(), module, callee_data.ty);
-    fmt_operand_ref(f, callee, Some(slots))?;
+    let inline_asm_callee = matches!(&callee_data.kind, ValueKindData::InlineAsm(_));
+    match &callee_data.kind {
+        ValueKindData::InlineAsm(data) => fmt_inline_asm(f, data)?,
+        _ => {
+            let callee = Value::from_parts(d.callee.get(), module, callee_data.ty);
+            fmt_operand_ref(f, callee, Some(slots))?;
+        }
+    }
     f.write_str("(")?;
     let mut first = true;
-    for arg_cell in d.args.iter() {
+    for (idx, arg_cell) in d.args.iter().enumerate() {
         if !first {
             f.write_str(", ")?;
         }
@@ -1441,9 +1736,25 @@ fn fmt_callbr(
         let ad = module.context().value_data(aid);
         let av = Value::from_parts(aid, module, ad.ty);
         write!(f, "{} ", av.ty())?;
+        if let Some(arg_attr) = d.attrs.arg_attrs.get(idx) {
+            fmt_attribute_set(f, arg_attr, AttrIndex::Param(0), false)?;
+            if arg_attr.get(AttrIndex::Param(0)).is_some() {
+                f.write_str(" ")?;
+            }
+        }
         fmt_operand_ref(f, av, Some(slots))?;
     }
-    f.write_str(")\n          to ")?;
+    f.write_str(")")?;
+    fmt_attribute_set(f, &d.attrs.function_attrs, AttrIndex::Function, true)?;
+    for group in d.attrs.function_attr_groups.iter() {
+        write!(f, " #{group}")?;
+    }
+    fmt_operand_bundles(f, &d.attrs.operand_bundles, module, slots)?;
+    f.write_str(if inline_asm_callee {
+        " to "
+    } else {
+        "\n          to "
+    })?;
     let dd = module.context().value_data(d.default_dest.get());
     let dbb = Value::from_parts(d.default_dest.get(), module, dd.ty);
     write!(f, "{} ", dbb.ty())?;
@@ -1644,6 +1955,68 @@ fn fmt_attribute_stored(f: &mut fmt::Formatter<'_>, attr: &AttributeStored) -> f
 // BasicBlock + Function + Module printing
 // --------------------------------------------------------------------------
 
+fn fmt_debug_metadata_operand(
+    f: &mut fmt::Formatter<'_>,
+    operand: crate::metadata::DebugMetadataOperand,
+    module: &Module<'_>,
+    store: &crate::metadata::MetadataStore,
+    md_slots: &[Option<usize>],
+    slots: &SlotTracker,
+) -> fmt::Result {
+    match operand {
+        crate::metadata::DebugMetadataOperand::Metadata(md) => {
+            fmt_metadata_operand(f, md.0, store, md_slots)
+        }
+        crate::metadata::DebugMetadataOperand::Value(id) => {
+            let data = module.context().value_data(id);
+            fmt_operand(f, Value::from_parts(id, module, data.ty), Some(slots))
+        }
+    }
+}
+
+fn fmt_debug_record(
+    f: &mut fmt::Formatter<'_>,
+    record: &crate::metadata::DebugRecord,
+    module: &Module<'_>,
+    store: &crate::metadata::MetadataStore,
+    md_slots: &[Option<usize>],
+    slots: &SlotTracker,
+) -> fmt::Result {
+    f.write_str("  ")?;
+    match record {
+        crate::metadata::DebugRecord::Variable(record) => {
+            write!(f, "#dbg_{}(", record.kind.name())?;
+            fmt_debug_metadata_operand(f, record.location, module, store, md_slots, slots)?;
+            f.write_str(", ")?;
+            fmt_metadata_operand(f, record.variable, store, md_slots)?;
+            f.write_str(", ")?;
+            fmt_metadata_operand(f, record.expression, store, md_slots)?;
+            f.write_str(", ")?;
+            if let Some(assign_id) = record.assign_id {
+                fmt_metadata_operand(f, assign_id, store, md_slots)?;
+                f.write_str(", ")?;
+            }
+            if let Some(address_location) = record.address_location {
+                fmt_debug_metadata_operand(f, address_location, module, store, md_slots, slots)?;
+                f.write_str(", ")?;
+            }
+            if let Some(address_expression) = record.address_expression {
+                fmt_metadata_operand(f, address_expression, store, md_slots)?;
+                f.write_str(", ")?;
+            }
+            fmt_metadata_operand(f, record.debug_loc, store, md_slots)?;
+            f.write_str(")")
+        }
+        crate::metadata::DebugRecord::Label { label, debug_loc } => {
+            f.write_str("#dbg_label(")?;
+            fmt_metadata_operand(f, *label, store, md_slots)?;
+            f.write_str(", ")?;
+            fmt_metadata_operand(f, *debug_loc, store, md_slots)?;
+            f.write_str(")")
+        }
+    }
+}
+
 pub(crate) fn fmt_basic_block(
     f: &mut fmt::Formatter<'_>,
     bb: BasicBlock<'_, Dyn>,
@@ -1661,7 +2034,13 @@ pub(crate) fn fmt_basic_block(
         f.write_str("<unnamed>:")?;
     }
     f.write_str("\n")?;
+    let md = bb.module().metadata_store();
+    let md_slots = metadata_slot_map(md.nodes());
     for inst in bb.instructions() {
+        for record in inst.debug_records().iter() {
+            fmt_debug_record(f, record, bb.module(), &md, &md_slots, slots)?;
+            f.write_str("\n")?;
+        }
         fmt_instruction(f, &inst, slots)?;
         f.write_str("\n")?;
     }
@@ -1686,6 +2065,18 @@ pub(crate) fn fmt_function(
     let linkage_str = linkage.keyword();
     if !linkage_str.is_empty() {
         write!(f, " {linkage_str}")?;
+    }
+    if let Some(s) = func.visibility().keyword() {
+        write!(f, " {s}")?;
+    }
+    if let Some(s) = func.dll_storage_class().keyword() {
+        write!(f, " {s}")?;
+    }
+    if let Some(s) = func.dso_locality().keyword() {
+        write!(f, " {s}")?;
+    }
+    if func.calling_conv() != crate::CallingConv::C {
+        write!(f, " {}", func.calling_conv())?;
     }
     // Return-attribute slot: prints between `define` (or `declare`)
     // and the return type. Mirrors `define noundef i32 @main()`.
@@ -1723,14 +2114,57 @@ pub(crate) fn fmt_function(
         f.write_str("...")?;
     }
     f.write_str(")")?;
-    // Unnamed-address marker.
     if let Some(kw) = func.unnamed_addr().keyword() {
         write!(f, " {kw}")?;
     }
-    // Function-level attribute slot. Printed inline after the signature,
-    // e.g. `define void @f() naked "frame-pointer"="all" {`. Mirrors the
-    // function-attribute portion of `AsmWriter::printFunction`.
+    if func.address_space() != 0 {
+        write!(f, " addrspace({})", func.address_space())?;
+    }
+    for group in func.function_attr_groups() {
+        write!(f, " #{group}")?;
+    }
     fmt_attribute_set(f, &attrs, AttrIndex::Function, true)?;
+    if let Some(section) = func.section() {
+        f.write_str(" section \"")?;
+        print_escaped_string(f, section.as_bytes())?;
+        f.write_str("\"")?;
+    }
+    if let Some(partition) = func.partition() {
+        f.write_str(" partition \"")?;
+        print_escaped_string(f, partition.as_bytes())?;
+        f.write_str("\"")?;
+    }
+    if let Some(c) = func.comdat() {
+        f.write_str(" comdat")?;
+        if c.name() != func.name() {
+            write!(f, "(${})", c.name())?;
+        }
+    }
+    if let Some(a) = func.align().align() {
+        write!(f, " align {}", a.value())?;
+    }
+    if let Some(gc) = func.gc() {
+        f.write_str(" gc \"")?;
+        print_escaped_string(f, gc.as_bytes())?;
+        f.write_str("\"")?;
+    }
+    if let Some(prefix) = func.prefix_data() {
+        f.write_str(" prefix ")?;
+        fmt_operand(f, prefix.as_value(), None)?;
+    }
+    if let Some(prologue) = func.prologue_data() {
+        f.write_str(" prologue ")?;
+        fmt_operand(f, prologue.as_value(), None)?;
+    }
+    if let Some(personality) = func.personality_fn() {
+        f.write_str(" personality ")?;
+        fmt_operand(f, personality.as_value(), None)?;
+    }
+    {
+        let md = func.module().metadata_store();
+        let md_slots = metadata_slot_map(md.nodes());
+        fmt_metadata_attachments(f, &func.metadata(), &md, &md_slots)?;
+    }
     if header == "declare" {
         return f.write_str("\n");
     }
@@ -1741,7 +2175,9 @@ pub(crate) fn fmt_function(
         first_block = false;
     }
     for directive in func.use_list_orders() {
-        writeln!(f, "  {directive}")?;
+        f.write_str("  ")?;
+        fmt_use_list_order(f, func.module(), &directive, Some(&slots))?;
+        f.write_str("\n")?;
     }
     f.write_str("}\n")
 }
@@ -1888,9 +2324,37 @@ pub(crate) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &Module<'_>) -> fmt::Res
         first = false;
         fmt_function(f, func)?;
     }
+    {
+        let mut groups = m.attribute_groups();
+        groups.sort_by_key(|(slot, _)| *slot);
+        if !groups.is_empty() {
+            f.write_str("\n")?;
+            for (slot, storage) in groups {
+                write!(f, "attributes #{slot} = {{")?;
+                if let Some(attrs) = storage.get(AttrIndex::Function) {
+                    if !attrs.is_empty() {
+                        f.write_str(" ")?;
+                        for (i, attr) in attrs.iter().enumerate() {
+                            if i != 0 {
+                                f.write_str(" ")?;
+                            }
+                            write!(f, "{attr}")?;
+                        }
+                        f.write_str(" ")?;
+                    }
+                }
+                f.write_str("}\n")?;
+            }
+        }
+    }
 
-    for directive in m.use_list_orders() {
-        writeln!(f, "{directive}")?;
+    for directive in m.iter_use_list_orders() {
+        fmt_use_list_order(f, m, &directive, None)?;
+        f.write_str("\n")?;
+    }
+    for directive in m.iter_use_list_order_bbs() {
+        fmt_use_list_order_bb(f, m, &directive)?;
+        f.write_str("\n")?;
     }
 
     // Numbered metadata nodes. Mirrors the
@@ -1957,8 +2421,12 @@ fn fmt_metadata_node(
 ) -> fmt::Result {
     use crate::metadata::MetadataKind;
     match node {
+        MetadataKind::Null => f.write_str("null"),
         MetadataKind::String(s) => fmt_md_string(f, s),
-        MetadataKind::Tuple(operands) => {
+        MetadataKind::Tuple { distinct, operands } => {
+            if *distinct {
+                f.write_str("distinct ")?;
+            }
             f.write_str("!{")?;
             for (i, op) in operands.iter().enumerate() {
                 if i > 0 {
@@ -1969,19 +2437,80 @@ fn fmt_metadata_node(
             f.write_str("}")
         }
         MetadataKind::Ref(id) => fmt_metadata_operand(f, *id, store, slots),
+        MetadataKind::Specialized(node) => fmt_specialized_metadata_node(f, node, store, slots),
     }
 }
+fn fmt_specialized_metadata_node(
+    f: &mut fmt::Formatter<'_>,
+    node: &crate::metadata::SpecializedMetadataNode,
+    store: &crate::metadata::MetadataStore,
+    slots: &[Option<usize>],
+) -> fmt::Result {
+    use crate::metadata::MetadataFieldValue;
+    if node.distinct {
+        f.write_str("distinct ")?;
+    }
+    write!(f, "!{}(", node.kind.name())?;
+    for (i, field) in node.fields.iter().enumerate() {
+        if i > 0 {
+            f.write_str(", ")?;
+        }
+        write!(f, "{}: ", field.name)?;
+        match &field.value {
+            MetadataFieldValue::Null => f.write_str("null")?,
+            MetadataFieldValue::Bool(v) => f.write_str(if *v { "true" } else { "false" })?,
+            MetadataFieldValue::Integer(v) => write!(f, "{v}")?,
+            MetadataFieldValue::String(s) => {
+                f.write_str("\"")?;
+                print_escaped_string(f, s.as_bytes())?;
+                f.write_str("\"")?;
+            }
+            MetadataFieldValue::Enum(s) => f.write_str(s)?,
+            MetadataFieldValue::Metadata(md) => fmt_metadata_operand(f, md.0, store, slots)?,
+            MetadataFieldValue::MetadataList(items) => {
+                f.write_str("!{")?;
+                for (j, md) in items.iter().enumerate() {
+                    if j > 0 {
+                        f.write_str(", ")?;
+                    }
+                    fmt_metadata_operand(f, md.0, store, slots)?;
+                }
+                f.write_str("}")?;
+            }
+        }
+    }
+    f.write_str(")")
+}
 
-/// Print a single metadata operand. `MDString` operands are inline; MDNodes
-/// are referenced by the renumbered slot map.
+fn fmt_metadata_attachments(
+    f: &mut fmt::Formatter<'_>,
+    attachments: &crate::metadata::MetadataAttachmentSet,
+    store: &crate::metadata::MetadataStore,
+    slots: &[Option<usize>],
+) -> fmt::Result {
+    for (kind, id) in attachments.iter() {
+        write!(f, ", !{} ", kind.name())?;
+        fmt_metadata_operand(f, *id, store, slots)?;
+    }
+    Ok(())
+}
+
+/// Print a single metadata operand. `MDString`, `DIExpression`, and other
+/// upstream-inline node families are printed inline; slotted MDNodes are
+/// referenced by the module metadata slot map.
 fn fmt_metadata_operand(
     f: &mut fmt::Formatter<'_>,
     id: crate::metadata::MetadataId,
     store: &crate::metadata::MetadataStore,
     slots: &[Option<usize>],
 ) -> fmt::Result {
-    if let Some(crate::metadata::MetadataKind::String(s)) = store.get(id) {
-        return fmt_md_string(f, s);
+    if let Some(node) = store.get(id) {
+        if let crate::metadata::MetadataKind::String(s) = node {
+            return fmt_md_string(f, s);
+        }
+        if is_inline_metadata_node(node) {
+            return fmt_metadata_node(f, node, store, slots);
+        }
     }
     match slots.get(id.index()).and_then(|slot| *slot) {
         Some(slot) => write!(f, "!{slot}"),
@@ -1989,11 +2518,22 @@ fn fmt_metadata_operand(
     }
 }
 
+fn is_inline_metadata_node(node: &crate::metadata::MetadataKind) -> bool {
+    matches!(node, crate::metadata::MetadataKind::Null)
+        || matches!(
+            node,
+            crate::metadata::MetadataKind::Specialized(s)
+                if s.kind == crate::metadata::SpecializedMetadataKind::DIExpression
+        )
+}
+
 fn metadata_slot_map(nodes: &[crate::metadata::MetadataKind]) -> Vec<Option<usize>> {
     let mut slots = vec![None; nodes.len()];
     let mut next = 0;
     for (i, node) in nodes.iter().enumerate() {
-        if !matches!(node, crate::metadata::MetadataKind::String(_)) {
+        if !matches!(node, crate::metadata::MetadataKind::String(_))
+            && !is_inline_metadata_node(node)
+        {
             slots[i] = Some(next);
             next += 1;
         }
@@ -2098,7 +2638,9 @@ fn fmt_global(
     if let Some(a) = g.align().align() {
         write!(f, ", align {}", a.value())?;
     }
-    Ok(())
+    let md = g.module().metadata_store();
+    let md_slots = metadata_slot_map(md.nodes());
+    fmt_metadata_attachments(f, &g.metadata(), &md, &md_slots)
 }
 
 pub(crate) fn fmt_alias(f: &mut fmt::Formatter<'_>, a: crate::GlobalAlias<'_>) -> fmt::Result {
@@ -2132,6 +2674,9 @@ pub(crate) fn fmt_alias(f: &mut fmt::Formatter<'_>, a: crate::GlobalAlias<'_>) -
         print_escaped_string(f, partition.as_bytes())?;
         f.write_str("\"")?;
     }
+    let md = a.module().metadata_store();
+    let md_slots = metadata_slot_map(md.nodes());
+    fmt_metadata_attachments(f, &a.metadata(), &md, &md_slots)?;
     f.write_str("\n")
 }
 
@@ -2154,6 +2699,9 @@ pub(crate) fn fmt_ifunc(f: &mut fmt::Formatter<'_>, i: crate::GlobalIFunc<'_>) -
         print_escaped_string(f, partition.as_bytes())?;
         f.write_str("\"")?;
     }
+    let md = i.module().metadata_store();
+    let md_slots = metadata_slot_map(md.nodes());
+    fmt_metadata_attachments(f, &i.metadata(), &md, &md_slots)?;
     f.write_str("\n")
 }
 

@@ -117,7 +117,8 @@ impl<T> NumberedValues<T> {
 /// Forward-reference resolution typestate (Roadmap section 10.5).
 ///
 /// The parser keeps slots that hold either a not-yet-defined forward
-/// reference ([`Unresolved`]) or a definition ([`Resolved`]). The two states
+/// reference ([`forward_ref::Unresolved`]) or a definition
+/// ([`forward_ref::Resolved`]). The two states
 /// are distinct types so leaking an `Unresolved<T>` past
 /// `PerFunctionState::finish` (Session 3) is a *compile* error: the consume
 /// site only accepts a state that has discharged every slot.

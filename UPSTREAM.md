@@ -15,7 +15,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 678.
+Total `#[test]` functions: 733.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -655,15 +655,25 @@ Total `#[test]` functions: 678.
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::instruction_multiple_trailing_metadata` | `test/Assembler/metadata.ll`; `LLParser::parseInstructionMetadata` multiple attachments | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::undefined_trailing_metadata_operand_is_rejected` | `lib/AsmParser/LLParser.cpp::LLParser::validateEndOfModule` undefined metadata diagnostic | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::instruction_trailing_metadata_no_comma` | `test/Assembler/metadata.ll`; `LLParser::parseInstructionMetadata` no-comma variant | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_bare_dieexpression_is_rejected` | `lib/AsmParser/LLParser.cpp::LLParser::parseStandaloneMetadata`; non-metadata token rejection | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::call_with_metadata_argument_roundtrip` | `test/CodeGen/X86/read-register.ll`; `LLParser::parseMetadataAsValue` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::call_with_metadata_and_value_argument_roundtrip` | `test/CodeGen/X86/write-register.ll`; `LLParser::parseMetadataAsValue` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::call_metadata_inline_tuple_operand_round_trips` | `lib/AsmParser/LLParser.cpp::LLParser::parseMetadataAsValue`; `LLParser::parseMetadata` tuple arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::call_metadata_inline_string_operand_round_trips` | `lib/AsmParser/LLParser.cpp::LLParser::parseMetadataAsValue`; `LLParser::parseMetadata` MDString arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_tuple_with_inline_dieexpression` | `lib/AsmParser/LLParser.cpp::LLParser::parseMDTuple`; `LLParser::parseMetadata` specialized metadata arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_tuple_bare_dieexpression_is_rejected` | `lib/AsmParser/LLParser.cpp::LLParser::parseMDTuple`; non-metadata token rejection | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::call_metadata_inline_dieexpression_operand_round_trips` | `lib/AsmParser/LLParser.cpp::LLParser::parseMetadataAsValue`; `LLParser::parseMetadata` specialized metadata arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::specialized_metadata_field_inline_dieexpression_round_trips` | `lib/AsmParser/LLParser.cpp::LLParser::parseMDField`; `LLParser::parseMetadata` specialized metadata arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::call_metadata_bare_dieexpression_operand_is_rejected` | `lib/AsmParser/LLParser.cpp::LLParser::parseMetadataAsValue`; non-metadata token rejection | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::specialized_metadata_field_bare_dieexpression_is_rejected` | `lib/AsmParser/LLParser.cpp::LLParser::parseMDField`; non-metadata token rejection | mirror |
+| `crates/llvmkit-asmparser/tests/parser_metadata.rs::trailing_metadata_bare_dieexpression_is_rejected` | `lib/AsmParser/LLParser.cpp::LLParser::parseInstructionMetadata`; non-metadata token rejection | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::inline_string_tuple_reparses` | `lib/IR/AsmWriter.cpp::writeAsOperandInternal(Metadata*)`; `LLParser::parseMetadata` MDString arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::nonzero_metadata_slot_resolves` | `lib/AsmParser/LLParser.cpp::LLParser::parseMDNodeID` forward-reference handling | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::undefined_named_metadata_operand_is_rejected` | `lib/AsmParser/LLParser.cpp::LLParser::validateEndOfModule` undefined metadata diagnostic | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::undefined_metadata_value_operand_is_rejected` | `lib/AsmParser/LLParser.cpp::LLParser::validateEndOfModule` undefined metadata diagnostic | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::metadata_ref_in_non_metadata_type_is_rejected` | `lib/AsmParser/LLParser.cpp::LLParser::parseMetadataAsValue` metadata-typed operand path | mirror |
+| `crates/llvmkit-asmparser/tests/parser_val_id.rs::standalone_constant_rejects_trailing_token` | `llvm/include/llvm/AsmParser/Parser.h::parseConstantValue`; `llvm/lib/AsmParser/LLParser.cpp::parseStandaloneConstantValue` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_val_id.rs::fadd_constant_expr_rejected_as_unsupported` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `fadd constexprs are no longer supported` diagnostic | mirror |
 | `crates/llvmkit-asmparser/tests/parser_value_forms.rs::undef_operand` | `test/Assembler/undef.ll`; `LLParser::parseValID` `lltok::kw_undef` arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_value_forms.rs::poison_operand` | `test/Assembler/poison.ll`; `LLParser::parseValID` `lltok::kw_poison` arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_value_forms.rs::float_decimal_literal` | `test/Assembler/float.ll`; `LLParser::parseValID` decimal FP literal arm | mirror |
@@ -688,7 +698,17 @@ Total `#[test]` functions: 678.
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::array_constant_initializer_round_trips` | `test/Assembler/aggregate-constant-values.ll` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::struct_constant_initializer_round_trips` | `test/Assembler/aggregate-constant-values.ll` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::getelementptr_constant_expr_initializer_round_trips` | `test/Assembler/getelementptr.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` getelementptr constant-expression arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_corpus.rs::parser_corpus_round_trips_checked_in_fixtures` | `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_casts_round_trip` | `test/Assembler/ConstantExprNoFold.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` cast constant-expression arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_binary_round_trip` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` integer binary constant-expression arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_gep_round_trip` | `test/Assembler/getelementptr.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` general getelementptr constant-expression arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::blockaddress_round_trips` | `test/Assembler/blockaddress.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `blockaddress` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::dso_local_equivalent_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `dso_local_equivalent` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::no_cfi_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `no_cfi` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::token_or_target_none_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none` arm; `test/Assembler/target-types.ll` | mirror |
+| `crates/llvmkit-ir/tests/constants_expr.rs::constant_expr_bitcast_round_trips` | `test/Assembler/ConstantExprNoFold.ll`; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` | mirror |
+| `crates/llvmkit-ir/tests/constants_expr.rs::blockaddress_constant_round_trips` | `test/Assembler/blockaddress.ll`; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` | mirror |
+| `crates/llvmkit-ir/tests/constants_expr.rs::token_none_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none` arm; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_corpus.rs::parser_corpus_round_trips_checked_in_fixtures` | `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile`; fixture-level provenance in `crates/llvmkit-asmparser/tests/fixtures/parser_corpus_manifest.txt` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_linkage_definition_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` linkage prefix | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_local_unnamed_addr_round_trips` | `test/Assembler/unnamed-addr.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` optional unnamed-address arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::extern_weak_declaration_with_unnamed_addr_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` declaration linkage validation | mirror |
@@ -697,3 +717,38 @@ Total `#[test]` functions: 678.
 | `crates/llvmkit-asmparser/tests/parser_use_list.rs::module_uselistorder_round_trips_global_callee` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseUseListOrder`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printUseListOrder` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_use_list.rs::function_uselistorder_round_trips_local_value` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseUseListOrder(PerFunctionState*)`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printUseListOrder` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_use_list.rs::ordered_uselistorder_indexes_are_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseUseListOrderIndexes` identity-order rejection | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::ptrtoaddr_constant_expr_round_trips` | `test/Assembler/ConstantExprNoFold.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_ptrtoaddr` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::unsupported_constant_expr_opcodes_are_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` unsupported constexpr diagnostics | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::none_is_token_only` | `Constants.cpp::ConstantTargetNone::get`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::target_ext_zeroinitializer_requires_zero_init_property` | `test/Assembler/target-types.ll`; `llvm/lib/IR/Type.cpp::getTargetTypeInfo` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::ptrauth_five_operands_round_trips` | `Constants.cpp::ConstantPtrAuth::get`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_ptrauth` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::ptrauth_default_operands_are_elided` | `Constants.cpp::ConstantPtrAuth::get`; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` ptrauth arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::forward_blockaddress_resolves_later_signature` | `test/Assembler/blockaddress.ll`; `Constants.cpp::BlockAddress::get` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::forward_dso_and_no_cfi_resolve_later_signature` | `Constants.cpp::DSOLocalEquivalent::get`; `Constants.cpp::NoCFIValue::get` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_splat_vector_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_splat` arm | mirror |
+| `crates/llvmkit-ir/tests/constants_expr.rs::constant_expr_supported_opcode_set_is_exact` | `test/Assembler/ConstantExprNoFold.ll`; `Verifier.cpp::Verifier::visitConstantExpr` | mirror |
+| `crates/llvmkit-ir/tests/constants_expr.rs::invalid_bitcast_constant_expr_is_rejected` | `Verifier.cpp::Verifier::visitConstantExpr` | mirror |
+| `crates/llvmkit-ir/tests/constants_expr.rs::invalid_gep_constant_expr_indices_are_rejected` | `Verifier.cpp::Verifier::visitConstantExpr` | mirror |
+| `crates/llvmkit-ir/tests/constants_expr.rs::constant_expr_ptrtoaddr_round_trips` | `test/Assembler/ConstantExprNoFold.ll`; `Verifier.cpp::checkPtrToAddr` | mirror |
+| `crates/llvmkit-ir/tests/constants_expr.rs::ptrauth_constructor_requires_five_operand_shape` | `Constants.cpp::ConstantPtrAuth::get`; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` ptrauth arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_intrinsics.rs::known_intrinsic_auto_declares_direct_callee` | `llvm/include/llvm/IR/Intrinsics.td::int_lifetime_start`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCall` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_intrinsics.rs::unknown_intrinsic_is_rejected` | `llvm/lib/IR/Verifier.cpp` intrinsic validation | mirror |
+| `crates/llvmkit-asmparser/tests/parser_intrinsics.rs::intrinsic_non_callee_use_is_rejected` | `llvm/lib/IR/Verifier.cpp` intrinsic validation | mirror |
+| `crates/llvmkit-asmparser/tests/parser_intrinsics.rs::intrinsic_signature_mismatch_is_rejected` | `llvm/include/llvm/IR/Intrinsics.td::int_lifetime_start` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_void_call_round_trips` | `test/Assembler/inline-asm.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_intel_alignstack_unwind_round_trips` | `test/Assembler/inline-asm.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_invoke_round_trips` | `test/Assembler/invoke.ll`; `test/Assembler/inline-asm.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_callbr_round_trips` | `test/Assembler/callbr.ll`; `test/Assembler/inline-asm.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_operand_header_fields_round_trip` | `test/Assembler/function-operand-uselistorder.ll`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printFunction` prefix/prologue/personality arms | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::call_modifiers_round_trip` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCall`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printInstruction` CallInst arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::operand_bundles_round_trip` | `test/Bitcode/operand-bundles.ll`; `llvm/lib/AsmParser/LLParser.cpp::parseOperandBundles` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_summary.rs::summary_module_entry_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseModuleEntry` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_summary.rs::summary_function_entry_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseFunctionSummary` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_summary.rs::summary_variable_entry_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseVariableSummary` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_summary.rs::summary_alias_entry_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseAliasSummary` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_summary.rs::parse_summary_index_assembly_file_reads_fixture` | `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::specialized_debug_nodes_round_trip` | `llvm/lib/AsmParser/LLParser.cpp::parseSpecializedMDNode` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::function_and_global_debug_attachments_round_trip` | `llvm/lib/IR/AsmWriter.cpp::SlotTracker::CreateMetadataSlot`; `llvm/lib/AsmParser/LLParser.cpp` function/global metadata attachment parsing | mirror |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::dbg_declare_value_record_round_trip` | `test/Assembler/dbg_declare_value.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_headers.rs::attribute_group_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseUnnamedAttrGroup` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_full_header_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseFunctionHeader` | mirror |

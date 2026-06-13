@@ -22,7 +22,7 @@
 use core::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use crate::constant::ConstantData;
+use crate::constant::{ConstantData, ConstantExprData};
 use crate::r#type::{StructBody, TypeData, TypeId};
 use crate::value::{ValueData, ValueId, ValueKindData};
 
@@ -74,6 +74,13 @@ pub(crate) struct Context {
     undef_constants: RefCell<HashMap<TypeId, ValueId>>,
     poison_constants: RefCell<HashMap<TypeId, ValueId>>,
     aggregate_constants: RefCell<AggregateConstantMap>,
+    expr_constants: RefCell<HashMap<ConstantExprData, ValueId>>,
+    block_address_constants: RefCell<HashMap<(TypeId, ValueId, ValueId), ValueId>>,
+    dso_local_equivalent_constants: RefCell<HashMap<(TypeId, ValueId), ValueId>>,
+    no_cfi_constants: RefCell<HashMap<(TypeId, ValueId), ValueId>>,
+    token_none_constant: Cell<Option<ValueId>>,
+    target_ext_none_constants: RefCell<HashMap<TypeId, ValueId>>,
+    ptrauth_constants: RefCell<PtrauthConstantMap>,
 }
 
 /// Intern key for [`ConstantData::Int`](crate::constant::ConstantData::Int):
@@ -83,6 +90,7 @@ type IntConstantMap = HashMap<(TypeId, Box<[u64]>), ValueId>;
 /// the float's type plus its IEEE bit pattern (held as a `u128` so
 /// every IEEE width up to `fp128` fits without a discriminant).
 type FloatConstantMap = HashMap<(TypeId, u128), ValueId>;
+type PtrauthConstantMap = HashMap<(TypeId, ValueId, ValueId, ValueId, ValueId, ValueId), ValueId>;
 /// Intern key for `ConstantArray` / `ConstantStruct` / `ConstantVector`
 /// payloads: the aggregate's type plus its element value-ids.
 type AggregateConstantMap = HashMap<(TypeId, Box<[ValueId]>), ValueId>;
@@ -144,6 +152,13 @@ impl Context {
             undef_constants: RefCell::new(HashMap::new()),
             poison_constants: RefCell::new(HashMap::new()),
             aggregate_constants: RefCell::new(HashMap::new()),
+            expr_constants: RefCell::new(HashMap::new()),
+            block_address_constants: RefCell::new(HashMap::new()),
+            dso_local_equivalent_constants: RefCell::new(HashMap::new()),
+            no_cfi_constants: RefCell::new(HashMap::new()),
+            token_none_constant: Cell::new(None),
+            target_ext_none_constants: RefCell::new(HashMap::new()),
+            ptrauth_constants: RefCell::new(HashMap::new()),
         }
     }
 
@@ -569,6 +584,149 @@ impl Context {
             use_list: core::cell::RefCell::new(Vec::new()),
         });
         self.aggregate_constants.borrow_mut().insert(key, id);
+        id
+    }
+
+    pub(crate) fn intern_constant_expr(&self, data: ConstantExprData) -> ValueId {
+        if let Some(&id) = self.expr_constants.borrow().get(&data) {
+            return id;
+        }
+        let ty = data.result_ty;
+        let key = data.clone();
+        let id = self.push_value(ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: ValueKindData::Constant(ConstantData::Expr(data)),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        self.expr_constants.borrow_mut().insert(key, id);
+        id
+    }
+
+    pub(crate) fn intern_constant_block_address(
+        &self,
+        ty: TypeId,
+        function: ValueId,
+        block: ValueId,
+    ) -> ValueId {
+        let key = (ty, function, block);
+        if let Some(&id) = self.block_address_constants.borrow().get(&key) {
+            return id;
+        }
+        let id = self.push_value(ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: ValueKindData::Constant(ConstantData::BlockAddress { function, block }),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        self.block_address_constants.borrow_mut().insert(key, id);
+        id
+    }
+
+    pub(crate) fn intern_constant_dso_local_equivalent(
+        &self,
+        ty: TypeId,
+        function: ValueId,
+    ) -> ValueId {
+        let key = (ty, function);
+        if let Some(&id) = self.dso_local_equivalent_constants.borrow().get(&key) {
+            return id;
+        }
+        let id = self.push_value(ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: ValueKindData::Constant(ConstantData::DSOLocalEquivalent { function }),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        self.dso_local_equivalent_constants
+            .borrow_mut()
+            .insert(key, id);
+        id
+    }
+
+    pub(crate) fn intern_constant_no_cfi(&self, ty: TypeId, function: ValueId) -> ValueId {
+        let key = (ty, function);
+        if let Some(&id) = self.no_cfi_constants.borrow().get(&key) {
+            return id;
+        }
+        let id = self.push_value(ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: ValueKindData::Constant(ConstantData::NoCfi { function }),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        self.no_cfi_constants.borrow_mut().insert(key, id);
+        id
+    }
+
+    pub(crate) fn intern_constant_token_none(&self, ty: TypeId) -> ValueId {
+        if let Some(id) = self.token_none_constant.get() {
+            return id;
+        }
+        let id = self.push_value(ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: ValueKindData::Constant(ConstantData::TokenNone),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        self.token_none_constant.set(Some(id));
+        id
+    }
+
+    pub(crate) fn intern_constant_target_ext_none(&self, ty: TypeId) -> ValueId {
+        if let Some(&id) = self.target_ext_none_constants.borrow().get(&ty) {
+            return id;
+        }
+        let id = self.push_value(ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: ValueKindData::Constant(ConstantData::TargetExtNone),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        self.target_ext_none_constants.borrow_mut().insert(ty, id);
+        id
+    }
+
+    pub(crate) fn intern_constant_ptrauth(
+        &self,
+        ty: TypeId,
+        pointer: ValueId,
+        key: ValueId,
+        discriminator: ValueId,
+        addr_discriminator: ValueId,
+        deactivation_symbol: ValueId,
+    ) -> ValueId {
+        let map_key = (
+            ty,
+            pointer,
+            key,
+            discriminator,
+            addr_discriminator,
+            deactivation_symbol,
+        );
+        if let Some(&id) = self.ptrauth_constants.borrow().get(&map_key) {
+            return id;
+        }
+        let id = self.push_value(ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: ValueKindData::Constant(ConstantData::PtrAuth {
+                pointer,
+                key,
+                discriminator,
+                addr_discriminator,
+                deactivation_symbol,
+            }),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        self.ptrauth_constants.borrow_mut().insert(map_key, id);
         id
     }
 }

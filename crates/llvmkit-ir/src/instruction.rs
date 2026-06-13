@@ -43,6 +43,8 @@ use crate::{DebugLoc, IrError, IrResult, Type};
 pub(crate) struct InstructionData {
     pub(crate) parent: core::cell::Cell<ValueId>,
     pub(crate) kind: InstructionKindData,
+    pub(crate) metadata: core::cell::RefCell<crate::metadata::MetadataAttachmentSet>,
+    pub(crate) debug_records: core::cell::RefCell<Vec<crate::metadata::DebugRecord>>,
 }
 
 impl InstructionData {
@@ -50,6 +52,8 @@ impl InstructionData {
         Self {
             parent: core::cell::Cell::new(parent),
             kind,
+            metadata: core::cell::RefCell::new(crate::metadata::MetadataAttachmentSet::new()),
+            debug_records: core::cell::RefCell::new(Vec::new()),
         }
     }
 }
@@ -153,6 +157,9 @@ impl InstructionKindData {
             Self::Call(c) => {
                 let mut v = vec![c.callee.get()];
                 v.extend(c.args.iter().map(|c| c.get()));
+                for bundle in c.attrs.operand_bundles.iter() {
+                    v.extend(bundle.inputs.iter().map(|input| input.get()));
+                }
                 v
             }
             Self::Select(s) => vec![s.cond.get(), s.true_val.get(), s.false_val.get()],
@@ -184,11 +191,17 @@ impl InstructionKindData {
             Self::Invoke(c) => {
                 let mut v = vec![c.callee.get()];
                 v.extend(c.args.iter().map(|c| c.get()));
+                for bundle in c.attrs.operand_bundles.iter() {
+                    v.extend(bundle.inputs.iter().map(|input| input.get()));
+                }
                 v
             }
             Self::CallBr(c) => {
                 let mut v = vec![c.callee.get()];
                 v.extend(c.args.iter().map(|c| c.get()));
+                for bundle in c.attrs.operand_bundles.iter() {
+                    v.extend(bundle.inputs.iter().map(|input| input.get()));
+                }
                 v
             }
             Self::LandingPad(l) => l.clauses.borrow().iter().map(|(_, c)| c.get()).collect(),
@@ -357,7 +370,27 @@ impl<'ctx, S: state::InstructionState> Instruction<'ctx, S> {
         self.as_value().name()
     }
 
-    /// Set or clear the textual name.
+    /// Metadata attachments on this instruction.
+    pub fn metadata(&self) -> core::cell::Ref<'_, crate::metadata::MetadataAttachmentSet> {
+        self.data().metadata.borrow()
+    }
+
+    /// Set or replace one metadata attachment.
+    pub fn set_metadata(
+        &self,
+        kind: crate::metadata::MetadataAttachmentKind,
+        id: crate::metadata::MetadataId,
+    ) {
+        self.data().metadata.borrow_mut().insert(kind, id);
+    }
+
+    pub fn debug_records(&self) -> core::cell::Ref<'_, [crate::metadata::DebugRecord]> {
+        core::cell::Ref::map(self.data().debug_records.borrow(), Vec::as_slice)
+    }
+
+    pub fn push_debug_record(&self, record: crate::metadata::DebugRecord) {
+        self.data().debug_records.borrow_mut().push(record);
+    }
     #[inline]
     pub fn set_name(&self, name: Option<&str>) {
         self.as_value().set_name(name);
@@ -883,6 +916,11 @@ fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueId, to: ValueId)
             for arg in c.args.iter() {
                 swap(arg);
             }
+            for bundle in c.attrs.operand_bundles.iter() {
+                for input in bundle.inputs.iter() {
+                    swap(input);
+                }
+            }
         }
         InstructionKindData::Select(s) => {
             swap(&s.cond);
@@ -950,11 +988,21 @@ fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueId, to: ValueId)
             for arg in c.args.iter() {
                 swap(arg);
             }
+            for bundle in c.attrs.operand_bundles.iter() {
+                for input in bundle.inputs.iter() {
+                    swap(input);
+                }
+            }
         }
         InstructionKindData::CallBr(c) => {
             swap(&c.callee);
             for arg in c.args.iter() {
                 swap(arg);
+            }
+            for bundle in c.attrs.operand_bundles.iter() {
+                for input in bundle.inputs.iter() {
+                    swap(input);
+                }
             }
         }
         InstructionKindData::LandingPad(l) => {

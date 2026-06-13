@@ -47,6 +47,7 @@ pub mod instr_types;
 pub mod instruction;
 pub mod instructions;
 pub mod int_width;
+pub mod intrinsics;
 pub mod ir_builder;
 pub mod iter;
 pub(crate) mod llvm_context;
@@ -88,10 +89,10 @@ pub use calling_conv::CallingConv;
 pub use cfg::{BasicBlockEdge, FunctionCfg};
 pub use cmp_predicate::{FloatPredicate, IntPredicate};
 pub use comdat::{ComdatRef, SelectionKind};
-pub use constant::{Constant, IsConstant};
+pub use constant::{Constant, ConstantExprFlags, ConstantExprOpcode, IsConstant};
 pub use constants::{
-    ConstantAggregate, ConstantFloatValue, ConstantIntValue, ConstantPointerNull, PoisonValue,
-    UndefValue,
+    ConstantAggregate, ConstantExprOptions, ConstantFloatValue, ConstantIntValue,
+    ConstantPointerNull, PoisonValue, UndefValue,
 };
 pub use data_layout::{
     DataLayout, FunctionPtrAlignType, ManglingMode, PointerSpec, PrimitiveSpec, StructLayoutInfo,
@@ -100,7 +101,7 @@ pub use debug_loc::DebugLoc;
 pub use derived_types::{
     AggregateType, AnyTypeEnum, ArrayType, BasicMetadataTypeEnum, BasicTypeEnum, FloatType,
     FunctionType, IntType, LabelType, MetadataType, PointerType, SizedType, StructType,
-    TargetExtType, TokenType, VectorType, VoidType,
+    TargetExtProperty, TargetExtType, TokenType, VectorType, VoidType,
 };
 pub use dominator_tree::{DominatorTree, DominatorTreeAnalysis};
 pub use error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel, VerifierRule};
@@ -109,14 +110,14 @@ pub use function::{FunctionBuilder, FunctionValue};
 pub use gep_no_wrap_flags::GepNoWrapFlags;
 pub use global_alias::{GlobalAlias, GlobalAliasBuilder};
 pub use global_ifunc::{GlobalIFunc, GlobalIFuncBuilder};
-pub use global_value::Linkage;
-pub use global_value::{DllStorageClass, ThreadLocalMode, Visibility};
+pub use global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode, Visibility};
 pub use global_variable::{GlobalBuilder, GlobalVariable};
-pub use inline_asm::{AsmDialect, InlineAsm};
+pub use inline_asm::{AsmDialect, InlineAsm, InlineAsmOptions};
 pub use instr_types::{
     AShrFlags, AddFlags, AtomicCmpXchgConfig, AtomicLoadConfig, AtomicRMWConfig, AtomicRMWFlags,
-    AtomicStoreConfig, CmpXchgFlags, ICmpFlags, LShrFlags, MulFlags, OrFlags, SDivFlags, ShlFlags,
-    SubFlags, TailCallKind, TruncFlags, UDivFlags, UIToFpFlags, ZExtFlags,
+    AtomicStoreConfig, CallAttributeData, CmpXchgFlags, ICmpFlags, LShrFlags, MulFlags,
+    OperandBundleData, OperandBundleTag, OrFlags, SDivFlags, ShlFlags, SubFlags, TailCallKind,
+    TruncFlags, UDivFlags, UIToFpFlags, ZExtFlags,
 };
 pub use instruction::{Instruction, InstructionKind, TerminatorKind};
 pub use instructions::{
@@ -129,13 +130,21 @@ pub use instructions::{
     SelectInst, ShlInst, ShuffleVectorInst, StoreInst, SubInst, SwitchInst, UDivInst, URemInst,
     UnreachableInst, VAArgInst, XorInst,
 };
+pub use intrinsics::{IntrinsicFloatKind, IntrinsicId, IntrinsicSignature, IntrinsicTypePattern};
 pub use ir_builder::constant_folder::ConstantFolder;
 pub use ir_builder::folder::IRBuilderFolder;
 pub use ir_builder::no_folder::NoFolder;
-pub use ir_builder::{CallBuilder, IRBuilder, Positioned, SelectArm, Unpositioned};
+pub use ir_builder::{
+    CallBuilder, CallSiteConfig, IRBuilder, InsertPoint, Positioned, SelectArm, Unpositioned,
+};
 pub use marker::{Dyn, Ptr, ReturnMarker};
-pub use metadata::{MetadataId, MetadataKind, MetadataRef};
-pub use module::{Module, ModuleId, ModuleRef, VerifiedModule};
+pub use metadata::{
+    MetadataAttachmentKind, MetadataAttachmentSet, MetadataField, MetadataFieldValue, MetadataId,
+    MetadataKind, MetadataRef, SpecializedMetadataKind, SpecializedMetadataNode,
+};
+pub use module::{
+    Module, ModuleId, ModuleRef, UseListOrderBBRecord, UseListOrderRecord, VerifiedModule,
+};
 pub use operator::OverflowingBinaryOperator;
 pub use pass_instrumentation::{PassInstrumentationAnalysis, PassInstrumentationCallbacks};
 pub use pass_manager::{
@@ -145,14 +154,14 @@ pub use phi_state::{Closed, Open, PhiState};
 pub use sized_element::{ArrayDyn, SizedElement};
 pub use struct_body_state::{BodySet, Opaque, StructBodyDyn, StructBodyState};
 pub use sync_scope::SyncScope;
-pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeKind};
+pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeId, TypeKind};
 pub use typed_pointer_type::TypedPointerType;
 pub use unnamed_addr::UnnamedAddr;
 pub use r#use::Use;
 pub use user::User;
 pub use value::{
     ArrayValue, FloatValue, FunctionTypedValue, HasDebugLoc, HasName, IntValue, IntoPointerValue,
-    IsValue, PointerValue, StructValue, Typed, Value, ValueCategory, VectorValue,
+    IsValue, PointerValue, StructValue, Typed, Value, ValueCategory, ValueId, VectorValue,
 };
 pub use vector_element::{VectorDyn, VectorElement};
 

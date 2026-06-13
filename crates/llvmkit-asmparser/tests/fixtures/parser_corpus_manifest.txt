@@ -1,3 +1,6 @@
-# Parser corpus fixtures (valid subset that current rust parser supports)
-# Format: <fixture>.ll | <upstream citation>
-facade_minimal.ll | unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, ParseAssemblyString)
+# Parser corpus fixtures.
+# Format: <fixture>.ll | <upstream citation> | expect=<expected fixture> | status=<pass|xfail-parse|xfail-verify>
+facade_minimal.ll | unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, ParseAssemblyString) | status=pass
+corpus_flags_minimal.ll | test/Assembler/flags.ll | expect=corpus_flags_minimal.expected.ll | status=pass
+corpus_dbg_declare_value.ll | test/Assembler/dbg_declare_value.ll | expect=corpus_dbg_declare_value.expected.ll | status=pass
+corpus_dbg_record_after_terminator_invalid.ll | test/Assembler/dbg-record-invalid-0.ll | status=xfail-parse
