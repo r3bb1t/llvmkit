@@ -1,5 +1,9 @@
 # llvmkit-asmparser
 
+[![crates.io](https://img.shields.io/crates/v/llvmkit-asmparser.svg)](https://crates.io/crates/llvmkit-asmparser)
+[![docs.rs](https://docs.rs/llvmkit-asmparser/badge.svg)](https://docs.rs/llvmkit-asmparser)
+[![License](https://img.shields.io/crates/l/llvmkit-asmparser.svg)](https://github.com/r3bb1t/llvmkit#license)
+
 Lexer (and eventually parser) for LLVM textual IR (`.ll`).
 
 The Rust files mirror `llvm/lib/AsmParser/` and `llvm/include/llvm/AsmParser/`

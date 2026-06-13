@@ -1,5 +1,9 @@
 # llvmkit
 
+[![crates.io](https://img.shields.io/crates/v/llvmkit.svg)](https://crates.io/crates/llvmkit)
+[![docs.rs](https://docs.rs/llvmkit/badge.svg)](https://docs.rs/llvmkit)
+[![License](https://img.shields.io/crates/l/llvmkit.svg)](https://github.com/r3bb1t/llvmkit#license)
+
 A from-scratch Rust reimplementation of [LLVM](https://llvm.org/) IR APIs.
 Today `llvmkit` can lex, parse, build, verify, analyze, and print LLVM IR
 without linking against `libLLVM`; bitcode support is still ahead.
