@@ -6438,7 +6438,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     /// Upstream: `test/Assembler/atomicrmw.ll`.
     fn parse_atomicrmw(
         &mut self,
-        state: &PerFunctionState<'ctx>,
+        state: &mut PerFunctionState<'ctx>,
         b: &ParsedBlockBuilder<'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
@@ -6451,7 +6451,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             .map_err(|_| self.expected("ptr operand for atomicrmw"))?;
         self.expect_punct(PunctKind::Comma, "',' in atomicrmw")?;
         let val_ty = self.parse_type(false)?;
-        let val_v = self.parse_value(state, val_ty)?;
+        let (val_v, deferred_value) = self.parse_value_or_deferred_local(state, val_ty)?;
         let sync_scope = self.parse_optional_syncscope()?;
         let ordering = self.parse_atomic_ordering("atomicrmw ordering")?;
         let align = self.parse_optional_comma_align()?;
@@ -6473,6 +6473,15 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         let v = b
             .build_atomicrmw(op, ptr, val_v, config, result_name.as_str())
             .map_err(|e| self.builder_err("atomicrmw", e))?;
+        if let Some((val_ref, loc)) = deferred_value {
+            state
+                .deferred_atomicrmw_values
+                .push(DeferredAtomicRmwValue {
+                    inst: v,
+                    val_ref,
+                    loc,
+                });
+        }
         Ok(v.as_instruction().as_value())
     }
 
@@ -7016,6 +7025,37 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         self.convert_val_id_to_value(ty, id, Some(state))
     }
 
+    fn parse_value_or_deferred_local(
+        &mut self,
+        state: &PerFunctionState<'ctx>,
+        ty: Type<'ctx>,
+    ) -> ParseResult<(
+        llvmkit_ir::Value<'ctx>,
+        Option<(DeferredLocalValueRef, Span)>,
+    )> {
+        let loc = self.loc();
+        let id = self.parse_val_id(Some(state), Some(ty))?;
+        match id {
+            ValId::LocalName(name) => match state.local_named.get(&name).copied() {
+                Some(value) => Ok((value, None)),
+                None => Ok((
+                    ty.get_undef().as_value(),
+                    Some((DeferredLocalValueRef::Named(name), loc)),
+                )),
+            },
+            ValId::LocalId(id) => match state.local_numbered.get(&id).copied() {
+                Some(value) => Ok((value, None)),
+                None => Ok((
+                    ty.get_undef().as_value(),
+                    Some((DeferredLocalValueRef::Numbered(id), loc)),
+                )),
+            },
+            other => self
+                .convert_val_id_to_value(ty, other, Some(state))
+                .map(|value| (value, None)),
+        }
+    }
+
     /// Parse a floating-point literal and return raw bits (u128).
     /// Handles decimal literals (converted to f64 bits) and hex forms.
     fn parse_fp_literal(
@@ -7095,6 +7135,18 @@ struct DeferredPhiEdge<'ctx> {
     loc: llvmkit_support::Span,
 }
 
+#[derive(Clone, Debug)]
+enum DeferredLocalValueRef {
+    Named(String),
+    Numbered(u32),
+}
+
+struct DeferredAtomicRmwValue<'ctx> {
+    inst: llvmkit_ir::AtomicRMWInst<'ctx>,
+    val_ref: DeferredLocalValueRef,
+    loc: Span,
+}
+
 /// Per-function symbol tables. Mirrors `LLParser::PerFunctionState`'s
 /// named/numbered value tables and the basic-block lookup map.
 struct PerFunctionState<'ctx> {
@@ -7117,6 +7169,8 @@ struct PerFunctionState<'ctx> {
     /// Deferred phi incoming edges for forward references. Resolved by
     /// `finish()` after all blocks in the function have been parsed.
     deferred_phi: Vec<DeferredPhiEdge<'ctx>>,
+    /// Deferred `atomicrmw` value operands for non-PHI forward references.
+    deferred_atomicrmw_values: Vec<DeferredAtomicRmwValue<'ctx>>,
 }
 
 impl<'ctx> PerFunctionState<'ctx> {
@@ -7135,6 +7189,7 @@ impl<'ctx> PerFunctionState<'ctx> {
             block_refs: std::collections::HashMap::new(),
             defined_blocks: std::collections::HashSet::new(),
             deferred_phi: Vec::new(),
+            deferred_atomicrmw_values: Vec::new(),
         }
     }
 
@@ -7207,6 +7262,35 @@ impl<'ctx> PerFunctionState<'ctx> {
                     loc: DiagLoc::span(*loc),
                 });
             }
+        }
+        let atomicrmw_values = std::mem::take(&mut self.deferred_atomicrmw_values);
+        for deferred in atomicrmw_values {
+            let val = match deferred.val_ref {
+                DeferredLocalValueRef::Named(ref n) => {
+                    self.local_named.get(n).copied().ok_or_else(|| {
+                        crate::parse_error::ParseError::UndefinedSymbol {
+                            kind: SYMBOL_KIND_LOCAL,
+                            id: crate::parse_error::SymbolId::Named(n.clone()),
+                            loc: DiagLoc::span(deferred.loc),
+                        }
+                    })?
+                }
+                DeferredLocalValueRef::Numbered(id) => {
+                    self.local_numbered.get(&id).copied().ok_or_else(|| {
+                        crate::parse_error::ParseError::UndefinedSymbol {
+                            kind: SYMBOL_KIND_LOCAL,
+                            id: crate::parse_error::SymbolId::Numbered(id),
+                            loc: DiagLoc::span(deferred.loc),
+                        }
+                    })?
+                }
+            };
+            deferred.inst.set_value_operand(val).map_err(|e| {
+                crate::parse_error::ParseError::Expected {
+                    expected: format!("valid atomicrmw forward value: {e}"),
+                    loc: DiagLoc::span(deferred.loc),
+                }
+            })?;
         }
         let edges = std::mem::take(&mut self.deferred_phi);
         for edge in edges {

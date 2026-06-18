@@ -1777,6 +1777,38 @@ impl<'ctx> AtomicRMWInst<'ctx> {
         let data = module.context().value_data(id);
         Value::from_parts(id, module, data.ty)
     }
+    pub fn set_value_operand(self, value: Value<'ctx>) -> crate::IrResult<()> {
+        if value.module != self.module {
+            return Err(crate::IrError::ForeignValue);
+        }
+        let module = self.module.module();
+        let expected = crate::r#type::Type::new(self.ty, module);
+        let got = value.ty();
+        if got != expected {
+            return Err(crate::IrError::TypeMismatch {
+                expected: expected.kind_label(),
+                got: got.kind_label(),
+            });
+        }
+        let payload = self.payload();
+        let old_id = payload.value.replace(value.id);
+        if old_id == value.id {
+            return Ok(());
+        }
+        {
+            let mut old_uses = module.context().value_data(old_id).use_list.borrow_mut();
+            if let Some(pos) = old_uses.iter().position(|id| *id == self.id) {
+                old_uses.remove(pos);
+            }
+        }
+        module
+            .context()
+            .value_data(value.id)
+            .use_list
+            .borrow_mut()
+            .push(self.id);
+        Ok(())
+    }
     pub fn align(self) -> Option<crate::align::Align> {
         self.payload().align.align()
     }

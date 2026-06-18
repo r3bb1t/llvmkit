@@ -4,10 +4,10 @@
 
 use llvmkit_ir::{IRBuilder, Linkage, Module};
 
-/// `xor`/`add`/`shl` on `<2 x i64>` vector operands emit element-wise vector
-/// IR (the typed builders reject these operands).
-/// Mirrors `Verifier::visitBinaryOperator` accepting integer vector operands
-/// with identical vector types.
+/// llvmkit-specific: `xor`/`add`/`shl` on `<2 x i64>` vector operands emit
+/// element-wise vector IR through llvmkit's type-erased builders. Closest
+/// upstream reference: `Verifier::visitBinaryOperator` accepts integer vector
+/// operands with identical vector types.
 #[test]
 fn vector_binops_emit_elementwise_ir() {
     let m = Module::new("vbinop");
@@ -43,22 +43,23 @@ fn vector_binops_emit_elementwise_ir() {
 
     let txt = format!("{m}");
     assert!(
-        txt.contains("xor <2 x i64>"),
+        txt.contains("%x = xor <2 x i64> %0, %1\n"),
         "expected vector xor, got:\n{txt}"
     );
     assert!(
-        txt.contains("add <2 x i64>"),
+        txt.contains("%s = add <2 x i64> %x, %0\n"),
         "expected vector add, got:\n{txt}"
     );
     assert!(
-        txt.contains("shl <2 x i64>"),
+        txt.contains("%sh = shl <2 x i64> %s, <i64 2, i64 2>\n"),
         "expected vector shl, got:\n{txt}"
     );
 }
 
-/// The `_dyn` builders still work on plain scalar `i64` operands (result type
-/// follows the LHS), so they are a strict superset of the typed family's reach.
-/// Mirrors `Verifier::visitBinaryOperator` scalar integer binop type checks.
+/// llvmkit-specific: the `_dyn` builders still work on plain scalar `i64`
+/// operands (result type follows the LHS), so they are a strict superset of
+/// the typed family's reach. Closest upstream reference:
+/// `Verifier::visitBinaryOperator` scalar integer binop type checks.
 #[test]
 fn scalar_binop_dyn_still_works() {
     let m = Module::new("sbinop");
@@ -81,5 +82,8 @@ fn scalar_binop_dyn_still_works() {
     b.build_ret(r).expect("ret");
 
     let txt = format!("{m}");
-    assert!(txt.contains("xor i64"), "expected scalar xor, got:\n{txt}");
+    assert!(
+        txt.contains("%x = xor i64 %0, %1\n"),
+        "expected scalar xor, got:\n{txt}"
+    );
 }

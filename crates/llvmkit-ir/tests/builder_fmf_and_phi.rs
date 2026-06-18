@@ -9,17 +9,17 @@
 //! coverage to the typed-marker API.
 
 use llvmkit_ir::{
-    FastMathFlags, FloatValue, IRBuilder, IntValue, IrError, Linkage, Module, PointerValue,
+    FastMathFlags, FloatValue, IRBuilder, Instruction, InstructionKind, IntValue, IrError, Linkage,
+    Module, PointerValue,
 };
 
 // --- Builder-context FMF -----------------------------------------------
 
 /// Mirrors `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest,
-/// FastMathFlags)` (line 557). The upstream test sets all flags via
-/// `FMF.setFast(); Builder.setFastMathFlags(FMF);` then expects the next
-/// `CreateFAdd` to carry every FMF bit. We mirror the construct with the
-/// `with_fast_math_flags` builder method (consume-self port of the
-/// upstream void mutator).
+/// FastMathFlags)` (lines 596-620). Upstream sets every builder FMF bit,
+/// then checks the next `CreateFAdd` / `CreateFDiv` carry the same `fast`
+/// state. llvmkit observes the instruction FMF through exact AsmWriter
+/// spelling because FP binop handles currently return typed values.
 #[test]
 fn fmf_propagates_from_builder_to_fadd() -> Result<(), IrError> {
     let m = Module::new("a");
@@ -30,20 +30,28 @@ fn fmf_propagates_from_builder_to_fadd() -> Result<(), IrError> {
     let b = IRBuilder::new_for::<f32>(&m)
         .position_at_end(entry)
         .with_fast_math_flags(FastMathFlags::fast());
+    assert_eq!(b.fast_math_flags(), FastMathFlags::fast());
+    assert!(b.fast_math_flags().is_fast());
     let p: FloatValue<f32> = f.param(0)?.try_into()?;
-    let r = b.build_fp_add(p, p, "r")?;
-    b.build_ret(r)?;
+    let add = b.build_fp_add(p, p, "add")?;
+    let div = b.build_fp_div(add, add, "div")?;
+    b.build_ret(div)?;
     let text = format!("{m}");
     assert!(
-        text.contains("%r = fadd fast float %0, %0\n"),
+        text.contains("%add = fadd fast float %0, %0\n"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("%div = fdiv fast float %add, %add\n"),
         "got:\n{text}"
     );
     Ok(())
 }
 
 /// Mirrors `IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)`
-/// (line 622-628): after `Builder.clearFastMathFlags()`, the next op
-/// carries no FMF.
+/// (lines 622-628): after `Builder.clearFastMathFlags()`, the next
+/// `CreateFDiv` carries no `AllowReciprocal` bit. The exact no-FMF print
+/// spelling is the observable llvmkit assertion.
 #[test]
 fn clear_fast_math_flags_drops_flags_from_subsequent_ops() -> Result<(), IrError> {
     let m = Module::new("a");
@@ -55,18 +63,46 @@ fn clear_fast_math_flags_drops_flags_from_subsequent_ops() -> Result<(), IrError
         .position_at_end(entry)
         .with_fast_math_flags(FastMathFlags::fast())
         .clear_fast_math_flags();
+    assert!(b.fast_math_flags().is_empty());
     let p: FloatValue<f32> = f.param(0)?.try_into()?;
     let r = b.build_fp_div(p, p, "r")?;
     b.build_ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%r = fdiv float %0, %0\n"), "got:\n{text}");
-    assert!(!text.contains("fast"), "no FMF expected; got:\n{text}");
     Ok(())
 }
 
 /// Mirrors `IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)`
-/// (line 643-647): `Builder.CreateFCmpOEQ(F, F)` carries the builder's
-/// FMF (an `FPMathOperator` upstream).
+/// (lines 630-640): after `FMF.setAllowReciprocal()` and
+/// `Builder.setFastMathFlags(FMF)`, the next `CreateFDiv` carries the
+/// `AllowReciprocal` bit.
+#[test]
+fn fmf_allow_reciprocal_propagates_to_fdiv() -> Result<(), IrError> {
+    let m = Module::new("a");
+    let f32_ty = m.f32_type();
+    let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
+    let f = m.add_function::<f32>("f", fn_ty, Linkage::External)?;
+    let entry = f.append_basic_block("entry");
+    let fmf = FastMathFlags::ALLOW_RECIPROCAL;
+    let b = IRBuilder::new_for::<f32>(&m)
+        .position_at_end(entry)
+        .with_fast_math_flags(fmf);
+    assert_eq!(b.fast_math_flags(), fmf);
+    let p: FloatValue<f32> = f.param(0)?.try_into()?;
+    let r = b.build_fp_div(p, p, "r")?;
+    b.build_ret(r)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("%r = fdiv arcp float %0, %0\n"),
+        "got:\n{text}"
+    );
+    Ok(())
+}
+
+/// Mirrors `IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)`
+/// (lines 642-658): `Builder.CreateFCmpOEQ(F, F)` first carries no
+/// `AllowReciprocal` bit after clear, then carries it after
+/// `FMF.setAllowReciprocal(); Builder.setFastMathFlags(FMF);`.
 #[test]
 fn fmf_propagates_to_fcmp_oeq() -> Result<(), IrError> {
     let m = Module::new("a");
@@ -75,19 +111,25 @@ fn fmf_propagates_to_fcmp_oeq() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i1_ty, [f32_ty.as_type()], false);
     let f = m.add_function::<bool>("f", fn_ty, Linkage::External)?;
     let entry = f.append_basic_block("entry");
-    // Match upstream's `FMF.setAllowReciprocal()` exactly (line 650).
-    let fmf = FastMathFlags::ALLOW_RECIPROCAL;
-    let b = IRBuilder::new_for::<bool>(&m)
-        .position_at_end(entry)
-        .with_fast_math_flags(fmf);
+    let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);
+    assert!(b.fast_math_flags().is_empty());
     let p: FloatValue<f32> = f.param(0)?.try_into()?;
-    let r = b.build_fcmp_oeq::<f32, _, _>(p, p, "r")?;
-    b.build_ret(r)?;
+    let c0 = b.build_fcmp_oeq::<f32, _, _>(p, p, "c0")?;
+    let fmf = FastMathFlags::ALLOW_RECIPROCAL;
+    let b = b.with_fast_math_flags(fmf);
+    assert_eq!(b.fast_math_flags(), fmf);
+    let c1 = b.build_fcmp_oeq::<f32, _, _>(p, p, "c1")?;
+    b.build_ret(c1)?;
     let text = format!("{m}");
     assert!(
-        text.contains("%r = fcmp arcp oeq float %0, %0\n"),
+        text.contains("%c0 = fcmp oeq float %0, %0\n"),
         "got:\n{text}"
     );
+    assert!(
+        text.contains("%c1 = fcmp arcp oeq float %0, %0\n"),
+        "got:\n{text}"
+    );
+    let _ = c0;
     Ok(())
 }
 
@@ -129,7 +171,8 @@ fn fmf_save_and_restore_round_trip() -> Result<(), IrError> {
 /// Mirrors `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, UnaryOperators)`
 /// (line 535-555): `Builder.CreateUnOp(Instruction::FNeg, V)` followed by
 /// `Builder.CreateFNegFMF(V, I)` where `I` carries `nnan` + `nsz`. We mirror
-/// both shapes via `build_float_neg` / `build_float_neg_with_flags`.
+/// both shapes via `build_float_neg` / `build_float_neg_with_flags` and
+/// assert the exposed `FNegInst` FMF bits directly.
 #[test]
 fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
     let m = Module::new("a");
@@ -139,12 +182,17 @@ fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
     let entry = f.append_basic_block("entry");
     let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
     let p: FloatValue<f32> = f.param(0)?.try_into()?;
-    // Default: no FMF.
     let n0 = b.build_float_neg::<f32, _>(p, "n0")?;
-    // With FMF: nnan + nsz (mirrors upstream `setHasNoNaNs(true);
-    // setHasNoSignedZeros(true)`, lines 548-549).
+    let Some(InstructionKind::FNeg(n0_inst)) = Instruction::try_from(n0.as_value())?.kind() else {
+        panic!("expected n0 to be fneg");
+    };
+    assert!(n0_inst.fast_math_flags().is_empty());
     let fmf = FastMathFlags::NO_NANS | FastMathFlags::NO_SIGNED_ZEROS;
     let n1 = b.build_float_neg_with_flags::<f32, _>(n0, fmf, "n1")?;
+    let Some(InstructionKind::FNeg(n1_inst)) = Instruction::try_from(n1.as_value())?.kind() else {
+        panic!("expected n1 to be fneg");
+    };
+    assert_eq!(n1_inst.fast_math_flags(), fmf);
     b.build_ret(n1)?;
     let text = format!("{m}");
     assert!(
@@ -159,9 +207,9 @@ fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
 }
 
 /// Mirrors `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest,
-/// FastMathFlags)` (lines 663-697): the AllowContract / ApproxFunc /
-/// AllowReassoc propagation arm. Builder-context FMF accumulates these
-/// flags and they appear on the resulting fmul.
+/// FastMathFlags)` (lines 662-697): the AllowContract / ApproxFunc /
+/// AllowReassoc propagation arm. llvmkit observes the instruction bits
+/// through exact AsmWriter FMF order.
 #[test]
 fn fmf_accumulates_contract_approx_reassoc_on_fmul() -> Result<(), IrError> {
     let m = Module::new("a");
@@ -169,19 +217,41 @@ fn fmf_accumulates_contract_approx_reassoc_on_fmul() -> Result<(), IrError> {
     let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
     let f = m.add_function::<f32>("f", fn_ty, Linkage::External)?;
     let entry = f.append_basic_block("entry");
-    let fmf =
-        FastMathFlags::APPROX_FUNC | FastMathFlags::ALLOW_CONTRACT | FastMathFlags::ALLOW_REASSOC;
-    let b = IRBuilder::new_for::<f32>(&m)
-        .position_at_end(entry)
-        .with_fast_math_flags(fmf);
+    let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
+    assert!(b.fast_math_flags().is_empty());
     let p: FloatValue<f32> = f.param(0)?.try_into()?;
-    let r = b.build_fp_mul(p, p, "r")?;
+    let _ = b.build_fp_add(p, p, "no_contract")?;
+
+    let contract = FastMathFlags::ALLOW_CONTRACT;
+    let b = b.with_fast_math_flags(contract);
+    assert_eq!(b.fast_math_flags(), contract);
+    let _ = b.build_fp_add(p, p, "contract")?;
+
+    let contract_afn = contract | FastMathFlags::APPROX_FUNC;
+    let b = b.with_fast_math_flags(contract_afn);
+    assert_eq!(b.fast_math_flags(), contract_afn);
+    let _ = b.build_fp_mul(p, p, "mul_contract_afn")?;
+
+    let contract_afn_reassoc = contract_afn | FastMathFlags::ALLOW_REASSOC;
+    let b = b.with_fast_math_flags(contract_afn_reassoc);
+    assert_eq!(b.fast_math_flags(), contract_afn_reassoc);
+    let r = b.build_fp_mul(p, p, "mul_contract_afn_reassoc")?;
     b.build_ret(r)?;
     let text = format!("{m}");
-    // Mirrors `lib/IR/AsmWriter.cpp::FastMathFlags::print` order:
-    // reassoc, nnan, ninf, nsz, arcp, contract, afn.
     assert!(
-        text.contains("%r = fmul reassoc contract afn float %0, %0\n"),
+        text.contains("%no_contract = fadd float %0, %0\n"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("%contract = fadd contract float %0, %0\n"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("%mul_contract_afn = fmul contract afn float %0, %0\n"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("%mul_contract_afn_reassoc = fmul reassoc contract afn float %0, %0\n"),
         "got:\n{text}"
     );
     Ok(())

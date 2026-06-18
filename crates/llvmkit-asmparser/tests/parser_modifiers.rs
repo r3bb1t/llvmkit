@@ -6,158 +6,131 @@
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::Module;
 
-fn parse_snippet(src: &str) -> (Module<'_>, String) {
-    let module = Module::new("test");
-    let _ = Parser::new(src.as_bytes(), &module)
+fn parse_fixture(module_name: &str, src: &[u8]) -> String {
+    let module = Module::new(module_name);
+    Parser::new(src, &module)
         .expect("parse constructor")
         .parse_module()
         .expect("parse succeeded");
-    let text = format!("{module}");
-    (module, text)
+    format!("{module}")
+}
+
+fn assert_check_lines(text: &str, check_lines: &[&str]) {
+    let mut offset = 0;
+    for expected in check_lines {
+        let tail = &text[offset..];
+        let found = tail.find(expected).unwrap_or_else(|| {
+            panic!("missing upstream CHECK line `{expected}` after byte {offset}; got:\n{text}")
+        });
+        offset += found + expected.len();
+    }
 }
 
 // ── Integer overflow flags on binops ──────────────────────────────────────
 
-/// `add nuw nsw` — mirrors `test/Assembler/flags.ll`.
+/// `add nuw nsw` — exact `test/Assembler/flags.ll` spelling.
 #[test]
 fn nuw_nsw_add_round_trips() {
-    let (_m, text) = parse_snippet(
-        r#"define i32 @f(i32 %x, i32 %y) {
-%r = add nuw nsw i32 %x, %y
-ret i32 %r
-}
-"#,
-    );
-    assert!(text.contains("add nuw nsw i32"), "got: {text}");
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/flags/nuw_nsw_add_round_trips.ll");
+
+    let text = parse_fixture("nuw_nsw_add_round_trips", FIXTURE);
+    assert_check_lines(&text, &["%z = add nuw nsw i64 %x, %y"]);
 }
 
-/// `sub nuw nsw` — mirrors same upstream fixture `test/Assembler/flags.ll`.
+/// `sub nuw nsw` — exact `test/Assembler/flags.ll` spelling.
 #[test]
 fn nuw_nsw_sub_round_trips() {
-    let (_m, text) = parse_snippet(
-        r#"define i32 @f(i32 %x, i32 %y) {
-%r = sub nuw nsw i32 %x, %y
-ret i32 %r
-}
-"#,
-    );
-    assert!(text.contains("sub nuw nsw i32"), "got: {text}");
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/flags/nuw_nsw_sub_round_trips.ll");
+
+    let text = parse_fixture("nuw_nsw_sub_round_trips", FIXTURE);
+    assert_check_lines(&text, &["%z = sub nuw nsw i64 %x, %y"]);
 }
 
-/// `udiv exact` — mirrors `test/Assembler/flags.ll`.
+/// `udiv exact` — exact `test/Assembler/flags.ll` spelling.
 #[test]
 fn exact_udiv_round_trips() {
-    let (_m, text) = parse_snippet(
-        r#"define i32 @f(i32 %x, i32 %y) {
-%r = udiv exact i32 %x, %y
-ret i32 %r
-}
-"#,
-    );
-    assert!(text.contains("udiv exact i32"), "got: {text}");
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/flags/exact_udiv_round_trips.ll");
+
+    let text = parse_fixture("exact_udiv_round_trips", FIXTURE);
+    assert_check_lines(&text, &["%z = udiv exact i64 %x, %y"]);
 }
 
 // ── Fast-math flags on fp ops ─────────────────────────────────────────────
 
-/// nnan fadd — FMF propagated via build_fp_add_fmf. Mirrors unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags).
+/// `fadd ninf nnan` canonicalizes to upstream FMF order from `test/Assembler/fast-math-flags.ll`.
 #[test]
 fn fmf_fadd_round_trips() {
-    let (_m, text) = parse_snippet(
-        r#"define float @f(float %x, float %y) {
-%r = fadd nnan ninf float %x, %y
-ret float %r
-}
-"#,
-    );
-    assert!(text.contains("fadd nnan"), "got: {text}");
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/fast-math-flags/fmf_fadd_round_trips.ll");
+
+    let text = parse_fixture("fmf_fadd_round_trips", FIXTURE);
+    assert_check_lines(&text, &["  %a = fadd nnan ninf float %x, %y"]);
 }
 
-/// `nnan fneg` — FNeg propagates FMF via `build_float_neg_with_flags`.
-/// Upstream: `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)`.
+/// `fneg nnan` — exact `test/Assembler/fast-math-flags.ll` spelling.
 #[test]
 fn fmf_fneg_round_trips() {
-    let (_m, text) = parse_snippet(
-        r#"define float @f(float %x) {
-%r = fneg nnan float %x
-ret float %r
-}
-"#,
-    );
-    assert!(text.contains("fneg nnan float"), "got: {text}");
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/fast-math-flags/fmf_fneg_round_trips.ll");
+
+    let text = parse_fixture("fmf_fneg_round_trips", FIXTURE);
+    assert_check_lines(&text, &["  %f = fneg nnan float %x"]);
 }
 
 // ── Alignment on alloca / load / store ────────────────────────────────────
 
-/// `alloca`, align — mirrors `test/Assembler/align-inst-alloca.ll`.
+/// `alloca`, align — mirrors the constructive alignment acceptance in `test/Assembler/align-inst.ll`.
 #[test]
 fn alloca_align_round_trips() {
-    let (_m, text) = parse_snippet(
-        r#"define ptr @f() {
-%p = alloca i32, align 4
-ret ptr %p
-}
-"#,
-    );
-    assert!(text.contains("align 4"), "got: {text}");
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/align-inst/alloca_align_round_trips.ll");
+
+    let text = parse_fixture("alloca_align_round_trips", FIXTURE);
+    assert_check_lines(&text, &["  %p = alloca i1, align 4294967296"]);
 }
 
-/// load with align — align propagated to IR. Mirrors test/Assembler/align-inst-load.ll.
+/// load with align — mirrors the constructive alignment acceptance in `test/Assembler/align-inst.ll`.
 #[test]
 fn load_align_round_trips() {
-    let (_m, text) = parse_snippet(
-        r#"define i32 @f(ptr %p) {
-%v = load i32, ptr %p, align 4
-ret i32 %v
-}
-"#,
-    );
-    assert!(text.contains("align 4"), "got: {text}");
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/align-inst/load_align_round_trips.ll");
+
+    let text = parse_fixture("load_align_round_trips", FIXTURE);
+    assert_check_lines(&text, &["  %1 = load i1, ptr %p, align 4294967296"]);
 }
 
 // ── GEP flags ─────────────────────────────────────────────────────────────
 
-/// getelementptr inbounds nuw — GepNoWrapFlags propagated. Mirrors test/Assembler/flags.ll.
+/// getelementptr inbounds nuw — exact `test/Assembler/flags.ll` GEP flag spelling.
 #[test]
 fn gep_inbounds_nuw_round_trips() {
-    let (_m, text) = parse_snippet(
-        r#"define ptr @f(ptr %p) {
-%g = getelementptr inbounds nuw i32, ptr %p, i32 1
-ret ptr %g
-}
-"#,
-    );
-    assert!(
-        text.contains("inbounds") && text.contains("nuw"),
-        "got: {text}"
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/flags/gep_inbounds_nuw_round_trips.ll");
+
+    let text = parse_fixture("gep_inbounds_nuw_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["%gep = getelementptr inbounds nuw i8, ptr %p, i64 %idx"],
     );
 }
 
 // ── samesign on icmp ──────────────────────────────────────────────────────
 
-/// icmp samesign — samesign propagated to CmpInstData. Mirrors test/Assembler/flags.ll.
+/// `icmp samesign ult` — exact `test/Assembler/flags.ll` spelling.
 #[test]
 fn samesign_icmp_round_trips() {
-    let (_m, text) = parse_snippet(
-        r#"define i1 @f(i32 %x, i32 %y) {
-%c = icmp samesign eq i32 %x, %y
-ret i1 %c
-}
-"#,
-    );
-    assert!(text.contains("icmp samesign eq"), "got: {text}");
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/flags/samesign_icmp_round_trips.ll");
+
+    let text = parse_fixture("samesign_icmp_round_trips", FIXTURE);
+    assert_check_lines(&text, &["%res = icmp samesign ult i32 %a, %b"]);
 }
 
 // ── disjoint on or ────────────────────────────────────────────────────────
 
-/// or disjoint — disjoint flag propagated to BinaryOpData. Mirrors test/Assembler/flags.ll.
+/// `or disjoint` — exact `test/Assembler/flags.ll` spelling.
 #[test]
 fn disjoint_or_round_trips() {
-    let (_m, text) = parse_snippet(
-        r#"define i32 @f(i32 %x, i32 %y) {
-%r = or disjoint i32 %x, %y
-ret i32 %r
-}
-"#,
-    );
-    assert!(text.contains("or disjoint"), "got: {text}");
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/flags/disjoint_or_round_trips.ll");
+
+    let text = parse_fixture("disjoint_or_round_trips", FIXTURE);
+    assert_check_lines(&text, &["%res = or disjoint i64 %a, %b"]);
 }

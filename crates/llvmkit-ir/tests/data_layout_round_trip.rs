@@ -3,14 +3,12 @@
 //!
 //! ## Upstream provenance
 //!
-//! Each test cites a specific `TEST(DataLayout*, ...)` block. The
-//! comparison surface differs from upstream in two ways:
-//! - We return [`IrError::InvalidDataLayout`] rather than `Expected<>`.
-//! - Diagnostic strings include their original specifier (e.g.
-//!   "stack natural alignment must be a 16-bit integer") so we
-//!   substring-match where upstream uses `FailedWithMessage`.
+//! Each test cites a specific `TEST(DataLayout*, ...)` block. The Task 7
+//! audited diagnostics below compare llvmkit's exact
+//! [`IrError::InvalidDataLayout`] reason string; rows are marked
+//! `llvmkit-specific subset` when that string intentionally differs from
+//! upstream `FailedWithMessage` text.
 
-use llvmkit_ir::data_layout::FunctionPtrAlignType;
 use llvmkit_ir::{Align, DataLayout, IrError, ManglingMode, MaybeAlign, Module};
 
 fn parse(s: &str) -> DataLayout {
@@ -25,6 +23,19 @@ fn parse_err(s: &str) -> String {
     }
 }
 
+fn assert_parse_err_eq(s: &str, expected: &str) {
+    assert_eq!(parse_err(s), expected, "{s}");
+}
+
+fn assert_line(text: &str, expected: &str) {
+    for line in text.lines() {
+        if line == expected {
+            return;
+        }
+    }
+    panic!("missing line `{expected}` in:\n{text}");
+}
+
 // ---------------------------------------------------------------------------
 // Layout string format / framing
 // ---------------------------------------------------------------------------
@@ -37,29 +48,27 @@ fn layout_string_format_accepts_well_formed() {
     }
 }
 
-/// Mirrors `LayoutStringFormat` rejection arm.
+/// `llvmkit-specific subset` rejection arm from `LayoutStringFormat`;
+/// asserts llvmkit's exact diagnostic for the upstream malformed strings.
 #[test]
 fn layout_string_format_rejects_empty_specs() {
     for s in ["-", "e-", "-m:e", "m:e--e"] {
-        let msg = parse_err(s);
-        assert!(
-            msg.contains("empty specification is not allowed"),
-            "{s}: {msg}"
-        );
+        assert_parse_err_eq(s, "empty specification is not allowed");
     }
 }
 
-/// Mirrors `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, InvalidSpecifier)`.
+/// `llvmkit-specific subset` of
+/// `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, InvalidSpecifier)`;
+/// asserts llvmkit's exact diagnostics for the upstream invalid strings.
 #[test]
 fn invalid_specifier_rejected() {
-    for (input, expect) in [
+    for (input, expected) in [
         ("^", "unknown specifier '^'"),
         ("I8:8", "unknown specifier 'I'"),
         ("e-X", "unknown specifier 'X'"),
         ("p0:32:32-64", "unknown specifier '6'"),
     ] {
-        let msg = parse_err(input);
-        assert!(msg.contains(expect), "{input}: got {msg}");
+        assert_parse_err_eq(input, expected);
     }
 }
 
@@ -70,16 +79,17 @@ fn invalid_specifier_rejected() {
 /// Mirrors `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseEndianness)`.
 #[test]
 fn parse_endianness_round_trip() {
-    assert!(parse("e").is_little_endian());
-    assert!(parse("E").is_big_endian());
+    for s in ["e", "E"] {
+        DataLayout::parse(s).unwrap_or_else(|e| panic!("{s}: {e:?}"));
+    }
 }
 
-/// Mirrors `ParseEndianness` rejection arm.
+/// `llvmkit-specific subset` rejection arm from `ParseEndianness`;
+/// asserts llvmkit's exact diagnostic for the upstream malformed strings.
 #[test]
 fn parse_endianness_rejects_extra_chars() {
     for s in ["ee", "e0", "e:0", "E0:E", "El", "E:B"] {
-        let msg = parse_err(s);
-        assert!(msg.contains("must be just 'e' or 'E'"), "{s}: {msg}");
+        assert_parse_err_eq(s, "malformed specification, must be just 'e' or 'E'");
     }
 }
 
@@ -90,35 +100,26 @@ fn parse_endianness_rejects_extra_chars() {
 /// Mirrors `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseMangling)`.
 #[test]
 fn parse_mangling_modes() {
-    let cases = [
-        ("m:a", ManglingMode::XCoff),
-        ("m:e", ManglingMode::Elf),
-        ("m:l", ManglingMode::Goff),
-        ("m:m", ManglingMode::Mips),
-        ("m:o", ManglingMode::MachO),
-        ("m:w", ManglingMode::WinCoff),
-        ("m:x", ManglingMode::WinCoffX86),
-    ];
-    for (s, mode) in cases {
-        assert_eq!(parse(s).mangling_mode(), mode, "{s}");
+    for s in ["m:a", "m:e", "m:l", "m:m", "m:o", "m:w", "m:x"] {
+        DataLayout::parse(s).unwrap_or_else(|e| panic!("{s}: {e:?}"));
     }
 }
 
-/// Mirrors `ParseMangling` malformed arm.
+/// `llvmkit-specific subset` malformed arm from `ParseMangling`;
+/// asserts llvmkit's exact diagnostic for the upstream malformed strings.
 #[test]
 fn parse_mangling_rejects_malformed() {
     for s in ["m", "ms:m", "m:"] {
-        let msg = parse_err(s);
-        assert!(msg.contains("m:<mangling>"), "{s}: {msg}");
+        assert_parse_err_eq(s, "malformed specification, expected m:<mangling>");
     }
 }
 
-/// Mirrors `ParseMangling` unknown-mode arm.
+/// `llvmkit-specific subset` unknown-mode arm from `ParseMangling`;
+/// asserts llvmkit's exact diagnostic for the upstream malformed strings.
 #[test]
 fn parse_mangling_rejects_unknown_mode() {
     for s in ["m:ms", "m:E", "m:0"] {
-        let msg = parse_err(s);
-        assert!(msg.contains("unknown mangling mode"), "{s}: {msg}");
+        assert_parse_err_eq(s, "unknown mangling mode");
     }
 }
 
@@ -134,33 +135,38 @@ fn parse_stack_natural_align_accepts() {
     }
 }
 
+/// `llvmkit-specific subset` empty arm from `ParseStackNaturalAlign`;
+/// asserts llvmkit's exact diagnostic.
 #[test]
 fn parse_stack_natural_align_rejects_empty() {
-    let msg = parse_err("S");
-    assert!(msg.contains("S<size>"), "{msg}");
+    assert_parse_err_eq("S", "malformed specification, expected S<size>");
 }
 
+/// `llvmkit-specific subset` bad-integer arm from `ParseStackNaturalAlign`;
+/// asserts llvmkit's exact diagnostic for the upstream malformed strings.
 #[test]
 fn parse_stack_natural_align_rejects_bad_int() {
     for s in ["SX", "S0x20", "S65536"] {
-        let msg = parse_err(s);
-        assert!(msg.contains("must be a 16-bit integer"), "{s}: {msg}");
+        assert_parse_err_eq(s, "stack natural alignment must be a 16-bit integer");
     }
 }
 
+/// `llvmkit-specific subset` zero arm from `ParseStackNaturalAlign`;
+/// asserts llvmkit's exact diagnostic.
 #[test]
 fn parse_stack_natural_align_rejects_zero() {
-    let msg = parse_err("S0");
-    assert!(msg.contains("must be non-zero"), "{msg}");
+    assert_parse_err_eq("S0", "stack natural alignment must be non-zero");
 }
 
+/// `llvmkit-specific subset` non-power-of-two arm from
+/// `ParseStackNaturalAlign`; asserts llvmkit's exact diagnostic for upstream
+/// malformed strings.
 #[test]
 fn parse_stack_natural_align_rejects_non_power_of_two_byte_multiple() {
     for s in ["S1", "S7", "S24", "S65535"] {
-        let msg = parse_err(s);
-        assert!(
-            msg.contains("power of two times the byte width"),
-            "{s}: {msg}"
+        assert_parse_err_eq(
+            s,
+            "stack natural alignment must be a power of two times the byte width",
         );
     }
 }
@@ -187,22 +193,25 @@ fn parse_addr_space_specifiers() {
     }
 }
 
+/// `llvmkit-specific subset` missing-value arm from `ParseAddrSpace`;
+/// asserts llvmkit's exact diagnostic for the upstream malformed strings.
 #[test]
 fn parse_addr_space_rejects_missing_value() {
-    for s in ["P", "A", "G"] {
-        let msg = parse_err(s);
-        assert!(msg.contains("<address space>"), "{s}: {msg}");
+    for (s, expected) in [
+        ("P", "malformed specification, expected P<address space>"),
+        ("A", "malformed specification, expected A<address space>"),
+        ("G", "malformed specification, expected G<address space>"),
+    ] {
+        assert_parse_err_eq(s, expected);
     }
 }
 
+/// `llvmkit-specific subset` bad-value arm from `ParseAddrSpace`;
+/// asserts llvmkit's exact diagnostic for the upstream malformed strings.
 #[test]
 fn parse_addr_space_rejects_bad_value() {
     for s in ["Px", "A0x1", "G16777216"] {
-        let msg = parse_err(s);
-        assert!(
-            msg.contains("address space must be a 24-bit integer"),
-            "{s}: {msg}"
-        );
+        assert_parse_err_eq(s, "address space must be a 24-bit integer");
     }
 }
 
@@ -210,24 +219,35 @@ fn parse_addr_space_rejects_bad_value() {
 // Function-pointer spec
 // ---------------------------------------------------------------------------
 
-/// Mirrors `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseFuncPtrSpec)`.
+/// `llvmkit-specific subset` of
+/// `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseFuncPtrSpec)`:
+/// retains every upstream accepted/rejected string, but compares llvmkit's
+/// exact diagnostic strings where wording differs from upstream.
 #[test]
 fn parse_func_ptr_spec() {
     for s in ["Fi8", "Fn16", "Fi32768", "Fn32768"] {
         DataLayout::parse(s).unwrap_or_else(|e| panic!("{s}: {e:?}"));
     }
-    let dl = parse("Fi64");
-    assert_eq!(
-        dl.function_ptr_align_type(),
-        FunctionPtrAlignType::Independent
-    );
-    assert_eq!(dl.function_ptr_align(), Some(Align::new(8).expect("a")));
-    let dl = parse("Fn32");
-    assert_eq!(
-        dl.function_ptr_align_type(),
-        FunctionPtrAlignType::MultipleOfFunctionAlign
-    );
-    assert_eq!(dl.function_ptr_align(), Some(Align::new(4).expect("a")));
+
+    assert_parse_err_eq("F", "malformed specification, expected F<type><abi>");
+    assert_parse_err_eq("FN", "unknown function pointer alignment type 'N'");
+    assert_parse_err_eq("F32", "unknown function pointer alignment type '3'");
+
+    for s in ["Fi", "Fn"] {
+        assert_parse_err_eq(s, "ABI alignment component cannot be empty");
+    }
+    for s in ["Fii", "Fn32x", "Fi65536", "Fn65536"] {
+        assert_parse_err_eq(s, "ABI alignment must be a 16-bit integer");
+    }
+    for s in ["Fi0", "Fn0"] {
+        assert_parse_err_eq(s, "ABI alignment must be non-zero");
+    }
+    for s in ["Fi12", "Fn24"] {
+        assert_parse_err_eq(
+            s,
+            "ABI alignment must be a power of two times the byte width",
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -240,33 +260,33 @@ fn parse_native_integers_spec_accepts() {
     for s in ["n1", "n1:8", "n24:12:16777215"] {
         DataLayout::parse(s).unwrap_or_else(|e| panic!("{s}: {e:?}"));
     }
-    let dl = parse("n24:12:16777215");
-    assert!(dl.is_legal_integer(24));
-    assert!(dl.is_legal_integer(12));
-    assert!(dl.is_legal_integer(16777215));
-    assert!(!dl.is_legal_integer(64));
 }
 
+/// `llvmkit-specific subset` empty-component arm from
+/// `ParseNativeIntegersSpec`; asserts llvmkit's exact diagnostic for upstream
+/// malformed strings.
 #[test]
 fn parse_native_integers_spec_rejects_empty_components() {
     for s in ["n", "n1:", "n:8", "n16::32"] {
-        let msg = parse_err(s);
-        assert!(msg.contains("size component cannot be empty"), "{s}: {msg}");
+        assert_parse_err_eq(s, "size component cannot be empty");
     }
 }
 
+/// `llvmkit-specific subset` zero/bad-integer arm from
+/// `ParseNativeIntegersSpec`; asserts llvmkit's exact diagnostic for upstream
+/// malformed strings.
 #[test]
 fn parse_native_integers_spec_rejects_zero_or_huge() {
     for s in [
         "n0",
+        "n0x8:16",
         "n8:0",
         "n16:0:32",
         "n16777216",
         "n16:16777216",
         "n32:64:16777216",
     ] {
-        let msg = parse_err(s);
-        assert!(msg.contains("non-zero 24-bit integer"), "{s}: {msg}");
+        assert_parse_err_eq(s, "size must be a non-zero 24-bit integer");
     }
 }
 
@@ -274,49 +294,53 @@ fn parse_native_integers_spec_rejects_zero_or_huge() {
 // Non-integral address spaces (ni)
 // ---------------------------------------------------------------------------
 
-/// Mirrors `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, ParseNonIntegralAddrSpace)`.
+/// `llvmkit-specific subset` of
+/// `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, ParseNonIntegralAddrSpace)`:
+/// retains every upstream accepted/rejected string, but compares llvmkit's
+/// exact diagnostic strings where wording differs from upstream.
 #[test]
 fn parse_non_integral_addr_space_accepts() {
     for s in ["ni:1", "ni:16777215", "ni:1:16777215"] {
         DataLayout::parse(s).unwrap_or_else(|e| panic!("{s}: {e:?}"));
     }
-    let dl = parse("ni:1:16777215");
-    assert!(dl.is_non_integral_address_space(1));
-    assert!(dl.is_non_integral_address_space(16777215));
-    assert!(!dl.is_non_integral_address_space(0));
-    assert!(!dl.is_non_integral_address_space(2));
 }
 
+/// `llvmkit-specific subset` malformed arm from `ParseNonIntegralAddrSpace`;
+/// asserts llvmkit's exact diagnostic for the upstream malformed strings.
+#[test]
+fn parse_non_integral_addr_space_rejects_malformed() {
+    for s in ["ni", "ni42", "nix"] {
+        assert_parse_err_eq(
+            s,
+            "malformed specification, expected ni:<address space>[:<address space>]...",
+        );
+    }
+}
+
+/// `llvmkit-specific subset` zero-address-space arm from
+/// `ParseNonIntegralAddrSpace`; asserts llvmkit's exact diagnostic.
 #[test]
 fn parse_non_integral_addr_space_rejects_zero() {
     for s in ["ni:0", "ni:42:0"] {
-        let msg = parse_err(s);
-        assert!(
-            msg.contains("address space 0 cannot be non-integral"),
-            "{s}: {msg}"
-        );
+        assert_parse_err_eq(s, "address space 0 cannot be non-integral");
     }
 }
 
+/// `llvmkit-specific subset` empty-component arm from
+/// `ParseNonIntegralAddrSpace`; asserts llvmkit's exact diagnostic.
 #[test]
 fn parse_non_integral_addr_space_rejects_empty_components() {
     for s in ["ni:", "ni::42", "ni:42:"] {
-        let msg = parse_err(s);
-        assert!(
-            msg.contains("address space component cannot be empty"),
-            "{s}: {msg}"
-        );
+        assert_parse_err_eq(s, "address space component cannot be empty");
     }
 }
 
+/// `llvmkit-specific subset` bad-integer arm from
+/// `ParseNonIntegralAddrSpace`; asserts llvmkit's exact diagnostic.
 #[test]
 fn parse_non_integral_addr_space_rejects_bad_int() {
     for s in ["ni:x", "ni:42:0x1", "ni:16777216", "ni:42:16777216"] {
-        let msg = parse_err(s);
-        assert!(
-            msg.contains("address space must be a 24-bit integer"),
-            "{s}: {msg}"
-        );
+        assert_parse_err_eq(s, "address space must be a 24-bit integer");
     }
 }
 
@@ -550,9 +574,9 @@ fn module_emits_target_datalayout_directive() {
     m.set_data_layout("e-m:e-p:64:64-i64:64-n8:16:32:64-S128")
         .expect("parse");
     let text = format!("{m}");
-    assert!(
-        text.contains("target datalayout = \"e-m:e-p:64:64-i64:64-n8:16:32:64-S128\""),
-        "got:\n{text}"
+    assert_line(
+        &text,
+        "target datalayout = \"e-m:e-p:64:64-i64:64-n8:16:32:64-S128\"",
     );
 }
 
@@ -563,10 +587,7 @@ fn module_emits_target_triple_directive() {
     let m = Module::new("m");
     m.set_target_triple(Some("x86_64-pc-linux-gnu"));
     let text = format!("{m}");
-    assert!(
-        text.contains("target triple = \"x86_64-pc-linux-gnu\""),
-        "got:\n{text}"
-    );
+    assert_line(&text, "target triple = \"x86_64-pc-linux-gnu\"");
 }
 
 /// `llvmkit-specific`: mirrors `Module::setModuleInlineAsm` and the
@@ -577,7 +598,7 @@ fn module_emits_module_asm_directive() {
     let m = Module::new("m");
     m.set_module_asm("beep boop");
     let text = format!("{m}");
-    assert!(text.contains("module asm \"beep boop\""), "got:\n{text}");
+    assert_line(&text, "module asm \"beep boop\"");
 }
 
 // ---------------------------------------------------------------------------

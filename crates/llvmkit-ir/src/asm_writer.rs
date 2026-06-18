@@ -22,6 +22,7 @@
 //! arm at a time as their builders land.
 
 use core::fmt;
+use core::fmt::Write as _;
 use std::collections::HashMap;
 
 use crate::AttrIndex;
@@ -580,20 +581,116 @@ fn fmt_int_constant(f: &mut fmt::Formatter<'_>, ty: Type<'_>, words: &[u64]) -> 
     Ok(())
 }
 
+struct FloatDecimalBuffer {
+    bytes: [u8; 32],
+    len: usize,
+}
+
+impl FloatDecimalBuffer {
+    fn new() -> Self {
+        Self {
+            bytes: [0; 32],
+            len: 0,
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        match core::str::from_utf8(&self.bytes[..self.len]) {
+            Ok(s) => s,
+            Err(_) => unreachable!("float decimal buffer contains formatter output"),
+        }
+    }
+}
+
+impl fmt::Write for FloatDecimalBuffer {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let Some(end) = self.len.checked_add(s.len()) else {
+            return Err(fmt::Error);
+        };
+        if end > self.bytes.len() {
+            return Err(fmt::Error);
+        }
+        self.bytes[self.len..end].copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
+// Mirrors `AsmWriter.cpp::writeAPFloatInternal`: finite single/double
+// constants try the six-digit scientific spelling and keep it only when
+// parsing that spelling returns the same `double` value.
+fn try_write_finite_float_decimal(
+    f: &mut fmt::Formatter<'_>,
+    value: f64,
+) -> Result<bool, fmt::Error> {
+    if !value.is_finite() {
+        return Ok(false);
+    }
+
+    let mut candidate = FloatDecimalBuffer::new();
+    write!(&mut candidate, "{value:.5e}")?;
+    let text = candidate.as_str();
+    let Ok(reparsed) = text.parse::<f64>() else {
+        return Ok(false);
+    };
+    if reparsed != value {
+        return Ok(false);
+    }
+
+    write_llvm_float_decimal(f, text)?;
+    Ok(true)
+}
+
+fn write_llvm_float_decimal(f: &mut fmt::Formatter<'_>, text: &str) -> fmt::Result {
+    let Some(exp_index) = text.as_bytes().iter().position(|&b| b == b'e') else {
+        return f.write_str(text);
+    };
+    f.write_str(&text[..exp_index])?;
+    f.write_str("0e")?;
+
+    let rest = &text[exp_index + 1..];
+    let (sign, digits) = match rest.as_bytes().first() {
+        Some(b'-') => ("-", &rest[1..]),
+        Some(b'+') => ("+", &rest[1..]),
+        _ => ("+", rest),
+    };
+    f.write_str(sign)?;
+    for _ in digits.len()..2 {
+        f.write_str("0")?;
+    }
+    f.write_str(digits)
+}
+
+fn low_u32(bits: u128) -> u32 {
+    let bytes = bits.to_le_bytes();
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+fn low_u64(bits: u128) -> u64 {
+    let bytes = bits.to_le_bytes();
+    u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ])
+}
+
 fn fmt_float_constant(f: &mut fmt::Formatter<'_>, ty: Type<'_>, bits: u128) -> fmt::Result {
     match ty.data() {
         TypeData::Half => write!(f, "0xH{:04x}", bits as u16),
         TypeData::BFloat => write!(f, "0xR{:04x}", bits as u16),
-        TypeData::Float | TypeData::Double => {
-            // For both single and double, emit the IEEE 754 double-
-            // precision hex representation. Mirrors AsmWriter.cpp's
-            // `writeAPFloatInternal`.
-            let as_double_bits: u64 = match ty.data() {
-                TypeData::Float => f64::from(f32::from_bits(bits as u32)).to_bits(),
-                TypeData::Double => bits as u64,
-                _ => unreachable!(),
-            };
+        TypeData::Float => {
+            let value = f32::from_bits(low_u32(bits));
+            if value.is_finite() && try_write_finite_float_decimal(f, f64::from(value))? {
+                return Ok(());
+            }
+            let as_double_bits = f64::from(value).to_bits();
             write!(f, "0x{as_double_bits:016x}")
+        }
+        TypeData::Double => {
+            let value = f64::from_bits(low_u64(bits));
+            if value.is_finite() && try_write_finite_float_decimal(f, value)? {
+                return Ok(());
+            }
+            write!(f, "0x{:016x}", value.to_bits())
         }
         TypeData::X86Fp80 => {
             let lo = bits as u64;
@@ -1650,7 +1747,6 @@ fn fmt_invoke(
     let module = inst.module();
     write!(f, "{} ", inst.ty())?;
     let callee_data = module.context().value_data(d.callee.get());
-    let inline_asm_callee = matches!(&callee_data.kind, ValueKindData::InlineAsm(_));
     match &callee_data.kind {
         ValueKindData::InlineAsm(data) => fmt_inline_asm(f, data)?,
         _ => {
@@ -1683,11 +1779,7 @@ fn fmt_invoke(
         write!(f, " #{group}")?;
     }
     fmt_operand_bundles(f, &d.attrs.operand_bundles, module, slots)?;
-    f.write_str(if inline_asm_callee {
-        " to "
-    } else {
-        "\n          to "
-    })?;
+    f.write_str("\n          to ")?;
     let nd = module.context().value_data(d.normal_dest.get());
     let nbb = Value::from_parts(d.normal_dest.get(), module, nd.ty);
     write!(f, "{} ", nbb.ty())?;
@@ -1717,7 +1809,6 @@ fn fmt_callbr(
     let module = inst.module();
     write!(f, "{} ", inst.ty())?;
     let callee_data = module.context().value_data(d.callee.get());
-    let inline_asm_callee = matches!(&callee_data.kind, ValueKindData::InlineAsm(_));
     match &callee_data.kind {
         ValueKindData::InlineAsm(data) => fmt_inline_asm(f, data)?,
         _ => {
@@ -1750,11 +1841,7 @@ fn fmt_callbr(
         write!(f, " #{group}")?;
     }
     fmt_operand_bundles(f, &d.attrs.operand_bundles, module, slots)?;
-    f.write_str(if inline_asm_callee {
-        " to "
-    } else {
-        "\n          to "
-    })?;
+    f.write_str("\n          to ")?;
     let dd = module.context().value_data(d.default_dest.get());
     let dbb = Value::from_parts(d.default_dest.get(), module, dd.ty);
     write!(f, "{} ", dbb.ty())?;

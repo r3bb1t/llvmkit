@@ -15,14 +15,13 @@ fn parse_and_print(src: &str) -> String {
     format!("{m}")
 }
 
-/// Mirrors the smallest body fixture: `define void @f() { ret void }`.
-/// Anchored on `test/Assembler/return-void.ll` and the
-/// `LLParser::parseRet` `void` arm.
+/// Mirrors `LLParser::parseRet`'s `void` arm on the smallest body shape:
+/// `define void @f() { ret void }`.
 #[test]
 fn parses_void_function_body() {
     let printed = parse_and_print("define void @f() {\nentry:\n  ret void\n}\n");
-    assert!(printed.contains("define void @f"));
-    assert!(printed.contains("ret void"));
+    assert!(printed.contains("define void @f() {\n"));
+    assert!(printed.contains("ret void\n"));
 }
 
 /// Mirrors `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, ...)`'s
@@ -32,8 +31,8 @@ fn parses_int_add_and_ret() {
     let printed = parse_and_print(
         "define i32 @add(i32 %a, i32 %b) {\nentry:\n  %r = add i32 %a, %b\n  ret i32 %r\n}\n",
     );
-    assert!(printed.contains("add i32 %a, %b"));
-    assert!(printed.contains("ret i32 %r"));
+    assert!(printed.contains("%r = add i32 %a, %b\n"));
+    assert!(printed.contains("ret i32 %r\n"));
 }
 
 /// Numbered parameters are valid local names. Mirrors
@@ -43,14 +42,14 @@ fn parses_numbered_params() {
     let printed = parse_and_print(
         "define i32 @add(i32, i32) {\nentry:\n  %r = add i32 %0, %1\n  ret i32 %r\n}\n",
     );
-    assert!(printed.contains("ret i32 %r"));
+    assert!(printed.contains("ret i32 %r\n"));
 }
 
-/// `unreachable` terminator. Mirrors `test/Assembler/unreachable.ll`.
+/// `unreachable` terminator. Mirrors `LLParser::parseUnreachable`.
 #[test]
 fn parses_unreachable_terminator() {
     let printed = parse_and_print("define void @abort() {\nentry:\n  unreachable\n}\n");
-    assert!(printed.contains("unreachable"));
+    assert!(printed.contains("\n  unreachable\n"));
 }
 
 /// Conditional branch with `icmp eq` predicate. Mirrors the entry-block
@@ -68,8 +67,8 @@ fn parses_icmp_and_cond_br() {
            ret i32 %x\n\
          }\n",
     );
-    assert!(printed.contains("icmp eq i32 %x, 0"));
-    assert!(printed.contains("br i1 %is_zero, label %zero_path, label %nonzero"));
+    assert!(printed.contains("%is_zero = icmp eq i32 %x, 0\n"));
+    assert!(printed.contains("br i1 %is_zero, label %zero_path, label %nonzero\n"));
 }
 
 /// Forward block reference: `br label %later` before `later:` is parsed.
@@ -84,8 +83,8 @@ fn parses_forward_block_reference() {
            ret void\n\
          }\n",
     );
-    assert!(printed.contains("br label %later"));
-    assert!(printed.contains("ret void"));
+    assert!(printed.contains("br label %later\n"));
+    assert!(printed.contains("ret void\n"));
 }
 
 /// Sub / mul arms of `parse_int_binop`. Mirrors the loop body of
@@ -100,8 +99,8 @@ fn parses_sub_and_mul() {
            ret i32 %b\n\
          }\n",
     );
-    assert!(printed.contains("sub i32 %x, 1"));
-    assert!(printed.contains("mul i32 %a, %x"));
+    assert!(printed.contains("%a = sub i32 %x, 1\n"));
+    assert!(printed.contains("%b = mul i32 %a, %x\n"));
 }
 
 /// Negative test: an unsupported opcode in this session is reported as a
@@ -137,10 +136,10 @@ fn parses_div_and_rem_opcodes() {
            ret i32 %sr\n\
          }\n",
     );
-    assert!(printed.contains("udiv i32 %a, %b"));
-    assert!(printed.contains("sdiv i32 %a, %b"));
-    assert!(printed.contains("urem i32 %a, %b"));
-    assert!(printed.contains("srem i32 %a, %b"));
+    assert!(printed.contains("%u = udiv i32 %a, %b\n"));
+    assert!(printed.contains("%s = sdiv i32 %a, %b\n"));
+    assert!(printed.contains("%ur = urem i32 %a, %b\n"));
+    assert!(printed.contains("%sr = srem i32 %a, %b\n"));
 }
 
 /// Ports the bitwise / shift arms of `LLParser::parseInstruction`
@@ -158,9 +157,12 @@ fn parses_shift_and_bitwise_opcodes() {
            ret i32 %s6\n\
          }\n",
     );
-    for op in ["shl", "lshr", "ashr", "and", "or", "xor"] {
-        assert!(printed.contains(op), "missing opcode {op}: {printed}");
-    }
+    assert!(printed.contains("%s1 = shl i32 %a, 1\n"));
+    assert!(printed.contains("%s2 = lshr i32 %s1, 1\n"));
+    assert!(printed.contains("%s3 = ashr i32 %s2, 1\n"));
+    assert!(printed.contains("%s4 = and i32 %s3, %b\n"));
+    assert!(printed.contains("%s5 = or i32 %s4, %b\n"));
+    assert!(printed.contains("%s6 = xor i32 %s5, %b\n"));
 }
 
 /// Ports `LLParser::parseCast` integer arm: `trunc` / `zext` / `sext`.
@@ -175,9 +177,9 @@ fn parses_int_casts() {
            ret i64 %s\n\
          }\n",
     );
-    assert!(printed.contains("trunc i32 %a to i16"));
-    assert!(printed.contains("zext i16 %t to i32"));
-    assert!(printed.contains("sext i32 %z to i64"));
+    assert!(printed.contains("%t = trunc i32 %a to i16\n"));
+    assert!(printed.contains("%z = zext i16 %t to i32\n"));
+    assert!(printed.contains("%s = sext i32 %z to i64\n"));
 }
 
 /// Ports `LLParser::parseCast`'s `Instruction::PtrToInt` /
@@ -192,8 +194,8 @@ fn parses_ptr_int_casts() {
            ret i64 %j\n\
          }\n",
     );
-    assert!(printed.contains("ptrtoint ptr %p to i64"));
-    assert!(printed.contains("inttoptr i64 %i to ptr"));
+    assert!(printed.contains("%i = ptrtoint ptr %p to i64\n"));
+    assert!(printed.contains("%q = inttoptr i64 %i to ptr\n"));
 }
 
 /// Ports the FP arithmetic arms of `LLParser::parseArithmetic`.
@@ -211,9 +213,11 @@ fn parses_fp_arith_opcodes() {
            ret float %r\n\
          }\n",
     );
-    for op in ["fadd", "fsub", "fmul", "fdiv", "frem"] {
-        assert!(printed.contains(op), "missing {op}: {printed}");
-    }
+    assert!(printed.contains("%x = fadd float %a, %b\n"));
+    assert!(printed.contains("%y = fsub float %x, %a\n"));
+    assert!(printed.contains("%z = fmul float %y, %b\n"));
+    assert!(printed.contains("%w = fdiv float %z, %a\n"));
+    assert!(printed.contains("%r = frem float %w, %b\n"));
 }
 
 /// Ports `LLParser::parseUnaryOp` `Instruction::FNeg` arm.
@@ -222,7 +226,7 @@ fn parses_fneg_opcode() {
     let printed = parse_and_print(
         "define float @neg(float %a) {\nentry:\n  %r = fneg float %a\n  ret float %r\n}\n",
     );
-    assert!(printed.contains("fneg float %a"));
+    assert!(printed.contains("%r = fneg float %a\n"));
 }
 
 /// Ports `LLParser::parseCompare` FP arm. Predicate spelling matches
@@ -235,7 +239,7 @@ fn parses_fcmp_opcodes() {
            ret i1 %r\n\
          }\n",
     );
-    assert!(printed.contains("fcmp oeq float %a, %b"));
+    assert!(printed.contains("%r = fcmp oeq float %a, %b\n"));
 }
 
 /// Ports the `alloca` / `load` / `store` arms of `LLParser::parseAlloc`
@@ -250,9 +254,9 @@ fn parses_alloca_load_store() {
            ret i32 %r\n\
          }\n",
     );
-    assert!(printed.contains("alloca i32"));
-    assert!(printed.contains("store i32 %v, ptr %slot"));
-    assert!(printed.contains("load i32, ptr %slot"));
+    assert!(printed.contains("%slot = alloca i32\n"));
+    assert!(printed.contains("store i32 %v, ptr %slot\n"));
+    assert!(printed.contains("%r = load i32, ptr %slot\n"));
 }
 
 /// Ports `LLParser::parseGetElementPtr` plain + inbounds arms.
@@ -266,8 +270,8 @@ fn parses_gep_plain_and_inbounds() {
            ret ptr %b\n\
          }\n",
     );
-    assert!(printed.contains("getelementptr i32, ptr %p, i64 %i"));
-    assert!(printed.contains("getelementptr inbounds i32, ptr %p, i64 %i"));
+    assert!(printed.contains("%a = getelementptr i32, ptr %p, i64 %i\n"));
+    assert!(printed.contains("%b = getelementptr inbounds i32, ptr %p, i64 %i\n"));
 }
 
 /// Ports `LLParser::parseSelect` for the int / fp / ptr arm categories.
@@ -282,9 +286,9 @@ fn parses_select_int_fp_ptr() {
            ret void\n\
          }\n",
     );
-    assert!(printed.contains("select i1 %c, i32 %a, i32 %b"));
-    assert!(printed.contains("select i1 %c, float %fa, float %fb"));
-    assert!(printed.contains("select i1 %c, ptr %pa, ptr %pb"));
+    assert!(printed.contains("%ri = select i1 %c, i32 %a, i32 %b\n"));
+    assert!(printed.contains("%rf = select i1 %c, float %fa, float %fb\n"));
+    assert!(printed.contains("%rp = select i1 %c, ptr %pa, ptr %pb\n"));
 }
 
 /// Ports `LLParser::parseCast` `Instruction::{FPToSI,FPToUI}` arms.
@@ -297,8 +301,8 @@ fn parses_fp_to_int_casts() {
            ret void\n\
          }\n",
     );
-    assert!(printed.contains("fptosi float %f to i32"));
-    assert!(printed.contains("fptoui float %f to i32"));
+    assert!(printed.contains("%s = fptosi float %f to i32\n"));
+    assert!(printed.contains("%u = fptoui float %f to i32\n"));
 }
 
 /// Ports `LLParser::parseCast` `Instruction::{SIToFP,UIToFP}` arms.
@@ -311,8 +315,8 @@ fn parses_int_to_fp_casts() {
            ret void\n\
          }\n",
     );
-    assert!(printed.contains("sitofp i32 %i to float"));
-    assert!(printed.contains("uitofp i32 %i to float"));
+    assert!(printed.contains("%s = sitofp i32 %i to float\n"));
+    assert!(printed.contains("%u = uitofp i32 %i to float\n"));
 }
 
 /// Ports `LLParser::parseCast` `Instruction::AddrSpaceCast` arm.
@@ -324,5 +328,5 @@ fn parses_addrspacecast() {
            ret ptr addrspace(1) %r\n\
          }\n",
     );
-    assert!(printed.contains("addrspacecast ptr %p to ptr addrspace(1)"));
+    assert!(printed.contains("%r = addrspacecast ptr %p to ptr addrspace(1)\n"));
 }

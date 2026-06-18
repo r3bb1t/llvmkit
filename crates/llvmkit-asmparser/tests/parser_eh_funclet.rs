@@ -1,7 +1,8 @@
 //! Parser integration tests for S3.3 EH/funclet opcodes.
 //!
-//! Each `#[test]` mirrors a constructive `.ll` fixture or unit-test case
-//! from upstream LLVM. Citations live in `UPSTREAM.md`.
+//! These are llvmkit-specific parser acceptance subsets for EH/funclet opcodes.
+//! The previously cited `test/Assembler/*.ll` fixture names are not present in
+//! LLVM 22.1.4; rows in `UPSTREAM.md` cite the parser branches instead.
 //!
 //! Note: the parser does not require a `personality` attribute on `define`
 //! to accept `landingpad`/`resume`; that constraint is left to the verifier.
@@ -21,8 +22,8 @@ fn parse_snippet(src: &str) -> (Module<'_>, String) {
 
 // ── landingpad / resume ───────────────────────────────────────────────────────
 
-/// `landingpad { ptr, i32 } catch ptr null` — non-terminator EH instruction.
-/// Mirrors `test/Assembler/landingpad.ll`.
+/// llvmkit-specific subset: `landingpad { ptr, i32 } catch ptr null`
+/// accepted via `LLParser::parseLandingPad`.
 #[test]
 fn landingpad_round_trips() {
     let (_, text) = parse_snippet(
@@ -35,11 +36,14 @@ lpad:
 }
 "#,
     );
-    assert!(text.contains("landingpad"), "got: {text}");
+    assert!(
+        text.contains("%e = landingpad { ptr, i32 }\n          catch ptr null\n"),
+        "got: {text}"
+    );
 }
 
-/// `resume { ptr, i32 } %e` — re-raise an exception.
-/// Mirrors `test/Assembler/resume.ll`.
+/// llvmkit-specific subset: `resume { ptr, i32 } %e` accepted via
+/// `LLParser::parseResume`.
 #[test]
 fn resume_round_trips() {
     let (_, text) = parse_snippet(
@@ -52,13 +56,13 @@ lpad:
 }
 "#,
     );
-    assert!(text.contains("resume"), "got: {text}");
+    assert!(text.contains("resume { ptr, i32 } %e\n"), "got: {text}");
 }
 
 // ── invoke ────────────────────────────────────────────────────────────────────
 
-/// `invoke void @may_throw() to label %ok unwind label %lpad` — EH call.
-/// Mirrors `test/Assembler/invoke.ll`.
+/// llvmkit-specific subset: `invoke void @may_throw() to label %ok unwind
+/// label %lpad` accepted via `LLParser::parseInvoke`.
 #[test]
 fn invoke_round_trips() {
     let (_, text) = parse_snippet(
@@ -74,13 +78,16 @@ lpad:
 }
 "#,
     );
-    assert!(text.contains("invoke"), "got: {text}");
+    assert!(
+        text.contains("invoke void @may_throw()\n          to label %normal unwind label %lpad\n"),
+        "got: {text}"
+    );
 }
 
 // ── cleanuppad / cleanupret ───────────────────────────────────────────────────
 
-/// `cleanuppad within none []` + `cleanupret from token %cp unwind to caller`.
-/// Mirrors `test/Assembler/cleanuppad.ll` and `test/Assembler/cleanupret.ll`.
+/// llvmkit-specific subset: `cleanuppad within none []` plus
+/// `cleanupret from token %cp unwind to caller` parser acceptance.
 #[test]
 fn cleanuppad_cleanupret_round_trips() {
     let (_, text) = parse_snippet(
@@ -93,6 +100,12 @@ pad_bb:
 }
 "#,
     );
-    assert!(text.contains("cleanuppad"), "got: {text}");
-    assert!(text.contains("cleanupret"), "got: {text}");
+    assert!(
+        text.contains("%cp = cleanuppad within none []\n"),
+        "got: {text}"
+    );
+    assert!(
+        text.contains("cleanupret from %cp unwind to caller\n"),
+        "got: {text}"
+    );
 }

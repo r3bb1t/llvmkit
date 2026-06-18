@@ -1,7 +1,9 @@
 //! Value form parsing tests — Session 4 gaps.
 //!
-//! Tests for `undef`, `poison`, float literals, and global variable
-//! references in instruction operand position.
+//! llvmkit-specific parser subsets for `undef`, `poison`, float literals, and
+//! global references in instruction operand position. The stale
+//! `test/Assembler/*.ll` fixture names previously cited here are not present in
+//! LLVM 22.1.4; `UPSTREAM.md` cites the relevant `LLParser` branches.
 
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::Module;
@@ -18,7 +20,7 @@ fn parse_snippet(src: &str) -> (Module<'_>, String) {
 
 // ── undef / poison ───────────────────────────────────────────────────────
 
-/// `undef` as an operand. Mirrors `test/Assembler/undef.ll`.
+/// llvmkit-specific subset: `undef` as an operand via `LLParser::parseValID`.
 #[test]
 fn undef_operand() {
     let src = r#"
@@ -28,10 +30,10 @@ define i32 @f() {
 }
 "#;
     let (_, text) = parse_snippet(src);
-    assert!(text.contains("add i32 0, undef"), "output: {text}");
+    assert!(text.contains("%x = add i32 0, undef\n"), "output: {text}");
 }
 
-/// `poison` as an operand. Mirrors `test/Assembler/poison.ll`.
+/// llvmkit-specific subset: `poison` as an operand via `LLParser::parseValID`.
 #[test]
 fn poison_operand() {
     let src = r#"
@@ -41,12 +43,12 @@ define i32 @f() {
 }
 "#;
     let (_, text) = parse_snippet(src);
-    assert!(text.contains("add i32 poison, 1"), "output: {text}");
+    assert!(text.contains("%x = add i32 poison, 1\n"), "output: {text}");
 }
 
 // ── Float literals ───────────────────────────────────────────────────────
 
-/// Decimal float literal in `fadd`. Mirrors `test/Assembler/float.ll`.
+/// llvmkit-specific subset: decimal FP literal in `LLParser::parseValID`.
 #[test]
 fn float_decimal_literal() {
     let src = r#"
@@ -56,10 +58,13 @@ define double @f(double %x) {
 }
 "#;
     let (_, text) = parse_snippet(src);
-    assert!(text.contains("fadd double %x,"), "output: {text}");
+    assert!(
+        text.contains("%y = fadd double %x, 1.000000e+00\n"),
+        "output: {text}"
+    );
 }
 
-/// Hex float literal. Mirrors `test/Assembler/float-hex.ll`.
+/// llvmkit-specific subset: hex FP literal in `LLParser::parseValID`.
 #[test]
 fn float_hex_literal() {
     let src = r#"
@@ -69,13 +74,15 @@ define double @f(double %x) {
 }
 "#;
     let (_, text) = parse_snippet(src);
-    // 0x3FF0000000000000 = 1.0 in IEEE double
-    assert!(text.contains("fadd double %x,"), "output: {text}");
+    assert!(
+        text.contains("%y = fadd double %x, 1.000000e+00\n"),
+        "output: {text}"
+    );
 }
 
 // ── zeroinitializer for float ────────────────────────────────────────────
 
-/// `zeroinitializer` for float type.
+/// llvmkit-specific subset: `zeroinitializer` for float type.
 #[test]
 fn zeroinitializer_float() {
     let src = r#"
@@ -90,7 +97,7 @@ define double @f(double %x) {
 
 // ── Global variable references ───────────────────────────────────────────
 
-/// Load from a global variable. Mirrors `test/Assembler/globalvariable.ll`.
+/// llvmkit-specific subset: load from a global variable reference.
 #[test]
 fn global_variable_reference() {
     let src = r#"
@@ -102,10 +109,10 @@ define i32 @f() {
 }
 "#;
     let (_, text) = parse_snippet(src);
-    assert!(text.contains("load i32, ptr @g"), "output: {text}");
+    assert!(text.contains("%v = load i32, ptr @g\n"), "output: {text}");
 }
 
-/// Function call via global reference.
+/// llvmkit-specific subset: function call via global reference.
 #[test]
 fn function_call_global_reference() {
     let src = r#"
@@ -117,5 +124,8 @@ define i32 @f(i32 %x) {
 }
 "#;
     let (_, text) = parse_snippet(src);
-    assert!(text.contains("call i32 @callee(i32 %x)"), "output: {text}");
+    assert!(
+        text.contains("%v = call i32 @callee(i32 %x)\n"),
+        "output: {text}"
+    );
 }

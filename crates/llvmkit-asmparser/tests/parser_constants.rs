@@ -1,146 +1,169 @@
 //! Constant parser tests.
 //!
-//! Mirrors upstream aggregate-constant parsing from
-//! `test/Assembler/aggregate-constant-values.ll`.
+//! Tests either include exact upstream `.ll` excerpts with `include_bytes!` or
+//! translate one `LLParser.cpp::parseValID` branch directly. Citations live in
+//! `UPSTREAM.md`.
 
 use llvmkit_asmparser::{ll_parser::Parser, parse_error::ParseError, parser};
 use llvmkit_ir::Module;
 
-fn parse_and_render(src: &str) -> String {
-    let module = Module::new("parser_constants");
-    Parser::new(src.as_bytes(), &module)
+fn parse_and_render(module_name: &str, src: &[u8]) -> String {
+    let module = Module::new(module_name);
+    Parser::new(src, &module)
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
     format!("{module}")
 }
 
-/// Mirrors `test/Assembler/aggregate-constant-values.ll`: array constant
-/// initializer syntax (`[i32 1, i32 2]`) as a global initializer.
-#[test]
-fn array_constant_initializer_round_trips() {
-    let text = parse_and_render("@arr = global [2 x i32] [i32 1, i32 2]\n");
-    assert!(
-        text.contains("@arr = global [2 x i32] [i32 1, i32 2]"),
-        "AsmWriter output: {text}"
-    );
+fn assert_check_lines(text: &str, check_lines: &[&str]) {
+    let mut offset = 0;
+    for expected in check_lines {
+        let tail = &text[offset..];
+        let found = tail.find(expected).unwrap_or_else(|| {
+            panic!("missing upstream CHECK line `{expected}` after byte {offset}; got:\n{text}")
+        });
+        offset += found + expected.len();
+    }
 }
 
-/// Mirrors `test/Assembler/aggregate-constant-values.ll`: struct constant
-/// initializer syntax (`{ i32 1, i32 2 }`) as a global initializer.
+fn assert_parse_print_parse_stable(text: &str) {
+    let module_name = text
+        .strip_prefix("; ModuleID = '")
+        .and_then(|tail| tail.split_once('\''))
+        .map_or("parser_constants_reparse", |(name, _)| name);
+    let reparsed = parse_and_render(module_name, text.as_bytes());
+    assert_eq!(reparsed, text);
+}
+
+/// Exact struct aggregate store from `test/Assembler/aggregate-constant-values.ll`.
 #[test]
 fn struct_constant_initializer_round_trips() {
-    let text = parse_and_render("@pair = global { i32, i32 } { i32 1, i32 2 }\n");
-    assert!(
-        text.contains("@pair = global { i32, i32 } { i32 1, i32 2 }"),
-        "AsmWriter output: {text}"
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/aggregate-constant-values/struct_constant_initializer_round_trips.ll"
+    );
+
+    let text = parse_and_render("struct_constant_initializer_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["@foo", "store { i32, i32 } { i32 7, i32 9 }, ptr %x", "ret"],
     );
 }
 
-/// Mirrors `test/Assembler/getelementptr.ll`: a global initializer may be a
-/// `getelementptr` constant expression.
+/// Exact array aggregate store from `test/Assembler/aggregate-constant-values.ll`.
+#[test]
+fn array_constant_initializer_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/aggregate-constant-values/array_constant_initializer_round_trips.ll"
+    );
+
+    let text = parse_and_render("array_constant_initializer_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["@bar", "store [2 x i32] [i32 7, i32 9], ptr %x", "ret"],
+    );
+}
+
+/// llvmkit-specific subset of `LLParser::parseValID`'s `getelementptr`
+/// global-initializer shape.
 #[test]
 fn getelementptr_constant_expr_initializer_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseValID/getelementptr_constant_expr_initializer_round_trips.ll"
+    );
+
     let text = parse_and_render(
-        "@data = global i8 0\n@ptr = global ptr getelementptr inbounds (i8, ptr @data, i64 1)\n",
+        "getelementptr_constant_expr_initializer_round_trips",
+        FIXTURE,
     );
-    assert!(
-        text.contains("@ptr = global ptr getelementptr inbounds (i8, ptr @data, i64 1)"),
-        "AsmWriter output: {text}"
+    assert_check_lines(
+        &text,
+        &["@ptr = global ptr getelementptr inbounds (i8, ptr @data, i64 1)"],
     );
+    assert_parse_print_parse_stable(&text);
 }
-/// Mirrors `test/Assembler/ConstantExprNoFold.ll`: cast constant expressions
-/// round-trip through parser and writer without constructing instructions.
+
+/// Exact `addrspacecast` constant expression from `test/Assembler/ConstantExprNoFold.ll`.
 #[test]
 fn constant_expr_casts_round_trip() {
-    let src = "@g = global i32 0\n@p = global ptr bitcast (ptr @g to ptr)\n";
-    let text = parse_and_render(src);
-    assert!(
-        text.contains("@p = global ptr bitcast (ptr @g to ptr)"),
-        "AsmWriter output: {text}"
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/ConstantExprNoFold/constant_expr_casts_round_trip.ll");
+
+    let text = parse_and_render("constant_expr_casts_round_trip", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["@E = global ptr addrspace(1) addrspacecast (ptr @A to ptr addrspace(1))"],
     );
-    let reparsed = parse_and_render(&text);
-    assert!(reparsed.contains("@p = global ptr bitcast (ptr @g to ptr)"));
+    assert_parse_print_parse_stable(&text);
 }
 
-/// Mirrors `test/Assembler/ConstantExprNoFold.ll`: supported binary constant
-/// expressions print in the canonical `add (ty lhs, ty rhs)` form.
+/// llvmkit-specific subset of `LLParser::parseValID`'s integer binary
+/// constant-expression branch: the accepted `add (ty lhs, ty rhs)` shape.
 #[test]
 fn constant_expr_binary_round_trip() {
-    let src = "@sum = global i32 add (i32 1, i32 2)\n";
-    let text = parse_and_render(src);
-    assert!(
-        text.contains("@sum = global i32 add (i32 1, i32 2)"),
-        "AsmWriter output: {text}"
-    );
-    let reparsed = parse_and_render(&text);
-    assert!(reparsed.contains("@sum = global i32 add (i32 1, i32 2)"));
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseValID/constant_expr_binary_round_trip.ll");
+
+    let text = parse_and_render("constant_expr_binary_round_trip", FIXTURE);
+    assert_check_lines(&text, &["@sum = global i32 add (i32 1, i32 2)"]);
+    assert_parse_print_parse_stable(&text);
 }
 
-/// Mirrors `test/Assembler/getelementptr.ll`: general getelementptr constant
-/// expressions use the `ConstantExpr` storage path, not the legacy offset-only
-/// compatibility node.
+/// llvmkit-specific subset of `LLParser::parseValID`'s general
+/// `getelementptr` constant-expression shape.
 #[test]
 fn constant_expr_gep_round_trip() {
-    let src =
-        "@data = global i8 0\n@ptr = global ptr getelementptr inbounds (i8, ptr @data, i64 1)\n";
-    let text = parse_and_render(src);
-    assert!(
-        text.contains("@ptr = global ptr getelementptr inbounds (i8, ptr @data, i64 1)"),
-        "AsmWriter output: {text}"
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseValID/constant_expr_gep_round_trip.ll");
+
+    let text = parse_and_render("constant_expr_gep_round_trip", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["@ptr = global ptr getelementptr (i8, ptr @data, i64 1)"],
     );
-    let reparsed = parse_and_render(&text);
-    assert!(reparsed.contains("@ptr = global ptr getelementptr inbounds (i8, ptr @data, i64 1)"));
+    assert_parse_print_parse_stable(&text);
 }
 
-/// Mirrors `test/Assembler/blockaddress.ll`: blockaddress constants name a
-/// function and a basic block.
+/// llvmkit-specific subset of `LLParser::parseValID`'s `blockaddress` branch:
+/// the accepted `blockaddress(@function, %block)` shape.
 #[test]
 fn blockaddress_round_trips() {
-    let src =
-        "define void @f() {\nentry:\n  ret void\n}\n@addr = global ptr blockaddress(@f, %entry)\n";
-    let text = parse_and_render(src);
-    assert!(
-        text.contains("@addr = global ptr blockaddress(@f, %entry)"),
-        "AsmWriter output: {text}"
-    );
-    let reparsed = parse_and_render(&text);
-    assert!(reparsed.contains("@addr = global ptr blockaddress(@f, %entry)"));
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseValID/blockaddress_round_trips.ll");
+
+    let text = parse_and_render("blockaddress_round_trips", FIXTURE);
+    assert_check_lines(&text, &["@addr = global ptr blockaddress(@f, %entry)"]);
+    assert_parse_print_parse_stable(&text);
 }
 
-/// Mirrors `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID`:
-/// `dso_local_equivalent @f` is a parser-level constant form.
+/// llvmkit-specific subset of `LLParser::parseValID`'s
+/// `dso_local_equivalent` branch: the accepted global-initializer shape.
 #[test]
 fn dso_local_equivalent_round_trips() {
-    let src = "declare void @f()\n@p = global ptr dso_local_equivalent @f\n";
-    let text = parse_and_render(src);
-    assert!(
-        text.contains("@p = global ptr dso_local_equivalent @f"),
-        "AsmWriter output: {text}"
-    );
-    let reparsed = parse_and_render(&text);
-    assert!(reparsed.contains("@p = global ptr dso_local_equivalent @f"));
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseValID/dso_local_equivalent_round_trips.ll");
+
+    let text = parse_and_render("dso_local_equivalent_round_trips", FIXTURE);
+    assert_check_lines(&text, &["@p = global ptr dso_local_equivalent @f"]);
+    assert_parse_print_parse_stable(&text);
 }
 
-/// Mirrors `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID`: `no_cfi`
-/// wraps a global function reference as a constant.
+/// llvmkit-specific subset of `LLParser::parseValID`'s `no_cfi` branch: the
+/// accepted global-initializer shape.
 #[test]
 fn no_cfi_round_trips() {
-    let src = "declare void @f()\n@p = global ptr no_cfi @f\n";
-    let text = parse_and_render(src);
-    assert!(
-        text.contains("@p = global ptr no_cfi @f"),
-        "AsmWriter output: {text}"
-    );
-    let reparsed = parse_and_render(&text);
-    assert!(reparsed.contains("@p = global ptr no_cfi @f"));
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseValID/no_cfi_round_trips.ll");
+
+    let text = parse_and_render("no_cfi_round_trips", FIXTURE);
+    assert_check_lines(&text, &["@p = global ptr no_cfi @f"]);
+    assert_parse_print_parse_stable(&text);
 }
 
-/// Mirrors `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none`
-/// and `test/Assembler/target-types.ll`: `none` is accepted for token and
-/// target extension constants once storage exists.
+/// Mirrors `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none`:
+/// `none` is accepted for token constants.
 #[test]
-fn token_or_target_none_round_trips() {
+fn token_none_round_trips() {
     let module = Module::new("parser_constants_none");
     let parsed =
         parser::parse_constant_value(b"none", &module, module.token_type().as_type(), None)
@@ -148,35 +171,63 @@ fn token_or_target_none_round_trips() {
     assert_eq!(format!("{}", parsed.as_value()), "token none");
 }
 
-/// Mirrors `test/Assembler/ConstantExprNoFold.ll` and
-/// `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID`: `ptrtoaddr`
-/// is a distinct supported constant expression opcode.
+/// Exact `ptrtoaddr` constant expression from `test/Assembler/ptrtoaddr.ll`.
 #[test]
 fn ptrtoaddr_constant_expr_round_trips() {
-    let src = "@g = global i32 0\n@addr = global i64 ptrtoaddr (ptr @g to i64)\n";
-    let text = parse_and_render(src);
-    assert!(
-        text.contains("@addr = global i64 ptrtoaddr (ptr @g to i64)"),
-        "AsmWriter output: {text}"
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/ptrtoaddr/ptrtoaddr_constant_expr_round_trips.ll");
+
+    let text = parse_and_render("ptrtoaddr_constant_expr_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["@global_cast_as0 = global i64 ptrtoaddr (ptr @i_as0 to i64)"],
     );
-    let reparsed = parse_and_render(&text);
-    assert!(reparsed.contains("@addr = global i64 ptrtoaddr (ptr @g to i64)"));
+    assert_parse_print_parse_stable(&text);
 }
 
-/// Mirrors `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID`: LLVM
-/// 22 rejects legacy folded constant-expression opcodes with opcode-specific
-/// diagnostics.
+/// llvmkit-specific subset of `LLParser::parseValID`'s unsupported legacy
+/// constant-expression diagnostics.
 #[test]
 fn unsupported_constant_expr_opcodes_are_rejected() {
     for (opcode, src) in [
-        ("fadd", "@x = global double fadd (double 1.0, double 2.0)\n"),
-        ("zext", "@x = global i64 zext (i32 1 to i64)\n"),
-        ("mul", "@x = global i32 mul (i32 1, i32 2)\n"),
-        ("select", "@x = global i32 select (i1 true, i32 1, i32 2)\n"),
-        ("icmp", "@x = global i1 icmp (i32 1, i32 2)\n"),
+        (
+            "fadd",
+            include_bytes!(
+                "fixtures/upstream/LLParser-parseValID/unsupported_constant_expr_fadd.ll"
+            )
+            .as_slice(),
+        ),
+        (
+            "zext",
+            include_bytes!(
+                "fixtures/upstream/LLParser-parseValID/unsupported_constant_expr_zext.ll"
+            )
+            .as_slice(),
+        ),
+        (
+            "mul",
+            include_bytes!(
+                "fixtures/upstream/LLParser-parseValID/unsupported_constant_expr_mul.ll"
+            )
+            .as_slice(),
+        ),
+        (
+            "select",
+            include_bytes!(
+                "fixtures/upstream/LLParser-parseValID/unsupported_constant_expr_select.ll"
+            )
+            .as_slice(),
+        ),
+        (
+            "icmp",
+            include_bytes!(
+                "fixtures/upstream/LLParser-parseValID/unsupported_constant_expr_icmp.ll"
+            )
+            .as_slice(),
+        ),
     ] {
         let module = Module::new("parser_constants_unsupported");
-        let err = Parser::new(src.as_bytes(), &module)
+        let err = Parser::new(src, &module)
             .expect("lexer primes")
             .parse_module()
             .expect_err("unsupported constexpr is rejected");
@@ -193,7 +244,8 @@ fn unsupported_constant_expr_opcodes_are_rejected() {
 }
 
 /// Mirrors `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none`
-/// and `Constants.cpp::ConstantTargetNone::get`: `none` is token-only.
+/// and `Constants.cpp::ConstantTargetNone::get`: `none` is token-only in the
+/// shipped parser subset.
 #[test]
 fn none_is_token_only() {
     let module = Module::new("parser_constants_none_token");
@@ -219,8 +271,9 @@ fn none_is_token_only() {
     }
 }
 
-/// Mirrors `test/Assembler/target-types.ll` and `Type.cpp::getTargetTypeInfo`:
-/// target-extension zeroinitializer requires the zero-initializable property.
+/// llvmkit-specific subset of `test/Assembler/target-types.ll` and
+/// `Type.cpp::getTargetTypeInfo`: target-extension zeroinitializer requires the
+/// zero-initializable property.
 #[test]
 fn target_ext_zeroinitializer_requires_zero_init_property() {
     let module = Module::new("parser_constants_target_zero");
@@ -255,75 +308,88 @@ fn target_ext_zeroinitializer_requires_zero_init_property() {
     }
 }
 
-/// Mirrors `Constants.cpp::ConstantPtrAuth::get`: ptrauth carries pointer,
-/// key, discriminator, address discriminator, and deactivation symbol.
+/// llvmkit-specific subset of `LLParser::parseValID`'s `ptrauth` branch: the
+/// five-operand shape accepted by llvmkit.
 #[test]
 fn ptrauth_five_operands_round_trips() {
-    let src = "@g = global i8 0\n@signed = global ptr ptrauth (ptr @g, i32 0, i64 1, ptr inttoptr (i64 1 to ptr), ptr inttoptr (i64 2 to ptr))\n";
-    let text = parse_and_render(src);
-    assert!(
-        text.contains("@signed = global ptr ptrauth (ptr @g, i32 0, i64 1, ptr inttoptr (i64 1 to ptr), ptr inttoptr (i64 2 to ptr))"),
-        "AsmWriter output: {text}"
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseValID/ptrauth_five_operands_round_trips.ll"
     );
-    let reparsed = parse_and_render(&text);
-    assert!(reparsed.contains("@signed = global ptr ptrauth (ptr @g, i32 0, i64 1, ptr inttoptr (i64 1 to ptr), ptr inttoptr (i64 2 to ptr))"));
+
+    let text = parse_and_render("ptrauth_five_operands_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "@signed = global ptr ptrauth (ptr @g, i32 0, i64 1, ptr inttoptr (i64 1 to ptr), ptr inttoptr (i64 2 to ptr))",
+        ],
+    );
+    assert_parse_print_parse_stable(&text);
 }
 
-/// Mirrors `Constants.cpp::ConstantPtrAuth::get`: default ptrauth operands
-/// are omitted only when all trailing operands are defaults.
+/// Exact default ptrauth operand elision from `test/Assembler/ptrauth-const.ll`.
 #[test]
 fn ptrauth_default_operands_are_elided() {
-    let src = "declare void @f()\n@signed = global ptr ptrauth (ptr @f, i32 0)\n";
-    let text = parse_and_render(src);
-    assert!(
-        text.contains("@signed = global ptr ptrauth (ptr @f, i32 0)"),
-        "AsmWriter output: {text}"
-    );
-    assert!(
-        !text.contains("i64 0") && !text.contains("ptr null"),
-        "AsmWriter output: {text}"
-    );
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/ptrauth-const/ptrauth_default_operands_are_elided.ll");
+
+    let text = parse_and_render("ptrauth_default_operands_are_elided", FIXTURE);
+    assert_check_lines(&text, &["@basic = global ptr ptrauth (ptr @var, i32 0)"]);
+    assert_parse_print_parse_stable(&text);
 }
 
-/// Mirrors `test/Assembler/blockaddress.ll`: forward blockaddress references
-/// resolve to the later real function signature, not a placeholder `void ()`.
+/// llvmkit-specific subset of `LLParser::parseValID`'s forward blockaddress
+/// placeholder resolution.
 #[test]
 fn forward_blockaddress_resolves_later_signature() {
-    let src = "@addr = global ptr blockaddress(@f, %entry)\ndefine i32 @f(i32 %x) {\nentry:\n  ret i32 %x\n}\n";
-    let text = parse_and_render(src);
-    assert!(text.contains("@addr = global ptr blockaddress(@f, %entry)"));
-    assert!(
-        !text.contains("declare void @f()"),
-        "AsmWriter output: {text}"
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseValID/forward_blockaddress_resolves_later_signature.ll"
     );
+
+    let text = parse_and_render("forward_blockaddress_resolves_later_signature", FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "@addr = global ptr blockaddress(@f, %entry)",
+            "define i32 @f(i32 %x)",
+        ],
+    );
+    assert_eq!(text.matches("declare void @f()").count(), 0);
+    assert_parse_print_parse_stable(&text);
 }
 
-/// Mirrors `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID`: forward
-/// dso/no_cfi references resolve to the later real declaration.
+/// llvmkit-specific subset of `LLParser::parseValID`'s forward
+/// `dso_local_equivalent` / `no_cfi` placeholder resolution.
 #[test]
 fn forward_dso_and_no_cfi_resolve_later_signature() {
-    let src =
-        "@d = global ptr dso_local_equivalent @f\n@n = global ptr no_cfi @f\ndeclare i32 @f(i32)\n";
-    let text = parse_and_render(src);
-    assert!(text.contains("@d = global ptr dso_local_equivalent @f"));
-    assert!(text.contains("@n = global ptr no_cfi @f"));
-    assert!(
-        text.contains("declare i32 @f(i32"),
-        "AsmWriter output: {text}"
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseValID/forward_dso_and_no_cfi_resolve_later_signature.ll"
     );
-    assert!(
-        !text.contains("declare void @f()"),
-        "AsmWriter output: {text}"
+
+    let text = parse_and_render("forward_dso_and_no_cfi_resolve_later_signature", FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "@d = global ptr dso_local_equivalent @f",
+            "@n = global ptr no_cfi @f",
+            "declare i32 @f(i32 %0)",
+        ],
     );
+    assert_eq!(text.matches("declare void @f()").count(), 0);
+    assert_parse_print_parse_stable(&text);
 }
 
-/// Mirrors `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_splat`:
-/// splat constants expand to fixed-vector element lists in storage.
+/// Exact `LLParser::parseValID` `kw_splat` accepted shape: a scalar splat
+/// expands to fixed-vector element storage.
 #[test]
 fn constant_splat_vector_round_trips() {
-    let text = parse_and_render("@v = global <4 x i32> splat (i32 7)\n");
-    assert!(
-        text.contains("@v = global <4 x i32> <i32 7, i32 7, i32 7, i32 7>"),
-        "AsmWriter output: {text}"
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseValID/constant_splat_vector_round_trips.ll"
     );
+
+    let text = parse_and_render("constant_splat_vector_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["@v = global <4 x i32> <i32 7, i32 7, i32 7, i32 7>"],
+    );
+    assert_parse_print_parse_stable(&text);
 }

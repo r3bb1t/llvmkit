@@ -1,66 +1,121 @@
 //! Call / invoke / callbr parser tests.
 
 use llvmkit_asmparser::ll_parser::Parser;
+use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_ir::Module;
 
 fn parse_and_render(src: &str) -> String {
-    let module = Module::new("parser_calls");
-    Parser::new(src.as_bytes(), &module)
+    parse_and_render_bytes("parser_calls", src.as_bytes())
+}
+
+fn parse_and_render_bytes(module_name: &str, src: &[u8]) -> String {
+    let module = Module::new(module_name);
+    Parser::new(src, &module)
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
     format!("{module}")
 }
 
-/// Mirrors `test/Assembler/inline-asm.ll`: plain calls may use inline asm
-/// as the callee.
-#[test]
-fn inline_asm_void_call_round_trips() {
-    let text = parse_and_render(
-        "define void @f() {\nentry:\n  call void asm sideeffect \"\", \"\"()\n  ret void\n}\n",
-    );
-    assert!(
-        text.contains("call void asm sideeffect \"\", \"\"()"),
-        "AsmWriter output: {text}"
-    );
-    let reparsed = parse_and_render(&text);
-    assert!(reparsed.contains("call void asm sideeffect \"\", \"\"()"));
+fn parse_fixture_err(module_name: &str, src: &[u8]) -> ParseError {
+    let module = Module::new(module_name);
+    Parser::new(src, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect_err("parser rejects malformed input")
 }
 
-/// Mirrors `test/Assembler/inline-asm.ll`: inline-asm modifiers preserve
-/// canonical keyword order.
+fn assert_check_lines(text: &str, check_lines: &[&str]) {
+    let mut offset = 0;
+    for expected in check_lines {
+        let tail = &text[offset..];
+        let found = tail.find(expected).unwrap_or_else(|| {
+            panic!("missing upstream CHECK line `{expected}` after byte {offset}; got:\n{text}")
+        });
+        offset += found + expected.len();
+    }
+}
+
+/// Inline-asm `sideeffect alignstack` spelling from `test/Assembler/alignstack.ll`.
 #[test]
-fn inline_asm_intel_alignstack_unwind_round_trips() {
-    let text = parse_and_render(
-        "define void @f() {\nentry:\n  call void asm sideeffect alignstack inteldialect unwind \"nop\", \"\"()\n  ret void\n}\n",
+fn inline_asm_sideeffect_alignstack_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/alignstack/inline_asm_sideeffect_alignstack_round_trips.ll"
     );
-    assert!(
-        text.contains("call void asm sideeffect alignstack inteldialect unwind \"nop\", \"\"()"),
-        "AsmWriter output: {text}"
+
+    let text = parse_and_render_bytes("inline_asm_sideeffect_alignstack_round_trips", FIXTURE);
+    assert_check_lines(&text, &["@test2", "sideeffect alignstack", "ret void"]);
+}
+
+/// llvmkit-specific subset of `test/Bindings/llvm-c/echo.ll` inline-asm
+/// `inteldialect` / `unwind` spelling, using named values and ordinary calls.
+#[test]
+fn inline_asm_inteldialect_unwind_round_trips() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/echo/inline_asm_inteldialect_unwind_round_trips.ll");
+
+    let text = parse_and_render_bytes("inline_asm_inteldialect_unwind_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "%intel = call i32 asm inteldialect unwind \"mov $0, $1\", \"=r,r,~{dirflag},~{fpsr},~{flags}\"(i32 %x)",
+            "%att = call i32 asm alignstack unwind \"mov $1, $0\", \"=r,r,~{dirflag},~{fpsr},~{flags}\"(i32 %intel)",
+        ],
     );
 }
 
-/// Mirrors `test/Assembler/invoke.ll` with inline asm as callee.
+/// llvmkit-specific subset of `test/Assembler/inline-asm-constraint-error.ll`:
+/// non-callbr inline asm may not carry label constraints.
 #[test]
-fn inline_asm_invoke_round_trips() {
-    let text = parse_and_render(
-        "define void @f() {\nentry:\n  invoke void asm sideeffect \"\", \"\"() to label %ok unwind label %bad\nok:\n  ret void\nbad:\n  unreachable\n}\n",
+fn inline_asm_call_label_constraint_subset() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/inline-asm-constraint-error/inline_asm_call_label_constraint_subset.ll"
     );
-    assert!(
-        text.contains("invoke void asm sideeffect \"\", \"\"() to label %ok unwind label %bad"),
-        "AsmWriter output: {text}"
-    );
+
+    let err = parse_fixture_err("inline_asm_call_label_constraint_subset", FIXTURE);
+    match err {
+        ParseError::Expected { expected, .. } => {
+            assert_eq!(expected, "inline asm call without label constraints")
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
 }
 
-/// Mirrors `test/Assembler/callbr.ll` with inline asm as callee.
+/// llvmkit-specific subset of `test/Assembler/inline-asm-constraint-error.ll`:
+/// callbr inline asm must provide one label constraint per indirect label.
 #[test]
-fn inline_asm_callbr_round_trips() {
-    let text = parse_and_render(
-        "define void @f() {\nentry:\n  callbr void asm sideeffect \"jmp ${0:l}\", \"!i\"() to label %fallthrough [label %target]\nfallthrough:\n  ret void\ntarget:\n  ret void\n}\n",
+fn inline_asm_callbr_label_constraints_subset() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/inline-asm-constraint-error/inline_asm_callbr_label_constraints_subset.ll"
     );
-    assert!(
-        text.contains("callbr void asm sideeffect \"jmp ${0:l}\", \"!i\"() to label %fallthrough [label %target]"),
-        "AsmWriter output: {text}"
+
+    let err = parse_fixture_err("inline_asm_callbr_label_constraints_subset", FIXTURE);
+    match err {
+        ParseError::Expected { expected, .. } => assert_eq!(
+            expected,
+            "inline asm callbr label constraint count matches indirect labels"
+        ),
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// llvmkit-specific callbr successor subset of `test/Assembler/callbr.ll`.
+#[test]
+fn callbr_successor_structure_round_trips() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/callbr/callbr_successor_structure_round_trips.ll");
+
+    let text = parse_and_render_bytes("callbr_successor_structure_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "callbr void @callee(i1 %c)",
+            "to label %cont [label %kill]",
+            "cont:",
+            "ret void",
+            "kill:",
+            "unreachable",
+        ],
     );
 }
 
@@ -77,36 +132,25 @@ entry:\n\
   ret i32 %r\n\
 }\n",
     );
-    assert!(
-        text.contains("%r = tail call fastcc zeroext i32 @callee(i32 zeroext %x) #0"),
-        "AsmWriter output: {text}"
+    assert_check_lines(
+        &text,
+        &["%r = tail call fastcc zeroext i32 @callee(i32 zeroext %x) #0"],
     );
 }
 
-/// Mirrors `test/Bitcode/operand-bundles.ll`: call/invoke operand-bundle
-/// lists are parsed into CallBase storage and printed after call-site attrs.
+/// llvmkit-specific subset of `test/Bitcode/operand-bundles.ll`: call/invoke
+/// operand-bundle lists are parsed into CallBase storage and printed after call-site attrs.
 #[test]
 fn operand_bundles_round_trip() {
-    let text = parse_and_render(
-        "declare void @callee0()\n\
-define void @f(i32 %x) {\n\
-entry:\n\
-  call void @callee0() [ \"foo\"(i32 42, i32 %x), \"bar\"() ]\n\
-  invoke void @callee0() [ \"foo\"(i32 %x) ] to label %ok unwind label %bad\n\
-ok:\n\
-  ret void\n\
-bad:\n\
-  unreachable\n\
-}\n",
-    );
-    assert!(
-        text.contains("call void @callee0() [\"foo\"(i32 42, i32 %x), \"bar\"()]"),
-        "AsmWriter output: {text}"
-    );
-    assert!(
-        text.contains(
-            "invoke void @callee0() [\"foo\"(i32 %x)]\n          to label %ok unwind label %bad"
-        ),
-        "AsmWriter output: {text}"
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/operand-bundles/operand_bundles_round_trip.ll");
+
+    let text = parse_and_render_bytes("operand_bundles_round_trip", FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "call void @callee0() [\"foo\"(i32 42, i32 %x), \"bar\"()]",
+            "invoke void @callee0() [\"foo\"(i32 %x)]\n          to label %ok unwind label %bad",
+        ],
     );
 }

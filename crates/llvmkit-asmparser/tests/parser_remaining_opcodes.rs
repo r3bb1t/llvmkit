@@ -6,269 +6,251 @@
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::Module;
 
-fn parse_snippet(src: &str) -> (Module<'_>, String) {
+fn parse_fixture(src: &[u8]) -> String {
     let module = Module::new("test");
-    let _ = Parser::new(src.as_bytes(), &module)
+    let _ = Parser::new(src, &module)
         .expect("parse constructor")
         .parse_module()
         .expect("parse succeeded");
-    let text = format!("{module}");
-    (module, text)
+    format!("{module}")
+}
+
+fn assert_check_lines(text: &str, check_lines: &[&str]) {
+    let mut offset = 0;
+    for expected in check_lines {
+        let tail = &text[offset..];
+        let found = tail.find(expected).unwrap_or_else(|| {
+            panic!("missing upstream CHECK line `{expected}` after byte {offset}; got:\n{text}")
+        });
+        offset += found + expected.len();
+    }
 }
 
 // ── Cast ops ─────────────────────────────────────────────────────────────────
 
-/// `bitcast i32 %x to float` — same-bit-width reinterpret cast.
-/// Mirrors `test/Assembler/bitcast.ll`.
+/// `bitcast` parser coverage from `test/Assembler/2006-12-09-Cast-To-Bool.ll`.
 #[test]
 fn bitcast_round_trips() {
-    let (_, text) = parse_snippet(
-        r#"define float @f(i32 %x) {
-%r = bitcast i32 %x to float
-ret float %r
-}
-"#,
-    );
-    assert!(text.contains("bitcast"), "got: {text}");
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/2006-12-09-Cast-To-Bool/bitcast_round_trips.ll");
+
+    let text = parse_fixture(FIXTURE);
+    assert_check_lines(&text, &["bitcast"]);
 }
 
-/// `fptrunc double %x to float` — narrowing FP cast.
-/// Mirrors `test/Assembler/fptrunc.ll`.
+/// `fptrunc double %src to float` from `test/Bitcode/conversionInstructions.3.2.ll`.
 #[test]
 fn fptrunc_round_trips() {
-    let (_, text) = parse_snippet(
-        r#"define float @f(double %x) {
-%r = fptrunc double %x to float
-ret float %r
-}
-"#,
-    );
-    assert!(text.contains("fptrunc"), "got: {text}");
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/conversionInstructions.3.2/fptrunc_round_trips.ll");
+
+    let text = parse_fixture(FIXTURE);
+    assert_check_lines(&text, &["%res1 = fptrunc double %src to float"]);
 }
 
-/// `fpext float %x to double` — widening FP cast.
-/// Mirrors `test/Assembler/fpext.ll`.
+/// `fpext float %src to double` from `test/Bitcode/conversionInstructions.3.2.ll`.
 #[test]
 fn fpext_round_trips() {
-    let (_, text) = parse_snippet(
-        r#"define double @f(float %x) {
-%r = fpext float %x to double
-ret double %r
-}
-"#,
-    );
-    assert!(text.contains("fpext"), "got: {text}");
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/conversionInstructions.3.2/fpext_round_trips.ll");
+
+    let text = parse_fixture(FIXTURE);
+    assert_check_lines(&text, &["%res1 = fpext float %src to double"]);
 }
 
 // ── Vector ops ────────────────────────────────────────────────────────────────
 
-/// `extractelement <4 x i32> %v, i32 0` — extract one lane.
-/// Mirrors `test/Assembler/extractelement.ll`.
+/// `extractelement` parser coverage from `test/Bitcode/vectorInstructions.3.2.ll`.
 #[test]
 fn extractelement_round_trips() {
-    let (_, text) = parse_snippet(
-        r#"define i32 @f(<4 x i32> %v) {
-%r = extractelement <4 x i32> %v, i32 0
-ret i32 %r
-}
-"#,
-    );
-    assert!(text.contains("extractelement"), "got: {text}");
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/vectorInstructions.3.2/extractelement_round_trips.ll");
+
+    let text = parse_fixture(FIXTURE);
+    assert_check_lines(&text, &["%res1 = extractelement <2 x i8> %x1, i32 0"]);
 }
 
-/// `insertelement <4 x i32> %v, i32 %x, i32 0` — write one lane.
-/// Mirrors `test/Assembler/insertelement.ll`.
+/// `insertelement` parser coverage from `test/Bitcode/vectorInstructions.3.2.ll`.
 #[test]
 fn insertelement_round_trips() {
-    let (_, text) = parse_snippet(
-        r#"define <4 x i32> @f(<4 x i32> %v, i32 %x) {
-%r = insertelement <4 x i32> %v, i32 %x, i32 0
-ret <4 x i32> %r
-}
-"#,
-    );
-    assert!(text.contains("insertelement"), "got: {text}");
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/vectorInstructions.3.2/insertelement_round_trips.ll");
+
+    let text = parse_fixture(FIXTURE);
+    assert_check_lines(&text, &["%res1 = insertelement <2 x i8> %x1, i8 0, i32 0"]);
 }
 
-/// `shufflevector` with an explicit 4-element mask.
-/// Mirrors `test/Assembler/shufflevector.ll`.
+/// `shufflevector` parser coverage from `test/Bitcode/vectorInstructions.3.2.ll`.
 #[test]
 fn shufflevector_round_trips() {
-    let (_, text) = parse_snippet(
-        r#"define <4 x i32> @f(<4 x i32> %a, <4 x i32> %b) {
-%r = shufflevector <4 x i32> %a, <4 x i32> %b, <i32 0, i32 1, i32 4, i32 5>
-ret <4 x i32> %r
-}
-"#,
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/vectorInstructions.3.2/shufflevector_round_trips.ll");
+
+    let text = parse_fixture(FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "%res1 = shufflevector <2 x i8> %x1, <2 x i8> %x1, <2 x i32> <i32 0, i32 1>",
+            "%res2 = shufflevector <2 x i8> %x1, <2 x i8> undef, <2 x i32> <i32 0, i32 1>",
+        ],
     );
-    assert!(text.contains("shufflevector"), "got: {text}");
 }
 
 // ── Aggregate ops ─────────────────────────────────────────────────────────────
 
-/// `extractvalue { i32, i64 } %s, 0` — read a struct field.
-/// Mirrors `test/Assembler/extractvalue.ll`.
+/// llvmkit-specific opaque-pointer subset of `test/Assembler/insertextractvalue.ll`.
 #[test]
 fn extractvalue_round_trips() {
-    let (_, text) = parse_snippet(
-        r#"define i32 @f({ i32, i64 } %s) {
-%r = extractvalue { i32, i64 } %s, 0
-ret i32 %r
-}
-"#,
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/insertextractvalue/extractvalue_round_trips.ll");
+
+    let text = parse_fixture(FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "@foo",
+            "load",
+            "extractvalue",
+            "insertvalue",
+            "store",
+            "ret",
+        ],
     );
-    assert!(text.contains("extractvalue"), "got: {text}");
 }
 
-/// `insertvalue { i32, i64 } %s, i32 %x, 0` — write a struct field.
-/// Mirrors `test/Assembler/insertvalue.ll`.
+/// llvmkit-specific opaque-pointer subset of `test/Assembler/insertextractvalue.ll`.
 #[test]
 fn insertvalue_round_trips() {
-    let (_, text) = parse_snippet(
-        r#"define { i32, i64 } @f({ i32, i64 } %s, i32 %x) {
-%r = insertvalue { i32, i64 } %s, i32 %x, 0
-ret { i32, i64 } %r
-}
-"#,
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/insertextractvalue/insertvalue_round_trips.ll");
+
+    let text = parse_fixture(FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "@foo",
+            "load",
+            "extractvalue",
+            "insertvalue",
+            "store",
+            "ret",
+        ],
     );
-    assert!(text.contains("insertvalue"), "got: {text}");
 }
 
 // ── SSA/control-flow ──────────────────────────────────────────────────────────
 
-/// `phi i32` in a simple counted loop. Tests forward-reference resolution.
-/// Mirrors `test/Assembler/phi.ll`.
+/// Zero-input `phi i32` from `test/Assembler/zero-input-phi.ll`.
 #[test]
 fn phi_int_round_trips() {
-    let (_, text) = parse_snippet(
-        r#"define i32 @f(i32 %n) {
-entry:
-  br label %loop
-loop:
-  %i = phi i32 [ 0, %entry ], [ %next, %loop ]
-  %next = add i32 %i, 1
-  %done = icmp eq i32 %next, %n
-  br i1 %done, label %exit, label %loop
-exit:
-  ret i32 %i
-}
-"#,
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/zero-input-phi/phi_int_round_trips.ll");
+
+    let text = parse_fixture(FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "define void @dead_phi()",
+            "entry:",
+            "ret void",
+            "return:",
+            "%r = phi i32",
+            "ret void",
+        ],
     );
-    assert!(text.contains("phi i32"), "got: {text}");
 }
 
-/// `call i32 @add(i32 %x, i32 %y)` — direct function call.
-/// Mirrors `test/Assembler/call.ll`.
+/// llvmkit-specific direct-call subset of `test/Bitcode/miscInstructions.3.2.ll`.
 #[test]
 fn call_function_round_trips() {
-    let (_, text) = parse_snippet(
-        r#"declare i32 @add(i32, i32)
-define i32 @f(i32 %x, i32 %y) {
-%r = call i32 @add(i32 %x, i32 %y)
-ret i32 %r
-}
-"#,
-    );
-    assert!(text.contains("call"), "got: {text}");
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/miscInstructions.3.2/call_function_round_trips.ll");
+
+    let text = parse_fixture(FIXTURE);
+    assert_check_lines(&text, &["%res1 = call i32 @test(i32 %x)"]);
 }
 
-/// `freeze i32 %x` — freeze an undef/poison value.
-/// Mirrors `test/Assembler/freeze.ll`.
+/// llvmkit-specific named-result subset of `test/Bitcode/compatibility.ll`.
 #[test]
 fn freeze_round_trips() {
-    let (_, text) = parse_snippet(
-        r#"define i32 @f(i32 %x) {
-%r = freeze i32 %x
-ret i32 %r
-}
-"#,
-    );
-    assert!(text.contains("freeze"), "got: {text}");
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/compatibility/freeze_round_trips.ll");
+
+    let text = parse_fixture(FIXTURE);
+    assert_check_lines(&text, &["freeze i32 %op1"]);
 }
 
 // ── Terminators ───────────────────────────────────────────────────────────────
 
-/// `switch i32 %x, label %default [ i32 0, label %c0  i32 1, label %c1 ]`.
-/// Mirrors `test/Assembler/switch.ll`.
+/// Minimal empty switch from `test/Assembler/2003-05-15-SwitchBug.ll`.
 #[test]
 fn switch_round_trips() {
-    let (_, text) = parse_snippet(
-        r#"define i32 @f(i32 %x) {
-entry:
-  switch i32 %x, label %default [
-    i32 0, label %c0
-    i32 1, label %c1
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/2003-05-15-SwitchBug/switch_round_trips.ll");
+    const EXPECTED: &str = "\
+; ModuleID = 'test'
+define void @test(i32 %X) {
+0:
+  switch i32 %X, label %dest [
   ]
-default:
-  ret i32 2
-c0:
-  ret i32 0
-c1:
-  ret i32 1
+
+dest:
+  ret void
 }
-"#,
-    );
-    assert!(text.contains("switch"), "got: {text}");
+";
+
+    let text = parse_fixture(FIXTURE);
+    assert_eq!(text, EXPECTED);
 }
 
-/// `indirectbr ptr %addr, [label %d1, label %d2]` — indirect branch.
-/// Mirrors `test/Assembler/indirectbr.ll`.
+/// llvmkit-specific opaque-pointer subset of `test/Bitcode/terminatorInstructions.3.2.ll`.
 #[test]
 fn indirectbr_round_trips() {
-    let (_, text) = parse_snippet(
-        r#"define void @f(ptr %addr) {
-entry:
-  indirectbr ptr %addr, [label %d1, label %d2]
-d1:
-  ret void
-d2:
-  ret void
-}
-"#,
-    );
-    assert!(text.contains("indirectbr"), "got: {text}");
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/terminatorInstructions.3.2/indirectbr_round_trips.ll");
+
+    let text = parse_fixture(FIXTURE);
+    assert_check_lines(&text, &["indirectbr ptr %Addr, [label %bb1, label %bb2]"]);
 }
 
 // ── Atomic ops ────────────────────────────────────────────────────────────────
 
-/// `fence acquire` — memory ordering barrier.
-/// Mirrors `test/Assembler/fence.ll`.
+/// `fence` syncscope/order cases from `test/Assembler/atomic.ll`.
 #[test]
 fn fence_round_trips() {
-    let (_, text) = parse_snippet(
-        r#"define void @f() {
-  fence acquire
-  ret void
-}
-"#,
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/atomic/fence_round_trips.ll");
+
+    let text = parse_fixture(FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "fence syncscope(\"singlethread\") release",
+            "fence seq_cst",
+            "fence syncscope(\"device\") seq_cst",
+        ],
     );
-    assert!(text.contains("fence"), "got: {text}");
 }
 
-/// `cmpxchg ptr %p, i32 %cmp, i32 %new seq_cst seq_cst` — atomic CAS.
-/// Mirrors `test/Assembler/cmpxchg.ll`.
+/// `cmpxchg` opaque-pointer case from `test/Assembler/opaque-ptr.ll`.
 #[test]
 fn cmpxchg_round_trips() {
-    let (_, text) = parse_snippet(
-        r#"define void @f(ptr %p, i32 %cmp, i32 %new) {
-  %r = cmpxchg ptr %p, i32 %cmp, i32 %new seq_cst seq_cst
-  ret void
-}
-"#,
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/opaque-ptr/cmpxchg_round_trips.ll");
+
+    let text = parse_fixture(FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "define void @cmpxchg(ptr %p, i32 %a, i32 %b)",
+            "%val_success = cmpxchg ptr %p, i32 %a, i32 %b acq_rel monotonic",
+            "ret void",
+        ],
     );
-    assert!(text.contains("cmpxchg"), "got: {text}");
 }
 
-/// `atomicrmw add ptr %p, i32 %v seq_cst` — atomic read-modify-write.
-/// Mirrors `test/Assembler/atomicrmw.ll`.
+/// Forward-reference `atomicrmw` case from `test/Assembler/atomicrmw.ll`.
 #[test]
 fn atomicrmw_round_trips() {
-    let (_, text) = parse_snippet(
-        r#"define void @f(ptr %p, i32 %v) {
-  %r = atomicrmw add ptr %p, i32 %v seq_cst
-  ret void
-}
-"#,
-    );
-    assert!(text.contains("atomicrmw"), "got: {text}");
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/atomicrmw/atomicrmw_round_trips.ll");
+
+    let text = parse_fixture(FIXTURE);
+    assert_check_lines(&text, &["@f", "atomicrmw"]);
 }

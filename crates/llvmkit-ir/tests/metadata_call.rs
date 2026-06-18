@@ -11,11 +11,40 @@ use llvmkit_ir::{
     AttrIndex, AttrKind, Attribute, IRBuilder, IrError, Linkage, MetadataRef, Module,
 };
 
+fn assert_line(text: &str, expected: &str) {
+    for line in text.lines() {
+        if line == expected {
+            return;
+        }
+    }
+    panic!("missing line `{expected}` in:\n{text}");
+}
+
+fn assert_line_with_fragments(text: &str, fragments: &[&str]) {
+    'lines: for line in text.lines() {
+        for fragment in fragments {
+            if line.find(fragment).is_none() {
+                continue 'lines;
+            }
+        }
+        return;
+    }
+    panic!("missing line with fragments {fragments:?} in:\n{text}");
+}
+
+fn assert_no_line_with_fragment(text: &str, fragment: &str) {
+    for line in text.lines() {
+        assert!(
+            line.find(fragment).is_none(),
+            "unexpected line containing `{fragment}` in:\n{text}"
+        );
+    }
+}
+
 /// Build the read/write named-register intrinsics, emit calls whose
-/// argument is a `metadata` node, and assert the printed module carries
-/// the `metadata !N` operands plus the `!{` node defining the register
-/// string. Mirrors `AsmWriter.cpp::writeAsOperandInternal(Value*)` for
-/// `MetadataAsValue` call operands.
+/// argument is the same `metadata` node, and assert the printed node body is
+/// exactly `!{!"rsp"}`. Mirrors `AsmWriter.cpp::writeAsOperandInternal(Value*)`
+/// for `MetadataAsValue` call operands.
 #[test]
 fn call_with_metadata_argument() -> Result<(), IrError> {
     let m = Module::new("named_registers");
@@ -51,16 +80,38 @@ fn call_with_metadata_argument() -> Result<(), IrError> {
     b.build_ret(rsp_val)?;
 
     let text = format!("{m}");
-    assert!(
-        text.contains("@llvm.read_register.i64(metadata !"),
-        "output:\n{text}"
+    let mut read_line = None;
+    let mut write_line = None;
+    for line in text.lines() {
+        if line
+            .find("call i64 @llvm.read_register.i64(metadata ")
+            .is_some()
+        {
+            read_line = Some(line);
+        }
+        if line
+            .find("call void @llvm.write_register.i64(metadata ")
+            .is_some()
+        {
+            write_line = Some(line);
+        }
+    }
+    let read_line = read_line.unwrap_or_else(|| panic!("missing read-register call:\n{text}"));
+    let write_line = write_line.unwrap_or_else(|| panic!("missing write-register call:\n{text}"));
+    let read_md = read_line
+        .split_once("@llvm.read_register.i64(metadata ")
+        .and_then(|(_, tail)| tail.strip_suffix(')'))
+        .unwrap_or_else(|| panic!("missing read metadata operand:\n{text}"));
+    let write_md = write_line
+        .split_once("@llvm.write_register.i64(metadata ")
+        .and_then(|(_, tail)| tail.split_once(", i64 ").map(|(md, _)| md))
+        .unwrap_or_else(|| panic!("missing write metadata operand:\n{text}"));
+    assert_eq!(
+        read_md, write_md,
+        "calls must share one metadata node:\n{text}"
     );
-    assert!(
-        text.contains("@llvm.write_register.i64(metadata !"),
-        "output:\n{text}"
-    );
-    // The rsp string is defined inline in a `!{ ... }` tuple node.
-    assert!(text.contains(r#"!{!"rsp"}"#), "output:\n{text}");
+    let expected_node = format!("{read_md} = !{{!\"rsp\"}}");
+    assert_line(&text, &expected_node);
     Ok(())
 }
 
@@ -92,9 +143,15 @@ fn post_construction_function_attributes() -> Result<(), IrError> {
     b.build_ret_void();
 
     let text = format!("{m}");
-    assert!(text.contains("noredzone"), "output:\n{text}");
-    assert!(text.contains("naked"), "output:\n{text}");
-    assert!(text.contains(r#""frame-pointer"="all""#), "output:\n{text}");
+    assert_line_with_fragments(
+        &text,
+        &[
+            "define void @trampoline()",
+            "noredzone",
+            "naked",
+            r#""frame-pointer"="all""#,
+        ],
+    );
     Ok(())
 }
 
@@ -132,14 +189,8 @@ fn metadata_string_as_value_prints_inline() -> Result<(), IrError> {
     b.build_ret_void();
 
     let text = format!("{m}");
-    assert!(
-        text.contains(r#"call void @g(metadata !"rsp")"#),
-        "output:\n{text}"
-    );
-    assert!(
-        !text.contains(r#" = !"rsp""#),
-        "MDString must not be top-level numbered:\n{text}"
-    );
+    assert_line(&text, r#"  call void @g(metadata !"rsp")"#);
+    assert_no_line_with_fragment(&text, r#" = !"rsp""#);
     Ok(())
 }
 
@@ -156,6 +207,6 @@ fn string_referenced_by_named_metadata_is_not_dangling() {
     m.named_metadata_add_operand(idx, MetadataRef(tuple));
 
     let text = format!("{m}");
-    assert!(text.contains(r#"!0 = !{!"x"}"#), "output:\n{text}");
-    assert!(text.contains("!my.named = !{!0}"), "output:\n{text}");
+    assert_line(&text, r#"!0 = !{!"x"}"#);
+    assert_line(&text, "!my.named = !{!0}");
 }

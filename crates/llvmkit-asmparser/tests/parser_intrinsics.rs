@@ -33,7 +33,7 @@ fn known_intrinsic_auto_declares_direct_callee() {
         "AsmWriter output: {text}"
     );
     let reparsed = parse_and_render(&text);
-    assert!(reparsed.contains("@llvm.lifetime.start.p0"));
+    assert!(reparsed.contains("declare void @llvm.lifetime.start.p0(i64 %0, ptr %1)"));
 }
 
 /// Mirrors `llvm/lib/IR/Verifier.cpp` intrinsic validation: unknown `llvm.*`

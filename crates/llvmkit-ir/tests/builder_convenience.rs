@@ -31,7 +31,7 @@ fn build_vector_splat_expands_to_insertelement_plus_shuffle() -> Result<(), IrEr
         "splatinsert missing; got:\n{text}"
     );
     assert!(
-        text.contains("%v.splat = shufflevector"),
+        text.contains("%v.splat = shufflevector <5 x i8> %v.splatinsert, <5 x i8> poison, <5 x i32> zeroinitializer\n"),
         "splat shufflevector missing; got:\n{text}"
     );
     Ok(())

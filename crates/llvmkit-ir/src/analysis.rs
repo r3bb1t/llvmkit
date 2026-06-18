@@ -132,7 +132,8 @@ impl PreservedAnalysisChecker<'_> {
 
     /// Whether an abstract analysis set is preserved.
     pub fn preserved_set<S: 'static>(self) -> bool {
-        self.pa.all || self.pa.preserved_sets.contains(&TypeId::of::<S>())
+        !self.pa.abandoned.contains(&self.analysis)
+            && (self.pa.all || self.pa.preserved_sets.contains(&TypeId::of::<S>()))
     }
 }
 

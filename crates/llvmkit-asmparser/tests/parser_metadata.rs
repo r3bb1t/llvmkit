@@ -537,8 +537,13 @@ define void @f() {
 !0 = !{}
 "#;
     let m = Module::new("t");
-    let res = Parser::new(src.as_bytes(), &m)
+    let err = Parser::new(src.as_bytes(), &m)
         .expect("ctor")
-        .parse_module();
-    assert!(res.is_err(), "i64 !0 must be rejected, got: {res:?}");
+        .parse_module()
+        .expect_err("i64 !0 must be rejected");
+    assert!(
+        err.to_string()
+            .contains("expected `metadata` type for a metadata operand"),
+        "unexpected error: {err}"
+    );
 }

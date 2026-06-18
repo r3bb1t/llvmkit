@@ -6,16 +6,20 @@ upstream tree has no equivalent (a typestate compile-fail that LLVM checks
 at runtime, or an AsmWriter byte-for-byte parity check), the row is
 marked `llvmkit-specific` with the closest functional reference.
 
+Audit rule: a `mirror` row means the Rust test is a 1:1 translation of the cited upstream LLVM test's logic. For upstream `.ll` tests, keep a checked-in fixture copied from the upstream file or exact relevant excerpt and load it with `include_bytes!` / `include_str!`; do not rewrite the IR by hand unless the row says `llvmkit-specific subset`. For upstream gtests, translate the same setup and assertions; do not replace them with opcode-presence, broad substring, `is_ok`, or `is_err` smoke checks.
+
 Categories:
 - `port` --- direct port of an upstream `TEST(...)` / `TEST_F(...)`.
 - `mirror` --- lifts an upstream `.ll` fixture or rule shape.
 - `example` --- locks output of an `examples/*.rs` binary.
-- `llvmkit-specific` --- llvmkit-only test (typestate compile-fail, format-stability,
-  Rust-API ergonomics) with the closest upstream functional reference cited.
+- `llvmkit-specific` / `llvmkit-specific subset` --- llvmkit-only or intentionally
+  narrower test (typestate compile-fail, format-stability, Rust-API ergonomics,
+  missing upstream API surface, or exact llvmkit diagnostics) with the closest
+  upstream functional reference cited.
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 733.
+Total `#[test]` functions: 734.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -327,7 +331,7 @@ Total `#[test]` functions: 733.
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_value_struct_field0` | `test/Bitcode/compatibility.ll` line 1558 | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_value_array_index_zero` | `test/Bitcode/compatibility.ll` line 1562 | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_element_vector_i8_index` | `test/Bitcode/compatibility.ll` line 1535 | mirror |
-| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_element_vector_float_at_i8` | `test/Bitcode/compatibility.ll` line 1537 | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_element_vector_float_at_i8` | `test/Bitcode/compatibility.ll` lines 1537-1538 | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_zeroinitializer_mask` | `test/Bitcode/compatibility.ll` line 1539 | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_explicit_mask_print` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, ShuffleMaskQueries)` | mirror |
 | `crates/llvmkit-ir/tests/builder_atomic.rs::fence_system_scope_orderings` | `test/Bitcode/compatibility.ll` lines 893-898 | mirror |
@@ -342,8 +346,8 @@ Total `#[test]` functions: 733.
 | `crates/llvmkit-ir/tests/builder_var_arity_terminators.rs::indirectbr_single_destination` | `test/Bitcode/compatibility.ll` line 1320 | mirror |
 | `crates/llvmkit-ir/tests/builder_var_arity_terminators.rs::indirectbr_multiple_destinations` | `test/Bitcode/compatibility.ll` line 1322 | mirror |
 | `crates/llvmkit-ir/tests/builder_eh_calls.rs::invoke_void_to_unwind` | `test/Bitcode/compatibility.ll` line 1325 | mirror |
-| `crates/llvmkit-ir/tests/builder_eh_calls.rs::callbr_void_with_one_indirect_dest` | `test/Assembler/callbr.ll` lines 8-9 | mirror |
-| `crates/llvmkit-ir/tests/builder_eh_calls.rs::callbr_two_indirect_dests_print_form` | `test/Assembler/inline-asm-constraint-error.ll` | mirror |
+| `crates/llvmkit-ir/tests/builder_eh_calls.rs::callbr_void_with_one_indirect_dest` | `test/Assembler/callbr.ll` lines 8-13 | mirror |
+| `crates/llvmkit-ir/tests/builder_eh_calls.rs::callbr_two_indirect_dests_print_form` | `test/Assembler/inline-asm-constraint-error.ll` line 65 | mirror |
 | `crates/llvmkit-ir/tests/builder_eh_data.rs::landingpad_cleanup_only` | `test/Bitcode/compatibility.ll` line 789 | mirror |
 | `crates/llvmkit-ir/tests/builder_eh_data.rs::landingpad_cleanup_plus_catch` | `test/Bitcode/compatibility.ll` lines 1782-1786 | mirror |
 | `crates/llvmkit-ir/tests/builder_eh_data.rs::resume_i32_undef` | `test/Bitcode/compatibility.ll` line 1332 | mirror |
@@ -374,9 +378,10 @@ Total `#[test]` functions: 733.
 | `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::build_pointer_cast_same_addrspace_emits_bitcast` | `IRBuilder.h::IRBuilder::CreatePointerBitCastOrAddrSpaceCast` + live use in `unittests/Frontend/OpenMPIRBuilderTest.cpp` line 6473 | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::build_is_null_emits_icmp_eq_null` | `IRBuilder.h::IRBuilder::CreateIsNull` (no dedicated `TEST_F`; sibling `CreateIsNotNull` used in `unittests/Frontend/OpenMPIRBuilderTest.cpp` line 1153) | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_positioning_and_unary.rs::build_is_not_null_emits_icmp_ne_null` | `unittests/Frontend/OpenMPIRBuilderTest.cpp` line 1153 (`Builder.CreateIsNotNull(F->arg_begin())`) | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_propagates_from_builder_to_fadd` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` (line 557) | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::clear_fast_math_flags_drops_flags_from_subsequent_ops` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` (line 622-628) | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_propagates_to_fcmp_oeq` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` (lines 643-658, AllowReciprocal arm) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_propagates_from_builder_to_fadd` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` lines 596-620 | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::clear_fast_math_flags_drops_flags_from_subsequent_ops` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` lines 622-628 | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_allow_reciprocal_propagates_to_fdiv` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` lines 630-640 | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_propagates_to_fcmp_oeq` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` lines 642-658 | mirror |
 | `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_oeq_emits_oeq` | `test/Bitcode/compatibility.ll` line 1677 | mirror |
 | `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_ogt_emits_ogt` | `test/Bitcode/compatibility.ll` line 1679 | mirror |
 | `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::build_fcmp_oge_emits_oge` | `test/Bitcode/compatibility.ll` line 1681 | mirror |
@@ -393,7 +398,7 @@ Total `#[test]` functions: 733.
 | `crates/llvmkit-ir/tests/builder_atomic_load_store.rs::verifier_rejects_atomic_load_struct_operand` | `test/Verifier/atomics.ll` lines 1-15 (`atomic load/store operand must have integer, pointer, floating point, or vector type!`) | mirror |
 | `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_save_and_restore_round_trip` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, RAIIHelpersTest)` lines 833-844 (FastMathFlagGuard arm) | mirror |
 | `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fneg_emits_default_then_fmf_form` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, UnaryOperators)` lines 535-555 (`CreateUnOp(FNeg)` + `CreateFNegFMF`) | mirror |
-| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_accumulates_contract_approx_reassoc_on_fmul` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` lines 663-697 (AllowContract / ApproxFunc / AllowReassoc arm) | mirror |
+| `crates/llvmkit-ir/tests/builder_fmf_and_phi.rs::fmf_accumulates_contract_approx_reassoc_on_fmul` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)` lines 662-697 (AllowContract / ApproxFunc / AllowReassoc arm) | mirror |
 | `crates/llvmkit-ir/tests/builder_vector_binop_dyn.rs::vector_binops_emit_elementwise_ir` | `lib/IR/Verifier.cpp::Verifier::visitBinaryOperator` vector operand type rule | mirror |
 | `crates/llvmkit-ir/tests/builder_vector_binop_dyn.rs::scalar_binop_dyn_still_works` | `lib/IR/Verifier.cpp::Verifier::visitBinaryOperator` scalar operand type rule | mirror |
 | `crates/llvmkit-ir/tests/globals_basic.rs::simple_global_i32_zero` | `test/Bitcode/compatibility.ll` line 88-89 | mirror |
@@ -452,35 +457,36 @@ Total `#[test]` functions: 733.
 | `crates/llvmkit-ir/tests/inline_asm.rs::indirect_call_rejects_wrong_return_marker` | `include/llvm/IR/IRBuilder.h::CreateCall(FunctionType*, Value*, ...)` | mirror |
 | `crates/llvmkit-ir/tests/inline_asm.rs::inline_asm_call_rejects_label_constraint` | `lib/IR/Verifier.cpp::Verifier::verifyInlineAsmCall` label constraint check | mirror |
 | `crates/llvmkit-ir/tests/inline_asm.rs::inline_asm_intel_dialect_keyword` | `lib/IR/AsmWriter.cpp::writeAsOperandInternal(Value*)` inline-asm dialect keyword arm; `include/llvm/IR/InlineAsm.h` | mirror |
-| `crates/llvmkit-ir/tests/metadata_call.rs::call_with_metadata_argument` | `lib/IR/AsmWriter.cpp::writeAsOperandInternal(Value*)`; `MetadataAsValue::get`; `test/CodeGen/X86/read-register.ll` | mirror |
+| `crates/llvmkit-ir/tests/metadata_call.rs::call_with_metadata_argument` | `lib/IR/AsmWriter.cpp::writeAsOperandInternal(Value*)` `MetadataAsValue` operand arm; `MetadataAsValue::get` | mirror |
 | `crates/llvmkit-ir/tests/metadata_call.rs::post_construction_function_attributes` | `lib/IR/Function.cpp::Function::addAttribute`; `include/llvm/IR/Attributes.h` | mirror |
 | `crates/llvmkit-ir/tests/metadata_call.rs::metadata_as_value_is_uniqued` | `MetadataAsValue::get` uniquing behavior | port |
 | `crates/llvmkit-ir/tests/metadata_call.rs::metadata_string_as_value_prints_inline` | `lib/IR/AsmWriter.cpp::writeAsOperandInternal(Metadata*)` MDString arm; `lib/IR/AsmWriter.cpp::writeAllMDNodes` | mirror |
 | `crates/llvmkit-ir/tests/metadata_call.rs::string_referenced_by_named_metadata_is_not_dangling` | `lib/IR/AsmWriter.cpp::writeAllMDNodes`; `lib/IR/AsmWriter.cpp::writeAsOperandInternal(Metadata*)` | mirror |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::layout_string_format_accepts_well_formed` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, LayoutStringFormat)` | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::layout_string_format_rejects_empty_specs` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, LayoutStringFormat)` (rejection arm) | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::invalid_specifier_rejected` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, InvalidSpecifier)` | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_endianness_round_trip` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseEndianness)` | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_endianness_rejects_extra_chars` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseEndianness)` (rejection arm) | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_mangling_modes` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseMangling)` | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_mangling_rejects_malformed` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseMangling)` (malformed arm) | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_mangling_rejects_unknown_mode` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseMangling)` (unknown-mode arm) | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_stack_natural_align_accepts` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseStackNaturalAlign)` | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_stack_natural_align_rejects_empty` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseStackNaturalAlign)` (empty arm) | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_stack_natural_align_rejects_bad_int` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseStackNaturalAlign)` (bad-int arm) | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_stack_natural_align_rejects_zero` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseStackNaturalAlign)` (zero arm) | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_stack_natural_align_rejects_non_power_of_two_byte_multiple` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseStackNaturalAlign)` (non-pow2 arm) | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_addr_space_specifiers` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseAddrSpace)` | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_addr_space_rejects_missing_value` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseAddrSpace)` (missing-value arm) | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_addr_space_rejects_bad_value` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseAddrSpace)` (bad-value arm) | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_func_ptr_spec` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseFuncPtrSpec)` | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_native_integers_spec_accepts` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseNativeIntegersSpec)` | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_native_integers_spec_rejects_empty_components` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseNativeIntegersSpec)` (empty arm) | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_native_integers_spec_rejects_zero_or_huge` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseNativeIntegersSpec)` (zero/huge arm) | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_non_integral_addr_space_accepts` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, ParseNonIntegralAddrSpace)` | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_non_integral_addr_space_rejects_zero` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, ParseNonIntegralAddrSpace)` (zero arm) | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_non_integral_addr_space_rejects_empty_components` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, ParseNonIntegralAddrSpace)` (empty arm) | port |
-| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_non_integral_addr_space_rejects_bad_int` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, ParseNonIntegralAddrSpace)` (bad-int arm) | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::layout_string_format_accepts_well_formed` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, LayoutStringFormat)` (accepted strings) | mirror |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::layout_string_format_rejects_empty_specs` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, LayoutStringFormat)` (rejection arm; exact llvmkit diagnostics) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::invalid_specifier_rejected` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, InvalidSpecifier)` (exact llvmkit diagnostics) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_endianness_round_trip` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseEndianness)` (accepted strings) | mirror |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_endianness_rejects_extra_chars` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseEndianness)` (rejection arm; exact llvmkit diagnostics) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_mangling_modes` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseMangling)` (accepted strings) | mirror |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_mangling_rejects_malformed` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseMangling)` (malformed arm; exact llvmkit diagnostics) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_mangling_rejects_unknown_mode` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseMangling)` (unknown-mode arm; exact llvmkit diagnostics) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_stack_natural_align_accepts` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseStackNaturalAlign)` (accepted strings) | mirror |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_stack_natural_align_rejects_empty` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseStackNaturalAlign)` (empty arm; exact llvmkit diagnostics) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_stack_natural_align_rejects_bad_int` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseStackNaturalAlign)` (bad-int arm; exact llvmkit diagnostics) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_stack_natural_align_rejects_zero` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseStackNaturalAlign)` (zero arm; exact llvmkit diagnostics) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_stack_natural_align_rejects_non_power_of_two_byte_multiple` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseStackNaturalAlign)` (non-pow2 arm; exact llvmkit diagnostics) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_addr_space_specifiers` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseAddrSpace)` (accepted strings) | mirror |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_addr_space_rejects_missing_value` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseAddrSpace)` (missing-value arm; exact llvmkit diagnostics) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_addr_space_rejects_bad_value` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseAddrSpace)` (bad-value arm; exact llvmkit diagnostics) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_func_ptr_spec` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseFuncPtrSpec)` (all accepted/rejected strings; exact llvmkit diagnostics) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_native_integers_spec_accepts` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseNativeIntegersSpec)` (accepted strings) | mirror |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_native_integers_spec_rejects_empty_components` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseNativeIntegersSpec)` (empty arm; exact llvmkit diagnostics) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_native_integers_spec_rejects_zero_or_huge` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, ParseNativeIntegersSpec)` (zero/huge arm; exact llvmkit diagnostics) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_non_integral_addr_space_accepts` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, ParseNonIntegralAddrSpace)` (accepted strings) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_non_integral_addr_space_rejects_malformed` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, ParseNonIntegralAddrSpace)` (malformed arm; exact llvmkit diagnostics) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_non_integral_addr_space_rejects_zero` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, ParseNonIntegralAddrSpace)` (zero arm; exact llvmkit diagnostics) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_non_integral_addr_space_rejects_empty_components` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, ParseNonIntegralAddrSpace)` (empty arm; exact llvmkit diagnostics) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::parse_non_integral_addr_space_rejects_bad_int` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, ParseNonIntegralAddrSpace)` (bad-int arm; exact llvmkit diagnostics) | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/data_layout_round_trip.rs::get_stack_alignment_default_unset` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, GetStackAlignment)` (default arm) | port |
 | `crates/llvmkit-ir/tests/data_layout_round_trip.rs::get_stack_alignment_table` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, GetStackAlignment)` (table arm) | port |
 | `crates/llvmkit-ir/tests/data_layout_round_trip.rs::get_pointer_size_in_bits_table` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, GetPointerSizeInBits)` | port |
@@ -530,16 +536,17 @@ Total `#[test]` functions: 733.
 | `crates/llvmkit-ir/tests/verifier_basic.rs::verify_phi_incoming_edge_dominance_passes` | `llvm/lib/IR/Verifier.cpp::verifyDominatesUse`; `llvm/lib/IR/Dominators.cpp` PHI incoming-edge semantics | mirror |
 | `crates/llvmkit-ir/tests/verifier_basic.rs::verify_phi_incoming_edge_dominance_fails` | `llvm/lib/IR/Verifier.cpp::verifyDominatesUse`; `llvm/lib/IR/Dominators.cpp` PHI incoming-edge semantics | mirror |
 | `crates/llvmkit-ir/tests/verifier_basic.rs::verify_invoke_result_used_on_unwind_edge_fails` | `llvm/lib/IR/Verifier.cpp::verifyDominatesUse`; `llvm/lib/IR/Dominators.cpp` invoke normal-edge semantics | mirror |
-| `crates/llvmkit-ir/tests/analysis_basic.rs::preserved_analyses_checker_behavior` | `unittests/IR/PassManagerTest.cpp::TEST(PreservedAnalysesTest, Basic)` plus `Preserve`/`PreserveSets`/`Abandon` | port |
-| `crates/llvmkit-ir/tests/analysis_basic.rs::function_analysis_runs_once_caches_and_invalidates` | `unittests/IR/PassManagerTest.cpp` local `TestFunctionAnalysis` cache/invalidation behavior | port |
-| `crates/llvmkit-ir/tests/analysis_basic.rs::module_analysis_runs_once_caches_and_invalidates` | `unittests/IR/PassManagerTest.cpp` local `TestModuleAnalysis` cache/invalidation behavior | port |
+| `crates/llvmkit-ir/tests/analysis_basic.rs::preserved_analyses_checker_behavior` | `unittests/IR/PassManagerTest.cpp::TEST(PreservedAnalysesTest, Basic/Preserve/PreserveSets/Intersect/Abandon)` (raw `AnalysisKey` checker omitted; no llvmkit API) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/analysis_basic.rs::function_analysis_runs_once_caches_and_invalidates` | `unittests/IR/PassManagerTest.cpp` local `TestFunctionAnalysis` cache/invalidation behavior | mirror |
+| `crates/llvmkit-ir/tests/analysis_basic.rs::module_analysis_runs_once_caches_and_invalidates` | `unittests/IR/PassManagerTest.cpp` local `TestModuleAnalysis` cache/invalidation behavior | mirror |
 | `crates/llvmkit-ir/tests/analysis_basic.rs::dominator_tree_analysis_caches_and_cfg_preserves` | `llvm/lib/IR/Dominators.cpp::DominatorTreeAnalysis::run` and `DominatorTree::invalidate` | port |
-| `crates/llvmkit-ir/tests/pass_manager_basic.rs::module_pass_manager_runs_in_order` | `unittests/IR/PassManagerTest.cpp::TEST_F(PassManagerTest, Basic)` | port |
-| `crates/llvmkit-ir/tests/pass_manager_basic.rs::module_to_function_adaptor_runs_defined_functions_only` | `unittests/IR/PassManagerTest.cpp` module-to-function adaptor behavior | port |
-| `crates/llvmkit-ir/tests/pass_manager_basic.rs::function_pass_can_query_dominator_tree_analysis` | `unittests/IR/PassManagerTest.cpp` function pass analysis query/preservation behavior | port |
-| `crates/llvmkit-ir/tests/pass_instrumentation_basic.rs::instrumentation_orders_and_skips_optional_passes` | `unittests/IR/PassBuilderCallbacksTest.cpp` before/after pass callback and optional skip behavior | port |
-| `crates/llvmkit-ir/tests/pass_instrumentation_basic.rs::required_passes_cannot_be_skipped` | `unittests/IR/PassBuilderCallbacksTest.cpp` required-pass skip behavior | port |
-| `crates/llvmkit-ir/tests/pass_instrumentation_basic.rs::analysis_callbacks_fire_only_on_computation` | `unittests/IR/PassBuilderCallbacksTest.cpp` before/after analysis callback behavior | port |
+| `crates/llvmkit-ir/tests/pass_manager_basic.rs::module_pass_manager_runs_in_order` | `unittests/IR/PassManagerTest.cpp::TEST_F(PassManagerTest, Basic)` (insertion/intersection subset; proxy invalidation and `RequireAnalysisPass` counters omitted) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/pass_manager_basic.rs::module_pass_manager_counts_supported_cache_and_invalidation` | `unittests/IR/PassManagerTest.cpp::TEST_F(PassManagerTest, Basic)` (supported function-pass counters/cache/one-function invalidation; proxy invalidation and `RequireAnalysisPass` omitted) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/pass_manager_basic.rs::module_to_function_adaptor_runs_defined_functions_only` | `unittests/IR/PassManagerTest.cpp` module-to-function adaptor definition-walk subset; loop/CGSCC/proxy surfaces omitted | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/pass_manager_basic.rs::function_pass_can_query_dominator_tree_analysis` | `unittests/IR/PassManagerTest.cpp` function-pass analysis query subset; module/function analysis proxy cache surface omitted | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/pass_instrumentation_basic.rs::instrumentation_orders_and_skips_optional_passes` | `unittests/IR/PassBuilderCallbacksTest.cpp` optional-pass skip subset; skipped/non-skipped callback APIs omitted | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/pass_instrumentation_basic.rs::required_passes_cannot_be_skipped` | `unittests/IR/PassBuilderCallbacksTest.cpp` required-pass skip override subset; non-skipped callback API omitted | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/pass_instrumentation_basic.rs::analysis_callbacks_fire_only_on_computation` | `unittests/IR/PassBuilderCallbacksTest.cpp` before/after analysis computation callbacks | mirror |
 | `crates/llvmkit-asmparser/src/file_loc.rs::tests::file_loc_orderings` | `llvm/include/llvm/AsmParser/FileLoc.h::FileLoc::operator<` / `operator<=` / `operator==` | mirror |
 | `crates/llvmkit-asmparser/src/file_loc.rs::tests::range_contains_loc_is_half_open` | `llvm/include/llvm/AsmParser/FileLoc.h::FileLocRange::contains(FileLoc)` | mirror |
 | `crates/llvmkit-asmparser/src/file_loc.rs::tests::range_contains_range` | `llvm/include/llvm/AsmParser/FileLoc.h::FileLocRange::contains(FileLocRange)` | mirror |
@@ -615,30 +622,30 @@ Total `#[test]` functions: 733.
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::exact_udiv_round_trips` | `test/Assembler/flags.ll`; `LLParser::parseArithmetic` `exact` arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::fmf_fadd_round_trips` | `test/Assembler/fast-math-flags.ll`; `LLParser::parseArithmetic` FMF arms | mirror |
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::fmf_fneg_round_trips` | `test/Assembler/fast-math-flags.ll`; `LLParser::parseUnaryOp` FMF arms | mirror |
-| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::alloca_align_round_trips` | `test/Assembler/align-inst-alloca.ll`; `LLParser::parseAlloc` align arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::load_align_round_trips` | `test/Assembler/align-inst.ll`; `LLParser::parseLoad` align arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::gep_inbounds_nuw_round_trips` | `test/Assembler/getelementptr.ll`; `LLParser::parseGetElementPtr` inbounds/nuw arms | mirror |
+| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::alloca_align_round_trips` | `test/Assembler/align-inst.ll` constructive alloca alignment excerpt; `LLParser::parseAlloc` align arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::load_align_round_trips` | `test/Assembler/align-inst.ll` constructive load alignment excerpt; `LLParser::parseLoad` align arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::gep_inbounds_nuw_round_trips` | `test/Assembler/flags.ll` `@gep_inbounds_nuw`; `LLParser::parseGetElementPtr` inbounds/nuw arms | mirror |
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::samesign_icmp_round_trips` | `test/Assembler/flags.ll`; `LLParser::parseCompare` `samesign` arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::disjoint_or_round_trips` | `test/Assembler/disjoint-or.ll`; `LLParser::parseArithmetic` `disjoint` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::disjoint_or_round_trips` | `test/Assembler/flags.ll` `@test_or`; `LLParser::parseArithmetic` `disjoint` arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::landingpad_round_trips` | `test/Assembler/landingpad.ll`; `LLParser::parseLandingPad` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::resume_round_trips` | `test/Assembler/resume.ll`; `LLParser::parseResume` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::invoke_round_trips` | `test/Assembler/invoke.ll`; `LLParser::parseInvoke` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_eh_funclet.rs::cleanuppad_cleanupret_round_trips` | `test/Assembler/cleanuppad.ll`; `LLParser::parseCleanupPad` / `parseCleanupRet` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::bitcast_round_trips` | `test/Assembler/bitcast.ll`; `LLParser::parseCast` `Instruction::BitCast` arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::fptrunc_round_trips` | `test/Assembler/fptrunc.ll`; `LLParser::parseCast` `Instruction::FPTrunc` arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::fpext_round_trips` | `test/Assembler/fpext.ll`; `LLParser::parseCast` `Instruction::FPExt` arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::extractelement_round_trips` | `test/Assembler/extractelement.ll`; `LLParser::parseExtractElement` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::insertelement_round_trips` | `test/Assembler/insertelement.ll`; `LLParser::parseInsertElement` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::shufflevector_round_trips` | `test/Assembler/shufflevector.ll`; `LLParser::parseShuffleVector` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::extractvalue_round_trips` | `test/Assembler/extractvalue.ll`; `LLParser::parseExtractValue` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::insertvalue_round_trips` | `test/Assembler/insertvalue.ll`; `LLParser::parseInsertValue` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::phi_int_round_trips` | `test/Assembler/phi.ll`; `LLParser::parsePHI` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::call_function_round_trips` | `test/Assembler/call.ll`; `LLParser::parseCall` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::freeze_round_trips` | `test/Assembler/freeze.ll`; `LLParser::parseFreeze` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::switch_round_trips` | `test/Assembler/switch.ll`; `LLParser::parseSwitch` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::indirectbr_round_trips` | `test/Assembler/indirectbr.ll`; `LLParser::parseIndirectBr` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::fence_round_trips` | `test/Assembler/fence.ll`; `LLParser::parseFence` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::cmpxchg_round_trips` | `test/Assembler/cmpxchg.ll`; `LLParser::parseCmpXchg` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::bitcast_round_trips` | `test/Assembler/2006-12-09-Cast-To-Bool.ll`; `LLParser::parseCast` `Instruction::BitCast` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::fptrunc_round_trips` | `test/Bitcode/conversionInstructions.3.2.ll`; `LLParser::parseCast` `Instruction::FPTrunc` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::fpext_round_trips` | `test/Bitcode/conversionInstructions.3.2.ll`; `LLParser::parseCast` `Instruction::FPExt` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::extractelement_round_trips` | `test/Bitcode/vectorInstructions.3.2.ll`; `LLParser::parseExtractElement` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::insertelement_round_trips` | `test/Bitcode/vectorInstructions.3.2.ll`; `LLParser::parseInsertElement` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::shufflevector_round_trips` | `test/Bitcode/vectorInstructions.3.2.ll`; `LLParser::parseShuffleVector` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::extractvalue_round_trips` | `test/Assembler/insertextractvalue.ll` opaque-pointer excerpt; `LLParser::parseExtractValue` | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::insertvalue_round_trips` | `test/Assembler/insertextractvalue.ll` opaque-pointer excerpt; `LLParser::parseInsertValue` | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::phi_int_round_trips` | `test/Assembler/zero-input-phi.ll`; `LLParser::parsePHI` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::call_function_round_trips` | `test/Bitcode/miscInstructions.3.2.ll` direct-call excerpt; `LLParser::parseCall` | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::freeze_round_trips` | `test/Bitcode/compatibility.ll` named-result excerpt; `LLParser::parseFreeze` | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::switch_round_trips` | `test/Assembler/2003-05-15-SwitchBug.ll`; `LLParser::parseSwitch` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::indirectbr_round_trips` | `test/Bitcode/terminatorInstructions.3.2.ll` opaque-pointer excerpt; `LLParser::parseIndirectBr` | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::fence_round_trips` | `test/Assembler/atomic.ll`; `LLParser::parseFence` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::cmpxchg_round_trips` | `test/Assembler/opaque-ptr.ll`; `LLParser::parseCmpXchg` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::atomicrmw_round_trips` | `test/Assembler/atomicrmw.ll`; `LLParser::parseAtomicRMW` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_string_is_rejected` | `lib/AsmParser/LLParser.cpp::LLParser::parseStandaloneMetadata`; `LLParser::parseMDString` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_metadata.rs::standalone_metadata_tuple_with_inline_string` | `test/Assembler/metadata.ll`; `lib/AsmParser/LLParser.cpp::LLParser::parseStandaloneMetadata` | mirror |
@@ -697,16 +704,16 @@ Total `#[test]` functions: 733.
 | `crates/llvmkit-asmparser/tests/parser_forward_refs.rs::numbered_declare_records_slot_mapping` | `unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, SlotMappingTest)` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::array_constant_initializer_round_trips` | `test/Assembler/aggregate-constant-values.ll` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::struct_constant_initializer_round_trips` | `test/Assembler/aggregate-constant-values.ll` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::getelementptr_constant_expr_initializer_round_trips` | `test/Assembler/getelementptr.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` getelementptr constant-expression arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::getelementptr_constant_expr_initializer_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_getelementptr` global-initializer shape | llvmkit-specific subset |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_casts_round_trip` | `test/Assembler/ConstantExprNoFold.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` cast constant-expression arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_binary_round_trip` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` integer binary constant-expression arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_gep_round_trip` | `test/Assembler/getelementptr.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` general getelementptr constant-expression arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::blockaddress_round_trips` | `test/Assembler/blockaddress.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `blockaddress` arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::dso_local_equivalent_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `dso_local_equivalent` arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::no_cfi_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `no_cfi` arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::token_or_target_none_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none` arm; `test/Assembler/target-types.ll` | mirror |
-| `crates/llvmkit-ir/tests/constants_expr.rs::constant_expr_bitcast_round_trips` | `test/Assembler/ConstantExprNoFold.ll`; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` | mirror |
-| `crates/llvmkit-ir/tests/constants_expr.rs::blockaddress_constant_round_trips` | `test/Assembler/blockaddress.ll`; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_binary_round_trip` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_add` integer binary constant-expression arm | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_gep_round_trip` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` general `kw_getelementptr` constant-expression shape | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::blockaddress_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `blockaddress` accepted shape | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::dso_local_equivalent_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `dso_local_equivalent` global-initializer shape | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::no_cfi_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `no_cfi` global-initializer shape | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::token_none_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none` token branch | mirror |
+| `crates/llvmkit-ir/tests/constants_expr.rs::constant_expr_bitcast_round_trips` | `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` `bitcast` constant-expression arm | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constants_expr.rs::blockaddress_constant_round_trips` | `test/Assembler/pr119818.ll`; `test/Assembler/uselistorder_bb.ll`; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constants_expr.rs::token_none_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none` arm; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_corpus.rs::parser_corpus_round_trips_checked_in_fixtures` | `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile`; fixture-level provenance in `crates/llvmkit-asmparser/tests/fixtures/parser_corpus_manifest.txt` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_linkage_definition_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` linkage prefix | mirror |
@@ -717,31 +724,32 @@ Total `#[test]` functions: 733.
 | `crates/llvmkit-asmparser/tests/parser_use_list.rs::module_uselistorder_round_trips_global_callee` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseUseListOrder`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printUseListOrder` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_use_list.rs::function_uselistorder_round_trips_local_value` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseUseListOrder(PerFunctionState*)`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printUseListOrder` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_use_list.rs::ordered_uselistorder_indexes_are_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseUseListOrderIndexes` identity-order rejection | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::ptrtoaddr_constant_expr_round_trips` | `test/Assembler/ConstantExprNoFold.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_ptrtoaddr` arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::unsupported_constant_expr_opcodes_are_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` unsupported constexpr diagnostics | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::none_is_token_only` | `Constants.cpp::ConstantTargetNone::get`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none` arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::target_ext_zeroinitializer_requires_zero_init_property` | `test/Assembler/target-types.ll`; `llvm/lib/IR/Type.cpp::getTargetTypeInfo` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::ptrauth_five_operands_round_trips` | `Constants.cpp::ConstantPtrAuth::get`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_ptrauth` arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::ptrauth_default_operands_are_elided` | `Constants.cpp::ConstantPtrAuth::get`; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` ptrauth arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::forward_blockaddress_resolves_later_signature` | `test/Assembler/blockaddress.ll`; `Constants.cpp::BlockAddress::get` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::forward_dso_and_no_cfi_resolve_later_signature` | `Constants.cpp::DSOLocalEquivalent::get`; `Constants.cpp::NoCFIValue::get` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_splat_vector_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_splat` arm | mirror |
-| `crates/llvmkit-ir/tests/constants_expr.rs::constant_expr_supported_opcode_set_is_exact` | `test/Assembler/ConstantExprNoFold.ll`; `Verifier.cpp::Verifier::visitConstantExpr` | mirror |
-| `crates/llvmkit-ir/tests/constants_expr.rs::invalid_bitcast_constant_expr_is_rejected` | `Verifier.cpp::Verifier::visitConstantExpr` | mirror |
-| `crates/llvmkit-ir/tests/constants_expr.rs::invalid_gep_constant_expr_indices_are_rejected` | `Verifier.cpp::Verifier::visitConstantExpr` | mirror |
-| `crates/llvmkit-ir/tests/constants_expr.rs::constant_expr_ptrtoaddr_round_trips` | `test/Assembler/ConstantExprNoFold.ll`; `Verifier.cpp::checkPtrToAddr` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::ptrtoaddr_constant_expr_round_trips` | `test/Assembler/ptrtoaddr.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_ptrtoaddr` arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::unsupported_constant_expr_opcodes_are_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` unsupported constexpr diagnostics | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::none_is_token_only` | `Constants.cpp::ConstantTargetNone::get`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none` token branch | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::target_ext_zeroinitializer_requires_zero_init_property` | `test/Assembler/target-types.ll`; `llvm/lib/IR/Type.cpp::getTargetTypeInfo` | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::ptrauth_five_operands_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_ptrauth` five-operand shape | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::ptrauth_default_operands_are_elided` | `test/Assembler/ptrauth-const.ll`; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` ptrauth arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::forward_blockaddress_resolves_later_signature` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` forward `blockaddress` placeholder resolution | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::forward_dso_and_no_cfi_resolve_later_signature` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` forward `dso_local_equivalent` / `no_cfi` placeholder resolution | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_splat_vector_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_splat` accepted shape | mirror |
+| `crates/llvmkit-ir/tests/constants_expr.rs::constant_expr_supported_opcode_set_is_exact` | llvmkit LLVM 22 parser-needed constant-expression storage subset; `Verifier.cpp::Verifier::visitConstantExpr` | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constants_expr.rs::invalid_bitcast_constant_expr_is_rejected` | `Verifier.cpp::Verifier::visitConstantExpr` `Invalid bitcast` branch; exact llvmkit diagnostic differs | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constants_expr.rs::invalid_gep_constant_expr_indices_are_rejected` | `Verifier.cpp::Verifier::visitConstantExpr` / GEP index validation; exact llvmkit diagnostic differs | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constants_expr.rs::constant_expr_ptrtoaddr_round_trips` | `test/Assembler/ptrtoaddr.ll`; `Verifier.cpp::checkPtrToAddr` (addrspace(0) print subset) | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constants_expr.rs::ptrauth_constructor_requires_five_operand_shape` | `Constants.cpp::ConstantPtrAuth::get`; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` ptrauth arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_intrinsics.rs::known_intrinsic_auto_declares_direct_callee` | `llvm/include/llvm/IR/Intrinsics.td::int_lifetime_start`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCall` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_intrinsics.rs::unknown_intrinsic_is_rejected` | `llvm/lib/IR/Verifier.cpp` intrinsic validation | mirror |
 | `crates/llvmkit-asmparser/tests/parser_intrinsics.rs::intrinsic_non_callee_use_is_rejected` | `llvm/lib/IR/Verifier.cpp` intrinsic validation | mirror |
 | `crates/llvmkit-asmparser/tests/parser_intrinsics.rs::intrinsic_signature_mismatch_is_rejected` | `llvm/include/llvm/IR/Intrinsics.td::int_lifetime_start` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_void_call_round_trips` | `test/Assembler/inline-asm.ll` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_intel_alignstack_unwind_round_trips` | `test/Assembler/inline-asm.ll` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_invoke_round_trips` | `test/Assembler/invoke.ll`; `test/Assembler/inline-asm.ll` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_callbr_round_trips` | `test/Assembler/callbr.ll`; `test/Assembler/inline-asm.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_sideeffect_alignstack_round_trips` | `test/Assembler/alignstack.ll` `@test2`; `LLParser::parseCall` inline-asm modifier arms | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_inteldialect_unwind_round_trips` | `test/Bindings/llvm-c/echo.ll` `@call_inline_asm` modifier spelling with named-value/no-tail parser subset; `LLParser::parseCall` inline-asm modifier arms | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_call_label_constraint_subset` | `test/Assembler/inline-asm-constraint-error.ll` label-constraint family; llvmkit currently rejects label constraints on non-callbr inline asm but not LLVM's full constraint-order diagnostics | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_callbr_label_constraints_subset` | `test/Assembler/inline-asm-constraint-error.ll` callbr label-constraint family; llvmkit currently validates label-count mismatch but not full constraint-order diagnostics | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::callbr_successor_structure_round_trips` | `test/Assembler/callbr.ll` successor structure with unsupported `@llvm.amdgcn.kill` replaced by a declared callee | llvmkit-specific subset |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_operand_header_fields_round_trip` | `test/Assembler/function-operand-uselistorder.ll`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printFunction` prefix/prologue/personality arms | mirror |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::call_modifiers_round_trip` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCall`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printInstruction` CallInst arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_calls.rs::operand_bundles_round_trip` | `test/Bitcode/operand-bundles.ll`; `llvm/lib/AsmParser/LLParser.cpp::parseOperandBundles` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::operand_bundles_round_trip` | `test/Bitcode/operand-bundles.ll` call/invoke bundle print-shape subset; `llvm/lib/AsmParser/LLParser.cpp::parseOperandBundles` | llvmkit-specific subset |
 | `crates/llvmkit-asmparser/tests/parser_summary.rs::summary_module_entry_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseModuleEntry` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_summary.rs::summary_function_entry_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseFunctionSummary` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_summary.rs::summary_variable_entry_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseVariableSummary` | mirror |

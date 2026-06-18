@@ -2,7 +2,7 @@
 //!
 //! Every test cites its upstream source per Doctrine D11.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use llvmkit_ir::{
@@ -39,7 +39,9 @@ impl<'ctx> ModulePass<'ctx> for NamedModulePass {
     }
 }
 
-struct RequiredFunctionPass;
+struct RequiredFunctionPass {
+    ran: Rc<Cell<u32>>,
+}
 
 impl<'ctx> FunctionPass<'ctx> for RequiredFunctionPass {
     fn run(
@@ -47,6 +49,7 @@ impl<'ctx> FunctionPass<'ctx> for RequiredFunctionPass {
         _function: llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn>,
         _fam: &mut FunctionAnalysisManager<'ctx>,
     ) -> llvmkit_ir::IrResult<PreservedAnalyses> {
+        self.ran.set(self.ran.get() + 1);
         Ok(PreservedAnalyses::all())
     }
 
@@ -55,9 +58,10 @@ impl<'ctx> FunctionPass<'ctx> for RequiredFunctionPass {
     }
 }
 
-/// Ports `unittests/IR/PassBuilderCallbacksTest.cpp`: before-pass callbacks
-/// run before a pass, after-pass callbacks receive its `PreservedAnalyses`, and
-/// returning `false` from before-pass skips optional passes.
+/// `llvmkit-specific subset`: ports the optional-pass skip direction from
+/// `unittests/IR/PassBuilderCallbacksTest.cpp` `InstrumentedSkippedPasses`.
+/// llvmkit has no separate skipped/non-skipped callbacks, so the retained
+/// assertion is the exact modeled `before` callback and absence of `after`.
 #[test]
 fn instrumentation_orders_and_skips_optional_passes() -> Result<(), IrError> {
     let m = sample_module()?;
@@ -91,16 +95,18 @@ fn instrumentation_orders_and_skips_optional_passes() -> Result<(), IrError> {
     mpm.run(&m, &mut mam, &mut fam)?;
 
     assert!(ran.borrow().is_empty());
-    assert!(events.borrow().iter().any(|e| e.starts_with("before:")));
-    assert!(!events.borrow().iter().any(|e| e.starts_with("after:")));
+    let pass_name = std::any::type_name::<NamedModulePass>();
+    let expected = vec![format!("before:{pass_name}:false")];
+    assert_eq!(&*events.borrow(), &expected);
     Ok(())
 }
 
-/// Ports `unittests/IR/PassBuilderCallbacksTest.cpp`: required passes cannot
-/// be skipped even when a before-pass callback asks to skip them.
+/// `llvmkit-specific subset`: ports LLVM's required-pass skip override.
+/// llvmkit models the required flag on the `before` callback, but not the
+/// separate upstream non-skipped callback.
 #[test]
 fn required_passes_cannot_be_skipped() -> Result<(), IrError> {
-    let m = sample_module()?;
+    let ran = Rc::new(Cell::new(0));
     let events = Rc::new(RefCell::new(Vec::new()));
     let callbacks = PassInstrumentationCallbacks::new();
     {
@@ -114,25 +120,34 @@ fn required_passes_cannot_be_skipped() -> Result<(), IrError> {
     }
     {
         let events = events.clone();
-        callbacks.register_after_pass_callback(move |name, _pa| {
-            events.borrow_mut().push(format!("after:{name}"));
+        callbacks.register_after_pass_callback(move |name, pa| {
+            events.borrow_mut().push(format!(
+                "after:{name}:{}",
+                pa.checker::<RequiredFunctionPass>().preserved()
+            ));
         });
     }
 
+    let m = sample_module()?;
     let mut fpm = FunctionPassManager::new();
+    let pass_name = std::any::type_name::<RequiredFunctionPass>();
     fpm.set_instrumentation(callbacks.clone());
-    fpm.add_pass(RequiredFunctionPass);
+    fpm.add_pass(RequiredFunctionPass { ran: ran.clone() });
     let mut fam = FunctionAnalysisManager::new();
     let f = m.function_by_name("f").expect("sample has f");
     fpm.run(f, &mut fam)?;
 
-    assert!(events.borrow().iter().any(|e| e.contains(":true")));
-    assert!(events.borrow().iter().any(|e| e.starts_with("after:")));
+    assert_eq!(ran.get(), 1);
+    let expected = vec![
+        format!("before:{pass_name}:true"),
+        format!("after:{pass_name}:true"),
+    ];
+    assert_eq!(&*events.borrow(), &expected);
     Ok(())
 }
 
-/// Ports `unittests/IR/PassBuilderCallbacksTest.cpp`: analysis callbacks fire
-/// around a real analysis computation, not around cached lookups.
+/// `llvmkit-specific subset`: ports the upstream before/after analysis
+/// computation callbacks. Cached lookups are asserted not to fire callbacks.
 #[test]
 fn analysis_callbacks_fire_only_on_computation() -> Result<(), IrError> {
     let m = sample_module()?;
@@ -158,20 +173,11 @@ fn analysis_callbacks_fire_only_on_computation() -> Result<(), IrError> {
     let _ = fam.get_result::<DominatorTreeAnalysis>(f)?;
     let _ = fam.get_result::<DominatorTreeAnalysis>(f)?;
 
-    let borrowed = events.borrow();
-    assert_eq!(
-        borrowed
-            .iter()
-            .filter(|e| e.starts_with("before-analysis:"))
-            .count(),
-        1
-    );
-    assert_eq!(
-        borrowed
-            .iter()
-            .filter(|e| e.starts_with("after-analysis:"))
-            .count(),
-        1
-    );
+    let analysis_name = std::any::type_name::<DominatorTreeAnalysis>();
+    let expected = vec![
+        format!("before-analysis:{analysis_name}"),
+        format!("after-analysis:{analysis_name}"),
+    ];
+    assert_eq!(&*events.borrow(), &expected);
     Ok(())
 }

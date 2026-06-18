@@ -173,15 +173,6 @@ fn extract_element_vector_i8_index() -> Result<(), IrError> {
 
 /// Ports `test/Bitcode/compatibility.ll` line 1537:
 /// `insertelement <4 x float> %vec, float 3.500000e+00, i8 0`.
-///
-/// **Note**: the upstream fixture prints the constant as
-/// `3.500000e+00` (the canonical scientific form for exactly-
-/// representable float values). llvmkit's [`ConstantFloatValue`]
-/// printer currently emits the IEEE-754 hex form
-/// `0x400c000000000000` for every float constant; that's a pre-
-/// existing format gap separate from this opcode and is tracked for a
-/// future asm-writer parity pass. We assert the *instruction*
-/// skeleton matches and tolerate the literal-form difference.
 #[test]
 fn insert_element_vector_float_at_i8() -> Result<(), IrError> {
     let m = Module::new("a");
@@ -200,10 +191,9 @@ fn insert_element_vector_float_at_i8() -> Result<(), IrError> {
     b.build_ret_void();
     let text = format!("{m}");
     assert!(
-        text.contains("insertelement <4 x float> %0, float "),
+        text.contains("insertelement <4 x float> %0, float 3.500000e+00, i8 0\n"),
         "got:\n{text}"
     );
-    assert!(text.contains(", i8 0\n"), "got:\n{text}");
     Ok(())
 }
 

@@ -47,8 +47,8 @@ fn alloca_array_size() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `test/Assembler/align-inst-alloca.ll` (canonical
-/// `alloca <ty>, align N` textual form).
+/// llvmkit-specific: positive `alloca <ty>, align N` print-form check.
+/// Upstream `test/Assembler/align-inst-alloca.ll` is a negative alignment fixture.
 #[test]
 fn alloca_aligned() -> Result<(), IrError> {
     let m = Module::new("a");
@@ -61,6 +61,6 @@ fn alloca_aligned() -> Result<(), IrError> {
     let p = b.build_alloca_with_align(i32_ty, Align::new(8)?, "p")?;
     b.build_ret(p)?;
     let text = format!("{m}");
-    assert!(text.contains("%p = alloca i32, align 8"), "got:\n{text}");
+    assert!(text.contains("%p = alloca i32, align 8\n"), "got:\n{text}");
     Ok(())
 }
