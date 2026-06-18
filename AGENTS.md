@@ -493,7 +493,7 @@ The crate ships a substantial test suite (250+ tests across `crates/llvmkit-ir/t
 
 **Do not invent `.ll` strings or test scenarios** unless upstream genuinely lacks coverage for the construct. When that happens, document the gap inline and cite the closest upstream test family (e.g. `IRBuilderTest::CreateStepVectorI3` for arbitrary-width tests).
 
-**Test provenance registry.** Every `#[test]` in the workspace ships with a doc comment citing the upstream LLVM file, fixture, or `TEST(...)` it ports. The complete registry lives at `UPSTREAM.md` (repo root) and is the authoritative answer to "where does this test come from?". After adding a new test, append the row. Doctrine D11 (see `local://RLLVM_TYPE_SAFETY_SWEEP.md`) makes this rule mechanical: a test without a citation is a defect, not a stylistic gap.
+**Test provenance registry.** Every `#[test]` in the workspace ships with a doc comment citing the upstream LLVM file, fixture, or `TEST(...)` it ports. The complete registry lives at `UPSTREAM.md` (repo root) and is the authoritative answer to "where does this test come from?". After adding a new test, append the row. Doctrine D11 (see `local://LLVMKIT_TYPE_SAFETY_SWEEP.md`) makes this rule mechanical: a test without a citation is a defect, not a stylistic gap.
 
 Categories below are the *shape* of testing; their content always sources from the upstream tree above.
 

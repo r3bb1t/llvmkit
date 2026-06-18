@@ -6,7 +6,7 @@
 //! over element shape). Today llvmkit's [`crate::VectorType<'ctx>`]
 //! still erases the element type at the value level; this module
 //! ships the marker hierarchy that the future const-generic
-//! parameterisation will key off (see `RLLVM_TYPE_SAFETY_SWEEP.md`
+//! parameterisation will key off (see `LLVMKIT_TYPE_SAFETY_SWEEP.md`
 //! T4 for the staged plan).
 
 use crate::value::sealed;

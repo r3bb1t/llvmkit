@@ -1,6 +1,6 @@
 # Upstream Test Provenance Registry
 
-Per Doctrine D11 (see `local://RLLVM_TYPE_SAFETY_SWEEP.md`), every llvmkit test
+Per Doctrine D11 (see `local://LLVMKIT_TYPE_SAFETY_SWEEP.md`), every llvmkit test
 cites the upstream LLVM test, fixture, or reference it ports. When the
 upstream tree has no equivalent (a typestate compile-fail that LLVM checks
 at runtime, or an AsmWriter byte-for-byte parity check), the row is
