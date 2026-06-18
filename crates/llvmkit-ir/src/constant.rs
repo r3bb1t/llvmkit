@@ -29,6 +29,7 @@
 //! [`ConstantIntValue`]: crate::constants::ConstantIntValue
 //! [`ConstantFloatValue`]: crate::constants::ConstantFloatValue
 
+use crate::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::module::ModuleRef;
 use crate::r#type::{Type, TypeId};
 use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, sealed};
@@ -37,38 +38,37 @@ use crate::{DebugLoc, IrError, IrResult};
 /// Opcode carried by a parser-needed LLVM `ConstantExpr`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConstantExprOpcode {
+    Add,
+    Sub,
+    Xor,
     GetElementPtr,
-    InBoundsGetElementPtr,
+    ShuffleVector,
+    InsertElement,
+    ExtractElement,
     Trunc,
     PtrToAddr,
     PtrToInt,
     IntToPtr,
     BitCast,
     AddrSpaceCast,
-    ExtractElement,
-    InsertElement,
-    ShuffleVector,
-    Add,
-    Sub,
-    Xor,
 }
 
 impl ConstantExprOpcode {
     pub(crate) fn keyword(self) -> &'static str {
         match self {
-            Self::GetElementPtr | Self::InBoundsGetElementPtr => "getelementptr",
+            Self::Add => "add",
+            Self::Sub => "sub",
+            Self::Xor => "xor",
+            Self::GetElementPtr => "getelementptr",
+            Self::ShuffleVector => "shufflevector",
+            Self::InsertElement => "insertelement",
+            Self::ExtractElement => "extractelement",
             Self::Trunc => "trunc",
             Self::PtrToAddr => "ptrtoaddr",
             Self::PtrToInt => "ptrtoint",
             Self::IntToPtr => "inttoptr",
             Self::BitCast => "bitcast",
             Self::AddrSpaceCast => "addrspacecast",
-            Self::ExtractElement => "extractelement",
-            Self::InsertElement => "insertelement",
-            Self::ShuffleVector => "shufflevector",
-            Self::Add => "add",
-            Self::Sub => "sub",
-            Self::Xor => "xor",
         }
     }
 
@@ -85,12 +85,57 @@ impl ConstantExprOpcode {
     }
 }
 
-/// Optional optimization and predicate flags attached to a constant expression.
+/// No-wrap flags accepted by LLVM 22's `add`/`sub` constant-expression parser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct ConstantExprFlags {
-    pub inbounds: bool,
+pub struct OverflowingConstantExprFlags {
     pub nuw: bool,
     pub nsw: bool,
+}
+
+/// APInt half-open range attached to a constant `getelementptr`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ConstantExprInRange {
+    pub start: Box<[u64]>,
+    pub end: Box<[u64]>,
+    pub bit_width: u32,
+}
+
+/// Flags accepted by LLVM 22's `getelementptr` constant-expression parser.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct ConstantGepFlags {
+    pub no_wrap: GepNoWrapFlags,
+    pub in_range: Option<ConstantExprInRange>,
+}
+
+/// Optional optimization and predicate flags attached to a constant expression.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub enum ConstantExprFlags {
+    #[default]
+    None,
+    Overflowing(OverflowingConstantExprFlags),
+    Gep(ConstantGepFlags),
+}
+
+impl ConstantExprFlags {
+    pub const fn none() -> Self {
+        Self::None
+    }
+    pub const fn overflowing(nuw: bool, nsw: bool) -> Self {
+        if !nuw && !nsw {
+            Self::None
+        } else {
+            Self::Overflowing(OverflowingConstantExprFlags { nuw, nsw })
+        }
+    }
+
+    pub fn gep(no_wrap: GepNoWrapFlags, in_range: Option<ConstantExprInRange>) -> Self {
+        let no_wrap = GepNoWrapFlags::from_bits_canonical(no_wrap.bits());
+        if no_wrap.is_empty() && in_range.is_none() {
+            Self::None
+        } else {
+            Self::Gep(ConstantGepFlags { no_wrap, in_range })
+        }
+    }
 }
 
 /// Lifetime-free payload for a `ConstantExpr`.
@@ -132,6 +177,9 @@ pub(crate) enum ConstantData {
     GlobalValueRef { value: ValueId },
     /// `null` of a pointer or typed-pointer type.
     PointerNull,
+    /// Temporary parser placeholder for a forward `blockaddress`.
+    /// It is replaced before successful module parsing completes.
+    BlockAddressPlaceholder,
     /// Aggregate constant — `ConstantArray`, `ConstantStruct`, or
     /// `ConstantVector`. Element categorisation is determined by the
     /// owning aggregate type.
@@ -192,6 +240,76 @@ pub(crate) enum ConstantData {
     /// `poison` of any first-class type. Distinct from `undef` per
     /// LangRef.
     Poison,
+}
+
+impl ConstantData {
+    pub(crate) fn for_each_operand(&self, mut f: impl FnMut(ValueId)) {
+        match self {
+            Self::Expr(data) => {
+                for operand in data.operands.iter().copied() {
+                    f(operand);
+                }
+            }
+            Self::Aggregate(elements) => {
+                for element in elements.iter().copied() {
+                    f(element);
+                }
+            }
+            Self::PtrAuth {
+                pointer,
+                key,
+                discriminator,
+                addr_discriminator,
+                deactivation_symbol,
+            } => {
+                f(*pointer);
+                f(*key);
+                f(*discriminator);
+                f(*addr_discriminator);
+                f(*deactivation_symbol);
+            }
+            Self::Int(_)
+            | Self::Float(_)
+            | Self::GlobalValueRef { .. }
+            | Self::PointerNull
+            | Self::BlockAddressPlaceholder
+            | Self::GepOffset { .. }
+            | Self::SymbolDelta { .. }
+            | Self::SymbolDeltaPlus { .. }
+            | Self::BlockAddress { .. }
+            | Self::DSOLocalEquivalent { .. }
+            | Self::NoCfi { .. }
+            | Self::TokenNone
+            | Self::TargetExtNone
+            | Self::Undef
+            | Self::Poison => {}
+        }
+    }
+}
+
+/// Linear parser placeholder for a forward `blockaddress`.
+///
+/// The erased [`Constant`] view may be embedded in parsed constants and
+/// instructions, but only this parser-only handle can resolve the placeholder.
+pub struct BlockAddressPlaceholder<'ctx> {
+    constant: Constant<'ctx>,
+}
+
+impl<'ctx> BlockAddressPlaceholder<'ctx> {
+    #[inline]
+    pub(crate) fn from_constant(constant: Constant<'ctx>) -> Self {
+        Self { constant }
+    }
+
+    #[inline]
+    pub fn as_constant(&self) -> Constant<'ctx> {
+        self.constant
+    }
+
+    #[doc(hidden)]
+    pub fn replace_all_uses_with<C: IsConstant<'ctx>>(self, replacement: C) -> IrResult<()> {
+        crate::constants::replace_constant_uses_with(self.constant, replacement.as_constant())
+    }
 }
 
 // --------------------------------------------------------------------------

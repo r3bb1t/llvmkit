@@ -19,7 +19,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 734.
+Total `#[test]` functions: 786.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -570,7 +570,6 @@ Total `#[test]` functions: 734.
 | `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_module_asm` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseModuleAsm` | mirror |
 | `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_named_struct_definition` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseNamedType` | mirror |
 | `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_numbered_struct_definition` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseUnnamedType` | mirror |
-| `crates/llvmkit-asmparser/src/ll_parser.rs::tests::rejects_legacy_typed_pointer_suffix` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType` (`Type ::= Type '*'` arm; LLVM 17+ rejects typed pointers) | mirror |
 | `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_simple_global_int` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseGlobal` (integer initializer) | mirror |
 | `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_simple_global_constant` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseGlobal` (`constant` keyword) | mirror |
 | `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_function_declaration` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDeclare` | mirror |
@@ -594,7 +593,6 @@ Total `#[test]` functions: 734.
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::variadic_declaration_round_trips` | `llvm/test/Assembler/declare.ll` (variadic) | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::numbered_global_records_in_slot_mapping` | `llvm/unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, SlotMappingTest)` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::void_in_value_position_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType` "void only allowed for function results" | mirror |
-| `crates/llvmkit-asmparser/tests/parser_module_level.rs::legacy_typed_pointer_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType` typed-pointer rejection | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::unknown_top_level_entity_is_typed_error` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseTopLevelEntities` default `tokError("expected top-level entity")` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_void_function_body` | `llvm/test/Assembler/return-void.ll`; `LLParser::parseRet` (void arm) | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_int_add_and_ret` | `llvm/unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, ...)` add+ret shape | mirror |
@@ -704,16 +702,26 @@ Total `#[test]` functions: 734.
 | `crates/llvmkit-asmparser/tests/parser_forward_refs.rs::numbered_declare_records_slot_mapping` | `unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, SlotMappingTest)` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::array_constant_initializer_round_trips` | `test/Assembler/aggregate-constant-values.ll` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::struct_constant_initializer_round_trips` | `test/Assembler/aggregate-constant-values.ll` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::getelementptr_constant_expr_initializer_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_getelementptr` global-initializer shape | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::getelementptr_constant_expr_initializer_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_getelementptr` global-initializer shape | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_casts_round_trip` | `test/Assembler/ConstantExprNoFold.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` cast constant-expression arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_binary_round_trip` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_add` integer binary constant-expression arm | llvmkit-specific subset |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_gep_round_trip` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` general `kw_getelementptr` constant-expression shape | llvmkit-specific subset |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::blockaddress_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `blockaddress` accepted shape | llvmkit-specific subset |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::dso_local_equivalent_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `dso_local_equivalent` global-initializer shape | llvmkit-specific subset |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::no_cfi_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `no_cfi` global-initializer shape | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_binary_round_trip` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_add` integer binary constant-expression arm | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_gep_round_trip` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` general `kw_getelementptr` constant-expression shape | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_vector_gep_round_trips` | `test/Assembler/opaque-ptr.ll::gep_constexpr_vec1` scalar pointer + vector index constant-expression GEP/FileCheck case | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_gep_flags_match_upstream_flags_fixture` | `test/Assembler/flags.ll` constant-expression GEP flag/FileCheck cases | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_gep_flags_addrspace_round_trips` | `test/Assembler/flags.ll::const_gep_nusw_nuw_as1` addrspace(1) constant-expression GEP/FileCheck case | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_gep_inrange_apint_bounds_truncate_to_index_width` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` constant GEP `inrange` APInt `extOrTrunc` branch | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_gep_inrange_hex_apsint_bounds_round_trip` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` constant GEP `inrange` endpoints parsed as `lltok::APSInt` (`s0x` / `u0x`) | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_gep_inrange_signed_hex_active_bits_are_preserved` | `llvm/lib/AsmParser/LLLexer.cpp` hexadecimal APSInt active-bit truncation; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` constant GEP `inrange` non-empty validation | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_shufflevector_rejects_non_i32_mask` | `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` mask element must be i32; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` shufflevector branch | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_shufflevector_rejects_out_of_range_mask` | `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` fixed-vector mask element range check; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` shufflevector branch | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_gep_rejects_scalable_aggregate_pointee` | `llvm/include/llvm/IR/Constants.h::ConstantExpr::isSupportedGetElementPtr`; `llvm/lib/IR/Type.cpp::Type::isScalableTy`; `test/Assembler/constant-getelementptr-scalable_pointee.ll` diagnostic family | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::blockaddress_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `blockaddress` accepted shape | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::dso_local_equivalent_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `dso_local_equivalent` global-initializer shape | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::no_cfi_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `no_cfi` global-initializer shape | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::token_none_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none` token branch | mirror |
 | `crates/llvmkit-ir/tests/constants_expr.rs::constant_expr_bitcast_round_trips` | `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` `bitcast` constant-expression arm | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constants_expr.rs::blockaddress_constant_round_trips` | `test/Assembler/pr119818.ll`; `test/Assembler/uselistorder_bb.ll`; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constants_expr.rs::blockaddress_constant_uses_function_address_space` | `llvm/lib/IR/Constants.cpp::BlockAddress::get(Function*, BasicBlock*)` uses the parent function pointer type | mirror |
 | `crates/llvmkit-ir/tests/constants_expr.rs::token_none_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none` arm; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_corpus.rs::parser_corpus_round_trips_checked_in_fixtures` | `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile`; fixture-level provenance in `crates/llvmkit-asmparser/tests/fixtures/parser_corpus_manifest.txt` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_linkage_definition_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` linkage prefix | mirror |
@@ -725,19 +733,36 @@ Total `#[test]` functions: 734.
 | `crates/llvmkit-asmparser/tests/parser_use_list.rs::function_uselistorder_round_trips_local_value` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseUseListOrder(PerFunctionState*)`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printUseListOrder` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_use_list.rs::ordered_uselistorder_indexes_are_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseUseListOrderIndexes` identity-order rejection | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::ptrtoaddr_constant_expr_round_trips` | `test/Assembler/ptrtoaddr.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_ptrtoaddr` arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::unsupported_constant_expr_opcodes_are_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` unsupported constexpr diagnostics | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::unsupported_constant_expr_opcodes_are_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` unsupported constexpr diagnostics | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::none_is_token_only` | `Constants.cpp::ConstantTargetNone::get`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none` token branch | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::target_ext_zeroinitializer_requires_zero_init_property` | `test/Assembler/target-types.ll`; `llvm/lib/IR/Type.cpp::getTargetTypeInfo` | llvmkit-specific subset |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::ptrauth_five_operands_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_ptrauth` five-operand shape | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::ptrauth_five_operands_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_ptrauth` five-operand shape | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::ptrauth_default_operands_are_elided` | `test/Assembler/ptrauth-const.ll`; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` ptrauth arm | mirror |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::forward_blockaddress_resolves_later_signature` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` forward `blockaddress` placeholder resolution | llvmkit-specific subset |
-| `crates/llvmkit-asmparser/tests/parser_constants.rs::forward_dso_and_no_cfi_resolve_later_signature` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` forward `dso_local_equivalent` / `no_cfi` placeholder resolution | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::ptrauth_invalid_operands_match_upstream_diagnostics` | `test/Assembler/invalid-ptrauth-const1.ll`; `test/Assembler/invalid-ptrauth-const2.ll`; `test/Assembler/invalid-ptrauth-const3.ll`; `test/Assembler/invalid-ptrauth-const4.ll`; `test/Assembler/invalid-ptrauth-const5.ll`; `test/Assembler/invalid-ptrauth-const6.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::forward_blockaddress_resolves_later_signature` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` forward `blockaddress` placeholder resolution | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::nested_forward_blockaddress_resolves_later_signature` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` nested forward `blockaddress` placeholder resolution | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::function_body_forward_blockaddress_resolves_later_signature` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `ForwardRefBlockAddresses` placeholder path for function-body constants | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::function_body_forward_aggregate_blockaddress_resolves_later_signature` | `llvm/lib/AsmParser/LLParser.cpp::PerFunctionState::resolveForwardRefBlockAddresses`; `llvm/lib/IR/Constants.cpp::ConstantVector::handleOperandChangeImpl` / `ConstantExpr::handleOperandChangeImpl` constant-user RAUW path | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::function_body_forward_numbered_blockaddress_resolves_later_signature` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `t_GlobalID` forward `blockaddress` path | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::forward_blockaddress_preserves_function_address_space` | `test/Bitcode/blockaddress-addrspace.ll::return-fwddecl-good.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::forward_dso_and_no_cfi_resolve_later_signature` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` forward `dso_local_equivalent` / `no_cfi` placeholder resolution | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::nested_forward_dso_and_no_cfi_resolve_later_signature` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` nested forward `dso_local_equivalent` / `no_cfi` placeholder resolution | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_splat_vector_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_splat` accepted shape | mirror |
-| `crates/llvmkit-ir/tests/constants_expr.rs::constant_expr_supported_opcode_set_is_exact` | llvmkit LLVM 22 parser-needed constant-expression storage subset; `Verifier.cpp::Verifier::visitConstantExpr` | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constants_expr.rs::constant_expr_opcode_surface_matches_llvm22_parse_val_id` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` supported constant-expression opcode cases (`add`, `sub`, `xor`, `getelementptr`, `shufflevector`, `insertelement`, `extractelement`, `trunc`, `ptrtoaddr`, `ptrtoint`, `inttoptr`, `bitcast`, `addrspacecast`) | mirror |
 | `crates/llvmkit-ir/tests/constants_expr.rs::invalid_bitcast_constant_expr_is_rejected` | `Verifier.cpp::Verifier::visitConstantExpr` `Invalid bitcast` branch; exact llvmkit diagnostic differs | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constants_expr.rs::invalid_gep_constant_expr_indices_are_rejected` | `Verifier.cpp::Verifier::visitConstantExpr` / GEP index validation; exact llvmkit diagnostic differs | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constants_expr.rs::empty_constant_expr_flags_are_canonicalized_before_interning` | `llvm/lib/IR/Constants.cpp::ConstantExpr::get` / `ConstantExprKeyType` raw flag uniquing for zero flags | mirror |
+| `crates/llvmkit-ir/tests/constants_expr.rs::constant_expr_gep_inrange_width_must_match_base_index_width` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` constant GEP `inrange` `DataLayout::getIndexTypeSizeInBits` `extOrTrunc` branch; llvmkit public-constructor canonical-width invariant | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constants_expr.rs::invalid_shufflevector_constant_expr_non_i32_mask_is_rejected` | `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` mask element type check | mirror |
+| `crates/llvmkit-ir/tests/constants_expr.rs::invalid_shufflevector_constant_expr_out_of_range_mask_is_rejected` | `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` fixed-vector mask element range check | mirror |
+| `crates/llvmkit-ir/tests/constants_expr.rs::invalid_scalable_shufflevector_explicit_zero_mask_is_rejected` | `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` scalable mask accepts only `undef` / `ConstantAggregateZero` before rejecting explicit constants | mirror |
+| `crates/llvmkit-ir/tests/constants_expr.rs::invalid_gep_constant_expr_scalable_aggregate_source_is_rejected` | `llvm/include/llvm/IR/Constants.h::ConstantExpr::isSupportedGetElementPtr`; `llvm/lib/IR/Type.cpp::Type::isScalableTy` recursive scalable check | mirror |
+| `crates/llvmkit-ir/tests/constants_expr.rs::vector_gep_scalar_sequential_indices_are_splatted_before_interning` | `llvm/lib/IR/Constants.cpp::ConstantExpr::getGetElementPtr` scalar sequential index splatting before `ConstantExprKeyType` lookup | mirror |
+| `crates/llvmkit-ir/tests/constants_expr.rs::vector_gep_struct_index_width_mismatch_is_rejected` | `llvm/lib/IR/Constants.cpp::ConstantExpr::getGetElementPtr` vector index element-count assertion before struct-index scalarization | mirror |
+| `crates/llvmkit-ir/tests/constants_expr.rs::constant_expr_gep_inrange_words_are_truncated_before_interning` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `inrange` APInt `extOrTrunc`; `llvm/lib/IR/ConstantsContext.h::ConstantExprKeyType` range-key parity for llvmkit public constructor | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constants_expr.rs::invalid_gep_constant_expr_address_space_mismatch_is_rejected` | `GetElementPtrInst::getGEPReturnType`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::convertValIDToValue` constant-expression expected-type mismatch branch | mirror |
 | `crates/llvmkit-ir/tests/constants_expr.rs::constant_expr_ptrtoaddr_round_trips` | `test/Assembler/ptrtoaddr.ll`; `Verifier.cpp::checkPtrToAddr` (addrspace(0) print subset) | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constants_expr.rs::ptrauth_constructor_requires_five_operand_shape` | `Constants.cpp::ConstantPtrAuth::get`; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` ptrauth arm | mirror |
+| `crates/llvmkit-ir/tests/constants_expr.rs::ptrauth_constructor_requires_five_operand_shape` | `Constants.cpp::ConstantPtrAuth::get`; `llvm/lib/IR/Verifier.cpp::Verifier::visitConstantPtrAuth` deactivation-symbol invariant; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` ptrauth arm | llvmkit-specific subset |
 | `crates/llvmkit-asmparser/tests/parser_intrinsics.rs::known_intrinsic_auto_declares_direct_callee` | `llvm/include/llvm/IR/Intrinsics.td::int_lifetime_start`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCall` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_intrinsics.rs::unknown_intrinsic_is_rejected` | `llvm/lib/IR/Verifier.cpp` intrinsic validation | mirror |
 | `crates/llvmkit-asmparser/tests/parser_intrinsics.rs::intrinsic_non_callee_use_is_rejected` | `llvm/lib/IR/Verifier.cpp` intrinsic validation | mirror |

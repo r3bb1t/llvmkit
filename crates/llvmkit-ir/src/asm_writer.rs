@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use crate::AttrIndex;
 use crate::attributes::{AttributeStorage, AttributeStored};
 use crate::basic_block::BasicBlock;
-use crate::constant::{ConstantData, ConstantExprData, ConstantExprOpcode};
+use crate::constant::{ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode};
 use crate::function::FunctionValue;
 use crate::instr_types::{
     BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData, PhiData,
@@ -331,6 +331,7 @@ pub(crate) fn fmt_constant(
         }
         ConstantData::Float(bits) => fmt_float_constant(f, host.ty(), *bits),
         ConstantData::PointerNull => f.write_str("null"),
+        ConstantData::BlockAddressPlaceholder => f.write_str("<forward blockaddress>"),
         ConstantData::Undef => f.write_str("undef"),
         ConstantData::Poison => f.write_str("poison"),
         ConstantData::Aggregate(elems) => fmt_aggregate_constant(f, host, elems),
@@ -467,6 +468,122 @@ fn is_null_pointer_constant(module: &Module<'_>, id: ValueId) -> bool {
     )
 }
 
+fn fmt_apint_signed(f: &mut fmt::Formatter<'_>, words: &[u64], bit_width: u32) -> fmt::Result {
+    if bit_width == 0 {
+        return f.write_str("0");
+    }
+    if bit_width <= 64 {
+        return fmt_small_apint_signed(f, words, bit_width);
+    }
+    let negative = apint_sign_bit(words, bit_width);
+    let mut magnitude = masked_apint_words(words, bit_width);
+    if negative {
+        f.write_str("-")?;
+        twos_complement_negate(&mut magnitude, bit_width);
+    }
+    fmt_apint_unsigned(f, &mut magnitude)
+}
+
+fn fmt_small_apint_signed(
+    f: &mut fmt::Formatter<'_>,
+    words: &[u64],
+    bit_width: u32,
+) -> fmt::Result {
+    let raw = apint_word(words, 0, bit_width);
+    let sign_bit = 1u64 << (bit_width - 1);
+    let value = if raw & sign_bit != 0 {
+        i128::from(raw) - (1i128 << bit_width)
+    } else {
+        i128::from(raw)
+    };
+    write!(f, "{value}")
+}
+
+fn masked_apint_words(words: &[u64], bit_width: u32) -> Vec<u64> {
+    let word_count = usize::try_from(bit_width.div_ceil(64)).unwrap_or(0);
+    (0..word_count)
+        .map(|idx| apint_word(words, idx, bit_width))
+        .collect()
+}
+
+fn twos_complement_negate(words: &mut [u64], bit_width: u32) {
+    for word in words.iter_mut() {
+        *word = !*word;
+    }
+    mask_apint_top_word(words, bit_width);
+    let mut carry = true;
+    for word in words.iter_mut() {
+        if !carry {
+            break;
+        }
+        let (next, overflowed) = word.overflowing_add(1);
+        *word = next;
+        carry = overflowed;
+    }
+    mask_apint_top_word(words, bit_width);
+}
+
+fn fmt_apint_unsigned(f: &mut fmt::Formatter<'_>, words: &mut [u64]) -> fmt::Result {
+    if words.iter().all(|word| *word == 0) {
+        return f.write_str("0");
+    }
+    let mut digits = Vec::new();
+    while words.iter().any(|word| *word != 0) {
+        let mut carry = 0u128;
+        for word in words.iter_mut().rev() {
+            let combined = (carry << 64) | u128::from(*word);
+            let quotient = combined / 10;
+            let remainder = combined % 10;
+            let Ok(next_word) = u64::try_from(quotient) else {
+                return Err(fmt::Error);
+            };
+            *word = next_word;
+            carry = remainder;
+        }
+        let Ok(digit) = u8::try_from(carry) else {
+            return Err(fmt::Error);
+        };
+        digits.push(digit);
+    }
+    for digit in digits.iter().rev() {
+        f.write_char(char::from(b'0' + *digit))?;
+    }
+    Ok(())
+}
+
+fn apint_sign_bit(words: &[u64], bit_width: u32) -> bool {
+    if bit_width == 0 {
+        return false;
+    }
+    let bit_index = bit_width - 1;
+    let word_index = usize::try_from(bit_index / 64).unwrap_or(usize::MAX);
+    let bit_in_word = bit_index % 64;
+    words
+        .get(word_index)
+        .is_some_and(|word| ((word >> bit_in_word) & 1) != 0)
+}
+
+fn apint_word(words: &[u64], idx: usize, bit_width: u32) -> u64 {
+    let mut word = words.get(idx).copied().unwrap_or(0);
+    let word_count = usize::try_from(bit_width.div_ceil(64)).unwrap_or(0);
+    if word_count != 0 && idx + 1 == word_count {
+        let top_bits = bit_width % 64;
+        if top_bits != 0 {
+            word &= (1u64 << top_bits) - 1;
+        }
+    }
+    word
+}
+
+fn mask_apint_top_word(words: &mut [u64], bit_width: u32) {
+    let top_bits = bit_width % 64;
+    if top_bits != 0
+        && let Some(top) = words.last_mut()
+    {
+        *top &= (1u64 << top_bits) - 1;
+    }
+}
+
 fn fmt_constant_expr(
     f: &mut fmt::Formatter<'_>,
     host: Value<'_>,
@@ -474,20 +591,31 @@ fn fmt_constant_expr(
 ) -> fmt::Result {
     let module = host.module();
     f.write_str(expr.opcode.keyword())?;
-    if expr.flags.inbounds || matches!(expr.opcode, ConstantExprOpcode::InBoundsGetElementPtr) {
-        f.write_str(" inbounds")?;
-    }
-    if expr.flags.nuw {
-        f.write_str(" nuw")?;
-    }
-    if expr.flags.nsw {
-        f.write_str(" nsw")?;
+    match &expr.flags {
+        ConstantExprFlags::None => {}
+        ConstantExprFlags::Overflowing(flags) => {
+            if flags.nuw {
+                f.write_str(" nuw")?;
+            }
+            if flags.nsw {
+                f.write_str(" nsw")?;
+            }
+        }
+        ConstantExprFlags::Gep(flags) => {
+            if !flags.no_wrap.is_empty() {
+                write!(f, " {}", flags.no_wrap)?;
+            }
+            if let Some(in_range) = &flags.in_range {
+                f.write_str(" inrange(")?;
+                fmt_apint_signed(f, &in_range.start, in_range.bit_width)?;
+                f.write_str(", ")?;
+                fmt_apint_signed(f, &in_range.end, in_range.bit_width)?;
+                f.write_str(")")?;
+            }
+        }
     }
     f.write_str(" (")?;
-    if matches!(
-        expr.opcode,
-        ConstantExprOpcode::GetElementPtr | ConstantExprOpcode::InBoundsGetElementPtr
-    ) {
+    if matches!(expr.opcode, ConstantExprOpcode::GetElementPtr) {
         let source_ty = expr
             .source_ty
             .unwrap_or_else(|| infer_gep_source_ty(module, expr));
@@ -1457,12 +1585,19 @@ fn fmt_call(
         f.write_str(" ")?;
     }
     let module = inst.module();
-    // Print the return type. Mirrors AsmWriter's
-    // `printType(I.getType())`. This is the *call result* type
-    // (`inst.ty()`), not the callee's pointer type — important for the
-    // inline-asm case, where the callee value is `ptr`-typed but the call
-    // yields the asm's wrapped return type.
-    write!(f, "{} ", inst.ty())?;
+    // LLVM prints the callee function type for varargs call sites so the
+    // fixed parameter prefix is preserved (`call i32 (ptr, ...) @printf(...)`).
+    // Non-varargs direct calls keep the compact result-type spelling.
+    if module
+        .context()
+        .type_data(c.fn_ty)
+        .as_function()
+        .is_some_and(|(_, _, is_var_arg)| is_var_arg)
+    {
+        write!(f, "{} ", Type::new(c.fn_ty, module))?;
+    } else {
+        write!(f, "{} ", inst.ty())?;
+    }
     let cd = module.context().value_data(c.callee.get());
     // An inline-asm callee prints the `asm "...", "..."` form in place of
     // an `@name` / SSA operand. Mirrors `AssemblyWriter`'s `CallInst`

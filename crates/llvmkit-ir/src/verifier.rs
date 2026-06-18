@@ -287,6 +287,17 @@ impl<'ctx> Verifier<'ctx> {
                     || key.ty() != self.module.i32_type().as_type()
                     || discriminator.ty() != self.module.i64_type().as_type()
                     || constant.ty() != pointer.ty()
+                    || !matches!(
+                        &self
+                            .module
+                            .context()
+                            .value_data(deactivation_symbol.id)
+                            .kind,
+                        ValueKindData::Constant(
+                            crate::constant::ConstantData::GlobalValueRef { .. }
+                                | crate::constant::ConstantData::PointerNull
+                        )
+                    )
                 {
                     return Err(IrError::InvalidOperation {
                         message: "invalid ptrauth constant",
@@ -302,6 +313,11 @@ impl<'ctx> Verifier<'ctx> {
                         )?)?;
                     }
                 }
+            }
+            crate::constant::ConstantData::BlockAddressPlaceholder => {
+                return Err(IrError::InvalidOperation {
+                    message: "unresolved forward blockaddress placeholder",
+                });
             }
             crate::constant::ConstantData::GlobalValueRef { .. }
             | crate::constant::ConstantData::PointerNull

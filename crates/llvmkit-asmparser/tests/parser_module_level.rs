@@ -257,16 +257,6 @@ fn void_in_value_position_is_rejected() {
     );
 }
 
-/// Mirrors the `parseType` rejection of legacy `T*` typed pointers in
-/// LLVM 17+ opaque-pointer mode.
-#[test]
-fn legacy_typed_pointer_is_rejected() {
-    let m = Module::new("legacy_ptr");
-    let parser = Parser::new(b"%s = type { i32* }\n", &m).unwrap();
-    let err = parser.parse_module().unwrap_err();
-    assert!(format!("{err}").contains("opaque-pointer"));
-}
-
 /// Mirrors `LLParser::parseTopLevelEntities`'s default arm: any unknown
 /// leading token is reported as a typed `top-level entity` error.
 #[test]

@@ -184,6 +184,7 @@ struct FunctionSuffix<'ctx> {
 /// `LLParser::NumberedTypes` / `NamedTypes` / `NumberedVals` fields.
 pub struct Parser<'src, 'ctx> {
     lex: Lexer<'src>,
+    src: &'src [u8],
     /// Most recently produced token. The constructor primes this with the
     /// first token (mirrors `LLParser::Run`'s leading `Lex.Lex();`).
     current: Spanned<Token<'src>>,
@@ -207,6 +208,7 @@ pub struct Parser<'src, 'ctx> {
     /// whether a matching `!N = ...` definition was seen.
     metadata_slots: HashMap<u32, MetadataSlotEntry>,
     deferred_global_initializers: Vec<DeferredGlobalInitializer<'ctx>>,
+    deferred_block_addresses: Vec<DeferredBlockAddress<'ctx>>,
     unresolved_intrinsic_uses: Vec<UnresolvedIntrinsicUse<'ctx>>,
 }
 
@@ -220,37 +222,25 @@ pub struct ParsedModule<'ctx> {
     pub summary_index: Option<crate::module_summary::ModuleSummaryIndex>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum ForwardGlobalRef {
-    Name(String),
-    Id(u32),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum ForwardBlockRef {
-    Name(String),
-    Id(u32),
-}
-
-enum DeferredConstantKind {
-    BlockAddress {
-        function: ForwardGlobalRef,
-        block: ForwardBlockRef,
-        loc: Span,
-    },
-    DsoLocalEquivalent {
-        target: ForwardGlobalRef,
-        loc: Span,
-    },
-    NoCfi {
-        target: ForwardGlobalRef,
-        loc: Span,
-    },
+enum DeferredConstantKind<'ctx> {
+    RawInitializer { ty: Type<'ctx>, span: Span },
 }
 
 struct DeferredGlobalInitializer<'ctx> {
     global: llvmkit_ir::GlobalVariable<'ctx>,
-    value: DeferredConstantKind,
+    value: DeferredConstantKind<'ctx>,
+}
+
+struct DeferredBlockAddress<'ctx> {
+    placeholder: llvmkit_ir::BlockAddressPlaceholder<'ctx>,
+    function: NameOrId,
+    label: String,
+    loc: Span,
+}
+
+enum ParsedBlockAddressFunction<'ctx> {
+    Resolved(llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn>),
+    Forward { function: NameOrId, loc: Span },
 }
 struct UnresolvedIntrinsicUse<'ctx> {
     name: String,
@@ -316,6 +306,366 @@ fn is_supported_constant_expr_opcode(op: crate::ll_token::Opcode) -> bool {
     )
 }
 
+fn linkage_keyword(keyword: Keyword) -> Option<Linkage> {
+    Some(match keyword {
+        Keyword::External => Linkage::External,
+        Keyword::AvailableExternally => Linkage::AvailableExternally,
+        Keyword::Linkonce => Linkage::LinkOnceAny,
+        Keyword::LinkonceOdr => Linkage::LinkOnceODR,
+        Keyword::Weak => Linkage::WeakAny,
+        Keyword::WeakOdr => Linkage::WeakODR,
+        Keyword::Appending => Linkage::Appending,
+        Keyword::Internal => Linkage::Internal,
+        Keyword::Private => Linkage::Private,
+        Keyword::ExternWeak => Linkage::ExternalWeak,
+        Keyword::Common => Linkage::Common,
+        _ => return None,
+    })
+}
+
+fn is_declaration_linkage(linkage: Linkage) -> bool {
+    matches!(linkage, Linkage::External | Linkage::ExternalWeak)
+}
+
+fn keyword_starts_top_level_entity(keyword: Keyword) -> bool {
+    matches!(
+        keyword,
+        Keyword::Target
+            | Keyword::SourceFilename
+            | Keyword::Module
+            | Keyword::Uselistorder
+            | Keyword::UselistorderBb
+            | Keyword::Declare
+            | Keyword::Define
+            | Keyword::Attributes
+    )
+}
+
+fn is_int_or_int_vector_type(ty: Type<'_>) -> bool {
+    match AnyTypeEnum::from(ty) {
+        AnyTypeEnum::Int(_) => true,
+        AnyTypeEnum::Vector(v) => v.element().is_integer(),
+        _ => false,
+    }
+}
+
+fn is_ptr_or_ptr_vector_type(ty: Type<'_>) -> bool {
+    match AnyTypeEnum::from(ty) {
+        AnyTypeEnum::Pointer(_) => true,
+        AnyTypeEnum::Vector(v) => v.element().is_pointer(),
+        _ => false,
+    }
+}
+
+fn vector_shape_type(ty: Type<'_>) -> Option<(u32, bool)> {
+    match AnyTypeEnum::from(ty) {
+        AnyTypeEnum::Vector(v) => Some((v.min_len(), v.is_scalable())),
+        _ => None,
+    }
+}
+fn type_contains_scalable_vector(ty: Type<'_>) -> bool {
+    match AnyTypeEnum::from(ty) {
+        AnyTypeEnum::Vector(v) => v.is_scalable() || type_contains_scalable_vector(v.element()),
+        AnyTypeEnum::Array(a) => type_contains_scalable_vector(a.element()),
+        AnyTypeEnum::Struct(s) => (0..s.field_count()).any(|index| {
+            s.field_type(index)
+                .is_some_and(type_contains_scalable_vector)
+        }),
+        _ => false,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ParsedGepConstantExprFlags {
+    no_wrap: llvmkit_ir::GepNoWrapFlags,
+    in_range: Option<(ParsedInRangeBound, ParsedInRangeBound)>,
+}
+
+#[derive(Debug, Clone)]
+enum ParsedInRangeBound {
+    SignedMagnitude {
+        negative: bool,
+        magnitude_words: Box<[u64]>,
+    },
+    HexApsInt {
+        signed: bool,
+        words: Box<[u64]>,
+        bit_width: u32,
+    },
+}
+
+fn pointer_address_space_or_vector_element(ty: Type<'_>) -> Option<u32> {
+    match AnyTypeEnum::from(ty) {
+        AnyTypeEnum::Pointer(ptr_ty) => Some(ptr_ty.address_space()),
+        AnyTypeEnum::Vector(vector_ty) => match vector_ty.element().into_type_enum() {
+            AnyTypeEnum::Pointer(ptr_ty) => Some(ptr_ty.address_space()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn inrange_bound_to_apint_words(bound: &ParsedInRangeBound, bit_width: u32) -> Box<[u64]> {
+    match bound {
+        ParsedInRangeBound::SignedMagnitude {
+            negative,
+            magnitude_words,
+        } => signed_magnitude_to_apint_words(*negative, magnitude_words, bit_width),
+        ParsedInRangeBound::HexApsInt {
+            signed,
+            words,
+            bit_width: source_bit_width,
+        } => apsint_to_apint_words(*signed, words, *source_bit_width, bit_width),
+    }
+}
+
+fn signed_magnitude_to_apint_words(
+    negative: bool,
+    magnitude_words: &[u64],
+    bit_width: u32,
+) -> Box<[u64]> {
+    let word_count = usize::try_from(bit_width.div_ceil(64)).unwrap_or(0);
+    let mut words = vec![0; word_count];
+    let copy_count = words.len().min(magnitude_words.len());
+    words[..copy_count].copy_from_slice(&magnitude_words[..copy_count]);
+    mask_apint_top_word(&mut words, bit_width);
+    if negative {
+        negate_apint_words(&mut words, bit_width);
+    }
+    words.into_boxed_slice()
+}
+
+fn apsint_to_apint_words(
+    signed: bool,
+    source_words: &[u64],
+    source_bit_width: u32,
+    bit_width: u32,
+) -> Box<[u64]> {
+    let word_count = usize::try_from(bit_width.div_ceil(64)).unwrap_or(0);
+    let negative = signed && apint_sign_bit(source_words, source_bit_width);
+    let fill = if negative { u64::MAX } else { 0 };
+    let mut words = vec![fill; word_count];
+    let copy_count = words.len().min(source_words.len());
+    words[..copy_count].copy_from_slice(&source_words[..copy_count]);
+    if negative && source_bit_width < bit_width {
+        sign_extend_apint_words(&mut words, source_bit_width);
+    }
+    mask_apint_top_word(&mut words, bit_width);
+    words.into_boxed_slice()
+}
+
+fn sign_extend_apint_words(words: &mut [u64], source_bit_width: u32) {
+    let start_word = usize::try_from(source_bit_width / 64).unwrap_or(usize::MAX);
+    if start_word >= words.len() {
+        return;
+    }
+    let start_bit = source_bit_width % 64;
+    if start_bit == 0 {
+        for word in &mut words[start_word..] {
+            *word = u64::MAX;
+        }
+    } else {
+        words[start_word] |= u64::MAX << start_bit;
+        for word in &mut words[start_word + 1..] {
+            *word = u64::MAX;
+        }
+    }
+}
+
+fn negate_apint_words(words: &mut [u64], bit_width: u32) {
+    for word in words.iter_mut() {
+        *word = !*word;
+    }
+    mask_apint_top_word(words, bit_width);
+    let mut carry = true;
+    for word in words.iter_mut() {
+        if !carry {
+            break;
+        }
+        let (next, overflowed) = word.overflowing_add(1);
+        *word = next;
+        carry = overflowed;
+    }
+    mask_apint_top_word(words, bit_width);
+}
+
+fn mask_apint_top_word(words: &mut [u64], bit_width: u32) {
+    let top_bits = bit_width % 64;
+    if top_bits != 0
+        && let Some(top) = words.last_mut()
+    {
+        *top &= (1u64 << top_bits) - 1;
+    }
+}
+
+fn constant_expr_inrange_is_non_empty(range: &llvmkit_ir::ConstantExprInRange) -> bool {
+    signed_apint_cmp(&range.start, &range.end, range.bit_width).is_lt()
+}
+
+fn signed_apint_cmp(lhs: &[u64], rhs: &[u64], bit_width: u32) -> core::cmp::Ordering {
+    let lhs_negative = apint_sign_bit(lhs, bit_width);
+    let rhs_negative = apint_sign_bit(rhs, bit_width);
+    match (lhs_negative, rhs_negative) {
+        (true, false) => core::cmp::Ordering::Less,
+        (false, true) => core::cmp::Ordering::Greater,
+        _ => unsigned_apint_cmp(lhs, rhs, bit_width),
+    }
+}
+
+fn apint_sign_bit(words: &[u64], bit_width: u32) -> bool {
+    if bit_width == 0 {
+        return false;
+    }
+    let bit_index = bit_width - 1;
+    let word_index = usize::try_from(bit_index / 64).unwrap_or(usize::MAX);
+    let bit_in_word = bit_index % 64;
+    words
+        .get(word_index)
+        .is_some_and(|word| ((word >> bit_in_word) & 1) != 0)
+}
+
+fn unsigned_apint_cmp(lhs: &[u64], rhs: &[u64], bit_width: u32) -> core::cmp::Ordering {
+    let word_count = usize::try_from(bit_width.div_ceil(64)).unwrap_or(0);
+    for idx in (0..word_count).rev() {
+        let lhs_word = apint_word(lhs, idx, bit_width);
+        let rhs_word = apint_word(rhs, idx, bit_width);
+        match lhs_word.cmp(&rhs_word) {
+            core::cmp::Ordering::Equal => {}
+            ordering => return ordering,
+        }
+    }
+    core::cmp::Ordering::Equal
+}
+
+fn decimal_digits_to_words(digits: &str) -> Option<Box<[u64]>> {
+    let mut words = vec![0u64];
+    for byte in digits.bytes() {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        mul_add_words(&mut words, 10, u64::from(byte - b'0'));
+    }
+    while words.len() > 1 && words.last().copied() == Some(0) {
+        words.pop();
+    }
+    Some(words.into_boxed_slice())
+}
+
+fn hex_digits_to_words(digits: &str) -> Option<Box<[u64]>> {
+    let mut words = vec![0u64];
+    for byte in digits.bytes() {
+        let digit = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => return None,
+        };
+        mul_add_words(&mut words, 16, u64::from(digit));
+    }
+    while words.len() > 1 && words.last().copied() == Some(0) {
+        words.pop();
+    }
+    Some(words.into_boxed_slice())
+}
+
+fn hex_apsint_bit_width(digits: &str, words: &[u64]) -> Option<u32> {
+    let syntactic_bits = u32::try_from(digits.len()).ok()?.checked_mul(4)?;
+    let active_bits = apint_active_bits(words)?;
+    if active_bits > 0 && active_bits < syntactic_bits {
+        Some(active_bits)
+    } else {
+        Some(syntactic_bits)
+    }
+}
+
+fn apint_active_bits(words: &[u64]) -> Option<u32> {
+    for (idx, word) in words.iter().enumerate().rev() {
+        if *word != 0 {
+            let word_base = u32::try_from(idx).ok()?.checked_mul(64)?;
+            return word_base.checked_add(64 - word.leading_zeros());
+        }
+    }
+    Some(0)
+}
+
+fn mul_add_words(words: &mut Vec<u64>, multiplier: u64, addend: u64) {
+    let mut carry = u128::from(addend);
+    for word in words.iter_mut() {
+        let value = u128::from(*word) * u128::from(multiplier) + carry;
+        *word = low_u64(value);
+        carry = value >> 64;
+    }
+    while carry != 0 {
+        words.push(low_u64(carry));
+        carry >>= 64;
+    }
+}
+
+fn low_u64(value: u128) -> u64 {
+    let bytes = value.to_le_bytes();
+    u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ])
+}
+
+fn apint_word(words: &[u64], idx: usize, bit_width: u32) -> u64 {
+    let mut word = words.get(idx).copied().unwrap_or(0);
+    let word_count = usize::try_from(bit_width.div_ceil(64)).unwrap_or(0);
+    if word_count != 0 && idx + 1 == word_count {
+        let top_bits = bit_width % 64;
+        if top_bits != 0 {
+            word &= (1u64 << top_bits) - 1;
+        }
+    }
+    word
+}
+
+fn is_valid_extractelement(result_ty: Type<'_>, vector_ty: Type<'_>, index_ty: Type<'_>) -> bool {
+    let AnyTypeEnum::Vector(vector_ty) = AnyTypeEnum::from(vector_ty) else {
+        return false;
+    };
+    vector_ty.element() == result_ty && index_ty.is_integer()
+}
+
+fn is_valid_insertelement(
+    result_ty: Type<'_>,
+    vector_ty: Type<'_>,
+    value_ty: Type<'_>,
+    index_ty: Type<'_>,
+) -> bool {
+    let AnyTypeEnum::Vector(vector_ty) = AnyTypeEnum::from(vector_ty) else {
+        return false;
+    };
+    vector_ty.as_type() == result_ty && vector_ty.element() == value_ty && index_ty.is_integer()
+}
+
+fn is_valid_shufflevector(
+    result_ty: Type<'_>,
+    lhs_ty: Type<'_>,
+    rhs_ty: Type<'_>,
+    mask_ty: Type<'_>,
+) -> bool {
+    let AnyTypeEnum::Vector(lhs_ty) = AnyTypeEnum::from(lhs_ty) else {
+        return false;
+    };
+    let AnyTypeEnum::Vector(rhs_ty) = AnyTypeEnum::from(rhs_ty) else {
+        return false;
+    };
+    let AnyTypeEnum::Vector(mask_ty) = AnyTypeEnum::from(mask_ty) else {
+        return false;
+    };
+    let AnyTypeEnum::Vector(result_ty) = AnyTypeEnum::from(result_ty) else {
+        return false;
+    };
+    lhs_ty.element() == rhs_ty.element()
+        && lhs_ty.min_len() == rhs_ty.min_len()
+        && lhs_ty.is_scalable() == rhs_ty.is_scalable()
+        && mask_ty.element() == mask_ty.as_type().module().i32_type().as_type()
+        && result_ty.element() == lhs_ty.element()
+        && result_ty.min_len() == mask_ty.min_len()
+        && result_ty.is_scalable() == mask_ty.is_scalable()
+}
+
 #[derive(Clone, Copy)]
 struct ParsedAliasHeader {
     linkage: Linkage,
@@ -346,6 +696,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         let current = lex.next_token().map_err(map_lex_error)?;
         Ok(Self {
             lex,
+            src,
             current,
             module,
             named_types: HashMap::new(),
@@ -353,6 +704,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             next_unnamed_type_id: 0,
             numbered_globals: NumberedValues::new(),
             numbered_attr_groups: NumberedValues::new(),
+            deferred_block_addresses: Vec::new(),
             metadata_slots: HashMap::new(),
             deferred_global_initializers: Vec::new(),
             unresolved_intrinsic_uses: Vec::new(),
@@ -501,6 +853,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         }
 
         self.resolve_deferred_global_initializers()?;
+        self.resolve_deferred_block_addresses()?;
         self.validate_intrinsic_uses()?;
 
         Ok(ParsedModule {
@@ -511,72 +864,69 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
 
     fn resolve_deferred_global_initializers(&mut self) -> ParseResult<()> {
         let deferred = std::mem::take(&mut self.deferred_global_initializers);
+        let slots = self.slot_mapping_snapshot();
         for item in deferred {
             let constant = match item.value {
-                DeferredConstantKind::BlockAddress {
-                    function,
-                    block,
-                    loc,
-                } => {
-                    let f = self.resolve_forward_function(function, loc)?;
-                    if f.basic_blocks().len() == 0 {
-                        return Err(ParseError::Expected {
-                            expected: "cannot take blockaddress inside a declaration".into(),
-                            loc: DiagLoc::span(loc),
-                        });
-                    }
-                    let bb = match block {
-                        ForwardBlockRef::Name(name) => f
-                            .basic_blocks()
-                            .find(|bb| bb.name().as_deref() == Some(name.as_str()))
-                            .ok_or_else(|| ParseError::Expected {
-                                expected: "referenced value is not a basic block".into(),
-                                loc: DiagLoc::span(loc),
-                            })?,
-                        ForwardBlockRef::Id(id) => {
-                            let wanted = id.to_string();
-                            f.basic_blocks()
-                                .find(|bb| bb.name().as_deref() == Some(wanted.as_str()))
-                                .ok_or_else(|| ParseError::Expected {
-                                    expected: "referenced value is not a basic block".into(),
-                                    loc: DiagLoc::span(loc),
-                                })?
-                        }
-                    };
-                    self.module
-                        .block_address(f, bb)
-                        .map_err(|e| self.builder_err("blockaddress", e))?
-                }
-                DeferredConstantKind::DsoLocalEquivalent { target, loc } => {
-                    let global = self.resolve_forward_global_ref(
-                        target,
-                        loc,
-                        "expected a function, alias to function, or ifunc in dso_local_equivalent",
-                    )?;
-                    self.module
-                        .dso_local_equivalent_global(self.global_ref_to_constant(global))
-                        .map_err(|_| ParseError::Expected {
-                            expected: "expected a function, alias to function, or ifunc in dso_local_equivalent".into(),
-                            loc: DiagLoc::span(loc),
-                        })?
-                }
-                DeferredConstantKind::NoCfi { target, loc } => {
-                    let global = self.resolve_forward_global_ref(
-                        target,
-                        loc,
-                        "expected global value name in no_cfi",
-                    )?;
-                    self.module
-                        .no_cfi_global(self.global_ref_to_constant(global))
-                        .map_err(|_| ParseError::Expected {
-                            expected: "expected global value name in no_cfi".into(),
-                            loc: DiagLoc::span(loc),
+                DeferredConstantKind::RawInitializer { ty, span } => {
+                    let start = usize::try_from(span.start)
+                        .map_err(|_| self.expected("constant initializer"))?;
+                    let end = usize::try_from(span.end)
+                        .map_err(|_| self.expected("constant initializer"))?;
+                    let bytes = self
+                        .src
+                        .get(start..end)
+                        .ok_or_else(|| self.expected("constant initializer"))?;
+                    crate::parser::parse_constant_value(bytes, self.module, ty, Some(&slots))
+                        .map_err(|err| match err {
+                            ParseError::Expected { expected, .. } => ParseError::Expected {
+                                expected,
+                                loc: DiagLoc::span(span),
+                            },
+                            other => other,
                         })?
                 }
             };
             item.global
                 .set_initializer(Some(constant))
                 .map_err(|e| self.builder_err("deferred global initializer", e))?;
+        }
+        Ok(())
+    }
+
+    fn resolve_deferred_block_addresses(&mut self) -> ParseResult<()> {
+        let deferred = std::mem::take(&mut self.deferred_block_addresses);
+        for item in deferred {
+            let function = match &item.function {
+                NameOrId::Name(name) => self.module.function_by_name(name),
+                NameOrId::Id(id) => self.numbered_globals.get(*id).and_then(|r| match r {
+                    GlobalRef::Function(f) => Some(*f),
+                    _ => None,
+                }),
+            }
+            .ok_or_else(|| ParseError::Expected {
+                expected: "function name in blockaddress".into(),
+                loc: DiagLoc::span(item.loc),
+            })?;
+            if function.basic_blocks().len() == 0 {
+                return Err(ParseError::Expected {
+                    expected: "cannot take blockaddress inside a declaration".into(),
+                    loc: DiagLoc::span(item.loc),
+                });
+            }
+            let block = function
+                .basic_blocks()
+                .find(|bb| bb.name().as_deref() == Some(item.label.as_str()))
+                .ok_or_else(|| ParseError::Expected {
+                    expected: "referenced value is not a basic block".into(),
+                    loc: DiagLoc::span(item.loc),
+                })?;
+            let resolved = self
+                .module
+                .block_address(function, block)
+                .map_err(|e| self.builder_err("blockaddress", e))?;
+            item.placeholder
+                .replace_all_uses_with(resolved)
+                .map_err(|e| self.builder_err("forward blockaddress", e))?;
         }
         Ok(())
     }
@@ -610,55 +960,37 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         Ok(())
     }
 
-    fn resolve_forward_function(
-        &self,
-        target: ForwardGlobalRef,
-        loc: Span,
-    ) -> ParseResult<llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn>> {
-        match target {
-            ForwardGlobalRef::Name(name) => {
-                self.module
-                    .function_by_name(&name)
-                    .ok_or(ParseError::Expected {
-                        expected: "expected function name in blockaddress".into(),
-                        loc: DiagLoc::span(loc),
-                    })
-            }
-            ForwardGlobalRef::Id(id) => self
-                .numbered_globals
-                .get(id)
-                .and_then(|g| match g {
-                    GlobalRef::Function(f) => Some(*f),
-                    _ => None,
-                })
-                .ok_or(ParseError::Expected {
-                    expected: "expected function name in blockaddress".into(),
-                    loc: DiagLoc::span(loc),
-                }),
+    fn slot_mapping_snapshot(&self) -> SlotMapping<'ctx> {
+        let mut named_types = HashMap::with_capacity(self.named_types.len());
+        for (name, entry) in &self.named_types {
+            named_types.insert(name.clone(), entry.ty);
         }
-    }
-
-    fn resolve_forward_global_ref(
-        &self,
-        target: ForwardGlobalRef,
-        loc: Span,
-        expected: &'static str,
-    ) -> ParseResult<GlobalRef<'ctx>> {
-        match target {
-            ForwardGlobalRef::Name(name) => {
-                self.resolve_global_name_as_ref(name)
-                    .map_err(|_| ParseError::Expected {
-                        expected: expected.into(),
-                        loc: DiagLoc::span(loc),
-                    })
-            }
-            ForwardGlobalRef::Id(id) => {
-                self.resolve_global_id_as_ref(id)
-                    .map_err(|_| ParseError::Expected {
-                        expected: expected.into(),
-                        loc: DiagLoc::span(loc),
-                    })
-            }
+        let mut numbered_types = std::collections::BTreeMap::new();
+        for (id, entry) in &self.numbered_types {
+            numbered_types.insert(*id, entry.ty);
+        }
+        let mut metadata_nodes = NumberedValues::new();
+        let mut metadata_entries: Vec<_> = self
+            .metadata_slots
+            .iter()
+            .filter(|(_, entry)| entry.defined)
+            .collect();
+        metadata_entries.sort_by_key(|(slot, _)| *slot);
+        for (slot, entry) in metadata_entries {
+            let _ = metadata_nodes.add(*slot, entry.id);
+        }
+        let mut attribute_groups = NumberedValues::new();
+        let mut attr_entries: Vec<_> = self.module.attribute_groups();
+        attr_entries.sort_by_key(|(slot, _)| *slot);
+        for (slot, storage) in attr_entries {
+            let _ = attribute_groups.add(slot, storage);
+        }
+        SlotMapping {
+            global_values: self.numbered_globals.clone(),
+            named_types,
+            numbered_types,
+            attribute_groups,
+            metadata_nodes,
         }
     }
 
@@ -1959,96 +2291,244 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     /// `allow_void` is `true` only at function-result position.
     pub fn parse_type(&mut self, allow_void: bool) -> ParseResult<Type<'ctx>> {
         let type_loc = self.loc();
-        let mut result: Type<'ctx> = match *self.peek() {
-            Token::PrimitiveType(p) => {
-                let ty = self.primitive_to_type(p, type_loc)?;
-                self.bump()?;
-                // `ptr` may be followed by `addrspace(N)`.
-                if matches!(p, PrimitiveTy::Ptr) {
-                    let addr_space = if let Token::Kw(Keyword::Addrspace) = self.peek() {
+        let mut result: Type<'ctx> =
+            if let Some(ptr_ty) = self.parse_legacy_typed_pointer_type_syntax_only()? {
+                ptr_ty
+            } else {
+                match *self.peek() {
+                    Token::PrimitiveType(p) => {
+                        let ty = self.primitive_to_type(p, type_loc)?;
                         self.bump()?;
-                        self.parse_addr_space_paren()?
-                    } else {
-                        0
-                    };
-                    let ptr_ty: PointerType<'ctx> = self.module.ptr_type(addr_space);
-                    if matches!(self.peek(), Token::Star) {
-                        return Err(self.expected("ptr (no '*' suffix; use 'ptr')"));
+                        // `ptr` may be followed by `addrspace(N)`.
+                        if matches!(p, PrimitiveTy::Ptr) {
+                            let addr_space = if let Token::Kw(Keyword::Addrspace) = self.peek() {
+                                self.bump()?;
+                                self.parse_addr_space_paren()?
+                            } else {
+                                0
+                            };
+                            let ptr_ty: PointerType<'ctx> = self.module.ptr_type(addr_space);
+                            ptr_ty.as_type()
+                        } else {
+                            ty
+                        }
                     }
-                    ptr_ty.as_type()
-                } else {
-                    ty
-                }
-            }
-            Token::LBrace => {
-                let (elems, packed) = self.parse_struct_body()?;
-                self.module.struct_type(elems, packed).as_type()
-            }
-            Token::Less => {
-                // `<` introduces vector or `<{ packed-struct }>`.
-                self.bump()?; // eat `<`
-                if matches!(self.peek(), Token::LBrace) {
-                    let (elems, _was_packed_redundant) = self.parse_struct_body_braces()?;
-                    self.expect_punct(PunctKind::Greater, "'>' at end of packed struct")?;
-                    self.module.struct_type(elems, true).as_type()
-                } else {
-                    self.parse_array_or_vector_after_open(true)?
-                }
-            }
-            Token::LSquare => {
-                self.bump()?; // eat `[`
-                self.parse_array_or_vector_after_open(false)?
-            }
-            Token::LocalVar(_) => {
-                let name = self
-                    .current_str_payload()
-                    .ok_or_else(|| self.expected("local identifier payload"))?;
-                let loc = self.loc();
-                self.bump()?;
-                self.lookup_or_forward_named_type(&name, loc)
-            }
-            Token::LocalVarId(n) => {
-                let id = n;
-                let loc = self.loc();
-                self.bump()?;
-                self.lookup_or_forward_numbered_type(id, loc)
-            }
-            _ => {
-                return Err(ParseError::Expected {
-                    expected: "type".into(),
-                    loc: DiagLoc::span(type_loc),
-                });
-            }
-        };
-
-        // Type suffixes: `*` for pointer (legacy form, rejected with a
-        // typed error since opaque pointers landed in LLVM 17), and
-        // `(args)` for function types.
-        loop {
-            match self.peek() {
-                Token::Kw(Keyword::Addrspace) => {
-                    return Err(self.expected(
-                        "ptr addrspace(N) (legacy 'T addrspace(N) *' form is unsupported)",
-                    ));
-                }
-                Token::Star => {
-                    return Err(self.expected("opaque-pointer 'ptr' (typed 'T*' is unsupported)"));
-                }
-                Token::LParen => {
-                    result = self.parse_function_type_after_return(result)?;
-                }
-                _ => {
-                    if !allow_void && matches!(result.into_type_enum(), AnyTypeEnum::Void(_)) {
+                    Token::LBrace => {
+                        let (elems, packed) = self.parse_struct_body()?;
+                        self.module.struct_type(elems, packed).as_type()
+                    }
+                    Token::Less => {
+                        // `<` introduces vector or `<{ packed-struct }>`.
+                        self.bump()?; // eat `<`
+                        if matches!(self.peek(), Token::LBrace) {
+                            let (elems, _was_packed_redundant) = self.parse_struct_body_braces()?;
+                            self.expect_punct(PunctKind::Greater, "'>' at end of packed struct")?;
+                            self.module.struct_type(elems, true).as_type()
+                        } else {
+                            self.parse_array_or_vector_after_open(true)?
+                        }
+                    }
+                    Token::LSquare => {
+                        self.bump()?; // eat `[`
+                        self.parse_array_or_vector_after_open(false)?
+                    }
+                    Token::LocalVar(_) => {
+                        let name = self
+                            .current_str_payload()
+                            .ok_or_else(|| self.expected("local identifier payload"))?;
+                        let loc = self.loc();
+                        self.bump()?;
+                        if let Some(ptr_ty) = self.parse_legacy_typed_pointer_suffix()? {
+                            ptr_ty
+                        } else {
+                            self.lookup_or_forward_named_type(&name, loc)
+                        }
+                    }
+                    Token::LocalVarId(n) => {
+                        let id = n;
+                        let loc = self.loc();
+                        self.bump()?;
+                        if let Some(ptr_ty) = self.parse_legacy_typed_pointer_suffix()? {
+                            ptr_ty
+                        } else {
+                            self.lookup_or_forward_numbered_type(id, loc)
+                        }
+                    }
+                    _ => {
                         return Err(ParseError::Expected {
-                            expected: "non-void type (void only allowed at function results)"
-                                .into(),
+                            expected: "type".into(),
                             loc: DiagLoc::span(type_loc),
                         });
                     }
-                    return Ok(result);
+                }
+            };
+
+        // Type suffixes: `*` and `addrspace(N)*` are accepted as
+        // parser-compatibility input for legacy typed-pointer `.ll`.
+        // They lower immediately to opaque pointer types; the pointee
+        // syntax is not represented in llvmkit-ir.
+        loop {
+            if let Some(ptr_ty) = self.parse_legacy_typed_pointer_suffix()? {
+                result = ptr_ty;
+            } else {
+                match self.peek() {
+                    Token::LParen => {
+                        result = self.parse_function_type_after_return(result)?;
+                    }
+                    _ => {
+                        if !allow_void && matches!(result.into_type_enum(), AnyTypeEnum::Void(_)) {
+                            return Err(ParseError::Expected {
+                                expected: "non-void type (void only allowed at function results)"
+                                    .into(),
+                                loc: DiagLoc::span(type_loc),
+                            });
+                        }
+                        return Ok(result);
+                    }
                 }
             }
         }
+    }
+
+    fn parse_legacy_typed_pointer_suffix(&mut self) -> ParseResult<Option<Type<'ctx>>> {
+        match self.peek() {
+            Token::Kw(Keyword::Addrspace) => {
+                self.bump()?;
+                let address_space = self.parse_addr_space_paren()?;
+                if !matches!(self.peek(), Token::Star) {
+                    return Err(self.expected("legacy typed pointer addrspace suffix requires '*'"));
+                }
+                self.bump()?;
+                Ok(Some(self.module.ptr_type(address_space).as_type()))
+            }
+            Token::Star => {
+                self.bump()?;
+                Ok(Some(self.module.ptr_type(0).as_type()))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn parse_legacy_typed_pointer_type_syntax_only(&mut self) -> ParseResult<Option<Type<'ctx>>> {
+        let saved_lex = self.lex.clone();
+        let saved_current = self.current.clone();
+
+        if self
+            .skip_type_before_legacy_pointer_suffix_syntax_only()
+            .is_err()
+        {
+            self.lex = saved_lex;
+            self.current = saved_current;
+            return Ok(None);
+        }
+
+        let Some(mut ptr_ty) = self.parse_legacy_typed_pointer_suffix()? else {
+            self.lex = saved_lex;
+            self.current = saved_current;
+            return Ok(None);
+        };
+
+        while let Some(next_ptr_ty) = self.parse_legacy_typed_pointer_suffix()? {
+            ptr_ty = next_ptr_ty;
+        }
+
+        Ok(Some(ptr_ty))
+    }
+
+    fn skip_type_before_legacy_pointer_suffix_syntax_only(&mut self) -> ParseResult<()> {
+        self.skip_type_atom_syntax_only()?;
+        while matches!(self.peek(), Token::LParen) {
+            self.skip_function_type_syntax_only()?;
+        }
+        Ok(())
+    }
+
+    fn skip_function_type_syntax_only(&mut self) -> ParseResult<()> {
+        self.expect_punct(PunctKind::LParen, "'(' in function type")?;
+        if !matches!(self.peek(), Token::RParen) {
+            loop {
+                if matches!(self.peek(), Token::DotDotDot) {
+                    self.bump()?;
+                    break;
+                }
+                self.skip_type_syntax_only()?;
+                if !self.eat_punct(PunctKind::Comma)? {
+                    break;
+                }
+            }
+        }
+        self.expect_punct(PunctKind::RParen, "')' to close function type")?;
+        Ok(())
+    }
+
+    fn skip_type_syntax_only(&mut self) -> ParseResult<()> {
+        self.skip_type_before_legacy_pointer_suffix_syntax_only()?;
+        while self.parse_legacy_typed_pointer_suffix()?.is_some() {}
+        Ok(())
+    }
+
+    fn skip_type_atom_syntax_only(&mut self) -> ParseResult<()> {
+        match self.peek() {
+            Token::PrimitiveType(_) => {
+                let is_ptr = matches!(self.peek(), Token::PrimitiveType(PrimitiveTy::Ptr));
+                self.bump()?;
+                if is_ptr && matches!(self.peek(), Token::Kw(Keyword::Addrspace)) {
+                    self.bump()?;
+                    self.parse_addr_space_paren()?;
+                }
+            }
+            Token::LocalVar(_) | Token::LocalVarId(_) => {
+                self.bump()?;
+            }
+            Token::LBrace => {
+                self.skip_struct_type_body_syntax_only()?;
+            }
+            Token::Less => {
+                self.bump()?;
+                if matches!(self.peek(), Token::LBrace) {
+                    self.skip_struct_type_body_syntax_only()?;
+                    self.expect_punct(PunctKind::Greater, "'>' at end of packed struct")?;
+                } else {
+                    self.skip_array_or_vector_type_syntax_only(true)?;
+                }
+            }
+            Token::LSquare => {
+                self.bump()?;
+                self.skip_array_or_vector_type_syntax_only(false)?;
+            }
+            _ => return Err(self.expected("type")),
+        }
+        Ok(())
+    }
+
+    fn skip_struct_type_body_syntax_only(&mut self) -> ParseResult<()> {
+        self.expect_punct(PunctKind::LBrace, "'{' to start struct body")?;
+        if !matches!(self.peek(), Token::RBrace) {
+            loop {
+                self.skip_type_syntax_only()?;
+                if !self.eat_punct(PunctKind::Comma)? {
+                    break;
+                }
+            }
+        }
+        self.expect_punct(PunctKind::RBrace, "'}' to close struct body")?;
+        Ok(())
+    }
+
+    fn skip_array_or_vector_type_syntax_only(&mut self, is_vector: bool) -> ParseResult<()> {
+        let scalable = is_vector && self.eat_keyword(Keyword::Vscale)?;
+        if scalable {
+            self.expect_keyword(Keyword::X, "'x' after vscale")?;
+        }
+        self.parse_uint64("element count")?;
+        self.expect_keyword(Keyword::X, "'x' between aggregate count and element type")?;
+        self.skip_type_syntax_only()?;
+        if is_vector {
+            self.expect_punct(PunctKind::Greater, "'>' at end of vector type")?;
+        } else {
+            self.expect_punct(PunctKind::RSquare, "']' at end of array type")?;
+        }
+        Ok(())
     }
 
     /// Helper: after consuming an opening `<` not followed by `{`, the
@@ -2212,30 +2692,15 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         };
         self.expect_punct(PunctKind::Equal, "'=' after global name")?;
 
-        let linkage = if self.eat_keyword(Keyword::External)? {
-            Linkage::External
-        } else if self.eat_keyword(Keyword::AvailableExternally)? {
-            Linkage::AvailableExternally
-        } else if self.eat_keyword(Keyword::Linkonce)? {
-            Linkage::LinkOnceAny
-        } else if self.eat_keyword(Keyword::LinkonceOdr)? {
-            Linkage::LinkOnceODR
-        } else if self.eat_keyword(Keyword::Weak)? {
-            Linkage::WeakAny
-        } else if self.eat_keyword(Keyword::WeakOdr)? {
-            Linkage::WeakODR
-        } else if self.eat_keyword(Keyword::Appending)? {
-            Linkage::Appending
-        } else if self.eat_keyword(Keyword::Internal)? {
-            Linkage::Internal
-        } else if self.eat_keyword(Keyword::Private)? {
-            Linkage::Private
-        } else if self.eat_keyword(Keyword::ExternWeak)? {
-            Linkage::ExternalWeak
-        } else if self.eat_keyword(Keyword::Common)? {
-            Linkage::Common
-        } else {
-            Linkage::External
+        let (linkage, has_linkage) = match self.peek() {
+            Token::Kw(keyword) => match linkage_keyword(*keyword) {
+                Some(linkage) => {
+                    self.bump()?;
+                    (linkage, true)
+                }
+                None => (Linkage::External, false),
+            },
+            _ => (Linkage::External, false),
         };
         let visibility = if self.eat_keyword(Keyword::Default)? {
             Visibility::Default
@@ -2312,7 +2777,12 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         };
 
         let ty = self.parse_type(false)?;
-        let (initializer, deferred_initializer) = self.parse_global_initializer(ty)?;
+        let (initializer, deferred_initializer) = if has_linkage && is_declaration_linkage(linkage)
+        {
+            (None, None)
+        } else {
+            self.parse_global_initializer(ty)?
+        };
         let mut section = None;
         let mut partition = None;
         let mut align = MaybeAlign::NONE;
@@ -2536,100 +3006,109 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         ty: Type<'ctx>,
     ) -> ParseResult<(
         Option<llvmkit_ir::Constant<'ctx>>,
-        Option<DeferredConstantKind>,
+        Option<DeferredConstantKind<'ctx>>,
     )> {
-        match self.peek() {
-            Token::Kw(Keyword::Blockaddress) => {
-                let loc = self.loc();
-                let value = self.parse_deferred_blockaddress(loc)?;
-                let placeholder = self.placeholder_constant(ty)?;
-                Ok((Some(placeholder), Some(value)))
-            }
-            Token::Kw(Keyword::DsoLocalEquivalent) => {
-                let loc = self.loc();
-                let value = self.parse_deferred_dso_local_equivalent(loc)?;
-                let placeholder = self.placeholder_constant(ty)?;
-                Ok((Some(placeholder), Some(value)))
-            }
-            Token::Kw(Keyword::NoCfi) => {
-                let loc = self.loc();
-                let value = self.parse_deferred_no_cfi(loc)?;
-                let placeholder = self.placeholder_constant(ty)?;
-                Ok((Some(placeholder), Some(value)))
-            }
-            _ => self.parse_constant(ty).map(|c| (c, None)),
+        if let Some(deferred) = self.defer_initializer_if_contains_special_constant(ty)? {
+            return Ok((None, Some(deferred)));
         }
+        self.parse_constant(ty).map(|c| (c, None))
     }
 
-    fn placeholder_constant(&self, ty: Type<'ctx>) -> ParseResult<llvmkit_ir::Constant<'ctx>> {
-        match ty.into_type_enum() {
-            AnyTypeEnum::Pointer(ptr_ty) => Ok(ptr_ty.const_null().as_constant()),
-            _ => Err(self.expected("pointer type for deferred constant")),
-        }
-    }
-
-    fn parse_forward_global_ref(
+    fn defer_initializer_if_contains_special_constant(
         &mut self,
-        expected: &'static str,
-    ) -> ParseResult<ForwardGlobalRef> {
-        match self.peek() {
-            Token::GlobalVar(_) => {
-                let name = self
-                    .current_str_payload()
-                    .ok_or_else(|| self.expected(expected))?;
-                self.bump()?;
-                Ok(ForwardGlobalRef::Name(name))
-            }
-            Token::GlobalId(id) => {
-                let id = *id;
-                self.bump()?;
-                Ok(ForwardGlobalRef::Id(id))
-            }
-            _ => Err(self.expected(expected)),
-        }
-    }
-
-    fn parse_deferred_blockaddress(&mut self, loc: Span) -> ParseResult<DeferredConstantKind> {
-        self.expect_keyword(Keyword::Blockaddress, "'blockaddress'")?;
-        self.expect_punct(PunctKind::LParen, "'(' in blockaddress")?;
-        let function = self.parse_forward_global_ref("function name in blockaddress")?;
-        self.expect_punct(PunctKind::Comma, "',' in blockaddress")?;
-        let block = match self.peek() {
-            Token::LocalVar(_) => {
-                let name = self
-                    .current_str_payload()
-                    .ok_or_else(|| self.expected("basic block name in blockaddress"))?;
-                self.bump()?;
-                ForwardBlockRef::Name(name)
-            }
-            Token::LocalVarId(id) => {
-                let id = *id;
-                self.bump()?;
-                ForwardBlockRef::Id(id)
-            }
-            _ => return Err(self.expected("basic block name in blockaddress")),
+        ty: Type<'ctx>,
+    ) -> ParseResult<Option<DeferredConstantKind<'ctx>>> {
+        let Some((span, contains_special)) = self.scan_initializer_span()? else {
+            return Ok(None);
         };
-        self.expect_punct(PunctKind::RParen, "')' in blockaddress")?;
-        Ok(DeferredConstantKind::BlockAddress {
-            function,
-            block,
-            loc,
-        })
+        if !contains_special {
+            return Ok(None);
+        }
+        self.skip_initializer_span(span.end)?;
+        Ok(Some(DeferredConstantKind::RawInitializer { ty, span }))
     }
 
-    fn parse_deferred_dso_local_equivalent(
-        &mut self,
-        loc: Span,
-    ) -> ParseResult<DeferredConstantKind> {
-        self.expect_keyword(Keyword::DsoLocalEquivalent, "'dso_local_equivalent'")?;
-        let target = self.parse_forward_global_ref("global value name in dso_local_equivalent")?;
-        Ok(DeferredConstantKind::DsoLocalEquivalent { target, loc })
+    fn scan_initializer_span(&self) -> ParseResult<Option<(Span, bool)>> {
+        if matches!(self.peek(), Token::Comma | Token::Eof) {
+            return Ok(None);
+        }
+        let mut lex = self.lex.clone();
+        let mut current = self.current.clone();
+        let start = current.span.start;
+        let mut end = current.span.end;
+        let mut depth = 0u32;
+        let mut contains_special = false;
+        let mut consumed_any = false;
+        loop {
+            if consumed_any
+                && depth == 0
+                && self.scan_token_ends_global_initializer(&current.value, &lex)?
+            {
+                break;
+            }
+            match current.value {
+                Token::Kw(Keyword::Blockaddress)
+                | Token::Kw(Keyword::DsoLocalEquivalent)
+                | Token::Kw(Keyword::NoCfi) => contains_special = true,
+                Token::LParen | Token::LSquare | Token::LBrace | Token::Less => {
+                    depth = depth.saturating_add(1);
+                }
+                Token::RParen | Token::RSquare | Token::RBrace | Token::Greater => {
+                    depth = depth.saturating_sub(1);
+                }
+                Token::Eof => break,
+                _ => {}
+            }
+            end = current.span.end;
+            consumed_any = true;
+            current = lex.next_token().map_err(map_lex_error)?;
+        }
+        Ok(Some((Span::new(start, end), contains_special)))
     }
 
-    fn parse_deferred_no_cfi(&mut self, loc: Span) -> ParseResult<DeferredConstantKind> {
-        self.expect_keyword(Keyword::NoCfi, "'no_cfi'")?;
-        let target = self.parse_forward_global_ref("global value name in no_cfi")?;
-        Ok(DeferredConstantKind::NoCfi { target, loc })
+    fn scan_token_ends_global_initializer(
+        &self,
+        token: &Token<'src>,
+        lex_after_token: &Lexer<'src>,
+    ) -> ParseResult<bool> {
+        match token {
+            Token::Eof | Token::Comma => Ok(true),
+            Token::Kw(keyword) => Ok(keyword_starts_top_level_entity(*keyword)),
+            Token::GlobalVar(_)
+            | Token::GlobalId(_)
+            | Token::LocalVar(_)
+            | Token::LocalVarId(_)
+            | Token::ComdatVar(_)
+            | Token::MetadataVar(_) => self.scan_next_token_is_equal(lex_after_token),
+            Token::Exclaim => self.scan_numbered_metadata_definition(lex_after_token),
+            _ => Ok(false),
+        }
+    }
+
+    fn scan_next_token_is_equal(&self, lex_after_token: &Lexer<'src>) -> ParseResult<bool> {
+        let mut lookahead = lex_after_token.clone();
+        let next = lookahead.next_token().map_err(map_lex_error)?;
+        Ok(matches!(next.value, Token::Equal))
+    }
+
+    fn scan_numbered_metadata_definition(
+        &self,
+        lex_after_token: &Lexer<'src>,
+    ) -> ParseResult<bool> {
+        let mut lookahead = lex_after_token.clone();
+        let slot = lookahead.next_token().map_err(map_lex_error)?;
+        if !matches!(slot.value, Token::IntegerLit(_)) {
+            return Ok(false);
+        }
+        let equal = lookahead.next_token().map_err(map_lex_error)?;
+        Ok(matches!(equal.value, Token::Equal))
+    }
+
+    fn skip_initializer_span(&mut self, end: u32) -> ParseResult<()> {
+        while self.current.span.start < end && !matches!(self.peek(), Token::Eof) {
+            self.bump()?;
+        }
+        Ok(())
     }
 
     fn parse_constant(
@@ -3229,41 +3708,45 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             })
     }
 
-    fn get_or_create_forward_function(
-        &self,
-        name: &str,
-    ) -> ParseResult<llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn>> {
-        if let Some(function) = self.module.function_by_name(name) {
-            return Ok(function);
-        }
-        let fn_ty =
-            self.module
-                .fn_type(self.module.void_type().as_type(), Vec::<Type>::new(), false);
-        self.module
-            .function_builder::<llvmkit_ir::Dyn>(name.to_owned(), fn_ty)
-            .build()
-            .map_err(|e| ParseError::Expected {
-                expected: format!("valid forward function declaration: {e}"),
-                loc: DiagLoc::span(self.loc()),
-            })
-    }
-
-    fn parse_function_ref_for_constant(
+    fn parse_function_ref_for_blockaddress(
         &mut self,
         expected: &'static str,
-    ) -> ParseResult<llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn>> {
+    ) -> ParseResult<ParsedBlockAddressFunction<'ctx>> {
         match self.peek() {
             Token::GlobalVar(_) => {
+                let loc = self.loc();
                 let name = self
                     .current_str_payload()
                     .ok_or_else(|| self.expected(expected))?;
                 self.bump()?;
-                self.get_or_create_forward_function(&name)
+                if let Some(function) = self.module.function_by_name(&name) {
+                    Ok(ParsedBlockAddressFunction::Resolved(function))
+                } else if self.module.get_global(&name).is_some()
+                    || self.module.get_alias(&name).is_some()
+                    || self.module.get_ifunc(&name).is_some()
+                {
+                    Err(self.expected(expected))
+                } else {
+                    Ok(ParsedBlockAddressFunction::Forward {
+                        function: NameOrId::Name(name),
+                        loc,
+                    })
+                }
             }
             Token::GlobalId(id) => {
+                let loc = self.loc();
                 let id = *id;
                 self.bump()?;
-                self.resolve_global_id_as_function(id)
+                match self.numbered_globals.get(id) {
+                    Some(GlobalRef::Function(function)) => {
+                        Ok(ParsedBlockAddressFunction::Resolved(*function))
+                    }
+                    Some(_) => Err(self.expected(expected)),
+                    None => Ok(ParsedBlockAddressFunction::Forward {
+                        function: NameOrId::Id(id),
+                        loc,
+                    }),
+                }
             }
             _ => Err(self.expected(expected)),
         }
@@ -3278,7 +3761,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         }
         self.expect_keyword(Keyword::Blockaddress, "'blockaddress'")?;
         self.expect_punct(PunctKind::LParen, "'(' in blockaddress")?;
-        let function = self.parse_function_ref_for_constant("function name in blockaddress")?;
+        let function = self.parse_function_ref_for_blockaddress("function name in blockaddress")?;
         self.expect_punct(PunctKind::Comma, "',' in blockaddress")?;
         let label = match self.peek() {
             Token::LocalVar(_) => self
@@ -3289,19 +3772,34 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         };
         self.bump()?;
         self.expect_punct(PunctKind::RParen, "')' in blockaddress")?;
-        let block = if let Some(block) = function
-            .basic_blocks()
-            .find(|bb| bb.name().as_deref() == Some(label.as_str()))
-        {
-            block
-        } else if function.basic_blocks().all(|bb| bb.is_empty()) {
-            function.append_basic_block(label)
-        } else {
-            return Err(self.expected("referenced value is not a basic block"));
-        };
-        self.module
-            .block_address(function, block)
-            .map_err(|e| self.builder_err("blockaddress", e))
+        match function {
+            ParsedBlockAddressFunction::Resolved(function) => {
+                if function.basic_blocks().len() == 0 {
+                    return Err(self.expected("cannot take blockaddress inside a declaration"));
+                }
+                let block = function
+                    .basic_blocks()
+                    .find(|bb| bb.name().as_deref() == Some(label.as_str()))
+                    .ok_or_else(|| self.expected("referenced value is not a basic block"))?;
+                self.module
+                    .block_address(function, block)
+                    .map_err(|e| self.builder_err("blockaddress", e))
+            }
+            ParsedBlockAddressFunction::Forward { function, loc } => {
+                let placeholder = self
+                    .module
+                    .block_address_placeholder(expected_ty)
+                    .map_err(|e| self.builder_err("blockaddress placeholder", e))?;
+                let constant = placeholder.as_constant();
+                self.deferred_block_addresses.push(DeferredBlockAddress {
+                    placeholder,
+                    function,
+                    label,
+                    loc,
+                });
+                Ok(constant)
+            }
+        }
     }
 
     fn parse_dso_local_equivalent_constant(&mut self) -> ParseResult<llvmkit_ir::Constant<'ctx>> {
@@ -3312,13 +3810,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                     .current_str_payload()
                     .ok_or_else(|| self.expected("global value name in dso_local_equivalent"))?;
                 self.bump()?;
-                match self.resolve_global_name_as_ref(name.clone()) {
-                    Ok(global) => Ok(global),
-                    Err(ParseError::UndefinedSymbol { .. }) => self
-                        .get_or_create_forward_function(&name)
-                        .map(GlobalRef::Function),
-                    Err(err) => Err(err),
-                }
+                self.resolve_global_name_as_ref(name)
             }
             Token::GlobalId(id) => {
                 let id = *id;
@@ -3340,13 +3832,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                     .current_str_payload()
                     .ok_or_else(|| self.expected("global value name in no_cfi"))?;
                 self.bump()?;
-                match self.resolve_global_name_as_ref(name.clone()) {
-                    Ok(global) => Ok(global),
-                    Err(ParseError::UndefinedSymbol { .. }) => self
-                        .get_or_create_forward_function(&name)
-                        .map(GlobalRef::Function),
-                    Err(err) => Err(err),
-                }
+                self.resolve_global_name_as_ref(name)
             }
             Token::GlobalId(id) => {
                 let id = *id;
@@ -3359,60 +3845,57 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             .no_cfi_global(self.global_ref_to_constant(global))
             .map_err(|e| self.builder_err("no_cfi", e))
     }
-    fn parse_ptrauth_pointer_operand(&mut self) -> ParseResult<llvmkit_ir::Constant<'ctx>> {
+    fn parse_ptrauth_operand(&mut self) -> ParseResult<llvmkit_ir::Constant<'ctx>> {
         let ty = self.parse_type(false)?;
-        match ty.into_type_enum() {
-            AnyTypeEnum::Pointer(_) => {}
-            _ => return Err(self.expected("pointer operand in ptrauth")),
-        }
-        match self.peek() {
-            Token::GlobalVar(_) => {
-                let name = self
-                    .current_str_payload()
-                    .ok_or_else(|| self.expected("global value name in ptrauth"))?;
-                self.bump()?;
-                self.resolve_global_name_as_constant(name)
-            }
-            Token::GlobalId(id) => {
-                let id = *id;
-                self.bump()?;
-                self.resolve_global_id_as_constant(id)
-            }
-            _ => self.parse_global_value(ty),
-        }
+        self.parse_global_value(ty)
     }
 
     fn parse_ptrauth_constant(&mut self) -> ParseResult<llvmkit_ir::Constant<'ctx>> {
         self.expect_keyword(Keyword::Ptrauth, "'ptrauth'")?;
-        self.expect_punct(PunctKind::LParen, "'(' in ptrauth")?;
-        let pointer = self.parse_ptrauth_pointer_operand()?;
-        self.expect_punct(PunctKind::Comma, "',' in ptrauth")?;
-        let key = self.parse_global_type_and_value()?;
+        self.expect_punct(
+            PunctKind::LParen,
+            "expected '(' in constant ptrauth expression",
+        )?;
+        let pointer = self.parse_ptrauth_operand()?;
+        self.expect_punct(
+            PunctKind::Comma,
+            "expected comma in constant ptrauth expression",
+        )?;
+        let key = self.parse_ptrauth_operand()?;
         let discriminator = if self.eat_punct(PunctKind::Comma)? {
-            self.parse_global_type_and_value()?
+            self.parse_ptrauth_operand()?
         } else {
             self.module.i64_type().const_zero().as_constant()
         };
         let addr_discriminator = if self.eat_punct(PunctKind::Comma)? {
-            self.parse_ptrauth_pointer_operand()?
+            self.parse_ptrauth_operand()?
         } else {
             self.module.ptr_type(0).const_null().as_constant()
         };
         let deactivation_symbol = if self.eat_punct(PunctKind::Comma)? {
-            self.parse_ptrauth_pointer_operand()?
+            self.parse_ptrauth_operand()?
         } else {
             self.module.ptr_type(0).const_null().as_constant()
         };
-        self.expect_punct(PunctKind::RParen, "')' in ptrauth")?;
+        self.expect_punct(
+            PunctKind::RParen,
+            "expected ')' in constant ptrauth expression",
+        )?;
         self.module
             .ptr_auth(
-                pointer.as_value(),
-                key.as_value(),
-                discriminator.as_value(),
-                addr_discriminator.as_value(),
-                deactivation_symbol.as_value(),
+                pointer,
+                key,
+                discriminator,
+                addr_discriminator,
+                deactivation_symbol,
             )
-            .map_err(|e| self.builder_err("ptrauth", e))
+            .map_err(|e| match e {
+                IrError::InvalidOperation { message } => ParseError::Expected {
+                    expected: message.into(),
+                    loc: DiagLoc::span(self.loc()),
+                },
+                other => self.builder_err("ptrauth", other),
+            })
     }
 
     fn parse_constant_expr(
@@ -3425,80 +3908,286 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             _ => return Err(self.expected("constant expression opcode")),
         };
         self.bump()?;
-        let mut flags = ConstantExprFlags::default();
         let opcode = match op {
-            crate::ll_token::Opcode::GetElementPtr => {
-                if self.eat_keyword(Keyword::Inbounds)? {
-                    flags.inbounds = true;
-                    ConstantExprOpcode::InBoundsGetElementPtr
-                } else {
-                    ConstantExprOpcode::GetElementPtr
-                }
-            }
-            crate::ll_token::Opcode::BitCast => ConstantExprOpcode::BitCast,
-            crate::ll_token::Opcode::AddrSpaceCast => ConstantExprOpcode::AddrSpaceCast,
-            crate::ll_token::Opcode::IntToPtr => ConstantExprOpcode::IntToPtr,
+            crate::ll_token::Opcode::Add => ConstantExprOpcode::Add,
+            crate::ll_token::Opcode::Sub => ConstantExprOpcode::Sub,
+            crate::ll_token::Opcode::Xor => ConstantExprOpcode::Xor,
+            crate::ll_token::Opcode::GetElementPtr => ConstantExprOpcode::GetElementPtr,
+            crate::ll_token::Opcode::ShuffleVector => ConstantExprOpcode::ShuffleVector,
+            crate::ll_token::Opcode::InsertElement => ConstantExprOpcode::InsertElement,
+            crate::ll_token::Opcode::ExtractElement => ConstantExprOpcode::ExtractElement,
+            crate::ll_token::Opcode::Trunc => ConstantExprOpcode::Trunc,
             crate::ll_token::Opcode::PtrToAddr => ConstantExprOpcode::PtrToAddr,
             crate::ll_token::Opcode::PtrToInt => ConstantExprOpcode::PtrToInt,
-            crate::ll_token::Opcode::Trunc => {
-                flags.nuw = self.eat_keyword(Keyword::Nuw)?;
-                flags.nsw = self.eat_keyword(Keyword::Nsw)?;
-                ConstantExprOpcode::Trunc
-            }
-            crate::ll_token::Opcode::Add => {
-                flags.nuw = self.eat_keyword(Keyword::Nuw)?;
-                flags.nsw = self.eat_keyword(Keyword::Nsw)?;
-                ConstantExprOpcode::Add
-            }
-            crate::ll_token::Opcode::Sub => {
-                flags.nuw = self.eat_keyword(Keyword::Nuw)?;
-                flags.nsw = self.eat_keyword(Keyword::Nsw)?;
-                ConstantExprOpcode::Sub
-            }
-            crate::ll_token::Opcode::Xor => ConstantExprOpcode::Xor,
-            crate::ll_token::Opcode::ExtractElement => ConstantExprOpcode::ExtractElement,
-            crate::ll_token::Opcode::InsertElement => ConstantExprOpcode::InsertElement,
-            crate::ll_token::Opcode::ShuffleVector => ConstantExprOpcode::ShuffleVector,
+            crate::ll_token::Opcode::IntToPtr => ConstantExprOpcode::IntToPtr,
+            crate::ll_token::Opcode::BitCast => ConstantExprOpcode::BitCast,
+            crate::ll_token::Opcode::AddrSpaceCast => ConstantExprOpcode::AddrSpaceCast,
             _ => return Err(self.unsupported_constant_value_form_at(self.loc())),
         };
-        self.expect_punct(PunctKind::LParen, "'(' in constantexpr")?;
-        if matches!(
-            opcode,
-            ConstantExprOpcode::Trunc
-                | ConstantExprOpcode::IntToPtr
-                | ConstantExprOpcode::PtrToAddr
-                | ConstantExprOpcode::PtrToInt
-                | ConstantExprOpcode::BitCast
-                | ConstantExprOpcode::AddrSpaceCast
-        ) {
-            let operand = self.parse_global_type_and_value()?;
-            self.expect_keyword(Keyword::To, "'to' in constantexpr cast")?;
-            let dst_ty = self.parse_type(false)?;
-            if dst_ty != result_ty {
-                return Err(
-                    self.expected("constant expression destination type matches initializer type")
-                );
+
+        match opcode {
+            ConstantExprOpcode::Add | ConstantExprOpcode::Sub | ConstantExprOpcode::Xor => {
+                let flags = if matches!(opcode, ConstantExprOpcode::Add | ConstantExprOpcode::Sub) {
+                    self.parse_overflowing_constant_expr_flags()?
+                } else {
+                    ConstantExprFlags::none()
+                };
+                self.expect_punct(PunctKind::LParen, "expected '(' in binary constantexpr")?;
+                let lhs = self.parse_global_type_and_value()?;
+                self.expect_punct(PunctKind::Comma, "expected comma in binary constantexpr")?;
+                let rhs = self.parse_global_type_and_value()?;
+                if lhs.ty() != rhs.ty() {
+                    return Err(self.expected("operands of constexpr must have same type"));
+                }
+                if !is_int_or_int_vector_type(lhs.ty()) {
+                    return Err(
+                        self.expected("constexpr requires integer or integer vector operands")
+                    );
+                }
+                self.expect_punct(PunctKind::RParen, "expected ')' in binary constantexpr")?;
+                self.build_constant_expr(result_ty, None, opcode, vec![lhs, rhs], flags)
             }
-            self.expect_punct(PunctKind::RParen, "')' in constantexpr")?;
-            return self.build_constant_expr(result_ty, None, opcode, vec![operand], flags);
+            ConstantExprOpcode::Trunc
+            | ConstantExprOpcode::IntToPtr
+            | ConstantExprOpcode::PtrToAddr
+            | ConstantExprOpcode::PtrToInt
+            | ConstantExprOpcode::BitCast
+            | ConstantExprOpcode::AddrSpaceCast => {
+                self.expect_punct(PunctKind::LParen, "expected '(' after constantexpr cast")?;
+                let operand = self.parse_global_type_and_value()?;
+                self.expect_keyword(Keyword::To, "expected 'to' in constantexpr cast")?;
+                let dst_ty = self.parse_type(false)?;
+                if dst_ty != result_ty {
+                    return Err(self.expected(
+                        "constant expression destination type matches initializer type",
+                    ));
+                }
+                self.expect_punct(
+                    PunctKind::RParen,
+                    "expected ')' at end of constantexpr cast",
+                )?;
+                self.build_constant_expr(
+                    result_ty,
+                    None,
+                    opcode,
+                    vec![operand],
+                    ConstantExprFlags::none(),
+                )
+            }
+            ConstantExprOpcode::GetElementPtr => {
+                let parsed_flags = self.parse_gep_constant_expr_flags()?;
+                self.expect_punct(PunctKind::LParen, "expected '(' in constantexpr")?;
+                let source_ty = self.parse_type(false)?;
+                self.expect_punct(
+                    PunctKind::Comma,
+                    "expected comma after getelementptr's type",
+                )?;
+                let operands = self.parse_global_value_vector()?;
+                self.expect_punct(PunctKind::RParen, "expected ')' in constantexpr")?;
+                self.validate_parsed_gep_constant_expr(source_ty, &operands)?;
+                let flags = self.finish_gep_constant_expr_flags(parsed_flags, &operands)?;
+                self.build_constant_expr(result_ty, Some(source_ty), opcode, operands, flags)
+            }
+            ConstantExprOpcode::ShuffleVector
+            | ConstantExprOpcode::InsertElement
+            | ConstantExprOpcode::ExtractElement => {
+                self.expect_punct(PunctKind::LParen, "expected '(' in constantexpr")?;
+                let operands = self.parse_global_value_vector()?;
+                self.expect_punct(PunctKind::RParen, "expected ')' in constantexpr")?;
+                self.validate_parsed_vector_constant_expr(opcode, result_ty, &operands)?;
+                self.build_constant_expr(
+                    result_ty,
+                    None,
+                    opcode,
+                    operands,
+                    ConstantExprFlags::none(),
+                )
+            }
         }
-        let source_ty = if matches!(
-            opcode,
-            ConstantExprOpcode::GetElementPtr | ConstantExprOpcode::InBoundsGetElementPtr
-        ) {
-            let ty = self.parse_type(false)?;
-            self.expect_punct(PunctKind::Comma, "',' after getelementptr source type")?;
-            Some(ty)
+    }
+
+    fn parse_overflowing_constant_expr_flags(
+        &mut self,
+    ) -> ParseResult<llvmkit_ir::ConstantExprFlags> {
+        let mut flags = llvmkit_ir::OverflowingConstantExprFlags::default();
+        if self.eat_keyword(Keyword::Nuw)? {
+            flags.nuw = true;
+        }
+        if self.eat_keyword(Keyword::Nsw)? {
+            flags.nsw = true;
+            if self.eat_keyword(Keyword::Nuw)? {
+                flags.nuw = true;
+            }
+        }
+        Ok(llvmkit_ir::ConstantExprFlags::overflowing(
+            flags.nuw, flags.nsw,
+        ))
+    }
+
+    fn parse_gep_constant_expr_flags(&mut self) -> ParseResult<ParsedGepConstantExprFlags> {
+        let mut no_wrap = llvmkit_ir::GepNoWrapFlags::empty();
+        loop {
+            if self.eat_keyword(Keyword::Inbounds)? {
+                no_wrap |= llvmkit_ir::GepNoWrapFlags::inbounds();
+            } else if self.eat_keyword(Keyword::Nusw)? {
+                no_wrap |= llvmkit_ir::GepNoWrapFlags::NUSW;
+            } else if self.eat_keyword(Keyword::Nuw)? {
+                no_wrap |= llvmkit_ir::GepNoWrapFlags::NUW;
+            } else {
+                break;
+            }
+        }
+
+        let in_range = if self.eat_keyword(Keyword::Inrange)? {
+            self.expect_punct(PunctKind::LParen, "expected '('")?;
+            let start = self.parse_inrange_bound()?;
+            self.expect_punct(PunctKind::Comma, "expected ','")?;
+            let end = self.parse_inrange_bound()?;
+            self.expect_punct(PunctKind::RParen, "expected ')'")?;
+            Some((start, end))
         } else {
             None
         };
-        let operands = if matches!(self.peek(), Token::RParen) {
-            Vec::new()
-        } else {
-            self.parse_global_value_vector()?
+
+        Ok(ParsedGepConstantExprFlags { no_wrap, in_range })
+    }
+
+    fn finish_gep_constant_expr_flags(
+        &self,
+        parsed: ParsedGepConstantExprFlags,
+        operands: &[llvmkit_ir::Constant<'ctx>],
+    ) -> ParseResult<llvmkit_ir::ConstantExprFlags> {
+        let Some((start, end)) = parsed.in_range else {
+            return Ok(llvmkit_ir::ConstantExprFlags::gep(parsed.no_wrap, None));
         };
-        self.expect_punct(PunctKind::RParen, "')' in constantexpr")?;
-        self.build_constant_expr(result_ty, source_ty, opcode, operands, flags)
+        let Some(base) = operands.first() else {
+            return Err(self.expected("base of getelementptr must be a pointer"));
+        };
+        let address_space = pointer_address_space_or_vector_element(base.ty())
+            .ok_or_else(|| self.expected("base of getelementptr must be a pointer"))?;
+        let bit_width = self.module.data_layout().index_size_in_bits(address_space);
+        let start_words = inrange_bound_to_apint_words(&start, bit_width);
+        let end_words = inrange_bound_to_apint_words(&end, bit_width);
+        let in_range = llvmkit_ir::ConstantExprInRange {
+            start: start_words,
+            end: end_words,
+            bit_width,
+        };
+        if !constant_expr_inrange_is_non_empty(&in_range) {
+            return Err(self.expected("expected end to be larger than start"));
+        }
+        Ok(llvmkit_ir::ConstantExprFlags::gep(
+            parsed.no_wrap,
+            Some(in_range),
+        ))
+    }
+
+    fn parse_inrange_bound(&mut self) -> ParseResult<ParsedInRangeBound> {
+        let bound = match self.peek() {
+            Token::IntegerLit(IntLit {
+                sign,
+                base: NumBase::Dec,
+                digits,
+            }) => {
+                let magnitude_words = decimal_digits_to_words(digits)
+                    .ok_or_else(|| self.expected("expected integer"))?;
+                ParsedInRangeBound::SignedMagnitude {
+                    negative: matches!(sign, Sign::Neg),
+                    magnitude_words,
+                }
+            }
+            Token::IntegerLit(IntLit {
+                base: base @ (NumBase::HexSigned | NumBase::HexUnsigned),
+                digits,
+                ..
+            }) => {
+                let words =
+                    hex_digits_to_words(digits).ok_or_else(|| self.expected("expected integer"))?;
+                let bit_width = hex_apsint_bit_width(digits, &words)
+                    .ok_or_else(|| self.expected("expected integer"))?;
+                ParsedInRangeBound::HexApsInt {
+                    signed: matches!(base, NumBase::HexSigned),
+                    words,
+                    bit_width,
+                }
+            }
+            _ => return Err(self.expected("expected integer")),
+        };
+        self.bump()?;
+        Ok(bound)
+    }
+
+    fn validate_parsed_gep_constant_expr(
+        &self,
+        source_ty: Type<'ctx>,
+        operands: &[llvmkit_ir::Constant<'ctx>],
+    ) -> ParseResult<()> {
+        let Some((base, indices)) = operands.split_first() else {
+            return Err(self.expected("base of getelementptr must be a pointer"));
+        };
+        if !is_ptr_or_ptr_vector_type(base.ty()) {
+            return Err(self.expected("base of getelementptr must be a pointer"));
+        }
+        if !indices.is_empty() && !source_ty.is_sized() {
+            return Err(self.expected("base element of getelementptr must be sized"));
+        }
+        if type_contains_scalable_vector(source_ty) {
+            return Err(self.expected("invalid base element for constant getelementptr"));
+        }
+        let pointer_shape = vector_shape_type(base.ty());
+        let mut gep_width = pointer_shape;
+        for index in indices {
+            if !is_int_or_int_vector_type(index.ty()) {
+                return Err(self.expected("getelementptr index must be an integer"));
+            }
+            if let Some(index_shape) = vector_shape_type(index.ty()) {
+                if let Some(pointer_shape) = gep_width
+                    && index_shape != pointer_shape
+                {
+                    return Err(
+                        self.expected("getelementptr vector index has a wrong number of elements")
+                    );
+                }
+                gep_width = Some(index_shape);
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_parsed_vector_constant_expr(
+        &self,
+        opcode: llvmkit_ir::ConstantExprOpcode,
+        result_ty: Type<'ctx>,
+        operands: &[llvmkit_ir::Constant<'ctx>],
+    ) -> ParseResult<()> {
+        match opcode {
+            llvmkit_ir::ConstantExprOpcode::ShuffleVector => {
+                let [lhs, rhs, mask] = operands else {
+                    return Err(self.expected("expected three operands to shufflevector"));
+                };
+                if !is_valid_shufflevector(result_ty, lhs.ty(), rhs.ty(), mask.ty()) {
+                    return Err(self.expected("invalid operands to shufflevector"));
+                }
+            }
+            llvmkit_ir::ConstantExprOpcode::ExtractElement => {
+                let [vector, index] = operands else {
+                    return Err(self.expected("expected two operands to extractelement"));
+                };
+                if !is_valid_extractelement(result_ty, vector.ty(), index.ty()) {
+                    return Err(self.expected("invalid extractelement operands"));
+                }
+            }
+            llvmkit_ir::ConstantExprOpcode::InsertElement => {
+                let [vector, value, index] = operands else {
+                    return Err(self.expected("expected three operands to insertelement"));
+                };
+                if !is_valid_insertelement(result_ty, vector.ty(), value.ty(), index.ty()) {
+                    return Err(self.expected("invalid insertelement operands"));
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn build_constant_expr(
@@ -3518,35 +4207,35 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                 [],
                 llvmkit_ir::ConstantExprOptions { source_ty, flags },
             )
-            .map_err(|e| self.builder_err("constant expression", e))
+            .map_err(|e| match e {
+                IrError::InvalidOperation { message }
+                    if matches!(opcode, llvmkit_ir::ConstantExprOpcode::ShuffleVector)
+                        && message == "invalid shufflevector constant expression" =>
+                {
+                    ParseError::Expected {
+                        expected: "invalid operands to shufflevector".into(),
+                        loc: DiagLoc::span(self.loc()),
+                    }
+                }
+                IrError::InvalidOperation { message } => ParseError::Expected {
+                    expected: message.into(),
+                    loc: DiagLoc::span(self.loc()),
+                },
+                other => self.builder_err("constant expression", other),
+            })
     }
 
     fn parse_optional_function_linkage(&mut self, is_define: bool) -> ParseResult<Linkage> {
         let loc = self.loc();
-        let linkage = if self.eat_keyword(Keyword::External)? {
-            Linkage::External
-        } else if self.eat_keyword(Keyword::AvailableExternally)? {
-            Linkage::AvailableExternally
-        } else if self.eat_keyword(Keyword::Linkonce)? {
-            Linkage::LinkOnceAny
-        } else if self.eat_keyword(Keyword::LinkonceOdr)? {
-            Linkage::LinkOnceODR
-        } else if self.eat_keyword(Keyword::Weak)? {
-            Linkage::WeakAny
-        } else if self.eat_keyword(Keyword::WeakOdr)? {
-            Linkage::WeakODR
-        } else if self.eat_keyword(Keyword::Appending)? {
-            Linkage::Appending
-        } else if self.eat_keyword(Keyword::Internal)? {
-            Linkage::Internal
-        } else if self.eat_keyword(Keyword::Private)? {
-            Linkage::Private
-        } else if self.eat_keyword(Keyword::ExternWeak)? {
-            Linkage::ExternalWeak
-        } else if self.eat_keyword(Keyword::Common)? {
-            Linkage::Common
-        } else {
-            Linkage::External
+        let linkage = match self.peek() {
+            Token::Kw(keyword) => match linkage_keyword(*keyword) {
+                Some(linkage) => {
+                    self.bump()?;
+                    linkage
+                }
+                None => Linkage::External,
+            },
+            _ => Linkage::External,
         };
 
         match linkage {
@@ -4104,11 +4793,17 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         let mut attrs = AttributeStorage::new();
         self.parse_fn_attribute_value_pairs(&mut attrs, AttrIndex::Return, false)?;
         let ret_ty = self.parse_type(true)?;
-        let name = match self.peek() {
-            Token::GlobalVar(_) => self
-                .current_str_payload()
-                .ok_or_else(|| self.expected("function name"))?,
-            Token::GlobalId(n) => format!("{n}"),
+        let (name_id, name) = match self.peek() {
+            Token::GlobalVar(_) => {
+                let name = self
+                    .current_str_payload()
+                    .ok_or_else(|| self.expected("function name"))?;
+                (NameOrId::Name(name.clone()), name)
+            }
+            Token::GlobalId(n) => {
+                let id = *n;
+                (NameOrId::Id(id), format!("{id}"))
+            }
             _ => return Err(self.expected("function name after return type")),
         };
         let decl_loc = self.loc();
@@ -4238,6 +4933,14 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         }
         for (kind, id) in suffix.metadata {
             f.set_metadata(kind, id);
+        }
+        if let NameOrId::Id(id) = name_id {
+            self.numbered_globals
+                .add(id, GlobalRef::Function(f))
+                .map_err(|source| ParseError::InvalidSlotId {
+                    source,
+                    loc: DiagLoc::span(decl_loc),
+                })?;
         }
 
         self.expect_punct(PunctKind::LBrace, "'{' to open function body")?;
@@ -5981,7 +6684,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         }
         let calling_conv = self.parse_optional_calling_conv()?;
         let return_attrs = self.parse_optional_return_attrs()?;
-        let ret_ty = self.parse_type(true)?;
+        let callee_ty = self.parse_type(true)?;
         let parsed_callee = self.parse_direct_callee_ref()?;
         self.expect_punct(PunctKind::LParen, "'(' in call argument list")?;
         let mut args: Vec<llvmkit_ir::Value<'ctx>> = Vec::new();
@@ -6017,7 +6720,10 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             operand_bundles,
             fmf: FastMathFlags::empty(),
         };
-        let parsed_fn_ty = self.module.fn_type(ret_ty, arg_tys, var_args);
+        let parsed_fn_ty = match callee_ty.into_type_enum() {
+            AnyTypeEnum::Function(fn_ty) => fn_ty,
+            _ => self.module.fn_type(callee_ty, arg_tys, var_args),
+        };
         let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty)?;
         let name = result_name.as_str();
         let v = match callee {
@@ -7555,18 +8261,6 @@ mod tests {
     #[test]
     fn parses_numbered_struct_definition() {
         parse("%0 = type { i32, i32, i32, i32 }\n").unwrap();
-    }
-
-    /// Mirrors `LLParser::parseType`'s rejection of legacy typed pointers
-    /// in opaque-pointer mode (LLVM 17+). The error wording is checked
-    /// structurally, not by string.
-    #[test]
-    fn rejects_legacy_typed_pointer_suffix() {
-        let err = parse("%foo = type { i32* }\n").unwrap_err();
-        match err {
-            ParseError::Expected { expected, .. } => assert!(expected.contains("opaque-pointer")),
-            other => panic!("unexpected error variant: {other:?}"),
-        }
     }
 
     /// Mirrors `test/Assembler/global-variable-attributes.ll` — simple

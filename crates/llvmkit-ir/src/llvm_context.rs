@@ -412,6 +412,15 @@ impl Context {
         ValueId::from_index(idx)
     }
 
+    fn register_constant_operand_uses(&self, user: ValueId) {
+        let ValueKindData::Constant(data) = &self.value_data(user).kind else {
+            return;
+        };
+        data.for_each_operand(|operand| {
+            self.value_data(operand).use_list.borrow_mut().push(user);
+        });
+    }
+
     /// Update the parent block of the instruction stored at `inst_id`.
     /// No-op if the value at that id is not an instruction. Crate-internal:
     /// only the lifecycle primitives in [`crate::instruction`] reach for this.
@@ -514,6 +523,16 @@ impl Context {
         })
     }
 
+    pub(crate) fn push_constant_block_address_placeholder(&self, ty: TypeId) -> ValueId {
+        self.push_value(ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: ValueKindData::Constant(ConstantData::BlockAddressPlaceholder),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        })
+    }
+
     /// Materialise a `getelementptr inbounds (i8, ptr @<base>, i64 <off>)`
     /// constant of pointer type `ty`. Not interned (each offset-pointer is
     /// effectively unique and cheap); a fresh value-arena node each call.
@@ -583,6 +602,7 @@ impl Context {
             kind: ValueKindData::Constant(ConstantData::Aggregate(elements)),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
+        self.register_constant_operand_uses(id);
         self.aggregate_constants.borrow_mut().insert(key, id);
         id
     }
@@ -600,6 +620,7 @@ impl Context {
             kind: ValueKindData::Constant(ConstantData::Expr(data)),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
+        self.register_constant_operand_uses(id);
         self.expr_constants.borrow_mut().insert(key, id);
         id
     }
@@ -726,6 +747,7 @@ impl Context {
             }),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
+        self.register_constant_operand_uses(id);
         self.ptrauth_constants.borrow_mut().insert(map_key, id);
         id
     }

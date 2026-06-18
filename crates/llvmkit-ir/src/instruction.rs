@@ -864,7 +864,7 @@ impl<'ctx> Instruction<'ctx, state::Detached> {
 /// For each operand `Cell<ValueId>` in `kind` whose current value is
 /// `from`, replace it with `to`. The match arms are exhaustive so
 /// future opcodes will fail to compile until they are added here.
-fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueId, to: ValueId) {
+pub(crate) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueId, to: ValueId) {
     use crate::instr_types::BranchKind;
     let swap = |c: &core::cell::Cell<ValueId>| {
         if c.get() == from {

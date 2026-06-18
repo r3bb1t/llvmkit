@@ -89,7 +89,10 @@ pub use calling_conv::CallingConv;
 pub use cfg::{BasicBlockEdge, FunctionCfg};
 pub use cmp_predicate::{FloatPredicate, IntPredicate};
 pub use comdat::{ComdatRef, SelectionKind};
-pub use constant::{Constant, ConstantExprFlags, ConstantExprOpcode, IsConstant};
+pub use constant::{
+    BlockAddressPlaceholder, Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode,
+    ConstantGepFlags, IsConstant, OverflowingConstantExprFlags,
+};
 pub use constants::{
     ConstantAggregate, ConstantExprOptions, ConstantFloatValue, ConstantIntValue,
     ConstantPointerNull, PoisonValue, UndefValue,

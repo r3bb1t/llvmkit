@@ -36,6 +36,18 @@ fn assert_parse_print_parse_stable(text: &str) {
     assert_eq!(reparsed, text);
 }
 
+fn assert_parse_error(src: &[u8], expected_message: &str) {
+    let module = Module::new("parser_constants_error");
+    let err = Parser::new(src, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect_err("fixture is rejected");
+    match err {
+        ParseError::Expected { expected, .. } => assert_eq!(expected, expected_message),
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
 /// Exact struct aggregate store from `test/Assembler/aggregate-constant-values.ll`.
 #[test]
 fn struct_constant_initializer_round_trips() {
@@ -64,7 +76,7 @@ fn array_constant_initializer_round_trips() {
     );
 }
 
-/// llvmkit-specific subset of `LLParser::parseValID`'s `getelementptr`
+/// Direct port of `LLParser::parseValID`'s `getelementptr`
 /// global-initializer shape.
 #[test]
 fn getelementptr_constant_expr_initializer_round_trips() {
@@ -97,7 +109,7 @@ fn constant_expr_casts_round_trip() {
     assert_parse_print_parse_stable(&text);
 }
 
-/// llvmkit-specific subset of `LLParser::parseValID`'s integer binary
+/// Direct port of `LLParser::parseValID`'s integer binary
 /// constant-expression branch: the accepted `add (ty lhs, ty rhs)` shape.
 #[test]
 fn constant_expr_binary_round_trip() {
@@ -109,7 +121,7 @@ fn constant_expr_binary_round_trip() {
     assert_parse_print_parse_stable(&text);
 }
 
-/// llvmkit-specific subset of `LLParser::parseValID`'s general
+/// Direct port of `LLParser::parseValID`'s general
 /// `getelementptr` constant-expression shape.
 #[test]
 fn constant_expr_gep_round_trip() {
@@ -123,8 +135,103 @@ fn constant_expr_gep_round_trip() {
     );
     assert_parse_print_parse_stable(&text);
 }
+/// Exact scalar-pointer/vector-index constant-expression GEP from
+/// `test/Assembler/opaque-ptr.ll`.
+#[test]
+fn constant_expr_vector_gep_round_trips() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/opaque-ptr/constexpr_vector_gep_round_trips.ll");
 
-/// llvmkit-specific subset of `LLParser::parseValID`'s `blockaddress` branch:
+    let text = parse_and_render("constant_expr_vector_gep_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["ret <2 x ptr> getelementptr (i16, ptr null, <2 x i32> <i32 3, i32 4>)"],
+    );
+    assert_parse_print_parse_stable(&text);
+}
+
+/// Exact constant-expression GEP flag forms from `test/Assembler/flags.ll`.
+#[test]
+fn constant_expr_gep_flags_match_upstream_flags_fixture() {
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/flags/constant_expr_gep_flags.ll");
+
+    let text = parse_and_render("constant_expr_gep_flags", FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "ret ptr getelementptr nuw (i8, ptr @addr, i64 100)",
+            "ret ptr getelementptr inbounds nuw (i8, ptr @addr, i64 100)",
+            "ret ptr getelementptr nusw (i8, ptr @addr, i64 100)",
+            "ret ptr getelementptr inbounds (i8, ptr @addr, i64 100)",
+            "ret ptr getelementptr nusw nuw (i8, ptr @addr, i64 100)",
+            "ret ptr getelementptr inbounds nuw (i8, ptr @addr, i64 100)",
+            "ret ptr getelementptr inbounds nuw (i8, ptr @addr, i64 100)",
+            "ret ptr getelementptr nuw inrange(-8, 16) (i8, ptr @addr, i64 100)",
+        ],
+    );
+    assert_parse_print_parse_stable(&text);
+}
+
+/// Exact addrspace(1) constant-expression GEP flag form from
+/// `test/Assembler/flags.ll`.
+#[test]
+fn constant_expr_gep_flags_addrspace_round_trips() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/flags/constant_expr_gep_flags_addrspace.ll");
+
+    let text = parse_and_render("constant_expr_gep_flags_addrspace", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["ret ptr addrspace(1) getelementptr nusw nuw (i8, ptr addrspace(1) @addr_as1, i64 100)"],
+    );
+    assert_parse_print_parse_stable(&text);
+}
+
+/// Direct port of `LLParser::parseValID`'s constant GEP `inrange` APInt
+/// truncation branch: endpoints are parsed before DataLayout index-width
+/// truncation.
+#[test]
+fn constant_expr_gep_inrange_apint_bounds_truncate_to_index_width() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseValID/constant_expr_gep_inrange_apint_trunc.ll"
+    );
+
+    let text = parse_and_render("constant_expr_gep_inrange_apint_trunc", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["ret ptr getelementptr inrange(0, 1) (i8, ptr @addr, i64 100)"],
+    );
+    assert_parse_print_parse_stable(&text);
+}
+/// Direct port of `LLParser::parseValID`'s constant GEP `inrange` APSInt
+/// branch: endpoints accept `s0x` / `u0x` hexadecimal APSInt tokens.
+#[test]
+fn constant_expr_gep_inrange_hex_apsint_bounds_round_trip() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseValID/constant_expr_gep_inrange_hex_apsint.ll"
+    );
+
+    let text = parse_and_render("constant_expr_gep_inrange_hex_apsint", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["ret ptr getelementptr inrange(0, 1) (i8, ptr @addr, i64 100)"],
+    );
+    assert_parse_print_parse_stable(&text);
+}
+
+/// Direct port of `LLLexer` hexadecimal APSInt active-bit truncation: `s0x1`
+/// is a one-bit signed APSInt and therefore sign-extends to `-1`, so the
+/// half-open range is empty after `LLParser::parseValID` index-width extension.
+#[test]
+fn constant_expr_gep_inrange_signed_hex_active_bits_are_preserved() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseValID/constant_expr_gep_inrange_signed_hex_active_bits_invalid.ll"
+    );
+
+    assert_parse_error(FIXTURE, "expected end to be larger than start");
+}
+
+/// Direct port of `LLParser::parseValID`'s `blockaddress` branch:
 /// the accepted `blockaddress(@function, %block)` shape.
 #[test]
 fn blockaddress_round_trips() {
@@ -136,8 +243,8 @@ fn blockaddress_round_trips() {
     assert_parse_print_parse_stable(&text);
 }
 
-/// llvmkit-specific subset of `LLParser::parseValID`'s
-/// `dso_local_equivalent` branch: the accepted global-initializer shape.
+/// Direct port of `LLParser::parseValID`'s `dso_local_equivalent` branch:
+/// the accepted global-initializer shape.
 #[test]
 fn dso_local_equivalent_round_trips() {
     const FIXTURE: &[u8] =
@@ -148,8 +255,8 @@ fn dso_local_equivalent_round_trips() {
     assert_parse_print_parse_stable(&text);
 }
 
-/// llvmkit-specific subset of `LLParser::parseValID`'s `no_cfi` branch: the
-/// accepted global-initializer shape.
+/// Direct port of `LLParser::parseValID`'s `no_cfi` branch: the accepted
+/// global-initializer shape.
 #[test]
 fn no_cfi_round_trips() {
     const FIXTURE: &[u8] =
@@ -185,8 +292,8 @@ fn ptrtoaddr_constant_expr_round_trips() {
     assert_parse_print_parse_stable(&text);
 }
 
-/// llvmkit-specific subset of `LLParser::parseValID`'s unsupported legacy
-/// constant-expression diagnostics.
+/// Direct port of `LLParser::parseValID`'s unsupported legacy
+/// constant-expression diagnostics for the listed upstream parser branches.
 #[test]
 fn unsupported_constant_expr_opcodes_are_rejected() {
     for (opcode, src) in [
@@ -241,6 +348,37 @@ fn unsupported_constant_expr_opcodes_are_rejected() {
             other => panic!("unexpected error variant: {other:?}"),
         }
     }
+}
+
+/// Ports `ShuffleVectorInst::isValidOperands`: constant-expression shuffle
+/// masks must have i32 elements, not just any integer element type.
+#[test]
+fn constant_expr_shufflevector_rejects_non_i32_mask() {
+    assert_parse_error(
+        b"define <2 x i32> @bad() {\n  ret <2 x i32> shufflevector (<2 x i32> <i32 1, i32 2>, <2 x i32> <i32 3, i32 4>, <2 x i64> <i64 0, i64 1>)\n}\n",
+        "invalid operands to shufflevector",
+    );
+}
+
+/// Ports `ShuffleVectorInst::isValidOperands`: fixed-vector mask elements
+/// greater than or equal to `2 * V1Size` are rejected by `parseValID`.
+#[test]
+fn constant_expr_shufflevector_rejects_out_of_range_mask() {
+    assert_parse_error(
+        b"define <2 x i32> @bad() {\n  ret <2 x i32> shufflevector (<2 x i32> <i32 1, i32 2>, <2 x i32> <i32 3, i32 4>, <2 x i32> <i32 0, i32 4>)\n}\n",
+        "invalid operands to shufflevector",
+    );
+}
+
+/// Ports `ConstantExpr::isSupportedGetElementPtr` plus recursive
+/// `Type::isScalableTy`: aggregate source types containing scalable vectors are
+/// invalid constant-GEP base elements.
+#[test]
+fn constant_expr_gep_rejects_scalable_aggregate_pointee() {
+    assert_parse_error(
+        b"define ptr @bad() {\n  ret ptr getelementptr ([2 x <vscale x 1 x i8>], ptr null, i64 1)\n}\n",
+        "invalid base element for constant getelementptr",
+    );
 }
 
 /// Mirrors `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none`
@@ -308,8 +446,8 @@ fn target_ext_zeroinitializer_requires_zero_init_property() {
     }
 }
 
-/// llvmkit-specific subset of `LLParser::parseValID`'s `ptrauth` branch: the
-/// five-operand shape accepted by llvmkit.
+/// Direct port of `LLParser::parseValID`'s `ptrauth` branch: the five-operand
+/// shape accepted by upstream.
 #[test]
 fn ptrauth_five_operands_round_trips() {
     const FIXTURE: &[u8] = include_bytes!(
@@ -320,7 +458,7 @@ fn ptrauth_five_operands_round_trips() {
     assert_check_lines(
         &text,
         &[
-            "@signed = global ptr ptrauth (ptr @g, i32 0, i64 1, ptr inttoptr (i64 1 to ptr), ptr inttoptr (i64 2 to ptr))",
+            "@signed = global ptr ptrauth (ptr @g, i32 0, i64 1, ptr inttoptr (i64 1 to ptr), ptr @g)",
         ],
     );
     assert_parse_print_parse_stable(&text);
@@ -337,8 +475,46 @@ fn ptrauth_default_operands_are_elided() {
     assert_parse_print_parse_stable(&text);
 }
 
-/// llvmkit-specific subset of `LLParser::parseValID`'s forward blockaddress
-/// placeholder resolution.
+/// Exact ptrauth validation diagnostics from `test/Assembler/invalid-ptrauth-const*.ll`.
+#[test]
+fn ptrauth_invalid_operands_match_upstream_diagnostics() {
+    for (fixture, expected) in [
+        (
+            include_bytes!("fixtures/upstream/ptrauth-const/invalid_ptrauth_base_pointer.ll")
+                .as_slice(),
+            "constant ptrauth base pointer must be a pointer",
+        ),
+        (
+            include_bytes!("fixtures/upstream/ptrauth-const/invalid_ptrauth_key.ll").as_slice(),
+            "constant ptrauth key must be i32 constant",
+        ),
+        (
+            include_bytes!("fixtures/upstream/ptrauth-const/invalid_ptrauth_addr_disc.ll")
+                .as_slice(),
+            "constant ptrauth address discriminator must be a pointer",
+        ),
+        (
+            include_bytes!("fixtures/upstream/ptrauth-const/invalid_ptrauth_disc_expr.ll")
+                .as_slice(),
+            "constant ptrauth integer discriminator must be i64 constant",
+        ),
+        (
+            include_bytes!("fixtures/upstream/ptrauth-const/invalid_ptrauth_disc_type.ll")
+                .as_slice(),
+            "constant ptrauth integer discriminator must be i64 constant",
+        ),
+        (
+            include_bytes!("fixtures/upstream/ptrauth-const/invalid_ptrauth_deactivation.ll")
+                .as_slice(),
+            "constant ptrauth deactivation symbol must be a pointer",
+        ),
+    ] {
+        assert_parse_error(fixture, expected);
+    }
+}
+
+/// Direct port of `LLParser::parseValID`'s forward blockaddress placeholder
+/// resolution.
 #[test]
 fn forward_blockaddress_resolves_later_signature() {
     const FIXTURE: &[u8] = include_bytes!(
@@ -357,8 +533,31 @@ fn forward_blockaddress_resolves_later_signature() {
     assert_parse_print_parse_stable(&text);
 }
 
-/// llvmkit-specific subset of `LLParser::parseValID`'s forward
-/// `dso_local_equivalent` / `no_cfi` placeholder resolution.
+/// Direct port of `LLParser::parseValID`'s forward blockaddress placeholder
+/// resolution in a nested aggregate constant.
+#[test]
+fn nested_forward_blockaddress_resolves_later_signature() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseValID/nested_forward_blockaddress_resolves_later_signature.ll"
+    );
+
+    let text = parse_and_render(
+        "nested_forward_blockaddress_resolves_later_signature",
+        FIXTURE,
+    );
+    assert_check_lines(
+        &text,
+        &[
+            "@addrs = global [1 x ptr] [ptr blockaddress(@f, %entry)]",
+            "define i32 @f(i32 %x)",
+        ],
+    );
+    assert_eq!(text.matches("declare void @f()").count(), 0);
+    assert_parse_print_parse_stable(&text);
+}
+
+/// Direct port of `LLParser::parseValID`'s forward `dso_local_equivalent` /
+/// `no_cfi` placeholder resolution.
 #[test]
 fn forward_dso_and_no_cfi_resolve_later_signature() {
     const FIXTURE: &[u8] = include_bytes!(
@@ -371,6 +570,87 @@ fn forward_dso_and_no_cfi_resolve_later_signature() {
         &[
             "@d = global ptr dso_local_equivalent @f",
             "@n = global ptr no_cfi @f",
+            "declare i32 @f(i32 %0)",
+        ],
+    );
+    assert_eq!(text.matches("declare void @f()").count(), 0);
+    assert_parse_print_parse_stable(&text);
+}
+
+/// Direct port of `LLParser::parseValID`'s `ForwardRefBlockAddresses` path:
+/// a function-body constant can name a block in a later-defined function.
+#[test]
+fn function_body_forward_blockaddress_resolves_later_signature() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseValID/function_body_forward_blockaddress_resolves_later_signature.ll"
+    );
+
+    let text = parse_and_render("function_body_forward_blockaddress", FIXTURE);
+    assert_check_lines(&text, &["ret ptr blockaddress(@f, %entry)"]);
+    assert_parse_print_parse_stable(&text);
+}
+
+/// Mirrors `LLParser::ForwardRefBlockAddresses`: RAUW must update constant
+/// aggregate users, not only direct instruction operands.
+#[test]
+fn function_body_forward_aggregate_blockaddress_resolves_later_signature() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseValID/function_body_forward_aggregate_blockaddress_resolves_later_signature.ll"
+    );
+
+    let text = parse_and_render("function_body_forward_aggregate_blockaddress", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["call void @sink([1 x ptr] [ptr blockaddress(@f, %entry)])"],
+    );
+    assert_parse_print_parse_stable(&text);
+}
+
+/// Mirrors `LLParser::parseValID`: numbered global IDs share the forward
+/// `blockaddress` placeholder path with named functions.
+#[test]
+fn function_body_forward_numbered_blockaddress_resolves_later_signature() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseValID/function_body_forward_numbered_blockaddress_resolves_later_signature.ll"
+    );
+
+    let text = parse_and_render("function_body_forward_numbered_blockaddress", FIXTURE);
+    assert_check_lines(&text, &["ret ptr blockaddress(@0, %entry)"]);
+    assert_parse_print_parse_stable(&text);
+}
+
+/// Exact `return-fwddecl-good.ll` address-space case from
+/// `test/Bitcode/blockaddress-addrspace.ll`.
+#[test]
+fn forward_blockaddress_preserves_function_address_space() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/blockaddress-addrspace/return_fwddecl_good.ll");
+
+    let text = parse_and_render("forward_blockaddress_addrspace", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["ret ptr addrspace(2) blockaddress(@fwddecl_as2, %bb)"],
+    );
+    assert_parse_print_parse_stable(&text);
+}
+
+/// Direct port of `LLParser::parseValID`'s forward `dso_local_equivalent` /
+/// `no_cfi` placeholder resolution in nested aggregate constants.
+#[test]
+fn nested_forward_dso_and_no_cfi_resolve_later_signature() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseValID/nested_forward_dso_and_no_cfi_resolve_later_signature.ll"
+    );
+
+    let text = parse_and_render(
+        "nested_forward_dso_and_no_cfi_resolve_later_signature",
+        FIXTURE,
+    );
+    assert_check_lines(
+        &text,
+        &[
+            "@d = global [1 x ptr] [ptr dso_local_equivalent @f]",
+            "@n = global [1 x ptr] [ptr no_cfi @f]",
             "declare i32 @f(i32 %0)",
         ],
     );
