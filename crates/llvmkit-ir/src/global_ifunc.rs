@@ -4,8 +4,10 @@ use core::cell::{Cell, RefCell};
 
 use crate::DebugLoc;
 use crate::constant::{Constant, IsConstant};
+use crate::derived_types::PointerType;
 use crate::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
 use crate::global_value::{Linkage, Visibility};
+use crate::metadata::MetadataAttachmentSet;
 use crate::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use crate::r#type::{Type, TypeId, TypeKind};
 use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
@@ -78,7 +80,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
     }
 
     #[inline]
-    pub fn ty(self) -> crate::PointerType<'ctx, B> {
+    pub fn ty(self) -> PointerType<'ctx, B> {
         crate::PointerType::new(self.ty, self.module)
     }
 
@@ -152,7 +154,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
         self.data().visibility.set(visibility);
     }
 
-    pub fn metadata(self) -> core::cell::Ref<'ctx, crate::metadata::MetadataAttachmentSet> {
+    pub fn metadata(self) -> core::cell::Ref<'ctx, MetadataAttachmentSet> {
         self.data().metadata.borrow()
     }
 
@@ -169,12 +171,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
         self.data().partition.borrow().clone()
     }
 
-    pub fn set_partition(
-        self,
-        _module: &Module<'ctx, B, Unverified>,
-        partition: Option<impl Into<String>>,
-    ) {
-        *self.data().partition.borrow_mut() = partition.map(Into::into);
+    pub fn set_partition<P>(self, _module: &Module<'ctx, B, Unverified>, partition: P)
+    where
+        P: Into<String>,
+    {
+        *self.data().partition.borrow_mut() = Some(partition.into());
+    }
+
+    pub fn clear_partition(self, _module: &Module<'ctx, B, Unverified>) {
+        *self.data().partition.borrow_mut() = None;
     }
 }
 
@@ -201,7 +206,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalIFunc<'ctx, B> {
     fn name(self) -> Option<String> {
         Some(self.data().name.clone())
     }
-    fn set_name(self, _module_token: &Module<'ctx, B, Unverified>, _name: &str) {}
+    fn set_name<Name>(self, _module_token: &Module<'ctx, B, Unverified>, _name: Name)
+    where
+        Name: Into<String>,
+    {
+    }
     fn clear_name(self, _module_token: &Module<'ctx, B, Unverified>) {}
 }
 impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalIFunc<'_, B> {
@@ -290,7 +299,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
         self
     }
 
-    pub fn partition(mut self, partition: impl Into<String>) -> Self {
+    pub fn partition<Partition>(mut self, partition: Partition) -> Self
+    where
+        Partition: Into<String>,
+    {
         self.partition = Some(partition.into());
         self
     }

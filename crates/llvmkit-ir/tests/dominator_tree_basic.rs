@@ -18,7 +18,7 @@ fn reachable_and_unreachable_block_dominance() -> Result<(), IrError> {
     Module::with_new("dt_blocks", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let then_bb = f.append_basic_block(&m, "then");
         let else_bb = f.append_basic_block(&m, "else");
@@ -73,7 +73,7 @@ fn same_block_instruction_order_and_unreachable_use_semantics() -> Result<(), Ir
     Module::with_new("dt_inst_order", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let dead = f.append_basic_block(&m, "dead");
         let x: IntValue<i32> = f.param(0)?.try_into()?;
@@ -115,7 +115,7 @@ fn phi_operands_are_dominated_on_incoming_edges() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let bool_ty = m.bool_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()], false);
-        let f = m.add_function::<i32>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let then_bb = f.append_basic_block(&m, "then");
         let else_bb = f.append_basic_block(&m, "else");
@@ -134,7 +134,7 @@ fn phi_operands_are_dominated_on_incoming_edges() -> Result<(), IrError> {
             .build_br(join)?;
         let bj = IRBuilder::new_for::<i32>(&m).position_at_end(join);
         let phi = bj
-            .build_int_phi::<i32>("p")?
+            .build_int_phi::<i32, _>("p")?
             .add_incoming(y, then_bb)?
             .add_incoming(x, else_bb)?;
         bj.build_ret(phi.as_int_value())?;
@@ -161,9 +161,9 @@ fn invoke_result_dominates_normal_destination_but_not_unwind() -> Result<(), IrE
     Module::with_new("dt_invoke", |m| {
         let i32_ty = m.i32_type();
         let callee_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let callee = m.add_function::<i32>("callee", callee_ty, Linkage::External)?;
+        let callee = m.add_function::<i32, _>("callee", callee_ty, Linkage::External)?;
         let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32>("f", caller_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("f", caller_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let normal = f.append_basic_block(&m, "normal");
         let unwind = f.append_basic_block(&m, "unwind");
@@ -207,7 +207,7 @@ fn duplicate_edges_do_not_dominate_successor() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let bool_ty = m.bool_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()], false);
-        let f = m.add_function::<i32>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let join = f.append_basic_block(&m, "join");
         let x: IntValue<i32> = f.param(0)?.try_into()?;
@@ -218,7 +218,7 @@ fn duplicate_edges_do_not_dominate_successor() -> Result<(), IrError> {
             .build_cond_br(cond, join, join)?;
         let bj = IRBuilder::new_for::<i32>(&m).position_at_end(join);
         let phi = bj
-            .build_int_phi::<i32>("p")?
+            .build_int_phi::<i32, _>("p")?
             .add_incoming(x, entry)?
             .add_incoming(x, entry)?;
         bj.build_ret(phi.as_int_value())?;

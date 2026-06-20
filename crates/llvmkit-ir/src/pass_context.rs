@@ -7,6 +7,7 @@
 use core::marker::PhantomData;
 
 use crate::BasicBlock;
+use crate::IrResult;
 use crate::analysis::{
     FunctionAnalysis, FunctionAnalysisManager, ModuleAnalysis, ModuleAnalysisManager,
 };
@@ -225,11 +226,11 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ReadOnlyFunctionPassContext<'pm, 'ctx, B>
 
     /// Query a function analysis for this pass's function.
     #[inline]
-    pub fn analysis<A>(&mut self) -> crate::IrResult<&A::Result>
+    pub fn analysis<A>(&mut self) -> IrResult<&A::Result>
     where
         A: FunctionAnalysis<'ctx, B>,
     {
-        self.fam.get_result::<A>(self.function)
+        self.fam.get_result::<A, _>(self.function)
     }
 
     /// Read a cached function analysis without computing it.
@@ -238,7 +239,7 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ReadOnlyFunctionPassContext<'pm, 'ctx, B>
     where
         A: FunctionAnalysis<'ctx, B>,
     {
-        self.fam.get_cached_result::<A>(self.function)
+        self.fam.get_cached_result::<A, _>(self.function)
     }
 
     /// Read a cached module analysis without computing it.
@@ -247,7 +248,7 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ReadOnlyFunctionPassContext<'pm, 'ctx, B>
     where
         A: ModuleAnalysis<'ctx, B>,
     {
-        self.mam?.get_cached_result::<A>(self.module())
+        self.mam?.get_cached_result::<A, _>(self.module())
     }
 
     #[inline]
@@ -308,11 +309,11 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> FunctionPassContext<'pm, 'ctx, B> {
 
     /// Query a function analysis for this pass's function.
     #[inline]
-    pub fn analysis<A>(&mut self) -> crate::IrResult<&A::Result>
+    pub fn analysis<A>(&mut self) -> IrResult<&A::Result>
     where
         A: FunctionAnalysis<'ctx, B>,
     {
-        self.fam.get_result::<A>(self.function)
+        self.fam.get_result::<A, _>(self.function)
     }
 
     /// Read a cached function analysis without computing it.
@@ -321,7 +322,7 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> FunctionPassContext<'pm, 'ctx, B> {
     where
         A: FunctionAnalysis<'ctx, B>,
     {
-        self.fam.get_cached_result::<A>(self.function)
+        self.fam.get_cached_result::<A, _>(self.function)
     }
 
     /// Read a cached module analysis without computing it.
@@ -330,7 +331,7 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> FunctionPassContext<'pm, 'ctx, B> {
     where
         A: ModuleAnalysis<'ctx, B>,
     {
-        self.mam?.get_cached_result::<A>(self.module())
+        self.mam?.get_cached_result::<A, _>(self.module())
     }
 
     /// Function analysis manager for this module brand.
@@ -371,7 +372,7 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ReadOnlyModulePassContext<'pm, 'ctx, B> {
 
     /// Query a module analysis.
     #[inline]
-    pub fn module_analysis<A>(&mut self) -> crate::IrResult<&A::Result>
+    pub fn module_analysis<A>(&mut self) -> IrResult<&A::Result>
     where
         A: ModuleAnalysis<'ctx, B>,
     {
@@ -384,7 +385,7 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ReadOnlyModulePassContext<'pm, 'ctx, B> {
     where
         A: ModuleAnalysis<'ctx, B>,
     {
-        self.mam.get_cached_result::<A>(self.module())
+        self.mam.get_cached_result::<A, _>(self.module())
     }
 
     /// Query a function analysis for a function in this module.
@@ -396,7 +397,7 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ReadOnlyModulePassContext<'pm, 'ctx, B> {
     where
         A: FunctionAnalysis<'ctx, B>,
     {
-        self.fam.get_result::<A>(function)
+        self.fam.get_result::<A, _>(function)
     }
 
     #[inline]
@@ -463,7 +464,7 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ModulePassContext<'pm, 'ctx, B> {
     where
         A: ModuleAnalysis<'ctx, B>,
     {
-        self.mam.get_cached_result::<A>(self.module())
+        self.mam.get_cached_result::<A, _>(self.module())
     }
 
     /// Query a function analysis for a function in this module.
@@ -475,7 +476,7 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ModulePassContext<'pm, 'ctx, B> {
     where
         A: FunctionAnalysis<'ctx, B>,
     {
-        self.fam.get_result::<A>(function)
+        self.fam.get_result::<A, _>(function)
     }
 
     #[inline]

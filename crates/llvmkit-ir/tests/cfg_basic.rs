@@ -26,7 +26,7 @@ fn unconditional_branch_cfg_edges() -> Result<(), IrError> {
     Module::with_new("cfg_br", |m| {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<()>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let exit = f.append_basic_block(&m, "exit");
 
@@ -53,7 +53,7 @@ fn conditional_branch_preserves_duplicate_edges() -> Result<(), IrError> {
         let bool_ty = m.bool_type();
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [bool_ty.as_type()], false);
-        let f = m.add_function::<()>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let target = f.append_basic_block(&m, "target");
 
@@ -80,7 +80,7 @@ fn switch_cfg_edges_include_default_then_cases() -> Result<(), IrError> {
         let i8_ty = m.i8_type();
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [i8_ty.as_type()], false);
-        let f = m.add_function::<()>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let default_bb = f.append_basic_block(&m, "default");
         let case0 = f.append_basic_block(&m, "case0");
@@ -120,7 +120,7 @@ fn indirectbr_cfg_edges_are_listed_destinations() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<()>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let bb1 = f.append_basic_block(&m, "bb1");
         let bb2 = f.append_basic_block(&m, "bb2");
@@ -151,9 +151,9 @@ fn invoke_cfg_edges_are_normal_then_unwind() -> Result<(), IrError> {
     Module::with_new("cfg_invoke", |m| {
         let void_ty = m.void_type();
         let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let callee = m.add_function::<()>("callee", callee_ty, Linkage::External)?;
+        let callee = m.add_function::<(), _>("callee", callee_ty, Linkage::External)?;
         let caller_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let caller = m.add_function::<()>("caller", caller_ty, Linkage::External)?;
+        let caller = m.add_function::<(), _>("caller", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
         let normal = caller.append_basic_block(&m, "normal");
         let unwind = caller.append_basic_block(&m, "unwind");
@@ -182,9 +182,9 @@ fn callbr_cfg_edges_are_default_then_indirect_dests() -> Result<(), IrError> {
     Module::with_new("cfg_callbr", |m| {
         let void_ty = m.void_type();
         let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let callee = m.add_function::<()>("callee", callee_ty, Linkage::External)?;
+        let callee = m.add_function::<(), _>("callee", callee_ty, Linkage::External)?;
         let caller_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let caller = m.add_function::<()>("caller", caller_ty, Linkage::External)?;
+        let caller = m.add_function::<(), _>("caller", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
         let dflt = caller.append_basic_block(&m, "default");
         let indirect = caller.append_basic_block(&m, "indirect");
@@ -219,7 +219,7 @@ fn catchret_cfg_edge_is_target_block() -> Result<(), IrError> {
     Module::with_new("cfg_catchret", |m| {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<()>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let cs_block = f.append_basic_block(&m, "cs");
         let cp_block = f.append_basic_block(&m, "cp");
         let ret_block = f.append_basic_block(&m, "ret");
@@ -229,7 +229,7 @@ fn catchret_cfg_edge_is_target_block() -> Result<(), IrError> {
 
         let (_sealed, cs) = IRBuilder::new_for::<()>(&m)
             .position_at_end(cs_block)
-            .build_catch_switch::<llvmkit_ir::Unsealed>(None, None, "cs")?;
+            .build_catch_switch_within_none_to_caller("cs")?;
         let cs_closed = cs.add_handler(cp_block)?.finish();
         let cp = IRBuilder::new_for::<()>(&m)
             .position_at_end(cp_block)
@@ -257,7 +257,7 @@ fn cleanupret_cfg_edge_is_optional_unwind_dest() -> Result<(), IrError> {
     Module::with_new("cfg_cleanupret", |m| {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<()>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let unwind = f.append_basic_block(&m, "unwind");
         IRBuilder::new_for::<()>(&m)
@@ -265,8 +265,8 @@ fn cleanupret_cfg_edge_is_optional_unwind_dest() -> Result<(), IrError> {
             .build_ret_void();
 
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        let cp = b.build_cleanup_pad(None, Vec::<llvmkit_ir::Value>::new(), "cp")?;
-        b.build_cleanup_ret(cp.as_instruction().as_value(), Some(unwind), "")?;
+        let cp = b.build_cleanup_pad_within_none(Vec::<llvmkit_ir::Value>::new(), "cp")?;
+        b.build_cleanup_ret(cp.as_instruction().as_value(), unwind, "")?;
 
         let cfg = FunctionCfg::new(f.as_dyn());
         assert_successors(entry.as_dyn(), &[unwind.as_dyn()]);
@@ -282,7 +282,7 @@ fn catchswitch_cfg_edges_are_handlers_then_unwind_dest() -> Result<(), IrError> 
     Module::with_new("cfg_catchswitch", |m| {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<()>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let handler0 = f.append_basic_block(&m, "handler0");
         let handler1 = f.append_basic_block(&m, "handler1");
@@ -295,7 +295,7 @@ fn catchswitch_cfg_edges_are_handlers_then_unwind_dest() -> Result<(), IrError> 
 
         let (_sealed, cs) = IRBuilder::new_for::<()>(&m)
             .position_at_end(entry)
-            .build_catch_switch(None, Some(unwind), "cs")?;
+            .build_catch_switch_within_none(unwind, "cs")?;
         let _closed = cs.add_handler(handler0)?.add_handler(handler1)?.finish();
 
         let cfg = FunctionCfg::new(f.as_dyn());

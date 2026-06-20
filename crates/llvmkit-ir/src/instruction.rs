@@ -20,11 +20,14 @@
 //! is exhaustive — `#[non_exhaustive]` only constrains *external*
 //! pattern matching.
 
+use crate::basic_block::BasicBlock;
 use crate::instr_types::{
     BinaryOpData, BranchInstData, BranchKind, CastOpData, CmpInstData, FCmpInstData, PhiData,
     ReturnOpData, UnreachableInstData,
 };
-use crate::module::{Brand, Module, ModuleCore, ModuleRef, Unverified};
+use crate::marker::{Dyn, ReturnMarker};
+use crate::metadata::{DebugRecord, MetadataAttachmentSet};
+use crate::module::{Brand, Module, ModuleCore, ModuleRef, ModuleView, Unverified};
 use crate::r#type::TypeId;
 use crate::r#use::Use;
 use crate::user::User;
@@ -157,8 +160,8 @@ impl InstructionKindData {
             Self::Call(c) => {
                 let mut v = vec![c.callee.get()];
                 v.extend(c.args.iter().map(|c| c.get()));
-                for bundle in c.attrs.operand_bundles.iter() {
-                    v.extend(bundle.inputs.iter().map(|input| input.get()));
+                for bundle in c.attrs.operand_bundles_slice() {
+                    v.extend(bundle.inputs());
                 }
                 v
             }
@@ -191,16 +194,16 @@ impl InstructionKindData {
             Self::Invoke(c) => {
                 let mut v = vec![c.callee.get()];
                 v.extend(c.args.iter().map(|c| c.get()));
-                for bundle in c.attrs.operand_bundles.iter() {
-                    v.extend(bundle.inputs.iter().map(|input| input.get()));
+                for bundle in c.attrs.operand_bundles_slice() {
+                    v.extend(bundle.inputs());
                 }
                 v
             }
             Self::CallBr(c) => {
                 let mut v = vec![c.callee.get()];
                 v.extend(c.args.iter().map(|c| c.get()));
-                for bundle in c.attrs.operand_bundles.iter() {
-                    v.extend(bundle.inputs.iter().map(|input| input.get()));
+                for bundle in c.attrs.operand_bundles_slice() {
+                    v.extend(bundle.inputs());
                 }
                 v
             }
@@ -369,7 +372,7 @@ impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand + 'ctx>
 
     /// Owning module reference.
     #[inline]
-    pub fn module(&self) -> crate::module::ModuleView<'ctx, B> {
+    pub fn module(&self) -> ModuleView<'ctx, B> {
         crate::module::ModuleView::new(self.module.module())
     }
 
@@ -386,7 +389,7 @@ impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand + 'ctx>
     }
 
     /// Metadata attachments on this instruction.
-    pub fn metadata(&self) -> core::cell::Ref<'_, crate::metadata::MetadataAttachmentSet> {
+    pub fn metadata(&self) -> core::cell::Ref<'_, MetadataAttachmentSet> {
         self.data().metadata.borrow()
     }
 
@@ -399,16 +402,19 @@ impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand + 'ctx>
         self.data().metadata.borrow_mut().insert(kind, id);
     }
 
-    pub fn debug_records(&self) -> core::cell::Ref<'_, [crate::metadata::DebugRecord]> {
+    pub fn debug_records(&self) -> core::cell::Ref<'_, [DebugRecord]> {
         core::cell::Ref::map(self.data().debug_records.borrow(), Vec::as_slice)
     }
 
-    pub fn push_debug_record(&self, record: crate::metadata::DebugRecord) {
+    pub fn push_debug_record(&self, record: DebugRecord) {
         self.data().debug_records.borrow_mut().push(record);
     }
     /// Set the textual name.
     #[inline]
-    pub fn set_name(&self, module_token: &Module<'ctx, B, Unverified>, name: &str) {
+    pub fn set_name<Name>(&self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
         self.as_value().set_name(module_token, name);
     }
 
@@ -642,7 +648,7 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attach
     }
 
     /// Containing basic block, in its runtime-checked form.
-    pub fn parent(&self) -> crate::basic_block::BasicBlock<'ctx, crate::marker::Dyn> {
+    pub fn parent(&self) -> BasicBlock<'ctx, Dyn> {
         let parent = self.data().parent.get();
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
@@ -888,7 +894,7 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Detach
 
     /// Append this detached instruction to the end of `block`'s
     /// instruction list. Mirrors `Instruction::insertInto(BB, BB->end())`.
-    pub fn append_to<R: crate::marker::ReturnMarker>(
+    pub fn append_to<R: ReturnMarker>(
         self,
         module_token: &Module<'ctx, B, Unverified>,
         block: &crate::basic_block::BasicBlock<'ctx, R>,
@@ -976,8 +982,8 @@ pub(crate) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueId, t
             for arg in c.args.iter() {
                 swap(arg);
             }
-            for bundle in c.attrs.operand_bundles.iter() {
-                for input in bundle.inputs.iter() {
+            for bundle in c.attrs.operand_bundles_slice() {
+                for input in bundle.input_cells() {
                     swap(input);
                 }
             }
@@ -1048,8 +1054,8 @@ pub(crate) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueId, t
             for arg in c.args.iter() {
                 swap(arg);
             }
-            for bundle in c.attrs.operand_bundles.iter() {
-                for input in bundle.inputs.iter() {
+            for bundle in c.attrs.operand_bundles_slice() {
+                for input in bundle.input_cells() {
                     swap(input);
                 }
             }
@@ -1059,8 +1065,8 @@ pub(crate) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueId, t
             for arg in c.args.iter() {
                 swap(arg);
             }
-            for bundle in c.attrs.operand_bundles.iter() {
-                for input in bundle.inputs.iter() {
+            for bundle in c.attrs.operand_bundles_slice() {
+                for input in bundle.input_cells() {
                     swap(input);
                 }
             }
@@ -1136,7 +1142,10 @@ impl<'ctx> HasName<'ctx> for Instruction<'ctx, state::Attached> {
         Instruction::name(&self)
     }
     #[inline]
-    fn set_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: &str) {
+    fn set_name<Name>(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
         Instruction::set_name(&self, module_token, name);
     }
     #[inline]

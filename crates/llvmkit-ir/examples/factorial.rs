@@ -30,7 +30,7 @@
 //! - `i32` typed function builder.
 //! - `IntoIntValue<i32>` lifting Rust scalars (`0_i32`, `1_i32`) at
 //!   call sites without an intermediate constant binding.
-//! - `build_int_cmp::<i32>` returning `IntValue<bool>`.
+//! - `build_int_cmp::<i32, _, _, _>` returning `IntValue<bool>`.
 //! - `build_cond_br` consuming the `i1`.
 //! - `build_int_phi` followed by chained `add_incoming` calls,
 //!   mirroring `PHINode::addIncoming` (the loop-edge incoming value
@@ -49,7 +49,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m
-        .function_builder::<i32>("factorial", fn_ty)
+        .function_builder::<i32, _>("factorial", fn_ty)
         .linkage(Linkage::External)
         .param_name(0, "n")
         .build()?;
@@ -63,7 +63,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
 
     // entry: %is_zero = icmp eq i32 %n, 0; br i1 %is_zero, ...
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
-    let is_zero = b.build_int_cmp::<i32, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
+    let is_zero = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
     b.build_cond_br(is_zero, base, loop_bb)?;
 
     // base: ret i32 1
@@ -72,13 +72,13 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
 
     // loop: create phis empty, build body, then patch phis with both edges.
     let b = IRBuilder::new_for::<i32>(m).position_at_end(loop_bb);
-    let acc_phi = b.build_int_phi::<i32>("acc")?;
-    let i_phi = b.build_int_phi::<i32>("i")?;
+    let acc_phi = b.build_int_phi::<i32, _>("acc")?;
+    let i_phi = b.build_int_phi::<i32, _>("i")?;
     let acc = acc_phi.as_int_value();
     let i = i_phi.as_int_value();
     let next_acc = b.build_int_mul(acc, i, "next_acc")?;
     let next_i = b.build_int_sub(i, 1_i32, "next_i")?;
-    let done = b.build_int_cmp::<i32, _, _>(IntPredicate::Eq, next_i, 0_i32, "done")?;
+    let done = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, next_i, 0_i32, "done")?;
     b.build_cond_br(done, exit, loop_bb)?;
 
     acc_phi

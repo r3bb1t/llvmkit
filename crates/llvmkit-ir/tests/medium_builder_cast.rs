@@ -18,7 +18,7 @@ fn build_trunc_emits_trunc_to_dst_type() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i32_ty, [i64_ty.as_type()], false);
-        let f = m.add_function::<i32>("narrow", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("narrow", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let arg: IntValue<i64> = f.param(0)?.try_into()?;
@@ -55,7 +55,7 @@ fn build_trunc_dyn_runtime_check_widening_rejected() -> Result<(), IrError> {
         let dyn_i32: IntType<'_, IntDyn> = m.custom_width_int_type(32)?;
         let dyn_i64: IntType<'_, IntDyn> = m.custom_width_int_type(64)?;
         let fn_ty = m.fn_type(dyn_i64.as_type(), [dyn_i32.as_type()], false);
-        let f = m.add_function::<IntDyn>("bad", fn_ty, Linkage::External)?;
+        let f = m.add_function::<IntDyn, _>("bad", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<IntDyn>(&m).position_at_end(entry);
         let arg: IntValue<IntDyn> = f.param(0)?.try_into()?;
@@ -82,7 +82,7 @@ fn build_trunc_preserves_anonymous_slot_naming() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i32_ty, [i64_ty.as_type()], false);
-        let f = m.add_function::<i32>("anon", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("anon", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let arg: IntValue<i64> = f.param(0)?.try_into()?;
@@ -103,7 +103,7 @@ fn build_zext_static_static_emits_zext() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i64_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i64>("widen", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i64, _>("widen", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
         let arg: IntValue<i32> = f.param(0)?.try_into()?;
@@ -124,7 +124,7 @@ fn build_sext_static_static_emits_sext() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i64_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i64>("widen", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i64, _>("widen", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
         let arg: IntValue<i32> = f.param(0)?.try_into()?;

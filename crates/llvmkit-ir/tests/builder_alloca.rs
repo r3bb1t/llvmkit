@@ -17,7 +17,7 @@ fn alloca_plain() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(ptr_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<Ptr>("a", fn_ty, Linkage::External)?;
+        let f = m.add_function::<Ptr, _>("a", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Ptr>(&m).position_at_end(entry);
         let p = b.build_alloca(i32_ty, "p")?;
@@ -37,7 +37,7 @@ fn alloca_array_size() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(ptr_ty.as_type(), [i32_ty.as_type()], false);
-        let f = m.add_function::<Ptr>("a", fn_ty, Linkage::External)?;
+        let f = m.add_function::<Ptr, _>("a", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Ptr>(&m).position_at_end(entry);
         let n: llvmkit_ir::IntValue<llvmkit_ir::IntDyn> = f.param(0)?.try_into()?;
@@ -57,7 +57,7 @@ fn alloca_aligned() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(ptr_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<Ptr>("a", fn_ty, Linkage::External)?;
+        let f = m.add_function::<Ptr, _>("a", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Ptr>(&m).position_at_end(entry);
         let p = b.build_alloca_with_align(i32_ty, Align::new(8)?, "p")?;

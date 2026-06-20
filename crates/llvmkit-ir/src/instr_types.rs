@@ -15,9 +15,12 @@
 
 use core::cell::Cell;
 
-use crate::value::ValueId;
-
+use crate::align::{Align, MaybeAlign};
+use crate::atomic_ordering::AtomicOrdering;
 use crate::attributes::AttributeStorage;
+use crate::fmf::FastMathFlags;
+use crate::sync_scope::SyncScope;
+use crate::value::ValueId;
 
 /// Storage payload for the binary-operator opcodes (`add`, `sub`,
 /// `mul`, ...). Mirrors the operand/flag layout of `BinaryOperator`
@@ -1234,8 +1237,32 @@ pub enum OperandBundleTag {
 
 #[derive(Debug)]
 pub struct OperandBundleData {
-    pub tag: OperandBundleTag,
-    pub inputs: Box<[Cell<ValueId>]>,
+    tag: OperandBundleTag,
+    inputs: Box<[Cell<ValueId>]>,
+}
+
+impl OperandBundleData {
+    pub fn new<Inputs>(tag: OperandBundleTag, inputs: Inputs) -> Self
+    where
+        Inputs: IntoIterator<Item = ValueId>,
+    {
+        Self {
+            tag,
+            inputs: inputs.into_iter().map(Cell::new).collect(),
+        }
+    }
+
+    pub fn tag(&self) -> &OperandBundleTag {
+        &self.tag
+    }
+
+    pub fn inputs(&self) -> impl ExactSizeIterator<Item = ValueId> + '_ {
+        self.inputs.iter().map(|input| input.get())
+    }
+
+    pub(crate) fn input_cells(&self) -> &[Cell<ValueId>] {
+        &self.inputs
+    }
 }
 
 impl Clone for OperandBundleData {
@@ -1271,24 +1298,80 @@ impl core::hash::Hash for OperandBundleData {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CallAttributeData {
-    pub return_attrs: AttributeStorage,
-    pub arg_attrs: Box<[AttributeStorage]>,
-    pub function_attrs: AttributeStorage,
-    pub function_attr_groups: Box<[u32]>,
-    pub operand_bundles: Box<[OperandBundleData]>,
-    pub fmf: crate::fmf::FastMathFlags,
+    return_attrs: AttributeStorage,
+    arg_attrs: Box<[AttributeStorage]>,
+    function_attrs: AttributeStorage,
+    function_attr_groups: Box<[u32]>,
+    operand_bundles: Box<[OperandBundleData]>,
+    fmf: FastMathFlags,
+}
+
+impl CallAttributeData {
+    pub fn new(
+        return_attrs: AttributeStorage,
+        arg_attrs: Box<[AttributeStorage]>,
+        function_attrs: AttributeStorage,
+    ) -> Self {
+        Self {
+            return_attrs,
+            arg_attrs,
+            function_attrs,
+            function_attr_groups: Box::new([]),
+            operand_bundles: Box::new([]),
+            fmf: FastMathFlags::empty(),
+        }
+    }
+
+    #[must_use]
+    pub fn function_attr_groups(mut self, groups: Box<[u32]>) -> Self {
+        self.function_attr_groups = groups;
+        self
+    }
+
+    #[must_use]
+    pub fn operand_bundles(mut self, bundles: Box<[OperandBundleData]>) -> Self {
+        self.operand_bundles = bundles;
+        self
+    }
+
+    #[must_use]
+    pub fn fast_math_flags(mut self, fmf: FastMathFlags) -> Self {
+        self.fmf = fmf;
+        self
+    }
+
+    pub fn return_attrs(&self) -> &AttributeStorage {
+        &self.return_attrs
+    }
+
+    pub fn arg_attrs(&self) -> &[AttributeStorage] {
+        &self.arg_attrs
+    }
+
+    pub fn function_attrs(&self) -> &AttributeStorage {
+        &self.function_attrs
+    }
+
+    pub fn function_attr_groups_slice(&self) -> &[u32] {
+        &self.function_attr_groups
+    }
+
+    pub fn operand_bundles_slice(&self) -> &[OperandBundleData] {
+        &self.operand_bundles
+    }
+
+    pub fn fast_math_flags_value(&self) -> FastMathFlags {
+        self.fmf
+    }
 }
 
 impl Default for CallAttributeData {
     fn default() -> Self {
-        Self {
-            return_attrs: AttributeStorage::new(),
-            arg_attrs: Box::new([]),
-            function_attrs: AttributeStorage::new(),
-            function_attr_groups: Box::new([]),
-            operand_bundles: Box::new([]),
-            fmf: crate::fmf::FastMathFlags::empty(),
-        }
+        Self::new(
+            AttributeStorage::new(),
+            Box::new([]),
+            AttributeStorage::new(),
+        )
     }
 }
 
@@ -1704,12 +1787,12 @@ impl AtomicCmpXchgInstData {
             ptr: Cell::new(ptr),
             cmp: Cell::new(cmp),
             new_val: Cell::new(new_val),
-            align: config.align,
-            success_ordering: config.success_ordering,
-            failure_ordering: config.failure_ordering,
-            sync_scope: config.sync_scope,
-            weak: config.flags.weak,
-            volatile: config.flags.volatile,
+            align: config.align_value(),
+            success_ordering: config.success_ordering_value(),
+            failure_ordering: config.failure_ordering_value(),
+            sync_scope: config.sync_scope_value().clone(),
+            weak: config.flags_value().weak,
+            volatile: config.flags_value().volatile,
         }
     }
 }
@@ -1780,10 +1863,10 @@ impl AtomicRMWInstData {
             op,
             ptr: Cell::new(ptr),
             value: Cell::new(value),
-            align: config.align,
-            ordering: config.ordering,
-            sync_scope: config.sync_scope,
-            volatile: config.flags.volatile,
+            align: config.align_value(),
+            ordering: config.ordering_value(),
+            sync_scope: config.sync_scope_value().clone(),
+            volatile: config.flags_value().volatile,
         }
     }
 }
@@ -2479,21 +2562,156 @@ impl core::hash::Hash for CatchSwitchInstData {
 /// (orderings + scope + flags + alignment).
 #[derive(Debug, Clone)]
 pub struct AtomicCmpXchgConfig {
-    pub success_ordering: crate::atomic_ordering::AtomicOrdering,
-    pub failure_ordering: crate::atomic_ordering::AtomicOrdering,
-    pub sync_scope: crate::sync_scope::SyncScope,
-    pub flags: CmpXchgFlags,
-    pub align: crate::align::MaybeAlign,
+    success_ordering: AtomicOrdering,
+    failure_ordering: AtomicOrdering,
+    sync_scope: SyncScope,
+    flags: CmpXchgFlags,
+    align: MaybeAlign,
+}
+
+impl AtomicCmpXchgConfig {
+    pub fn new(
+        success_ordering: AtomicOrdering,
+        failure_ordering: AtomicOrdering,
+        sync_scope: SyncScope,
+    ) -> Self {
+        Self {
+            success_ordering,
+            failure_ordering,
+            sync_scope,
+            flags: CmpXchgFlags::new(),
+            align: MaybeAlign::NONE,
+        }
+    }
+
+    #[must_use]
+    pub fn success_ordering(mut self, ordering: AtomicOrdering) -> Self {
+        self.success_ordering = ordering;
+        self
+    }
+
+    #[must_use]
+    pub fn failure_ordering(mut self, ordering: AtomicOrdering) -> Self {
+        self.failure_ordering = ordering;
+        self
+    }
+
+    #[must_use]
+    pub fn sync_scope(mut self, sync_scope: SyncScope) -> Self {
+        self.sync_scope = sync_scope;
+        self
+    }
+
+    #[must_use]
+    pub fn flags(mut self, flags: CmpXchgFlags) -> Self {
+        self.flags = flags;
+        self
+    }
+
+    #[must_use]
+    pub fn weak(mut self) -> Self {
+        self.flags = self.flags.weak();
+        self
+    }
+
+    #[must_use]
+    pub fn volatile(mut self) -> Self {
+        self.flags = self.flags.volatile();
+        self
+    }
+
+    #[must_use]
+    pub fn align(mut self, align: MaybeAlign) -> Self {
+        self.align = align;
+        self
+    }
+
+    pub fn success_ordering_value(&self) -> AtomicOrdering {
+        self.success_ordering
+    }
+
+    pub fn failure_ordering_value(&self) -> AtomicOrdering {
+        self.failure_ordering
+    }
+
+    pub fn sync_scope_value(&self) -> &SyncScope {
+        &self.sync_scope
+    }
+
+    pub fn flags_value(&self) -> CmpXchgFlags {
+        self.flags
+    }
+
+    pub fn align_value(&self) -> MaybeAlign {
+        self.align
+    }
 }
 
 /// Bundled configuration for [`crate::IRBuilder::build_atomicrmw`].
 /// Mirrors the per-instruction state stored on `AtomicRMWInst`.
 #[derive(Debug, Clone)]
 pub struct AtomicRMWConfig {
-    pub ordering: crate::atomic_ordering::AtomicOrdering,
-    pub sync_scope: crate::sync_scope::SyncScope,
-    pub flags: AtomicRMWFlags,
-    pub align: crate::align::MaybeAlign,
+    ordering: AtomicOrdering,
+    sync_scope: SyncScope,
+    flags: AtomicRMWFlags,
+    align: MaybeAlign,
+}
+
+impl AtomicRMWConfig {
+    pub fn new(ordering: AtomicOrdering, sync_scope: SyncScope) -> Self {
+        Self {
+            ordering,
+            sync_scope,
+            flags: AtomicRMWFlags::new(),
+            align: MaybeAlign::NONE,
+        }
+    }
+
+    #[must_use]
+    pub fn ordering(mut self, ordering: AtomicOrdering) -> Self {
+        self.ordering = ordering;
+        self
+    }
+
+    #[must_use]
+    pub fn sync_scope(mut self, sync_scope: SyncScope) -> Self {
+        self.sync_scope = sync_scope;
+        self
+    }
+
+    #[must_use]
+    pub fn flags(mut self, flags: AtomicRMWFlags) -> Self {
+        self.flags = flags;
+        self
+    }
+
+    #[must_use]
+    pub fn volatile(mut self) -> Self {
+        self.flags = self.flags.volatile();
+        self
+    }
+
+    #[must_use]
+    pub fn align(mut self, align: MaybeAlign) -> Self {
+        self.align = align;
+        self
+    }
+
+    pub fn ordering_value(&self) -> AtomicOrdering {
+        self.ordering
+    }
+
+    pub fn sync_scope_value(&self) -> &SyncScope {
+        &self.sync_scope
+    }
+
+    pub fn flags_value(&self) -> AtomicRMWFlags {
+        self.flags
+    }
+
+    pub fn align_value(&self) -> MaybeAlign {
+        self.align
+    }
 }
 
 /// Bundled configuration for atomic [`crate::IRBuilder::build_int_load_atomic`]
@@ -2503,21 +2721,17 @@ pub struct AtomicRMWConfig {
 /// AtomicOrdering, SyncScope::ID)` (`Instructions.h`).
 #[derive(Debug, Clone)]
 pub struct AtomicLoadConfig {
-    pub ordering: crate::atomic_ordering::AtomicOrdering,
-    pub sync_scope: crate::sync_scope::SyncScope,
-    pub align: crate::align::Align,
-    pub volatile: bool,
+    ordering: AtomicOrdering,
+    sync_scope: SyncScope,
+    align: Align,
+    volatile: bool,
 }
 
 impl AtomicLoadConfig {
     /// Convenience constructor with `volatile = false`. The 4-arg shape
     /// matches the common-case upstream `LoadInst` constructor that omits
     /// the volatile slot.
-    pub fn new(
-        ordering: crate::atomic_ordering::AtomicOrdering,
-        sync_scope: crate::sync_scope::SyncScope,
-        align: crate::align::Align,
-    ) -> Self {
+    pub fn new(ordering: AtomicOrdering, sync_scope: SyncScope, align: Align) -> Self {
         Self {
             ordering,
             sync_scope,
@@ -2526,10 +2740,45 @@ impl AtomicLoadConfig {
         }
     }
 
+    #[must_use]
+    pub fn ordering(mut self, ordering: AtomicOrdering) -> Self {
+        self.ordering = ordering;
+        self
+    }
+
+    #[must_use]
+    pub fn sync_scope(mut self, sync_scope: SyncScope) -> Self {
+        self.sync_scope = sync_scope;
+        self
+    }
+
+    #[must_use]
+    pub fn align(mut self, align: Align) -> Self {
+        self.align = align;
+        self
+    }
+
     /// Flip the volatile bit. Mirrors `LoadInst::setVolatile(true)`.
+    #[must_use]
     pub fn volatile(mut self) -> Self {
         self.volatile = true;
         self
+    }
+
+    pub fn ordering_value(&self) -> AtomicOrdering {
+        self.ordering
+    }
+
+    pub fn sync_scope_value(&self) -> &SyncScope {
+        &self.sync_scope
+    }
+
+    pub fn align_value(&self) -> Align {
+        self.align
+    }
+
+    pub fn is_volatile(&self) -> bool {
+        self.volatile
     }
 }
 
@@ -2539,18 +2788,14 @@ impl AtomicLoadConfig {
 /// Align, AtomicOrdering, SyncScope::ID)`.
 #[derive(Debug, Clone)]
 pub struct AtomicStoreConfig {
-    pub ordering: crate::atomic_ordering::AtomicOrdering,
-    pub sync_scope: crate::sync_scope::SyncScope,
-    pub align: crate::align::Align,
-    pub volatile: bool,
+    ordering: AtomicOrdering,
+    sync_scope: SyncScope,
+    align: Align,
+    volatile: bool,
 }
 
 impl AtomicStoreConfig {
-    pub fn new(
-        ordering: crate::atomic_ordering::AtomicOrdering,
-        sync_scope: crate::sync_scope::SyncScope,
-        align: crate::align::Align,
-    ) -> Self {
+    pub fn new(ordering: AtomicOrdering, sync_scope: SyncScope, align: Align) -> Self {
         Self {
             ordering,
             sync_scope,
@@ -2559,9 +2804,44 @@ impl AtomicStoreConfig {
         }
     }
 
+    #[must_use]
+    pub fn ordering(mut self, ordering: AtomicOrdering) -> Self {
+        self.ordering = ordering;
+        self
+    }
+
+    #[must_use]
+    pub fn sync_scope(mut self, sync_scope: SyncScope) -> Self {
+        self.sync_scope = sync_scope;
+        self
+    }
+
+    #[must_use]
+    pub fn align(mut self, align: Align) -> Self {
+        self.align = align;
+        self
+    }
+
     /// Flip the volatile bit. Mirrors `StoreInst::setVolatile(true)`.
+    #[must_use]
     pub fn volatile(mut self) -> Self {
         self.volatile = true;
         self
+    }
+
+    pub fn ordering_value(&self) -> AtomicOrdering {
+        self.ordering
+    }
+
+    pub fn sync_scope_value(&self) -> &SyncScope {
+        &self.sync_scope
+    }
+
+    pub fn align_value(&self) -> Align {
+        self.align
+    }
+
+    pub fn is_volatile(&self) -> bool {
+        self.volatile
     }
 }

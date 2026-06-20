@@ -15,7 +15,7 @@ fn build_br_emits_unconditional() -> Result<(), IrError> {
     Module::with_new("br", |m| {
         let void = m.void_type();
         let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let exit = f.append_basic_block(&m, "exit");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
@@ -37,13 +37,13 @@ fn build_cond_br_branches_on_i1() -> Result<(), IrError> {
         let void = m.void_type();
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(void.as_type(), [i32_ty.as_type()], false);
-        let f = m.add_function::<()>("cb", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("cb", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let then_bb = f.append_basic_block(&m, "then");
         let else_bb = f.append_basic_block(&m, "else");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let n: IntValue<i32> = f.param(0)?.try_into()?;
-        let cond = b.build_int_cmp::<i32, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
+        let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
         b.build_cond_br(cond, then_bb, else_bb)?;
         let b = IRBuilder::new_for::<()>(&m).position_at_end(then_bb);
         b.build_ret_void();
@@ -67,7 +67,7 @@ fn build_unreachable_terminator() -> Result<(), IrError> {
     Module::with_new("u", |m| {
         let void = m.void_type();
         let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<()>("dead", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("dead", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let (_sealed, inst) = b.build_unreachable();

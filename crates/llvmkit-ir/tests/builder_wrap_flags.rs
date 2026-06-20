@@ -23,10 +23,10 @@ fn add_nuw_nsw_flags_round_trip() -> Result<(), IrError> {
     Module::with_new("flags", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-        let f = m.add_function::<i32>("addf", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("addf", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let r = b.build_int_add_with_flags::<i32, _, _>(
+        let r = b.build_int_add_with_flags::<i32, _, _, _>(
             f.param(0)?,
             f.param(1)?,
             AddFlags::new().nuw().nsw(),
@@ -56,10 +56,10 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
 
-        let sub_fn = m.add_function::<i32>("sub_f", fn_ty, Linkage::External)?;
+        let sub_fn = m.add_function::<i32, _>("sub_f", fn_ty, Linkage::External)?;
         let entry = sub_fn.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let r = b.build_int_sub_with_flags::<i32, _, _>(
+        let r = b.build_int_sub_with_flags::<i32, _, _, _>(
             sub_fn.param(0)?,
             sub_fn.param(1)?,
             SubFlags::new().nuw(),
@@ -73,10 +73,10 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
         }
         b.build_ret(r)?;
 
-        let mul_fn = m.add_function::<i32>("mul_f", fn_ty, Linkage::External)?;
+        let mul_fn = m.add_function::<i32, _>("mul_f", fn_ty, Linkage::External)?;
         let entry = mul_fn.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let r = b.build_int_mul_with_flags::<i32, _, _>(
+        let r = b.build_int_mul_with_flags::<i32, _, _, _>(
             mul_fn.param(0)?,
             mul_fn.param(1)?,
             MulFlags::new().nuw(),
@@ -90,10 +90,10 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
         }
         b.build_ret(r)?;
 
-        let shl_fn = m.add_function::<i32>("shl_f", fn_ty, Linkage::External)?;
+        let shl_fn = m.add_function::<i32, _>("shl_f", fn_ty, Linkage::External)?;
         let entry = shl_fn.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let r = b.build_int_shl_with_flags::<i32, _, _>(
+        let r = b.build_int_shl_with_flags::<i32, _, _, _>(
             shl_fn.param(0)?,
             shl_fn.param(1)?,
             ShlFlags::new().nuw(),
@@ -122,10 +122,10 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
 
-        let udiv_fn = m.add_function::<i32>("udiv_f", fn_ty, Linkage::External)?;
+        let udiv_fn = m.add_function::<i32, _>("udiv_f", fn_ty, Linkage::External)?;
         let entry = udiv_fn.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let r = b.build_int_udiv_with_flags::<i32, _, _>(
+        let r = b.build_int_udiv_with_flags::<i32, _, _, _>(
             udiv_fn.param(0)?,
             udiv_fn.param(1)?,
             UDivFlags::new().exact(),
@@ -139,10 +139,10 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
         }
         b.build_ret(r)?;
 
-        let sdiv_fn = m.add_function::<i32>("sdiv_f", fn_ty, Linkage::External)?;
+        let sdiv_fn = m.add_function::<i32, _>("sdiv_f", fn_ty, Linkage::External)?;
         let entry = sdiv_fn.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let r = b.build_int_sdiv_with_flags::<i32, _, _>(
+        let r = b.build_int_sdiv_with_flags::<i32, _, _, _>(
             sdiv_fn.param(0)?,
             sdiv_fn.param(1)?,
             SDivFlags::new().exact(),
@@ -156,10 +156,10 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
         }
         b.build_ret(r)?;
 
-        let lshr_fn = m.add_function::<i32>("lshr_f", fn_ty, Linkage::External)?;
+        let lshr_fn = m.add_function::<i32, _>("lshr_f", fn_ty, Linkage::External)?;
         let entry = lshr_fn.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let r = b.build_int_lshr_with_flags::<i32, _, _>(
+        let r = b.build_int_lshr_with_flags::<i32, _, _, _>(
             lshr_fn.param(0)?,
             lshr_fn.param(1)?,
             LShrFlags::new().exact(),
@@ -173,10 +173,10 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
         }
         b.build_ret(r)?;
 
-        let ashr_fn = m.add_function::<i32>("ashr_f", fn_ty, Linkage::External)?;
+        let ashr_fn = m.add_function::<i32, _>("ashr_f", fn_ty, Linkage::External)?;
         let entry = ashr_fn.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let r = b.build_int_ashr_with_flags::<i32, _, _>(
+        let r = b.build_int_ashr_with_flags::<i32, _, _, _>(
             ashr_fn.param(0)?,
             ashr_fn.param(1)?,
             AShrFlags::new().exact(),

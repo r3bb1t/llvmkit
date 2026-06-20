@@ -586,9 +586,12 @@ fn module_emits_target_datalayout_directive() {
 #[test]
 fn module_emits_target_triple_directive() {
     Module::with_new("m", |m| {
-        m.set_target_triple(Some("x86_64-pc-linux-gnu"));
+        m.set_target_triple("x86_64-pc-linux-gnu");
         let text = format!("{m}");
         assert_line(&text, "target triple = \"x86_64-pc-linux-gnu\"");
+        m.clear_target_triple();
+        assert!(m.target_triple().is_none());
+        assert!(!format!("{m}").contains("target triple"));
     })
 }
 
@@ -733,11 +736,11 @@ fn value_or_abi_type_align() {
         let dl = DataLayout::default();
         let custom = MaybeAlign::from(Align::new(16).expect("a"));
         assert_eq!(
-            dl.value_or_abi_type_align(custom.align(), m.i32_type().as_type()),
+            dl.value_or_abi_type_align(custom, m.i32_type().as_type()),
             Align::new(16).expect("a")
         );
         assert_eq!(
-            dl.value_or_abi_type_align(MaybeAlign::default().align(), m.i32_type().as_type()),
+            dl.value_or_abi_type_align(MaybeAlign::default(), m.i32_type().as_type()),
             Align::new(4).expect("a")
         );
     })

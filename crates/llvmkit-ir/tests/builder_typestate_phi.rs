@@ -12,7 +12,7 @@ fn phi_finishes_after_all_incomings() -> Result<(), IrError> {
     Module::with_new("phi_finish", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let other = f.append_basic_block(&m, "other");
         let join = f.append_basic_block(&m, "join");
@@ -23,7 +23,7 @@ fn phi_finishes_after_all_incomings() -> Result<(), IrError> {
         b.build_br(join)?;
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
-        let phi_open = b.build_int_phi::<i32>("p")?;
+        let phi_open = b.build_int_phi::<i32, _>("p")?;
         let phi_closed = phi_open
             .add_incoming(1_i32, entry)?
             .add_incoming(2_i32, other)?

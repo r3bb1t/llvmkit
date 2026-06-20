@@ -7,7 +7,7 @@ error[E0599]: no method named `add_incoming` found for struct `PhiInst<'_, i32, 
 note: there's an earlier shadowed binding `phi` of type `PhiInst<'_, i32, llvmkit_ir::Open, Brand<'_>>` that has method `add_incoming` available
   --> tests/compile_fail/add_incoming_after_finish.rs:27:13
    |
-27 |         let phi = b.build_int_phi::<i32>("p").unwrap();
+27 |         let phi = b.build_int_phi::<i32, _>("p").unwrap();
    |             ^^^ `phi` of type `PhiInst<'_, i32, llvmkit_ir::Open, Brand<'_>>` that has method `add_incoming` defined earlier here
 28 |         let phi = phi
    |             --- earlier `phi` shadowed here with type `PhiInst<'_, i32, llvmkit_ir::Closed, Brand<'_>>`

@@ -25,6 +25,7 @@ use crate::r#type::{Type, TypeId};
 use crate::unnamed_addr::UnnamedAddr;
 use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
 
+use crate::metadata::MetadataAttachmentSet;
 use core::cell::{Cell, RefCell};
 
 // --------------------------------------------------------------------------
@@ -301,37 +302,33 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         })
     }
 
-    /// Set or clear the initializer. Mirrors
+    /// Set the initializer. Mirrors
     /// `GlobalVariable::setInitializer`. Errors with
     /// [`IrError::TypeMismatch`] when the initializer's type does not
     /// match the global's value type, with [`IrError::ForeignValue`]
     /// when the constant belongs to a different module.
-    pub fn set_initializer(
-        self,
-        _module: &Module<'ctx, B, Unverified>,
-        init: Option<impl IsConstant<'ctx, B>>,
-    ) -> IrResult<()> {
-        match init {
-            None => {
-                self.data().initializer.set(None);
-                Ok(())
-            }
-            Some(c) => {
-                let constant = c.as_constant();
-                if constant.module != self.module {
-                    return Err(IrError::ForeignValue);
-                }
-                if constant.ty != self.data().value_type {
-                    let value_ty = self.value_type();
-                    return Err(IrError::TypeMismatch {
-                        expected: value_ty.kind_label(),
-                        got: constant.ty().kind_label(),
-                    });
-                }
-                self.data().initializer.set(Some(constant.id));
-                Ok(())
-            }
+    pub fn set_initializer<C>(self, _module: &Module<'ctx, B, Unverified>, init: C) -> IrResult<()>
+    where
+        C: IsConstant<'ctx, B>,
+    {
+        let constant = init.as_constant();
+        if constant.module != self.module {
+            return Err(IrError::ForeignValue);
         }
+        if constant.ty != self.data().value_type {
+            let value_ty = self.value_type();
+            return Err(IrError::TypeMismatch {
+                expected: value_ty.kind_label(),
+                got: constant.ty().kind_label(),
+            });
+        }
+        self.data().initializer.set(Some(constant.id));
+        Ok(())
+    }
+
+    /// Clear the initializer.
+    pub fn clear_initializer(self, _module: &Module<'ctx, B, Unverified>) {
+        self.data().initializer.set(None);
     }
 
     /// Linkage. Mirrors `GlobalValue::getLinkage`.
@@ -429,13 +426,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         self.data().section.borrow().clone()
     }
 
-    /// Set or clear the section. Mirrors `GlobalValue::setSection`.
-    pub fn set_section(
-        self,
-        _module: &Module<'ctx, B, Unverified>,
-        section: Option<impl Into<String>>,
-    ) {
-        *self.data().section.borrow_mut() = section.map(Into::into);
+    /// Set the section. Mirrors `GlobalValue::setSection`.
+    pub fn set_section<S>(self, _module: &Module<'ctx, B, Unverified>, section: S)
+    where
+        S: Into<String>,
+    {
+        *self.data().section.borrow_mut() = Some(section.into());
+    }
+
+    /// Clear the section.
+    pub fn clear_section(self, _module: &Module<'ctx, B, Unverified>) {
+        *self.data().section.borrow_mut() = None;
     }
 
     /// Partition name, if set. Mirrors
@@ -444,14 +445,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         self.data().partition.borrow().clone()
     }
 
-    /// Set or clear the partition. Mirrors
+    /// Set the partition. Mirrors
     /// `GlobalValue::setPartition`.
-    pub fn set_partition(
-        self,
-        _module: &Module<'ctx, B, Unverified>,
-        partition: Option<impl Into<String>>,
-    ) {
-        *self.data().partition.borrow_mut() = partition.map(Into::into);
+    pub fn set_partition<P>(self, _module: &Module<'ctx, B, Unverified>, partition: P)
+    where
+        P: Into<String>,
+    {
+        *self.data().partition.borrow_mut() = Some(partition.into());
+    }
+
+    /// Clear the partition.
+    pub fn clear_partition(self, _module: &Module<'ctx, B, Unverified>) {
+        *self.data().partition.borrow_mut() = None;
     }
 
     /// Toggle the `externally_initialized` marker. Mirrors
@@ -467,7 +472,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         self.module.module().get_comdat::<B>(&name)
     }
 
-    /// Attach (or clear) a comdat. The comdat must already exist in
+    /// Attach a comdat. The comdat must already exist in
     /// the owning module (use
     /// [`Module::get_or_insert_comdat`](crate::Module::get_or_insert_comdat)
     /// to materialise one). Errors with
@@ -476,25 +481,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     pub fn set_comdat(
         self,
         _module: &Module<'ctx, B, Unverified>,
-        comdat: Option<ComdatRef<'ctx, B>>,
+        comdat: ComdatRef<'ctx, B>,
     ) -> IrResult<()> {
-        match comdat {
-            None => {
-                *self.data().comdat.borrow_mut() = None;
-                Ok(())
-            }
-            Some(c) => {
-                if c.module != self.module {
-                    return Err(IrError::InvalidOperation {
-                        message: "comdat does not belong to this module",
-                    });
-                }
-                *self.data().comdat.borrow_mut() = Some(c.name().to_owned());
-                Ok(())
-            }
+        if comdat.module != self.module {
+            return Err(IrError::InvalidOperation {
+                message: "comdat does not belong to this module",
+            });
         }
+        *self.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
+        Ok(())
     }
-    pub fn metadata(self) -> core::cell::Ref<'ctx, crate::metadata::MetadataAttachmentSet> {
+
+    /// Clear the attached comdat.
+    pub fn clear_comdat(self, _module: &Module<'ctx, B, Unverified>) {
+        *self.data().comdat.borrow_mut() = None;
+    }
+
+    pub fn metadata(self) -> core::cell::Ref<'ctx, MetadataAttachmentSet> {
         self.data().metadata.borrow()
     }
 
@@ -531,7 +534,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalVariable<'ctx, B> {
     fn name(self) -> Option<String> {
         Some(self.data().name.clone())
     }
-    fn set_name(self, _module_token: &Module<'ctx, B, Unverified>, _name: &str) {
+    fn set_name<Name>(self, _module_token: &Module<'ctx, B, Unverified>, _name: Name)
+    where
+        Name: Into<String>,
+    {
         // GlobalVariable names are immutable through this interface
         // -- they participate in the module's name table. Renaming
         // requires a dedicated path that keeps the table consistent.
@@ -686,13 +692,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
     }
 
     /// Section name. Mirrors `GlobalValue::setSection`.
-    pub fn section(mut self, section: impl Into<String>) -> Self {
+    pub fn section<Section>(mut self, section: Section) -> Self
+    where
+        Section: Into<String>,
+    {
         self.section = Some(section.into());
         self
     }
 
     /// Partition name. Mirrors `GlobalValue::setPartition`.
-    pub fn partition(mut self, partition: impl Into<String>) -> Self {
+    pub fn partition<Partition>(mut self, partition: Partition) -> Self
+    where
+        Partition: Into<String>,
+    {
         self.partition = Some(partition.into());
         self
     }

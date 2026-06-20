@@ -455,6 +455,7 @@ Total `#[test]` functions: 797.
 | `crates/llvmkit-ir/tests/globals_basic.rs::module_named_global_lookup_round_trip` | `unittests/IR/ModuleTest.cpp::TEST(ModuleTest, GlobalList)` (the `M->getNamedValue("GV")` round-trip) | port |
 | `crates/llvmkit-ir/tests/globals_basic.rs::module_iter_globals_preserves_order` | `unittests/IR/ModuleTest.cpp::TEST(ModuleTest, GlobalList)` (the `Range.begin()` walk) | port |
 | `crates/llvmkit-ir/tests/globals_basic.rs::comdat_get_or_insert_is_idempotent` | `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, ComdatUserTracking)` (second `getOrInsertComdat("comdat")` is identity-stable) | port |
+| `crates/llvmkit-ir/tests/globals_basic.rs::alias_ifunc_partition_clear_apis` | `IR/GlobalAlias.h::GlobalAlias` / `IR/GlobalIFunc.h::GlobalIFunc` partition accessors | llvmkit-specific |
 | `crates/llvmkit-ir/tests/inline_asm.rs::inline_asm_call_with_side_effects` | `lib/IR/AsmWriter.cpp::writeAsOperandInternal(Value*)` inline-asm arm; `include/llvm/IR/InlineAsm.h` | mirror |
 | `crates/llvmkit-ir/tests/inline_asm.rs::inline_asm_call_without_side_effects` | `lib/IR/AsmWriter.cpp::writeAsOperandInternal(Value*)` inline-asm arm; `include/llvm/IR/InlineAsm.h` | mirror |
 | `crates/llvmkit-ir/tests/inline_asm.rs::inline_asm_multiline_escapes_newline` | `lib/IR/AsmWriter.cpp::writeAsOperandInternal(Value*)` inline-asm arm; string escaping via `printEscapedString` | mirror |

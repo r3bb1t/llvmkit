@@ -21,7 +21,7 @@ fn vector_binops_emit_elementwise_ir() {
             false,
         );
         let f = m
-            .add_function::<()>("g", fn_ty, Linkage::External)
+            .add_function::<(), _>("g", fn_ty, Linkage::External)
             .expect("g");
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
@@ -71,7 +71,7 @@ fn scalar_binop_dyn_still_works() {
             false,
         );
         let f = m
-            .add_function::<i64>("h", fn_ty, Linkage::External)
+            .add_function::<i64, _>("h", fn_ty, Linkage::External)
             .expect("h");
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);

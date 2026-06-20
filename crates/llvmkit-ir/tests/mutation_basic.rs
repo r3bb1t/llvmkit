@@ -37,7 +37,7 @@ fn use_test_sort_setup_registers_eight_users() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(void_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<()>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let x: IntValue<i32> = f.param(0)?.try_into()?;
@@ -84,7 +84,7 @@ fn erase_no_invalidation() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(void_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<()>("foo", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("foo", fn_ty, Linkage::External)?;
         let bb = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(bb);
         let x: IntValue<i32> = f.param(0)?.try_into()?;
@@ -132,7 +132,7 @@ fn erase_deregisters_from_operand_use_lists() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(void_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<()>("foo", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("foo", fn_ty, Linkage::External)?;
         let bb = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(bb);
         let x: IntValue<i32> = f.param(0)?.try_into()?;

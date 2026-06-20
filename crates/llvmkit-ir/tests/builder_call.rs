@@ -17,10 +17,10 @@ fn call_int_returning_function() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         // declare i32 @callee(i32, i32)
         let callee_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-        let callee = m.add_function::<i32>("callee", callee_ty, Linkage::External)?;
+        let callee = m.add_function::<i32, _>("callee", callee_ty, Linkage::External)?;
         // define i32 @caller(i32 %x, i32 %y) { %r = call i32 @callee(i32 %x, i32 %y); ret i32 %r }
         let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-        let caller = m.add_function::<i32>("caller", caller_ty, Linkage::External)?;
+        let caller = m.add_function::<i32, _>("caller", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let x: llvmkit_ir::IntValue<i32> = caller.param(0)?.try_into()?;
@@ -51,10 +51,10 @@ fn call_void_returning_function() -> Result<(), IrError> {
         let void_ty = m.void_type();
         // declare void @sink()
         let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let callee = m.add_function::<()>("sink", callee_ty, Linkage::External)?;
+        let callee = m.add_function::<(), _>("sink", callee_ty, Linkage::External)?;
         // define void @caller() { call void @sink(); ret void }
         let caller_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let caller = m.add_function::<()>("caller", caller_ty, Linkage::External)?;
+        let caller = m.add_function::<(), _>("caller", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let inst = b.build_call(callee, Vec::<llvmkit_ir::Value>::new(), "")?;
@@ -82,9 +82,9 @@ fn call_builder_mixed_arg_types() -> Result<(), IrError> {
             [i32_ty.as_type(), ptr_ty.as_type()],
             false,
         );
-        let callee = m.add_function::<()>("with_ptr", callee_ty, Linkage::External)?;
+        let callee = m.add_function::<(), _>("with_ptr", callee_ty, Linkage::External)?;
         let caller_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
-        let caller = m.add_function::<()>("caller", caller_ty, Linkage::External)?;
+        let caller = m.add_function::<(), _>("caller", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let p: llvmkit_ir::PointerValue = caller.param(0)?.try_into()?;
@@ -112,9 +112,9 @@ fn call_tail() -> Result<(), IrError> {
     Module::with_new("c", |m| {
         let i32_ty = m.i32_type();
         let callee_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let callee = m.add_function::<i32>("g", callee_ty, Linkage::External)?;
+        let callee = m.add_function::<i32, _>("g", callee_ty, Linkage::External)?;
         let caller_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let caller = m.add_function::<i32>("f", caller_ty, Linkage::External)?;
+        let caller = m.add_function::<i32, _>("f", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let inst = b.call_builder(callee).tail().name("r").build()?;
@@ -133,9 +133,9 @@ fn call_to_pointer_returning_function() -> Result<(), IrError> {
     Module::with_new("c", |m| {
         let ptr_ty = m.ptr_type(0);
         let callee_ty = m.fn_type(ptr_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let callee = m.add_function::<Ptr>("alloc_ptr", callee_ty, Linkage::External)?;
+        let callee = m.add_function::<Ptr, _>("alloc_ptr", callee_ty, Linkage::External)?;
         let caller_ty = m.fn_type(ptr_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let caller = m.add_function::<Ptr>("g", caller_ty, Linkage::External)?;
+        let caller = m.add_function::<Ptr, _>("g", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Ptr>(&m).position_at_end(entry);
         let inst = b.build_call(callee, Vec::<llvmkit_ir::Value>::new(), "p")?;

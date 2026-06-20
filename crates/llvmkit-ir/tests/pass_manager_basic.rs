@@ -20,9 +20,9 @@ where
     Module::with_new("pm", |m| {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<()>("f", fn_ty, Linkage::External)?;
-        let g = m.add_function::<()>("g", fn_ty, Linkage::External)?;
-        let h = m.add_function::<()>("h", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let g = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
+        let h = m.add_function::<(), _>("h", fn_ty, Linkage::External)?;
 
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
@@ -36,7 +36,7 @@ where
                 .position_at_end(entry)
                 .build_ret_void();
         }
-        let _decl = m.add_function::<()>("decl", fn_ty, Linkage::External)?;
+        let _decl = m.add_function::<(), _>("decl", fn_ty, Linkage::External)?;
         run(m)
     })
 }
@@ -249,11 +249,12 @@ fn module_pass_invalidates_function_analysis_cache() -> Result<(), IrError> {
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(CountingFunctionAnalysis { runs: runs.clone() });
         assert!(
-            fam.get_cached_result::<CountingFunctionAnalysis>(f)
+            fam.get_cached_result::<CountingFunctionAnalysis, _>(f)
                 .is_none()
         );
         assert_eq!(
-            fam.get_result::<CountingFunctionAnalysis>(f)?.instructions,
+            fam.get_result::<CountingFunctionAnalysis, _>(f)?
+                .instructions,
             3
         );
 
@@ -267,7 +268,7 @@ fn module_pass_invalidates_function_analysis_cache() -> Result<(), IrError> {
         let _ = mpm.run(m.verify()?, &mut mam, &mut fam)?;
 
         assert!(
-            fam.get_cached_result::<CountingFunctionAnalysis>(f)
+            fam.get_cached_result::<CountingFunctionAnalysis, _>(f)
                 .is_none()
         );
         assert_eq!(runs.get(), 1);
@@ -321,7 +322,10 @@ fn function_pass_can_query_dominator_tree_analysis() -> Result<(), IrError> {
         fam.register_pass(DominatorTreeAnalysis);
 
         let _ = mpm.run(m.verify()?, &mut mam, &mut fam)?;
-        assert!(fam.get_cached_result::<DominatorTreeAnalysis>(f).is_some());
+        assert!(
+            fam.get_cached_result::<DominatorTreeAnalysis, _>(f)
+                .is_some()
+        );
         Ok(())
     })
 }

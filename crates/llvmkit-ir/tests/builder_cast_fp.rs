@@ -20,7 +20,7 @@ fn fpext_f32_to_f64() -> Result<(), IrError> {
         let f32_ty = m.f32_type();
         let f64_ty = m.f64_type();
         let fn_ty = m.fn_type(f64_ty, [f32_ty.as_type()], false);
-        let f = m.add_function::<f64>("ext", fn_ty, Linkage::External)?;
+        let f = m.add_function::<f64, _>("ext", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<f64>(&m).position_at_end(entry);
         let arg: llvmkit_ir::FloatValue<f32> = f.param(0)?.try_into()?;
@@ -43,7 +43,7 @@ fn fptrunc_f64_to_f32() -> Result<(), IrError> {
         let f32_ty = m.f32_type();
         let f64_ty = m.f64_type();
         let fn_ty = m.fn_type(f32_ty, [f64_ty.as_type()], false);
-        let f = m.add_function::<f32>("tr", fn_ty, Linkage::External)?;
+        let f = m.add_function::<f32, _>("tr", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
         let arg: llvmkit_ir::FloatValue<f64> = f.param(0)?.try_into()?;
@@ -58,9 +58,9 @@ fn fptrunc_f64_to_f32() -> Result<(), IrError> {
     })
 }
 
-// `b.build_fp_ext::<f64, f32>(...)` is a compile error: `f32` is not
+// `b.build_fp_ext::<f64, f32, _>(...)` is a compile error: `f32` is not
 // `FloatWiderThan<f64>`.
-// `b.build_fp_trunc::<f32, f64>(...)` is a compile error: `f32` is not
+// `b.build_fp_trunc::<f32, f64, _>(...)` is a compile error: `f32` is not
 // `FloatWiderThan<f64>` (the source must be wider than the
 // destination).
 
@@ -72,7 +72,7 @@ fn fptosi_f32_to_i32() -> Result<(), IrError> {
         let f32_ty = m.f32_type();
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [f32_ty.as_type()], false);
-        let f = m.add_function::<i32>("toi", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("toi", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let arg: llvmkit_ir::FloatValue<f32> = f.param(0)?.try_into()?;
@@ -92,7 +92,7 @@ fn fptoui_f32_to_i32() -> Result<(), IrError> {
         let f32_ty = m.f32_type();
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [f32_ty.as_type()], false);
-        let f = m.add_function::<i32>("tou", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("tou", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let arg: llvmkit_ir::FloatValue<f32> = f.param(0)?.try_into()?;
@@ -112,7 +112,7 @@ fn sitofp_i32_to_f32() -> Result<(), IrError> {
         let f32_ty = m.f32_type();
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(f32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<f32>("sif", fn_ty, Linkage::External)?;
+        let f = m.add_function::<f32, _>("sif", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
         let arg: llvmkit_ir::IntValue<i32> = f.param(0)?.try_into()?;
@@ -132,7 +132,7 @@ fn uitofp_i32_to_f32() -> Result<(), IrError> {
         let f32_ty = m.f32_type();
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(f32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<f32>("uif", fn_ty, Linkage::External)?;
+        let f = m.add_function::<f32, _>("uif", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
         let arg: llvmkit_ir::IntValue<i32> = f.param(0)?.try_into()?;

@@ -16,7 +16,7 @@ fn inline_asm_call_with_side_effects() -> Result<(), IrError> {
 
         // The function the host body lives in: i64 @add_via_asm(i64 %a, i64 %b).
         let host_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
-        let host = m.add_function::<i64>("add_via_asm", host_ty, Linkage::External)?;
+        let host = m.add_function::<i64, _>("add_via_asm", host_ty, Linkage::External)?;
         let entry = host.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
 
@@ -32,7 +32,7 @@ fn inline_asm_call_with_side_effects() -> Result<(), IrError> {
             llvmkit_ir::InlineAsmOptions::new().side_effects(true),
         );
 
-        let r = b.build_inline_asm_call::<i64, _, _>(asm, [a, bb], "r")?;
+        let r = b.build_inline_asm_call::<i64, _, _, _>(asm, [a, bb], "r")?;
         b.build_ret(r.return_int_value())?;
 
         let text = format!("{m}");
@@ -70,7 +70,7 @@ fn inline_asm_call_without_side_effects() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
 
         let host_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let host = m.add_function::<i32>("neg_via_asm", host_ty, Linkage::External)?;
+        let host = m.add_function::<i32, _>("neg_via_asm", host_ty, Linkage::External)?;
         let entry = host.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
 
@@ -84,7 +84,7 @@ fn inline_asm_call_without_side_effects() -> Result<(), IrError> {
             llvmkit_ir::InlineAsmOptions::new(),
         );
 
-        let r = b.build_inline_asm_call::<i32, _, _>(asm, [x], "r")?;
+        let r = b.build_inline_asm_call::<i32, _, _, _>(asm, [x], "r")?;
         b.build_ret(r.return_int_value())?;
 
         let text = format!("{m}");
@@ -112,7 +112,7 @@ fn inline_asm_multiline_escapes_newline() -> Result<(), IrError> {
         let void_ty = m.void_type();
 
         let host_ty = m.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
-        let host = m.add_function::<()>("fence_via_asm", host_ty, Linkage::External)?;
+        let host = m.add_function::<(), _>("fence_via_asm", host_ty, Linkage::External)?;
         let entry = host.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
 
@@ -125,7 +125,7 @@ fn inline_asm_multiline_escapes_newline() -> Result<(), IrError> {
             llvmkit_ir::InlineAsmOptions::new().side_effects(true),
         );
 
-        b.build_inline_asm_call::<(), _, _>(asm, Vec::<llvmkit_ir::Value>::new(), "")?;
+        b.build_inline_asm_call::<(), _, _, _>(asm, Vec::<llvmkit_ir::Value>::new(), "")?;
         b.build_ret_void();
 
         let text = format!("{m}");
@@ -155,13 +155,13 @@ fn indirect_call_rejects_wrong_return_marker() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let ptr_ty = m.ptr_type(0);
         let host_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
-        let host = m.add_function::<()>("host", host_ty, Linkage::External)?;
+        let host = m.add_function::<(), _>("host", host_ty, Linkage::External)?;
         let entry = host.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let callee_ptr = llvmkit_ir::PointerValue::try_from(host.param(0).expect("callee ptr"))?;
         let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let err = b
-            .build_indirect_call::<i64, _, _>(
+            .build_indirect_call::<i64, _, _, _>(
                 callee_ty,
                 callee_ptr,
                 Vec::<llvmkit_ir::Value>::new(),
@@ -183,12 +183,12 @@ fn inline_asm_call_rejects_label_constraint() -> Result<(), IrError> {
     Module::with_new("asm_label_constraint", |m| {
         let void_ty = m.void_type();
         let host_ty = m.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
-        let host = m.add_function::<()>("host", host_ty, Linkage::External)?;
+        let host = m.add_function::<(), _>("host", host_ty, Linkage::External)?;
         let entry = host.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let asm_ty = m.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
         let asm = m.inline_asm(asm_ty, "", "!i", llvmkit_ir::InlineAsmOptions::new());
-        b.build_inline_asm_call::<(), _, _>(asm, Vec::<llvmkit_ir::Value>::new(), "")?;
+        b.build_inline_asm_call::<(), _, _, _>(asm, Vec::<llvmkit_ir::Value>::new(), "")?;
         b.build_ret_void();
         let err = m
             .verify_borrowed()
@@ -211,7 +211,7 @@ fn inline_asm_intel_dialect_keyword() -> Result<(), IrError> {
         let i64_ty = m.i64_type();
 
         let host_ty = m.fn_type(i64_ty, [i64_ty.as_type()], false);
-        let host = m.add_function::<i64>("id_via_asm", host_ty, Linkage::External)?;
+        let host = m.add_function::<i64, _>("id_via_asm", host_ty, Linkage::External)?;
         let entry = host.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
         let x = host.param(0).expect("param 0");
@@ -221,10 +221,10 @@ fn inline_asm_intel_dialect_keyword() -> Result<(), IrError> {
             asm_fn_ty,
             "mov $0, $1",
             "=r,r",
-            llvmkit_ir::InlineAsmOptions::new().dialect(AsmDialect::Intel),
+            llvmkit_ir::InlineAsmOptions::new().with_dialect(AsmDialect::Intel),
         );
 
-        let r = b.build_inline_asm_call::<i64, _, _>(asm, [x], "r")?;
+        let r = b.build_inline_asm_call::<i64, _, _, _>(asm, [x], "r")?;
         b.build_ret(r.return_int_value())?;
 
         let text = format!("{m}");

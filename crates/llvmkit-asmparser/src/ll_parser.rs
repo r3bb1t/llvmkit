@@ -502,7 +502,7 @@ fn mask_apint_top_word(words: &mut [u64], bit_width: u32) {
 }
 
 fn constant_expr_inrange_is_non_empty(range: &llvmkit_ir::ConstantExprInRange) -> bool {
-    signed_apint_cmp(&range.start, &range.end, range.bit_width).is_lt()
+    signed_apint_cmp(range.start(), range.end(), range.bit_width()).is_lt()
 }
 
 fn signed_apint_cmp(lhs: &[u64], rhs: &[u64], bit_width: u32) -> core::cmp::Ordering {
@@ -898,7 +898,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 }
             };
             item.global
-                .set_initializer(self.module, Some(constant))
+                .set_initializer(self.module, constant)
                 .map_err(|e| self.builder_err("deferred global initializer", e))?;
         }
         Ok(())
@@ -1398,7 +1398,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 self.bump()?;
                 self.expect_punct(PunctKind::Equal, "'=' after target triple")?;
                 let s = self.parse_string_constant("target-triple string constant")?;
-                self.module.set_target_triple(Some(s));
+                self.module.set_target_triple(s);
                 Ok(())
             }
             Token::Kw(Keyword::Datalayout) => {
@@ -1480,16 +1480,19 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         &mut self,
         pfs: Option<&PerFunctionState<'ctx>>,
     ) -> ParseResult<UseListOrderRecord> {
+        let loc = self.loc();
         self.expect_keyword(Keyword::Uselistorder, "'uselistorder'")?;
         let ty = self.parse_type(false)?;
         let val_id = self.parse_val_id(pfs, Some(ty))?;
         let value = self.convert_val_id_to_value(ty, val_id, pfs)?;
         self.expect_punct(PunctKind::Comma, "',' before uselistorder indexes")?;
         let indexes = self.parse_use_list_order_indexes()?;
-        Ok(UseListOrderRecord {
-            value: value.id(),
-            value_ty: ty.id(),
-            indexes,
+        UseListOrderRecord::new(value.id(), ty.id(), indexes).map_err(|e| match e {
+            IrError::InvalidOperation { message } => ParseError::Expected {
+                expected: message.into(),
+                loc: DiagLoc::span(loc),
+            },
+            other => self.builder_err("uselistorder", other),
         })
     }
 
@@ -1596,11 +1599,15 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         };
         self.expect_punct(PunctKind::Comma, "',' before uselistorder_bb indexes")?;
         let indexes = self.parse_use_list_order_indexes()?;
-        let record = UseListOrderBBRecord {
-            function: function.as_value().id(),
-            block: block.as_value().id(),
-            indexes,
-        };
+        let record =
+            UseListOrderBBRecord::new(function.as_value().id(), block.as_value().id(), indexes)
+                .map_err(|e| match e {
+                    IrError::InvalidOperation { message } => ParseError::Expected {
+                        expected: message.into(),
+                        loc: DiagLoc::span(loc),
+                    },
+                    other => self.builder_err("uselistorder_bb", other),
+                })?;
         self.module
             .append_use_list_order_bb(record)
             .map_err(|e| match e {
@@ -1858,10 +1865,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                         };
                         self.bump()?;
                         let value = self.parse_metadata_field_value()?;
-                        fields.push(llvmkit_ir::metadata::MetadataField {
-                            name: field_name,
-                            value,
-                        });
+                        fields.push(llvmkit_ir::metadata::MetadataField::new(field_name, value));
                         if !self.eat_punct(PunctKind::Comma)? {
                             break;
                         }
@@ -1869,11 +1873,9 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 }
                 self.expect_punct(PunctKind::RParen, "')' closing specialized metadata")?;
                 Ok(llvmkit_ir::metadata::MetadataKind::Specialized(
-                    llvmkit_ir::metadata::SpecializedMetadataNode {
-                        distinct,
-                        kind,
-                        fields,
-                    },
+                    llvmkit_ir::metadata::SpecializedMetadataNode::new(kind)
+                        .distinct(distinct)
+                        .with_fields(fields),
                 ))
             }
             Token::MetadataVar(bytes) => {
@@ -1894,10 +1896,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                         };
                         self.bump()?;
                         let value = self.parse_metadata_field_value()?;
-                        fields.push(llvmkit_ir::metadata::MetadataField {
-                            name: field_name,
-                            value,
-                        });
+                        fields.push(llvmkit_ir::metadata::MetadataField::new(field_name, value));
                         if !self.eat_punct(PunctKind::Comma)? {
                             break;
                         }
@@ -1905,11 +1904,9 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 }
                 self.expect_punct(PunctKind::RParen, "')' closing specialized metadata")?;
                 Ok(llvmkit_ir::metadata::MetadataKind::Specialized(
-                    llvmkit_ir::metadata::SpecializedMetadataNode {
-                        distinct,
-                        kind,
-                        fields,
-                    },
+                    llvmkit_ir::metadata::SpecializedMetadataNode::new(kind)
+                        .distinct(distinct)
+                        .with_fields(fields),
                 ))
             }
             Token::StringConstant(_) => {
@@ -2099,16 +2096,17 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
 
         let debug_loc = self.parse_metadata_attachment_operand()?;
         self.expect_punct(PunctKind::RParen, "')' closing debug record")?;
-        Ok(DebugRecord::Variable(DebugVariableRecord {
-            kind,
-            location,
-            variable,
-            expression,
-            assign_id,
-            address_location,
-            address_expression,
-            debug_loc,
-        }))
+        let mut record = DebugVariableRecord::new(kind, location, variable, expression, debug_loc);
+        if let Some(assign_id) = assign_id {
+            record = record.with_assign_id(assign_id);
+        }
+        if let Some(address_location) = address_location {
+            record = record.with_address_location(address_location);
+        }
+        if let Some(address_expression) = address_expression {
+            record = record.with_address_expression(address_expression);
+        }
+        Ok(DebugRecord::Variable(record))
     }
 
     fn finish_trailing_metadata(
@@ -4023,19 +4021,18 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
     fn parse_overflowing_constant_expr_flags(
         &mut self,
     ) -> ParseResult<llvmkit_ir::ConstantExprFlags> {
-        let mut flags = llvmkit_ir::OverflowingConstantExprFlags::default();
+        let mut nuw = false;
+        let mut nsw = false;
         if self.eat_keyword(Keyword::Nuw)? {
-            flags.nuw = true;
+            nuw = true;
         }
         if self.eat_keyword(Keyword::Nsw)? {
-            flags.nsw = true;
+            nsw = true;
             if self.eat_keyword(Keyword::Nuw)? {
-                flags.nuw = true;
+                nuw = true;
             }
         }
-        Ok(llvmkit_ir::ConstantExprFlags::overflowing(
-            flags.nuw, flags.nsw,
-        ))
+        Ok(llvmkit_ir::ConstantExprFlags::overflowing(nuw, nsw))
     }
 
     fn parse_gep_constant_expr_flags(&mut self) -> ParseResult<ParsedGepConstantExprFlags> {
@@ -4072,7 +4069,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         operands: &[llvmkit_ir::Constant<'ctx>],
     ) -> ParseResult<llvmkit_ir::ConstantExprFlags> {
         let Some((start, end)) = parsed.in_range else {
-            return Ok(llvmkit_ir::ConstantExprFlags::gep(parsed.no_wrap, None));
+            return Ok(llvmkit_ir::ConstantExprFlags::gep(parsed.no_wrap));
         };
         let Some(base) = operands.first() else {
             return Err(self.expected("base of getelementptr must be a pointer"));
@@ -4082,17 +4079,13 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         let bit_width = self.module.data_layout().index_size_in_bits(address_space);
         let start_words = inrange_bound_to_apint_words(&start, bit_width);
         let end_words = inrange_bound_to_apint_words(&end, bit_width);
-        let in_range = llvmkit_ir::ConstantExprInRange {
-            start: start_words,
-            end: end_words,
-            bit_width,
-        };
+        let in_range = llvmkit_ir::ConstantExprInRange::new(start_words, end_words, bit_width);
         if !constant_expr_inrange_is_non_empty(&in_range) {
             return Err(self.expected("expected end to be larger than start"));
         }
-        Ok(llvmkit_ir::ConstantExprFlags::gep(
+        Ok(llvmkit_ir::ConstantExprFlags::gep_with_in_range(
             parsed.no_wrap,
-            Some(in_range),
+            in_range,
         ))
     }
 
@@ -4212,6 +4205,12 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         operands: Vec<llvmkit_ir::Constant<'ctx>>,
         flags: llvmkit_ir::ConstantExprFlags,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx>> {
+        let options = match source_ty {
+            Some(source_ty) => llvmkit_ir::ConstantExprOptions::new()
+                .source_ty(source_ty)
+                .flags(flags),
+            None => llvmkit_ir::ConstantExprOptions::new().flags(flags),
+        };
         self.module
             .constant_expr_with_options(
                 result_ty,
@@ -4219,7 +4218,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 operands.into_iter().map(|c| c.as_value()),
                 [],
                 [],
-                llvmkit_ir::ConstantExprOptions { source_ty, flags },
+                options,
             )
             .map_err(|e| match e {
                 IrError::InvalidOperation { message }
@@ -4607,17 +4606,17 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                     loop {
                         let ty = self.parse_type(false)?;
                         let value = self.parse_value(state, ty)?;
-                        inputs.push(core::cell::Cell::new(value.id()));
+                        inputs.push(value.id());
                         if !self.eat_punct(PunctKind::Comma)? {
                             break;
                         }
                     }
                 }
                 self.expect_punct(PunctKind::RParen, "')' in operand bundle")?;
-                bundles.push(llvmkit_ir::instr_types::OperandBundleData {
-                    tag: Self::operand_bundle_tag_from_name(tag),
-                    inputs: inputs.into_boxed_slice(),
-                });
+                bundles.push(llvmkit_ir::instr_types::OperandBundleData::new(
+                    Self::operand_bundle_tag_from_name(tag),
+                    inputs,
+                ));
                 if !self.eat_punct(PunctKind::Comma)? {
                     break;
                 }
@@ -4722,7 +4721,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         } else {
             let f = self
                 .module
-                .add_function::<llvmkit_ir::Dyn>(&name, fn_ty, linkage)
+                .add_function::<llvmkit_ir::Dyn, _>(&name, fn_ty, linkage)
                 .map_err(|e| ParseError::Expected {
                     expected: format!("valid function declaration: {e}"),
                     loc: DiagLoc::span(decl_loc),
@@ -4753,31 +4752,31 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
             f.add_function_attr_group(self.module, group);
         }
         if let Some(section) = suffix.section {
-            f.set_section(self.module, Some(section));
+            f.set_section(self.module, section);
         }
         if let Some(partition) = suffix.partition {
-            f.set_partition(self.module, Some(partition));
+            f.set_partition(self.module, partition);
         }
         if let Some(comdat_name) = suffix.comdat {
             let name = comdat_name.unwrap_or_else(|| f.name().to_owned());
             let comdat = self.module.get_or_insert_comdat(&name);
-            f.set_comdat(self.module, Some(comdat))
+            f.set_comdat(self.module, comdat)
                 .map_err(|e| self.builder_err("function comdat", e))?;
         }
         f.set_align(self.module, suffix.align);
         if let Some(gc) = suffix.gc {
-            f.set_gc(self.module, Some(gc));
+            f.set_gc(self.module, gc);
         }
         if let Some(prefix_data) = suffix.prefix_data {
-            f.set_prefix_data(self.module, Some(prefix_data))
+            f.set_prefix_data(self.module, prefix_data)
                 .map_err(|e| self.builder_err("function prefix", e))?;
         }
         if let Some(prologue_data) = suffix.prologue_data {
-            f.set_prologue_data(self.module, Some(prologue_data))
+            f.set_prologue_data(self.module, prologue_data)
                 .map_err(|e| self.builder_err("function prologue", e))?;
         }
         if let Some(personality_fn) = suffix.personality_fn {
-            f.set_personality_fn(self.module, Some(personality_fn))
+            f.set_personality_fn(self.module, personality_fn)
                 .map_err(|e| self.builder_err("function personality", e))?;
         }
         for (kind, id) in suffix.metadata {
@@ -4895,7 +4894,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         } else {
             let f = self
                 .module
-                .add_function::<llvmkit_ir::Dyn>(&name, fn_ty, linkage)
+                .add_function::<llvmkit_ir::Dyn, _>(&name, fn_ty, linkage)
                 .map_err(|e| ParseError::Expected {
                     expected: format!("valid function definition: {e}"),
                     loc: DiagLoc::span(decl_loc),
@@ -4926,31 +4925,31 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
             f.add_function_attr_group(self.module, group);
         }
         if let Some(section) = suffix.section {
-            f.set_section(self.module, Some(section));
+            f.set_section(self.module, section);
         }
         if let Some(partition) = suffix.partition {
-            f.set_partition(self.module, Some(partition));
+            f.set_partition(self.module, partition);
         }
         if let Some(comdat_name) = suffix.comdat {
             let name = comdat_name.unwrap_or_else(|| f.name().to_owned());
             let comdat = self.module.get_or_insert_comdat(&name);
-            f.set_comdat(self.module, Some(comdat))
+            f.set_comdat(self.module, comdat)
                 .map_err(|e| self.builder_err("function comdat", e))?;
         }
         f.set_align(self.module, suffix.align);
         if let Some(gc) = suffix.gc {
-            f.set_gc(self.module, Some(gc));
+            f.set_gc(self.module, gc);
         }
         if let Some(prefix_data) = suffix.prefix_data {
-            f.set_prefix_data(self.module, Some(prefix_data))
+            f.set_prefix_data(self.module, prefix_data)
                 .map_err(|e| self.builder_err("function prefix", e))?;
         }
         if let Some(prologue_data) = suffix.prologue_data {
-            f.set_prologue_data(self.module, Some(prologue_data))
+            f.set_prologue_data(self.module, prologue_data)
                 .map_err(|e| self.builder_err("function prologue", e))?;
         }
         if let Some(personality_fn) = suffix.personality_fn {
-            f.set_personality_fn(self.module, Some(personality_fn))
+            f.set_personality_fn(self.module, personality_fn)
                 .map_err(|e| self.builder_err("function personality", e))?;
         }
         for (kind, id) in suffix.metadata {
@@ -5482,7 +5481,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 if nsw {
                     flags = flags.nsw();
                 }
-                b.build_int_add_with_flags::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, flags, name)
+                b.build_int_add_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("add", e))?
                     .as_value()
             }
@@ -5494,7 +5493,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 if nsw {
                     flags = flags.nsw();
                 }
-                b.build_int_sub_with_flags::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, flags, name)
+                b.build_int_sub_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("sub", e))?
                     .as_value()
             }
@@ -5506,7 +5505,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 if nsw {
                     flags = flags.nsw();
                 }
-                b.build_int_mul_with_flags::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, flags, name)
+                b.build_int_mul_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("mul", e))?
                     .as_value()
             }
@@ -5518,7 +5517,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 if nsw {
                     flags = flags.nsw();
                 }
-                b.build_int_shl_with_flags::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, flags, name)
+                b.build_int_shl_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("shl", e))?
                     .as_value()
             }
@@ -5527,7 +5526,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 if exact {
                     flags = flags.exact();
                 }
-                b.build_int_udiv_with_flags::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, flags, name)
+                b.build_int_udiv_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("udiv", e))?
                     .as_value()
             }
@@ -5536,7 +5535,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 if exact {
                     flags = flags.exact();
                 }
-                b.build_int_sdiv_with_flags::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, flags, name)
+                b.build_int_sdiv_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("sdiv", e))?
                     .as_value()
             }
@@ -5545,7 +5544,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 if exact {
                     flags = flags.exact();
                 }
-                b.build_int_lshr_with_flags::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, flags, name)
+                b.build_int_lshr_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("lshr", e))?
                     .as_value()
             }
@@ -5554,20 +5553,20 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 if exact {
                     flags = flags.exact();
                 }
-                b.build_int_ashr_with_flags::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, flags, name)
+                b.build_int_ashr_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("ashr", e))?
                     .as_value()
             }
             IntBinOp::URem => b
-                .build_int_urem::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, name)
+                .build_int_urem::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
                 .map_err(|e| self.builder_err("urem", e))?
                 .as_value(),
             IntBinOp::SRem => b
-                .build_int_srem::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, name)
+                .build_int_srem::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
                 .map_err(|e| self.builder_err("srem", e))?
                 .as_value(),
             IntBinOp::And => b
-                .build_int_and::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, name)
+                .build_int_and::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
                 .map_err(|e| self.builder_err("and", e))?
                 .as_value(),
             IntBinOp::Or => {
@@ -5576,12 +5575,12 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 } else {
                     OrFlags::new()
                 };
-                b.build_int_or_with_flags::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, flags, name)
+                b.build_int_or_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("or", e))?
                     .as_value()
             }
             IntBinOp::Xor => b
-                .build_int_xor::<llvmkit_ir::IntDyn, _, _>(lhs, rhs, name)
+                .build_int_xor::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
                 .map_err(|e| self.builder_err("xor", e))?
                 .as_value(),
         };
@@ -5756,9 +5755,9 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
             .try_into()
             .map_err(|_| self.expected("float-typed fneg operand"))?;
         let r = if fmf.is_empty() {
-            b.build_float_neg::<llvmkit_ir::FloatDyn, _>(f, result_name.as_str())
+            b.build_float_neg::<llvmkit_ir::FloatDyn, _, _>(f, result_name.as_str())
         } else {
-            b.build_float_neg_with_flags::<llvmkit_ir::FloatDyn, _>(f, fmf, result_name.as_str())
+            b.build_float_neg_with_flags::<llvmkit_ir::FloatDyn, _, _>(f, fmf, result_name.as_str())
         }
         .map_err(|e| self.builder_err("fneg", e))?;
         Ok(r.as_value())
@@ -5787,37 +5786,37 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         let name = result_name.as_str();
         let v = match op {
             FpBinOp::Add => if fmf.is_empty() {
-                b.build_fp_add::<llvmkit_ir::FloatDyn, _, _>(lhs, rhs, name)
+                b.build_fp_add::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, name)
             } else {
-                b.build_fp_add_fmf::<llvmkit_ir::FloatDyn, _, _>(lhs, rhs, fmf, name)
+                b.build_fp_add_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
             }
             .map_err(|e| self.builder_err("fadd", e))?
             .as_value(),
             FpBinOp::Sub => if fmf.is_empty() {
-                b.build_fp_sub::<llvmkit_ir::FloatDyn, _, _>(lhs, rhs, name)
+                b.build_fp_sub::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, name)
             } else {
-                b.build_fp_sub_fmf::<llvmkit_ir::FloatDyn, _, _>(lhs, rhs, fmf, name)
+                b.build_fp_sub_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
             }
             .map_err(|e| self.builder_err("fsub", e))?
             .as_value(),
             FpBinOp::Mul => if fmf.is_empty() {
-                b.build_fp_mul::<llvmkit_ir::FloatDyn, _, _>(lhs, rhs, name)
+                b.build_fp_mul::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, name)
             } else {
-                b.build_fp_mul_fmf::<llvmkit_ir::FloatDyn, _, _>(lhs, rhs, fmf, name)
+                b.build_fp_mul_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
             }
             .map_err(|e| self.builder_err("fmul", e))?
             .as_value(),
             FpBinOp::Div => if fmf.is_empty() {
-                b.build_fp_div::<llvmkit_ir::FloatDyn, _, _>(lhs, rhs, name)
+                b.build_fp_div::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, name)
             } else {
-                b.build_fp_div_fmf::<llvmkit_ir::FloatDyn, _, _>(lhs, rhs, fmf, name)
+                b.build_fp_div_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
             }
             .map_err(|e| self.builder_err("fdiv", e))?
             .as_value(),
             FpBinOp::Rem => if fmf.is_empty() {
-                b.build_fp_rem::<llvmkit_ir::FloatDyn, _, _>(lhs, rhs, name)
+                b.build_fp_rem::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, name)
             } else {
-                b.build_fp_rem_fmf::<llvmkit_ir::FloatDyn, _, _>(lhs, rhs, fmf, name)
+                b.build_fp_rem_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
             }
             .map_err(|e| self.builder_err("frem", e))?
             .as_value(),
@@ -5866,11 +5865,11 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
             .map_err(|_| self.expected("float-typed rhs"))?;
         let name = result_name.as_str();
         let r = if fmf.is_empty() {
-            b.build_fp_cmp::<llvmkit_ir::FloatDyn, _, _>(pred, lhs, rhs, name)
+            b.build_fp_cmp::<llvmkit_ir::FloatDyn, _, _, _>(pred, lhs, rhs, name)
                 .map_err(|e| self.builder_err("fcmp", e))?
                 .as_value()
         } else {
-            b.build_fp_cmp_fmf::<llvmkit_ir::FloatDyn, _, _>(pred, lhs, rhs, fmf, name)
+            b.build_fp_cmp_fmf::<llvmkit_ir::FloatDyn, _, _, _>(pred, lhs, rhs, fmf, name)
                 .map_err(|e| self.builder_err("fcmp", e))?
                 .as_value()
         };
@@ -5921,12 +5920,9 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
             let ordering = self.parse_atomic_ordering("atomic ordering")?;
             self.expect_punct(PunctKind::Comma, "',' after atomic ordering")?;
             let align = self.parse_align_val()?;
-            let config = llvmkit_ir::instr_types::AtomicLoadConfig {
-                ordering,
-                sync_scope,
-                align,
-                volatile,
-            };
+            let config =
+                llvmkit_ir::instr_types::AtomicLoadConfig::new(ordering, sync_scope, align);
+            let config = if volatile { config.volatile() } else { config };
             let v = b
                 .build_load_atomic(ty, ptr, config, result_name.as_str())
                 .map_err(|e| self.builder_err("load", e))?;
@@ -5972,12 +5968,9 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
             let ordering = self.parse_atomic_ordering("atomic ordering")?;
             self.expect_punct(PunctKind::Comma, "',' after atomic ordering")?;
             let align = self.parse_align_val()?;
-            let config = llvmkit_ir::instr_types::AtomicStoreConfig {
-                ordering,
-                sync_scope,
-                align,
-                volatile,
-            };
+            let config =
+                llvmkit_ir::instr_types::AtomicStoreConfig::new(ordering, sync_scope, align);
+            let config = if volatile { config.volatile() } else { config };
             b.build_store_atomic(val_v, ptr, config)
                 .map_err(|e| self.builder_err("store", e))?;
         } else {
@@ -6734,14 +6727,13 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         self.expect_punct(PunctKind::RParen, "')' to close call argument list")?;
         let (function_attrs, function_attr_groups) = self.parse_optional_fn_attrs()?;
         let operand_bundles = self.parse_optional_operand_bundles(state)?;
-        let call_attrs = llvmkit_ir::instr_types::CallAttributeData {
+        let call_attrs = llvmkit_ir::instr_types::CallAttributeData::new(
             return_attrs,
-            arg_attrs: arg_attrs.into_boxed_slice(),
+            arg_attrs.into_boxed_slice(),
             function_attrs,
-            function_attr_groups: function_attr_groups.into_boxed_slice(),
-            operand_bundles,
-            fmf: FastMathFlags::empty(),
-        };
+        )
+        .function_attr_groups(function_attr_groups.into_boxed_slice())
+        .operand_bundles(operand_bundles);
         let parsed_fn_ty = match callee_ty.into_type_enum() {
             AnyTypeEnum::Function(fn_ty) => fn_ty,
             _ => self.module.fn_type(callee_ty, arg_tys, var_args),
@@ -6774,7 +6766,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 if asm.label_constraint_count() != 0 {
                     return Err(self.expected("inline asm call without label constraints"));
                 }
-                b.build_inline_asm_call::<llvmkit_ir::Dyn, _, _>(asm, args, name)
+                b.build_inline_asm_call::<llvmkit_ir::Dyn, _, _, _>(asm, args, name)
                     .map_err(|e| self.builder_err("call", e))?
                     .as_instruction()
                     .as_value()
@@ -6891,7 +6883,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 if name.starts_with("llvm.") {
                     let f = self
                         .module
-                        .add_function::<llvmkit_ir::Dyn>(&name, parsed_fn_ty, Linkage::External)
+                        .add_function::<llvmkit_ir::Dyn, _>(&name, parsed_fn_ty, Linkage::External)
                         .map_err(|_| ParseError::Expected {
                             expected: "intrinsic signature mismatch".into(),
                             loc: DiagLoc::span(loc),
@@ -6926,8 +6918,8 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                     llvmkit_ir::InlineAsmOptions::new()
                         .side_effects(data.has_side_effects)
                         .align_stack(data.is_align_stack)
-                        .dialect(data.dialect)
-                        .can_unwind(data.can_unwind),
+                        .with_dialect(data.dialect)
+                        .with_can_unwind(data.can_unwind),
                 ),
             )),
         }
@@ -7132,25 +7124,19 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         let success_ord = self.parse_atomic_ordering("cmpxchg success ordering")?;
         let failure_ord = self.parse_atomic_ordering("cmpxchg failure ordering")?;
         let align = self.parse_optional_comma_align()?;
-        let config = llvmkit_ir::instr_types::AtomicCmpXchgConfig {
-            success_ordering: success_ord,
-            failure_ordering: failure_ord,
-            sync_scope,
-            flags: {
-                let mut f = llvmkit_ir::instr_types::CmpXchgFlags::new();
-                if weak {
-                    f = f.weak();
-                }
-                if volatile {
-                    f = f.volatile();
-                }
-                f
-            },
-            align: match align {
-                Some(value) => llvmkit_ir::align::MaybeAlign::from(value),
-                None => llvmkit_ir::align::MaybeAlign::NONE,
-            },
+        let align = match align {
+            Some(value) => llvmkit_ir::align::MaybeAlign::from(value),
+            None => llvmkit_ir::align::MaybeAlign::NONE,
         };
+        let mut config =
+            llvmkit_ir::instr_types::AtomicCmpXchgConfig::new(success_ord, failure_ord, sync_scope)
+                .align(align);
+        if weak {
+            config = config.weak();
+        }
+        if volatile {
+            config = config.volatile();
+        }
         let v = b
             .build_atomic_cmpxchg(ptr, cmp_v, new_v, config, result_name.as_str())
             .map_err(|e| self.builder_err("cmpxchg", e))?;
@@ -7181,21 +7167,15 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         let sync_scope = self.parse_optional_syncscope()?;
         let ordering = self.parse_atomic_ordering("atomicrmw ordering")?;
         let align = self.parse_optional_comma_align()?;
-        let config = llvmkit_ir::instr_types::AtomicRMWConfig {
-            ordering,
-            sync_scope,
-            flags: {
-                let mut f = llvmkit_ir::instr_types::AtomicRMWFlags::new();
-                if volatile {
-                    f = f.volatile();
-                }
-                f
-            },
-            align: match align {
-                Some(value) => llvmkit_ir::align::MaybeAlign::from(value),
-                None => llvmkit_ir::align::MaybeAlign::NONE,
-            },
+        let align = match align {
+            Some(value) => llvmkit_ir::align::MaybeAlign::from(value),
+            None => llvmkit_ir::align::MaybeAlign::NONE,
         };
+        let mut config =
+            llvmkit_ir::instr_types::AtomicRMWConfig::new(ordering, sync_scope).align(align);
+        if volatile {
+            config = config.volatile();
+        }
         let v = b
             .build_atomicrmw(op, ptr, val_v, config, result_name.as_str())
             .map_err(|e| self.builder_err("atomicrmw", e))?;
@@ -7297,9 +7277,11 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         self.expect_keyword(Keyword::Within, "'within' in cleanuppad")?;
         let parent_pad = self.parse_optional_pad_token(state)?;
         let args = self.parse_bracket_value_list(state)?;
-        let v = b
-            .build_cleanup_pad(parent_pad, args, result_name.as_str())
-            .map_err(|e| self.builder_err("cleanuppad", e))?;
+        let v = match parent_pad {
+            Some(parent) => b.build_cleanup_pad(parent, args, result_name.as_str()),
+            None => b.build_cleanup_pad_within_none(args, result_name.as_str()),
+        }
+        .map_err(|e| self.builder_err("cleanuppad", e))?;
         Ok(v.as_instruction().as_value())
     }
 
@@ -7366,9 +7348,11 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         } else {
             None
         };
-        let _ = b
-            .build_cleanup_ret(pad_v, unwind_dest, "")
-            .map_err(|e| self.builder_err("cleanupret", e))?;
+        let _ = match unwind_dest {
+            Some(dest) => b.build_cleanup_ret(pad_v, dest, ""),
+            None => b.build_cleanup_ret_to_caller(pad_v, ""),
+        }
+        .map_err(|e| self.builder_err("cleanupret", e))?;
         Ok(())
     }
 
@@ -7440,9 +7424,13 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
             Some(self.parse_block_ref(state)?)
         };
         let name = result_name.as_str();
-        let (_, mut cs) = b
-            .build_catch_switch(parent_pad, unwind_dest, name)
-            .map_err(|e| self.builder_err("catchswitch", e))?;
+        let (_, mut cs) = match (parent_pad, unwind_dest) {
+            (Some(parent), Some(dest)) => b.build_catch_switch(parent, dest, name),
+            (Some(parent), None) => b.build_catch_switch_to_caller(parent, name),
+            (None, Some(dest)) => b.build_catch_switch_within_none(dest, name),
+            (None, None) => b.build_catch_switch_within_none_to_caller(name),
+        }
+        .map_err(|e| self.builder_err("catchswitch", e))?;
         for h in handlers {
             cs = cs
                 .add_handler(h)
@@ -7493,14 +7481,13 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         self.expect_punct(PunctKind::RParen, "')' to close invoke argument list")?;
         let (function_attrs, function_attr_groups) = self.parse_optional_fn_attrs()?;
         let operand_bundles = self.parse_optional_operand_bundles(state)?;
-        let call_attrs = llvmkit_ir::instr_types::CallAttributeData {
+        let call_attrs = llvmkit_ir::instr_types::CallAttributeData::new(
             return_attrs,
-            arg_attrs: arg_attrs.into_boxed_slice(),
+            arg_attrs.into_boxed_slice(),
             function_attrs,
-            function_attr_groups: function_attr_groups.into_boxed_slice(),
-            operand_bundles,
-            fmf: FastMathFlags::empty(),
-        };
+        )
+        .function_attr_groups(function_attr_groups.into_boxed_slice())
+        .operand_bundles(operand_bundles);
         self.expect_keyword(Keyword::To, "'to' in invoke")?;
         self.expect_primitive(
             crate::ll_token::PrimitiveTy::Label,
@@ -7595,14 +7582,13 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         self.expect_punct(PunctKind::RParen, "')' to close callbr argument list")?;
         let (function_attrs, function_attr_groups) = self.parse_optional_fn_attrs()?;
         let operand_bundles = self.parse_optional_operand_bundles(state)?;
-        let call_attrs = llvmkit_ir::instr_types::CallAttributeData {
+        let call_attrs = llvmkit_ir::instr_types::CallAttributeData::new(
             return_attrs,
-            arg_attrs: arg_attrs.into_boxed_slice(),
+            arg_attrs.into_boxed_slice(),
             function_attrs,
-            function_attr_groups: function_attr_groups.into_boxed_slice(),
-            operand_bundles,
-            fmf: FastMathFlags::empty(),
-        };
+        )
+        .function_attr_groups(function_attr_groups.into_boxed_slice())
+        .operand_bundles(operand_bundles);
         self.expect_keyword(Keyword::To, "'to' in callbr")?;
         self.expect_primitive(
             crate::ll_token::PrimitiveTy::Label,

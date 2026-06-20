@@ -25,7 +25,7 @@ fn fmf_propagates_from_builder_to_fadd() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
-        let f = m.add_function::<f32>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<f32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<f32>(&m)
             .position_at_end(entry)
@@ -58,7 +58,7 @@ fn clear_fast_math_flags_drops_flags_from_subsequent_ops() -> Result<(), IrError
     Module::with_new("a", |m| {
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
-        let f = m.add_function::<f32>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<f32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<f32>(&m)
             .position_at_end(entry)
@@ -83,7 +83,7 @@ fn fmf_allow_reciprocal_propagates_to_fdiv() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
-        let f = m.add_function::<f32>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<f32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let fmf = FastMathFlags::ALLOW_RECIPROCAL;
         let b = IRBuilder::new_for::<f32>(&m)
@@ -112,16 +112,16 @@ fn fmf_propagates_to_fcmp_oeq() -> Result<(), IrError> {
         let f32_ty = m.f32_type();
         let i1_ty = m.bool_type();
         let fn_ty = m.fn_type(i1_ty, [f32_ty.as_type()], false);
-        let f = m.add_function::<bool>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<bool, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);
         assert!(b.fast_math_flags().is_empty());
         let p: FloatValue<f32> = f.param(0)?.try_into()?;
-        let c0 = b.build_fcmp_oeq::<f32, _, _>(p, p, "c0")?;
+        let c0 = b.build_fcmp_oeq::<f32, _, _, _>(p, p, "c0")?;
         let fmf = FastMathFlags::ALLOW_RECIPROCAL;
         let b = b.with_fast_math_flags(fmf);
         assert_eq!(b.fast_math_flags(), fmf);
-        let c1 = b.build_fcmp_oeq::<f32, _, _>(p, p, "c1")?;
+        let c1 = b.build_fcmp_oeq::<f32, _, _, _>(p, p, "c1")?;
         b.build_ret(c1)?;
         let text = format!("{m}");
         assert!(
@@ -147,7 +147,7 @@ fn fmf_save_and_restore_round_trip() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
-        let f = m.add_function::<f32>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<f32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
         // Original: empty FMF.
@@ -183,18 +183,18 @@ fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
-        let f = m.add_function::<f32>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<f32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
         let p: FloatValue<f32> = f.param(0)?.try_into()?;
-        let n0 = b.build_float_neg::<f32, _>(p, "n0")?;
+        let n0 = b.build_float_neg::<f32, _, _>(p, "n0")?;
         let Some(InstructionKind::FNeg(n0_inst)) = Instruction::try_from(n0.as_value())?.kind()
         else {
             panic!("expected n0 to be fneg");
         };
         assert!(n0_inst.fast_math_flags().is_empty());
         let fmf = FastMathFlags::NO_NANS | FastMathFlags::NO_SIGNED_ZEROS;
-        let n1 = b.build_float_neg_with_flags::<f32, _>(n0, fmf, "n1")?;
+        let n1 = b.build_float_neg_with_flags::<f32, _, _>(n0, fmf, "n1")?;
         let Some(InstructionKind::FNeg(n1_inst)) = Instruction::try_from(n1.as_value())?.kind()
         else {
             panic!("expected n1 to be fneg");
@@ -223,7 +223,7 @@ fn fmf_accumulates_contract_approx_reassoc_on_fmul() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
-        let f = m.add_function::<f32>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<f32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
         assert!(b.fast_math_flags().is_empty());
@@ -275,7 +275,7 @@ fn fmf_accumulates_contract_approx_reassoc_on_fmul() -> Result<(), IrError> {
 #[test]
 fn build_fcmp_oeq_emits_oeq() -> Result<(), IrError> {
     fcmp_predicate_emits("oeq", |b, lhs, rhs| {
-        b.build_fcmp_oeq::<f32, _, _>(lhs, rhs, "r")
+        b.build_fcmp_oeq::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
 
@@ -283,7 +283,7 @@ fn build_fcmp_oeq_emits_oeq() -> Result<(), IrError> {
 #[test]
 fn build_fcmp_ogt_emits_ogt() -> Result<(), IrError> {
     fcmp_predicate_emits("ogt", |b, lhs, rhs| {
-        b.build_fcmp_ogt::<f32, _, _>(lhs, rhs, "r")
+        b.build_fcmp_ogt::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
 
@@ -291,7 +291,7 @@ fn build_fcmp_ogt_emits_ogt() -> Result<(), IrError> {
 #[test]
 fn build_fcmp_oge_emits_oge() -> Result<(), IrError> {
     fcmp_predicate_emits("oge", |b, lhs, rhs| {
-        b.build_fcmp_oge::<f32, _, _>(lhs, rhs, "r")
+        b.build_fcmp_oge::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
 
@@ -299,7 +299,7 @@ fn build_fcmp_oge_emits_oge() -> Result<(), IrError> {
 #[test]
 fn build_fcmp_olt_emits_olt() -> Result<(), IrError> {
     fcmp_predicate_emits("olt", |b, lhs, rhs| {
-        b.build_fcmp_olt::<f32, _, _>(lhs, rhs, "r")
+        b.build_fcmp_olt::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
 
@@ -307,7 +307,7 @@ fn build_fcmp_olt_emits_olt() -> Result<(), IrError> {
 #[test]
 fn build_fcmp_ole_emits_ole() -> Result<(), IrError> {
     fcmp_predicate_emits("ole", |b, lhs, rhs| {
-        b.build_fcmp_ole::<f32, _, _>(lhs, rhs, "r")
+        b.build_fcmp_ole::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
 
@@ -315,7 +315,7 @@ fn build_fcmp_ole_emits_ole() -> Result<(), IrError> {
 #[test]
 fn build_fcmp_ord_emits_ord() -> Result<(), IrError> {
     fcmp_predicate_emits("ord", |b, lhs, rhs| {
-        b.build_fcmp_ord::<f32, _, _>(lhs, rhs, "r")
+        b.build_fcmp_ord::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
 
@@ -323,7 +323,7 @@ fn build_fcmp_ord_emits_ord() -> Result<(), IrError> {
 #[test]
 fn build_fcmp_uno_emits_uno() -> Result<(), IrError> {
     fcmp_predicate_emits("uno", |b, lhs, rhs| {
-        b.build_fcmp_uno::<f32, _, _>(lhs, rhs, "r")
+        b.build_fcmp_uno::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
 
@@ -331,7 +331,7 @@ fn build_fcmp_uno_emits_uno() -> Result<(), IrError> {
 #[test]
 fn build_fcmp_ueq_emits_ueq() -> Result<(), IrError> {
     fcmp_predicate_emits("ueq", |b, lhs, rhs| {
-        b.build_fcmp_ueq::<f32, _, _>(lhs, rhs, "r")
+        b.build_fcmp_ueq::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
 
@@ -349,7 +349,7 @@ where
         let f32_ty = m.f32_type();
         let i1_ty = m.bool_type();
         let fn_ty = m.fn_type(i1_ty, [f32_ty.as_type(), f32_ty.as_type()], false);
-        let f = m.add_function::<bool>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<bool, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);
         let lhs: FloatValue<f32> = f.param(0)?.try_into()?;
@@ -375,7 +375,7 @@ fn build_fp_phi_emits_phi_with_double_kind() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let f64_ty = m.f64_type();
         let fn_ty = m.fn_type(f64_ty, [f64_ty.as_type()], false);
-        let f = m.add_function::<f64>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<f64, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let join = f.append_basic_block(&m, "join");
         let b = IRBuilder::new_for::<f64>(&m).position_at_end(entry);
@@ -384,7 +384,7 @@ fn build_fp_phi_emits_phi_with_double_kind() -> Result<(), IrError> {
         let _ = entry_sealed;
         let b2 = IRBuilder::new_for::<f64>(&m).position_at_end(join);
         let phi = b2
-            .build_fp_phi::<f64>("merge")?
+            .build_fp_phi::<f64, _>("merge")?
             .add_incoming(p, entry)?
             .finish();
         b2.build_ret(phi.as_float_value())?;
@@ -407,7 +407,7 @@ fn build_pointer_phi_emits_phi_with_ptr() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(ptr_ty, [ptr_ty.as_type()], false);
-        let f = m.add_function::<Ptr>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<Ptr, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let join = f.append_basic_block(&m, "join");
         let b = IRBuilder::new_for::<Ptr>(&m).position_at_end(entry);

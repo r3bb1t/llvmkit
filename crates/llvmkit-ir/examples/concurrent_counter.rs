@@ -45,8 +45,8 @@
 //! ```
 
 use llvmkit_ir::{
-    AtomicOrdering, AtomicRMWBinOp, AtomicRMWConfig, AtomicRMWFlags, Brand, IRBuilder, IntValue,
-    IrError, Linkage, MaybeAlign, Module, PointerValue, SyncScope, Unverified,
+    AtomicOrdering, AtomicRMWBinOp, AtomicRMWConfig, Brand, IRBuilder, IntValue, IrError, Linkage,
+    Module, PointerValue, SyncScope, Unverified,
 };
 
 pub fn main() -> Result<(), IrError> {
@@ -78,7 +78,7 @@ pub fn build_atomic_inc<'ctx>(m: &Module<'ctx, Brand<'ctx>, Unverified>) -> Resu
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
     let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
-    let f = m.add_function::<i32>("atomic_inc", fn_ty, Linkage::External)?;
+    let f = m.add_function::<i32, _>("atomic_inc", fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
 
@@ -92,12 +92,7 @@ pub fn build_atomic_inc<'ctx>(m: &Module<'ctx, Brand<'ctx>, Unverified>) -> Resu
         AtomicRMWBinOp::Add,
         counter,
         one,
-        AtomicRMWConfig {
-            ordering: AtomicOrdering::Monotonic,
-            sync_scope: SyncScope::System,
-            flags: AtomicRMWFlags::new(),
-            align: MaybeAlign::NONE,
-        },
+        AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
         "old",
     )?;
 
@@ -122,7 +117,7 @@ pub fn build_dispatch<'ctx>(m: &Module<'ctx, Brand<'ctx>, Unverified>) -> Result
         [i32_ty.as_type(), i32_ty.as_type(), i32_ty.as_type()],
         false,
     );
-    let f = m.add_function::<i32>("dispatch", fn_ty, Linkage::External)?;
+    let f = m.add_function::<i32, _>("dispatch", fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let do_add = f.append_basic_block(m, "do_add");
     let do_sub = f.append_basic_block(m, "do_sub");

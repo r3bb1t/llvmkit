@@ -12,7 +12,7 @@ fn declare(name: &str, value: UnnamedAddr) -> String {
         let void = m.void_type();
         let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m
-            .function_builder::<()>(name, fn_ty)
+            .function_builder::<(), _>(name, fn_ty)
             .linkage(Linkage::External)
             .unnamed_addr(value)
             .build()

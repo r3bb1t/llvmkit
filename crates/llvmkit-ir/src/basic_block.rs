@@ -19,6 +19,8 @@
 //! [`IRBuilder`]: crate::ir_builder::IRBuilder
 
 use crate::block_state::{BlockSealState, Unsealed};
+use crate::function::FunctionValue;
+use crate::instruction::Instruction;
 use crate::marker::{Dyn, ReturnMarker};
 use crate::module::{Brand, Module, ModuleRef, ModuleView, Unverified};
 use crate::r#type::TypeId;
@@ -188,7 +190,10 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
     /// Set or clear the textual name.
     /// Set the textual name.
     #[inline]
-    pub fn set_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: &str) {
+    pub fn set_name<Name>(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
         self.as_value().set_name(module_token, name);
     }
 
@@ -200,7 +205,7 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
 
     /// Owning module reference.
     #[inline]
-    pub fn module(self) -> ModuleView<'ctx, crate::module::Brand<'ctx>> {
+    pub fn module(self) -> ModuleView<'ctx, Brand<'ctx>> {
         ModuleView::new(self.module.module())
     }
 
@@ -213,7 +218,7 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
     /// `None` if the block is an orphan (no parent attached). The
     /// caller can narrow back to its static `R` via
     /// [`crate::FunctionValue::as_dyn`] / `try_into` if needed.
-    pub fn parent_function(self) -> Option<crate::function::FunctionValue<'ctx, Dyn>> {
+    pub fn parent_function(self) -> Option<FunctionValue<'ctx, Dyn>> {
         let id = self.parent_id()?;
         Some(
             crate::function::FunctionValue::<'ctx, Dyn>::from_parts_unchecked(
@@ -248,7 +253,7 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
 
     /// Last instruction (the terminator if the block is well-formed),
     /// or `None` for an empty block.
-    pub fn terminator(self) -> Option<crate::instruction::Instruction<'ctx>> {
+    pub fn terminator(self) -> Option<Instruction<'ctx>> {
         let last = *self.data().instructions.borrow().last()?;
         Some(crate::instruction::Instruction::from_parts(
             last,
@@ -363,12 +368,15 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
     /// parent function. The original block keeps the prefix; the caller
     /// is responsible for adding a terminator that flows to the new
     /// block. Mirrors `BasicBlock::splitBasicBlock` in `lib/IR/BasicBlock.cpp`.
-    pub fn split_at(
+    pub fn split_at<Name>(
         self,
         module_token: &Module<'ctx, Brand<'ctx>, Unverified>,
         before: &crate::instruction::Instruction<'ctx, crate::instruction::state::Attached>,
-        name: impl Into<String>,
-    ) -> IrResult<BasicBlock<'ctx, R, Unsealed>> {
+        name: Name,
+    ) -> IrResult<BasicBlock<'ctx, R, Unsealed>>
+    where
+        Name: Into<String>,
+    {
         if module_token.id() != self.module.id() {
             return Err(IrError::ForeignValue);
         }
@@ -422,7 +430,10 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> HasName<'ctx> for BasicBlock<'
         BasicBlock::name(self)
     }
     #[inline]
-    fn set_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: &str) {
+    fn set_name<Name>(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
         BasicBlock::set_name(self, module_token, name);
     }
     #[inline]

@@ -55,9 +55,34 @@ pub enum IntrinsicTypePattern {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct IntrinsicSignature {
-    pub return_ty: IntrinsicTypePattern,
-    pub params: Box<[IntrinsicTypePattern]>,
-    pub is_var_arg: bool,
+    return_ty: IntrinsicTypePattern,
+    params: Box<[IntrinsicTypePattern]>,
+    is_var_arg: bool,
+}
+
+impl IntrinsicSignature {
+    pub fn new<Params>(return_ty: IntrinsicTypePattern, params: Params, is_var_arg: bool) -> Self
+    where
+        Params: Into<Box<[IntrinsicTypePattern]>>,
+    {
+        Self {
+            return_ty,
+            params: params.into(),
+            is_var_arg,
+        }
+    }
+
+    pub fn return_type(&self) -> &IntrinsicTypePattern {
+        &self.return_ty
+    }
+
+    pub fn params(&self) -> &[IntrinsicTypePattern] {
+        &self.params
+    }
+
+    pub const fn is_var_arg(&self) -> bool {
+        self.is_var_arg
+    }
 }
 
 impl IntrinsicId {

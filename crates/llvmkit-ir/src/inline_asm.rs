@@ -13,7 +13,7 @@
 //! while the *function type* it conceptually wraps is carried separately
 //! so a `call` through it knows the argument / return shape. This module
 //! follows that split: the [`InlineAsm`] handle's [`Value::ty`] is the
-//! module's `ptr` type, and the wrapped [`FunctionType`](crate::FunctionType)
+//! module's `ptr` type, and the wrapped [`FunctionType`]
 //! id is stored in the payload for the [`IRBuilder`](crate::ir_builder::IRBuilder)
 //! to consume when it emits the call.
 //!
@@ -25,6 +25,7 @@
 
 use core::marker::PhantomData;
 
+use crate::derived_types::FunctionType;
 use crate::module::{ModuleBrand, ModuleRef, ModuleView};
 use crate::r#type::TypeId;
 use crate::value::{Value, ValueId};
@@ -50,10 +51,10 @@ pub enum AsmDialect {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct InlineAsmOptions {
-    pub has_side_effects: bool,
-    pub is_align_stack: bool,
-    pub dialect: AsmDialect,
-    pub can_unwind: bool,
+    has_side_effects: bool,
+    is_align_stack: bool,
+    dialect: AsmDialect,
+    can_unwind: bool,
 }
 
 impl InlineAsmOptions {
@@ -71,14 +72,30 @@ impl InlineAsmOptions {
         self
     }
 
-    pub fn dialect(mut self, value: AsmDialect) -> Self {
+    pub fn with_dialect(mut self, value: AsmDialect) -> Self {
         self.dialect = value;
         self
     }
 
-    pub fn can_unwind(mut self, value: bool) -> Self {
+    pub fn with_can_unwind(mut self, value: bool) -> Self {
         self.can_unwind = value;
         self
+    }
+
+    pub const fn has_side_effects(&self) -> bool {
+        self.has_side_effects
+    }
+
+    pub const fn is_align_stack(&self) -> bool {
+        self.is_align_stack
+    }
+
+    pub const fn dialect(&self) -> AsmDialect {
+        self.dialect
+    }
+
+    pub const fn can_unwind(&self) -> bool {
+        self.can_unwind
     }
 }
 
@@ -182,7 +199,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InlineAsm<'ctx, B> {
     /// The conceptual function type wrapped by this asm — the signature a
     /// `call` through it must match. Mirrors `InlineAsm::getFunctionType()`.
     #[inline]
-    pub fn function_type(self) -> crate::derived_types::FunctionType<'ctx, B> {
+    pub fn function_type(self) -> FunctionType<'ctx, B> {
         let fn_ty = self.payload().fn_ty;
         crate::derived_types::FunctionType::new(fn_ty, self.module)
     }
