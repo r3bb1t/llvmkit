@@ -19,7 +19,7 @@ fn function_with_noundef_param_and_return() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m
-            .function_builder::<i32>("identity", fn_ty)
+            .function_builder::<i32, _>("identity", fn_ty)
             .linkage(Linkage::External)
             .return_attribute(AttrKind::NoUndef)
             .param_attribute(0, AttrKind::NoUndef)
@@ -50,7 +50,7 @@ fn attribute_added_via_attribute_method_path() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m
-            .function_builder::<i32>("zext_arg", fn_ty)
+            .function_builder::<i32, _>("zext_arg", fn_ty)
             .attribute(
                 AttrIndex::Param(0),
                 Attribute::enum_attr(AttrKind::ZExt).expect("enum"),

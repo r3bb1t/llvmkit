@@ -31,7 +31,10 @@ impl AttributeMask {
     }
 
     /// Add a target-dependent string attribute key to the mask.
-    pub fn add_string(&mut self, key: impl Into<String>) -> &mut Self {
+    pub fn add_string<Key>(&mut self, key: Key) -> &mut Self
+    where
+        Key: Into<String>,
+    {
         self.target_dep_attrs.insert(key.into());
         self
     }

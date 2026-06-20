@@ -24,17 +24,27 @@ use core::marker::PhantomData;
 use core::num::NonZeroU32;
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use crate::align::MaybeAlign;
+use crate::attributes::AttributeStorage;
+use crate::comdat::{ComdatRef, SelectionKind};
+use crate::constant::Constant;
+use crate::data_layout::DataLayout;
 use crate::derived_types::{
     ArrayType, FloatType, FunctionType, IntType, LabelType, MetadataType, PointerType, StructType,
     TargetExtType, TokenType, VectorType, VoidType,
 };
 use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::float_kind::{BFloat, Fp128, Half, PpcFp128, X86Fp80};
-use crate::int_width::IntDyn;
+use crate::global_alias::GlobalAlias;
+use crate::global_ifunc::GlobalIFunc;
+use crate::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
+use crate::int_width::{IntDyn, Width};
 use crate::llvm_context::Context;
+use crate::metadata::{MetadataAttachmentSet, MetadataId, MetadataRef};
 use crate::named_md_node::NamedMDNode;
 use crate::r#type::{MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeId};
 use crate::typed_pointer_type::TypedPointerType;
+use crate::unnamed_addr::UnnamedAddr;
 use crate::value::ValueId;
 
 // --------------------------------------------------------------------------
@@ -250,37 +260,37 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariableView<'ctx, B> {
     }
 
     #[inline]
-    pub fn initializer(self) -> Option<crate::Constant<'ctx, B>> {
+    pub fn initializer(self) -> Option<Constant<'ctx, B>> {
         self.global.initializer()
     }
 
     #[inline]
-    pub fn linkage(self) -> crate::Linkage {
+    pub fn linkage(self) -> Linkage {
         self.global.linkage()
     }
 
     #[inline]
-    pub fn visibility(self) -> crate::Visibility {
+    pub fn visibility(self) -> Visibility {
         self.global.visibility()
     }
 
     #[inline]
-    pub fn dll_storage_class(self) -> crate::DllStorageClass {
+    pub fn dll_storage_class(self) -> DllStorageClass {
         self.global.dll_storage_class()
     }
 
     #[inline]
-    pub fn thread_local_mode(self) -> crate::ThreadLocalMode {
+    pub fn thread_local_mode(self) -> ThreadLocalMode {
         self.global.thread_local_mode()
     }
 
     #[inline]
-    pub fn unnamed_addr(self) -> crate::UnnamedAddr {
+    pub fn unnamed_addr(self) -> UnnamedAddr {
         self.global.unnamed_addr()
     }
 
     #[inline]
-    pub fn align(self) -> crate::MaybeAlign {
+    pub fn align(self) -> MaybeAlign {
         self.global.align()
     }
 
@@ -305,7 +315,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariableView<'ctx, B> {
     }
 
     #[inline]
-    pub fn metadata(self) -> core::cell::Ref<'ctx, crate::metadata::MetadataAttachmentSet> {
+    pub fn metadata(self) -> core::cell::Ref<'ctx, MetadataAttachmentSet> {
         self.global.metadata()
     }
 }
@@ -348,37 +358,37 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasView<'ctx, B> {
     }
 
     #[inline]
-    pub fn aliasee(self) -> crate::Constant<'ctx, B> {
+    pub fn aliasee(self) -> Constant<'ctx, B> {
         self.alias.aliasee()
     }
 
     #[inline]
-    pub fn linkage(self) -> crate::Linkage {
+    pub fn linkage(self) -> Linkage {
         self.alias.linkage()
     }
 
     #[inline]
-    pub fn visibility(self) -> crate::Visibility {
+    pub fn visibility(self) -> Visibility {
         self.alias.visibility()
     }
 
     #[inline]
-    pub fn dll_storage_class(self) -> crate::DllStorageClass {
+    pub fn dll_storage_class(self) -> DllStorageClass {
         self.alias.dll_storage_class()
     }
 
     #[inline]
-    pub fn thread_local_mode(self) -> crate::ThreadLocalMode {
+    pub fn thread_local_mode(self) -> ThreadLocalMode {
         self.alias.thread_local_mode()
     }
 
     #[inline]
-    pub fn unnamed_addr(self) -> crate::UnnamedAddr {
+    pub fn unnamed_addr(self) -> UnnamedAddr {
         self.alias.unnamed_addr()
     }
 
     #[inline]
-    pub fn metadata(self) -> core::cell::Ref<'ctx, crate::metadata::MetadataAttachmentSet> {
+    pub fn metadata(self) -> core::cell::Ref<'ctx, MetadataAttachmentSet> {
         self.alias.metadata()
     }
 
@@ -426,22 +436,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncView<'ctx, B> {
     }
 
     #[inline]
-    pub fn resolver(self) -> crate::Constant<'ctx, B> {
+    pub fn resolver(self) -> Constant<'ctx, B> {
         self.ifunc.resolver()
     }
 
     #[inline]
-    pub fn linkage(self) -> crate::Linkage {
+    pub fn linkage(self) -> Linkage {
         self.ifunc.linkage()
     }
 
     #[inline]
-    pub fn visibility(self) -> crate::Visibility {
+    pub fn visibility(self) -> Visibility {
         self.ifunc.visibility()
     }
 
     #[inline]
-    pub fn metadata(self) -> core::cell::Ref<'ctx, crate::metadata::MetadataAttachmentSet> {
+    pub fn metadata(self) -> core::cell::Ref<'ctx, MetadataAttachmentSet> {
         self.ifunc.metadata()
     }
 
@@ -474,7 +484,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ComdatView<'ctx, B> {
     }
 
     #[inline]
-    pub fn selection_kind(self) -> crate::SelectionKind {
+    pub fn selection_kind(self) -> SelectionKind {
         self.comdat.selection_kind()
     }
 }
@@ -518,7 +528,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
 
     /// Parsed data layout.
     #[inline]
-    pub fn data_layout(self) -> core::cell::Ref<'ctx, crate::data_layout::DataLayout> {
+    pub fn data_layout(self) -> core::cell::Ref<'ctx, DataLayout> {
         self.core.data_layout()
     }
 
@@ -642,17 +652,71 @@ impl<B: ModuleBrand> core::fmt::Display for ModuleView<'_, B> {
 /// Structured `uselistorder Type Value, { ... }` record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UseListOrderRecord {
-    pub value: ValueId,
-    pub value_ty: TypeId,
-    pub indexes: Box<[u32]>,
+    value: ValueId,
+    value_ty: TypeId,
+    indexes: Box<[u32]>,
+}
+
+impl UseListOrderRecord {
+    pub fn new<Indexes>(value: ValueId, value_ty: TypeId, indexes: Indexes) -> IrResult<Self>
+    where
+        Indexes: Into<Box<[u32]>>,
+    {
+        let indexes = indexes.into();
+        validate_use_list_order_indexes(&indexes)?;
+        Ok(Self {
+            value,
+            value_ty,
+            indexes,
+        })
+    }
+
+    pub fn value(&self) -> ValueId {
+        self.value
+    }
+
+    pub fn value_type(&self) -> TypeId {
+        self.value_ty
+    }
+
+    pub fn indexes(&self) -> &[u32] {
+        &self.indexes
+    }
 }
 
 /// Structured `uselistorder_bb @function, %block, { ... }` record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UseListOrderBBRecord {
-    pub function: ValueId,
-    pub block: ValueId,
-    pub indexes: Box<[u32]>,
+    function: ValueId,
+    block: ValueId,
+    indexes: Box<[u32]>,
+}
+
+impl UseListOrderBBRecord {
+    pub fn new<Indexes>(function: ValueId, block: ValueId, indexes: Indexes) -> IrResult<Self>
+    where
+        Indexes: Into<Box<[u32]>>,
+    {
+        let indexes = indexes.into();
+        validate_use_list_order_indexes(&indexes)?;
+        Ok(Self {
+            function,
+            block,
+            indexes,
+        })
+    }
+
+    pub fn function(&self) -> ValueId {
+        self.function
+    }
+
+    pub fn block(&self) -> ValueId {
+        self.block
+    }
+
+    pub fn indexes(&self) -> &[u32] {
+        &self.indexes
+    }
 }
 
 pub(crate) fn validate_use_list_order_indexes(indexes: &[u32]) -> IrResult<()> {
@@ -780,7 +844,10 @@ impl<'ctx> ModuleCore {
 
     /// Set the `source_filename` directive. Mirrors
     /// `Module::setSourceFileName`.
-    pub fn set_source_filename(&self, filename: impl Into<String>) {
+    pub fn set_source_filename<Filename>(&self, filename: Filename)
+    where
+        Filename: Into<String>,
+    {
         *self.source_filename.borrow_mut() = Some(filename.into());
     }
 
@@ -887,7 +954,7 @@ impl<'ctx> ModuleCore {
     /// crate::Width). Const-evaluated range check at monomorphisation:
     /// `N` outside `MIN_INT_BITS..=MAX_INT_BITS` is a compile error.
     /// Mirrors `Type::getIntNTy(C, N)`.
-    pub fn int_type_n<const N: u32>(&'ctx self) -> IntType<'ctx, crate::int_width::Width<N>> {
+    pub fn int_type_n<const N: u32>(&'ctx self) -> IntType<'ctx, Width<N>> {
         const {
             assert!(
                 N >= MIN_INT_BITS && N <= MAX_INT_BITS,
@@ -941,14 +1008,15 @@ impl<'ctx> ModuleCore {
     /// of the same name already exists, or
     /// [`IrError::ReturnTypeMismatch`] if the signature's return
     /// type does not match the chosen [`ReturnMarker`](crate::marker::ReturnMarker).
-    pub fn add_function<R>(
+    pub fn add_function<R, Name>(
         &'ctx self,
-        name: impl AsRef<str>,
+        name: Name,
         signature: FunctionType<'ctx>,
         linkage: crate::global_value::Linkage,
     ) -> IrResult<crate::function::FunctionValue<'ctx, R>>
     where
         R: crate::marker::ReturnMarker,
+        Name: AsRef<str>,
     {
         let name = name.as_ref();
         if self.global_name_exists(name) {
@@ -1038,13 +1106,14 @@ impl<'ctx> ModuleCore {
     /// for incremental setup of linkage, calling convention,
     /// `unnamed_addr`, parameter names, and attributes before
     /// materialising the function.
-    pub fn function_builder<R>(
+    pub fn function_builder<R, Name>(
         &'ctx self,
-        name: impl Into<String>,
+        name: Name,
         signature: FunctionType<'ctx>,
     ) -> crate::function::FunctionBuilder<'ctx, R>
     where
         R: crate::marker::ReturnMarker,
+        Name: Into<String>,
     {
         crate::function::FunctionBuilder::new(self, name, signature)
     }
@@ -1203,13 +1272,16 @@ impl<'ctx> ModuleCore {
     /// Borrow the parsed [`DataLayout`](crate::data_layout::DataLayout).
     /// Mirrors `Module::getDataLayout`. Returns the default (empty)
     /// layout when no directive has been set.
-    pub fn data_layout(&self) -> core::cell::Ref<'_, crate::data_layout::DataLayout> {
+    pub fn data_layout(&self) -> core::cell::Ref<'_, DataLayout> {
         self.data_layout.borrow()
     }
 
     /// Replace the data layout with a parsed copy of the given
     /// string. Mirrors `Module::setDataLayout(StringRef)`.
-    pub fn set_data_layout(&self, layout: impl AsRef<str>) -> IrResult<()> {
+    pub fn set_data_layout<Layout>(&self, layout: Layout) -> IrResult<()>
+    where
+        Layout: AsRef<str>,
+    {
         let parsed = crate::data_layout::DataLayout::parse(layout.as_ref())?;
         *self.data_layout.borrow_mut() = parsed;
         Ok(())
@@ -1218,7 +1290,7 @@ impl<'ctx> ModuleCore {
     /// Replace the data layout with an already-parsed
     /// [`DataLayout`](crate::data_layout::DataLayout). Mirrors
     /// `Module::setDataLayout(const DataLayout &)`.
-    pub fn set_data_layout_value(&self, layout: crate::data_layout::DataLayout) {
+    pub fn set_data_layout_value(&self, layout: DataLayout) {
         *self.data_layout.borrow_mut() = layout;
     }
 
@@ -1229,10 +1301,18 @@ impl<'ctx> ModuleCore {
         self.target_triple.borrow().clone()
     }
 
-    /// Set or clear the `target triple` directive. Mirrors
+    /// Set the `target triple` directive. Mirrors
     /// `Module::setTargetTriple`.
-    pub fn set_target_triple(&self, triple: Option<impl Into<String>>) {
-        *self.target_triple.borrow_mut() = triple.map(Into::into);
+    pub fn set_target_triple<T>(&self, triple: T)
+    where
+        T: Into<String>,
+    {
+        *self.target_triple.borrow_mut() = Some(triple.into());
+    }
+
+    /// Clear the `target triple` directive.
+    pub fn clear_target_triple(&self) {
+        *self.target_triple.borrow_mut() = None;
     }
 
     /// Module-level inline assembly. Mirrors
@@ -1243,13 +1323,19 @@ impl<'ctx> ModuleCore {
 
     /// Replace the module-level inline assembly. Mirrors
     /// `Module::setModuleInlineAsm`. Pass an empty string to clear.
-    pub fn set_module_asm(&self, asm: impl Into<String>) {
+    pub fn set_module_asm<Asm>(&self, asm: Asm)
+    where
+        Asm: Into<String>,
+    {
         *self.module_asm.borrow_mut() = asm.into();
     }
 
     /// Append one line of module-level inline assembly. Mirrors
     /// `Module::appendModuleInlineAsm`.
-    pub fn append_module_asm(&self, line: impl AsRef<str>) {
+    pub fn append_module_asm<Line>(&self, line: Line)
+    where
+        Line: AsRef<str>,
+    {
         let mut buf = self.module_asm.borrow_mut();
         if !buf.is_empty() && !buf.ends_with('\n') {
             buf.push('\n');
@@ -1257,13 +1343,13 @@ impl<'ctx> ModuleCore {
         buf.push_str(line.as_ref());
     }
     pub fn append_use_list_order(&self, record: UseListOrderRecord) -> IrResult<()> {
-        validate_use_list_order_indexes(&record.indexes)?;
+        validate_use_list_order_indexes(record.indexes())?;
         self.use_list_orders.borrow_mut().push(record);
         Ok(())
     }
 
     pub fn append_use_list_order_bb(&self, record: UseListOrderBBRecord) -> IrResult<()> {
-        validate_use_list_order_indexes(&record.indexes)?;
+        validate_use_list_order_indexes(record.indexes())?;
         self.use_list_order_bbs.borrow_mut().push(record);
         Ok(())
     }
@@ -1276,7 +1362,7 @@ impl<'ctx> ModuleCore {
         self.use_list_order_bbs.borrow().clone().into_iter()
     }
 
-    pub fn set_attribute_group(&self, id: u32, storage: crate::attributes::AttributeStorage) {
+    pub fn set_attribute_group(&self, id: u32, storage: AttributeStorage) {
         let mut groups = self.attribute_groups.borrow_mut();
         if let Some((_, existing)) = groups.iter_mut().find(|(slot, _)| *slot == id) {
             *existing = storage;
@@ -1286,7 +1372,7 @@ impl<'ctx> ModuleCore {
         groups.sort_by_key(|(slot, _)| *slot);
     }
 
-    pub fn attribute_groups(&self) -> Vec<(u32, crate::attributes::AttributeStorage)> {
+    pub fn attribute_groups(&self) -> Vec<(u32, AttributeStorage)> {
         self.attribute_groups.borrow().clone()
     }
 
@@ -1294,7 +1380,10 @@ impl<'ctx> ModuleCore {
 
     /// Intern a metadata string node. Returns an existing id if an
     /// identical string was already interned. Mirrors `MDString::get`.
-    pub fn metadata_string(&self, s: impl Into<String>) -> crate::metadata::MetadataId {
+    pub fn metadata_string<S>(&self, s: S) -> MetadataId
+    where
+        S: Into<String>,
+    {
         self.metadata.borrow_mut().get_string(s)
     }
 
@@ -1303,20 +1392,23 @@ impl<'ctx> ModuleCore {
     /// Accepts anything that borrows as a slice of
     /// [`MetadataRef`](crate::metadata::MetadataRef) — both an owned
     /// `Vec` and a borrowed `&[..]` work.
-    pub fn metadata_tuple(
-        &self,
-        operands: impl AsRef<[crate::metadata::MetadataRef]>,
-    ) -> crate::metadata::MetadataId {
+    pub fn metadata_tuple<Ops>(&self, operands: Ops) -> MetadataId
+    where
+        Ops: AsRef<[crate::metadata::MetadataRef]>,
+    {
         self.metadata
             .borrow_mut()
             .get_tuple(operands.as_ref().to_vec())
     }
     /// Create a tuple node with explicit distinctness.
-    pub fn metadata_tuple_with_distinct(
+    pub fn metadata_tuple_with_distinct<Ops>(
         &self,
         distinct: bool,
-        operands: impl AsRef<[crate::metadata::MetadataRef]>,
-    ) -> crate::metadata::MetadataId {
+        operands: Ops,
+    ) -> crate::metadata::MetadataId
+    where
+        Ops: AsRef<[crate::metadata::MetadataRef]>,
+    {
         self.metadata
             .borrow_mut()
             .get_tuple_with_distinct(distinct, operands.as_ref().to_vec())
@@ -1354,7 +1446,7 @@ impl<'ctx> ModuleCore {
     /// filled via [`metadata_set`](Self::metadata_set). Used by the parser
     /// to resolve forward references without assuming textual `!N` slots
     /// equal arena indices.
-    pub fn metadata_reserve(&self) -> crate::metadata::MetadataId {
+    pub fn metadata_reserve(&self) -> MetadataId {
         self.metadata.borrow_mut().reserve()
     }
 
@@ -1394,7 +1486,10 @@ impl<'ctx> ModuleCore {
 
     /// Get or create a named metadata node with the given name.
     /// Mirrors `Module::getOrInsertNamedMetadata`.
-    pub fn get_or_insert_named_metadata(&self, name: impl Into<String>) -> usize {
+    pub fn get_or_insert_named_metadata<Name>(&self, name: Name) -> usize
+    where
+        Name: Into<String>,
+    {
         let name = name.into();
         let mut nmd = self.named_metadata.borrow_mut();
         for (i, node) in nmd.iter().enumerate() {
@@ -1408,7 +1503,7 @@ impl<'ctx> ModuleCore {
     }
 
     /// Append an operand to a named metadata node (by index).
-    pub fn named_metadata_add_operand(&self, index: usize, op: crate::metadata::MetadataRef) {
+    pub fn named_metadata_add_operand(&self, index: usize, op: MetadataRef) {
         self.named_metadata.borrow_mut()[index].add_operand(op);
     }
 
@@ -1431,10 +1526,14 @@ impl<'ctx> ModuleCore {
     /// [`SelectionKind::Any`](crate::comdat::SelectionKind::Any);
     /// callers can refine via
     /// [`ComdatRef::set_selection_kind`](crate::comdat::ComdatRef::set_selection_kind).
-    pub fn get_or_insert_comdat<B: ModuleBrand>(
+    pub fn get_or_insert_comdat<B, Name>(
         &'ctx self,
-        name: impl AsRef<str>,
-    ) -> crate::comdat::ComdatRef<'ctx, B> {
+        name: Name,
+    ) -> crate::comdat::ComdatRef<'ctx, B>
+    where
+        B: ModuleBrand,
+        Name: AsRef<str>,
+    {
         let name = name.as_ref();
         if let Some(&id) = self.comdat_by_name.borrow().get(name) {
             return crate::comdat::ComdatRef {
@@ -1544,7 +1643,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
 
     /// Borrow the parsed data layout.
     #[inline]
-    pub fn data_layout(&self) -> core::cell::Ref<'_, crate::data_layout::DataLayout> {
+    pub fn data_layout(&self) -> core::cell::Ref<'_, DataLayout> {
         self.core.data_layout()
     }
 
@@ -1560,7 +1659,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
         self.core.module_asm()
     }
 
-    pub fn attribute_groups(&self) -> Vec<(u32, crate::attributes::AttributeStorage)> {
+    pub fn attribute_groups(&self) -> Vec<(u32, AttributeStorage)> {
         self.core.attribute_groups()
     }
 
@@ -1635,39 +1734,50 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
 }
 
 impl<'ctx> Module<'ctx, Brand<'ctx>, Unverified> {
-    pub fn function_builder<R>(
+    pub fn function_builder<R, Name>(
         &self,
-        name: impl Into<String>,
+        name: Name,
         signature: FunctionType<'ctx>,
     ) -> crate::function::FunctionBuilder<'ctx, R>
     where
         R: crate::marker::ReturnMarker,
+        Name: Into<String>,
     {
         self.core.function_builder(name, signature)
     }
 
-    pub fn constant_expr(
+    pub fn constant_expr<Operands, Indices, Mask>(
         &self,
         result_ty: Type<'ctx>,
         opcode: crate::ConstantExprOpcode,
-        operands: impl IntoIterator<Item = crate::Value<'ctx>>,
-        indices: impl IntoIterator<Item = u32>,
-        mask: impl IntoIterator<Item = i32>,
+        operands: Operands,
+        indices: Indices,
+        mask: Mask,
         flags: crate::ConstantExprFlags,
-    ) -> IrResult<crate::Constant<'ctx>> {
+    ) -> IrResult<crate::Constant<'ctx>>
+    where
+        Operands: IntoIterator<Item = crate::Value<'ctx>>,
+        Indices: IntoIterator<Item = u32>,
+        Mask: IntoIterator<Item = i32>,
+    {
         self.core
             .constant_expr(result_ty, opcode, operands, indices, mask, flags)
     }
 
-    pub fn constant_expr_with_options(
+    pub fn constant_expr_with_options<Operands, Indices, Mask>(
         &self,
         result_ty: Type<'ctx>,
         opcode: crate::ConstantExprOpcode,
-        operands: impl IntoIterator<Item = crate::Value<'ctx>>,
-        indices: impl IntoIterator<Item = u32>,
-        mask: impl IntoIterator<Item = i32>,
+        operands: Operands,
+        indices: Indices,
+        mask: Mask,
         options: crate::ConstantExprOptions<'ctx>,
-    ) -> IrResult<crate::Constant<'ctx>> {
+    ) -> IrResult<crate::Constant<'ctx>>
+    where
+        Operands: IntoIterator<Item = crate::Value<'ctx>>,
+        Indices: IntoIterator<Item = u32>,
+        Mask: IntoIterator<Item = i32>,
+    {
         self.core
             .constant_expr_with_options(result_ty, opcode, operands, indices, mask, options)
     }
@@ -1712,7 +1822,7 @@ impl<'ctx> Module<'ctx, Brand<'ctx>, Unverified> {
         self.core.no_cfi(function)
     }
 
-    pub fn no_cfi_global(&self, global: crate::Constant<'ctx>) -> IrResult<crate::Constant<'ctx>> {
+    pub fn no_cfi_global(&self, global: Constant<'ctx>) -> IrResult<Constant<'ctx>> {
         self.core.no_cfi_global(global)
     }
 
@@ -1733,11 +1843,11 @@ impl<'ctx> Module<'ctx, Brand<'ctx>, Unverified> {
         )
     }
 
-    pub fn token_none(&self) -> crate::Constant<'ctx> {
+    pub fn token_none(&self) -> Constant<'ctx> {
         self.core.token_none()
     }
 
-    pub fn target_ext_none(&self, ty: Type<'ctx>) -> IrResult<crate::Constant<'ctx>> {
+    pub fn target_ext_none(&self, ty: Type<'ctx>) -> IrResult<Constant<'ctx>> {
         self.core.target_ext_none(ty)
     }
 }
@@ -1862,7 +1972,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         ))
     }
 
-    pub fn int_type_n<const N: u32>(&self) -> IntType<'ctx, crate::int_width::Width<N>, B> {
+    pub fn int_type_n<const N: u32>(&self) -> IntType<'ctx, Width<N>, B> {
         const {
             assert!(
                 N >= MIN_INT_BITS && N <= MAX_INT_BITS,
@@ -2026,13 +2136,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         )
     }
 
-    pub fn target_ext_type<I, T, J>(
+    pub fn target_ext_type<Name, I, T, J>(
         &self,
-        name: impl Into<String>,
+        name: Name,
         type_params: I,
         int_params: J,
     ) -> TargetExtType<'ctx, B>
     where
+        Name: Into<String>,
         I: IntoIterator<Item = T>,
         T: Into<Type<'ctx, B>>,
         J: IntoIterator<Item = u32>,
@@ -2046,14 +2157,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         )
     }
 
-    pub fn add_function<R>(
+    pub fn add_function<R, Name>(
         &self,
-        name: impl AsRef<str>,
+        name: Name,
         signature: FunctionType<'ctx, B>,
         linkage: crate::global_value::Linkage,
     ) -> IrResult<crate::function::FunctionValue<'ctx, R, B>>
     where
         R: crate::marker::ReturnMarker,
+        Name: AsRef<str>,
     {
         let name = name.as_ref();
         if self.core.global_name_exists(name) {
@@ -2200,19 +2312,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         )
     }
 
-    pub fn alias_builder<C>(
+    pub fn alias_builder<C, Name>(
         &self,
-        name: impl Into<String>,
+        name: Name,
         value_type: Type<'ctx, B>,
         aliasee: C,
     ) -> crate::global_alias::GlobalAliasBuilder<'ctx, B>
     where
         C: crate::constant::IsConstant<'ctx, B>,
+        Name: Into<String>,
     {
         crate::global_alias::GlobalAliasBuilder::new(self.module_ref(), name, value_type, aliasee)
     }
 
-    pub fn get_alias(&self, name: &str) -> Option<crate::global_alias::GlobalAlias<'ctx, B>> {
+    pub fn get_alias(&self, name: &str) -> Option<GlobalAlias<'ctx, B>> {
         let id = self.core.alias_by_name.borrow().get(name).copied()?;
         let value_data = self.core.ctx.value_data(id);
         Some(crate::global_alias::GlobalAlias::from_parts_unchecked(
@@ -2226,19 +2339,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         self.core.alias_empty()
     }
 
-    pub fn ifunc_builder<C>(
+    pub fn ifunc_builder<C, Name>(
         &self,
-        name: impl Into<String>,
+        name: Name,
         value_type: Type<'ctx, B>,
         resolver: C,
     ) -> crate::global_ifunc::GlobalIFuncBuilder<'ctx, B>
     where
         C: crate::constant::IsConstant<'ctx, B>,
+        Name: Into<String>,
     {
         crate::global_ifunc::GlobalIFuncBuilder::new(self.module_ref(), name, value_type, resolver)
     }
 
-    pub fn get_ifunc(&self, name: &str) -> Option<crate::global_ifunc::GlobalIFunc<'ctx, B>> {
+    pub fn get_ifunc(&self, name: &str) -> Option<GlobalIFunc<'ctx, B>> {
         let id = self.core.ifunc_by_name.borrow().get(name).copied()?;
         let value_data = self.core.ctx.value_data(id);
         Some(crate::global_ifunc::GlobalIFunc::from_parts_unchecked(
@@ -2274,15 +2388,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         self.core.set_data_layout(layout)
     }
 
-    pub fn set_data_layout_value(&self, layout: crate::data_layout::DataLayout) {
+    pub fn set_data_layout_value(&self, layout: DataLayout) {
         self.core.set_data_layout_value(layout);
     }
 
-    pub fn set_target_triple<T>(&self, triple: Option<T>)
+    pub fn set_target_triple<T>(&self, triple: T)
     where
         T: Into<String>,
     {
         self.core.set_target_triple(triple);
+    }
+
+    pub fn clear_target_triple(&self) {
+        self.core.clear_target_triple();
     }
 
     pub fn set_module_asm<A>(&self, asm: A)
@@ -2299,30 +2417,34 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         self.core.append_module_asm(line);
     }
 
-    pub fn get_or_insert_comdat(&self, name: &str) -> crate::comdat::ComdatRef<'ctx, B> {
-        self.core.get_or_insert_comdat::<B>(name)
+    pub fn get_or_insert_comdat(&self, name: &str) -> ComdatRef<'ctx, B> {
+        self.core.get_or_insert_comdat::<B, _>(name)
     }
 
-    pub fn get_comdat(&self, name: &str) -> Option<crate::comdat::ComdatRef<'ctx, B>> {
+    pub fn get_comdat(&self, name: &str) -> Option<ComdatRef<'ctx, B>> {
         self.core.get_comdat::<B>(name)
     }
 
-    pub fn inline_asm(
+    pub fn inline_asm<Asm, Constraints>(
         &self,
         fn_ty: FunctionType<'ctx, B>,
-        asm: impl Into<String>,
-        constraints: impl Into<String>,
+        asm: Asm,
+        constraints: Constraints,
         options: crate::inline_asm::InlineAsmOptions,
-    ) -> crate::inline_asm::InlineAsm<'ctx, B> {
+    ) -> crate::inline_asm::InlineAsm<'ctx, B>
+    where
+        Asm: Into<String>,
+        Constraints: Into<String>,
+    {
         let ptr_ty = self.ptr_type(0).as_type().id();
         let data = crate::inline_asm::InlineAsmData {
             asm_string: asm.into(),
             constraint_string: constraints.into(),
             fn_ty: fn_ty.as_type().id(),
-            has_side_effects: options.has_side_effects,
-            is_align_stack: options.is_align_stack,
-            can_unwind: options.can_unwind,
-            dialect: options.dialect,
+            has_side_effects: options.has_side_effects(),
+            is_align_stack: options.is_align_stack(),
+            can_unwind: options.can_unwind(),
+            dialect: options.dialect(),
         };
         let id = self.core.ctx.push_value(crate::value::ValueData {
             ty: ptr_ty,
@@ -2334,22 +2456,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         crate::inline_asm::InlineAsm::from_parts(id, self.module_ref(), ptr_ty)
     }
 
-    pub fn metadata_string(&self, s: impl Into<String>) -> crate::metadata::MetadataId {
+    pub fn metadata_string<S>(&self, s: S) -> MetadataId
+    where
+        S: Into<String>,
+    {
         self.core.metadata_string(s)
     }
 
-    pub fn metadata_tuple(
-        &self,
-        operands: impl AsRef<[crate::metadata::MetadataRef]>,
-    ) -> crate::metadata::MetadataId {
+    pub fn metadata_tuple<Ops>(&self, operands: Ops) -> MetadataId
+    where
+        Ops: AsRef<[crate::metadata::MetadataRef]>,
+    {
         self.core.metadata_tuple(operands)
     }
 
-    pub fn metadata_tuple_with_distinct(
+    pub fn metadata_tuple_with_distinct<Ops>(
         &self,
         distinct: bool,
-        operands: impl AsRef<[crate::metadata::MetadataRef]>,
-    ) -> crate::metadata::MetadataId {
+        operands: Ops,
+    ) -> crate::metadata::MetadataId
+    where
+        Ops: AsRef<[crate::metadata::MetadataRef]>,
+    {
         self.core.metadata_tuple_with_distinct(distinct, operands)
     }
 
@@ -2389,7 +2517,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         crate::value::Value::from_parts(id, self.module_ref(), ty)
     }
 
-    pub fn metadata_reserve(&self) -> crate::metadata::MetadataId {
+    pub fn metadata_reserve(&self) -> MetadataId {
         self.core.metadata_reserve()
     }
 
@@ -2412,11 +2540,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         self.core.metadata_count()
     }
 
-    pub fn get_or_insert_named_metadata(&self, name: impl Into<String>) -> usize {
+    pub fn get_or_insert_named_metadata<Name>(&self, name: Name) -> usize
+    where
+        Name: Into<String>,
+    {
         self.core.get_or_insert_named_metadata(name)
     }
 
-    pub fn named_metadata_add_operand(&self, index: usize, op: crate::metadata::MetadataRef) {
+    pub fn named_metadata_add_operand(&self, index: usize, op: MetadataRef) {
         self.core.named_metadata_add_operand(index, op);
     }
 
@@ -2432,7 +2563,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         self.core.append_use_list_order_bb(record)
     }
 
-    pub fn set_attribute_group(&self, id: u32, storage: crate::attributes::AttributeStorage) {
+    pub fn set_attribute_group(&self, id: u32, storage: AttributeStorage) {
         self.core.set_attribute_group(id, storage);
     }
 

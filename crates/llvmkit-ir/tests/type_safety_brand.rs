@@ -15,7 +15,7 @@ use llvmkit_ir::{
 fn exercise_tables<'ctx>(module: Module<'ctx>) -> IrResult<()> {
     let i64_ty = module.i64_type();
     let fn_ty = module.fn_type(i64_ty.as_type(), [i64_ty.as_type()], false);
-    let function = module.add_function::<i64>("f", fn_ty, Linkage::External)?;
+    let function = module.add_function::<i64, _>("f", fn_ty, Linkage::External)?;
     let entry = function.append_basic_block(&module, "entry");
     let parameter: IntValue<'ctx, i64> = function.param(0)?.try_into()?;
 
@@ -115,7 +115,7 @@ fn transform_function_adaptor_returns_unverified() -> IrResult<()> {
     Module::with_new::<_, _, _>("function-pass-state", |module| {
         let void_ty = module.void_type();
         let fn_ty = module.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
-        let function = module.add_function::<()>("f", fn_ty, Linkage::External)?;
+        let function = module.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let entry = function.append_basic_block(&module, "entry");
         IRBuilder::new_for::<()>(&module)
             .position_at_end(entry)

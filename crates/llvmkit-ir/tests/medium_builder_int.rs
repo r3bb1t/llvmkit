@@ -21,7 +21,7 @@ fn build_int_add_accepts_int_value_and_rust_literal() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32>("inc", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("inc", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let n: IntValue<i32> = f.param(0)?.try_into()?;
@@ -43,7 +43,7 @@ fn build_int_sub_accepts_constant_and_argument() -> Result<(), IrError> {
     Module::with_new("s", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32>("dec", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("dec", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let n: IntValue<i32> = f.param(0)?.try_into()?;
@@ -71,7 +71,7 @@ fn build_ret_accepts_rust_literal_directly() -> Result<(), IrError> {
     Module::with_new("r", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<i32>("one", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("one", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         b.build_ret(1_i32)?;

@@ -475,12 +475,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
         self.analyses.insert(id, runner);
     }
 
-    pub fn get_result<A>(
-        &mut self,
-        function: impl Into<FunctionView<'ctx, B>>,
-    ) -> IrResult<&A::Result>
+    pub fn get_result<A, F>(&mut self, function: F) -> IrResult<&A::Result>
     where
         A: FunctionAnalysis<'ctx, B>,
+        F: Into<FunctionView<'ctx, B>>,
     {
         let function = function.into();
         let key = function_key::<A, B>(function);
@@ -499,18 +497,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
                 callbacks.run_after_analysis(type_name::<A>());
             }
         }
-        self.get_cached_result::<A>(function)
+        self.get_cached_result::<A, _>(function)
             .ok_or(IrError::AnalysisNotCached {
                 name: type_name::<A>(),
             })
     }
 
-    pub fn get_cached_result<A>(
-        &self,
-        function: impl Into<FunctionView<'ctx, B>>,
-    ) -> Option<&A::Result>
+    pub fn get_cached_result<A, F>(&self, function: F) -> Option<&A::Result>
     where
         A: FunctionAnalysis<'ctx, B>,
+        F: Into<FunctionView<'ctx, B>>,
     {
         let function = function.into();
         self.results
@@ -519,11 +515,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
             .downcast_ref::<A::Result>()
     }
 
-    pub fn invalidate(
-        &mut self,
-        function: impl Into<FunctionView<'ctx, B>>,
-        pa: &PreservedAnalyses,
-    ) -> IrResult<()> {
+    pub fn invalidate<F>(&mut self, function: F, pa: &PreservedAnalyses) -> IrResult<()>
+    where
+        F: Into<FunctionView<'ctx, B>>,
+    {
         let function = function.into();
         let function_handle = function.as_function();
         let module_id = function_handle.as_value().module().id();
@@ -566,9 +561,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
         self.results.clear();
     }
 
-    pub fn clear_analysis<A>(&mut self, function: impl Into<FunctionView<'ctx, B>>)
+    pub fn clear_analysis<A, F>(&mut self, function: F)
     where
         A: FunctionAnalysis<'ctx, B>,
+        F: Into<FunctionView<'ctx, B>>,
     {
         let function = function.into();
         self.results.remove(&function_key::<A, B>(function));
@@ -642,15 +638,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
                 callbacks.run_after_analysis(type_name::<A>());
             }
         }
-        self.get_cached_result::<A>(module_view)
+        self.get_cached_result::<A, _>(module_view)
             .ok_or(IrError::AnalysisNotCached {
                 name: type_name::<A>(),
             })
     }
 
-    pub fn get_cached_result<A>(&self, module: impl Into<ModuleView<'ctx, B>>) -> Option<&A::Result>
+    pub fn get_cached_result<A, M>(&self, module: M) -> Option<&A::Result>
     where
         A: ModuleAnalysis<'ctx, B>,
+        M: Into<ModuleView<'ctx, B>>,
     {
         let module = module.into();
         self.results
@@ -659,11 +656,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
             .downcast_ref::<A::Result>()
     }
 
-    pub fn invalidate(
-        &mut self,
-        module: impl Into<ModuleView<'ctx, B>>,
-        pa: &PreservedAnalyses,
-    ) -> IrResult<()> {
+    pub fn invalidate<M>(&mut self, module: M, pa: &PreservedAnalyses) -> IrResult<()>
+    where
+        M: Into<ModuleView<'ctx, B>>,
+    {
         let module = module.into();
         let module_id = module.id();
         let snapshot = ModuleAnalysisSnapshot {
@@ -687,9 +683,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
         self.results.clear();
     }
 
-    pub fn clear_analysis<A>(&mut self, module: impl Into<ModuleView<'ctx, B>>)
+    pub fn clear_analysis<A, M>(&mut self, module: M)
     where
         A: ModuleAnalysis<'ctx, B>,
+        M: Into<ModuleView<'ctx, B>>,
     {
         let module = module.into();
         self.results.remove(&module_key::<A, B>(module));

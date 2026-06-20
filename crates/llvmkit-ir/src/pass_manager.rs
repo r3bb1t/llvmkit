@@ -253,12 +253,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPassManager<'ctx, B, PreservesVerifica
         self.passes.push(Box::new(FunctionPassModel { pass }));
     }
 
-    pub fn run(
+    pub fn run<F>(
         &mut self,
         module: Module<'ctx, B, Verified>,
-        function: impl Into<FunctionView<'ctx, B>>,
+        function: F,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Verified>> {
+    ) -> IrResult<Module<'ctx, B, Verified>>
+    where
+        F: Into<FunctionView<'ctx, B>>,
+    {
         self.run_read_only_inner(function.into(), None, fam)?;
         Ok(module)
     }
@@ -303,12 +306,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPassManager<'ctx, B, MutatesIr> {
         self.passes.push(Box::new(FunctionPassModel { pass }));
     }
 
-    pub fn run(
+    pub fn run<F>(
         &mut self,
         module: Module<'ctx, B, Verified>,
-        function: impl Into<FunctionView<'ctx, B>>,
+        function: F,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Unverified>> {
+    ) -> IrResult<Module<'ctx, B, Unverified>>
+    where
+        F: Into<FunctionView<'ctx, B>>,
+    {
         let module = module.unverify();
         self.run_transform_inner(&module, function.into(), None, fam)?;
         Ok(module)

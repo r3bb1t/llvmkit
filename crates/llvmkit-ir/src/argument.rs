@@ -8,6 +8,7 @@
 //! common accessors do not round-trip through the value arena.
 
 use crate::function::FunctionValue;
+use crate::marker::Dyn;
 use crate::module::{Brand, Module, ModuleCore, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeId};
 use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
@@ -54,7 +55,7 @@ impl<'ctx> Argument<'ctx> {
     /// Owning function as a runtime-checked [`FunctionValue<Dyn>`].
     /// Narrow with [`TryFrom`] when a typed handle is needed.
     #[inline]
-    pub fn parent_function(self) -> FunctionValue<'ctx, crate::marker::Dyn> {
+    pub fn parent_function(self) -> FunctionValue<'ctx, Dyn> {
         FunctionValue::<'_, crate::marker::Dyn>::from_parts_unchecked(
             self.parent_fn,
             self.module.module(),
@@ -81,7 +82,10 @@ impl<'ctx> Argument<'ctx> {
 
     /// Set the textual name.
     #[inline]
-    pub fn set_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: &str) {
+    pub fn set_name<Name>(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
         self.as_value().set_name(module_token, name);
     }
 
@@ -111,7 +115,10 @@ impl<'ctx> HasName<'ctx> for Argument<'ctx> {
         Argument::name(self)
     }
     #[inline]
-    fn set_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: &str) {
+    fn set_name<Name>(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
         Argument::set_name(self, module_token, name);
     }
     #[inline]

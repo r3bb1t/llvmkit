@@ -14,11 +14,11 @@ fn main() {
         let void_ty = m.void_type();
         let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let callee = m
-            .add_function::<()>("sink", callee_ty, Linkage::External)
+            .add_function::<(), _>("sink", callee_ty, Linkage::External)
             .unwrap();
         let caller_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let caller = m
-            .add_function::<()>("c", caller_ty, Linkage::External)
+            .add_function::<(), _>("c", caller_ty, Linkage::External)
             .unwrap();
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);

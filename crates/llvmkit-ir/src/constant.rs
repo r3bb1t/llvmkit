@@ -88,23 +88,118 @@ impl ConstantExprOpcode {
 /// No-wrap flags accepted by LLVM 22's `add`/`sub` constant-expression parser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct OverflowingConstantExprFlags {
-    pub nuw: bool,
-    pub nsw: bool,
+    nuw: bool,
+    nsw: bool,
+}
+
+impl OverflowingConstantExprFlags {
+    #[inline]
+    pub const fn new(nuw: bool, nsw: bool) -> Self {
+        Self { nuw, nsw }
+    }
+
+    #[inline]
+    pub const fn none() -> Self {
+        Self::new(false, false)
+    }
+
+    #[inline]
+    pub const fn nuw(self) -> bool {
+        self.nuw
+    }
+
+    #[inline]
+    pub const fn nsw(self) -> bool {
+        self.nsw
+    }
+
+    #[inline]
+    pub const fn is_empty(self) -> bool {
+        !self.nuw && !self.nsw
+    }
 }
 
 /// APInt half-open range attached to a constant `getelementptr`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConstantExprInRange {
-    pub start: Box<[u64]>,
-    pub end: Box<[u64]>,
-    pub bit_width: u32,
+    start: Box<[u64]>,
+    end: Box<[u64]>,
+    bit_width: u32,
+}
+
+impl ConstantExprInRange {
+    #[inline]
+    pub fn new<Start, End>(start: Start, end: End, bit_width: u32) -> Self
+    where
+        Start: Into<Box<[u64]>>,
+        End: Into<Box<[u64]>>,
+    {
+        Self {
+            start: start.into(),
+            end: end.into(),
+            bit_width,
+        }
+    }
+
+    #[inline]
+    pub fn start(&self) -> &[u64] {
+        &self.start
+    }
+
+    #[inline]
+    pub fn end(&self) -> &[u64] {
+        &self.end
+    }
+
+    #[inline]
+    pub const fn bit_width(&self) -> u32 {
+        self.bit_width
+    }
+
+    #[inline]
+    pub(crate) fn into_parts(self) -> (Box<[u64]>, Box<[u64]>, u32) {
+        (self.start, self.end, self.bit_width)
+    }
 }
 
 /// Flags accepted by LLVM 22's `getelementptr` constant-expression parser.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct ConstantGepFlags {
-    pub no_wrap: GepNoWrapFlags,
-    pub in_range: Option<ConstantExprInRange>,
+    no_wrap: GepNoWrapFlags,
+    in_range: Option<ConstantExprInRange>,
+}
+
+impl ConstantGepFlags {
+    #[inline]
+    pub fn new(no_wrap: GepNoWrapFlags) -> Self {
+        Self {
+            no_wrap: GepNoWrapFlags::from_bits_canonical(no_wrap.bits()),
+            in_range: None,
+        }
+    }
+
+    #[inline]
+    pub fn with_in_range(no_wrap: GepNoWrapFlags, in_range: ConstantExprInRange) -> Self {
+        Self {
+            no_wrap: GepNoWrapFlags::from_bits_canonical(no_wrap.bits()),
+            in_range: Some(in_range),
+        }
+    }
+
+    #[inline]
+    pub const fn no_wrap(&self) -> GepNoWrapFlags {
+        self.no_wrap
+    }
+
+    #[inline]
+    pub fn in_range(&self) -> Option<&ConstantExprInRange> {
+        self.in_range.as_ref()
+    }
+
+    #[inline]
+    pub(crate) fn into_parts(self) -> (GepNoWrapFlags, Option<ConstantExprInRange>) {
+        (self.no_wrap, self.in_range)
+    }
 }
 
 /// Optional optimization and predicate flags attached to a constant expression.
@@ -121,14 +216,23 @@ impl ConstantExprFlags {
         Self::None
     }
     pub const fn overflowing(nuw: bool, nsw: bool) -> Self {
-        if !nuw && !nsw {
+        let flags = OverflowingConstantExprFlags::new(nuw, nsw);
+        if flags.is_empty() {
             Self::None
         } else {
-            Self::Overflowing(OverflowingConstantExprFlags { nuw, nsw })
+            Self::Overflowing(flags)
         }
     }
 
-    pub fn gep(no_wrap: GepNoWrapFlags, in_range: Option<ConstantExprInRange>) -> Self {
+    pub fn gep(no_wrap: GepNoWrapFlags) -> Self {
+        Self::gep_raw(no_wrap, None)
+    }
+
+    pub fn gep_with_in_range(no_wrap: GepNoWrapFlags, in_range: ConstantExprInRange) -> Self {
+        Self::gep_raw(no_wrap, Some(in_range))
+    }
+
+    pub(crate) fn gep_raw(no_wrap: GepNoWrapFlags, in_range: Option<ConstantExprInRange>) -> Self {
         let no_wrap = GepNoWrapFlags::from_bits_canonical(no_wrap.bits());
         if no_wrap.is_empty() && in_range.is_none() {
             Self::None
@@ -378,7 +482,10 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> HasName<'ctx, B> for Constant<'
         self.as_value().name()
     }
     #[inline]
-    fn set_name(self, module_token: &Module<'ctx, B, Unverified>, name: &str) {
+    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
         self.as_value().set_name(module_token, name);
     }
     #[inline]

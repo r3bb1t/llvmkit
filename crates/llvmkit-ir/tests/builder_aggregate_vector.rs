@@ -20,7 +20,7 @@ fn extract_value_struct_field0() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
         let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
-        let f = m.add_function::<()>("instructions.aggregateops", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("instructions.aggregateops", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let up = f.param(0)?;
@@ -45,7 +45,7 @@ fn extract_value_array_index() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let arr_ty = m.array_type(i8_ty, 3);
         let fn_ty = m.fn_type(void_ty.as_type(), [arr_ty.as_type()], false);
-        let f = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let arr = f.param(0)?;
@@ -72,7 +72,7 @@ fn extract_value_nested_indices() -> Result<(), IrError> {
         let inner = m.struct_type([i32_ty.as_type()], false);
         let outer = m.struct_type([i8_ty.as_type(), inner.as_type()], false);
         let fn_ty = m.fn_type(void_ty.as_type(), [outer.as_type()], false);
-        let f = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let n = f.param(0)?;
@@ -101,7 +101,7 @@ fn insert_value_struct_field0() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
         let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
-        let f = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let up = f.param(0)?;
@@ -126,7 +126,7 @@ fn insert_value_array_index_zero() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let arr_ty = m.array_type(i8_ty, 3);
         let fn_ty = m.fn_type(void_ty.as_type(), [arr_ty.as_type()], false);
-        let f = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let arr = f.param(0)?;
@@ -157,7 +157,7 @@ fn extract_element_vector_i8_index() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let vec_ty = m.vector_type(f32_ty, 4, false);
         let fn_ty = m.fn_type(void_ty.as_type(), [vec_ty.as_type()], false);
-        let f = m.add_function::<()>("instructions.vectorops", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("instructions.vectorops", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let vec = f.param(0)?;
@@ -187,7 +187,7 @@ fn insert_element_vector_float_at_i8() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let vec_ty = m.vector_type(f32_ty, 4, false);
         let fn_ty = m.fn_type(void_ty.as_type(), [vec_ty.as_type()], false);
-        let f = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let vec = f.param(0)?;
@@ -222,7 +222,7 @@ fn shuffle_vector_zeroinitializer_mask() -> Result<(), IrError> {
             [vec_ty.as_type(), vec_ty.as_type()],
             false,
         );
-        let f = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let v0 = f.param(0)?;
@@ -258,7 +258,7 @@ fn shuffle_vector_explicit_mask_print() -> Result<(), IrError> {
             [vec_ty.as_type(), vec_ty.as_type()],
             false,
         );
-        let f = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let v0 = f.param(0)?;

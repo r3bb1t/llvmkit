@@ -82,7 +82,7 @@ fn build() -> Result<(), IrError> {
     Module::with_new::<_, _, _>("demo", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-        let f = m.add_function::<i32>("add", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("add", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -188,7 +188,7 @@ For a runnable end-to-end version, see
 | `FunctionPass::run(Function &, FunctionAnalysisManager &)` | `FunctionPass::run(&mut FunctionPassContext)` |
 | `ModulePass::run(Module &, ModuleAnalysisManager &)` | `ModulePass::run(&mut ModulePassContext)` |
 | `PreservedAnalyses::all()` / `none()` | same names |
-| `FAM.getResult<A>(F)` | `cx.analysis::<A>()` inside a function pass, `fam.get_result::<A>(FunctionView)` outside |
+| `FAM.getResult<A>(F)` | `cx.analysis::<A>()` inside a function pass, `fam.get_result::<A, _>(FunctionView)` outside |
 | `ModuleToFunctionPassAdaptor` | same name; function passes read cached module analyses only |
 | mutating a module pass | use a `MutatesIr` manager, call `cx.module_mut()`, receive `Module<'ctx, B, Unverified>` |
 

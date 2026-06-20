@@ -21,7 +21,7 @@ fn position_before_inserts_between_prev_and_anchor() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let n: IntValue<i32> = f.param(0)?.try_into()?;
@@ -53,7 +53,7 @@ fn position_past_allocas_anchors_after_alloca_prefix() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<()>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let slot = b.build_alloca(i32_ty, "slot")?;
@@ -82,7 +82,7 @@ fn save_and_restore_insert_point_round_trip() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let saved = b.save_insert_point();
@@ -107,7 +107,7 @@ fn build_int_neg_emits_sub_zero() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let n: IntValue<i32> = f.param(0)?.try_into()?;
@@ -129,7 +129,7 @@ fn build_int_neg_nsw_emits_sub_nsw() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let n: IntValue<i32> = f.param(0)?.try_into()?;
@@ -151,7 +151,7 @@ fn build_int_not_emits_xor_minus_one() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let n: IntValue<i32> = f.param(0)?.try_into()?;
@@ -175,7 +175,7 @@ fn build_pointer_cast_same_addrspace_emits_bitcast() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(ptr_ty, [ptr_ty.as_type()], false);
-        let f = m.add_function::<llvmkit_ir::marker::Ptr>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<llvmkit_ir::marker::Ptr, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<llvmkit_ir::marker::Ptr>(&m).position_at_end(entry);
         let p: PointerValue = f.param(0)?.try_into()?;
@@ -200,7 +200,7 @@ fn build_is_null_emits_icmp_eq_null() -> Result<(), IrError> {
         let i1_ty = m.bool_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i1_ty, [ptr_ty.as_type()], false);
-        let f = m.add_function::<bool>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<bool, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);
         let p: PointerValue = f.param(0)?.try_into()?;
@@ -224,7 +224,7 @@ fn build_is_not_null_emits_icmp_ne_null() -> Result<(), IrError> {
         let i1_ty = m.bool_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i1_ty, [ptr_ty.as_type()], false);
-        let f = m.add_function::<bool>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<bool, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);
         let p: PointerValue = f.param(0)?.try_into()?;

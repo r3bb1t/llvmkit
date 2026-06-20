@@ -38,7 +38,8 @@ fn width_marker_works_as_return_marker() -> Result<(), llvmkit_ir::IrError> {
     Module::with_new("c", |m| {
         let i17_ty = m.int_type_n::<17>();
         let fn_ty = m.fn_type(i17_ty, [i17_ty.as_type()], false);
-        let _f = m.add_function::<Width<17>>("identity17", fn_ty, llvmkit_ir::Linkage::External)?;
+        let _f =
+            m.add_function::<Width<17>, _>("identity17", fn_ty, llvmkit_ir::Linkage::External)?;
         Ok(())
     })
 }

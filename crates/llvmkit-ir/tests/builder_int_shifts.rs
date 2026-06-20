@@ -15,10 +15,10 @@ fn shl_plain() -> Result<(), IrError> {
     Module::with_new("shifts", |m| {
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
-        let f = m.add_function::<i64>("shl_plain", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i64, _>("shl_plain", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
-        let r = b.build_int_shl::<i64, _, _>(f.param(0)?, f.param(1)?, "z")?;
+        let r = b.build_int_shl::<i64, _, _, _>(f.param(0)?, f.param(1)?, "z")?;
         b.build_ret(r)?;
         let text = format!("{m}");
         assert!(text.contains("%z = shl i64 %0, %1"), "got:\n{text}");
@@ -32,10 +32,10 @@ fn lshr_plain() -> Result<(), IrError> {
     Module::with_new("shifts", |m| {
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
-        let f = m.add_function::<i64>("lshr_plain", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i64, _>("lshr_plain", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
-        let r = b.build_int_lshr::<i64, _, _>(f.param(0)?, f.param(1)?, "z")?;
+        let r = b.build_int_lshr::<i64, _, _, _>(f.param(0)?, f.param(1)?, "z")?;
         b.build_ret(r)?;
         let text = format!("{m}");
         assert!(text.contains("%z = lshr i64 %0, %1"), "got:\n{text}");
@@ -49,10 +49,10 @@ fn ashr_plain() -> Result<(), IrError> {
     Module::with_new("shifts", |m| {
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
-        let f = m.add_function::<i64>("ashr_plain", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i64, _>("ashr_plain", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
-        let r = b.build_int_ashr::<i64, _, _>(f.param(0)?, f.param(1)?, "z")?;
+        let r = b.build_int_ashr::<i64, _, _, _>(f.param(0)?, f.param(1)?, "z")?;
         b.build_ret(r)?;
         let text = format!("{m}");
         assert!(text.contains("%z = ashr i64 %0, %1"), "got:\n{text}");
@@ -67,10 +67,10 @@ fn shl_nuw_nsw() -> Result<(), IrError> {
     Module::with_new("shifts", |m| {
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
-        let f = m.add_function::<i64>("shl_both", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i64, _>("shl_both", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
-        let r = b.build_int_shl_with_flags::<i64, _, _>(
+        let r = b.build_int_shl_with_flags::<i64, _, _, _>(
             f.param(0)?,
             f.param(1)?,
             ShlFlags::new().nuw().nsw(),
@@ -89,10 +89,10 @@ fn lshr_exact() -> Result<(), IrError> {
     Module::with_new("shifts", |m| {
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
-        let f = m.add_function::<i64>("lshr_exact", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i64, _>("lshr_exact", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
-        let r = b.build_int_lshr_with_flags::<i64, _, _>(
+        let r = b.build_int_lshr_with_flags::<i64, _, _, _>(
             f.param(0)?,
             f.param(1)?,
             LShrFlags::new().exact(),
@@ -111,10 +111,10 @@ fn ashr_exact() -> Result<(), IrError> {
     Module::with_new("shifts", |m| {
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
-        let f = m.add_function::<i64>("ashr_exact", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i64, _>("ashr_exact", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
-        let r = b.build_int_ashr_with_flags::<i64, _, _>(
+        let r = b.build_int_ashr_with_flags::<i64, _, _, _>(
             f.param(0)?,
             f.param(1)?,
             AShrFlags::new().exact(),

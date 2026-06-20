@@ -52,7 +52,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
         false,
     );
     let add_fn = m
-        .function_builder::<i32>("add", add_sig)
+        .function_builder::<i32, _>("add", add_sig)
         .linkage(Linkage::External)
         .unnamed_addr(UnnamedAddr::Local)
         .param_name(0, "rax")
@@ -81,7 +81,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     // ---- `main`: no params, returns i32, ret-attr `noundef`. ----
     let main_sig = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
     let main_fn = m
-        .function_builder::<i32>("main", main_sig)
+        .function_builder::<i32, _>("main", main_sig)
         .linkage(Linkage::External)
         .unnamed_addr(UnnamedAddr::Local)
         .return_attribute(AttrKind::NoUndef)

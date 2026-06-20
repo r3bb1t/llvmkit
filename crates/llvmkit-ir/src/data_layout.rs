@@ -26,7 +26,7 @@
 
 use core::fmt;
 
-use crate::align::Align;
+use crate::align::{Align, MaybeAlign};
 use crate::error::{IrError, IrResult};
 use crate::module::ModuleCore;
 use crate::r#type::{Type, TypeData, TypeId};
@@ -39,9 +39,39 @@ use crate::r#type::{Type, TypeData, TypeId};
 /// `v<...>`). Mirrors `DataLayout::PrimitiveSpec`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PrimitiveSpec {
-    pub bit_width: u32,
-    pub abi_align: Align,
-    pub pref_align: Align,
+    bit_width: u32,
+    abi_align: Align,
+    pref_align: Align,
+}
+
+impl PrimitiveSpec {
+    pub const fn new(bit_width: u32, abi_align: Align, pref_align: Align) -> Self {
+        Self {
+            bit_width,
+            abi_align,
+            pref_align,
+        }
+    }
+
+    #[inline]
+    pub const fn bit_width(&self) -> u32 {
+        self.bit_width
+    }
+
+    #[inline]
+    pub const fn abi_align(&self) -> Align {
+        self.abi_align
+    }
+
+    #[inline]
+    pub const fn pref_align(&self) -> Align {
+        self.pref_align
+    }
+
+    fn set_alignments(&mut self, abi_align: Align, pref_align: Align) {
+        self.abi_align = abi_align;
+        self.pref_align = pref_align;
+    }
 }
 
 /// Per-address-space pointer specification
@@ -49,27 +79,127 @@ pub struct PrimitiveSpec {
 /// `DataLayout::PointerSpec`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PointerSpec {
-    pub address_space: u32,
-    pub bit_width: u32,
-    pub abi_align: Align,
-    pub pref_align: Align,
-    pub index_bit_width: u32,
+    address_space: u32,
+    bit_width: u32,
+    abi_align: Align,
+    pref_align: Align,
+    index_bit_width: u32,
     /// Pointer values in this address space have an unstable
     /// representation: bit-identical pointers may compare unequal,
     /// or `inttoptr(ptrtoint(p))` may not equal `p`. Mirrors the `u`
     /// flag in `parsePointerSpec`.
-    pub has_unstable_repr: bool,
+    has_unstable_repr: bool,
     /// Pointers in this address space carry external state stored
     /// outside the in-memory bit pattern (e.g. CHERI capability
     /// tags). Mirrors the `e` flag in `parsePointerSpec`.
-    pub has_external_state: bool,
+    has_external_state: bool,
     /// Symbolic name (`p1(global):...` -> `"global"`). Empty string
     /// if no name is set.
-    pub address_space_name: String,
+    address_space_name: String,
     /// Whether this address space is non-integral (set by `ni:<as>`
     /// specs after primary parsing). Mirrors the post-pass in
     /// `parseLayoutString`.
-    pub non_integral: bool,
+    non_integral: bool,
+}
+
+impl PointerSpec {
+    fn new(
+        address_space: u32,
+        bit_width: u32,
+        abi_align: Align,
+        pref_align: Align,
+        index_bit_width: u32,
+    ) -> Self {
+        Self {
+            address_space,
+            bit_width,
+            abi_align,
+            pref_align,
+            index_bit_width,
+            has_unstable_repr: false,
+            has_external_state: false,
+            address_space_name: String::new(),
+            non_integral: false,
+        }
+    }
+
+    fn with_pointer_flags(mut self, has_unstable_repr: bool, has_external_state: bool) -> Self {
+        self.has_unstable_repr = has_unstable_repr;
+        self.has_external_state = has_external_state;
+        self
+    }
+
+    fn with_address_space_name(mut self, address_space_name: String) -> Self {
+        self.address_space_name = address_space_name;
+        self
+    }
+
+    #[inline]
+    pub const fn address_space(&self) -> u32 {
+        self.address_space
+    }
+
+    #[inline]
+    pub const fn bit_width(&self) -> u32 {
+        self.bit_width
+    }
+
+    #[inline]
+    pub const fn abi_align(&self) -> Align {
+        self.abi_align
+    }
+
+    #[inline]
+    pub const fn pref_align(&self) -> Align {
+        self.pref_align
+    }
+
+    #[inline]
+    pub const fn index_bit_width(&self) -> u32 {
+        self.index_bit_width
+    }
+
+    #[inline]
+    pub const fn has_unstable_representation(&self) -> bool {
+        self.has_unstable_repr
+    }
+
+    #[inline]
+    pub const fn has_unstable_repr(&self) -> bool {
+        self.has_unstable_representation()
+    }
+
+    #[inline]
+    pub const fn has_external_state(&self) -> bool {
+        self.has_external_state
+    }
+
+    #[inline]
+    pub fn address_space_name(&self) -> &str {
+        &self.address_space_name
+    }
+
+    #[inline]
+    pub const fn is_non_integral(&self) -> bool {
+        self.non_integral
+    }
+
+    #[inline]
+    pub const fn non_integral(&self) -> bool {
+        self.is_non_integral()
+    }
+
+    fn with_non_integral(mut self, non_integral: bool) -> Self {
+        self.non_integral = non_integral;
+        self
+    }
+
+    fn into_non_integral_address_space(mut self, address_space: u32) -> Self {
+        self.address_space = address_space;
+        self.has_unstable_repr = true;
+        self.non_integral = true;
+        self
+    }
 }
 
 /// Function-pointer alignment kind. Mirrors
@@ -188,60 +318,20 @@ impl Default for DataLayout {
             mangling_mode: ManglingMode::None,
             legal_int_widths: Vec::new(),
             int_specs: vec![
-                PrimitiveSpec {
-                    bit_width: 8,
-                    abi_align: Align::ONE,
-                    pref_align: Align::ONE,
-                },
-                PrimitiveSpec {
-                    bit_width: 16,
-                    abi_align: const_align(2),
-                    pref_align: const_align(2),
-                },
-                PrimitiveSpec {
-                    bit_width: 32,
-                    abi_align: const_align(4),
-                    pref_align: const_align(4),
-                },
-                PrimitiveSpec {
-                    bit_width: 64,
-                    abi_align: const_align(4),
-                    pref_align: const_align(8),
-                },
+                PrimitiveSpec::new(8, Align::ONE, Align::ONE),
+                PrimitiveSpec::new(16, const_align(2), const_align(2)),
+                PrimitiveSpec::new(32, const_align(4), const_align(4)),
+                PrimitiveSpec::new(64, const_align(4), const_align(8)),
             ],
             float_specs: vec![
-                PrimitiveSpec {
-                    bit_width: 16,
-                    abi_align: const_align(2),
-                    pref_align: const_align(2),
-                },
-                PrimitiveSpec {
-                    bit_width: 32,
-                    abi_align: const_align(4),
-                    pref_align: const_align(4),
-                },
-                PrimitiveSpec {
-                    bit_width: 64,
-                    abi_align: const_align(8),
-                    pref_align: const_align(8),
-                },
-                PrimitiveSpec {
-                    bit_width: 128,
-                    abi_align: const_align(16),
-                    pref_align: const_align(16),
-                },
+                PrimitiveSpec::new(16, const_align(2), const_align(2)),
+                PrimitiveSpec::new(32, const_align(4), const_align(4)),
+                PrimitiveSpec::new(64, const_align(8), const_align(8)),
+                PrimitiveSpec::new(128, const_align(16), const_align(16)),
             ],
             vector_specs: vec![
-                PrimitiveSpec {
-                    bit_width: 64,
-                    abi_align: const_align(8),
-                    pref_align: const_align(8),
-                },
-                PrimitiveSpec {
-                    bit_width: 128,
-                    abi_align: const_align(16),
-                    pref_align: const_align(16),
-                },
+                PrimitiveSpec::new(64, const_align(8), const_align(8)),
+                PrimitiveSpec::new(128, const_align(16), const_align(16)),
             ],
             pointer_specs: Vec::new(),
             struct_abi_align: Align::ONE,
@@ -251,17 +341,7 @@ impl Default for DataLayout {
         // Default pointer spec for AS 0: 64-bit pointers, 8-byte
         // ABI/pref alignment, 64-bit index width. Mirrors the trailing
         // `setPointerSpec(0, ...)` call in `DataLayout::DataLayout()`.
-        layout.set_pointer_spec(PointerSpec {
-            address_space: 0,
-            bit_width: 64,
-            abi_align: const_align(8),
-            pref_align: const_align(8),
-            index_bit_width: 64,
-            has_unstable_repr: false,
-            has_external_state: false,
-            address_space_name: String::new(),
-            non_integral: false,
-        });
+        layout.set_pointer_spec(PointerSpec::new(0, 64, const_align(8), const_align(8), 64));
         layout
     }
 }
@@ -271,7 +351,10 @@ impl DataLayout {
     /// `static Expected<DataLayout> DataLayout::parse(StringRef)`.
     /// Returns [`IrError::InvalidDataLayout`] on the first parse
     /// failure.
-    pub fn parse(s: impl AsRef<str>) -> IrResult<Self> {
+    pub fn parse<S>(s: S) -> IrResult<Self>
+    where
+        S: AsRef<str>,
+    {
         let s = s.as_ref();
         let mut layout = Self::default();
         layout.parse_layout_string(s)?;
@@ -377,8 +460,8 @@ impl DataLayout {
     pub fn non_standard_address_spaces(&self) -> Vec<u32> {
         self.pointer_specs
             .iter()
-            .filter(|s| s.address_space != 0)
-            .map(|s| s.address_space)
+            .filter(|s| s.address_space() != 0)
+            .map(PointerSpec::address_space)
             .collect()
     }
 
@@ -401,89 +484,89 @@ impl DataLayout {
     pub fn non_integral_address_spaces(&self) -> Vec<u32> {
         self.pointer_specs
             .iter()
-            .filter(|s| s.non_integral)
-            .map(|s| s.address_space)
+            .filter(|s| s.is_non_integral())
+            .map(PointerSpec::address_space)
             .collect()
     }
 
     /// Mirrors `DataLayout::isNonIntegralAddressSpace`.
     pub fn is_non_integral_address_space(&self, addr_space: u32) -> bool {
-        self.pointer_spec(addr_space).non_integral
+        self.pointer_spec(addr_space).is_non_integral()
     }
 
     /// Mirrors `DataLayout::hasUnstableRepresentation(unsigned)`.
     pub fn has_unstable_representation(&self, addr_space: u32) -> bool {
-        self.pointer_spec(addr_space).has_unstable_repr
+        self.pointer_spec(addr_space).has_unstable_representation()
     }
 
     /// Mirrors `DataLayout::hasExternalState(unsigned)`.
     pub fn has_external_state(&self, addr_space: u32) -> bool {
-        self.pointer_spec(addr_space).has_external_state
+        self.pointer_spec(addr_space).has_external_state()
     }
 
     /// Mirrors `DataLayout::getAddressSpaceName`.
     pub fn address_space_name(&self, addr_space: u32) -> &str {
-        &self.pointer_spec(addr_space).address_space_name
+        self.pointer_spec(addr_space).address_space_name()
     }
 
     /// Mirrors `DataLayout::getNamedAddressSpace`.
     pub fn named_address_space(&self, name: &str) -> Option<u32> {
         self.pointer_specs
             .iter()
-            .find(|s| s.address_space_name == name)
-            .map(|s| s.address_space)
+            .find(|s| s.address_space_name() == name)
+            .map(PointerSpec::address_space)
     }
 
     // ----- Pointer accessors -----
 
     /// Mirrors `DataLayout::getPointerSize(AS)`. Bytes.
     pub fn pointer_size(&self, addr_space: u32) -> u32 {
-        div_ceil_u32(self.pointer_spec(addr_space).bit_width, 8)
+        div_ceil_u32(self.pointer_spec(addr_space).bit_width(), 8)
     }
 
     /// Mirrors `DataLayout::getPointerSizeInBits(AS)`.
     #[inline]
     pub fn pointer_size_in_bits(&self, addr_space: u32) -> u32 {
-        self.pointer_spec(addr_space).bit_width
+        self.pointer_spec(addr_space).bit_width()
     }
 
     /// Mirrors `DataLayout::getIndexSize(AS)`. Bytes.
     pub fn index_size(&self, addr_space: u32) -> u32 {
-        div_ceil_u32(self.pointer_spec(addr_space).index_bit_width, 8)
+        div_ceil_u32(self.pointer_spec(addr_space).index_bit_width(), 8)
     }
 
     /// Mirrors `DataLayout::getIndexSizeInBits(AS)`.
     #[inline]
     pub fn index_size_in_bits(&self, addr_space: u32) -> u32 {
-        self.pointer_spec(addr_space).index_bit_width
+        self.pointer_spec(addr_space).index_bit_width()
     }
 
     /// Mirrors `DataLayout::getPointerABIAlignment(AS)`.
     #[inline]
     pub fn pointer_abi_align(&self, addr_space: u32) -> Align {
-        self.pointer_spec(addr_space).abi_align
+        self.pointer_spec(addr_space).abi_align()
     }
 
     /// Mirrors `DataLayout::getPointerPrefAlignment(AS)`.
     #[inline]
     pub fn pointer_pref_align(&self, addr_space: u32) -> Align {
-        self.pointer_spec(addr_space).pref_align
+        self.pointer_spec(addr_space).pref_align()
     }
 
-    /// Mirrors `DataLayout::getPointerSpec`. Crate-internal because
-    /// the spec struct is plain data.
+    /// Mirrors `DataLayout::getPointerSpec`. Exposes the parsed
+    /// pointer-layout record without exposing its representation.
     pub fn pointer_spec(&self, addr_space: u32) -> &PointerSpec {
         if addr_space != 0
             && let Some(spec) = self
                 .pointer_specs
                 .iter()
-                .find(|s| s.address_space == addr_space)
+                .find(|s| s.address_space() == addr_space)
         {
             return spec;
         }
         self.pointer_specs
             .iter()
-            .find(|s| s.address_space == 0)
+            .find(|s| s.address_space() == 0)
             .unwrap_or_else(|| unreachable!("DataLayout always has a pointer spec for AS 0"))
     }
 
@@ -536,8 +619,8 @@ impl DataLayout {
 
     /// Mirrors `DataLayout::getValueOrABITypeAlignment`. If
     /// `alignment` is set, returns it; otherwise the ABI alignment.
-    pub fn value_or_abi_type_align(&self, alignment: Option<Align>, ty: Type<'_>) -> Align {
-        alignment.unwrap_or_else(|| self.abi_type_align(ty))
+    pub fn value_or_abi_type_align(&self, alignment: MaybeAlign, ty: Type<'_>) -> Align {
+        alignment.align().unwrap_or_else(|| self.abi_type_align(ty))
     }
 
     /// Mirrors `DataLayout::getABIIntegerTypeAlignment(BitWidth)`.
@@ -592,7 +675,7 @@ impl DataLayout {
             }
             TypeData::Struct(_) => {
                 let layout = self.struct_layout_inner(module, id);
-                let size = layout.size_in_bytes();
+                let size = layout.size_bytes();
                 let is_packed = matches!(
                     module.context().type_data(id),
                     TypeData::Struct(s) if s.body.borrow().as_ref().is_some_and(|b| b.packed)
@@ -600,7 +683,7 @@ impl DataLayout {
                 if is_packed {
                     size
                 } else {
-                    let a = std::cmp::max(self.struct_abi_align, layout.alignment);
+                    let a = std::cmp::max(self.struct_abi_align, layout.alignment());
                     align_to(size, a)
                 }
             }
@@ -650,11 +733,11 @@ impl DataLayout {
                     TypeData::Fp128 | TypeData::PpcFp128 | TypeData::X86Fp80 => 128,
                     _ => unreachable!(),
                 };
-                if let Some(s) = self.float_specs.iter().find(|s| s.bit_width == bit_width) {
+                if let Some(s) = self.float_specs.iter().find(|s| s.bit_width() == bit_width) {
                     if abi_or_pref {
-                        s.abi_align
+                        s.abi_align()
                     } else {
-                        s.pref_align
+                        s.pref_align()
                     }
                 } else {
                     pow2_ceil_align(bit_width / 8)
@@ -665,11 +748,15 @@ impl DataLayout {
                     .type_size_in_bits_inner(module, id)
                     .try_into()
                     .unwrap_or(u32::MAX);
-                if let Some(s) = self.vector_specs.iter().find(|s| s.bit_width == bit_width) {
+                if let Some(s) = self
+                    .vector_specs
+                    .iter()
+                    .find(|s| s.bit_width() == bit_width)
+                {
                     if abi_or_pref {
-                        s.abi_align
+                        s.abi_align()
                     } else {
-                        s.pref_align
+                        s.pref_align()
                     }
                 } else {
                     let store_bits =
@@ -706,9 +793,9 @@ impl DataLayout {
                 } else {
                     let layout = self.struct_layout_inner(module, id);
                     if abi_or_pref {
-                        std::cmp::max(self.struct_abi_align, layout.alignment)
+                        std::cmp::max(self.struct_abi_align, layout.alignment())
                     } else {
-                        std::cmp::max(self.struct_pref_align, layout.alignment)
+                        std::cmp::max(self.struct_pref_align, layout.alignment())
                     }
                 }
             }
@@ -732,16 +819,16 @@ impl DataLayout {
         let mut chosen: Option<&PrimitiveSpec> = None;
         for spec in &self.int_specs {
             chosen = Some(spec);
-            if spec.bit_width >= bit_width {
+            if spec.bit_width() >= bit_width {
                 break;
             }
         }
         let spec = chosen
             .unwrap_or_else(|| unreachable!("DataLayout default seeds at least one int spec"));
         if abi_or_pref {
-            spec.abi_align
+            spec.abi_align()
         } else {
-            spec.pref_align
+            spec.pref_align()
         }
     }
 
@@ -789,29 +876,22 @@ impl DataLayout {
             size_bytes = align_to(size_bytes, alignment);
         }
 
-        StructLayoutInfo {
-            size_bytes,
-            alignment,
-            is_padded,
-            member_offsets,
-        }
+        StructLayoutInfo::new(size_bytes, alignment, is_padded, member_offsets)
     }
 
     fn set_pointer_spec(&mut self, spec: PointerSpec) {
         match self
             .pointer_specs
-            .binary_search_by_key(&spec.address_space, |s| s.address_space)
+            .binary_search_by_key(&spec.address_space(), |s| s.address_space())
         {
             Ok(idx) => {
                 // Mirrors the upstream `update existing` arm: keep
                 // the existing `non_integral` flag because that is
                 // applied later by the post-pass in
                 // `parse_layout_string`.
-                let kept_non_integral = self.pointer_specs[idx].non_integral;
-                self.pointer_specs[idx] = PointerSpec {
-                    non_integral: kept_non_integral || spec.non_integral,
-                    ..spec
-                };
+                let kept_non_integral = self.pointer_specs[idx].is_non_integral();
+                let non_integral = kept_non_integral || spec.is_non_integral();
+                self.pointer_specs[idx] = spec.with_non_integral(non_integral);
             }
             Err(idx) => {
                 self.pointer_specs.insert(idx, spec);
@@ -832,19 +912,11 @@ impl DataLayout {
             'v' => &mut self.vector_specs,
             _ => unreachable!("set_primitive_spec invariant: kind in {{i, f, v}}"),
         };
-        match specs.binary_search_by_key(&bit_width, |s| s.bit_width) {
+        match specs.binary_search_by_key(&bit_width, |s| s.bit_width()) {
             Ok(idx) => {
-                specs[idx].abi_align = abi_align;
-                specs[idx].pref_align = pref_align;
+                specs[idx].set_alignments(abi_align, pref_align);
             }
-            Err(idx) => specs.insert(
-                idx,
-                PrimitiveSpec {
-                    bit_width,
-                    abi_align,
-                    pref_align,
-                },
-            ),
+            Err(idx) => specs.insert(idx, PrimitiveSpec::new(bit_width, abi_align, pref_align)),
         }
     }
 }
@@ -857,22 +929,42 @@ impl DataLayout {
 /// `class StructLayout` in `DataLayout.h` for the values we expose.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructLayoutInfo {
-    pub size_bytes: u64,
-    pub alignment: Align,
-    pub is_padded: bool,
-    pub member_offsets: Vec<u64>,
+    size_bytes: u64,
+    alignment: Align,
+    is_padded: bool,
+    member_offsets: Vec<u64>,
 }
 
 impl StructLayoutInfo {
+    /// Construct computed struct-layout information.
+    pub fn new(
+        size_bytes: u64,
+        alignment: Align,
+        is_padded: bool,
+        member_offsets: Vec<u64>,
+    ) -> Self {
+        Self {
+            size_bytes,
+            alignment,
+            is_padded,
+            member_offsets,
+        }
+    }
+
+    /// Mirrors `StructLayout::getSizeInBytes`.
+    #[inline]
+    pub fn size_bytes(&self) -> u64 {
+        self.size_bytes
+    }
     /// Mirrors `StructLayout::getSizeInBytes`.
     #[inline]
     pub fn size_in_bytes(&self) -> u64 {
-        self.size_bytes
+        self.size_bytes()
     }
     /// Mirrors `StructLayout::getSizeInBits`.
     #[inline]
     pub fn size_in_bits(&self) -> u64 {
-        self.size_bytes.saturating_mul(8)
+        self.size_bytes().saturating_mul(8)
     }
     /// Mirrors `StructLayout::getAlignment`.
     #[inline]
@@ -881,27 +973,37 @@ impl StructLayoutInfo {
     }
     /// Mirrors `StructLayout::hasPadding`.
     #[inline]
-    pub fn has_padding(&self) -> bool {
+    pub fn is_padded(&self) -> bool {
         self.is_padded
+    }
+    /// Mirrors `StructLayout::hasPadding`.
+    #[inline]
+    pub fn has_padding(&self) -> bool {
+        self.is_padded()
+    }
+    /// All member byte offsets in declaration order.
+    #[inline]
+    pub fn member_offsets(&self) -> &[u64] {
+        &self.member_offsets
     }
     /// Mirrors `StructLayout::getElementOffset`.
     pub fn element_offset(&self, index: usize) -> u64 {
-        self.member_offsets[index]
+        self.member_offsets()[index]
     }
     /// Mirrors `StructLayout::getElementOffsetInBits`.
     pub fn element_offset_in_bits(&self, index: usize) -> u64 {
-        self.member_offsets[index].saturating_mul(8)
+        self.member_offsets()[index].saturating_mul(8)
     }
     /// Mirrors `StructLayout::getElementContainingOffset`. Returns
     /// the index of the field that contains the byte offset, or
     /// `None` for an out-of-range offset.
     pub fn element_containing_offset(&self, byte_offset: u64) -> Option<usize> {
-        if byte_offset >= self.size_bytes {
+        if byte_offset >= self.size_bytes() {
             return None;
         }
         // upper_bound: greatest index whose member_offset <= byte_offset.
         match self
-            .member_offsets
+            .member_offsets()
             .binary_search_by(|m| m.cmp(&byte_offset))
         {
             Ok(idx) => Some(idx),
@@ -951,12 +1053,7 @@ impl DataLayout {
             // given AS (or AS 0 if there is none), then mark it
             // non-integral.
             let base = self.pointer_spec(as_id).clone();
-            self.set_pointer_spec(PointerSpec {
-                address_space: as_id,
-                has_unstable_repr: true,
-                non_integral: true,
-                ..base
-            });
+            self.set_pointer_spec(base.into_non_integral_address_space(as_id));
         }
         Ok(())
     }
@@ -1227,17 +1324,17 @@ impl DataLayout {
             ));
         }
 
-        self.set_pointer_spec(PointerSpec {
-            address_space: addr_space,
-            bit_width,
-            abi_align,
-            pref_align,
-            index_bit_width,
-            has_unstable_repr,
-            has_external_state,
-            address_space_name: addr_space_name,
-            non_integral: false,
-        });
+        self.set_pointer_spec(
+            PointerSpec::new(
+                addr_space,
+                bit_width,
+                abi_align,
+                pref_align,
+                index_bit_width,
+            )
+            .with_pointer_flags(has_unstable_repr, has_external_state)
+            .with_address_space_name(addr_space_name),
+        );
         Ok(())
     }
 }

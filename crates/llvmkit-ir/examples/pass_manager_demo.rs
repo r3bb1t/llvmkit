@@ -73,7 +73,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
         [bool_ty.as_type(), i32_ty.as_type(), i32_ty.as_type()],
         false,
     );
-    let f = m.add_function::<i32>("select_or_add", fn_ty, Linkage::External)?;
+    let f = m.add_function::<i32, _>("select_or_add", fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let then_bb = f.append_basic_block(m, "then");
     let else_bb = f.append_basic_block(m, "else");
@@ -97,7 +97,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
 
     let bm = IRBuilder::new_for::<i32>(m).position_at_end(merge);
     let phi = bm
-        .build_int_phi::<i32>("result")?
+        .build_int_phi::<i32, _>("result")?
         .add_incoming(add_xy, then_bb)?
         .add_incoming(sub_xy, else_bb)?;
     let is_zero = bm.build_int_cmp(IntPredicate::Eq, phi.as_int_value(), 0_i32, "is_zero")?;
@@ -120,7 +120,7 @@ pub fn run_demo(m: Module<'_>) -> Result<(String, String), IrError> {
 
     let mut fam = FunctionAnalysisManager::new();
     fam.register_pass(DominatorTreeAnalysis);
-    let dt = fam.get_result::<DominatorTreeAnalysis>(function)?;
+    let dt = fam.get_result::<DominatorTreeAnalysis, _>(function)?;
 
     let lines = Rc::new(RefCell::new(vec![format!(
         "analysis entry_dominates_merge={}",

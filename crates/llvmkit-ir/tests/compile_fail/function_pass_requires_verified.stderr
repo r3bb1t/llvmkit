@@ -11,5 +11,5 @@ error[E0308]: mismatched types
 note: method defined here
   --> src/pass_manager.rs
    |
-   |     pub fn run(
+   |     pub fn run<F>(
    |            ^^^

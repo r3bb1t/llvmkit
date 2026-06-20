@@ -712,7 +712,7 @@ impl_into_int_value_static!(u128, i128, i128_type);
 /// Sealed: integer-width markers whose width is known at compile time
 /// AND whose `IntType<'ctx, Self>` can be projected from a
 /// [`Module`](crate::Module) without an extra runtime parameter. Lets the IR
-/// builder accept `b.build_int_phi::<i32>("acc")?` instead of
+/// builder accept `b.build_int_phi::<i32, _>("acc")?` instead of
 /// `b.build_int_phi(i32_ty, "acc")?`.
 ///
 /// Not implemented for [`IntDyn`] - there is no single "dyn

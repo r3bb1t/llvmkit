@@ -40,20 +40,25 @@ use super::align::{Align, MaybeAlign};
 use super::atomic_ordering::AtomicOrdering;
 use super::basic_block::BasicBlock;
 use super::block_state::{BlockSealState, Sealed};
+use super::calling_conv::CallingConv;
 use super::derived_types::IntType;
 use super::error::{IrError, IrResult, TypeKindLabel};
+use super::fmf::FastMathFlags;
 use super::function::FunctionValue;
-use super::instr_types::{BinaryOpData, CastOpData, LoadInstData, ReturnOpData, StoreInstData};
+use super::instr_types::{
+    BinaryOpData, CallAttributeData, CastOpData, LoadInstData, ReturnOpData, StoreInstData,
+};
 use super::instruction::{Instruction, InstructionKindData, build_instruction_value};
+use super::instructions::{CallInst, CatchSwitchInst, CleanupPadInst};
 use super::int_width::IntWidth;
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::folder::IRBuilderFolder;
 use super::marker::{Dyn, Ptr, ReturnMarker};
 use super::module::{Module, ModuleBrand, ModuleCore, ModuleRef, Unverified};
 use super::sync_scope::SyncScope;
+use super::term_open_state::Open;
 use super::r#type::TypeId;
-use super::value::IntValue;
-use crate::value::Value;
+use super::value::{IntValue, IsValue, Value};
 
 /// Type-state marker: the builder has no insertion point. None of the
 /// `build_*` methods are reachable in this state.
@@ -85,28 +90,47 @@ pub struct InsertPoint<'ctx, R: ReturnMarker> {
 
 #[derive(Debug, Clone)]
 pub struct CallSiteConfig {
-    pub name: String,
-    pub calling_conv: crate::CallingConv,
-    pub attrs: crate::instr_types::CallAttributeData,
+    name: String,
+    calling_conv: CallingConv,
+    attrs: CallAttributeData,
 }
 
 impl CallSiteConfig {
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn new<Name>(name: Name) -> Self
+    where
+        Name: Into<String>,
+    {
         Self {
             name: name.into(),
-            calling_conv: crate::CallingConv::C,
-            attrs: crate::instr_types::CallAttributeData::default(),
+            calling_conv: CallingConv::C,
+            attrs: CallAttributeData::default(),
         }
     }
 
-    pub fn calling_conv(mut self, calling_conv: crate::CallingConv) -> Self {
+    pub fn calling_conv(mut self, calling_conv: CallingConv) -> Self {
         self.calling_conv = calling_conv;
         self
     }
 
-    pub fn attrs(mut self, attrs: crate::instr_types::CallAttributeData) -> Self {
+    pub fn attrs(mut self, attrs: CallAttributeData) -> Self {
         self.attrs = attrs;
         self
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn calling_conv_value(&self) -> CallingConv {
+        self.calling_conv
+    }
+
+    pub fn attrs_value(&self) -> &CallAttributeData {
+        &self.attrs
+    }
+
+    pub(crate) fn into_parts(self) -> (String, CallingConv, CallAttributeData) {
+        (self.name, self.calling_conv, self.attrs)
     }
 }
 
@@ -434,14 +458,14 @@ where
     /// Get the builder's current default FMF set. Mirrors
     /// `IRBuilderBase::getFastMathFlags() const` in `IRBuilder.h`.
     #[inline]
-    pub fn fast_math_flags(&self) -> super::fmf::FastMathFlags {
+    pub fn fast_math_flags(&self) -> FastMathFlags {
         self.fmf
     }
 
     /// Set the builder's default FMF. Subsequent FP-math instructions
     /// (fadd / fsub / fmul / fdiv / frem / fneg / fcmp) carry these flags.
     /// Mirrors `IRBuilderBase::setFastMathFlags(FastMathFlags)`.
-    pub fn with_fast_math_flags(self, fmf: super::fmf::FastMathFlags) -> Self {
+    pub fn with_fast_math_flags(self, fmf: FastMathFlags) -> Self {
         Self { fmf, ..self }
     }
 
@@ -462,13 +486,14 @@ where
     /// type system. Either side accepts any [`crate::IntoIntValue<'ctx, W>`]:
     /// already-typed [`IntValue`]s, [`crate::ConstantIntValue`]s, and
     /// Rust scalar literals (`5_i32`, `true`, ...) all work.
-    pub fn build_int_add<W, Lhs, Rhs>(
+    pub fn build_int_add<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -490,13 +515,14 @@ where
     }
 
     /// Produce `sub lhs, rhs`. Mirrors `IRBuilder::CreateSub`.
-    pub fn build_int_sub<W, Lhs, Rhs>(
+    pub fn build_int_sub<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -518,13 +544,14 @@ where
     }
 
     /// Produce `mul lhs, rhs`. Mirrors `IRBuilder::CreateMul`.
-    pub fn build_int_mul<W, Lhs, Rhs>(
+    pub fn build_int_mul<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -546,13 +573,14 @@ where
     }
 
     /// Produce `udiv lhs, rhs`. Mirrors `IRBuilder::CreateUDiv`.
-    pub fn build_int_udiv<W, Lhs, Rhs>(
+    pub fn build_int_udiv<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -561,13 +589,14 @@ where
     }
 
     /// Produce `sdiv lhs, rhs`. Mirrors `IRBuilder::CreateSDiv`.
-    pub fn build_int_sdiv<W, Lhs, Rhs>(
+    pub fn build_int_sdiv<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -576,13 +605,14 @@ where
     }
 
     /// Produce `urem lhs, rhs`. Mirrors `IRBuilder::CreateURem`.
-    pub fn build_int_urem<W, Lhs, Rhs>(
+    pub fn build_int_urem<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -591,13 +621,14 @@ where
     }
 
     /// Produce `srem lhs, rhs`. Mirrors `IRBuilder::CreateSRem`.
-    pub fn build_int_srem<W, Lhs, Rhs>(
+    pub fn build_int_srem<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -606,13 +637,14 @@ where
     }
 
     /// Produce `shl lhs, rhs`. Mirrors `IRBuilder::CreateShl`.
-    pub fn build_int_shl<W, Lhs, Rhs>(
+    pub fn build_int_shl<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -621,13 +653,14 @@ where
     }
 
     /// Produce `lshr lhs, rhs`. Mirrors `IRBuilder::CreateLShr`.
-    pub fn build_int_lshr<W, Lhs, Rhs>(
+    pub fn build_int_lshr<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -636,13 +669,14 @@ where
     }
 
     /// Produce `ashr lhs, rhs`. Mirrors `IRBuilder::CreateAShr`.
-    pub fn build_int_ashr<W, Lhs, Rhs>(
+    pub fn build_int_ashr<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -651,13 +685,14 @@ where
     }
 
     /// Produce `and lhs, rhs`. Mirrors `IRBuilder::CreateAnd`.
-    pub fn build_int_and<W, Lhs, Rhs>(
+    pub fn build_int_and<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -666,13 +701,14 @@ where
     }
 
     /// Produce `or lhs, rhs`. Mirrors `IRBuilder::CreateOr`.
-    pub fn build_int_or<W, Lhs, Rhs>(
+    pub fn build_int_or<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -683,14 +719,15 @@ where
     /// Produce `or disjoint lhs, rhs` with explicit [`crate::OrFlags`].
     /// The `disjoint` flag asserts the operands have no bits in common.
     /// Mirrors `IRBuilder::CreateOr` with `IsDisjoint` set.
-    pub fn build_int_or_with_flags<W, Lhs, Rhs>(
+    pub fn build_int_or_with_flags<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
         flags: crate::instr_types::OrFlags,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -699,13 +736,14 @@ where
     }
 
     /// Produce `xor lhs, rhs`. Mirrors `IRBuilder::CreateXor`.
-    pub fn build_int_xor<W, Lhs, Rhs>(
+    pub fn build_int_xor<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -717,14 +755,15 @@ where
     /// `IRBuilder::CreateAdd` plus the `nuw`/`nsw` knobs. The flag
     /// set type only exposes flags LLVM accepts on `add`, so
     /// invalid combinations are a compile error.
-    pub fn build_int_add_with_flags<W, Lhs, Rhs>(
+    pub fn build_int_add_with_flags<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
         flags: crate::instr_types::AddFlags,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -733,14 +772,15 @@ where
     }
 
     /// Produce `sub lhs, rhs` with explicit [`crate::SubFlags`].
-    pub fn build_int_sub_with_flags<W, Lhs, Rhs>(
+    pub fn build_int_sub_with_flags<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
         flags: crate::instr_types::SubFlags,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -749,14 +789,15 @@ where
     }
 
     /// Produce `mul lhs, rhs` with explicit [`crate::MulFlags`].
-    pub fn build_int_mul_with_flags<W, Lhs, Rhs>(
+    pub fn build_int_mul_with_flags<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
         flags: crate::instr_types::MulFlags,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -765,14 +806,15 @@ where
     }
 
     /// Produce `shl lhs, rhs` with explicit [`crate::ShlFlags`].
-    pub fn build_int_shl_with_flags<W, Lhs, Rhs>(
+    pub fn build_int_shl_with_flags<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
         flags: crate::instr_types::ShlFlags,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -781,14 +823,15 @@ where
     }
 
     /// Produce `udiv lhs, rhs` with explicit [`crate::UDivFlags`].
-    pub fn build_int_udiv_with_flags<W, Lhs, Rhs>(
+    pub fn build_int_udiv_with_flags<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
         flags: crate::instr_types::UDivFlags,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -797,14 +840,15 @@ where
     }
 
     /// Produce `sdiv lhs, rhs` with explicit [`crate::SDivFlags`].
-    pub fn build_int_sdiv_with_flags<W, Lhs, Rhs>(
+    pub fn build_int_sdiv_with_flags<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
         flags: crate::instr_types::SDivFlags,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -813,14 +857,15 @@ where
     }
 
     /// Produce `lshr lhs, rhs` with explicit [`crate::LShrFlags`].
-    pub fn build_int_lshr_with_flags<W, Lhs, Rhs>(
+    pub fn build_int_lshr_with_flags<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
         flags: crate::instr_types::LShrFlags,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -829,14 +874,15 @@ where
     }
 
     /// Produce `ashr lhs, rhs` with explicit [`crate::AShrFlags`].
-    pub fn build_int_ashr_with_flags<W, Lhs, Rhs>(
+    pub fn build_int_ashr_with_flags<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
         flags: crate::instr_types::AShrFlags,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -846,12 +892,9 @@ where
 
     /// Integer negation: `sub 0, V`. Mirrors `IRBuilder::CreateNeg(V, Name)`,
     /// which expands to `CreateSub(Constant::getNullValue(V->getType()), V, Name)`.
-    pub fn build_int_neg<W, V>(
-        &self,
-        value: V,
-        name: impl AsRef<str>,
-    ) -> IrResult<IntValue<'ctx, W>>
+    pub fn build_int_neg<W, V, Name>(&self, value: V, name: Name) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: super::int_width::StaticIntWidth,
         V: super::int_width::IntoIntValue<'ctx, W>,
     {
@@ -862,12 +905,9 @@ where
 
     /// Integer NSW negation. Mirrors `IRBuilder::CreateNSWNeg(V, Name)` ->
     /// `CreateNeg(V, Name, /*HasNSW=*/true)` -> `CreateSub` with `nsw`.
-    pub fn build_int_neg_nsw<W, V>(
-        &self,
-        value: V,
-        name: impl AsRef<str>,
-    ) -> IrResult<IntValue<'ctx, W>>
+    pub fn build_int_neg_nsw<W, V, Name>(&self, value: V, name: Name) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: super::int_width::StaticIntWidth,
         V: super::int_width::IntoIntValue<'ctx, W>,
     {
@@ -878,12 +918,9 @@ where
 
     /// Bitwise complement: `xor V, -1`. Mirrors `IRBuilder::CreateNot(V, Name)`,
     /// which expands to `CreateXor(V, Constant::getAllOnesValue(V->getType()))`.
-    pub fn build_int_not<W, V>(
-        &self,
-        value: V,
-        name: impl AsRef<str>,
-    ) -> IrResult<IntValue<'ctx, W>>
+    pub fn build_int_not<W, V, Name>(&self, value: V, name: Name) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: super::int_width::StaticIntWidth,
         V: super::int_width::IntoIntValue<'ctx, W>,
     {
@@ -983,113 +1020,141 @@ where
 
     /// `add lhs, rhs` on erased operands (scalar or integer vector).
     /// Uses the shared erased integer-binop validation path.
-    pub fn build_int_add_dyn(
+    pub fn build_int_add_dyn<Name>(
         &self,
         lhs: crate::value::Value<'ctx>,
         rhs: crate::value::Value<'ctx>,
-        name: impl AsRef<str>,
-    ) -> IrResult<crate::value::Value<'ctx>> {
+        name: Name,
+    ) -> IrResult<crate::value::Value<'ctx>>
+    where
+        Name: AsRef<str>,
+    {
         self.build_int_binop_dyn(lhs, rhs, name, InstructionKindData::Add)
     }
 
     /// `sub lhs, rhs` on erased operands (scalar or integer vector).
     /// Uses the shared erased integer-binop validation path.
-    pub fn build_int_sub_dyn(
+    pub fn build_int_sub_dyn<Name>(
         &self,
         lhs: crate::value::Value<'ctx>,
         rhs: crate::value::Value<'ctx>,
-        name: impl AsRef<str>,
-    ) -> IrResult<crate::value::Value<'ctx>> {
+        name: Name,
+    ) -> IrResult<crate::value::Value<'ctx>>
+    where
+        Name: AsRef<str>,
+    {
         self.build_int_binop_dyn(lhs, rhs, name, InstructionKindData::Sub)
     }
 
     /// `mul lhs, rhs` on erased operands (scalar or integer vector).
     /// Uses the shared erased integer-binop validation path.
-    pub fn build_int_mul_dyn(
+    pub fn build_int_mul_dyn<Name>(
         &self,
         lhs: crate::value::Value<'ctx>,
         rhs: crate::value::Value<'ctx>,
-        name: impl AsRef<str>,
-    ) -> IrResult<crate::value::Value<'ctx>> {
+        name: Name,
+    ) -> IrResult<crate::value::Value<'ctx>>
+    where
+        Name: AsRef<str>,
+    {
         self.build_int_binop_dyn(lhs, rhs, name, InstructionKindData::Mul)
     }
 
     /// `xor lhs, rhs` on erased operands (scalar or integer vector).
     /// Uses the shared erased integer-binop validation path.
-    pub fn build_int_xor_dyn(
+    pub fn build_int_xor_dyn<Name>(
         &self,
         lhs: crate::value::Value<'ctx>,
         rhs: crate::value::Value<'ctx>,
-        name: impl AsRef<str>,
-    ) -> IrResult<crate::value::Value<'ctx>> {
+        name: Name,
+    ) -> IrResult<crate::value::Value<'ctx>>
+    where
+        Name: AsRef<str>,
+    {
         self.build_int_binop_dyn(lhs, rhs, name, InstructionKindData::Xor)
     }
 
     /// `and lhs, rhs` on erased operands (scalar or integer vector).
     /// Uses the shared erased integer-binop validation path.
-    pub fn build_int_and_dyn(
+    pub fn build_int_and_dyn<Name>(
         &self,
         lhs: crate::value::Value<'ctx>,
         rhs: crate::value::Value<'ctx>,
-        name: impl AsRef<str>,
-    ) -> IrResult<crate::value::Value<'ctx>> {
+        name: Name,
+    ) -> IrResult<crate::value::Value<'ctx>>
+    where
+        Name: AsRef<str>,
+    {
         self.build_int_binop_dyn(lhs, rhs, name, InstructionKindData::And)
     }
 
     /// `or lhs, rhs` on erased operands (scalar or integer vector).
     /// Uses the shared erased integer-binop validation path.
-    pub fn build_int_or_dyn(
+    pub fn build_int_or_dyn<Name>(
         &self,
         lhs: crate::value::Value<'ctx>,
         rhs: crate::value::Value<'ctx>,
-        name: impl AsRef<str>,
-    ) -> IrResult<crate::value::Value<'ctx>> {
+        name: Name,
+    ) -> IrResult<crate::value::Value<'ctx>>
+    where
+        Name: AsRef<str>,
+    {
         self.build_int_binop_dyn(lhs, rhs, name, InstructionKindData::Or)
     }
 
     /// `shl lhs, rhs` on erased operands (scalar or integer vector).
     /// Uses the shared erased integer-binop validation path.
-    pub fn build_int_shl_dyn(
+    pub fn build_int_shl_dyn<Name>(
         &self,
         lhs: crate::value::Value<'ctx>,
         rhs: crate::value::Value<'ctx>,
-        name: impl AsRef<str>,
-    ) -> IrResult<crate::value::Value<'ctx>> {
+        name: Name,
+    ) -> IrResult<crate::value::Value<'ctx>>
+    where
+        Name: AsRef<str>,
+    {
         self.build_int_binop_dyn(lhs, rhs, name, InstructionKindData::Shl)
     }
 
     /// `lshr lhs, rhs` on erased operands (scalar or integer vector).
     /// Uses the shared erased integer-binop validation path.
-    pub fn build_int_lshr_dyn(
+    pub fn build_int_lshr_dyn<Name>(
         &self,
         lhs: crate::value::Value<'ctx>,
         rhs: crate::value::Value<'ctx>,
-        name: impl AsRef<str>,
-    ) -> IrResult<crate::value::Value<'ctx>> {
+        name: Name,
+    ) -> IrResult<crate::value::Value<'ctx>>
+    where
+        Name: AsRef<str>,
+    {
         self.build_int_binop_dyn(lhs, rhs, name, InstructionKindData::LShr)
     }
 
     /// `ashr lhs, rhs` on erased operands (scalar or integer vector).
     /// Uses the shared erased integer-binop validation path.
-    pub fn build_int_ashr_dyn(
+    pub fn build_int_ashr_dyn<Name>(
         &self,
         lhs: crate::value::Value<'ctx>,
         rhs: crate::value::Value<'ctx>,
-        name: impl AsRef<str>,
-    ) -> IrResult<crate::value::Value<'ctx>> {
+        name: Name,
+    ) -> IrResult<crate::value::Value<'ctx>>
+    where
+        Name: AsRef<str>,
+    {
         self.build_int_binop_dyn(lhs, rhs, name, InstructionKindData::AShr)
     }
 
     // ---- Floating-point arithmetic ----
 
     /// Produce `fadd lhs, rhs`. Mirrors `IRBuilder::CreateFAdd`.
-    pub fn build_fp_add<K, Lhs, Rhs>(
+    pub fn build_fp_add<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::FloatValue<'ctx, K>>
     where
+        Name: AsRef<str>,
         K: crate::float_kind::FloatKind,
         Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
@@ -1098,13 +1163,14 @@ where
     }
 
     /// Produce `fsub lhs, rhs`. Mirrors `IRBuilder::CreateFSub`.
-    pub fn build_fp_sub<K, Lhs, Rhs>(
+    pub fn build_fp_sub<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::FloatValue<'ctx, K>>
     where
+        Name: AsRef<str>,
         K: crate::float_kind::FloatKind,
         Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
@@ -1113,13 +1179,14 @@ where
     }
 
     /// Produce `fmul lhs, rhs`. Mirrors `IRBuilder::CreateFMul`.
-    pub fn build_fp_mul<K, Lhs, Rhs>(
+    pub fn build_fp_mul<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::FloatValue<'ctx, K>>
     where
+        Name: AsRef<str>,
         K: crate::float_kind::FloatKind,
         Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
@@ -1128,13 +1195,14 @@ where
     }
 
     /// Produce `fdiv lhs, rhs`. Mirrors `IRBuilder::CreateFDiv`.
-    pub fn build_fp_div<K, Lhs, Rhs>(
+    pub fn build_fp_div<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::FloatValue<'ctx, K>>
     where
+        Name: AsRef<str>,
         K: crate::float_kind::FloatKind,
         Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
@@ -1143,13 +1211,14 @@ where
     }
 
     /// Produce `frem lhs, rhs`. Mirrors `IRBuilder::CreateFRem`.
-    pub fn build_fp_rem<K, Lhs, Rhs>(
+    pub fn build_fp_rem<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::FloatValue<'ctx, K>>
     where
+        Name: AsRef<str>,
         K: crate::float_kind::FloatKind,
         Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
@@ -1226,14 +1295,15 @@ where
 
     /// `fadd` with an explicit [`crate::fmf::FastMathFlags`] parameter.
     /// Bypasses the builder-context FMF; caller supplies the exact flags.
-    pub fn build_fp_add_fmf<K, Lhs, Rhs>(
+    pub fn build_fp_add_fmf<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
         fmf: crate::fmf::FastMathFlags,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::FloatValue<'ctx, K>>
     where
+        Name: AsRef<str>,
         K: crate::float_kind::FloatKind,
         Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
@@ -1242,14 +1312,15 @@ where
     }
 
     /// `fsub` with an explicit [`crate::fmf::FastMathFlags`] parameter.
-    pub fn build_fp_sub_fmf<K, Lhs, Rhs>(
+    pub fn build_fp_sub_fmf<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
         fmf: crate::fmf::FastMathFlags,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::FloatValue<'ctx, K>>
     where
+        Name: AsRef<str>,
         K: crate::float_kind::FloatKind,
         Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
@@ -1258,14 +1329,15 @@ where
     }
 
     /// `fmul` with an explicit [`crate::fmf::FastMathFlags`] parameter.
-    pub fn build_fp_mul_fmf<K, Lhs, Rhs>(
+    pub fn build_fp_mul_fmf<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
         fmf: crate::fmf::FastMathFlags,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::FloatValue<'ctx, K>>
     where
+        Name: AsRef<str>,
         K: crate::float_kind::FloatKind,
         Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
@@ -1274,14 +1346,15 @@ where
     }
 
     /// `fdiv` with an explicit [`crate::fmf::FastMathFlags`] parameter.
-    pub fn build_fp_div_fmf<K, Lhs, Rhs>(
+    pub fn build_fp_div_fmf<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
         fmf: crate::fmf::FastMathFlags,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::FloatValue<'ctx, K>>
     where
+        Name: AsRef<str>,
         K: crate::float_kind::FloatKind,
         Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
@@ -1290,14 +1363,15 @@ where
     }
 
     /// `frem` with an explicit [`crate::fmf::FastMathFlags`] parameter.
-    pub fn build_fp_rem_fmf<K, Lhs, Rhs>(
+    pub fn build_fp_rem_fmf<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
         fmf: crate::fmf::FastMathFlags,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::FloatValue<'ctx, K>>
     where
+        Name: AsRef<str>,
         K: crate::float_kind::FloatKind,
         Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
@@ -1307,15 +1381,16 @@ where
 
     /// `fcmp` with an explicit [`crate::fmf::FastMathFlags`] parameter.
     /// Bypasses the builder-context FMF. Result is `i1`.
-    pub fn build_fp_cmp_fmf<K, Lhs, Rhs>(
+    pub fn build_fp_cmp_fmf<K, Lhs, Rhs, Name>(
         &self,
         pred: crate::cmp_predicate::FloatPredicate,
         lhs: Lhs,
         rhs: Rhs,
         fmf: crate::fmf::FastMathFlags,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         K: crate::float_kind::FloatKind,
         Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
@@ -1337,14 +1412,15 @@ where
 
     /// Produce `fcmp <pred> lhs, rhs`. Mirrors
     /// `IRBuilder::CreateFCmp`. Result is `i1`.
-    pub fn build_fp_cmp<K, Lhs, Rhs>(
+    pub fn build_fp_cmp<K, Lhs, Rhs, Name>(
         &self,
         pred: crate::cmp_predicate::FloatPredicate,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         K: crate::float_kind::FloatKind,
         Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
@@ -1372,213 +1448,297 @@ where
     // delegate to `build_fp_cmp` with the appropriate `FloatPredicate`.
 
     /// Mirrors `IRBuilder::CreateFCmpOEQ`.
-    pub fn build_fcmp_oeq<K, Lhs, Rhs>(
+    pub fn build_fcmp_oeq<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         K: super::float_kind::FloatKind,
         Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
     {
-        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Oeq, lhs, rhs, name)
+        self.build_fp_cmp::<K, Lhs, Rhs, _>(
+            super::cmp_predicate::FloatPredicate::Oeq,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// Mirrors `IRBuilder::CreateFCmpOGT`.
-    pub fn build_fcmp_ogt<K, Lhs, Rhs>(
+    pub fn build_fcmp_ogt<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         K: super::float_kind::FloatKind,
         Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
     {
-        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Ogt, lhs, rhs, name)
+        self.build_fp_cmp::<K, Lhs, Rhs, _>(
+            super::cmp_predicate::FloatPredicate::Ogt,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// Mirrors `IRBuilder::CreateFCmpOGE`.
-    pub fn build_fcmp_oge<K, Lhs, Rhs>(
+    pub fn build_fcmp_oge<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         K: super::float_kind::FloatKind,
         Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
     {
-        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Oge, lhs, rhs, name)
+        self.build_fp_cmp::<K, Lhs, Rhs, _>(
+            super::cmp_predicate::FloatPredicate::Oge,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// Mirrors `IRBuilder::CreateFCmpOLT`.
-    pub fn build_fcmp_olt<K, Lhs, Rhs>(
+    pub fn build_fcmp_olt<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         K: super::float_kind::FloatKind,
         Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
     {
-        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Olt, lhs, rhs, name)
+        self.build_fp_cmp::<K, Lhs, Rhs, _>(
+            super::cmp_predicate::FloatPredicate::Olt,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// Mirrors `IRBuilder::CreateFCmpOLE`.
-    pub fn build_fcmp_ole<K, Lhs, Rhs>(
+    pub fn build_fcmp_ole<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         K: super::float_kind::FloatKind,
         Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
     {
-        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Ole, lhs, rhs, name)
+        self.build_fp_cmp::<K, Lhs, Rhs, _>(
+            super::cmp_predicate::FloatPredicate::Ole,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// Mirrors `IRBuilder::CreateFCmpONE`.
-    pub fn build_fcmp_one<K, Lhs, Rhs>(
+    pub fn build_fcmp_one<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         K: super::float_kind::FloatKind,
         Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
     {
-        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::One, lhs, rhs, name)
+        self.build_fp_cmp::<K, Lhs, Rhs, _>(
+            super::cmp_predicate::FloatPredicate::One,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// Mirrors `IRBuilder::CreateFCmpORD`.
-    pub fn build_fcmp_ord<K, Lhs, Rhs>(
+    pub fn build_fcmp_ord<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         K: super::float_kind::FloatKind,
         Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
     {
-        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Ord, lhs, rhs, name)
+        self.build_fp_cmp::<K, Lhs, Rhs, _>(
+            super::cmp_predicate::FloatPredicate::Ord,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// Mirrors `IRBuilder::CreateFCmpUNO`.
-    pub fn build_fcmp_uno<K, Lhs, Rhs>(
+    pub fn build_fcmp_uno<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         K: super::float_kind::FloatKind,
         Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
     {
-        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Uno, lhs, rhs, name)
+        self.build_fp_cmp::<K, Lhs, Rhs, _>(
+            super::cmp_predicate::FloatPredicate::Uno,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// Mirrors `IRBuilder::CreateFCmpUEQ`.
-    pub fn build_fcmp_ueq<K, Lhs, Rhs>(
+    pub fn build_fcmp_ueq<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         K: super::float_kind::FloatKind,
         Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
     {
-        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Ueq, lhs, rhs, name)
+        self.build_fp_cmp::<K, Lhs, Rhs, _>(
+            super::cmp_predicate::FloatPredicate::Ueq,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// Mirrors `IRBuilder::CreateFCmpUGT`.
-    pub fn build_fcmp_ugt<K, Lhs, Rhs>(
+    pub fn build_fcmp_ugt<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         K: super::float_kind::FloatKind,
         Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
     {
-        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Ugt, lhs, rhs, name)
+        self.build_fp_cmp::<K, Lhs, Rhs, _>(
+            super::cmp_predicate::FloatPredicate::Ugt,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// Mirrors `IRBuilder::CreateFCmpUGE`.
-    pub fn build_fcmp_uge<K, Lhs, Rhs>(
+    pub fn build_fcmp_uge<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         K: super::float_kind::FloatKind,
         Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
     {
-        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Uge, lhs, rhs, name)
+        self.build_fp_cmp::<K, Lhs, Rhs, _>(
+            super::cmp_predicate::FloatPredicate::Uge,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// Mirrors `IRBuilder::CreateFCmpULT`.
-    pub fn build_fcmp_ult<K, Lhs, Rhs>(
+    pub fn build_fcmp_ult<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         K: super::float_kind::FloatKind,
         Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
     {
-        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Ult, lhs, rhs, name)
+        self.build_fp_cmp::<K, Lhs, Rhs, _>(
+            super::cmp_predicate::FloatPredicate::Ult,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// Mirrors `IRBuilder::CreateFCmpULE`.
-    pub fn build_fcmp_ule<K, Lhs, Rhs>(
+    pub fn build_fcmp_ule<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         K: super::float_kind::FloatKind,
         Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
     {
-        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Ule, lhs, rhs, name)
+        self.build_fp_cmp::<K, Lhs, Rhs, _>(
+            super::cmp_predicate::FloatPredicate::Ule,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// Mirrors `IRBuilder::CreateFCmpUNE`.
-    pub fn build_fcmp_une<K, Lhs, Rhs>(
+    pub fn build_fcmp_une<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         K: super::float_kind::FloatKind,
         Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
         Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
     {
-        self.build_fp_cmp::<K, Lhs, Rhs>(super::cmp_predicate::FloatPredicate::Une, lhs, rhs, name)
+        self.build_fp_cmp::<K, Lhs, Rhs, _>(
+            super::cmp_predicate::FloatPredicate::Une,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     // ---- Unary ops: fneg / freeze / va_arg ----
@@ -1586,28 +1746,30 @@ where
     /// Produce `fneg <value>`. Mirrors `IRBuilder::CreateFNeg` in
     /// `IRBuilder.h`. The result handle has the same float kind as the
     /// operand (Doctrine D4).
-    pub fn build_float_neg<K, V>(
+    pub fn build_float_neg<K, V, Name>(
         &self,
         value: V,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::FloatValue<'ctx, K>>
     where
+        Name: AsRef<str>,
         K: crate::float_kind::FloatKind,
         V: crate::float_kind::IntoFloatValue<'ctx, K>,
     {
-        self.build_float_neg_with_flags::<K, V>(value, self.fmf, name)
+        self.build_float_neg_with_flags::<K, V, _>(value, self.fmf, name)
     }
 
     /// Produce `fneg <fmf> <value>`. Mirrors `IRBuilder::CreateFNegFMF`.
     /// The flags are written verbatim onto the instruction (see
     /// `FPMathOperator::setFastMathFlags`).
-    pub fn build_float_neg_with_flags<K, V>(
+    pub fn build_float_neg_with_flags<K, V, Name>(
         &self,
         value: V,
         fmf: crate::fmf::FastMathFlags,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::FloatValue<'ctx, K>>
     where
+        Name: AsRef<str>,
         K: crate::float_kind::FloatKind,
         V: crate::float_kind::IntoFloatValue<'ctx, K>,
     {
@@ -1625,12 +1787,13 @@ where
     /// Produce `freeze <value>`. Mirrors `IRBuilder::CreateFreeze`.
     /// Accepts any [`crate::value::IsValue`] operand; the result type
     /// matches the operand type.
-    pub fn build_freeze<V>(
+    pub fn build_freeze<V, Name>(
         &self,
         value: V,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::instructions::FreezeInst<'ctx>>
     where
+        Name: AsRef<str>,
         V: crate::value::IsValue<'ctx>,
     {
         let v = value.as_value();
@@ -1647,12 +1810,15 @@ where
     /// Produce `va_arg <list>, <ty>`. Mirrors `IRBuilder::CreateVAArg`.
     /// The destination type can be any first-class type; the source
     /// must be a `va_list` pointer.
-    pub fn build_va_arg(
+    pub fn build_va_arg<Name>(
         &self,
         list_ptr: crate::value::PointerValue<'ctx>,
         result_ty: crate::r#type::Type<'ctx>,
-        name: impl AsRef<str>,
-    ) -> IrResult<crate::instructions::VAArgInst<'ctx>> {
+        name: Name,
+    ) -> IrResult<crate::instructions::VAArgInst<'ctx>>
+    where
+        Name: AsRef<str>,
+    {
         let v = crate::value::IsValue::as_value(list_ptr);
         self.require_same_module(v)?;
         let payload = crate::instr_types::VAArgInstData::new(v.id);
@@ -1668,13 +1834,14 @@ where
 
     /// Produce `extractvalue <agg-ty> <agg>, idx0, idx1, ...`.
     /// Mirrors `IRBuilder::CreateExtractValue`.
-    pub fn build_extract_value<V, I>(
+    pub fn build_extract_value<V, I, Name>(
         &self,
         aggregate: V,
         indices: I,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::instructions::ExtractValueInst<'ctx>>
     where
+        Name: AsRef<str>,
         V: crate::value::IsValue<'ctx>,
         I: IntoIterator<Item = u32>,
     {
@@ -1694,14 +1861,15 @@ where
 
     /// Produce `insertvalue <agg-ty> <agg>, <elt-ty> <elt>, idx0, ...`.
     /// Mirrors `IRBuilder::CreateInsertValue`.
-    pub fn build_insert_value<A, V, I>(
+    pub fn build_insert_value<A, V, I, Name>(
         &self,
         aggregate: A,
         value: V,
         indices: I,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::instructions::InsertValueInst<'ctx>>
     where
+        Name: AsRef<str>,
         A: crate::value::IsValue<'ctx>,
         V: crate::value::IsValue<'ctx>,
         I: IntoIterator<Item = u32>,
@@ -1731,13 +1899,14 @@ where
 
     /// Produce `extractelement <vec-ty> <vec>, <idx-ty> <idx>`.
     /// Mirrors `IRBuilder::CreateExtractElement`.
-    pub fn build_extract_element<V, W, I>(
+    pub fn build_extract_element<V, W, I, Name>(
         &self,
         vector: V,
         index: I,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::instructions::ExtractElementInst<'ctx>>
     where
+        Name: AsRef<str>,
         V: crate::value::IsValue<'ctx>,
         W: crate::int_width::IntWidth,
         I: crate::int_width::IntoIntValue<'ctx, W>,
@@ -1767,14 +1936,15 @@ where
 
     /// Produce `insertelement <vec-ty> <vec>, <elt-ty> <elt>, <idx-ty> <idx>`.
     /// Mirrors `IRBuilder::CreateInsertElement`.
-    pub fn build_insert_element<V, E, W, I>(
+    pub fn build_insert_element<V, E, W, I, Name>(
         &self,
         vector: V,
         elt: E,
         index: I,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::instructions::InsertElementInst<'ctx>>
     where
+        Name: AsRef<str>,
         V: crate::value::IsValue<'ctx>,
         E: crate::value::IsValue<'ctx>,
         W: crate::int_width::IntWidth,
@@ -1800,14 +1970,15 @@ where
     /// `IRBuilder::CreateShuffleVector`. The mask is a slice of `i32`s;
     /// pass `[`[`crate::instr_types::POISON_MASK_ELEM`]`; ...]` for
     /// poison entries.
-    pub fn build_shuffle_vector<L, Rhs2>(
+    pub fn build_shuffle_vector<L, Rhs2, Name>(
         &self,
         lhs: L,
         rhs: Rhs2,
         mask: &[i32],
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::instructions::ShuffleVectorInst<'ctx>>
     where
+        Name: AsRef<str>,
         L: crate::value::IsValue<'ctx>,
         Rhs2: crate::value::IsValue<'ctx>,
     {
@@ -1858,12 +2029,15 @@ where
     /// Produce `fence <ordering>` (or
     /// `fence syncscope("...") <ordering>`). Mirrors
     /// `IRBuilder::CreateFence`.
-    pub fn build_fence(
+    pub fn build_fence<Name>(
         &self,
         ordering: AtomicOrdering,
         sync_scope: SyncScope,
-        name: impl AsRef<str>,
-    ) -> IrResult<crate::instructions::FenceInst<'ctx>> {
+        name: Name,
+    ) -> IrResult<crate::instructions::FenceInst<'ctx>>
+    where
+        Name: AsRef<str>,
+    {
         let payload = crate::instr_types::FenceInstData::new(ordering, sync_scope);
         let void_ty = self.module.void_type().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Fence(payload), name);
@@ -1879,15 +2053,16 @@ where
     /// Mirrors `IRBuilder::CreateAtomicCmpXchg`.
     ///
     /// Result type is the literal struct `{ <pointee>, i1 }`.
-    pub fn build_atomic_cmpxchg<P, C, N>(
+    pub fn build_atomic_cmpxchg<P, C, N, Name>(
         &self,
         ptr: P,
         cmp: C,
         new_val: N,
         config: crate::instr_types::AtomicCmpXchgConfig,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::instructions::AtomicCmpXchgInst<'ctx>>
     where
+        Name: AsRef<str>,
         P: crate::value::IsValue<'ctx>,
         C: crate::value::IsValue<'ctx>,
         N: crate::value::IsValue<'ctx>,
@@ -1923,15 +2098,16 @@ where
     /// `IRBuilder::CreateAtomicRMW`.
     ///
     /// Result type matches the value-operand type (the "old" value).
-    pub fn build_atomicrmw<P, V>(
+    pub fn build_atomicrmw<P, V, Name>(
         &self,
         op: crate::atomicrmw_binop::AtomicRMWBinOp,
         ptr: P,
         value: V,
         config: crate::instr_types::AtomicRMWConfig,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::instructions::AtomicRMWInst<'ctx>>
     where
+        Name: AsRef<str>,
         P: crate::value::IsValue<'ctx>,
         V: crate::value::IsValue<'ctx>,
     {
@@ -1962,13 +2138,14 @@ where
     ///
     /// The remaining `IrResult` failure mode is
     /// [`IrError::ForeignValue`] (cross-module operand).
-    pub fn build_trunc<Src, Dst>(
+    pub fn build_trunc<Src, Dst, Name>(
         &self,
         value: IntValue<'ctx, Src>,
         dst_ty: IntType<'ctx, Dst>,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, Dst>>
     where
+        Name: AsRef<str>,
         Src: crate::int_width::WiderThan<Dst>,
         Dst: IntWidth,
     {
@@ -1988,13 +2165,14 @@ where
     /// The `Dst: WiderThan<Src>` bound enforces at compile time that
     /// the destination is strictly wider than the source. Use
     /// [`Self::build_zext_dyn`] when both widths are erased.
-    pub fn build_zext<Src, Dst>(
+    pub fn build_zext<Src, Dst, Name>(
         &self,
         value: IntValue<'ctx, Src>,
         dst_ty: IntType<'ctx, Dst>,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, Dst>>
     where
+        Name: AsRef<str>,
         Src: IntWidth,
         Dst: crate::int_width::WiderThan<Src>,
     {
@@ -2014,13 +2192,14 @@ where
     /// The `Dst: WiderThan<Src>` bound enforces at compile time that
     /// the destination is strictly wider than the source. Use
     /// [`Self::build_sext_dyn`] when both widths are erased.
-    pub fn build_sext<Src, Dst>(
+    pub fn build_sext<Src, Dst, Name>(
         &self,
         value: IntValue<'ctx, Src>,
         dst_ty: IntType<'ctx, Dst>,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, Dst>>
     where
+        Name: AsRef<str>,
         Src: IntWidth,
         Dst: crate::int_width::WiderThan<Src>,
     {
@@ -2039,12 +2218,15 @@ where
     /// Runtime-checked `trunc` for `IntValue<Dyn>` operands.
     /// Errors with [`IrError::OperandWidthMismatch`] if `dst_ty` is
     /// not strictly narrower than `value`'s runtime width.
-    pub fn build_trunc_dyn(
+    pub fn build_trunc_dyn<Name>(
         &self,
         value: IntValue<'ctx, crate::int_width::IntDyn>,
         dst_ty: IntType<'ctx, crate::int_width::IntDyn>,
-        name: impl AsRef<str>,
-    ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>> {
+        name: Name,
+    ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>>
+    where
+        Name: AsRef<str>,
+    {
         self.require_same_module(value.as_value())?;
         let src_w = value.ty().bit_width();
         let dst_w = dst_ty.bit_width();
@@ -2068,13 +2250,16 @@ where
     /// `trunc nuw/nsw` with explicit [`crate::TruncFlags`]. Runtime-checked
     /// like [`Self::build_trunc_dyn`]; additionally sets `nuw`/`nsw` on the
     /// cast payload.
-    pub fn build_trunc_with_flags_dyn(
+    pub fn build_trunc_with_flags_dyn<Name>(
         &self,
         value: IntValue<'ctx, crate::int_width::IntDyn>,
         dst_ty: IntType<'ctx, crate::int_width::IntDyn>,
         flags: crate::instr_types::TruncFlags,
-        name: impl AsRef<str>,
-    ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>> {
+        name: Name,
+    ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>>
+    where
+        Name: AsRef<str>,
+    {
         self.require_same_module(value.as_value())?;
         let src_w = value.ty().bit_width();
         let dst_w = dst_ty.bit_width();
@@ -2101,25 +2286,31 @@ where
     /// Runtime-checked `zext` for `IntValue<Dyn>` operands.
     /// Errors with [`IrError::OperandWidthMismatch`] if `dst_ty` is
     /// not strictly wider than `value`'s runtime width.
-    pub fn build_zext_dyn(
+    pub fn build_zext_dyn<Name>(
         &self,
         value: IntValue<'ctx, crate::int_width::IntDyn>,
         dst_ty: IntType<'ctx, crate::int_width::IntDyn>,
-        name: impl AsRef<str>,
-    ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>> {
+        name: Name,
+    ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>>
+    where
+        Name: AsRef<str>,
+    {
         self.build_int_extend_dyn(value, dst_ty, name, crate::instr_types::CastOpcode::ZExt)
     }
 
     /// `zext nneg` with explicit [`crate::ZExtFlags`]. Runtime-checked
     /// like [`Self::build_zext_dyn`]; additionally sets `nneg` on the cast
     /// payload.
-    pub fn build_zext_with_flags_dyn(
+    pub fn build_zext_with_flags_dyn<Name>(
         &self,
         src: IntValue<'ctx, crate::int_width::IntDyn>,
         dst: crate::derived_types::IntType<'ctx, crate::int_width::IntDyn>,
         flags: crate::instr_types::ZExtFlags,
-        name: impl AsRef<str>,
-    ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>> {
+        name: Name,
+    ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>>
+    where
+        Name: AsRef<str>,
+    {
         self.require_same_module(src.as_value())?;
         let src_w = src.ty().bit_width();
         let dst_w = dst.bit_width();
@@ -2141,12 +2332,15 @@ where
     /// Runtime-checked `sext` for `IntValue<Dyn>` operands.
     /// Errors with [`IrError::OperandWidthMismatch`] if `dst_ty` is
     /// not strictly wider than `value`'s runtime width.
-    pub fn build_sext_dyn(
+    pub fn build_sext_dyn<Name>(
         &self,
         value: IntValue<'ctx, crate::int_width::IntDyn>,
         dst_ty: IntType<'ctx, crate::int_width::IntDyn>,
-        name: impl AsRef<str>,
-    ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>> {
+        name: Name,
+    ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>>
+    where
+        Name: AsRef<str>,
+    {
         self.build_int_extend_dyn(value, dst_ty, name, crate::instr_types::CastOpcode::SExt)
     }
 
@@ -2182,12 +2376,13 @@ where
 
     /// Produce `alloca <ty>`. Mirrors `IRBuilder::CreateAlloca`.
     /// The result is a `ptr` in the default address space.
-    pub fn build_alloca<T>(
+    pub fn build_alloca<T, Name>(
         &self,
         ty: T,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::PointerValue<'ctx>>
     where
+        Name: AsRef<str>,
         T: crate::r#type::IrType<'ctx>,
     {
         self.build_alloca_inner(ty.as_type().id(), None, MaybeAlign::NONE, 0, name)
@@ -2195,13 +2390,14 @@ where
 
     /// Produce `alloca <ty>, <size-ty> <num_elements>`. Mirrors
     /// `IRBuilder::CreateAlloca` with an array-size operand.
-    pub fn build_array_alloca<T, N>(
+    pub fn build_array_alloca<T, N, Name>(
         &self,
         ty: T,
         num_elements: N,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::PointerValue<'ctx>>
     where
+        Name: AsRef<str>,
         T: crate::r#type::IrType<'ctx>,
         N: crate::int_width::IntoIntValue<'ctx, crate::int_width::IntDyn>,
     {
@@ -2217,13 +2413,14 @@ where
 
     /// Produce `alloca <ty>, align <N>`. Mirrors
     /// `IRBuilder::CreateAlignedAlloca`.
-    pub fn build_alloca_with_align<T>(
+    pub fn build_alloca_with_align<T, Name>(
         &self,
         ty: T,
         align: Align,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::PointerValue<'ctx>>
     where
+        Name: AsRef<str>,
         T: crate::r#type::IrType<'ctx>,
     {
         self.build_alloca_inner(ty.as_type().id(), None, MaybeAlign::new(align), 0, name)
@@ -2256,8 +2453,9 @@ where
     /// `ty` decodes to at runtime; returned as a [`Value`] handle the
     /// caller narrows via `try_into()`. Mirrors
     /// `IRBuilder::CreateLoad`.
-    pub fn build_load<T, P>(&self, ty: T, ptr: P, name: impl AsRef<str>) -> IrResult<Value<'ctx>>
+    pub fn build_load<T, P, Name>(&self, ty: T, ptr: P, name: Name) -> IrResult<Value<'ctx>>
     where
+        Name: AsRef<str>,
         T: crate::r#type::IrType<'ctx>,
         P: crate::value::IntoPointerValue<'ctx>,
     {
@@ -2277,14 +2475,15 @@ where
 
     /// `load <ty>, ptr <ptr>, align N`. Non-volatile non-atomic load with explicit
     /// alignment. Mirrors `IRBuilder::CreateLoad` with an explicit `Align` slot.
-    pub fn build_load_with_align<T, P>(
+    pub fn build_load_with_align<T, P, Name>(
         &self,
         ty: T,
         ptr: P,
         align: Align,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<Value<'ctx>>
     where
+        Name: AsRef<str>,
         T: crate::r#type::IrType<'ctx>,
         P: crate::value::IntoPointerValue<'ctx>,
     {
@@ -2305,8 +2504,9 @@ where
     /// Typed integer load: `load iN, ptr <ptr>`. Marker-only form:
     /// the result type comes from `W` via [`crate::StaticIntWidth`].
     /// Mirrors `IRBuilder::CreateLoad` with a fixed integer width.
-    pub fn build_int_load<W, P>(&self, ptr: P, name: impl AsRef<str>) -> IrResult<IntValue<'ctx, W>>
+    pub fn build_int_load<W, P, Name>(&self, ptr: P, name: Name) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: crate::int_width::StaticIntWidth,
         P: crate::value::IntoPointerValue<'ctx>,
     {
@@ -2326,13 +2526,14 @@ where
 
     /// Runtime-width integer load. Takes the type explicitly because
     /// the [`crate::IntDyn`] marker carries no static width.
-    pub fn build_int_load_dyn<P>(
+    pub fn build_int_load_dyn<P, Name>(
         &self,
         ty: IntType<'ctx, crate::int_width::IntDyn>,
         ptr: P,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>>
     where
+        Name: AsRef<str>,
         P: crate::value::IntoPointerValue<'ctx>,
     {
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
@@ -2351,12 +2552,13 @@ where
     }
 
     /// Typed float load: `load <fpty>, ptr <ptr>`. Marker-only.
-    pub fn build_fp_load<K, P>(
+    pub fn build_fp_load<K, P, Name>(
         &self,
         ptr: P,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::FloatValue<'ctx, K>>
     where
+        Name: AsRef<str>,
         K: crate::float_kind::StaticFloatKind,
         P: crate::value::IntoPointerValue<'ctx>,
     {
@@ -2378,13 +2580,14 @@ where
 
     /// Runtime-kind float load. Takes the type explicitly because
     /// [`crate::FloatDyn`] carries no static kind.
-    pub fn build_fp_load_dyn<P>(
+    pub fn build_fp_load_dyn<P, Name>(
         &self,
         ty: crate::derived_types::FloatType<'ctx, crate::float_kind::FloatDyn>,
         ptr: P,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>>
     where
+        Name: AsRef<str>,
         P: crate::value::IntoPointerValue<'ctx>,
     {
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
@@ -2408,12 +2611,13 @@ where
     /// uniform (only address space varies); the loaded ptr is in the
     /// default address space. Use [`Self::build_load`] erased form for
     /// other address spaces.
-    pub fn build_pointer_load<P>(
+    pub fn build_pointer_load<P, Name>(
         &self,
         ptr: P,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::PointerValue<'ctx>>
     where
+        Name: AsRef<str>,
         P: crate::value::IntoPointerValue<'ctx>,
     {
         let ty = self.module.ptr_type(0);
@@ -2433,13 +2637,14 @@ where
     }
 
     /// Same as [`Self::build_int_load`] plus an explicit alignment.
-    pub fn build_int_load_with_align<W, P>(
+    pub fn build_int_load_with_align<W, P, Name>(
         &self,
         ptr: P,
         align: Align,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: crate::int_width::StaticIntWidth,
         P: crate::value::IntoPointerValue<'ctx>,
     {
@@ -2470,13 +2675,14 @@ where
 
     /// `load volatile <ty>, ptr <ptr>`. Non-atomic volatile load.
     /// Mirrors `IRBuilder::CreateLoad` with `isVolatile = true`.
-    pub fn build_load_volatile<T, P>(
+    pub fn build_load_volatile<T, P, Name>(
         &self,
         ty: T,
         ptr: P,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::Value<'ctx>>
     where
+        Name: AsRef<str>,
         T: crate::r#type::IrType<'ctx>,
         P: crate::value::IntoPointerValue<'ctx>,
     {
@@ -2496,14 +2702,15 @@ where
 
     /// `load volatile <ty>, ptr <ptr>, align N`. Volatile load with explicit
     /// alignment.
-    pub fn build_load_volatile_with_align<T, P>(
+    pub fn build_load_volatile_with_align<T, P, Name>(
         &self,
         ty: T,
         ptr: P,
         align: Align,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::Value<'ctx>>
     where
+        Name: AsRef<str>,
         T: crate::r#type::IrType<'ctx>,
         P: crate::value::IntoPointerValue<'ctx>,
     {
@@ -2663,13 +2870,14 @@ where
     /// [`super::instr_types::AtomicLoadConfig`] (parallel to the existing
     /// [`super::instr_types::AtomicCmpXchgConfig`] /
     /// [`super::instr_types::AtomicRMWConfig`] shapes).
-    pub fn build_int_load_atomic<W, P>(
+    pub fn build_int_load_atomic<W, P, Name>(
         &self,
         ptr: P,
         config: super::instr_types::AtomicLoadConfig,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: super::int_width::StaticIntWidth,
         P: super::value::IntoPointerValue<'ctx>,
     {
@@ -2678,10 +2886,10 @@ where
         let payload = LoadInstData::new(
             ty.as_type().id(),
             super::value::IsValue::as_value(p).id,
-            MaybeAlign::new(config.align),
-            config.volatile,
-            config.ordering,
-            config.sync_scope,
+            MaybeAlign::new(config.align_value()),
+            config.is_volatile(),
+            config.ordering_value(),
+            config.sync_scope_value().clone(),
         );
         let inst = self.build_load_inner(p, payload, name)?;
         Ok(IntValue::<W>::from_value_unchecked(inst.as_value()))
@@ -2690,14 +2898,15 @@ where
     /// Erased atomic load. Same upstream constructor as
     /// [`Self::build_int_load_atomic`] but with an explicit pointee type
     /// (caller narrows the returned [`Value`]).
-    pub fn build_load_atomic<T, P>(
+    pub fn build_load_atomic<T, P, Name>(
         &self,
         ty: T,
         ptr: P,
         config: super::instr_types::AtomicLoadConfig,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<Value<'ctx>>
     where
+        Name: AsRef<str>,
         T: super::r#type::IrType<'ctx>,
         P: super::value::IntoPointerValue<'ctx>,
     {
@@ -2706,10 +2915,10 @@ where
         let payload = LoadInstData::new(
             ty_id,
             super::value::IsValue::as_value(p).id,
-            MaybeAlign::new(config.align),
-            config.volatile,
-            config.ordering,
-            config.sync_scope,
+            MaybeAlign::new(config.align_value()),
+            config.is_volatile(),
+            config.ordering_value(),
+            config.sync_scope_value().clone(),
         );
         let inst = self.build_load_inner(p, payload, name)?;
         Ok(inst.as_value())
@@ -2734,10 +2943,10 @@ where
         let payload = self.store_payload(
             value,
             ptr,
-            MaybeAlign::new(config.align),
-            config.volatile,
-            config.ordering,
-            config.sync_scope,
+            MaybeAlign::new(config.align_value()),
+            config.is_volatile(),
+            config.ordering_value(),
+            config.sync_scope_value().clone(),
         )?;
         self.build_store_inner(payload)
     }
@@ -2748,13 +2957,14 @@ where
     /// pre-widened arguments (each one already a [`Value<'ctx>`]), and
     /// a name. Mirrors the simple shape of `IRBuilder::CreateCall`.
     /// Use [`Self::call_builder`] for mixed-arg-type construction.
-    pub fn build_call<R2, I, V>(
+    pub fn build_call<R2, I, V, Name>(
         &self,
         callee: FunctionValue<'ctx, R2>,
         args: I,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::instructions::CallInst<'ctx, R2>>
     where
+        Name: AsRef<str>,
         R2: crate::marker::ReturnMarker,
         I: IntoIterator<Item = V>,
         V: crate::value::IsValue<'ctx>,
@@ -2771,7 +2981,7 @@ where
     /// chainable methods, then emits the call on `.build()`. Each
     /// `.arg()` call is statically dispatched (no `dyn`); arg types
     /// can vary across calls.
-    pub fn call_builder<R2: crate::marker::ReturnMarker>(
+    pub fn call_builder<R2: ReturnMarker>(
         &self,
         callee: FunctionValue<'ctx, R2>,
     ) -> CallBuilder<'_, 'm, 'ctx, B, F, R, R2> {
@@ -2799,14 +3009,15 @@ where
     ///
     /// `fn_ty` is the callee's signature; `callee` is the function pointer; the
     /// caller picks the return marker `R2` to match `fn_ty`'s return type.
-    pub fn build_indirect_call<R2, I, V>(
+    pub fn build_indirect_call<R2, I, V, Name>(
         &self,
         fn_ty: crate::derived_types::FunctionType<'ctx>,
         callee: crate::value::PointerValue<'ctx>,
         args: I,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::instructions::CallInst<'ctx, R2>>
     where
+        Name: AsRef<str>,
         R2: crate::marker::ReturnMarker,
         I: IntoIterator<Item = V>,
         V: crate::value::IsValue<'ctx>,
@@ -2857,13 +3068,14 @@ where
     /// return type; a mismatch fails with
     /// [`IrError::ReturnTypeMismatch`]. The calling convention is `C`,
     /// matching what LLVM emits for an inline-asm call.
-    pub fn build_inline_asm_call<R2, I, V>(
+    pub fn build_inline_asm_call<R2, I, V, Name>(
         &self,
         asm: crate::inline_asm::InlineAsm<'ctx>,
         args: I,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::instructions::CallInst<'ctx, R2>>
     where
+        Name: AsRef<str>,
         R2: crate::marker::ReturnMarker,
         I: IntoIterator<Item = V>,
         V: crate::value::IsValue<'ctx>,
@@ -2910,14 +3122,15 @@ where
 
     /// Produce `getelementptr <source-ty>, ptr <ptr>, <indices>`.
     /// Mirrors `IRBuilder::CreateGEP`.
-    pub fn build_gep<T, P, I, V>(
+    pub fn build_gep<T, P, I, V, Name>(
         &self,
         source_ty: T,
         ptr: P,
         indices: I,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::PointerValue<'ctx>>
     where
+        Name: AsRef<str>,
         T: crate::r#type::IrType<'ctx>,
         P: crate::value::IntoPointerValue<'ctx>,
         I: IntoIterator<Item = V>,
@@ -2934,14 +3147,15 @@ where
 
     /// Produce `getelementptr inbounds <source-ty>, ptr <ptr>,
     /// <indices>`. Mirrors `IRBuilder::CreateInBoundsGEP`.
-    pub fn build_inbounds_gep<T, P, I, V>(
+    pub fn build_inbounds_gep<T, P, I, V, Name>(
         &self,
         source_ty: T,
         ptr: P,
         indices: I,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::PointerValue<'ctx>>
     where
+        Name: AsRef<str>,
         T: crate::r#type::IrType<'ctx>,
         P: crate::value::IntoPointerValue<'ctx>,
         I: IntoIterator<Item = V>,
@@ -2958,14 +3172,15 @@ where
 
     /// Produce `getelementptr inbounds <struct-ty>, ptr <ptr>,
     /// i32 0, i32 <field-idx>`. Mirrors `IRBuilder::CreateStructGEP`.
-    pub fn build_struct_gep<P>(
+    pub fn build_struct_gep<P, Name>(
         &self,
         struct_ty: crate::derived_types::StructType<'ctx>,
         ptr: P,
         idx: u32,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::PointerValue<'ctx>>
     where
+        Name: AsRef<str>,
         P: crate::value::IntoPointerValue<'ctx>,
     {
         let i32_ty = self.module.i32_type();
@@ -2987,15 +3202,16 @@ where
     /// `getelementptr` with explicit [`crate::GepNoWrapFlags`]. Use this
     /// when the parser has decoded `inbounds`, `nuw`, or `nusw` flags directly.
     /// Mirrors `IRBuilder::CreateGEP` with the full flags bitfield.
-    pub fn build_gep_with_flags<T, P, I, V>(
+    pub fn build_gep_with_flags<T, P, I, V, Name>(
         &self,
         source_ty: T,
         ptr: P,
         indices: I,
         flags: crate::gep_no_wrap_flags::GepNoWrapFlags,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::PointerValue<'ctx>>
     where
+        Name: AsRef<str>,
         T: crate::r#type::IrType<'ctx>,
         P: crate::value::IntoPointerValue<'ctx>,
         I: IntoIterator<Item = V>,
@@ -3044,13 +3260,14 @@ where
 
     /// Produce `fpext <value> to <dst>`. Compile-time check:
     /// `Dst: FloatWiderThan<Src>`. Mirrors `IRBuilder::CreateFPExt`.
-    pub fn build_fp_ext<Src, Dst>(
+    pub fn build_fp_ext<Src, Dst, Name>(
         &self,
         value: crate::value::FloatValue<'ctx, Src>,
         dst_ty: crate::derived_types::FloatType<'ctx, Dst>,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::FloatValue<'ctx, Dst>>
     where
+        Name: AsRef<str>,
         Src: crate::float_kind::FloatKind,
         Dst: crate::float_kind::FloatKind + crate::float_kind::FloatWiderThan<Src>,
     {
@@ -3059,13 +3276,14 @@ where
 
     /// Produce `fptrunc <value> to <dst>`. Compile-time check:
     /// `Src: FloatWiderThan<Dst>`. Mirrors `IRBuilder::CreateFPTrunc`.
-    pub fn build_fp_trunc<Src, Dst>(
+    pub fn build_fp_trunc<Src, Dst, Name>(
         &self,
         value: crate::value::FloatValue<'ctx, Src>,
         dst_ty: crate::derived_types::FloatType<'ctx, Dst>,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::FloatValue<'ctx, Dst>>
     where
+        Name: AsRef<str>,
         Src: crate::float_kind::FloatKind + crate::float_kind::FloatWiderThan<Dst>,
         Dst: crate::float_kind::FloatKind,
     {
@@ -3079,12 +3297,15 @@ where
     /// No compile-time width ordering check is performed; the LLVM
     /// verifier will reject `fptrunc` where `src` is not strictly wider
     /// than `dst`.
-    pub fn build_fp_trunc_dyn(
+    pub fn build_fp_trunc_dyn<Name>(
         &self,
         value: crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>,
         dst_ty: crate::derived_types::FloatType<'ctx, crate::float_kind::FloatDyn>,
-        name: impl AsRef<str>,
-    ) -> IrResult<crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>> {
+        name: Name,
+    ) -> IrResult<crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>>
+    where
+        Name: AsRef<str>,
+    {
         let v = crate::value::IsValue::as_value(value);
         self.require_same_module(v)?;
         let payload = CastOpData::new(crate::instr_types::CastOpcode::FpTrunc, v.id);
@@ -3107,12 +3328,15 @@ where
     /// No compile-time width ordering check is performed; the LLVM
     /// verifier will reject `fpext` where `dst` is not strictly wider
     /// than `src`.
-    pub fn build_fp_ext_dyn(
+    pub fn build_fp_ext_dyn<Name>(
         &self,
         value: crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>,
         dst_ty: crate::derived_types::FloatType<'ctx, crate::float_kind::FloatDyn>,
-        name: impl AsRef<str>,
-    ) -> IrResult<crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>> {
+        name: Name,
+    ) -> IrResult<crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>>
+    where
+        Name: AsRef<str>,
+    {
         let v = crate::value::IsValue::as_value(value);
         self.require_same_module(v)?;
         let payload = CastOpData::new(crate::instr_types::CastOpcode::FpExt, v.id);
@@ -3155,13 +3379,14 @@ where
 
     /// Produce `fptoui <value> to <dst>`. Mirrors
     /// `IRBuilder::CreateFPToUI`.
-    pub fn build_fp_to_ui<K, W>(
+    pub fn build_fp_to_ui<K, W, Name>(
         &self,
         value: crate::value::FloatValue<'ctx, K>,
         dst_ty: IntType<'ctx, W>,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         K: crate::float_kind::FloatKind,
         W: IntWidth,
     {
@@ -3170,13 +3395,14 @@ where
 
     /// Produce `fptosi <value> to <dst>`. Mirrors
     /// `IRBuilder::CreateFPToSI`.
-    pub fn build_fp_to_si<K, W>(
+    pub fn build_fp_to_si<K, W, Name>(
         &self,
         value: crate::value::FloatValue<'ctx, K>,
         dst_ty: IntType<'ctx, W>,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         K: crate::float_kind::FloatKind,
         W: IntWidth,
     {
@@ -3207,13 +3433,14 @@ where
 
     /// Produce `uitofp <value> to <dst>`. Mirrors
     /// `IRBuilder::CreateUIToFP`.
-    pub fn build_ui_to_fp<W, K>(
+    pub fn build_ui_to_fp<W, K, Name>(
         &self,
         value: IntValue<'ctx, W>,
         dst_ty: crate::derived_types::FloatType<'ctx, K>,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::FloatValue<'ctx, K>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         K: crate::float_kind::FloatKind,
     {
@@ -3222,13 +3449,14 @@ where
 
     /// Produce `sitofp <value> to <dst>`. Mirrors
     /// `IRBuilder::CreateSIToFP`.
-    pub fn build_si_to_fp<W, K>(
+    pub fn build_si_to_fp<W, K, Name>(
         &self,
         value: IntValue<'ctx, W>,
         dst_ty: crate::derived_types::FloatType<'ctx, K>,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::FloatValue<'ctx, K>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         K: crate::float_kind::FloatKind,
     {
@@ -3238,13 +3466,16 @@ where
     /// `uitofp nneg` with explicit [`crate::UIToFpFlags`]. The `nneg` flag
     /// asserts the source value is non-negative. Both source and destination
     /// types are erased (dyn variants).
-    pub fn build_ui_to_fp_with_flags_dyn(
+    pub fn build_ui_to_fp_with_flags_dyn<Name>(
         &self,
         src: IntValue<'ctx, crate::int_width::IntDyn>,
         dst: crate::derived_types::FloatType<'ctx, crate::float_kind::FloatDyn>,
         flags: crate::instr_types::UIToFpFlags,
-        name: impl AsRef<str>,
-    ) -> IrResult<crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>> {
+        name: Name,
+    ) -> IrResult<crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>>
+    where
+        Name: AsRef<str>,
+    {
         self.require_same_module(src.as_value())?;
         let mut payload =
             CastOpData::new(crate::instr_types::CastOpcode::UIToFp, src.as_value().id);
@@ -3286,13 +3517,14 @@ where
 
     /// Produce `ptrtoint <value> to <dst>`. Mirrors
     /// `IRBuilder::CreatePtrToInt`.
-    pub fn build_ptr_to_int<W>(
+    pub fn build_ptr_to_int<W, Name>(
         &self,
         value: crate::value::PointerValue<'ctx>,
         dst_ty: IntType<'ctx, W>,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
     {
         let v = crate::value::IsValue::as_value(value);
@@ -3308,13 +3540,14 @@ where
 
     /// Produce `inttoptr <value> to <dst>`. Mirrors
     /// `IRBuilder::CreateIntToPtr`.
-    pub fn build_int_to_ptr<W>(
+    pub fn build_int_to_ptr<W, Name>(
         &self,
         value: IntValue<'ctx, W>,
         dst_ty: crate::derived_types::PointerType<'ctx>,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::value::PointerValue<'ctx>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
     {
         let v = value.as_value();
@@ -3338,13 +3571,14 @@ where
     /// [`super::float_kind::StaticFloatKind::STATIC_BITS`]
     /// `const { assert!(...) }` blocks at monomorphisation; under-spec'd
     /// instantiations are *compile* errors.
-    pub fn build_bitcast_int_to_int<Src, Dst, V>(
+    pub fn build_bitcast_int_to_int<Src, Dst, V, Name>(
         &self,
         value: V,
         dst_ty: IntType<'ctx, Dst>,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, Dst>>
     where
+        Name: AsRef<str>,
         Src: super::int_width::StaticIntWidth,
         Dst: super::int_width::StaticIntWidth,
         V: super::int_width::IntoIntValue<'ctx, Src>,
@@ -3372,13 +3606,14 @@ where
     /// `Instruction::BitCast` arm of `CastInst::Create` in
     /// `lib/IR/Instructions.cpp` for the `int -> fp` shape. Width
     /// equality is enforced statically.
-    pub fn build_bitcast_int_to_fp<W, K, V>(
+    pub fn build_bitcast_int_to_fp<W, K, V, Name>(
         &self,
         value: V,
         dst_ty: super::derived_types::FloatType<'ctx, K>,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<super::value::FloatValue<'ctx, K>>
     where
+        Name: AsRef<str>,
         W: super::int_width::StaticIntWidth,
         K: super::float_kind::StaticFloatKind,
         V: super::int_width::IntoIntValue<'ctx, W>,
@@ -3408,13 +3643,14 @@ where
     /// `Instruction::BitCast` arm of `CastInst::Create` in
     /// `lib/IR/Instructions.cpp` for the `fp -> int` shape. Width
     /// equality is enforced statically.
-    pub fn build_bitcast_fp_to_int<K, W, V>(
+    pub fn build_bitcast_fp_to_int<K, W, V, Name>(
         &self,
         value: V,
         dst_ty: IntType<'ctx, W>,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, W>>
     where
+        Name: AsRef<str>,
         K: super::float_kind::StaticFloatKind,
         W: super::int_width::StaticIntWidth,
         V: super::float_kind::IntoFloatValue<'ctx, K>,
@@ -3442,13 +3678,14 @@ where
     /// `bfloat <-> half` (both 16 bits) and `fp128 <-> ppc_fp128` (both
     /// 128 bits). Mirrors `Instruction::BitCast` in
     /// `lib/IR/Instructions.cpp`.
-    pub fn build_bitcast_fp_to_fp<Src, Dst, V>(
+    pub fn build_bitcast_fp_to_fp<Src, Dst, V, Name>(
         &self,
         value: V,
         dst_ty: super::derived_types::FloatType<'ctx, Dst>,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<super::value::FloatValue<'ctx, Dst>>
     where
+        Name: AsRef<str>,
         Src: super::float_kind::StaticFloatKind,
         Dst: super::float_kind::StaticFloatKind,
         V: super::float_kind::IntoFloatValue<'ctx, Src>,
@@ -3480,12 +3717,15 @@ where
     /// will reject ill-formed bitcasts.
     ///
     /// Used by the parser where compile-time static markers are unavailable.
-    pub fn build_bitcast_dyn(
+    pub fn build_bitcast_dyn<Name>(
         &self,
         value: crate::value::Value<'ctx>,
         dst_ty: crate::r#type::Type<'ctx>,
-        name: impl AsRef<str>,
-    ) -> IrResult<crate::value::Value<'ctx>> {
+        name: Name,
+    ) -> IrResult<crate::value::Value<'ctx>>
+    where
+        Name: AsRef<str>,
+    {
         self.require_same_module(value)?;
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, value.id);
         let inst = self.append_instruction(dst_ty.id(), InstructionKindData::Cast(payload), name);
@@ -3494,12 +3734,15 @@ where
 
     /// Produce `addrspacecast <value> to <dst>`. Mirrors
     /// `IRBuilder::CreateAddrSpaceCast`.
-    pub fn build_addrspace_cast(
+    pub fn build_addrspace_cast<Name>(
         &self,
         value: crate::value::PointerValue<'ctx>,
         dst_ty: crate::derived_types::PointerType<'ctx>,
-        name: impl AsRef<str>,
-    ) -> IrResult<crate::value::PointerValue<'ctx>> {
+        name: Name,
+    ) -> IrResult<crate::value::PointerValue<'ctx>>
+    where
+        Name: AsRef<str>,
+    {
         let v = crate::value::IsValue::as_value(value);
         self.require_same_module(v)?;
         let payload = CastOpData::new(crate::instr_types::CastOpcode::AddrSpaceCast, v.id);
@@ -3518,12 +3761,15 @@ where
     /// instruction) and `addrspacecast` when address spaces differ.
     /// Mirrors `IRBuilder::CreatePointerBitCastOrAddrSpaceCast`
     /// (`IRBuilder.h`), which dispatches the same way.
-    pub fn build_pointer_cast(
+    pub fn build_pointer_cast<Name>(
         &self,
         value: super::value::PointerValue<'ctx>,
         dst_ty: super::derived_types::PointerType<'ctx>,
-        name: impl AsRef<str>,
-    ) -> IrResult<super::value::PointerValue<'ctx>> {
+        name: Name,
+    ) -> IrResult<super::value::PointerValue<'ctx>>
+    where
+        Name: AsRef<str>,
+    {
         let v = super::value::IsValue::as_value(value);
         self.require_same_module(v)?;
         let opcode = if value.ty().address_space() == dst_ty.address_space() {
@@ -3545,11 +3791,14 @@ where
     /// `icmp eq <ptr>, null` -- pointer-null test. Mirrors
     /// `IRBuilder::CreateIsNull(Arg)` ->
     /// `CreateICmpEQ(Arg, Constant::getNullValue(Arg->getType()))`.
-    pub fn build_is_null(
+    pub fn build_is_null<Name>(
         &self,
         ptr: super::value::PointerValue<'ctx>,
-        name: impl AsRef<str>,
-    ) -> IrResult<IntValue<'ctx, bool>> {
+        name: Name,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        Name: AsRef<str>,
+    {
         self.build_pointer_cmp(
             super::cmp_predicate::IntPredicate::Eq,
             ptr,
@@ -3561,11 +3810,14 @@ where
     /// `icmp ne <ptr>, null` -- pointer-non-null test. Mirrors
     /// `IRBuilder::CreateIsNotNull(Arg)` ->
     /// `CreateICmpNE(Arg, Constant::getNullValue(Arg->getType()))`.
-    pub fn build_is_not_null(
+    pub fn build_is_not_null<Name>(
         &self,
         ptr: super::value::PointerValue<'ctx>,
-        name: impl AsRef<str>,
-    ) -> IrResult<IntValue<'ctx, bool>> {
+        name: Name,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        Name: AsRef<str>,
+    {
         self.build_pointer_cmp(
             super::cmp_predicate::IntPredicate::Ne,
             ptr,
@@ -3579,14 +3831,15 @@ where
     /// our typed [`Self::build_int_cmp`] is integer-only. This helper
     /// covers the pointer arm directly (used by `build_is_null` /
     /// `build_is_not_null`).
-    pub fn build_pointer_cmp<L, R2>(
+    pub fn build_pointer_cmp<L, R2, Name>(
         &self,
         pred: super::cmp_predicate::IntPredicate,
         lhs: L,
         rhs: R2,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         L: super::value::IntoPointerValue<'ctx>,
         R2: super::value::IntoPointerValue<'ctx>,
     {
@@ -3613,13 +3866,14 @@ where
     /// `shufflevector ..., <count x T> poison, <count x i32> zeroinitializer`.
     /// The result is named `<name>.splat`; the intermediate insertelement
     /// is `<name>.splatinsert`.
-    pub fn build_vector_splat<V>(
+    pub fn build_vector_splat<V, Name>(
         &self,
         count: u32,
         scalar: V,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<super::value::VectorValue<'ctx>>
     where
+        Name: AsRef<str>,
         V: super::value::IsValue<'ctx>,
     {
         if count == 0 {
@@ -3641,7 +3895,7 @@ where
             format!("{name_ref}.splatinsert")
         };
         let inserted =
-            self.build_insert_element::<_, _, i64, _>(poison, scalar, zero_idx, insert_name)?;
+            self.build_insert_element::<_, _, i64, _, _>(poison, scalar, zero_idx, insert_name)?;
         let mask = vec![0_i32; usize::try_from(count).unwrap_or(usize::MAX)];
         let splat_name = if name_ref.is_empty() {
             String::from("splat")
@@ -3664,13 +3918,14 @@ where
     /// `getelementptr i8, ptr <ptr>, <offset>` -- byte-offset pointer
     /// arithmetic. Mirrors `IRBuilder::CreatePtrAdd` in `IRBuilder.h`
     /// (line 2039), which expands to `CreateGEP(getInt8Ty(), Ptr, Offset, ...)`.
-    pub fn build_ptr_add<P, O, W>(
+    pub fn build_ptr_add<P, O, W, Name>(
         &self,
         ptr: P,
         offset: O,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<super::value::PointerValue<'ctx>>
     where
+        Name: AsRef<str>,
         P: super::value::IntoPointerValue<'ctx>,
         W: super::int_width::IntWidth,
         O: super::int_width::IntoIntValue<'ctx, W>,
@@ -3685,13 +3940,14 @@ where
     /// `getelementptr inbounds i8, ptr <ptr>, <offset>`. Mirrors
     /// `IRBuilder::CreateInBoundsPtrAdd` (`IRBuilder.h` line 2044), which
     /// expands to `CreateGEP(getInt8Ty(), Ptr, Offset, Name, GEPNoWrapFlags::inBounds())`.
-    pub fn build_inbounds_ptr_add<P, O, W>(
+    pub fn build_inbounds_ptr_add<P, O, W, Name>(
         &self,
         ptr: P,
         offset: O,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<super::value::PointerValue<'ctx>>
     where
+        Name: AsRef<str>,
         P: super::value::IntoPointerValue<'ctx>,
         W: super::int_width::IntWidth,
         O: super::int_width::IntoIntValue<'ctx, W>,
@@ -3710,14 +3966,15 @@ where
     ///
     /// Both operands share width `W` at the type level. The result
     /// type is always `i1` (`IntValue<'ctx, bool>`).
-    pub fn build_int_cmp<W, Lhs, Rhs>(
+    pub fn build_int_cmp<W, Lhs, Rhs, Name>(
         &self,
         pred: crate::cmp_predicate::IntPredicate,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
@@ -3736,14 +3993,17 @@ where
     /// `icmp samesign` with explicit [`crate::ICmpFlags`]. Both operands
     /// must be dynamically-typed (`IntDyn`). The `samesign` flag asserts
     /// both operands carry the same sign (LLVM 19+).
-    pub fn build_int_cmp_with_flags_dyn(
+    pub fn build_int_cmp_with_flags_dyn<Name>(
         &self,
         flags: crate::instr_types::ICmpFlags,
         pred: crate::cmp_predicate::IntPredicate,
         lhs: IntValue<'ctx, crate::int_width::IntDyn>,
         rhs: IntValue<'ctx, crate::int_width::IntDyn>,
-        name: impl AsRef<str>,
-    ) -> IrResult<IntValue<'ctx, bool>> {
+        name: Name,
+    ) -> IrResult<IntValue<'ctx, bool>>
+    where
+        Name: AsRef<str>,
+    {
         self.require_same_module(lhs.as_value())?;
         self.require_same_module(rhs.as_value())?;
         let mut payload =
@@ -3766,171 +4026,221 @@ where
     /// `icmp eq` -- equal. Signedness-irrelevant. Mirrors
     /// `IRBuilder::CreateICmpEQ`.
     #[inline]
-    pub fn build_icmp_eq<W, Lhs, Rhs>(
+    pub fn build_icmp_eq<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Eq, lhs, rhs, name)
+        self.build_int_cmp::<W, Lhs, Rhs, _>(crate::cmp_predicate::IntPredicate::Eq, lhs, rhs, name)
     }
 
     /// `icmp ne` -- not equal. Signedness-irrelevant. Mirrors
     /// `IRBuilder::CreateICmpNE`.
     #[inline]
-    pub fn build_icmp_ne<W, Lhs, Rhs>(
+    pub fn build_icmp_ne<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Ne, lhs, rhs, name)
+        self.build_int_cmp::<W, Lhs, Rhs, _>(crate::cmp_predicate::IntPredicate::Ne, lhs, rhs, name)
     }
 
     /// `icmp ult` -- unsigned less than. Mirrors
     /// `IRBuilder::CreateICmpULT`.
     #[inline]
-    pub fn build_icmp_ult<W, Lhs, Rhs>(
+    pub fn build_icmp_ult<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Ult, lhs, rhs, name)
+        self.build_int_cmp::<W, Lhs, Rhs, _>(
+            crate::cmp_predicate::IntPredicate::Ult,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// `icmp ule` -- unsigned less than or equal. Mirrors
     /// `IRBuilder::CreateICmpULE`.
     #[inline]
-    pub fn build_icmp_ule<W, Lhs, Rhs>(
+    pub fn build_icmp_ule<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Ule, lhs, rhs, name)
+        self.build_int_cmp::<W, Lhs, Rhs, _>(
+            crate::cmp_predicate::IntPredicate::Ule,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// `icmp ugt` -- unsigned greater than. Mirrors
     /// `IRBuilder::CreateICmpUGT`.
     #[inline]
-    pub fn build_icmp_ugt<W, Lhs, Rhs>(
+    pub fn build_icmp_ugt<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Ugt, lhs, rhs, name)
+        self.build_int_cmp::<W, Lhs, Rhs, _>(
+            crate::cmp_predicate::IntPredicate::Ugt,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// `icmp uge` -- unsigned greater than or equal. Mirrors
     /// `IRBuilder::CreateICmpUGE`.
     #[inline]
-    pub fn build_icmp_uge<W, Lhs, Rhs>(
+    pub fn build_icmp_uge<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Uge, lhs, rhs, name)
+        self.build_int_cmp::<W, Lhs, Rhs, _>(
+            crate::cmp_predicate::IntPredicate::Uge,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// `icmp slt` -- signed less than. Mirrors
     /// `IRBuilder::CreateICmpSLT`.
     #[inline]
-    pub fn build_icmp_slt<W, Lhs, Rhs>(
+    pub fn build_icmp_slt<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Slt, lhs, rhs, name)
+        self.build_int_cmp::<W, Lhs, Rhs, _>(
+            crate::cmp_predicate::IntPredicate::Slt,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// `icmp sle` -- signed less than or equal. Mirrors
     /// `IRBuilder::CreateICmpSLE`.
     #[inline]
-    pub fn build_icmp_sle<W, Lhs, Rhs>(
+    pub fn build_icmp_sle<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Sle, lhs, rhs, name)
+        self.build_int_cmp::<W, Lhs, Rhs, _>(
+            crate::cmp_predicate::IntPredicate::Sle,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// `icmp sgt` -- signed greater than. Mirrors
     /// `IRBuilder::CreateICmpSGT`.
     #[inline]
-    pub fn build_icmp_sgt<W, Lhs, Rhs>(
+    pub fn build_icmp_sgt<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Sgt, lhs, rhs, name)
+        self.build_int_cmp::<W, Lhs, Rhs, _>(
+            crate::cmp_predicate::IntPredicate::Sgt,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     /// `icmp sge` -- signed greater than or equal. Mirrors
     /// `IRBuilder::CreateICmpSGE`.
     #[inline]
-    pub fn build_icmp_sge<W, Lhs, Rhs>(
+    pub fn build_icmp_sge<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<IntValue<'ctx, bool>>
     where
+        Name: AsRef<str>,
         W: IntWidth,
         Lhs: crate::int_width::IntoIntValue<'ctx, W>,
         Rhs: crate::int_width::IntoIntValue<'ctx, W>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs>(crate::cmp_predicate::IntPredicate::Sge, lhs, rhs, name)
+        self.build_int_cmp::<W, Lhs, Rhs, _>(
+            crate::cmp_predicate::IntPredicate::Sge,
+            lhs,
+            rhs,
+            name,
+        )
     }
 
     // ---- Phi ----
@@ -3938,16 +4248,17 @@ where
     /// Produce `phi <ty>` with no initial incoming edges. Marker-only
     /// form: the result type comes from the `W` type parameter via
     /// [`crate::StaticIntWidth`], so callers spell it as
-    /// `b.build_int_phi::<i32>("acc")?` without first binding
+    /// `b.build_int_phi::<i32, _>("acc")?` without first binding
     /// `let i32_ty = m.i32_type();`. Mirrors `IRBuilder::CreatePHI`
     /// followed by zero `PHINode::addIncoming` calls. Subsequent
     /// edges are added through [`crate::PhiInst::add_incoming`],
     /// which returns `Self` so calls chain.
-    pub fn build_int_phi<W>(
+    pub fn build_int_phi<W, Name>(
         &self,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::instructions::PhiInst<'ctx, W>>
     where
+        Name: AsRef<str>,
         W: crate::int_width::StaticIntWidth,
     {
         let ty = W::ir_type(ModuleRef::new(self.module));
@@ -3966,11 +4277,14 @@ where
 
     /// Runtime-width phi for the [`crate::IntDyn`] case. Takes the
     /// type explicitly because the marker carries no static width.
-    pub fn build_int_phi_dyn(
+    pub fn build_int_phi_dyn<Name>(
         &self,
         ty: IntType<'ctx, crate::int_width::IntDyn>,
-        name: impl AsRef<str>,
-    ) -> IrResult<crate::instructions::PhiInst<'ctx, crate::int_width::IntDyn>> {
+        name: Name,
+    ) -> IrResult<crate::instructions::PhiInst<'ctx, crate::int_width::IntDyn>>
+    where
+        Name: AsRef<str>,
+    {
         let payload = crate::instr_types::PhiData::new();
         let inst =
             self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
@@ -3987,11 +4301,12 @@ where
     /// Float-typed phi: `phi <fpty>`. Marker-only form keyed on
     /// `K: StaticFloatKind`. Mirrors `IRBuilder::CreatePHI(Type*, ...)`
     /// applied to a floating-point type.
-    pub fn build_fp_phi<K>(
+    pub fn build_fp_phi<K, Name>(
         &self,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<super::instructions::FpPhiInst<'ctx, K>>
     where
+        Name: AsRef<str>,
         K: super::float_kind::StaticFloatKind,
     {
         let ty = K::ir_type(ModuleRef::new(self.module));
@@ -4007,11 +4322,14 @@ where
 
     /// Runtime-kind float phi: takes the type explicitly because
     /// [`crate::FloatDyn`] carries no static kind.
-    pub fn build_fp_phi_dyn(
+    pub fn build_fp_phi_dyn<Name>(
         &self,
         ty: super::derived_types::FloatType<'ctx, super::float_kind::FloatDyn>,
-        name: impl AsRef<str>,
-    ) -> IrResult<super::instructions::FpPhiInst<'ctx, super::float_kind::FloatDyn>> {
+        name: Name,
+    ) -> IrResult<super::instructions::FpPhiInst<'ctx, super::float_kind::FloatDyn>>
+    where
+        Name: AsRef<str>,
+    {
         let payload = super::instr_types::PhiData::new();
         let inst =
             self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
@@ -4026,10 +4344,13 @@ where
 
     /// Pointer-typed phi in the default address space (addrspace 0).
     /// Mirrors `IRBuilder::CreatePHI(PointerType::getUnqual(...), ...)`.
-    pub fn build_pointer_phi(
+    pub fn build_pointer_phi<Name>(
         &self,
-        name: impl AsRef<str>,
-    ) -> IrResult<super::instructions::PointerPhiInst<'ctx>> {
+        name: Name,
+    ) -> IrResult<super::instructions::PointerPhiInst<'ctx>>
+    where
+        Name: AsRef<str>,
+    {
         let ty = self.module.ptr_type(0);
         let payload = super::instr_types::PhiData::new();
         let inst =
@@ -4043,11 +4364,14 @@ where
 
     /// Pointer-typed phi in a caller-specified address space. Mirrors
     /// `IRBuilder::CreatePHI(PointerType::get(Ctx, AS), ...)`.
-    pub fn build_pointer_phi_in_addrspace(
+    pub fn build_pointer_phi_in_addrspace<Name>(
         &self,
         ty: super::derived_types::PointerType<'ctx>,
-        name: impl AsRef<str>,
-    ) -> IrResult<super::instructions::PointerPhiInst<'ctx>> {
+        name: Name,
+    ) -> IrResult<super::instructions::PointerPhiInst<'ctx>>
+    where
+        Name: AsRef<str>,
+    {
         let payload = super::instr_types::PhiData::new();
         let inst =
             self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
@@ -4120,22 +4444,22 @@ where
     /// Produce `switch <cond>, label <default> [...]`. Mirrors
     /// `IRBuilder::CreateSwitch`.
     ///
-    /// Returns the sealed parent block plus an
-    /// [`Open`](crate::term_open_state::Open)-typestate
+    /// Returns the sealed parent block plus an [`Open`]-typestate
     /// [`SwitchInst`](crate::instructions::SwitchInst). The caller adds
     /// cases via [`SwitchInst::add_case`](crate::instructions::SwitchInst::add_case)
     /// (chainable) and seals the case list with
     /// [`SwitchInst::finish`](crate::instructions::SwitchInst::finish).
-    pub fn build_switch<C, S2>(
+    pub fn build_switch<C, S2, Name>(
         self,
         cond: C,
         default_target: BasicBlock<'ctx, R, S2>,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<(
         BasicBlock<'ctx, R, Sealed>,
         crate::instructions::SwitchInst<'ctx, crate::term_open_state::Open>,
     )>
     where
+        Name: AsRef<str>,
         C: crate::value::IsValue<'ctx>,
         S2: BlockSealState,
     {
@@ -4158,20 +4482,20 @@ where
     /// Produce `indirectbr <addr>, [...]`. Mirrors
     /// `IRBuilder::CreateIndirectBr`.
     ///
-    /// Returns the sealed parent block plus an
-    /// [`Open`](crate::term_open_state::Open)-typestate
+    /// Returns the sealed parent block plus an [`Open`]-typestate
     /// [`IndirectBrInst`](crate::instructions::IndirectBrInst). The
     /// caller adds destinations via
     /// [`IndirectBrInst::add_destination`](crate::instructions::IndirectBrInst::add_destination)
-    pub fn build_indirectbr<A>(
+    pub fn build_indirectbr<A, Name>(
         self,
         address: A,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<(
         BasicBlock<'ctx, R, Sealed>,
         crate::instructions::IndirectBrInst<'ctx, crate::term_open_state::Open>,
     )>
     where
+        Name: AsRef<str>,
         A: crate::value::IsValue<'ctx>,
     {
         let addr_v = address.as_value();
@@ -4188,18 +4512,19 @@ where
 
     /// Produce `invoke <ret-ty> <callee>(<args>) to label %normal
     /// unwind label %unwind`. Mirrors `IRBuilder::CreateInvoke`.
-    pub fn build_invoke<R2, I, V, S2, SU>(
+    pub fn build_invoke<R2, I, V, S2, SU, Name>(
         self,
         callee: FunctionValue<'ctx, R2>,
         args: I,
         normal_dest: BasicBlock<'ctx, R, S2>,
         unwind_dest: BasicBlock<'ctx, R, SU>,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<(
         BasicBlock<'ctx, R, Sealed>,
         crate::instructions::InvokeInst<'ctx, R2>,
     )>
     where
+        Name: AsRef<str>,
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: crate::value::IsValue<'ctx>,
@@ -4249,6 +4574,7 @@ where
             .as_function()
             .map(|(r, _, _)| r)
             .unwrap_or(fn_ty);
+        let (name, calling_conv, attrs) = config.into_parts();
         let bb = self.insert_block();
         let arg_ids: Vec<crate::value::ValueId> =
             args.into_iter().map(|a| a.as_value().id).collect();
@@ -4256,13 +4582,12 @@ where
             callee_v.id,
             fn_ty,
             arg_ids,
-            config.calling_conv,
+            calling_conv,
             normal_dest.as_value().id,
             unwind_dest.as_value().id,
-            config.attrs,
+            attrs,
         );
-        let inst =
-            self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), &config.name);
+        let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
         Ok((
             bb.retag_seal::<Sealed>(),
             crate::instructions::InvokeInst::<crate::marker::Dyn>::from_raw(
@@ -4275,18 +4600,19 @@ where
     }
 
     /// Produce an `invoke` whose callee is an inline-assembly value.
-    pub fn build_inline_asm_invoke<R2, I, V, S2, SU>(
+    pub fn build_inline_asm_invoke<R2, I, V, S2, SU, Name>(
         self,
         asm: crate::inline_asm::InlineAsm<'ctx>,
         args: I,
         normal_dest: BasicBlock<'ctx, R, S2>,
         unwind_dest: BasicBlock<'ctx, R, SU>,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<(
         BasicBlock<'ctx, R, Sealed>,
         crate::instructions::InvokeInst<'ctx, R2>,
     )>
     where
+        Name: AsRef<str>,
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: crate::value::IsValue<'ctx>,
@@ -4343,18 +4669,18 @@ where
             self.require_same_module(v)?;
             arg_ids.push(v.id);
         }
+        let (name, calling_conv, attrs) = config.into_parts();
         let bb = self.insert_block();
         let payload = crate::instr_types::InvokeInstData::new_with_attrs(
             asm_v.id,
             fn_ty.as_type().id(),
             arg_ids,
-            config.calling_conv,
+            calling_conv,
             normal_dest.as_value().id,
             unwind_dest.as_value().id,
-            config.attrs,
+            attrs,
         );
-        let inst =
-            self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), &config.name);
+        let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
         Ok((
             bb.retag_seal::<Sealed>(),
             crate::instructions::InvokeInst::<crate::marker::Dyn>::from_raw(
@@ -4368,18 +4694,19 @@ where
 
     /// Produce `callbr <ret-ty> <callee>(<args>) to label %default
     /// [label %indirect1, ...]`. Mirrors `IRBuilder::CreateCallBr`.
-    pub fn build_callbr<R2, I, V, S2>(
+    pub fn build_callbr<R2, I, V, S2, Name>(
         self,
         callee: FunctionValue<'ctx, R2>,
         args: I,
         default_dest: BasicBlock<'ctx, R, S2>,
         indirect_dests: &[BasicBlock<'ctx, R, S2>],
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<(
         BasicBlock<'ctx, R, Sealed>,
         crate::instructions::CallBrInst<'ctx>,
     )>
     where
+        Name: AsRef<str>,
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: crate::value::IsValue<'ctx>,
@@ -4430,6 +4757,7 @@ where
             .as_function()
             .map(|(r, _, _)| r)
             .unwrap_or(fn_ty);
+        let (name, calling_conv, attrs) = config.into_parts();
         let bb = self.insert_block();
         let arg_ids: Vec<crate::value::ValueId> =
             args.into_iter().map(|a| a.as_value().id).collect();
@@ -4439,13 +4767,12 @@ where
             callee_v.id,
             fn_ty,
             arg_ids,
-            config.calling_conv,
+            calling_conv,
             default_dest.as_value().id,
             indirect_ids,
-            config.attrs,
+            attrs,
         );
-        let inst =
-            self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), &config.name);
+        let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name);
         Ok((
             bb.retag_seal::<Sealed>(),
             crate::instructions::CallBrInst::from_raw(inst.as_value().id, self.module, ret_ty),
@@ -4453,18 +4780,19 @@ where
     }
 
     /// Produce a `callbr` whose callee is an inline-assembly value.
-    pub fn build_inline_asm_callbr<R2, I, V, S2>(
+    pub fn build_inline_asm_callbr<R2, I, V, S2, Name>(
         self,
         asm: crate::inline_asm::InlineAsm<'ctx>,
         args: I,
         default_dest: BasicBlock<'ctx, R, S2>,
         indirect_dests: &[BasicBlock<'ctx, R, S2>],
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<(
         BasicBlock<'ctx, R, Sealed>,
         crate::instructions::CallBrInst<'ctx>,
     )>
     where
+        Name: AsRef<str>,
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: crate::value::IsValue<'ctx>,
@@ -4524,18 +4852,18 @@ where
         }
         let indirect_ids: Vec<crate::value::ValueId> =
             indirect_dests.iter().map(|d| d.as_value().id).collect();
+        let (name, calling_conv, attrs) = config.into_parts();
         let bb = self.insert_block();
         let payload = crate::instr_types::CallBrInstData::new_with_attrs(
             asm_v.id,
             fn_ty.as_type().id(),
             arg_ids,
-            config.calling_conv,
+            calling_conv,
             default_dest.as_value().id,
             indirect_ids,
-            config.attrs,
+            attrs,
         );
-        let inst =
-            self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), &config.name);
+        let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name);
         Ok((
             bb.retag_seal::<Sealed>(),
             crate::instructions::CallBrInst::from_raw(inst.as_value().id, self.module, ret_ty),
@@ -4546,15 +4874,18 @@ where
     ///
     /// Consumes `self`; infallible (no operands, no brand check).
     /// Produce `landingpad <ty>`. Mirrors `IRBuilder::CreateLandingPad`.
-    /// Returns an [`Open`](crate::term_open_state::Open)-typestate
+    /// Returns an [`Open`]-typestate
     /// handle; the caller adds clauses with `add_catch_clause` /
     /// `add_filter_clause` and seals the list with `finish`.
-    pub fn build_landingpad(
+    pub fn build_landingpad<Name>(
         &self,
         result_ty: crate::r#type::Type<'ctx>,
         cleanup: bool,
-        name: impl AsRef<str>,
-    ) -> IrResult<crate::instructions::LandingPadInst<'ctx, crate::term_open_state::Open>> {
+        name: Name,
+    ) -> IrResult<crate::instructions::LandingPadInst<'ctx, crate::term_open_state::Open>>
+    where
+        Name: AsRef<str>,
+    {
         let payload = crate::instr_types::LandingPadInstData::new(cleanup);
         let inst =
             self.append_instruction(result_ty.id, InstructionKindData::LandingPad(payload), name);
@@ -4567,12 +4898,13 @@ where
 
     /// Produce `resume <ty> <value>`. Mirrors `IRBuilder::CreateResume`.
     /// The `value` is typically a previously-built `landingpad` result.
-    pub fn build_resume<V>(
+    pub fn build_resume<V, Name>(
         self,
         value: V,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>)>
     where
+        Name: AsRef<str>,
         V: crate::value::IsValue<'ctx>,
     {
         let v = value.as_value();
@@ -4585,32 +4917,55 @@ where
     }
 
     /// Produce `cleanuppad within <parent> [<args>]`. Mirrors
-    /// `IRBuilder::CreateCleanupPad`. `parent_pad = None` means
-    /// `within none`.
-    pub fn build_cleanup_pad<I, V>(
+    /// `IRBuilder::CreateCleanupPad`.
+    pub fn build_cleanup_pad<I, V, Name>(
         &self,
-        parent_pad: Option<Value<'ctx>>,
+        parent_pad: Value<'ctx>,
         args: I,
-        name: impl AsRef<str>,
-    ) -> IrResult<crate::instructions::CleanupPadInst<'ctx>>
+        name: Name,
+    ) -> IrResult<CleanupPadInst<'ctx>>
     where
         I: IntoIterator<Item = V>,
         V: crate::value::IsValue<'ctx>,
+        Name: AsRef<str>,
     {
-        let parent_id = match parent_pad {
-            Some(v) => {
-                self.require_same_module(v)?;
-                Some(v.id)
-            }
-            None => None,
-        };
+        self.require_same_module(parent_pad)?;
+        self.build_cleanup_pad_raw(Some(parent_pad.id), args, name)
+    }
+
+    /// Produce `cleanuppad within none [<args>]`. Mirrors
+    /// `IRBuilder::CreateCleanupPad`.
+    pub fn build_cleanup_pad_within_none<I, V, Name>(
+        &self,
+        args: I,
+        name: Name,
+    ) -> IrResult<CleanupPadInst<'ctx>>
+    where
+        I: IntoIterator<Item = V>,
+        V: crate::value::IsValue<'ctx>,
+        Name: AsRef<str>,
+    {
+        self.build_cleanup_pad_raw(None, args, name)
+    }
+
+    fn build_cleanup_pad_raw<I, V, Name>(
+        &self,
+        parent_id: Option<crate::value::ValueId>,
+        args: I,
+        name: Name,
+    ) -> IrResult<CleanupPadInst<'ctx>>
+    where
+        I: IntoIterator<Item = V>,
+        V: crate::value::IsValue<'ctx>,
+        Name: AsRef<str>,
+    {
         let arg_ids: Vec<crate::value::ValueId> =
             args.into_iter().map(|a| a.as_value().id).collect();
         let payload = crate::instr_types::CleanupPadInstData::new(parent_id, arg_ids);
         let token_ty = self.module.token_type().as_type().id();
         let inst =
             self.append_instruction(token_ty, InstructionKindData::CleanupPad(payload), name);
-        Ok(crate::instructions::CleanupPadInst::from_raw(
+        Ok(CleanupPadInst::from_raw(
             inst.as_value().id,
             self.module,
             token_ty,
@@ -4619,13 +4974,14 @@ where
 
     /// Produce `catchpad within <catchswitch> [<args>]`. Mirrors
     /// `IRBuilder::CreateCatchPad`.
-    pub fn build_catch_pad<I, V>(
+    pub fn build_catch_pad<I, V, Name>(
         &self,
         catch_switch: Value<'ctx>,
         args: I,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<crate::instructions::CatchPadInst<'ctx>>
     where
+        Name: AsRef<str>,
         I: IntoIterator<Item = V>,
         V: crate::value::IsValue<'ctx>,
     {
@@ -4644,13 +5000,14 @@ where
 
     /// Produce `catchret from <catchpad> to label <bb>`. Mirrors
     /// `IRBuilder::CreateCatchRet`.
-    pub fn build_catch_ret<S2>(
+    pub fn build_catch_ret<S2, Name>(
         self,
         catch_pad: Value<'ctx>,
         target: BasicBlock<'ctx, R, S2>,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>)>
     where
+        Name: AsRef<str>,
         S2: BlockSealState,
     {
         self.require_same_module(catch_pad)?;
@@ -4666,72 +5023,130 @@ where
         Ok((bb.retag_seal::<Sealed>(), inst))
     }
 
-    /// Produce `cleanupret from <cleanuppad> unwind [to caller |
-    /// label <bb>]`. Mirrors `IRBuilder::CreateCleanupRet`.
-    pub fn build_cleanup_ret<S2>(
+    /// Produce `cleanupret from <cleanuppad> unwind label <bb>`.
+    /// Mirrors `IRBuilder::CreateCleanupRet`.
+    pub fn build_cleanup_ret<S2, Name>(
         self,
         cleanup_pad: Value<'ctx>,
-        unwind_dest: Option<BasicBlock<'ctx, R, S2>>,
-        name: impl AsRef<str>,
+        unwind_dest: BasicBlock<'ctx, R, S2>,
+        name: Name,
     ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>)>
     where
         S2: BlockSealState,
+        Name: AsRef<str>,
     {
         self.require_same_module(cleanup_pad)?;
-        let unwind_id = match unwind_dest {
-            Some(b) => {
-                if b.as_value().module().id() != self.module.id() {
-                    return Err(IrError::ForeignValue);
-                }
-                Some(b.as_value().id)
-            }
-            None => None,
-        };
+        let unwind_value = unwind_dest.as_value();
+        if unwind_value.module().id() != self.module.id() {
+            return Err(IrError::ForeignValue);
+        }
+        self.build_cleanup_ret_raw(cleanup_pad.id, Some(unwind_value.id), name)
+    }
+
+    /// Produce `cleanupret from <cleanuppad> unwind to caller`.
+    /// Mirrors `IRBuilder::CreateCleanupRet`.
+    pub fn build_cleanup_ret_to_caller<Name>(
+        self,
+        cleanup_pad: Value<'ctx>,
+        name: Name,
+    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>)>
+    where
+        Name: AsRef<str>,
+    {
+        self.require_same_module(cleanup_pad)?;
+        self.build_cleanup_ret_raw(cleanup_pad.id, None, name)
+    }
+
+    fn build_cleanup_ret_raw<Name>(
+        self,
+        cleanup_pad_id: crate::value::ValueId,
+        unwind_id: Option<crate::value::ValueId>,
+        name: Name,
+    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>)>
+    where
+        Name: AsRef<str>,
+    {
         let bb = self.insert_block();
         let void_ty = self.module.void_type().as_type().id();
-        let payload = crate::instr_types::CleanupReturnInstData::new(cleanup_pad.id, unwind_id);
+        let payload = crate::instr_types::CleanupReturnInstData::new(cleanup_pad_id, unwind_id);
         let inst =
             self.append_instruction(void_ty, InstructionKindData::CleanupReturn(payload), name);
         Ok((bb.retag_seal::<Sealed>(), inst))
     }
 
-    /// Produce `catchswitch within <parent> [...] unwind [to caller |
-    /// label <bb>]`. Mirrors `IRBuilder::CreateCatchSwitch`.
-    ///
-    /// Returns the sealed block plus an
-    /// [`Open`](crate::term_open_state::Open)-typestate
-    /// [`CatchSwitchInst`](crate::instructions::CatchSwitchInst); the
-    /// caller adds handler blocks via
-    /// [`CatchSwitchInst::add_handler`](crate::instructions::CatchSwitchInst::add_handler)
-    /// `finish`.
-    pub fn build_catch_switch<S2>(
+    /// Produce `catchswitch within <parent> [...] unwind label <bb>`.
+    /// Mirrors `IRBuilder::CreateCatchSwitch`.
+    pub fn build_catch_switch<S2, Name>(
         self,
-        parent_pad: Option<Value<'ctx>>,
-        unwind_dest: Option<BasicBlock<'ctx, R, S2>>,
-        name: impl AsRef<str>,
-    ) -> IrResult<(
-        BasicBlock<'ctx, R, Sealed>,
-        crate::instructions::CatchSwitchInst<'ctx, crate::term_open_state::Open>,
-    )>
+        parent_pad: Value<'ctx>,
+        unwind_dest: BasicBlock<'ctx, R, S2>,
+        name: Name,
+    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, CatchSwitchInst<'ctx, Open>)>
     where
         S2: BlockSealState,
+        Name: AsRef<str>,
     {
-        let parent_id = match parent_pad {
-            Some(v) => {
-                self.require_same_module(v)?;
-                Some(v.id)
-            }
-            None => None,
-        };
-        let unwind_id = match unwind_dest {
-            Some(b) => {
-                if b.as_value().module().id() != self.module.id() {
-                    return Err(IrError::ForeignValue);
-                }
-                Some(b.as_value().id)
-            }
-            None => None,
-        };
+        self.require_same_module(parent_pad)?;
+        let unwind_value = unwind_dest.as_value();
+        if unwind_value.module().id() != self.module.id() {
+            return Err(IrError::ForeignValue);
+        }
+        self.build_catch_switch_raw(Some(parent_pad.id), Some(unwind_value.id), name)
+    }
+
+    /// Produce `catchswitch within <parent> [...] unwind to caller`.
+    /// Mirrors `IRBuilder::CreateCatchSwitch`.
+    pub fn build_catch_switch_to_caller<Name>(
+        self,
+        parent_pad: Value<'ctx>,
+        name: Name,
+    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, CatchSwitchInst<'ctx, Open>)>
+    where
+        Name: AsRef<str>,
+    {
+        self.require_same_module(parent_pad)?;
+        self.build_catch_switch_raw(Some(parent_pad.id), None, name)
+    }
+
+    /// Produce `catchswitch within none [...] unwind label <bb>`.
+    /// Mirrors `IRBuilder::CreateCatchSwitch`.
+    pub fn build_catch_switch_within_none<S2, Name>(
+        self,
+        unwind_dest: BasicBlock<'ctx, R, S2>,
+        name: Name,
+    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, CatchSwitchInst<'ctx, Open>)>
+    where
+        S2: BlockSealState,
+        Name: AsRef<str>,
+    {
+        let unwind_value = unwind_dest.as_value();
+        if unwind_value.module().id() != self.module.id() {
+            return Err(IrError::ForeignValue);
+        }
+        self.build_catch_switch_raw(None, Some(unwind_value.id), name)
+    }
+
+    /// Produce `catchswitch within none [...] unwind to caller`.
+    /// Mirrors `IRBuilder::CreateCatchSwitch`.
+    pub fn build_catch_switch_within_none_to_caller<Name>(
+        self,
+        name: Name,
+    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, CatchSwitchInst<'ctx, Open>)>
+    where
+        Name: AsRef<str>,
+    {
+        self.build_catch_switch_raw(None, None, name)
+    }
+
+    fn build_catch_switch_raw<Name>(
+        self,
+        parent_id: Option<crate::value::ValueId>,
+        unwind_id: Option<crate::value::ValueId>,
+        name: Name,
+    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, CatchSwitchInst<'ctx, Open>)>
+    where
+        Name: AsRef<str>,
+    {
         let bb = self.insert_block();
         let token_ty = self.module.token_type().as_type().id();
         let payload = crate::instr_types::CatchSwitchInstData::new(parent_id, unwind_id);
@@ -4739,11 +5154,7 @@ where
             self.append_instruction(token_ty, InstructionKindData::CatchSwitch(payload), name);
         Ok((
             bb.retag_seal::<Sealed>(),
-            crate::instructions::CatchSwitchInst::from_raw(
-                inst.as_value().id,
-                self.module,
-                token_ty,
-            ),
+            CatchSwitchInst::from_raw(inst.as_value().id, self.module, token_ty),
         ))
     }
 
@@ -5065,7 +5476,7 @@ where
 {
     /// Add an argument. Statically dispatched per `V: IsValue` so
     /// mixed-type argument lists work without homogeneity.
-    pub fn arg<V: crate::value::IsValue<'ctx>>(mut self, value: V) -> Self {
+    pub fn arg<V: IsValue<'ctx>>(mut self, value: V) -> Self {
         let v = value.as_value();
         // Same-module check is deferred to `.build()`; this lets
         // the caller chain without an early `IrResult` plumbing.
@@ -5088,22 +5499,25 @@ where
         self
     }
 
-    pub fn calling_conv(mut self, cc: crate::CallingConv) -> Self {
+    pub fn calling_conv(mut self, cc: CallingConv) -> Self {
         self.calling_conv = cc;
         self
     }
-    pub fn call_attributes(mut self, attrs: crate::instr_types::CallAttributeData) -> Self {
+    pub fn call_attributes(mut self, attrs: CallAttributeData) -> Self {
         self.attrs = attrs;
         self
     }
 
-    pub fn name(mut self, name: impl AsRef<str>) -> Self {
+    pub fn name<Name>(mut self, name: Name) -> Self
+    where
+        Name: AsRef<str>,
+    {
         self.name = name.as_ref().to_owned();
         self
     }
 
     /// Emit the call instruction.
-    pub fn build(self) -> IrResult<crate::instructions::CallInst<'ctx, RC>> {
+    pub fn build(self) -> IrResult<CallInst<'ctx, RC>> {
         // Cross-module check on every operand id.
         let module = self.parent.module;
         for &id in &self.args {
@@ -5208,14 +5622,15 @@ where
     /// Both arms must share the same Rust type `A`, which pins the
     /// IR-type invariant that LangRef requires. The returned handle
     /// is `A::Output`, statically tied to the arm category.
-    pub fn build_select<C, A>(
+    pub fn build_select<C, A, Name>(
         &self,
         cond: C,
         true_arm: A,
         false_arm: A,
-        name: impl AsRef<str>,
+        name: Name,
     ) -> IrResult<A::Output>
     where
+        Name: AsRef<str>,
         C: crate::int_width::IntoIntValue<'ctx, bool>,
         A: SelectArm<'ctx> + Copy,
     {

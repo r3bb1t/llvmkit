@@ -36,7 +36,7 @@ use crate::derived_types::{
 use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::function::FunctionData;
 use crate::instruction::InstructionData;
-use crate::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use crate::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use crate::r#type::{Type, TypeData, TypeId};
 use core::fmt;
 use core::hash::{Hash, Hasher};
@@ -246,7 +246,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     }
 
     /// Set the textual name. Mirrors `Value::setName`.
-    pub fn set_name(self, module_token: &Module<'ctx, B, Unverified>, name: impl Into<String>) {
+    pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
         if module_token.id() == self.module.id() {
             self.set_name_internal(Some(name.into()));
         }
@@ -397,7 +400,9 @@ pub trait Typed<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>>: sealed::Seal
 /// name. Implemented by every value handle.
 pub trait HasName<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>>: sealed::Sealed {
     fn name(self) -> Option<String>;
-    fn set_name(self, module_token: &Module<'ctx, B, Unverified>, name: &str);
+    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    where
+        Name: Into<String>;
     fn clear_name(self, module_token: &Module<'ctx, B, Unverified>);
 }
 
@@ -426,7 +431,10 @@ impl<'ctx, B: ModuleBrand> HasName<'ctx, B> for Value<'ctx, B> {
         Value::name(self)
     }
     #[inline]
-    fn set_name(self, module_token: &Module<'ctx, B, Unverified>, name: &str) {
+    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
         Value::set_name(self, module_token, name);
     }
     #[inline]
@@ -473,7 +481,7 @@ macro_rules! decl_value_handle {
 
             /// Owning module reference.
             #[inline]
-            pub fn module(self) -> ModuleView<'ctx, crate::module::Brand<'ctx>> {
+            pub fn module(self) -> ModuleView<'ctx, Brand<'ctx>> {
                 ModuleView::new(self.module.module())
             }
 
@@ -489,12 +497,15 @@ macro_rules! decl_value_handle {
             }
 
             /// Set the textual name.
-            pub fn set_name(self, module_token: &crate::module::Module<'ctx, crate::module::Brand<'ctx>, crate::module::Unverified>, name: &str) {
+            pub fn set_name<Name>(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: Name)
+            where
+                Name: Into<String>,
+            {
                 self.as_value().set_name(module_token, name);
             }
 
             /// Clear the textual name.
-            pub fn clear_name(self, module_token: &crate::module::Module<'ctx, crate::module::Brand<'ctx>, crate::module::Unverified>) {
+            pub fn clear_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>) {
                 self.as_value().clear_name(module_token);
             }
 
@@ -520,7 +531,7 @@ macro_rules! decl_value_handle {
             #[inline]
             fn name(self) -> Option<String> { Self::name(self) }
             #[inline]
-            fn set_name(self, module_token: &crate::module::Module<'ctx, crate::module::Brand<'ctx>, crate::module::Unverified>, name: &str) { Self::set_name(self, module_token, name) }
+            fn set_name<Name>(self, module_token: &crate::module::Module<'ctx, crate::module::Brand<'ctx>, crate::module::Unverified>, name: Name) where Name: Into<String> { Self::set_name(self, module_token, name) }
             #[inline]
             fn clear_name(self, module_token: &crate::module::Module<'ctx, crate::module::Brand<'ctx>, crate::module::Unverified>) { Self::clear_name(self, module_token) }
         }
@@ -709,7 +720,7 @@ impl<'ctx, W: IntWidth> IntValue<'ctx, W> {
     }
     /// Owning module reference.
     #[inline]
-    pub fn module(self) -> ModuleView<'ctx, crate::module::Brand<'ctx>> {
+    pub fn module(self) -> ModuleView<'ctx, Brand<'ctx>> {
         ModuleView::new(self.module.module())
     }
     /// Refined IR-type handle for this value.
@@ -722,15 +733,17 @@ impl<'ctx, W: IntWidth> IntValue<'ctx, W> {
         self.as_value().name()
     }
     /// Set the textual name.
-    pub fn set_name(
+    pub fn set_name<Name>(
         self,
         module_token: &crate::module::Module<
             'ctx,
             crate::module::Brand<'ctx>,
             crate::module::Unverified,
         >,
-        name: &str,
-    ) {
+        name: Name,
+    ) where
+        Name: Into<String>,
+    {
         self.as_value().set_name(module_token, name);
     }
     /// Clear the textual name.
@@ -780,15 +793,17 @@ impl<'ctx, W: IntWidth> HasName<'ctx> for IntValue<'ctx, W> {
         Self::name(self)
     }
     #[inline]
-    fn set_name(
+    fn set_name<Name>(
         self,
         module_token: &crate::module::Module<
             'ctx,
             crate::module::Brand<'ctx>,
             crate::module::Unverified,
         >,
-        name: &str,
-    ) {
+        name: Name,
+    ) where
+        Name: Into<String>,
+    {
         Self::set_name(self, module_token, name)
     }
     #[inline]
@@ -1061,7 +1076,7 @@ impl<'ctx, K: FloatKind> FloatValue<'ctx, K> {
         }
     }
     #[inline]
-    pub fn module(self) -> ModuleView<'ctx, crate::module::Brand<'ctx>> {
+    pub fn module(self) -> ModuleView<'ctx, Brand<'ctx>> {
         ModuleView::new(self.module.module())
     }
     #[inline]
@@ -1071,15 +1086,17 @@ impl<'ctx, K: FloatKind> FloatValue<'ctx, K> {
     pub fn name(self) -> Option<String> {
         self.as_value().name()
     }
-    pub fn set_name(
+    pub fn set_name<Name>(
         self,
         module_token: &crate::module::Module<
             'ctx,
             crate::module::Brand<'ctx>,
             crate::module::Unverified,
         >,
-        name: &str,
-    ) {
+        name: Name,
+    ) where
+        Name: Into<String>,
+    {
         self.as_value().set_name(module_token, name);
     }
     pub fn clear_name(
@@ -1124,15 +1141,17 @@ impl<'ctx, K: FloatKind> HasName<'ctx> for FloatValue<'ctx, K> {
     fn name(self) -> Option<String> {
         Self::name(self)
     }
-    fn set_name(
+    fn set_name<Name>(
         self,
         module_token: &crate::module::Module<
             'ctx,
             crate::module::Brand<'ctx>,
             crate::module::Unverified,
         >,
-        name: &str,
-    ) {
+        name: Name,
+    ) where
+        Name: Into<String>,
+    {
         Self::set_name(self, module_token, name)
     }
     fn clear_name(

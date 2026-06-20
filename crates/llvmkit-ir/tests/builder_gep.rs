@@ -22,7 +22,7 @@ fn gep_array_offset() -> Result<(), IrError> {
             [ptr_ty.as_type(), i32_ty.as_type()],
             false,
         );
-        let f = m.add_function::<Ptr>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function::<Ptr, _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Ptr>(&m).position_at_end(entry);
         let p: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
@@ -51,7 +51,7 @@ fn gep_inbounds() -> Result<(), IrError> {
             [ptr_ty.as_type(), i32_ty.as_type()],
             false,
         );
-        let f = m.add_function::<Ptr>("gi", fn_ty, Linkage::External)?;
+        let f = m.add_function::<Ptr, _>("gi", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Ptr>(&m).position_at_end(entry);
         let p: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
@@ -79,7 +79,7 @@ fn struct_gep() -> Result<(), IrError> {
         m.set_struct_body(s_ty, [i32_ty.as_type(), i64_ty.as_type()], false)?;
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(ptr_ty.as_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<Ptr>("sg", fn_ty, Linkage::External)?;
+        let f = m.add_function::<Ptr, _>("sg", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Ptr>(&m).position_at_end(entry);
         let p: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
@@ -102,7 +102,7 @@ fn gep_zero_index() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(ptr_ty.as_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<Ptr>("gz", fn_ty, Linkage::External)?;
+        let f = m.add_function::<Ptr, _>("gz", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Ptr>(&m).position_at_end(entry);
         let p: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;

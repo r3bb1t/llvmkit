@@ -694,7 +694,7 @@ fn function_pointer_global_initializer_verifies() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let ptr_ty = m.ptr_type(0);
         let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let callee = m.add_function::<()>("callee", callee_ty, Linkage::External)?;
+        let callee = m.add_function::<(), _>("callee", callee_ty, Linkage::External)?;
         let init = callee.as_global_constant_ptr();
         m.add_global_constant("slot", ptr_ty.as_type(), init)?;
         m.verify_borrowed()?;
@@ -716,7 +716,7 @@ fn function_pointer_aggregate_initializer_prints_ptr_base() -> Result<(), IrErro
         let void_ty = m.void_type();
         let ptr_ty = m.ptr_type(0);
         let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let callee = m.add_function::<()>("callee", callee_ty, Linkage::External)?;
+        let callee = m.add_function::<(), _>("callee", callee_ty, Linkage::External)?;
         let arr_ty = m.array_type(ptr_ty.as_type(), 1);
         let elem = callee.as_aggregate_ptr(0);
         let init = arr_ty.const_array([elem])?;
@@ -1000,5 +1000,40 @@ fn comdat_get_or_insert_is_idempotent() {
         assert_eq!(a.id(), b.id());
         let c = m.get_or_insert_comdat("c2");
         assert_ne!(a.id(), c.id());
+    })
+}
+
+/// `llvmkit-specific`: ports the explicit Rust API split for global
+/// alias/ifunc partition clearing. Closest upstream references are
+/// `IR/GlobalAlias.h::GlobalAlias` and `IR/GlobalIFunc.h::GlobalIFunc`
+/// partition accessors.
+#[test]
+fn alias_ifunc_partition_clear_apis() {
+    Module::with_new("m", |m| {
+        let i32_ty = m.i32_type();
+        let zero = i32_ty.const_int(0i32);
+        let target = m
+            .add_global("target", i32_ty.as_type(), zero)
+            .expect("target");
+        let alias = m
+            .alias_builder("alias", i32_ty.as_type(), target)
+            .partition("part")
+            .build()
+            .expect("alias");
+        assert_eq!(alias.partition().as_deref(), Some("part"));
+        alias.clear_partition(&m);
+        assert!(alias.partition().is_none());
+
+        let resolver = m
+            .add_global("resolver", i32_ty.as_type(), zero)
+            .expect("resolver");
+        let ifunc = m
+            .ifunc_builder("ifunc", i32_ty.as_type(), resolver)
+            .partition("part")
+            .build()
+            .expect("ifunc");
+        assert_eq!(ifunc.partition().as_deref(), Some("part"));
+        ifunc.clear_partition(&m);
+        assert!(ifunc.partition().is_none());
     })
 }

@@ -19,7 +19,7 @@ fn module_prints_simple_add_function() -> Result<(), IrError> {
     Module::with_new("demo", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-        let f = m.add_function::<i32>("add", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("add", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -55,7 +55,7 @@ fn module_prints_const_folded_arithmetic() -> Result<(), IrError> {
         // pre-folded ConstantInt operand for `ret`.
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<i32>("answer", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("answer", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -88,7 +88,7 @@ fn function_print_standalone_matches_module_section() -> Result<(), IrError> {
     Module::with_new("standalone", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32>("identity", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("identity", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -112,7 +112,7 @@ fn declare_form_for_empty_function() -> Result<(), IrError> {
     Module::with_new("declare_only", |m| {
         let void = m.void_type();
         let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let _ = m.add_function::<()>("ext", fn_ty, Linkage::External)?;
+        let _ = m.add_function::<(), _>("ext", fn_ty, Linkage::External)?;
         let text = format!("{m}");
         assert!(text.contains("declare void @ext()\n"), "got:\n{text}");
         Ok(())
@@ -128,7 +128,7 @@ fn unnamed_basic_block_uses_slot_label() -> Result<(), IrError> {
     Module::with_new("slots", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32>("anon", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("anon", fn_ty, Linkage::External)?;
         // No name on the entry block.
         let entry = f.append_basic_block(&m, "");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);

@@ -18,7 +18,7 @@ fn switch_three_cases_print_form() -> Result<(), IrError> {
         let i8_ty = m.i8_type();
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [i8_ty.as_type()], false);
-        let f = m.add_function::<()>("instructions.terminators", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("instructions.terminators", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let default_bb = f.append_basic_block(&m, "defaultdest");
         let case0 = f.append_basic_block(&m, "defaultdest.0");
@@ -71,7 +71,7 @@ fn switch_no_cases_only_default() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [i32_ty.as_type()], false);
-        let f = m.add_function::<()>("test", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("test", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let dest = f.append_basic_block(&m, "dest");
         {
@@ -110,7 +110,7 @@ fn indirectbr_single_destination() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let dest = f.append_basic_block(&m, "dest");
         {
@@ -140,7 +140,7 @@ fn indirectbr_multiple_destinations() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let bb1 = f.append_basic_block(&m, "bb1");
         let bb2 = f.append_basic_block(&m, "bb2");

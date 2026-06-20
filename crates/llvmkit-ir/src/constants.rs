@@ -23,7 +23,7 @@ use crate::basic_block::BasicBlock;
 use crate::block_state::BlockSealState;
 use crate::constant::{
     BlockAddressPlaceholder, Constant, ConstantData, ConstantExprData, ConstantExprFlags,
-    ConstantExprInRange, ConstantExprOpcode, IsConstant, OverflowingConstantExprFlags,
+    ConstantExprInRange, ConstantExprOpcode, IsConstant,
 };
 use crate::derived_types::{
     ArrayType, FloatType, IntType, PointerType, StructType, TargetExtProperty, VectorType,
@@ -102,7 +102,7 @@ macro_rules! decl_constant_handle {
             #[inline]
             fn name(self) -> Option<String> { self.as_value().name() }
             #[inline]
-            fn set_name(self, module_token: &Module<'ctx, B, Unverified>, name: &str) { self.as_value().set_name(module_token, name); }
+            fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name) where Name: Into<String> { self.as_value().set_name(module_token, name); }
             #[inline]
             fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) { self.as_value().clear_name(module_token); }
         }
@@ -275,7 +275,10 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> HasName<'ctx, B> for ConstantIntV
     fn name(self) -> Option<String> {
         self.as_value().name()
     }
-    fn set_name(self, module_token: &Module<'ctx, B, Unverified>, name: &str) {
+    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
         self.as_value().set_name(module_token, name);
     }
     fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
@@ -466,7 +469,10 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> HasName<'ctx, B>
     fn name(self) -> Option<String> {
         self.as_value().name()
     }
-    fn set_name(self, module_token: &Module<'ctx, B, Unverified>, name: &str) {
+    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
         self.as_value().set_name(module_token, name);
     }
     fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
@@ -881,18 +887,27 @@ impl<'ctx> VectorType<'ctx> {
 // Parser-needed ConstantExpr and special constants
 // --------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ConstantExprOptions<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
-    pub source_ty: Option<Type<'ctx, B>>,
-    pub flags: ConstantExprFlags,
+    source_ty: Option<Type<'ctx, B>>,
+    flags: ConstantExprFlags,
 }
 
-impl<'ctx> ConstantExprOptions<'ctx> {
+impl<'ctx, B: crate::module::ModuleBrand> Default for ConstantExprOptions<'ctx, B> {
+    fn default() -> Self {
+        Self {
+            source_ty: None,
+            flags: ConstantExprFlags::none(),
+        }
+    }
+}
+
+impl<'ctx, B: crate::module::ModuleBrand> ConstantExprOptions<'ctx, B> {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn source_ty(mut self, ty: Type<'ctx>) -> Self {
+    pub fn source_ty(mut self, ty: Type<'ctx, B>) -> Self {
         self.source_ty = Some(ty);
         self
     }
@@ -900,6 +915,16 @@ impl<'ctx> ConstantExprOptions<'ctx> {
     pub fn flags(mut self, flags: ConstantExprFlags) -> Self {
         self.flags = flags;
         self
+    }
+
+    #[inline]
+    pub const fn source_type(&self) -> Option<Type<'ctx, B>> {
+        self.source_ty
+    }
+
+    #[inline]
+    pub const fn constant_flags(&self) -> &ConstantExprFlags {
+        &self.flags
     }
 }
 
@@ -920,10 +945,7 @@ impl<'ctx> ModuleCore {
             operands,
             indices,
             mask,
-            ConstantExprOptions {
-                source_ty: None,
-                flags,
-            },
+            ConstantExprOptions::new().flags(flags),
         )
     }
 
@@ -943,7 +965,7 @@ impl<'ctx> ModuleCore {
                 message: "type does not belong to this module",
             });
         }
-        let source_ty_id = match options.source_ty {
+        let source_ty_id = match options.source_type() {
             Some(ty) => {
                 if ty.module().id() != self.id() {
                     return Err(IrError::InvalidOperation {
@@ -968,7 +990,7 @@ impl<'ctx> ModuleCore {
             operands: ids.into_boxed_slice(),
             indices: indices.into_iter().collect::<Vec<_>>().into_boxed_slice(),
             mask: mask.into_iter().collect::<Vec<_>>().into_boxed_slice(),
-            flags: canonical_constant_expr_flags(options.flags),
+            flags: canonical_constant_expr_flags(options.constant_flags().clone()),
         };
         canonicalize_constant_expr_data(self, &mut data)?;
         validate_constant_expr_data(self, &data)?;
@@ -1245,26 +1267,25 @@ fn is_global_value_or_null_constant(module: &ModuleCore, id: ValueId) -> bool {
 }
 fn canonical_constant_expr_flags(flags: ConstantExprFlags) -> ConstantExprFlags {
     match flags {
-        ConstantExprFlags::Overflowing(OverflowingConstantExprFlags {
-            nuw: false,
-            nsw: false,
-        }) => ConstantExprFlags::None,
-        ConstantExprFlags::Gep(flags) if flags.no_wrap.is_empty() && flags.in_range.is_none() => {
-            ConstantExprFlags::None
-        }
-        ConstantExprFlags::Gep(mut flags) => {
-            flags.no_wrap = crate::GepNoWrapFlags::from_bits_canonical(flags.no_wrap.bits());
-            flags.in_range = flags.in_range.map(canonical_in_range);
-            ConstantExprFlags::Gep(flags)
+        ConstantExprFlags::Overflowing(flags) if flags.is_empty() => ConstantExprFlags::None,
+        ConstantExprFlags::Gep(flags) => {
+            let (no_wrap, in_range) = flags.into_parts();
+            ConstantExprFlags::gep_raw(
+                crate::GepNoWrapFlags::from_bits_canonical(no_wrap.bits()),
+                in_range.map(canonical_in_range),
+            )
         }
         flags => flags,
     }
 }
 
-fn canonical_in_range(mut in_range: ConstantExprInRange) -> ConstantExprInRange {
-    in_range.start = canonical_apint_words(in_range.start, in_range.bit_width);
-    in_range.end = canonical_apint_words(in_range.end, in_range.bit_width);
-    in_range
+fn canonical_in_range(in_range: ConstantExprInRange) -> ConstantExprInRange {
+    let (start, end, bit_width) = in_range.into_parts();
+    ConstantExprInRange::new(
+        canonical_apint_words(start, bit_width),
+        canonical_apint_words(end, bit_width),
+        bit_width,
+    )
 }
 
 fn canonical_apint_words(words: Box<[u64]>, bit_width: u32) -> Box<[u64]> {
@@ -1593,8 +1614,7 @@ fn validate_constant_expr_flags(data: &ConstantExprData) -> IrResult<()> {
     match (&data.opcode, &data.flags) {
         (
             ConstantExprOpcode::Add | ConstantExprOpcode::Sub,
-            ConstantExprFlags::None
-            | ConstantExprFlags::Overflowing(OverflowingConstantExprFlags { .. }),
+            ConstantExprFlags::None | ConstantExprFlags::Overflowing(_),
         )
         | (ConstantExprOpcode::Xor, ConstantExprFlags::None)
         | (
@@ -1621,7 +1641,7 @@ fn validate_constant_expr_flags(data: &ConstantExprData) -> IrResult<()> {
     }
 
     if let ConstantExprFlags::Gep(flags) = &data.flags
-        && let Some(in_range) = &flags.in_range
+        && let Some(in_range) = flags.in_range()
         && !constant_range_is_non_empty(in_range)
     {
         return Err(IrError::InvalidOperation {
@@ -1633,7 +1653,7 @@ fn validate_constant_expr_flags(data: &ConstantExprData) -> IrResult<()> {
 }
 
 fn constant_range_is_non_empty(range: &ConstantExprInRange) -> bool {
-    signed_apint_cmp(&range.start, &range.end, range.bit_width).is_lt()
+    signed_apint_cmp(range.start(), range.end(), range.bit_width()).is_lt()
 }
 
 fn signed_apint_cmp(lhs: &[u64], rhs: &[u64], bit_width: u32) -> core::cmp::Ordering {
@@ -1956,10 +1976,10 @@ fn validate_gep_constant_expr(
         });
     }
     if let ConstantExprFlags::Gep(flags) = &data.flags
-        && let Some(in_range) = &flags.in_range
+        && let Some(in_range) = flags.in_range()
     {
         let index_bit_width = module.data_layout().index_size_in_bits(base_addr_space);
-        if in_range.bit_width != index_bit_width {
+        if in_range.bit_width() != index_bit_width {
             return Err(IrError::InvalidOperation {
                 message: "invalid getelementptr inrange bit width",
             });

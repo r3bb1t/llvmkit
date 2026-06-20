@@ -19,14 +19,18 @@ fn cond_br_terminator_seals_block() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(void_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<()>("cb", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("cb", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let then_bb = f.append_basic_block(&m, "then");
         let else_bb = f.append_basic_block(&m, "else");
 
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        let cond: IntValue<bool> =
-            b.build_int_cmp::<i32, _, _>(llvmkit_ir::IntPredicate::Eq, f.param(0)?, 0_i32, "cond")?;
+        let cond: IntValue<bool> = b.build_int_cmp::<i32, _, _, _>(
+            llvmkit_ir::IntPredicate::Eq,
+            f.param(0)?,
+            0_i32,
+            "cond",
+        )?;
         let (sealed_entry, term) = b.build_cond_br(cond, then_bb, else_bb)?;
 
         // Mirrors `EXPECT_EQ(BI, TI)` -- the returned terminator handle
@@ -62,13 +66,13 @@ fn phi_range_iterates_three_phis() -> Result<(), IrError> {
     Module::with_new("p", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<i32>("p", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("p", fn_ty, Linkage::External)?;
         let bb = f.append_basic_block(&m, "bb");
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(bb);
-        let p1 = b.build_int_phi::<i32>("phi.1")?;
-        let p2 = b.build_int_phi::<i32>("phi.2")?;
-        let p3 = b.build_int_phi::<i32>("phi.3")?;
+        let p1 = b.build_int_phi::<i32, _>("phi.1")?;
+        let p2 = b.build_int_phi::<i32, _>("phi.2")?;
+        let p3 = b.build_int_phi::<i32, _>("phi.3")?;
         // Upstream wires `P1->addIncoming(P2, BB)` etc. via the same `BB`
         // (cycle). We add poisons referencing self -- the structural shape
         // matches the upstream phi count assertion regardless of operand
@@ -100,7 +104,7 @@ fn seal_typestate_does_not_change_asm_output() -> Result<(), IrError> {
     Module::with_new("seal_asm", |m| {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let exit = f.append_basic_block(&m, "exit");
 

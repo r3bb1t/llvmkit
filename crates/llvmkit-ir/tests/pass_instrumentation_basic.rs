@@ -19,7 +19,7 @@ where
     Module::with_new("pi", |m| {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<()>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         IRBuilder::new_for::<()>(&m)
             .position_at_end(entry)
@@ -175,8 +175,8 @@ fn analysis_callbacks_fire_only_on_computation() -> Result<(), IrError> {
         let mut fam = FunctionAnalysisManager::new();
         fam.set_instrumentation(callbacks);
         fam.register_pass(DominatorTreeAnalysis);
-        let _ = fam.get_result::<DominatorTreeAnalysis>(f)?;
-        let _ = fam.get_result::<DominatorTreeAnalysis>(f)?;
+        let _ = fam.get_result::<DominatorTreeAnalysis, _>(f)?;
+        let _ = fam.get_result::<DominatorTreeAnalysis, _>(f)?;
 
         let analysis_name = std::any::type_name::<DominatorTreeAnalysis>();
         let expected = vec![

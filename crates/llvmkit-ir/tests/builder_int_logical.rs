@@ -15,15 +15,15 @@ fn module_with(op: &str) -> Result<String, IrError> {
     Module::with_new("logical", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-        let f = m.add_function::<i32>(op, fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>(op, fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let x = f.param(0)?;
         let y = f.param(1)?;
         let r = match op {
-            "and" => b.build_int_and::<i32, _, _>(x, y, "z")?,
-            "or" => b.build_int_or::<i32, _, _>(x, y, "z")?,
-            "xor" => b.build_int_xor::<i32, _, _>(x, y, "z")?,
+            "and" => b.build_int_and::<i32, _, _, _>(x, y, "z")?,
+            "or" => b.build_int_or::<i32, _, _, _>(x, y, "z")?,
+            "xor" => b.build_int_xor::<i32, _, _, _>(x, y, "z")?,
             _ => unreachable!(),
         };
         b.build_ret(r)?;

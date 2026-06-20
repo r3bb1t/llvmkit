@@ -20,7 +20,7 @@ fn select_int_arms() -> Result<(), IrError> {
             [bool_ty.as_type(), i32_ty.as_type(), i32_ty.as_type()],
             false,
         );
-        let f = m.add_function::<i32>("test", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("test", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let cond: llvmkit_ir::IntValue<bool> = f.param(0)?.try_into()?;
@@ -48,7 +48,7 @@ fn select_fp_arms() -> Result<(), IrError> {
             [bool_ty.as_type(), f64_ty.as_type(), f64_ty.as_type()],
             false,
         );
-        let f = m.add_function::<f64>("test", fn_ty, Linkage::External)?;
+        let f = m.add_function::<f64, _>("test", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<f64>(&m).position_at_end(entry);
         let cond: llvmkit_ir::IntValue<bool> = f.param(0)?.try_into()?;
@@ -76,7 +76,7 @@ fn select_pointer_arms() -> Result<(), IrError> {
             [bool_ty.as_type(), ptr_ty.as_type(), ptr_ty.as_type()],
             false,
         );
-        let f = m.add_function::<llvmkit_ir::Ptr>("test", fn_ty, Linkage::External)?;
+        let f = m.add_function::<llvmkit_ir::Ptr, _>("test", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<llvmkit_ir::Ptr>(&m).position_at_end(entry);
         let cond: llvmkit_ir::IntValue<bool> = f.param(0)?.try_into()?;

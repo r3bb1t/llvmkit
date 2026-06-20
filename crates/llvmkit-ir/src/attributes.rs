@@ -314,7 +314,11 @@ impl<'ctx> Attribute<'ctx> {
     }
 
     /// Construct a string key=value attribute. Always valid.
-    pub fn string(key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn string<Key, ValueText>(key: Key, value: ValueText) -> Self
+    where
+        Key: Into<String>,
+        ValueText: Into<String>,
+    {
         Self::String {
             key: key.into(),
             value: value.into(),

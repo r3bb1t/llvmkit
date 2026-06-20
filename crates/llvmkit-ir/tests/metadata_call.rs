@@ -59,18 +59,20 @@ fn call_with_metadata_argument() -> Result<(), IrError> {
 
         // declare i64  @llvm.read_register.i64(metadata)
         let read_ty = m.fn_type(i64_ty, [md_ty.as_type()], false);
-        let read = m.add_function::<i64>("llvm.read_register.i64", read_ty, Linkage::External)?;
+        let read =
+            m.add_function::<i64, _>("llvm.read_register.i64", read_ty, Linkage::External)?;
         // declare void @llvm.write_register.i64(metadata, i64)
         let write_ty = m.fn_type(
             void_ty.as_type(),
             [md_ty.as_type(), i64_ty.as_type()],
             false,
         );
-        let write = m.add_function::<()>("llvm.write_register.i64", write_ty, Linkage::External)?;
+        let write =
+            m.add_function::<(), _>("llvm.write_register.i64", write_ty, Linkage::External)?;
 
         // define i64 @get_sp() { %rsp = call ...; call void ...; ret i64 %rsp }
         let host_ty = m.fn_type(i64_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let host = m.add_function::<i64>("get_sp", host_ty, Linkage::External)?;
+        let host = m.add_function::<i64, _>("get_sp", host_ty, Linkage::External)?;
         let entry = host.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
 
@@ -128,7 +130,7 @@ fn post_construction_function_attributes() -> Result<(), IrError> {
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
 
         // Forward declaration via plain `add_function` (no builder).
-        let f = m.add_function::<()>("trampoline", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("trampoline", fn_ty, Linkage::External)?;
         // Body is defined later; decorate the existing value.
         f.add_attribute(
             &m,
@@ -184,9 +186,9 @@ fn metadata_string_as_value_prints_inline() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let md_ty = m.metadata_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [md_ty.as_type()], false);
-        let g = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let g = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let host_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<()>("f", host_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("f", host_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let s = m.metadata_string("rsp");

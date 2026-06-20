@@ -2753,7 +2753,9 @@ mod tests {
         name: &str,
     ) -> (ValueId, ValueId) {
         let fn_ty = m.fn_type(ret_ty, params.iter().copied(), false);
-        let f = m.add_function::<R>(name, fn_ty, Linkage::External).unwrap();
+        let f = m
+            .add_function::<R, _>(name, fn_ty, Linkage::External)
+            .unwrap();
         let bb = f.append_basic_block(m, "entry");
         // Reach the value-id pair without leaking R into the return.
         let f_id = {
@@ -3038,7 +3040,7 @@ mod tests {
             // fabricated to make it valid.
             let callee_fn_ty = m.fn_type(i32_ty, [i32_ty, i32_ty], false);
             let callee = m
-                .add_function::<i32>("callee", callee_fn_ty, Linkage::External)
+                .add_function::<i32, _>("callee", callee_fn_ty, Linkage::External)
                 .unwrap();
             let cb = callee.append_basic_block(&m, "entry");
             let zero = fab_const_int_id(&m, i32_ty.id(), 0);
@@ -3051,7 +3053,7 @@ mod tests {
             // Caller: passes only ONE arg.
             let caller_fn_ty = m.fn_type(void_ty, [i32_ty], false);
             let caller = m
-                .add_function::<()>("caller", caller_fn_ty, Linkage::External)
+                .add_function::<(), _>("caller", caller_fn_ty, Linkage::External)
                 .unwrap();
             let entry = caller.append_basic_block(&m, "entry");
             let arg_id = caller.param(0).unwrap().as_value().id;

@@ -3,8 +3,7 @@
 //! Every test cites its upstream source per Doctrine D11.
 
 use llvmkit_ir::{
-    AtomicOrdering, AtomicRMWBinOp, AtomicRMWFlags, CmpXchgFlags, IRBuilder, IrError, Linkage,
-    MaybeAlign, Module, PointerValue, SyncScope,
+    AtomicOrdering, AtomicRMWBinOp, IRBuilder, IrError, Linkage, Module, PointerValue, SyncScope,
 };
 
 // --------------------------------------------------------------------------
@@ -19,7 +18,7 @@ fn fence_system_scope_orderings() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<()>("instructions.atomics", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("instructions.atomics", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let _ = b.build_fence(AtomicOrdering::Acquire, SyncScope::System, "")?;
@@ -42,7 +41,7 @@ fn fence_singlethread_seq_cst() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let _ = b.build_fence(
@@ -73,7 +72,7 @@ fn cmpxchg_no_align_monotonic_monotonic() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let word: PointerValue = f.param(0)?.try_into()?;
@@ -83,13 +82,11 @@ fn cmpxchg_no_align_monotonic_monotonic() -> Result<(), IrError> {
             word,
             zero,
             four,
-            llvmkit_ir::AtomicCmpXchgConfig {
-                success_ordering: AtomicOrdering::Monotonic,
-                failure_ordering: AtomicOrdering::Monotonic,
-                sync_scope: SyncScope::System,
-                flags: CmpXchgFlags::new(),
-                align: MaybeAlign::NONE,
-            },
+            llvmkit_ir::AtomicCmpXchgConfig::new(
+                AtomicOrdering::Monotonic,
+                AtomicOrdering::Monotonic,
+                SyncScope::System,
+            ),
             "cmpxchg_no_align.0",
         )?;
         b.build_ret_void();
@@ -114,7 +111,7 @@ fn cmpxchg_weak_volatile_singlethread() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let word: PointerValue = f.param(0)?.try_into()?;
@@ -124,13 +121,13 @@ fn cmpxchg_weak_volatile_singlethread() -> Result<(), IrError> {
             word,
             zero,
             eleven,
-            llvmkit_ir::AtomicCmpXchgConfig {
-                success_ordering: AtomicOrdering::SequentiallyConsistent,
-                failure_ordering: AtomicOrdering::Monotonic,
-                sync_scope: SyncScope::SingleThread,
-                flags: CmpXchgFlags::new().weak().volatile(),
-                align: MaybeAlign::NONE,
-            },
+            llvmkit_ir::AtomicCmpXchgConfig::new(
+                AtomicOrdering::SequentiallyConsistent,
+                AtomicOrdering::Monotonic,
+                SyncScope::SingleThread,
+            )
+            .weak()
+            .volatile(),
             "cx",
         )?;
         b.build_ret_void();
@@ -158,7 +155,7 @@ fn atomicrmw_xchg_monotonic() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let word: PointerValue = f.param(0)?.try_into()?;
@@ -167,12 +164,7 @@ fn atomicrmw_xchg_monotonic() -> Result<(), IrError> {
             AtomicRMWBinOp::Xchg,
             word,
             twelve,
-            llvmkit_ir::AtomicRMWConfig {
-                ordering: AtomicOrdering::Monotonic,
-                sync_scope: SyncScope::System,
-                flags: AtomicRMWFlags::new(),
-                align: MaybeAlign::NONE,
-            },
+            llvmkit_ir::AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
             "atomicrmw_no_align.xchg",
         )?;
         b.build_ret_void();
@@ -194,7 +186,7 @@ fn atomicrmw_volatile_min_monotonic() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let word: PointerValue = f.param(0)?.try_into()?;
@@ -203,12 +195,8 @@ fn atomicrmw_volatile_min_monotonic() -> Result<(), IrError> {
             AtomicRMWBinOp::Min,
             word,
             twenty,
-            llvmkit_ir::AtomicRMWConfig {
-                ordering: AtomicOrdering::Monotonic,
-                sync_scope: SyncScope::System,
-                flags: AtomicRMWFlags::new().volatile(),
-                align: MaybeAlign::NONE,
-            },
+            llvmkit_ir::AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::System)
+                .volatile(),
             "amin",
         )?;
         b.build_ret_void();
@@ -230,7 +218,7 @@ fn atomicrmw_umax_singlethread() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let word: PointerValue = f.param(0)?.try_into()?;
@@ -239,12 +227,7 @@ fn atomicrmw_umax_singlethread() -> Result<(), IrError> {
             AtomicRMWBinOp::UMax,
             word,
             twenty_one,
-            llvmkit_ir::AtomicRMWConfig {
-                ordering: AtomicOrdering::Monotonic,
-                sync_scope: SyncScope::SingleThread,
-                flags: AtomicRMWFlags::new(),
-                align: MaybeAlign::NONE,
-            },
+            llvmkit_ir::AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::SingleThread),
             "u",
         )?;
         b.build_ret_void();

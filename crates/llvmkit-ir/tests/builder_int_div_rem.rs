@@ -15,16 +15,16 @@ fn module_for(op: &str) -> Result<String, IrError> {
     Module::with_new("dr", |m| {
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
-        let f = m.add_function::<i64>(op, fn_ty, Linkage::External)?;
+        let f = m.add_function::<i64, _>(op, fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
         let x = f.param(0)?;
         let y = f.param(1)?;
         let r = match op {
-            "udiv" => b.build_int_udiv::<i64, _, _>(x, y, "z")?,
-            "sdiv" => b.build_int_sdiv::<i64, _, _>(x, y, "z")?,
-            "urem" => b.build_int_urem::<i64, _, _>(x, y, "z")?,
-            "srem" => b.build_int_srem::<i64, _, _>(x, y, "z")?,
+            "udiv" => b.build_int_udiv::<i64, _, _, _>(x, y, "z")?,
+            "sdiv" => b.build_int_sdiv::<i64, _, _, _>(x, y, "z")?,
+            "urem" => b.build_int_urem::<i64, _, _, _>(x, y, "z")?,
+            "srem" => b.build_int_srem::<i64, _, _, _>(x, y, "z")?,
             _ => unreachable!(),
         };
         b.build_ret(r)?;
@@ -72,10 +72,10 @@ fn udiv_exact() -> Result<(), IrError> {
     Module::with_new("ex", |m| {
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
-        let f = m.add_function::<i64>("udiv_exact", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i64, _>("udiv_exact", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
-        let r = b.build_int_udiv_with_flags::<i64, _, _>(
+        let r = b.build_int_udiv_with_flags::<i64, _, _, _>(
             f.param(0)?,
             f.param(1)?,
             UDivFlags::new().exact(),
@@ -94,10 +94,10 @@ fn sdiv_exact() -> Result<(), IrError> {
     Module::with_new("ex", |m| {
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
-        let f = m.add_function::<i64>("sdiv_exact", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i64, _>("sdiv_exact", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
-        let r = b.build_int_sdiv_with_flags::<i64, _, _>(
+        let r = b.build_int_sdiv_with_flags::<i64, _, _, _>(
             f.param(0)?,
             f.param(1)?,
             SDivFlags::new().exact(),

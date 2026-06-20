@@ -35,6 +35,7 @@ use core::marker::PhantomData;
 
 use crate::float_kind::{BFloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
 use crate::int_width::{IntDyn, IntWidth};
+use crate::struct_body_state::StructBodyDyn;
 use crate::r#type::{IrType, sealed};
 
 // --------------------------------------------------------------------------
@@ -216,7 +217,7 @@ impl<'ctx, Body: crate::struct_body_state::StructBodyState, B: ModuleBrand + 'ct
 
     /// Erase the body-state marker.
     #[inline]
-    pub fn as_dyn(self) -> StructType<'ctx, crate::struct_body_state::StructBodyDyn, B> {
+    pub fn as_dyn(self) -> StructType<'ctx, StructBodyDyn, B> {
         self.retag::<crate::struct_body_state::StructBodyDyn>()
     }
 

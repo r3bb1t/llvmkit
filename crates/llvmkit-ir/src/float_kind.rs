@@ -325,7 +325,7 @@ impl_into_float_value_via_try_from!(
 
 /// Sealed: float-kind markers whose `FloatType<'ctx, Self>` can be
 /// projected from a [`Module`](crate::Module) without an extra runtime parameter.
-/// Lets the IR builder accept `b.build_fp_load::<f32>(p, "v")?`
+/// Lets the IR builder accept `b.build_fp_load::<f32, _, _>(p, "v")?`
 /// instead of `b.build_fp_load(f32_ty, p, "v")?`.
 ///
 /// Not implemented for [`FloatDyn`] - the dyn-flavour builder

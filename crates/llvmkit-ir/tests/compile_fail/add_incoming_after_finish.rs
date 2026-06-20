@@ -14,7 +14,7 @@ fn main() {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m
-            .add_function::<i32>("f", fn_ty, Linkage::External)
+            .add_function::<i32, _>("f", fn_ty, Linkage::External)
             .unwrap();
         let entry = f.append_basic_block(&m, "entry");
         let other = f.append_basic_block(&m, "other");
@@ -24,7 +24,7 @@ fn main() {
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(other);
         b.build_br(join).unwrap();
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
-        let phi = b.build_int_phi::<i32>("p").unwrap();
+        let phi = b.build_int_phi::<i32, _>("p").unwrap();
         let phi = phi
             .add_incoming(1_i32, entry)
             .unwrap()

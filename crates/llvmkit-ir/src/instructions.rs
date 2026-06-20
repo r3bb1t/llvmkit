@@ -9,15 +9,29 @@
 //! the resulting [`Instruction<'ctx, state::Attached>`] is `!Copy` and
 //! can drive `erase_from_parent` / `detach_from_parent` / RAUW.
 
+use crate::IrResult;
+use crate::align::Align;
+use crate::atomic_ordering::AtomicOrdering;
+use crate::atomicrmw_binop::AtomicRMWBinOp;
+use crate::basic_block::BasicBlock;
+use crate::calling_conv::CallingConv;
+use crate::cmp_predicate::{FloatPredicate, IntPredicate};
+use crate::derived_types::FunctionType;
+use crate::fmf::FastMathFlags;
+use crate::gep_no_wrap_flags::GepNoWrapFlags;
+use crate::instr_types::TailCallKind;
 use crate::instr_types::{
     BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData, PhiData,
     ReturnOpData,
 };
 use crate::instruction::{Instruction, InstructionKindData, state};
+use crate::marker::Dyn;
 use crate::module::{ModuleCore, ModuleRef};
 use crate::phi_state::{Closed, Open, PhiState};
-use crate::r#type::TypeId;
-use crate::value::{Value, ValueId, ValueKindData};
+use crate::sync_scope::SyncScope;
+use crate::term_open_state::Closed as TermClosed;
+use crate::r#type::{Type, TypeId};
+use crate::value::{FloatValue, IntValue, IsValue, PointerValue, Value, ValueId, ValueKindData};
 
 macro_rules! decl_binop_handle {
     (
@@ -226,7 +240,7 @@ impl<'ctx> AllocaInst<'ctx> {
         }
     }
     /// Allocated element type.
-    pub fn allocated_type(self) -> crate::r#type::Type<'ctx> {
+    pub fn allocated_type(self) -> Type<'ctx> {
         crate::r#type::Type::new(self.payload().allocated_ty, self.module.module())
     }
     /// Optional element-count operand (`alloca i32, i32 %n`).
@@ -237,7 +251,7 @@ impl<'ctx> AllocaInst<'ctx> {
         Some(Value::from_parts(id, module, data.ty))
     }
     /// Explicit alignment, if any.
-    pub fn align(self) -> Option<crate::align::Align> {
+    pub fn align(self) -> Option<Align> {
         self.payload().align.align()
     }
     /// Address space of the result pointer.
@@ -273,7 +287,7 @@ impl<'ctx> LoadInst<'ctx> {
         let data = module.context().value_data(id);
         Value::from_parts(id, module, data.ty)
     }
-    pub fn align(self) -> Option<crate::align::Align> {
+    pub fn align(self) -> Option<Align> {
         self.payload().align.align()
     }
     pub fn is_volatile(self) -> bool {
@@ -281,12 +295,12 @@ impl<'ctx> LoadInst<'ctx> {
     }
     /// Atomic-ordering on this load. Mirrors `LoadInst::getOrdering`
     /// in `Instructions.h`. Returns `NotAtomic` for ordinary non-atomic loads.
-    pub fn ordering(self) -> crate::atomic_ordering::AtomicOrdering {
+    pub fn ordering(self) -> AtomicOrdering {
         self.payload().ordering
     }
     /// Synchronization scope on this load. Mirrors
     /// `LoadInst::getSyncScopeID` in `Instructions.h`.
-    pub fn sync_scope(self) -> crate::sync_scope::SyncScope {
+    pub fn sync_scope(self) -> SyncScope {
         self.payload().sync_scope.clone()
     }
     /// `true` when this load carries a non-`NotAtomic` ordering. Mirrors
@@ -329,7 +343,7 @@ impl<'ctx> StoreInst<'ctx> {
         let data = module.context().value_data(id);
         Value::from_parts(id, module, data.ty)
     }
-    pub fn align(self) -> Option<crate::align::Align> {
+    pub fn align(self) -> Option<Align> {
         self.payload().align.align()
     }
     pub fn is_volatile(self) -> bool {
@@ -337,12 +351,12 @@ impl<'ctx> StoreInst<'ctx> {
     }
     /// Atomic-ordering on this store. Mirrors `StoreInst::getOrdering`
     /// in `Instructions.h`. Returns `NotAtomic` for ordinary non-atomic stores.
-    pub fn ordering(self) -> crate::atomic_ordering::AtomicOrdering {
+    pub fn ordering(self) -> AtomicOrdering {
         self.payload().ordering
     }
     /// Synchronization scope on this store. Mirrors
     /// `StoreInst::getSyncScopeID` in `Instructions.h`.
-    pub fn sync_scope(self) -> crate::sync_scope::SyncScope {
+    pub fn sync_scope(self) -> SyncScope {
         self.payload().sync_scope.clone()
     }
     /// `true` when this store carries a non-`NotAtomic` ordering. Mirrors
@@ -375,7 +389,7 @@ impl<'ctx> GepInst<'ctx> {
         }
     }
     /// Source-element type (the second operand of `getelementptr`).
-    pub fn source_element_type(self) -> crate::r#type::Type<'ctx> {
+    pub fn source_element_type(self) -> Type<'ctx> {
         crate::r#type::Type::new(self.payload().source_ty, self.module.module())
     }
     pub fn pointer(self) -> Value<'ctx> {
@@ -392,7 +406,7 @@ impl<'ctx> GepInst<'ctx> {
             Value::from_parts(id, module, data.ty)
         })
     }
-    pub fn flags(self) -> crate::gep_no_wrap_flags::GepNoWrapFlags {
+    pub fn flags(self) -> GepNoWrapFlags {
         self.payload().flags
     }
 }
@@ -469,7 +483,7 @@ impl<'ctx, R: crate::marker::ReturnMarker> CallInst<'ctx, R> {
     /// Erase the return marker. Useful for storage / printing helpers
     /// that don't want to be generic in `R`.
     #[inline]
-    pub fn as_dyn(self) -> CallInst<'ctx, crate::marker::Dyn> {
+    pub fn as_dyn(self) -> CallInst<'ctx, Dyn> {
         self.retag::<crate::marker::Dyn>()
     }
 
@@ -491,7 +505,7 @@ impl<'ctx, R: crate::marker::ReturnMarker> CallInst<'ctx, R> {
         Value::from_parts(id, module, data.ty)
     }
     /// Function-type of the call (`FunctionType<'ctx>`).
-    pub fn function_type(self) -> crate::derived_types::FunctionType<'ctx> {
+    pub fn function_type(self) -> FunctionType<'ctx> {
         crate::derived_types::FunctionType::new(self.payload().fn_ty, self.module.module())
     }
     pub fn args(self) -> impl ExactSizeIterator<Item = Value<'ctx>> + 'ctx {
@@ -502,10 +516,10 @@ impl<'ctx, R: crate::marker::ReturnMarker> CallInst<'ctx, R> {
             Value::from_parts(id, module, data.ty)
         })
     }
-    pub fn calling_conv(self) -> crate::CallingConv {
+    pub fn calling_conv(self) -> CallingConv {
         self.payload().calling_conv
     }
-    pub fn tail_call_kind(self) -> crate::instr_types::TailCallKind {
+    pub fn tail_call_kind(self) -> TailCallKind {
         self.payload().tail_kind
     }
     /// Return value, or `None` for a void-returning callee. Available
@@ -532,7 +546,7 @@ macro_rules! call_inst_int_return {
         impl<'ctx> CallInst<'ctx, $w> {
             /// Typed result handle for an integer-returning call.
             #[inline]
-            pub fn return_int_value(self) -> crate::value::IntValue<'ctx, $w> {
+            pub fn return_int_value(self) -> IntValue<'ctx, $w> {
                 let v = Value::from_parts(self.id, self.module.module(), self.ty);
                 crate::value::IntValue::<$w>::from_value_unchecked(v)
             }
@@ -546,7 +560,7 @@ macro_rules! call_inst_float_return {
         impl<'ctx> CallInst<'ctx, $k> {
             /// Typed result handle for a float-returning call.
             #[inline]
-            pub fn return_float_value(self) -> crate::value::FloatValue<'ctx, $k> {
+            pub fn return_float_value(self) -> FloatValue<'ctx, $k> {
                 let v = Value::from_parts(self.id, self.module.module(), self.ty);
                 crate::value::FloatValue::<$k>::from_value_unchecked(v)
             }
@@ -567,7 +581,7 @@ call_inst_float_return!(
 impl<'ctx> CallInst<'ctx, crate::marker::Ptr> {
     /// Typed result handle for a pointer-returning call.
     #[inline]
-    pub fn return_pointer_value(self) -> crate::value::PointerValue<'ctx> {
+    pub fn return_pointer_value(self) -> PointerValue<'ctx> {
         crate::value::PointerValue::from_value_unchecked(Value::from_parts(
             self.id,
             self.module.module(),
@@ -720,7 +734,7 @@ impl<'ctx> ICmpInst<'ctx> {
     }
     /// Integer predicate (`eq`, `slt`, `ult`, ...).
     #[inline]
-    pub fn predicate(self) -> crate::cmp_predicate::IntPredicate {
+    pub fn predicate(self) -> IntPredicate {
         self.payload().predicate
     }
     pub fn lhs(self) -> Value<'ctx> {
@@ -761,7 +775,7 @@ impl<'ctx> FCmpInst<'ctx> {
     }
     /// Float predicate (`oeq`, `olt`, `une`, ...).
     #[inline]
-    pub fn predicate(self) -> crate::cmp_predicate::FloatPredicate {
+    pub fn predicate(self) -> FloatPredicate {
         self.payload().predicate
     }
     pub fn lhs(self) -> Value<'ctx> {
@@ -929,7 +943,7 @@ impl<'ctx, W: crate::int_width::IntWidth, P: PhiState> PhiInst<'ctx, W, P> {
     /// Result handle for the phi node, narrowed to the static width
     /// `W`.
     #[inline]
-    pub fn as_int_value(self) -> crate::value::IntValue<'ctx, W> {
+    pub fn as_int_value(self) -> IntValue<'ctx, W> {
         let v = Value::from_parts(self.id, self.module.module(), self.ty);
         crate::value::IntValue::<W>::from_value_unchecked(v)
     }
@@ -1119,7 +1133,7 @@ impl<'ctx, K: crate::float_kind::FloatKind, P: PhiState> FpPhiInst<'ctx, K, P> {
 
     /// Result handle for the phi, narrowed to the static kind `K`.
     #[inline]
-    pub fn as_float_value(self) -> crate::value::FloatValue<'ctx, K> {
+    pub fn as_float_value(self) -> FloatValue<'ctx, K> {
         let v = Value::from_parts(self.id, self.module.module(), self.ty);
         crate::value::FloatValue::<K>::from_value_unchecked(v)
     }
@@ -1269,10 +1283,9 @@ impl<'ctx, P: PhiState> PointerPhiInst<'ctx, P> {
         Instruction::from_parts(self.id, self.module.module())
     }
 
-    /// Result handle for the phi, narrowed to a
-    /// [`PointerValue`](crate::value::PointerValue).
+    /// Result handle for the phi, narrowed to a [`PointerValue`].
     #[inline]
-    pub fn as_pointer_value(self) -> crate::value::PointerValue<'ctx> {
+    pub fn as_pointer_value(self) -> PointerValue<'ctx> {
         let v = Value::from_parts(self.id, self.module.module(), self.ty);
         crate::value::PointerValue::from_value_unchecked(v)
     }
@@ -1387,7 +1400,7 @@ impl<'ctx> FNegInst<'ctx> {
         Value::from_parts(id, module, data.ty)
     }
     /// Fast-math flags. Mirrors `FPMathOperator::getFastMathFlags`.
-    pub fn fast_math_flags(self) -> crate::fmf::FastMathFlags {
+    pub fn fast_math_flags(self) -> FastMathFlags {
         self.payload().fmf
     }
 }
@@ -1454,7 +1467,7 @@ impl<'ctx> VAArgInst<'ctx> {
         Value::from_parts(id, module, data.ty)
     }
     /// Destination type (the second `, T` in `va_arg ptr %vl, T`).
-    pub fn result_type(self) -> crate::r#type::Type<'ctx> {
+    pub fn result_type(self) -> Type<'ctx> {
         crate::r#type::Type::new(self.ty, self.module.module())
     }
 }
@@ -1688,11 +1701,11 @@ impl<'ctx> FenceInst<'ctx> {
         }
     }
     /// Memory ordering. Mirrors `FenceInst::getOrdering`.
-    pub fn ordering(self) -> crate::atomic_ordering::AtomicOrdering {
+    pub fn ordering(self) -> AtomicOrdering {
         self.payload().ordering
     }
     /// Synchronization scope. Mirrors `FenceInst::getSyncScopeID`.
-    pub fn sync_scope(self) -> crate::sync_scope::SyncScope {
+    pub fn sync_scope(self) -> SyncScope {
         self.payload().sync_scope.clone()
     }
 }
@@ -1738,16 +1751,16 @@ impl<'ctx> AtomicCmpXchgInst<'ctx> {
         let data = module.context().value_data(id);
         Value::from_parts(id, module, data.ty)
     }
-    pub fn align(self) -> Option<crate::align::Align> {
+    pub fn align(self) -> Option<Align> {
         self.payload().align.align()
     }
-    pub fn success_ordering(self) -> crate::atomic_ordering::AtomicOrdering {
+    pub fn success_ordering(self) -> AtomicOrdering {
         self.payload().success_ordering
     }
-    pub fn failure_ordering(self) -> crate::atomic_ordering::AtomicOrdering {
+    pub fn failure_ordering(self) -> AtomicOrdering {
         self.payload().failure_ordering
     }
-    pub fn sync_scope(self) -> crate::sync_scope::SyncScope {
+    pub fn sync_scope(self) -> SyncScope {
         self.payload().sync_scope.clone()
     }
     pub fn is_weak(self) -> bool {
@@ -1780,7 +1793,7 @@ impl<'ctx> AtomicRMWInst<'ctx> {
             _ => unreachable!("AtomicRMWInst invariant: kind is Instruction"),
         }
     }
-    pub fn operation(self) -> crate::atomicrmw_binop::AtomicRMWBinOp {
+    pub fn operation(self) -> AtomicRMWBinOp {
         self.payload().op
     }
     pub fn pointer(self) -> Value<'ctx> {
@@ -1795,7 +1808,7 @@ impl<'ctx> AtomicRMWInst<'ctx> {
         let data = module.context().value_data(id);
         Value::from_parts(id, module, data.ty)
     }
-    pub fn set_value_operand(self, value: Value<'ctx>) -> crate::IrResult<()> {
+    pub fn set_value_operand(self, value: Value<'ctx>) -> IrResult<()> {
         if value.module != self.module {
             return Err(crate::IrError::ForeignValue);
         }
@@ -1827,13 +1840,13 @@ impl<'ctx> AtomicRMWInst<'ctx> {
             .push(self.id);
         Ok(())
     }
-    pub fn align(self) -> Option<crate::align::Align> {
+    pub fn align(self) -> Option<Align> {
         self.payload().align.align()
     }
-    pub fn ordering(self) -> crate::atomic_ordering::AtomicOrdering {
+    pub fn ordering(self) -> AtomicOrdering {
         self.payload().ordering
     }
-    pub fn sync_scope(self) -> crate::sync_scope::SyncScope {
+    pub fn sync_scope(self) -> SyncScope {
         self.payload().sync_scope.clone()
     }
     pub fn is_volatile(self) -> bool {
@@ -1923,7 +1936,7 @@ impl<'ctx, P: crate::term_open_state::TermOpenState> SwitchInst<'ctx, P> {
         let data = module.context().value_data(id);
         Value::from_parts(id, module, data.ty)
     }
-    pub fn default_destination(self) -> crate::basic_block::BasicBlock<'ctx, crate::marker::Dyn> {
+    pub fn default_destination(self) -> BasicBlock<'ctx, Dyn> {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
         crate::basic_block::BasicBlock::from_parts(
@@ -1983,7 +1996,7 @@ impl<'ctx> SwitchInst<'ctx, crate::term_open_state::Open> {
     /// the implicit "switch is finalised" convention upstream where
     /// the verifier subsequently runs `Verifier::visitSwitchInst`.
     #[inline]
-    pub fn finish(self) -> SwitchInst<'ctx, crate::term_open_state::Closed> {
+    pub fn finish(self) -> SwitchInst<'ctx, TermClosed> {
         self.retag()
     }
 }
@@ -2103,7 +2116,7 @@ impl<'ctx> IndirectBrInst<'ctx, crate::term_open_state::Open> {
     }
     /// Consume the open `indirectbr` and return its [`Closed`] view.
     #[inline]
-    pub fn finish(self) -> IndirectBrInst<'ctx, crate::term_open_state::Closed> {
+    pub fn finish(self) -> IndirectBrInst<'ctx, TermClosed> {
         self.retag()
     }
 }
@@ -2185,7 +2198,7 @@ impl<'ctx, R: crate::marker::ReturnMarker> InvokeInst<'ctx, R> {
     }
     /// Erase the return marker.
     #[inline]
-    pub fn as_dyn(self) -> InvokeInst<'ctx, crate::marker::Dyn> {
+    pub fn as_dyn(self) -> InvokeInst<'ctx, Dyn> {
         self.retag::<crate::marker::Dyn>()
     }
     fn payload(self) -> &'ctx crate::instr_types::InvokeInstData {
@@ -2204,7 +2217,7 @@ impl<'ctx, R: crate::marker::ReturnMarker> InvokeInst<'ctx, R> {
         let data = module.context().value_data(id);
         Value::from_parts(id, module, data.ty)
     }
-    pub fn function_type(self) -> crate::derived_types::FunctionType<'ctx> {
+    pub fn function_type(self) -> FunctionType<'ctx> {
         crate::derived_types::FunctionType::new(self.payload().fn_ty, self.module.module())
     }
     pub fn args(self) -> impl ExactSizeIterator<Item = Value<'ctx>> + 'ctx {
@@ -2215,10 +2228,10 @@ impl<'ctx, R: crate::marker::ReturnMarker> InvokeInst<'ctx, R> {
             Value::from_parts(id, module, data.ty)
         })
     }
-    pub fn calling_conv(self) -> crate::CallingConv {
+    pub fn calling_conv(self) -> CallingConv {
         self.payload().calling_conv
     }
-    pub fn normal_destination(self) -> crate::basic_block::BasicBlock<'ctx, crate::marker::Dyn> {
+    pub fn normal_destination(self) -> BasicBlock<'ctx, Dyn> {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
         crate::basic_block::BasicBlock::from_parts(
@@ -2227,7 +2240,7 @@ impl<'ctx, R: crate::marker::ReturnMarker> InvokeInst<'ctx, R> {
             label_ty,
         )
     }
-    pub fn unwind_destination(self) -> crate::basic_block::BasicBlock<'ctx, crate::marker::Dyn> {
+    pub fn unwind_destination(self) -> BasicBlock<'ctx, Dyn> {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
         crate::basic_block::BasicBlock::from_parts(
@@ -2276,7 +2289,7 @@ impl<'ctx> CallBrInst<'ctx> {
         let data = module.context().value_data(id);
         Value::from_parts(id, module, data.ty)
     }
-    pub fn function_type(self) -> crate::derived_types::FunctionType<'ctx> {
+    pub fn function_type(self) -> FunctionType<'ctx> {
         crate::derived_types::FunctionType::new(self.payload().fn_ty, self.module.module())
     }
     pub fn args(self) -> impl ExactSizeIterator<Item = Value<'ctx>> + 'ctx {
@@ -2287,10 +2300,10 @@ impl<'ctx> CallBrInst<'ctx> {
             Value::from_parts(id, module, data.ty)
         })
     }
-    pub fn calling_conv(self) -> crate::CallingConv {
+    pub fn calling_conv(self) -> CallingConv {
         self.payload().calling_conv
     }
-    pub fn default_destination(self) -> crate::basic_block::BasicBlock<'ctx, crate::marker::Dyn> {
+    pub fn default_destination(self) -> BasicBlock<'ctx, Dyn> {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
         crate::basic_block::BasicBlock::from_parts(
@@ -2411,10 +2424,7 @@ impl<'ctx> LandingPadInst<'ctx, crate::term_open_state::Open> {
     }
     /// Append a `catch <ty> <val>` clause. Mirrors `LandingPadInst::addClause`
     /// for `Catch`.
-    pub fn add_catch_clause<V: crate::value::IsValue<'ctx>>(
-        self,
-        type_info: V,
-    ) -> crate::IrResult<Self> {
+    pub fn add_catch_clause<V: IsValue<'ctx>>(self, type_info: V) -> crate::IrResult<Self> {
         let module = self.module.module();
         let v = type_info.as_value();
         if v.module().id() != module.id() {
@@ -2433,10 +2443,7 @@ impl<'ctx> LandingPadInst<'ctx, crate::term_open_state::Open> {
         Ok(self)
     }
     /// Append a `filter <ty> <val>` clause.
-    pub fn add_filter_clause<V: crate::value::IsValue<'ctx>>(
-        self,
-        filter_array: V,
-    ) -> crate::IrResult<Self> {
+    pub fn add_filter_clause<V: IsValue<'ctx>>(self, filter_array: V) -> crate::IrResult<Self> {
         let module = self.module.module();
         let v = filter_array.as_value();
         if v.module().id() != module.id() {
@@ -2456,7 +2463,7 @@ impl<'ctx> LandingPadInst<'ctx, crate::term_open_state::Open> {
     }
     /// Consume the open landingpad and return its [`Closed`] view.
     #[inline]
-    pub fn finish(self) -> LandingPadInst<'ctx, crate::term_open_state::Closed> {
+    pub fn finish(self) -> LandingPadInst<'ctx, TermClosed> {
         self.retag()
     }
 }
@@ -2610,7 +2617,7 @@ impl<'ctx> CatchReturnInst<'ctx> {
         let data = module.context().value_data(id);
         Value::from_parts(id, module, data.ty)
     }
-    pub fn target(self) -> crate::basic_block::BasicBlock<'ctx, crate::marker::Dyn> {
+    pub fn target(self) -> BasicBlock<'ctx, Dyn> {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
         crate::basic_block::BasicBlock::from_parts(self.payload().target_bb, module, label_ty)
@@ -2645,7 +2652,7 @@ impl<'ctx> CleanupReturnInst<'ctx> {
         Value::from_parts(id, module, data.ty)
     }
     /// `None` represents `unwind to caller`.
-    pub fn unwind_dest(self) -> Option<crate::basic_block::BasicBlock<'ctx, crate::marker::Dyn>> {
+    pub fn unwind_dest(self) -> Option<BasicBlock<'ctx, Dyn>> {
         let id = self.payload().unwind_dest?;
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
@@ -2732,7 +2739,7 @@ impl<'ctx, P: crate::term_open_state::TermOpenState> CatchSwitchInst<'ctx, P> {
         Some(Value::from_parts(id, module, data.ty))
     }
     /// `None` = `unwind to caller`.
-    pub fn unwind_dest(self) -> Option<crate::basic_block::BasicBlock<'ctx, crate::marker::Dyn>> {
+    pub fn unwind_dest(self) -> Option<BasicBlock<'ctx, Dyn>> {
         let id = self.payload().unwind_dest.get()?;
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
@@ -2767,7 +2774,7 @@ impl<'ctx> CatchSwitchInst<'ctx, crate::term_open_state::Open> {
         Ok(self)
     }
     #[inline]
-    pub fn finish(self) -> CatchSwitchInst<'ctx, crate::term_open_state::Closed> {
+    pub fn finish(self) -> CatchSwitchInst<'ctx, TermClosed> {
         self.retag()
     }
 }

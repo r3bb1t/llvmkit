@@ -19,11 +19,11 @@ fn build_fneg_round_trip() -> Result<(), IrError> {
     Module::with_new("u", |m| {
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
-        let f = m.add_function::<f32>("k", fn_ty, Linkage::External)?;
+        let f = m.add_function::<f32, _>("k", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
         let x: FloatValue<f32> = f.param(0)?.try_into()?;
-        let r = b.build_float_neg::<f32, _>(x, "y")?;
+        let r = b.build_float_neg::<f32, _, _>(x, "y")?;
         b.build_ret(r)?;
         let text = format!("{m}");
         assert!(text.contains("%y = fneg float %0\n"), "got:\n{text}");
@@ -40,13 +40,13 @@ fn fneg_with_fmf_prints_canonical_form() -> Result<(), IrError> {
     Module::with_new("u", |m| {
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
-        let f = m.add_function::<f32>("k", fn_ty, Linkage::External)?;
+        let f = m.add_function::<f32, _>("k", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
         let x: FloatValue<f32> = f.param(0)?.try_into()?;
         let nnan_only = FastMathFlags::NO_NANS;
-        let n = b.build_float_neg_with_flags::<f32, _>(x, nnan_only, "n")?;
-        let fast = b.build_float_neg_with_flags::<f32, _>(x, FastMathFlags::fast(), "fst")?;
+        let n = b.build_float_neg_with_flags::<f32, _, _>(x, nnan_only, "n")?;
+        let fast = b.build_float_neg_with_flags::<f32, _, _>(x, FastMathFlags::fast(), "fst")?;
         b.build_ret(n)?;
         let text = format!("{m}");
         // Mirrors `; CHECK: %f.nnan = fneg nnan float %op1` (compatibility.ll line 1008).
@@ -67,11 +67,11 @@ fn fneg_double_no_flags_unnamed_result() -> Result<(), IrError> {
         let f64_ty = m.f64_type();
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [f64_ty.as_type()], false);
-        let f = m.add_function::<()>("instructions.unops", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("instructions.unops", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let x: FloatValue<f64> = f.param(0)?.try_into()?;
-        let _ = b.build_float_neg::<f64, _>(x, "")?;
+        let _ = b.build_float_neg::<f64, _, _>(x, "")?;
         b.build_ret_void();
         let text = format!("{m}");
         // Mirrors `; CHECK: fneg double %op1` (compatibility.ll line 1445).
@@ -93,7 +93,7 @@ fn freeze_i8_round_trip() -> Result<(), IrError> {
         let i8_ty = m.i8_type();
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [i8_ty.as_type()], false);
-        let f = m.add_function::<()>("foo", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("foo", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let arg: IntValue<i8> = f.param(0)?.try_into()?;
@@ -121,7 +121,7 @@ fn freeze_int_and_pointer_print_forms() -> Result<(), IrError> {
             [i32_ty.as_type(), ptr_ty.as_type()],
             false,
         );
-        let f = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let iop: IntValue<i32> = f.param(0)?.try_into()?;
@@ -147,7 +147,7 @@ fn verifier_accepts_freeze_int() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<()>("foo", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("foo", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let zero = i32_ty.const_int(0_i32);
@@ -172,7 +172,7 @@ fn va_arg_int_round_trip() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
-        let f = m.add_function::<i32>("get_i32", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("get_i32", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let ap: PointerValue = f.param(0)?.try_into()?;
@@ -196,7 +196,7 @@ fn va_arg_print_keyword_and_destination_type() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
-        let f = m.add_function::<i32>("h", fn_ty, Linkage::External)?;
+        let f = m.add_function::<i32, _>("h", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let ap: PointerValue = f.param(0)?.try_into()?;
@@ -219,7 +219,7 @@ fn verifier_accepts_va_arg_pointer_source() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<()>("foo", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("foo", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let ap: PointerValue = f.param(0)?.try_into()?;

@@ -7,5 +7,5 @@ error[E0599]: no method named `set_linkage` found for struct `GlobalVariableView
 help: there is a method `linkage` with a similar name, but with different arguments
   --> src/module.rs
    |
-   |     pub fn linkage(self) -> crate::Linkage {
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |     pub fn linkage(self) -> Linkage {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

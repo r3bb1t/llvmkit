@@ -78,7 +78,7 @@ fn blockaddress_constant_round_trips() -> Result<(), IrError> {
     Module::with_new("blockaddress_const", |m| {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<()>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let terminator = b.build_ret_void().1;
@@ -101,7 +101,7 @@ fn blockaddress_constant_uses_function_address_space() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m
-            .function_builder::<()>("f", fn_ty)
+            .function_builder::<(), _>("f", fn_ty)
             .linkage(Linkage::External)
             .address_space(2)
             .build()?;
@@ -445,10 +445,7 @@ fn empty_constant_expr_flags_are_canonicalized_before_interning() -> Result<(), 
             [lhs.as_value(), rhs.as_value()],
             [],
             [],
-            ConstantExprFlags::Overflowing(OverflowingConstantExprFlags {
-                nuw: false,
-                nsw: false,
-            }),
+            ConstantExprFlags::Overflowing(OverflowingConstantExprFlags::none()),
         )?;
 
         assert_eq!(plain, empty_flags);
@@ -544,16 +541,9 @@ fn constant_expr_gep_inrange_words_are_truncated_before_interning() -> Result<()
         let g = m.add_global("g", i8_ty.as_type(), i8_ty.const_zero())?;
         let ptr = g.as_global_constant_ptr();
         let offset = m.i64_type().const_int(1i64);
-        let canonical_range = ConstantExprInRange {
-            start: Box::from([0]),
-            end: Box::from([1]),
-            bit_width: 64,
-        };
-        let high_word_range = ConstantExprInRange {
-            start: Box::from([0, u64::MAX]),
-            end: Box::from([1, u64::MAX]),
-            bit_width: 64,
-        };
+        let canonical_range = ConstantExprInRange::new(Box::from([0]), Box::from([1]), 64);
+        let high_word_range =
+            ConstantExprInRange::new(Box::from([0, u64::MAX]), Box::from([1, u64::MAX]), 64);
 
         let canonical = m.constant_expr_with_options(
             m.ptr_type(0).as_type(),
@@ -563,9 +553,9 @@ fn constant_expr_gep_inrange_words_are_truncated_before_interning() -> Result<()
             [],
             llvmkit_ir::ConstantExprOptions::new()
                 .source_ty(i8_ty.as_type())
-                .flags(ConstantExprFlags::gep(
+                .flags(ConstantExprFlags::gep_with_in_range(
                     GepNoWrapFlags::empty(),
-                    Some(canonical_range),
+                    canonical_range,
                 )),
         )?;
         let high_word = m.constant_expr_with_options(
@@ -576,9 +566,9 @@ fn constant_expr_gep_inrange_words_are_truncated_before_interning() -> Result<()
             [],
             llvmkit_ir::ConstantExprOptions::new()
                 .source_ty(i8_ty.as_type())
-                .flags(ConstantExprFlags::gep(
+                .flags(ConstantExprFlags::gep_with_in_range(
                     GepNoWrapFlags::empty(),
-                    Some(high_word_range),
+                    high_word_range,
                 )),
         )?;
 
@@ -597,11 +587,7 @@ fn constant_expr_gep_inrange_width_must_match_base_index_width() -> Result<(), I
         let i8_ty = m.i8_type();
         let g = m.add_global("g", i8_ty.as_type(), i8_ty.const_zero())?;
         let offset = m.i64_type().const_int(1i64);
-        let wrong_width_range = ConstantExprInRange {
-            start: Box::from([0]),
-            end: Box::from([1]),
-            bit_width: 32,
-        };
+        let wrong_width_range = ConstantExprInRange::new(Box::from([0]), Box::from([1]), 32);
 
         let err = m
             .constant_expr_with_options(
@@ -612,9 +598,9 @@ fn constant_expr_gep_inrange_width_must_match_base_index_width() -> Result<(), I
                 [],
                 llvmkit_ir::ConstantExprOptions::new()
                     .source_ty(i8_ty.as_type())
-                    .flags(ConstantExprFlags::gep(
+                    .flags(ConstantExprFlags::gep_with_in_range(
                         GepNoWrapFlags::empty(),
-                        Some(wrong_width_range),
+                        wrong_width_range,
                     )),
             )
             .expect_err("public GEP inrange width must be canonical");

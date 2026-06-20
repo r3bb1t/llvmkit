@@ -219,8 +219,28 @@ pub enum MetadataFieldValue {
 /// One `name: value` pair in a specialized `DI*` node.
 #[derive(Debug, Clone)]
 pub struct MetadataField {
-    pub name: String,
-    pub value: MetadataFieldValue,
+    name: String,
+    value: MetadataFieldValue,
+}
+
+impl MetadataField {
+    pub fn new<Name>(name: Name, value: MetadataFieldValue) -> Self
+    where
+        Name: Into<String>,
+    {
+        Self {
+            name: name.into(),
+            value,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn value(&self) -> &MetadataFieldValue {
+        &self.value
+    }
 }
 
 /// Metadata operand used by new-format `#dbg_*` records. Values are stored by
@@ -252,14 +272,82 @@ impl DebugVariableRecordKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DebugVariableRecord {
-    pub kind: DebugVariableRecordKind,
-    pub location: DebugMetadataOperand,
-    pub variable: MetadataId,
-    pub expression: MetadataId,
-    pub assign_id: Option<MetadataId>,
-    pub address_location: Option<DebugMetadataOperand>,
-    pub address_expression: Option<MetadataId>,
-    pub debug_loc: MetadataId,
+    kind: DebugVariableRecordKind,
+    location: DebugMetadataOperand,
+    variable: MetadataId,
+    expression: MetadataId,
+    assign_id: Option<MetadataId>,
+    address_location: Option<DebugMetadataOperand>,
+    address_expression: Option<MetadataId>,
+    debug_loc: MetadataId,
+}
+
+impl DebugVariableRecord {
+    pub fn new(
+        kind: DebugVariableRecordKind,
+        location: DebugMetadataOperand,
+        variable: MetadataId,
+        expression: MetadataId,
+        debug_loc: MetadataId,
+    ) -> Self {
+        Self {
+            kind,
+            location,
+            variable,
+            expression,
+            assign_id: None,
+            address_location: None,
+            address_expression: None,
+            debug_loc,
+        }
+    }
+
+    pub fn with_assign_id(mut self, assign_id: MetadataId) -> Self {
+        self.assign_id = Some(assign_id);
+        self
+    }
+
+    pub fn with_address_location(mut self, address_location: DebugMetadataOperand) -> Self {
+        self.address_location = Some(address_location);
+        self
+    }
+
+    pub fn with_address_expression(mut self, address_expression: MetadataId) -> Self {
+        self.address_expression = Some(address_expression);
+        self
+    }
+
+    pub const fn kind(&self) -> DebugVariableRecordKind {
+        self.kind
+    }
+
+    pub const fn location(&self) -> DebugMetadataOperand {
+        self.location
+    }
+
+    pub const fn variable(&self) -> MetadataId {
+        self.variable
+    }
+
+    pub const fn expression(&self) -> MetadataId {
+        self.expression
+    }
+
+    pub const fn assign_id(&self) -> Option<MetadataId> {
+        self.assign_id
+    }
+
+    pub const fn address_location(&self) -> Option<DebugMetadataOperand> {
+        self.address_location
+    }
+
+    pub const fn address_expression(&self) -> Option<MetadataId> {
+        self.address_expression
+    }
+
+    pub const fn debug_loc(&self) -> MetadataId {
+        self.debug_loc
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -274,9 +362,49 @@ pub enum DebugRecord {
 /// Stored specialized node. Field order is significant and mirrors source.
 #[derive(Debug, Clone)]
 pub struct SpecializedMetadataNode {
-    pub distinct: bool,
-    pub kind: SpecializedMetadataKind,
-    pub fields: Vec<MetadataField>,
+    distinct: bool,
+    kind: SpecializedMetadataKind,
+    fields: Vec<MetadataField>,
+}
+
+impl SpecializedMetadataNode {
+    pub fn new(kind: SpecializedMetadataKind) -> Self {
+        Self {
+            distinct: false,
+            kind,
+            fields: Vec::new(),
+        }
+    }
+
+    pub fn distinct(mut self, distinct: bool) -> Self {
+        self.distinct = distinct;
+        self
+    }
+
+    pub fn field(mut self, field: MetadataField) -> Self {
+        self.fields.push(field);
+        self
+    }
+
+    pub fn with_fields<Fields>(mut self, fields: Fields) -> Self
+    where
+        Fields: IntoIterator<Item = MetadataField>,
+    {
+        self.fields.extend(fields);
+        self
+    }
+
+    pub const fn is_distinct(&self) -> bool {
+        self.distinct
+    }
+
+    pub const fn kind(&self) -> SpecializedMetadataKind {
+        self.kind
+    }
+
+    pub fn fields(&self) -> &[MetadataField] {
+        &self.fields
+    }
 }
 
 /// Base metadata discriminant. Mirrors `Metadata::MetadataKind` in `Metadata.h`.
@@ -344,7 +472,10 @@ pub struct MetadataStore {
 impl MetadataStore {
     /// Intern a string node. Returns an existing id if an identical string
     /// was already inserted (mirrors `MDString::get`).
-    pub fn get_string(&mut self, s: impl Into<String>) -> MetadataId {
+    pub fn get_string<S>(&mut self, s: S) -> MetadataId
+    where
+        S: Into<String>,
+    {
         let s = s.into();
         for (i, node) in self.nodes.iter().enumerate() {
             if let MetadataKind::String(existing) = node
