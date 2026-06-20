@@ -4,14 +4,14 @@
 //! This crate mirrors the relevant `llvm/lib/IR/` and `llvm/include/llvm/IR/`
 //! surfaces from LLVM 22.1.4. The currently shipped layer includes typed IR
 //! construction, AsmWriter support, structural verification, shared CFG
-//! queries, recompute-on-demand dominance, and a minimal new-pass-manager-
-//! inspired analysis / pass substrate.
+//! queries, recompute-on-demand dominance, and effect-typed new-pass-manager-
+//! inspired analysis / pass managers.
 //!
-//! The surface is intentionally incomplete: the `.ll` parser, bitcode, and
-//! built-in optimization pipelines are still ahead. See [`crate::analysis`],
-//! [`crate::pass_manager`], [`crate::pass_instrumentation`],
-//! [`crate::cfg`], and [`crate::dominator_tree`] for the pass-readiness slice
-//! that now ships.
+//! The surface is intentionally incomplete: bitcode, built-in optimization
+//! transforms, and PassBuilder-style pipeline builders are still ahead. See
+//! [`crate::analysis`], [`crate::pass_manager`],
+//! [`crate::pass_instrumentation`], [`crate::cfg`], and
+//! [`crate::dominator_tree`] for the pass-readiness slice that now ships.
 
 pub mod align;
 pub mod analysis;
@@ -56,6 +56,7 @@ pub mod metadata;
 pub mod module;
 pub mod named_md_node;
 pub mod operator;
+pub mod pass_context;
 pub mod pass_instrumentation;
 pub mod pass_manager;
 pub mod phi_state;
@@ -74,9 +75,11 @@ pub mod verifier;
 
 pub mod unnamed_addr;
 pub use analysis::{
-    AllAnalysesOnFunction, AllAnalysesOnModule, CFGAnalyses, FunctionAnalysis,
-    FunctionAnalysisManager, FunctionAnalysisResult, ModuleAnalysis, ModuleAnalysisManager,
-    ModuleAnalysisResult, PreservedAnalyses, PreservedAnalysisChecker,
+    AllAnalysesOnFunction, AllAnalysesOnModule, AnalysisKeyId, AnalysisSetKeyId, CFGAnalyses,
+    FunctionAnalysis, FunctionAnalysisInvalidator, FunctionAnalysisManager,
+    FunctionAnalysisManagerModuleProxy, FunctionAnalysisResult, ModuleAnalysis,
+    ModuleAnalysisInvalidator, ModuleAnalysisManager, ModuleAnalysisResult, PreservedAnalyses,
+    PreservedAnalysisChecker,
 };
 pub use argument::Argument;
 pub use atomic_ordering::AtomicOrdering;
@@ -106,7 +109,7 @@ pub use derived_types::{
     FunctionType, IntType, LabelType, MetadataType, PointerType, SizedType, StructType,
     TargetExtProperty, TargetExtType, TokenType, VectorType, VoidType,
 };
-pub use dominator_tree::{DominatorTree, DominatorTreeAnalysis};
+pub use dominator_tree::{DominatorTree, DominatorTreeAnalysis, DominatorTreeBlock};
 pub use error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel, VerifierRule};
 pub use fmf::FastMathFlags;
 pub use function::{FunctionBuilder, FunctionValue};
@@ -146,12 +149,20 @@ pub use metadata::{
     MetadataKind, MetadataRef, SpecializedMetadataKind, SpecializedMetadataNode,
 };
 pub use module::{
-    Module, ModuleId, ModuleRef, UseListOrderBBRecord, UseListOrderRecord, VerifiedModule,
+    Brand, ComdatView, GlobalAliasView, GlobalIFuncView, GlobalVariableView, Module, ModuleBrand,
+    ModuleId, ModuleRef, ModuleView, Unverified, UseListOrderBBRecord, UseListOrderRecord,
+    Verified,
 };
 pub use operator::OverflowingBinaryOperator;
+pub use pass_context::{
+    BasicBlockView, FunctionBody, FunctionPassContext, FunctionView, ModuleFunctionViews,
+    ModulePassContext, ReadOnlyFunctionPassContext, ReadOnlyModulePassContext,
+};
 pub use pass_instrumentation::{PassInstrumentationAnalysis, PassInstrumentationCallbacks};
 pub use pass_manager::{
-    FunctionPass, FunctionPassManager, ModulePass, ModulePassManager, ModuleToFunctionPassAdaptor,
+    FunctionPass, FunctionPassManager, ModulePass, ModulePassEffect, ModulePassManager,
+    ModuleToFunctionPassAdaptor, MutatesIr, PreservesVerification, ReadOnlyFunctionPass,
+    ReadOnlyModulePass,
 };
 pub use phi_state::{Closed, Open, PhiState};
 pub use sized_element::{ArrayDyn, SizedElement};

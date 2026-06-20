@@ -12,23 +12,24 @@
 use llvmkit_ir::{IRBuilder, IrError, Linkage, Module, SDivFlags, UDivFlags};
 
 fn module_for(op: &str) -> Result<String, IrError> {
-    let m = Module::new("dr");
-    let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
-    let f = m.add_function::<i64>(op, fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block("entry");
-    let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
-    let x = f.param(0)?;
-    let y = f.param(1)?;
-    let r = match op {
-        "udiv" => b.build_int_udiv::<i64, _, _>(x, y, "z")?,
-        "sdiv" => b.build_int_sdiv::<i64, _, _>(x, y, "z")?,
-        "urem" => b.build_int_urem::<i64, _, _>(x, y, "z")?,
-        "srem" => b.build_int_srem::<i64, _, _>(x, y, "z")?,
-        _ => unreachable!(),
-    };
-    b.build_ret(r)?;
-    Ok(format!("{m}"))
+    Module::with_new("dr", |m| {
+        let i64_ty = m.i64_type();
+        let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
+        let f = m.add_function::<i64>(op, fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
+        let x = f.param(0)?;
+        let y = f.param(1)?;
+        let r = match op {
+            "udiv" => b.build_int_udiv::<i64, _, _>(x, y, "z")?,
+            "sdiv" => b.build_int_sdiv::<i64, _, _>(x, y, "z")?,
+            "urem" => b.build_int_urem::<i64, _, _>(x, y, "z")?,
+            "srem" => b.build_int_srem::<i64, _, _>(x, y, "z")?,
+            _ => unreachable!(),
+        };
+        b.build_ret(r)?;
+        Ok(format!("{m}"))
+    })
 }
 
 /// Mirrors `test/Assembler/flags.ll` for `udiv` print form. Closest
@@ -68,43 +69,45 @@ fn srem_plain() -> Result<(), IrError> {
 /// Mirrors `test/Assembler/flags.ll` for the `udiv exact` variant.
 #[test]
 fn udiv_exact() -> Result<(), IrError> {
-    let m = Module::new("ex");
-    let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
-    let f = m.add_function::<i64>("udiv_exact", fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block("entry");
-    let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
-    let r = b.build_int_udiv_with_flags::<i64, _, _>(
-        f.param(0)?,
-        f.param(1)?,
-        UDivFlags::new().exact(),
-        "z",
-    )?;
-    b.build_ret(r)?;
-    let text = format!("{m}");
-    assert!(text.contains("%z = udiv exact i64 %0, %1"), "got:\n{text}");
-    Ok(())
+    Module::with_new("ex", |m| {
+        let i64_ty = m.i64_type();
+        let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
+        let f = m.add_function::<i64>("udiv_exact", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
+        let r = b.build_int_udiv_with_flags::<i64, _, _>(
+            f.param(0)?,
+            f.param(1)?,
+            UDivFlags::new().exact(),
+            "z",
+        )?;
+        b.build_ret(r)?;
+        let text = format!("{m}");
+        assert!(text.contains("%z = udiv exact i64 %0, %1"), "got:\n{text}");
+        Ok(())
+    })
 }
 
 /// Mirrors `test/Assembler/flags.ll` for the `sdiv exact` variant.
 #[test]
 fn sdiv_exact() -> Result<(), IrError> {
-    let m = Module::new("ex");
-    let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
-    let f = m.add_function::<i64>("sdiv_exact", fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block("entry");
-    let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
-    let r = b.build_int_sdiv_with_flags::<i64, _, _>(
-        f.param(0)?,
-        f.param(1)?,
-        SDivFlags::new().exact(),
-        "z",
-    )?;
-    b.build_ret(r)?;
-    let text = format!("{m}");
-    assert!(text.contains("%z = sdiv exact i64 %0, %1"), "got:\n{text}");
-    Ok(())
+    Module::with_new("ex", |m| {
+        let i64_ty = m.i64_type();
+        let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
+        let f = m.add_function::<i64>("sdiv_exact", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
+        let r = b.build_int_sdiv_with_flags::<i64, _, _>(
+            f.param(0)?,
+            f.param(1)?,
+            SDivFlags::new().exact(),
+            "z",
+        )?;
+        b.build_ret(r)?;
+        let text = format!("{m}");
+        assert!(text.contains("%z = sdiv exact i64 %0, %1"), "got:\n{text}");
+        Ok(())
+    })
 }
 
 // `urem` / `srem` accept no flags. There is no `URemFlags` /

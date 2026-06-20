@@ -30,7 +30,7 @@
 //! [`ConstantFloatValue`]: crate::constants::ConstantFloatValue
 
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
-use crate::module::ModuleRef;
+use crate::module::{Module, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeId};
 use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, sealed};
 use crate::{DebugLoc, IrError, IrResult};
@@ -291,23 +291,24 @@ impl ConstantData {
 ///
 /// The erased [`Constant`] view may be embedded in parsed constants and
 /// instructions, but only this parser-only handle can resolve the placeholder.
-pub struct BlockAddressPlaceholder<'ctx> {
-    constant: Constant<'ctx>,
+pub struct BlockAddressPlaceholder<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>>
+{
+    constant: Constant<'ctx, B>,
 }
 
-impl<'ctx> BlockAddressPlaceholder<'ctx> {
+impl<'ctx, B: crate::module::ModuleBrand + 'ctx> BlockAddressPlaceholder<'ctx, B> {
     #[inline]
-    pub(crate) fn from_constant(constant: Constant<'ctx>) -> Self {
+    pub(crate) fn from_constant(constant: Constant<'ctx, B>) -> Self {
         Self { constant }
     }
 
     #[inline]
-    pub fn as_constant(&self) -> Constant<'ctx> {
+    pub fn as_constant(&self) -> Constant<'ctx, B> {
         self.constant
     }
 
     #[doc(hidden)]
-    pub fn replace_all_uses_with<C: IsConstant<'ctx>>(self, replacement: C) -> IrResult<()> {
+    pub fn replace_all_uses_with<C: IsConstant<'ctx, B>>(self, replacement: C) -> IrResult<()> {
         crate::constants::replace_constant_uses_with(self.constant, replacement.as_constant())
     }
 }
@@ -323,17 +324,17 @@ impl<'ctx> BlockAddressPlaceholder<'ctx> {
 ///
 /// [`ConstantIntValue`]: crate::constants::ConstantIntValue
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Constant<'ctx> {
+pub struct Constant<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
-impl<'ctx> Constant<'ctx> {
+impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// Construct from raw parts. Crate-internal: only the constant
     /// constructors hand these out.
     #[inline]
-    pub(crate) fn from_parts(value: Value<'ctx>) -> Self {
+    pub(crate) fn from_parts(value: Value<'ctx, B>) -> Self {
         Self {
             id: value.id,
             module: value.module,
@@ -343,7 +344,7 @@ impl<'ctx> Constant<'ctx> {
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx> {
+    pub fn as_value(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -353,51 +354,55 @@ impl<'ctx> Constant<'ctx> {
 
     /// IR type of the constant.
     #[inline]
-    pub fn ty(self) -> Type<'ctx> {
-        Type::new(self.ty, self.module.module())
+    pub fn ty(self) -> Type<'ctx, B> {
+        Type::new(self.ty, self.module)
     }
 }
 
-impl<'ctx> sealed::Sealed for Constant<'ctx> {}
-impl<'ctx> IsValue<'ctx> for Constant<'ctx> {
+impl<'ctx, B: crate::module::ModuleBrand + 'ctx> sealed::Sealed for Constant<'ctx, B> {}
+impl<'ctx, B: crate::module::ModuleBrand + 'ctx> IsValue<'ctx, B> for Constant<'ctx, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx> {
+    fn as_value(self) -> Value<'ctx, B> {
         Constant::as_value(self)
     }
 }
-impl<'ctx> Typed<'ctx> for Constant<'ctx> {
+impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Typed<'ctx, B> for Constant<'ctx, B> {
     #[inline]
-    fn ty(self) -> Type<'ctx> {
+    fn ty(self) -> Type<'ctx, B> {
         Constant::ty(self)
     }
 }
-impl<'ctx> HasName<'ctx> for Constant<'ctx> {
+impl<'ctx, B: crate::module::ModuleBrand + 'ctx> HasName<'ctx, B> for Constant<'ctx, B> {
     #[inline]
     fn name(self) -> Option<String> {
         self.as_value().name()
     }
     #[inline]
-    fn set_name(self, name: Option<&str>) {
-        self.as_value().set_name(name);
+    fn set_name(self, module_token: &Module<'ctx, B, Unverified>, name: &str) {
+        self.as_value().set_name(module_token, name);
+    }
+    #[inline]
+    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+        self.as_value().clear_name(module_token);
     }
 }
-impl HasDebugLoc for Constant<'_> {
+impl<B: crate::module::ModuleBrand + 'static> HasDebugLoc for Constant<'_, B> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
         self.as_value().debug_loc()
     }
 }
 
-impl<'ctx> From<Constant<'ctx>> for Value<'ctx> {
+impl<'ctx, B: crate::module::ModuleBrand + 'ctx> From<Constant<'ctx, B>> for Value<'ctx, B> {
     #[inline]
-    fn from(c: Constant<'ctx>) -> Self {
+    fn from(c: Constant<'ctx, B>) -> Self {
         c.as_value()
     }
 }
 
-impl<'ctx> TryFrom<Value<'ctx>> for Constant<'ctx> {
+impl<'ctx, B: crate::module::ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for Constant<'ctx, B> {
     type Error = IrError;
-    fn try_from(v: Value<'ctx>) -> IrResult<Self> {
+    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
         if let crate::value::ValueKindData::Constant(_) = v.data().kind {
             Ok(Self::from_parts(v))
         } else {
@@ -417,14 +422,16 @@ impl<'ctx> TryFrom<Value<'ctx>> for Constant<'ctx> {
 /// (`ConstantIntValue`, `ConstantFloatValue`, ...) plus the erased
 /// [`Constant`] itself. Bound generic code with this trait when a
 /// function should accept any constant.
-pub trait IsConstant<'ctx>: sealed::Sealed + IsValue<'ctx> {
+pub trait IsConstant<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>>:
+    sealed::Sealed + IsValue<'ctx, B>
+{
     /// Widen to the erased [`Constant`] handle.
-    fn as_constant(self) -> Constant<'ctx>;
+    fn as_constant(self) -> Constant<'ctx, B>;
 }
 
-impl<'ctx> IsConstant<'ctx> for Constant<'ctx> {
+impl<'ctx, B: crate::module::ModuleBrand + 'ctx> IsConstant<'ctx, B> for Constant<'ctx, B> {
     #[inline]
-    fn as_constant(self) -> Constant<'ctx> {
+    fn as_constant(self) -> Constant<'ctx, B> {
         self
     }
 }

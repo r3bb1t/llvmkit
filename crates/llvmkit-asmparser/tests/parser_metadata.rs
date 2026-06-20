@@ -6,23 +6,45 @@
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::Module;
 
-fn parse_snippet(src: &str) -> (Module<'_>, String) {
-    let module = Module::new("test");
-    let _ = Parser::new(src.as_bytes(), &module)
-        .expect("parse constructor")
-        .parse_module()
-        .expect("parse succeeded");
-    let text = format!("{module}");
-    (module, text)
+#[derive(Clone, Copy)]
+struct ModuleStats {
+    metadata_count: usize,
+    named_metadata_count: usize,
+}
+
+impl ModuleStats {
+    fn metadata_count(self) -> usize {
+        self.metadata_count
+    }
+
+    fn named_metadata_count(self) -> usize {
+        self.named_metadata_count
+    }
+}
+
+fn parse_snippet(src: &str) -> (ModuleStats, String) {
+    Module::with_new("test", |module| {
+        let _ = Parser::new(src.as_bytes(), &module)
+            .expect("parse constructor")
+            .parse_module()
+            .expect("parse succeeded");
+        let stats = ModuleStats {
+            metadata_count: module.metadata_count(),
+            named_metadata_count: module.named_metadata_count(),
+        };
+        let text = format!("{module}");
+        (stats, text)
+    })
 }
 
 fn parse_fails(src: &str) -> String {
-    let module = Module::new("test");
-    let err = Parser::new(src.as_bytes(), &module)
-        .expect("parse constructor")
-        .parse_module()
-        .expect_err("parse should fail");
-    err.to_string()
+    Module::with_new("test", |module| {
+        let err = Parser::new(src.as_bytes(), &module)
+            .expect("parse constructor")
+            .parse_module()
+            .expect_err("parse should fail");
+        err.to_string()
+    })
 }
 
 // ── Standalone metadata: string operands ─────────────────────────────────
@@ -458,12 +480,14 @@ fn inline_string_tuple_reparses() {
     assert!(text.contains(r#"!0 = !{!"hello"}"#), "output: {text}");
     // Re-parse the writer's output: it must be accepted, and re-printing
     // it must reproduce the same inline-string node (stable round-trip).
-    let m2 = Module::new("test");
-    Parser::new(text.as_bytes(), &m2)
-        .expect("ctor")
-        .parse_module()
-        .expect("writer output must reparse");
-    assert_eq!(format!("{m2}"), text, "round-trip must be stable");
+    let reparsed = Module::with_new("test", |m2| {
+        Parser::new(text.as_bytes(), &m2)
+            .expect("ctor")
+            .parse_module()
+            .expect("writer output must reparse");
+        format!("{m2}")
+    });
+    assert_eq!(reparsed, text, "round-trip must be stable");
 }
 
 /// Textual metadata slots need not be dense or 0-based: a `metadata !3`
@@ -483,11 +507,12 @@ define i64 @f() {
     let (_, text) = parse_snippet(src);
     // The reference and its definition agree on a single slot number, and
     // re-parsing succeeds (no dangling reference).
-    let m2 = Module::new("rt");
-    Parser::new(text.as_bytes(), &m2)
-        .expect("ctor")
-        .parse_module()
-        .expect("output must reparse with a resolvable metadata slot");
+    Module::with_new("rt", |m2| {
+        Parser::new(text.as_bytes(), &m2)
+            .expect("ctor")
+            .parse_module()
+            .expect("output must reparse with a resolvable metadata slot");
+    });
     // The node the call references is actually defined in the output.
     assert!(text.contains("@g(metadata !0)"), "output: {text}");
     assert!(text.contains("!0 = !{}"), "output: {text}");
@@ -536,11 +561,12 @@ define void @f() {
 }
 !0 = !{}
 "#;
-    let m = Module::new("t");
-    let err = Parser::new(src.as_bytes(), &m)
-        .expect("ctor")
-        .parse_module()
-        .expect_err("i64 !0 must be rejected");
+    let err = Module::with_new("t", |m| {
+        Parser::new(src.as_bytes(), &m)
+            .expect("ctor")
+            .parse_module()
+            .expect_err("i64 !0 must be rejected")
+    });
     assert!(
         err.to_string()
             .contains("expected `metadata` type for a metadata operand"),

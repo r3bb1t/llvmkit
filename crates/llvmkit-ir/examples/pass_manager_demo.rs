@@ -15,25 +15,24 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    DominatorTreeAnalysis, FunctionAnalysisManager, FunctionPass, FunctionPassManager, IRBuilder,
-    IntPredicate, IntValue, IrError, Linkage, Module, ModuleAnalysisManager, ModulePass,
-    ModulePassManager, ModuleToFunctionPassAdaptor, PreservedAnalyses,
+    DominatorTreeAnalysis, FunctionAnalysisManager, FunctionPassManager, IRBuilder, IntPredicate,
+    IntValue, IrError, Linkage, Module, ModuleAnalysisManager, ModulePassManager,
+    ModuleToFunctionPassAdaptor, PreservedAnalyses, PreservesVerification, ReadOnlyFunctionPass,
+    ReadOnlyFunctionPassContext, ReadOnlyModulePass, ReadOnlyModulePassContext,
 };
 
 struct ReportModulePass {
     out: Rc<RefCell<Vec<String>>>,
 }
 
-impl<'ctx> ModulePass<'ctx> for ReportModulePass {
+impl<'ctx> ReadOnlyModulePass<'ctx> for ReportModulePass {
     fn run(
         &mut self,
-        module: &'ctx Module<'ctx>,
-        _mam: &mut ModuleAnalysisManager<'ctx>,
-        _fam: &mut FunctionAnalysisManager<'ctx>,
+        cx: &mut ReadOnlyModulePassContext<'_, 'ctx>,
     ) -> Result<PreservedAnalyses, IrError> {
         self.out.borrow_mut().push(format!(
             "module_pass functions={}",
-            module.iter_functions().len()
+            cx.module().iter_functions().len()
         ));
         Ok(PreservedAnalyses::all())
     }
@@ -43,13 +42,13 @@ struct ReportFunctionPass {
     out: Rc<RefCell<Vec<String>>>,
 }
 
-impl<'ctx> FunctionPass<'ctx> for ReportFunctionPass {
+impl<'ctx> ReadOnlyFunctionPass<'ctx> for ReportFunctionPass {
     fn run(
         &mut self,
-        function: llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn>,
-        fam: &mut FunctionAnalysisManager<'ctx>,
+        cx: &mut ReadOnlyFunctionPassContext<'_, 'ctx>,
     ) -> Result<PreservedAnalyses, IrError> {
-        let dt = fam.get_result::<DominatorTreeAnalysis>(function)?;
+        let function = cx.function();
+        let dt = cx.analysis::<DominatorTreeAnalysis>()?;
         let entry = function
             .entry_block()
             .expect("demo function has an entry block");
@@ -75,10 +74,10 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
         false,
     );
     let f = m.add_function::<i32>("select_or_add", fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block("entry");
-    let then_bb = f.append_basic_block("then");
-    let else_bb = f.append_basic_block("else");
-    let merge = f.append_basic_block("merge");
+    let entry = f.append_basic_block(m, "entry");
+    let then_bb = f.append_basic_block(m, "then");
+    let else_bb = f.append_basic_block(m, "else");
+    let merge = f.append_basic_block(m, "merge");
 
     let cond: IntValue<bool> = f.param(0)?.try_into()?;
     let x: IntValue<i32> = f.param(1)?.try_into()?;
@@ -107,7 +106,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     Ok(())
 }
 
-pub fn run_demo(m: &Module<'_>) -> Result<String, IrError> {
+pub fn run_demo(m: Module<'_>) -> Result<(String, String), IrError> {
     let function = m
         .function_by_name("select_or_add")
         .expect("demo function is present");
@@ -128,29 +127,32 @@ pub fn run_demo(m: &Module<'_>) -> Result<String, IrError> {
         dt.dominates_block(entry, merge)
     )]));
 
-    let mut fpm = FunctionPassManager::new();
+    let mut fpm = FunctionPassManager::<_, PreservesVerification>::new_read_only();
     fpm.add_pass(ReportFunctionPass { out: lines.clone() });
 
-    let mut mpm = ModulePassManager::new();
+    let mut mpm = ModulePassManager::<_, PreservesVerification>::new_read_only();
     mpm.add_pass(ReportModulePass { out: lines.clone() });
     mpm.add_pass(ModuleToFunctionPassAdaptor::new(fpm));
 
     let mut mam = ModuleAnalysisManager::new();
-    mpm.run(m, &mut mam, &mut fam)?;
-
-    Ok(lines.borrow().join("\n"))
+    let module = mpm.run(m.verify()?, &mut mam, &mut fam)?;
+    let report = lines.borrow().join("\n");
+    let module_text = format!("{module}");
+    Ok((report, module_text))
 }
 
 pub fn main() {
-    let m = Module::new("pass_manager_demo");
-    let report = match build(&m).and_then(|()| run_demo(&m)) {
-        Ok(report) => report,
+    let (report, module_text) = match Module::with_new("pass_manager_demo", |m| {
+        build(&m)?;
+        run_demo(m)
+    }) {
+        Ok(output) => output,
         Err(err) => {
-            eprintln!("error: {err}");
+            eprintln!("error: {err:?}");
             std::process::exit(1);
         }
     };
 
     println!("{report}");
-    print!("{m}");
+    print!("{module_text}");
 }

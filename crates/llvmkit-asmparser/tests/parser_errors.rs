@@ -8,11 +8,12 @@ use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_ir::Module;
 
 fn parse_err(src: &str) -> ParseError {
-    let module = Module::new("parser_errors");
-    Parser::new(src.as_bytes(), &module)
-        .expect("lexer primes")
-        .parse_module()
-        .expect_err("parser rejects malformed input")
+    Module::with_new("parser_errors", |module| {
+        Parser::new(src.as_bytes(), &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("parser rejects malformed input")
+    })
 }
 
 /// Mirrors `LLParser.cpp::parseType`: integer widths outside LLVM's modeled

@@ -8,14 +8,14 @@
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::Module;
 
-fn parse_snippet(src: &str) -> (Module<'_>, String) {
-    let module = Module::new("test");
-    let _ = Parser::new(src.as_bytes(), &module)
-        .expect("parse constructor")
-        .parse_module()
-        .expect("parse succeeded");
-    let text = format!("{module}");
-    (module, text)
+fn parse_snippet(src: &str) -> String {
+    Module::with_new("test", |module| {
+        let _ = Parser::new(src.as_bytes(), &module)
+            .expect("parse constructor")
+            .parse_module()
+            .expect("parse succeeded");
+        format!("{module}")
+    })
 }
 
 // ── undef / poison ───────────────────────────────────────────────────────
@@ -29,7 +29,7 @@ define i32 @f() {
   ret i32 %x
 }
 "#;
-    let (_, text) = parse_snippet(src);
+    let text = parse_snippet(src);
     assert!(text.contains("%x = add i32 0, undef\n"), "output: {text}");
 }
 
@@ -42,7 +42,7 @@ define i32 @f() {
   ret i32 %x
 }
 "#;
-    let (_, text) = parse_snippet(src);
+    let text = parse_snippet(src);
     assert!(text.contains("%x = add i32 poison, 1\n"), "output: {text}");
 }
 
@@ -57,7 +57,7 @@ define double @f(double %x) {
   ret double %y
 }
 "#;
-    let (_, text) = parse_snippet(src);
+    let text = parse_snippet(src);
     assert!(
         text.contains("%y = fadd double %x, 1.000000e+00\n"),
         "output: {text}"
@@ -73,7 +73,7 @@ define double @f(double %x) {
   ret double %y
 }
 "#;
-    let (_, text) = parse_snippet(src);
+    let text = parse_snippet(src);
     assert!(
         text.contains("%y = fadd double %x, 1.000000e+00\n"),
         "output: {text}"
@@ -91,7 +91,7 @@ define double @f(double %x) {
   ret double %y
 }
 "#;
-    let (_, _text) = parse_snippet(src);
+    let _text = parse_snippet(src);
     // Parses without error
 }
 
@@ -108,7 +108,7 @@ define i32 @f() {
   ret i32 %v
 }
 "#;
-    let (_, text) = parse_snippet(src);
+    let text = parse_snippet(src);
     assert!(text.contains("%v = load i32, ptr @g\n"), "output: {text}");
 }
 
@@ -123,7 +123,7 @@ define i32 @f(i32 %x) {
   ret i32 %v
 }
 "#;
-    let (_, text) = parse_snippet(src);
+    let text = parse_snippet(src);
     assert!(
         text.contains("%v = call i32 @callee(i32 %x)\n"),
         "output: {text}"

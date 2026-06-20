@@ -54,10 +54,10 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
         .param_name(0, "n")
         .build()?;
 
-    let entry = f.append_basic_block("entry");
-    let base = f.append_basic_block("base");
-    let loop_bb = f.append_basic_block("loop");
-    let exit = f.append_basic_block("exit");
+    let entry = f.append_basic_block(m, "entry");
+    let base = f.append_basic_block(m, "base");
+    let loop_bb = f.append_basic_block(m, "loop");
+    let exit = f.append_basic_block(m, "exit");
 
     let n: IntValue<i32> = f.param(0)?.try_into()?;
 
@@ -97,10 +97,12 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
 }
 
 pub fn main() {
-    let m = Module::new("factorial");
-    if let Err(e) = build(&m) {
-        eprintln!("error: {e}");
+    if let Err(e) = Module::with_new("factorial", |m| {
+        build(&m)?;
+        print!("{m}");
+        Ok::<(), IrError>(())
+    }) {
+        eprintln!("error: {e:?}");
         std::process::exit(1);
     }
-    print!("{m}");
 }

@@ -6,33 +6,39 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    DominatorTreeAnalysis, FunctionAnalysis, FunctionAnalysisManager, FunctionAnalysisResult,
-    FunctionPass, FunctionPassManager, IRBuilder, IrError, Linkage, Module, ModuleAnalysisManager,
-    ModulePass, ModulePassManager, ModuleToFunctionPassAdaptor, PreservedAnalyses,
+    DominatorTreeAnalysis, FunctionAnalysis, FunctionAnalysisInvalidator, FunctionAnalysisManager,
+    FunctionAnalysisResult, FunctionPassManager, IRBuilder, IrError, Linkage, Module,
+    ModuleAnalysisManager, ModuleBrand, ModulePassManager, ModuleToFunctionPassAdaptor,
+    PreservedAnalyses, PreservesVerification, ReadOnlyFunctionPass, ReadOnlyFunctionPassContext,
+    ReadOnlyModulePass, ReadOnlyModulePassContext,
 };
 
-fn sample_module() -> Result<Module<'static>, IrError> {
-    let m = Module::new("pm");
-    let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-    let f = m.add_function::<()>("f", fn_ty, Linkage::External)?;
-    let g = m.add_function::<()>("g", fn_ty, Linkage::External)?;
-    let h = m.add_function::<()>("h", fn_ty, Linkage::External)?;
+fn with_sample_module<R, F>(run: F) -> Result<R, IrError>
+where
+    F: for<'ctx> FnOnce(Module<'ctx>) -> Result<R, IrError>,
+{
+    Module::with_new("pm", |m| {
+        let void_ty = m.void_type();
+        let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let f = m.add_function::<()>("f", fn_ty, Linkage::External)?;
+        let g = m.add_function::<()>("g", fn_ty, Linkage::External)?;
+        let h = m.add_function::<()>("h", fn_ty, Linkage::External)?;
 
-    let entry = f.append_basic_block("entry");
-    let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-    b.build_call(g, Vec::<llvmkit_ir::Value>::new(), "")?;
-    b.build_call(h, Vec::<llvmkit_ir::Value>::new(), "")?;
-    b.build_ret_void();
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        b.build_call(g, Vec::<llvmkit_ir::Value>::new(), "")?;
+        b.build_call(h, Vec::<llvmkit_ir::Value>::new(), "")?;
+        b.build_ret_void();
 
-    for function in [g, h] {
-        let entry = function.append_basic_block("entry");
-        IRBuilder::new_for::<()>(&m)
-            .position_at_end(entry)
-            .build_ret_void();
-    }
-    let _decl = m.add_function::<()>("decl", fn_ty, Linkage::External)?;
-    Ok(m)
+        for function in [g, h] {
+            let entry = function.append_basic_block(&m, "entry");
+            IRBuilder::new_for::<()>(&m)
+                .position_at_end(entry)
+                .build_ret_void();
+        }
+        let _decl = m.add_function::<()>("decl", fn_ty, Linkage::External)?;
+        run(m)
+    })
 }
 
 struct RecordingModulePass {
@@ -41,12 +47,10 @@ struct RecordingModulePass {
     preserved: PreservedAnalyses,
 }
 
-impl<'ctx> ModulePass<'ctx> for RecordingModulePass {
+impl<'ctx, B: ModuleBrand> ReadOnlyModulePass<'ctx, B> for RecordingModulePass {
     fn run(
         &mut self,
-        _module: &'ctx Module<'ctx>,
-        _mam: &mut ModuleAnalysisManager<'ctx>,
-        _fam: &mut FunctionAnalysisManager<'ctx>,
+        _cx: &mut ReadOnlyModulePassContext<'_, 'ctx, B>,
     ) -> llvmkit_ir::IrResult<PreservedAnalyses> {
         self.order.borrow_mut().push(self.name);
         Ok(self.preserved.clone())
@@ -58,15 +62,15 @@ struct RecordingFunctionPass {
     query_dt: bool,
 }
 
-impl<'ctx> FunctionPass<'ctx> for RecordingFunctionPass {
+impl<'ctx> ReadOnlyFunctionPass<'ctx> for RecordingFunctionPass {
     fn run(
         &mut self,
-        function: llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn>,
-        fam: &mut FunctionAnalysisManager<'ctx>,
+        cx: &mut ReadOnlyFunctionPassContext<'_, 'ctx>,
     ) -> llvmkit_ir::IrResult<PreservedAnalyses> {
+        let function = cx.function();
         self.names.borrow_mut().push(function.name().to_owned());
         if self.query_dt {
-            let dt = fam.get_result::<DominatorTreeAnalysis>(function)?;
+            let dt = cx.analysis::<DominatorTreeAnalysis>()?;
             assert!(dt.is_reachable_from_entry(function.entry_block().expect("definition")));
         }
         Ok(PreservedAnalyses::all())
@@ -88,13 +92,13 @@ impl<'ctx> FunctionAnalysis<'ctx> for CountingFunctionAnalysis {
 
     fn run(
         &self,
-        function: llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn>,
+        function: llvmkit_ir::FunctionView<'ctx>,
         _am: &mut FunctionAnalysisManager<'ctx>,
     ) -> llvmkit_ir::IrResult<Self::Result> {
         self.runs.set(self.runs.get() + 1);
         let instructions = function
             .basic_blocks()
-            .map(|bb| bb.instructions().len())
+            .map(|bb| bb.instruction_count())
             .sum();
         Ok(CountingFunctionResult { instructions })
     }
@@ -103,11 +107,12 @@ impl<'ctx> FunctionAnalysis<'ctx> for CountingFunctionAnalysis {
 impl<'ctx> FunctionAnalysisResult<'ctx> for CountingFunctionResult {
     fn invalidate(
         &mut self,
-        _function: llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn>,
+        _function: llvmkit_ir::FunctionView<'ctx>,
         pa: &PreservedAnalyses,
-    ) -> bool {
+        _inv: &mut FunctionAnalysisInvalidator<'_, 'ctx>,
+    ) -> llvmkit_ir::IrResult<bool> {
         let checker = pa.checker::<CountingFunctionAnalysis>();
-        !(checker.preserved() || checker.preserved_set::<llvmkit_ir::AllAnalysesOnFunction>())
+        Ok(!(checker.preserved() || checker.preserved_set::<llvmkit_ir::AllAnalysesOnFunction>()))
     }
 }
 
@@ -116,14 +121,13 @@ struct AnalyzingFunctionPass {
     analyzed_instr_count: Rc<Cell<usize>>,
 }
 
-impl<'ctx> FunctionPass<'ctx> for AnalyzingFunctionPass {
+impl<'ctx> ReadOnlyFunctionPass<'ctx> for AnalyzingFunctionPass {
     fn run(
         &mut self,
-        function: llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn>,
-        fam: &mut FunctionAnalysisManager<'ctx>,
+        cx: &mut ReadOnlyFunctionPassContext<'_, 'ctx>,
     ) -> llvmkit_ir::IrResult<PreservedAnalyses> {
         self.run_count.set(self.run_count.get() + 1);
-        let result = fam.get_result::<CountingFunctionAnalysis>(function)?;
+        let result = cx.analysis::<CountingFunctionAnalysis>()?;
         self.analyzed_instr_count
             .set(self.analyzed_instr_count.get() + result.instructions);
         Ok(PreservedAnalyses::all())
@@ -134,12 +138,12 @@ struct InvalidateNamedFunctionPass {
     name: &'static str,
 }
 
-impl<'ctx> FunctionPass<'ctx> for InvalidateNamedFunctionPass {
+impl<'ctx> ReadOnlyFunctionPass<'ctx> for InvalidateNamedFunctionPass {
     fn run(
         &mut self,
-        function: llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn>,
-        _fam: &mut FunctionAnalysisManager<'ctx>,
+        cx: &mut ReadOnlyFunctionPassContext<'_, 'ctx>,
     ) -> llvmkit_ir::IrResult<PreservedAnalyses> {
+        let function = cx.function();
         if function.name() == self.name {
             Ok(PreservedAnalyses::none())
         } else {
@@ -155,26 +159,26 @@ impl<'ctx> FunctionPass<'ctx> for InvalidateNamedFunctionPass {
 /// invalidation/RequireAnalysisPass counters from that test.
 #[test]
 fn module_pass_manager_runs_in_order() -> Result<(), IrError> {
-    let m = sample_module()?;
-    let order = Rc::new(RefCell::new(Vec::new()));
-    let mut mpm = ModulePassManager::new();
-    mpm.add_pass(RecordingModulePass {
-        name: "a",
-        order: order.clone(),
-        preserved: PreservedAnalyses::all(),
-    });
-    mpm.add_pass(RecordingModulePass {
-        name: "b",
-        order: order.clone(),
-        preserved: PreservedAnalyses::none(),
-    });
-    let mut mam = ModuleAnalysisManager::new();
-    let mut fam = FunctionAnalysisManager::new();
+    with_sample_module(|m| {
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let mut mpm = ModulePassManager::<_, PreservesVerification>::new_read_only();
+        mpm.add_pass(RecordingModulePass {
+            name: "a",
+            order: order.clone(),
+            preserved: PreservedAnalyses::all(),
+        });
+        mpm.add_pass(RecordingModulePass {
+            name: "b",
+            order: order.clone(),
+            preserved: PreservedAnalyses::none(),
+        });
+        let mut mam = ModuleAnalysisManager::new();
+        let mut fam = FunctionAnalysisManager::new();
 
-    let pa = mpm.run(&m, &mut mam, &mut fam)?;
-    assert_eq!(&*order.borrow(), &["a", "b"]);
-    assert!(!pa.checker::<DominatorTreeAnalysis>().preserved());
-    Ok(())
+        let _ = mpm.run(m.verify()?, &mut mam, &mut fam)?;
+        assert_eq!(&*order.borrow(), &["a", "b"]);
+        Ok(())
+    })
 }
 
 /// `llvmkit-specific subset` of `PassManagerTest.cpp::Basic`: ports the
@@ -183,54 +187,92 @@ fn module_pass_manager_runs_in_order() -> Result<(), IrError> {
 /// module/function proxy invalidation and `RequireAnalysisPass` APIs.
 #[test]
 fn module_pass_manager_counts_supported_cache_and_invalidation() -> Result<(), IrError> {
-    let m = sample_module()?;
-    let analysis_runs = Rc::new(Cell::new(0));
-    let run_count1 = Rc::new(Cell::new(0));
-    let instr_count1 = Rc::new(Cell::new(0usize));
-    let run_count2 = Rc::new(Cell::new(0));
-    let instr_count2 = Rc::new(Cell::new(0usize));
-    let run_count3 = Rc::new(Cell::new(0));
-    let instr_count3 = Rc::new(Cell::new(0usize));
+    with_sample_module(|m| {
+        let analysis_runs = Rc::new(Cell::new(0));
+        let run_count1 = Rc::new(Cell::new(0));
+        let instr_count1 = Rc::new(Cell::new(0usize));
+        let run_count2 = Rc::new(Cell::new(0));
+        let instr_count2 = Rc::new(Cell::new(0usize));
+        let run_count3 = Rc::new(Cell::new(0));
+        let instr_count3 = Rc::new(Cell::new(0usize));
 
-    let mut first = FunctionPassManager::new();
-    first.add_pass(AnalyzingFunctionPass {
-        run_count: run_count1.clone(),
-        analyzed_instr_count: instr_count1.clone(),
-    });
+        let mut first = FunctionPassManager::<_, PreservesVerification>::new_read_only();
+        first.add_pass(AnalyzingFunctionPass {
+            run_count: run_count1.clone(),
+            analyzed_instr_count: instr_count1.clone(),
+        });
 
-    let mut second = FunctionPassManager::new();
-    second.add_pass(AnalyzingFunctionPass {
-        run_count: run_count2.clone(),
-        analyzed_instr_count: instr_count2.clone(),
-    });
-    second.add_pass(InvalidateNamedFunctionPass { name: "f" });
+        let mut second = FunctionPassManager::<_, PreservesVerification>::new_read_only();
+        second.add_pass(AnalyzingFunctionPass {
+            run_count: run_count2.clone(),
+            analyzed_instr_count: instr_count2.clone(),
+        });
+        second.add_pass(InvalidateNamedFunctionPass { name: "f" });
 
-    let mut third = FunctionPassManager::new();
-    third.add_pass(AnalyzingFunctionPass {
-        run_count: run_count3.clone(),
-        analyzed_instr_count: instr_count3.clone(),
-    });
+        let mut third = FunctionPassManager::<_, PreservesVerification>::new_read_only();
+        third.add_pass(AnalyzingFunctionPass {
+            run_count: run_count3.clone(),
+            analyzed_instr_count: instr_count3.clone(),
+        });
 
-    let mut mpm = ModulePassManager::new();
-    mpm.add_pass(ModuleToFunctionPassAdaptor::new(first));
-    mpm.add_pass(ModuleToFunctionPassAdaptor::new(second));
-    mpm.add_pass(ModuleToFunctionPassAdaptor::new(third));
-    let mut mam = ModuleAnalysisManager::new();
-    let mut fam = FunctionAnalysisManager::new();
-    fam.register_pass(CountingFunctionAnalysis {
-        runs: analysis_runs.clone(),
-    });
+        let mut mpm = ModulePassManager::<_, PreservesVerification>::new_read_only();
+        mpm.add_pass(ModuleToFunctionPassAdaptor::new(first));
+        mpm.add_pass(ModuleToFunctionPassAdaptor::new(second));
+        mpm.add_pass(ModuleToFunctionPassAdaptor::new(third));
+        let mut mam = ModuleAnalysisManager::new();
+        let mut fam = FunctionAnalysisManager::new();
+        fam.register_pass(CountingFunctionAnalysis {
+            runs: analysis_runs.clone(),
+        });
 
-    mpm.run(&m, &mut mam, &mut fam)?;
+        mpm.run(m.verify()?, &mut mam, &mut fam)?;
 
-    assert_eq!(run_count1.get(), 3);
-    assert_eq!(instr_count1.get(), 5);
-    assert_eq!(run_count2.get(), 3);
-    assert_eq!(instr_count2.get(), 5);
-    assert_eq!(run_count3.get(), 3);
-    assert_eq!(instr_count3.get(), 5);
-    assert_eq!(analysis_runs.get(), 4);
-    Ok(())
+        assert_eq!(run_count1.get(), 3);
+        assert_eq!(instr_count1.get(), 5);
+        assert_eq!(run_count2.get(), 3);
+        assert_eq!(instr_count2.get(), 5);
+        assert_eq!(run_count3.get(), 3);
+        assert_eq!(instr_count3.get(), 5);
+        assert_eq!(analysis_runs.get(), 4);
+        Ok(())
+    })
+}
+
+/// `llvmkit-specific subset` of `PassManagerTest.cpp` proxy invalidation:
+/// module passes that do not preserve function analyses clear the function
+/// analysis cache for the whole module.
+#[test]
+fn module_pass_invalidates_function_analysis_cache() -> Result<(), IrError> {
+    with_sample_module(|m| {
+        let f = m.function_by_name("f").expect("sample has f");
+        let runs = Rc::new(Cell::new(0));
+        let mut fam = FunctionAnalysisManager::new();
+        fam.register_pass(CountingFunctionAnalysis { runs: runs.clone() });
+        assert!(
+            fam.get_cached_result::<CountingFunctionAnalysis>(f)
+                .is_none()
+        );
+        assert_eq!(
+            fam.get_result::<CountingFunctionAnalysis>(f)?.instructions,
+            3
+        );
+
+        let mut mpm = ModulePassManager::<_, PreservesVerification>::new_read_only();
+        mpm.add_pass(RecordingModulePass {
+            name: "invalidate",
+            order: Rc::new(RefCell::new(Vec::new())),
+            preserved: PreservedAnalyses::none(),
+        });
+        let mut mam = ModuleAnalysisManager::new();
+        let _ = mpm.run(m.verify()?, &mut mam, &mut fam)?;
+
+        assert!(
+            fam.get_cached_result::<CountingFunctionAnalysis>(f)
+                .is_none()
+        );
+        assert_eq!(runs.get(), 1);
+        Ok(())
+    })
 }
 
 /// `llvmkit-specific subset` of `PassManagerTest.cpp`: the
@@ -238,24 +280,25 @@ fn module_pass_manager_counts_supported_cache_and_invalidation() -> Result<(), I
 /// skips declarations. llvmkit lacks loop/CGSCC adaptors and proxy analyses.
 #[test]
 fn module_to_function_adaptor_runs_defined_functions_only() -> Result<(), IrError> {
-    let m = sample_module()?;
-    let names = Rc::new(RefCell::new(Vec::new()));
-    let mut fpm = FunctionPassManager::new();
-    fpm.add_pass(RecordingFunctionPass {
-        names: names.clone(),
-        query_dt: false,
-    });
-    let mut mpm = ModulePassManager::new();
-    mpm.add_pass(ModuleToFunctionPassAdaptor::new(fpm));
-    let mut mam = ModuleAnalysisManager::new();
-    let mut fam = FunctionAnalysisManager::new();
+    with_sample_module(|m| {
+        let names = Rc::new(RefCell::new(Vec::new()));
+        let mut fpm = FunctionPassManager::<_, PreservesVerification>::new_read_only();
+        fpm.add_pass(RecordingFunctionPass {
+            names: names.clone(),
+            query_dt: false,
+        });
+        let mut mpm = ModulePassManager::<_, PreservesVerification>::new_read_only();
+        mpm.add_pass(ModuleToFunctionPassAdaptor::new(fpm));
+        let mut mam = ModuleAnalysisManager::new();
+        let mut fam = FunctionAnalysisManager::new();
 
-    mpm.run(&m, &mut mam, &mut fam)?;
-    assert_eq!(
-        &*names.borrow(),
-        &["f".to_owned(), "g".to_owned(), "h".to_owned()]
-    );
-    Ok(())
+        mpm.run(m.verify()?, &mut mam, &mut fam)?;
+        assert_eq!(
+            &*names.borrow(),
+            &["f".to_owned(), "g".to_owned(), "h".to_owned()]
+        );
+        Ok(())
+    })
 }
 
 /// `llvmkit-specific subset` of `PassManagerTest.cpp` analysis query behavior:
@@ -263,20 +306,22 @@ fn module_to_function_adaptor_runs_defined_functions_only() -> Result<(), IrErro
 /// llvmkit lacks the upstream module/function analysis proxy cache surface.
 #[test]
 fn function_pass_can_query_dominator_tree_analysis() -> Result<(), IrError> {
-    let m = sample_module()?;
-    let names = Rc::new(RefCell::new(Vec::new()));
-    let mut fpm = FunctionPassManager::new();
-    fpm.add_pass(RecordingFunctionPass {
-        names,
-        query_dt: true,
-    });
-    let mut mpm = ModulePassManager::new();
-    mpm.add_pass(ModuleToFunctionPassAdaptor::new(fpm));
-    let mut mam = ModuleAnalysisManager::new();
-    let mut fam = FunctionAnalysisManager::new();
-    fam.register_pass(DominatorTreeAnalysis);
+    with_sample_module(|m| {
+        let f = m.function_by_name("f").expect("sample has f");
+        let names = Rc::new(RefCell::new(Vec::new()));
+        let mut fpm = FunctionPassManager::<_, PreservesVerification>::new_read_only();
+        fpm.add_pass(RecordingFunctionPass {
+            names,
+            query_dt: true,
+        });
+        let mut mpm = ModulePassManager::<_, PreservesVerification>::new_read_only();
+        mpm.add_pass(ModuleToFunctionPassAdaptor::new(fpm));
+        let mut mam = ModuleAnalysisManager::new();
+        let mut fam = FunctionAnalysisManager::new();
+        fam.register_pass(DominatorTreeAnalysis);
 
-    let pa = mpm.run(&m, &mut mam, &mut fam)?;
-    assert!(pa.checker::<DominatorTreeAnalysis>().preserved());
-    Ok(())
+        let _ = mpm.run(m.verify()?, &mut mam, &mut fam)?;
+        assert!(fam.get_cached_result::<DominatorTreeAnalysis>(f).is_some());
+        Ok(())
+    })
 }

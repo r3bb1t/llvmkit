@@ -1,0 +1,16 @@
+error[E0382]: borrow of moved value: `module`
+ --> tests/compile_fail/saved_global_handle_requires_unverified_token.rs:8:28
+  |
+4 |     Module::with_new::<_, _, _>("saved-global", |module| {
+  |                                                  ------ move occurs because `module` has type `Module<'_, Brand<'_>>`, which does not implement the `Copy` trait
+...
+7 |         let _verified = module.verify()?;
+  |                                -------- `module` moved due to this method call
+8 |         global.set_linkage(&module, Linkage::Internal);
+  |                            ^^^^^^^ value borrowed here after move
+  |
+note: `Module::<'ctx, B>::verify` takes ownership of the receiver `self`, which moves `module`
+ --> src/module.rs
+  |
+  |     pub fn verify(self) -> IrResult<Module<'ctx, B, Verified>> {
+  |                   ^^^^

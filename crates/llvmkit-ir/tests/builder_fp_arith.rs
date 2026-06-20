@@ -15,24 +15,25 @@
 use llvmkit_ir::{IRBuilder, IrError, Linkage, Module};
 
 fn build_f32_fn(op: &str) -> Result<String, IrError> {
-    let m = Module::new("fp");
-    let f32_ty = m.f32_type();
-    let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type(), f32_ty.as_type()], false);
-    let f = m.add_function::<f32>(op, fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block("entry");
-    let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
-    let x = f.param(0)?;
-    let y = f.param(1)?;
-    let r = match op {
-        "fadd" => b.build_fp_add::<f32, _, _>(x, y, "z")?,
-        "fsub" => b.build_fp_sub::<f32, _, _>(x, y, "z")?,
-        "fmul" => b.build_fp_mul::<f32, _, _>(x, y, "z")?,
-        "fdiv" => b.build_fp_div::<f32, _, _>(x, y, "z")?,
-        "frem" => b.build_fp_rem::<f32, _, _>(x, y, "z")?,
-        _ => unreachable!(),
-    };
-    b.build_ret(r)?;
-    Ok(format!("{m}"))
+    Module::with_new("fp", |m| {
+        let f32_ty = m.f32_type();
+        let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type(), f32_ty.as_type()], false);
+        let f = m.add_function::<f32>(op, fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
+        let x = f.param(0)?;
+        let y = f.param(1)?;
+        let r = match op {
+            "fadd" => b.build_fp_add::<f32, _, _>(x, y, "z")?,
+            "fsub" => b.build_fp_sub::<f32, _, _>(x, y, "z")?,
+            "fmul" => b.build_fp_mul::<f32, _, _>(x, y, "z")?,
+            "fdiv" => b.build_fp_div::<f32, _, _>(x, y, "z")?,
+            "frem" => b.build_fp_rem::<f32, _, _>(x, y, "z")?,
+            _ => unreachable!(),
+        };
+        b.build_ret(r)?;
+        Ok(format!("{m}"))
+    })
 }
 
 /// Port of `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)`
@@ -85,15 +86,16 @@ fn frem_f32() -> Result<(), IrError> {
 /// marker propagates correctly to the `fadd double` print form.
 #[test]
 fn fadd_f64() -> Result<(), IrError> {
-    let m = Module::new("fp");
-    let f64_ty = m.f64_type();
-    let fn_ty = m.fn_type(f64_ty, [f64_ty.as_type(), f64_ty.as_type()], false);
-    let f = m.add_function::<f64>("fadd", fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block("entry");
-    let b = IRBuilder::new_for::<f64>(&m).position_at_end(entry);
-    let r = b.build_fp_add::<f64, _, _>(f.param(0)?, f.param(1)?, "z")?;
-    b.build_ret(r)?;
-    let text = format!("{m}");
-    assert!(text.contains("%z = fadd double %0, %1"), "got:\n{text}");
-    Ok(())
+    Module::with_new("fp", |m| {
+        let f64_ty = m.f64_type();
+        let fn_ty = m.fn_type(f64_ty, [f64_ty.as_type(), f64_ty.as_type()], false);
+        let f = m.add_function::<f64>("fadd", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<f64>(&m).position_at_end(entry);
+        let r = b.build_fp_add::<f64, _, _>(f.param(0)?, f.param(1)?, "z")?;
+        b.build_ret(r)?;
+        let text = format!("{m}");
+        assert!(text.contains("%z = fadd double %0, %1"), "got:\n{text}");
+        Ok(())
+    })
 }

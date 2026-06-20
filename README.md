@@ -79,20 +79,21 @@ Build IR programmatically:
 use llvmkit_ir::{IRBuilder, IntValue, IrError, Linkage, Module};
 
 fn build() -> Result<(), IrError> {
-    let m = Module::new("demo");
-    let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-    let f = m.add_function::<i32>("add", fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block("entry");
+    Module::with_new::<_, _, _>("demo", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+        let f = m.add_function::<i32>("add", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
 
-    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-    let lhs: IntValue<i32> = f.param(0)?.try_into()?;
-    let rhs: IntValue<i32> = f.param(1)?.try_into()?;
-    let sum = b.build_int_add(lhs, rhs, "sum")?;
-    b.build_ret(sum)?;
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let lhs: IntValue<i32> = f.param(0)?.try_into()?;
+        let rhs: IntValue<i32> = f.param(1)?.try_into()?;
+        let sum = b.build_int_add(lhs, rhs, "sum")?;
+        b.build_ret(sum)?;
 
-    print!("{m}");
-    Ok(())
+        print!("{m}");
+        Ok(())
+    })
 }
 ```
 
@@ -114,8 +115,11 @@ cargo run -p llvmkit-ir --example pass_manager_demo
 
 ## Built-in Analyses and Custom Passes
 
-`llvmkit-ir` now ships the minimum pass-readiness layer needed to query and run
-LLVM-like analyses over the modeled IR.
+`llvmkit-ir` ships a branded, verified-state pass layer for querying analyses
+and running LLVM-like passes over the modeled IR. Fresh modules are created
+with `Module::with_new`, whose closure carries the generative module brand;
+read-only pass pipelines preserve `Module<'ctx, B, Verified>`, while transform
+pipelines return `Module<'ctx, B, Unverified>`.
 
 Built-in analysis available today:
 
@@ -125,63 +129,68 @@ Core pass / analysis infrastructure available today:
 
 - `FunctionAnalysisManager`
 - `ModuleAnalysisManager`
+- `FunctionPassContext`
+- `ModulePassContext`
 - `FunctionPassManager`
 - `ModulePassManager`
 - `ModuleToFunctionPassAdaptor`
 - `PreservedAnalyses`
 - `PassInstrumentationCallbacks`
 
-Planned next tightening: keep the pass / analysis substrate but distinguish
-**verified** and **unverified** modules explicitly at pass entry points. The
-current infrastructure is intentionally a stepping stone toward a
-`VerifiedModule<'ctx>`-aware surface, not a replacement for that typestate
-boundary.
-
 Register a built-in analysis and a custom function pass:
 
 ```rust
 use llvmkit_ir::{
-    DominatorTreeAnalysis, FunctionAnalysisManager, FunctionPass, FunctionPassManager,
-    Module, ModuleAnalysisManager, ModulePassManager, ModuleToFunctionPassAdaptor,
-    PreservedAnalyses,
+    DominatorTreeAnalysis, FunctionAnalysisManager, FunctionPassManager, IrResult, Module,
+    ModuleAnalysisManager, ModulePassManager, ModuleToFunctionPassAdaptor, PreservedAnalyses,
+    PreservesVerification, ReadOnlyFunctionPass, ReadOnlyFunctionPassContext,
 };
 
 struct MyFunctionPass;
 
-impl<'ctx> FunctionPass<'ctx> for MyFunctionPass {
+impl<'ctx> ReadOnlyFunctionPass<'ctx> for MyFunctionPass {
     fn run(
         &mut self,
-        function: llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn>,
-        fam: &mut FunctionAnalysisManager<'ctx>,
-    ) -> llvmkit_ir::IrResult<PreservedAnalyses> {
-        let dt = fam.get_result::<DominatorTreeAnalysis>(function)?;
+        cx: &mut ReadOnlyFunctionPassContext<'_, 'ctx>,
+    ) -> IrResult<PreservedAnalyses> {
+        let function = cx.function();
+        let dt = cx.analysis::<DominatorTreeAnalysis>()?;
         let entry = function.entry_block().expect("function body");
         assert!(dt.is_reachable_from_entry(entry));
         Ok(PreservedAnalyses::all())
     }
 }
 
-fn run_passes(m: &Module<'_>) -> llvmkit_ir::IrResult<()> {
-    let function = m.function_by_name("my_function").expect("function exists");
+fn run_passes() -> IrResult<()> {
+    Module::with_new::<_, _, _>("passes", |m| {
+        // Build or parse functions into `m` here.
+        let mut fam = FunctionAnalysisManager::new();
+        fam.register_pass(DominatorTreeAnalysis);
 
-    let mut fam = FunctionAnalysisManager::new();
-    fam.register_pass(DominatorTreeAnalysis);
-    let _ = fam.get_result::<DominatorTreeAnalysis>(function)?;
+        let mut fpm = FunctionPassManager::<_, PreservesVerification>::new_read_only();
+        fpm.add_pass(MyFunctionPass);
 
-    let mut fpm = FunctionPassManager::new();
-    fpm.add_pass(MyFunctionPass);
+        let mut mpm = ModulePassManager::<_, PreservesVerification>::new_read_only();
+        mpm.add_pass(ModuleToFunctionPassAdaptor::new(fpm));
 
-    let mut mpm = ModulePassManager::new();
-    mpm.add_pass(ModuleToFunctionPassAdaptor::new(fpm));
-
-    let mut mam = ModuleAnalysisManager::new();
-    mpm.run(m, &mut mam, &mut fam)?;
-    Ok(())
+        let mut mam = ModuleAnalysisManager::new();
+        let _verified = mpm.run(m.verify()?, &mut mam, &mut fam)?;
+        Ok(())
+    })
 }
 ```
 
 For a runnable end-to-end version, see
 `crates/llvmkit-ir/examples/pass_manager_demo.rs`.
+
+| LLVM new PM concept | llvmkit API |
+|---|---|
+| `FunctionPass::run(Function &, FunctionAnalysisManager &)` | `FunctionPass::run(&mut FunctionPassContext)` |
+| `ModulePass::run(Module &, ModuleAnalysisManager &)` | `ModulePass::run(&mut ModulePassContext)` |
+| `PreservedAnalyses::all()` / `none()` | same names |
+| `FAM.getResult<A>(F)` | `cx.analysis::<A>()` inside a function pass, `fam.get_result::<A>(FunctionView)` outside |
+| `ModuleToFunctionPassAdaptor` | same name; function passes read cached module analyses only |
+| mutating a module pass | use a `MutatesIr` manager, call `cx.module_mut()`, receive `Module<'ctx, B, Unverified>` |
 
 Important boundary: the crate currently ships **pass infrastructure and one
 built-in analysis**, not a full optimization pipeline. There is no public
@@ -237,13 +246,14 @@ surface; cite them by id (`D1`-`D11`) in reviews and commit messages.
   updates live in one exhaustive place per construction / mutation primitive.
 - **D6. Aggregate types preserve element shape.** Aggregate typing is modeled
   directly rather than flattened into weak runtime predicates.
-- **D7. Cross-module mixing is rejected.** Handles carry both a `'ctx` brand
-  and a `ModuleRef` runtime identity check.
-- **D8. Verified guarantees are explicit.** `Module::verify()` produces a
-  `VerifiedModule<'ctx>` brand. The minimal pass infrastructure is shipped, and
-  the planned next cutover is to make analysis / transform entry points reflect
-  the verified-vs-unverified distinction directly instead of collapsing both
-  states into the same module-facing surface.
+- **D7. Cross-module mixing is rejected.** Handles carry a generative module
+  brand plus the owning `ModuleRef`, so values from one `Module::with_new`
+  closure cannot be used with another module's builders.
+- **D8. Verified guarantees are explicit.** Verification consumes an
+  unverified token and produces `Module<'ctx, B, Verified>`. Read-only pass
+  managers preserve that verified state at the type level; transform managers
+  return `Module<'ctx, B, Unverified>`, so their output must be verified again
+  before another verified-only pipeline can consume it.
 - **D9. Iteration safety is structural.** Mutating-while-iterating uses
   dedicated cursor APIs rather than relying on caller discipline.
 - **D10. No undefined behavior, by design.** Legal API calls must produce

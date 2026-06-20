@@ -8,12 +8,13 @@ use llvmkit_asmparser::{ll_parser::Parser, parse_error::ParseError, parser};
 use llvmkit_ir::Module;
 
 fn parse_and_render(module_name: &str, src: &[u8]) -> String {
-    let module = Module::new(module_name);
-    Parser::new(src, &module)
-        .expect("lexer primes")
-        .parse_module()
-        .expect("parser succeeds");
-    format!("{module}")
+    Module::with_new(module_name, |module| {
+        Parser::new(src, &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect("parser succeeds");
+        format!("{module}")
+    })
 }
 
 fn assert_check_lines(text: &str, check_lines: &[&str]) {
@@ -37,11 +38,12 @@ fn assert_parse_print_parse_stable(text: &str) {
 }
 
 fn assert_parse_error(src: &[u8], expected_message: &str) {
-    let module = Module::new("parser_constants_error");
-    let err = Parser::new(src, &module)
-        .expect("lexer primes")
-        .parse_module()
-        .expect_err("fixture is rejected");
+    let err = Module::with_new("parser_constants_error", |module| {
+        Parser::new(src, &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("fixture is rejected")
+    });
     match err {
         ParseError::Expected { expected, .. } => assert_eq!(expected, expected_message),
         other => panic!("unexpected error variant: {other:?}"),
@@ -271,11 +273,12 @@ fn no_cfi_round_trips() {
 /// `none` is accepted for token constants.
 #[test]
 fn token_none_round_trips() {
-    let module = Module::new("parser_constants_none");
-    let parsed =
-        parser::parse_constant_value(b"none", &module, module.token_type().as_type(), None)
-            .expect("token none parses");
-    assert_eq!(format!("{}", parsed.as_value()), "token none");
+    Module::with_new("parser_constants_none", |module| {
+        let parsed =
+            parser::parse_constant_value(b"none", &module, module.token_type().as_type(), None)
+                .expect("token none parses");
+        assert_eq!(format!("{}", parsed.as_value()), "token none");
+    });
 }
 
 /// Exact `ptrtoaddr` constant expression from `test/Assembler/ptrtoaddr.ll`.
@@ -333,20 +336,21 @@ fn unsupported_constant_expr_opcodes_are_rejected() {
             .as_slice(),
         ),
     ] {
-        let module = Module::new("parser_constants_unsupported");
-        let err = Parser::new(src, &module)
-            .expect("lexer primes")
-            .parse_module()
-            .expect_err("unsupported constexpr is rejected");
-        match err {
-            ParseError::Expected { expected, .. } => {
-                assert_eq!(
-                    expected,
-                    format!("{opcode} constexprs are no longer supported")
-                );
+        Module::with_new("parser_constants_unsupported", |module| {
+            let err = Parser::new(src, &module)
+                .expect("lexer primes")
+                .parse_module()
+                .expect_err("unsupported constexpr is rejected");
+            match err {
+                ParseError::Expected { expected, .. } => {
+                    assert_eq!(
+                        expected,
+                        format!("{opcode} constexprs are no longer supported")
+                    );
+                }
+                other => panic!("unexpected error variant: {other:?}"),
             }
-            other => panic!("unexpected error variant: {other:?}"),
-        }
+        });
     }
 }
 
@@ -386,27 +390,28 @@ fn constant_expr_gep_rejects_scalable_aggregate_pointee() {
 /// shipped parser subset.
 #[test]
 fn none_is_token_only() {
-    let module = Module::new("parser_constants_none_token");
-    let parsed =
-        parser::parse_constant_value(b"none", &module, module.token_type().as_type(), None)
-            .expect("token none parses");
-    assert_eq!(format!("{}", parsed.as_value()), "token none");
+    Module::with_new("parser_constants_none_token", |module| {
+        let parsed =
+            parser::parse_constant_value(b"none", &module, module.token_type().as_type(), None)
+                .expect("token none parses");
+        assert_eq!(format!("{}", parsed.as_value()), "token none");
 
-    let target_ty = module
-        .target_ext_type(
-            "spirv.Image",
-            Vec::<llvmkit_ir::Type>::new(),
-            Vec::<u32>::new(),
-        )
-        .as_type();
-    let err = parser::parse_constant_value(b"none", &module, target_ty, None)
-        .expect_err("target-extension none is rejected");
-    match err {
-        ParseError::Expected { expected, .. } => {
-            assert_eq!(expected, "invalid type for none constant")
+        let target_ty = module
+            .target_ext_type(
+                "spirv.Image",
+                Vec::<llvmkit_ir::Type>::new(),
+                Vec::<u32>::new(),
+            )
+            .as_type();
+        let err = parser::parse_constant_value(b"none", &module, target_ty, None)
+            .expect_err("target-extension none is rejected");
+        match err {
+            ParseError::Expected { expected, .. } => {
+                assert_eq!(expected, "invalid type for none constant")
+            }
+            other => panic!("unexpected error variant: {other:?}"),
         }
-        other => panic!("unexpected error variant: {other:?}"),
-    }
+    });
 }
 
 /// llvmkit-specific subset of `test/Assembler/target-types.ll` and
@@ -414,36 +419,37 @@ fn none_is_token_only() {
 /// zero-initializable property.
 #[test]
 fn target_ext_zeroinitializer_requires_zero_init_property() {
-    let module = Module::new("parser_constants_target_zero");
-    let zero_ty = module
-        .target_ext_type(
-            "spirv.foo",
-            Vec::<llvmkit_ir::Type>::new(),
-            Vec::<u32>::new(),
-        )
-        .as_type();
-    let zero = parser::parse_constant_value(b"zeroinitializer", &module, zero_ty, None)
-        .expect("zero-initializable target extension parses");
-    assert_eq!(
-        format!("{}", zero.as_value()),
-        "target(\"spirv.foo\") zeroinitializer"
-    );
+    Module::with_new("parser_constants_target_zero", |module| {
+        let zero_ty = module
+            .target_ext_type(
+                "spirv.foo",
+                Vec::<llvmkit_ir::Type>::new(),
+                Vec::<u32>::new(),
+            )
+            .as_type();
+        let zero = parser::parse_constant_value(b"zeroinitializer", &module, zero_ty, None)
+            .expect("zero-initializable target extension parses");
+        assert_eq!(
+            format!("{}", zero.as_value()),
+            "target(\"spirv.foo\") zeroinitializer"
+        );
 
-    let image_ty = module
-        .target_ext_type(
-            "spirv.Image",
-            Vec::<llvmkit_ir::Type>::new(),
-            Vec::<u32>::new(),
-        )
-        .as_type();
-    let err = parser::parse_constant_value(b"zeroinitializer", &module, image_ty, None)
-        .expect_err("non-zero-initializable target extension is rejected");
-    match err {
-        ParseError::Expected { expected, .. } => {
-            assert_eq!(expected, "invalid type for null constant")
+        let image_ty = module
+            .target_ext_type(
+                "spirv.Image",
+                Vec::<llvmkit_ir::Type>::new(),
+                Vec::<u32>::new(),
+            )
+            .as_type();
+        let err = parser::parse_constant_value(b"zeroinitializer", &module, image_ty, None)
+            .expect_err("non-zero-initializable target extension is rejected");
+        match err {
+            ParseError::Expected { expected, .. } => {
+                assert_eq!(expected, "invalid type for null constant")
+            }
+            other => panic!("unexpected error variant: {other:?}"),
         }
-        other => panic!("unexpected error variant: {other:?}"),
-    }
+    });
 }
 
 /// Direct port of `LLParser::parseValID`'s `ptrauth` branch: the five-operand

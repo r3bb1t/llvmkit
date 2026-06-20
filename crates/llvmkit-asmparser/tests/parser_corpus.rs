@@ -4,7 +4,7 @@
 //! public parser facade entry points for focused regression coverage.
 
 use llvmkit_asmparser::parser;
-use llvmkit_ir::Module;
+use std::fs::read_to_string;
 use std::path::{Path, PathBuf};
 
 const CORPUS_MANIFEST: &str = include_str!("fixtures/parser_corpus_manifest.txt");
@@ -73,49 +73,43 @@ fn parser_corpus_round_trips_checked_in_fixtures() {
 
     for entry in fixture_entries() {
         let path = fixture_dir.join(entry.fixture);
-        let name = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(entry.fixture);
-        let module = Module::new(name);
+        let parse_result = parser::parse_assembly_file(&path, |module, _parsed| {
+            if let Some(expected) = entry.expected {
+                let expected_text = read_to_string(fixture_dir.join(expected))
+                    .unwrap_or_else(|err| panic!("expected output {expected} should read: {err}"));
+                let expected_text = expected_text.replace("\r\n", "\n");
+                assert_eq!(
+                    format!("{module}"),
+                    expected_text,
+                    "corpus fixture {} should print canonically",
+                    entry.fixture
+                );
+            }
 
-        let parse_result = parser::parse_assembly_file_into(&path, &module);
+            let verify_result = module.verify_borrowed();
+            match entry.status {
+                CorpusStatus::Pass => verify_result.unwrap_or_else(|err| {
+                    panic!("corpus fixture {} should verify: {err}", entry.fixture)
+                }),
+                CorpusStatus::XfailVerify => {
+                    if verify_result.is_ok() {
+                        panic!("corpus fixture {} unexpectedly verified", entry.fixture);
+                    }
+                }
+                CorpusStatus::XfailParse => {}
+            }
+        });
         match entry.status {
             CorpusStatus::XfailParse => {
                 if parse_result.is_ok() {
                     panic!("corpus fixture {} unexpectedly parsed", entry.fixture);
                 }
-                continue;
             }
             CorpusStatus::Pass | CorpusStatus::XfailVerify => {
                 parse_result.unwrap_or_else(|err| {
                     panic!("corpus fixture {} should parse: {err}", entry.fixture)
                 });
             }
-        }
-
-        if let Some(expected) = entry.expected {
-            let expected_text = std::fs::read_to_string(fixture_dir.join(expected))
-                .unwrap_or_else(|err| panic!("expected output {expected} should read: {err}"));
-            assert_eq!(
-                format!("{module}"),
-                expected_text,
-                "corpus fixture {} should print canonically",
-                entry.fixture
-            );
-        }
-
-        let verify_result = module.verify_borrowed();
-        match entry.status {
-            CorpusStatus::Pass => verify_result.unwrap_or_else(|err| {
-                panic!("corpus fixture {} should verify: {err}", entry.fixture)
-            }),
-            CorpusStatus::XfailVerify => {
-                if verify_result.is_ok() {
-                    panic!("corpus fixture {} unexpectedly verified", entry.fixture);
-                }
-            }
-            CorpusStatus::XfailParse => {}
         }
     }
 }

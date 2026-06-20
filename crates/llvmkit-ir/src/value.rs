@@ -36,7 +36,7 @@ use crate::derived_types::{
 use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::function::FunctionData;
 use crate::instruction::InstructionData;
-use crate::module::{Module, ModuleRef};
+use crate::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use crate::r#type::{Type, TypeData, TypeId};
 use core::fmt;
 use core::hash::{Hash, Hasher};
@@ -155,23 +155,61 @@ pub(crate) enum ValueKindData {
 /// - `ty: TypeId` — cached type. Values do not change type, so caching
 ///   here saves an arena lookup on every `value.ty()` access.
 ///
-/// The handle derives `Copy + Clone + PartialEq + Eq + Hash + Debug`
-/// without any hand-rolled impls.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Value<'ctx> {
+/// Equality and hashing compare the branded module reference by `ModuleId`,
+/// so the handle remains cheap to copy and store in maps.
+pub struct Value<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
-impl<'ctx> Value<'ctx> {
+impl<B: ModuleBrand> Clone for Value<'_, B> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<B: ModuleBrand> Copy for Value<'_, B> {}
+
+impl<B: ModuleBrand> PartialEq for Value<'_, B> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.module == other.module
+    }
+}
+
+impl<B: ModuleBrand> Eq for Value<'_, B> {}
+
+impl<B: ModuleBrand> Hash for Value<'_, B> {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+        self.module.hash(state);
+        self.ty.hash(state);
+    }
+}
+
+impl<B: ModuleBrand> fmt::Debug for Value<'_, B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Value")
+            .field("id", &self.id)
+            .field("ty", &self.ty)
+            .finish()
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     /// Construct from raw parts. Crate-internal: only the value-arena
     /// constructors hand these out.
     #[inline]
-    pub(crate) fn from_parts(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
+    pub(crate) fn from_parts<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    where
+        M: Into<ModuleRef<'ctx, B>>,
+    {
         Self {
             id,
-            module: ModuleRef::new(module),
+            module: module.into(),
             ty,
         }
     }
@@ -184,8 +222,8 @@ impl<'ctx> Value<'ctx> {
 
     /// Owning module reference.
     #[inline]
-    pub fn module(self) -> &'ctx Module<'ctx> {
-        self.module.module()
+    pub fn module(self) -> ModuleView<'ctx, B> {
+        ModuleView::new(self.module.module())
     }
 
     /// Opaque arena id for structured side tables such as use-list order
@@ -197,8 +235,8 @@ impl<'ctx> Value<'ctx> {
 
     /// Cached IR type of this value.
     #[inline]
-    pub fn ty(self) -> Type<'ctx> {
-        Type::new(self.ty, self.module.module())
+    pub fn ty(self) -> Type<'ctx, B> {
+        Type::new(self.ty, self.module)
     }
 
     /// Optional textual name. `None` for slot-numbered (`%0`, `%1`)
@@ -207,9 +245,22 @@ impl<'ctx> Value<'ctx> {
         self.data().name.borrow().clone()
     }
 
-    /// Set or clear the textual name. Mirrors `Value::setName`.
-    pub fn set_name(self, name: Option<impl Into<String>>) {
-        *self.data().name.borrow_mut() = name.map(Into::into);
+    /// Set the textual name. Mirrors `Value::setName`.
+    pub fn set_name(self, module_token: &Module<'ctx, B, Unverified>, name: impl Into<String>) {
+        if module_token.id() == self.module.id() {
+            self.set_name_internal(Some(name.into()));
+        }
+    }
+
+    /// Clear the textual name.
+    pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+        if module_token.id() == self.module.id() {
+            self.set_name_internal(None);
+        }
+    }
+
+    pub(crate) fn set_name_internal(self, name: Option<String>) {
+        *self.data().name.borrow_mut() = name;
     }
 
     /// Read the optional debug-location attached to this value.
@@ -246,8 +297,10 @@ impl<'ctx> Value<'ctx> {
     /// the same instruction references this value in multiple slots.
     pub fn users(
         self,
-    ) -> impl ExactSizeIterator<Item = crate::instruction::Instruction<'ctx>> + 'ctx {
-        let module = self.module.module();
+    ) -> impl ExactSizeIterator<
+        Item = crate::instruction::Instruction<'ctx, crate::instruction::state::Attached, B>,
+    > + 'ctx {
+        let module = self.module;
         let snapshot: Vec<ValueId> = self.data().use_list.borrow().clone();
         snapshot
             .into_iter()
@@ -327,22 +380,25 @@ pub(crate) mod sealed {
 ///
 /// Sealed: the closed set of LLVM value categories is part of the IR
 /// spec, not an extension point.
-pub trait IsValue<'ctx>: sealed::Sealed + Copy + Sized + core::fmt::Debug {
+pub trait IsValue<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>>:
+    sealed::Sealed + Copy + Sized + core::fmt::Debug
+{
     /// Widen to the erased [`Value`] handle.
-    fn as_value(self) -> Value<'ctx>;
+    fn as_value(self) -> Value<'ctx, B>;
 }
 
 /// Sealed accessor trait: anything that has an IR type. Implemented by
 /// every value handle and every type handle.
-pub trait Typed<'ctx>: sealed::Sealed {
-    fn ty(self) -> Type<'ctx>;
+pub trait Typed<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>>: sealed::Sealed {
+    fn ty(self) -> Type<'ctx, B>;
 }
 
 /// Sealed accessor trait: anything that exposes an optional textual
 /// name. Implemented by every value handle.
-pub trait HasName<'ctx>: sealed::Sealed {
+pub trait HasName<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>>: sealed::Sealed {
     fn name(self) -> Option<String>;
-    fn set_name(self, name: Option<&str>);
+    fn set_name(self, module_token: &Module<'ctx, B, Unverified>, name: &str);
+    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>);
 }
 
 /// Sealed accessor trait: anything that carries an optional
@@ -351,30 +407,34 @@ pub trait HasDebugLoc: sealed::Sealed {
     fn debug_loc(self) -> Option<DebugLoc>;
 }
 
-impl<'ctx> sealed::Sealed for Value<'ctx> {}
-impl<'ctx> IsValue<'ctx> for Value<'ctx> {
+impl<'ctx, B: ModuleBrand> sealed::Sealed for Value<'ctx, B> {}
+impl<'ctx, B: ModuleBrand> IsValue<'ctx, B> for Value<'ctx, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx> {
+    fn as_value(self) -> Value<'ctx, B> {
         self
     }
 }
-impl<'ctx> Typed<'ctx> for Value<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for Value<'ctx, B> {
     #[inline]
-    fn ty(self) -> Type<'ctx> {
+    fn ty(self) -> Type<'ctx, B> {
         Value::ty(self)
     }
 }
-impl<'ctx> HasName<'ctx> for Value<'ctx> {
+impl<'ctx, B: ModuleBrand> HasName<'ctx, B> for Value<'ctx, B> {
     #[inline]
     fn name(self) -> Option<String> {
         Value::name(self)
     }
     #[inline]
-    fn set_name(self, name: Option<&str>) {
-        Value::set_name(self, name);
+    fn set_name(self, module_token: &Module<'ctx, B, Unverified>, name: &str) {
+        Value::set_name(self, module_token, name);
+    }
+    #[inline]
+    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+        Value::clear_name(self, module_token);
     }
 }
-impl HasDebugLoc for Value<'_> {
+impl<B: ModuleBrand> HasDebugLoc for Value<'_, B> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
         Value::debug_loc(self)
@@ -398,9 +458,9 @@ macro_rules! decl_value_handle {
     ) => {
         $(#[$attr])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub struct $name<'ctx> {
+        pub struct $name<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
             pub(crate) id: ValueId,
-            pub(crate) module: ModuleRef<'ctx>,
+            pub(crate) module: ModuleRef<'ctx, B>,
             pub(crate) ty: TypeId,
         }
 
@@ -413,8 +473,8 @@ macro_rules! decl_value_handle {
 
             /// Owning module reference.
             #[inline]
-            pub fn module(self) -> &'ctx Module<'ctx> {
-                self.module.module()
+            pub fn module(self) -> ModuleView<'ctx, crate::module::Brand<'ctx>> {
+                ModuleView::new(self.module.module())
             }
 
             /// Refined IR-type handle for this value.
@@ -428,9 +488,14 @@ macro_rules! decl_value_handle {
                 self.as_value().name()
             }
 
-            /// Set or clear the textual name.
-            pub fn set_name(self, name: Option<&str>) {
-                self.as_value().set_name(name);
+            /// Set the textual name.
+            pub fn set_name(self, module_token: &crate::module::Module<'ctx, crate::module::Brand<'ctx>, crate::module::Unverified>, name: &str) {
+                self.as_value().set_name(module_token, name);
+            }
+
+            /// Clear the textual name.
+            pub fn clear_name(self, module_token: &crate::module::Module<'ctx, crate::module::Brand<'ctx>, crate::module::Unverified>) {
+                self.as_value().clear_name(module_token);
             }
 
             /// Optional debug-location.
@@ -455,7 +520,9 @@ macro_rules! decl_value_handle {
             #[inline]
             fn name(self) -> Option<String> { Self::name(self) }
             #[inline]
-            fn set_name(self, name: Option<&str>) { Self::set_name(self, name) }
+            fn set_name(self, module_token: &crate::module::Module<'ctx, crate::module::Brand<'ctx>, crate::module::Unverified>, name: &str) { Self::set_name(self, module_token, name) }
+            #[inline]
+            fn clear_name(self, module_token: &crate::module::Module<'ctx, crate::module::Brand<'ctx>, crate::module::Unverified>) { Self::clear_name(self, module_token) }
         }
         impl<'ctx> HasDebugLoc for $name<'ctx> {
             #[inline]
@@ -580,9 +647,9 @@ decl_value_handle!(
 /// Value whose IR type is `iN`. The `W: IntWidth` marker pins the
 /// bit-width at the type level, so the IRBuilder can reject mismatched
 /// widths at compile time.
-pub struct IntValue<'ctx, W: IntWidth> {
+pub struct IntValue<'ctx, W: IntWidth, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
     pub(crate) _w: PhantomData<W>,
 }
@@ -642,8 +709,8 @@ impl<'ctx, W: IntWidth> IntValue<'ctx, W> {
     }
     /// Owning module reference.
     #[inline]
-    pub fn module(self) -> &'ctx Module<'ctx> {
-        self.module.module()
+    pub fn module(self) -> ModuleView<'ctx, crate::module::Brand<'ctx>> {
+        ModuleView::new(self.module.module())
     }
     /// Refined IR-type handle for this value.
     #[inline]
@@ -654,9 +721,28 @@ impl<'ctx, W: IntWidth> IntValue<'ctx, W> {
     pub fn name(self) -> Option<String> {
         self.as_value().name()
     }
-    /// Set or clear the textual name.
-    pub fn set_name(self, name: Option<&str>) {
-        self.as_value().set_name(name);
+    /// Set the textual name.
+    pub fn set_name(
+        self,
+        module_token: &crate::module::Module<
+            'ctx,
+            crate::module::Brand<'ctx>,
+            crate::module::Unverified,
+        >,
+        name: &str,
+    ) {
+        self.as_value().set_name(module_token, name);
+    }
+    /// Clear the textual name.
+    pub fn clear_name(
+        self,
+        module_token: &crate::module::Module<
+            'ctx,
+            crate::module::Brand<'ctx>,
+            crate::module::Unverified,
+        >,
+    ) {
+        self.as_value().clear_name(module_token);
     }
     /// Optional debug-location.
     #[inline]
@@ -694,8 +780,27 @@ impl<'ctx, W: IntWidth> HasName<'ctx> for IntValue<'ctx, W> {
         Self::name(self)
     }
     #[inline]
-    fn set_name(self, name: Option<&str>) {
-        Self::set_name(self, name)
+    fn set_name(
+        self,
+        module_token: &crate::module::Module<
+            'ctx,
+            crate::module::Brand<'ctx>,
+            crate::module::Unverified,
+        >,
+        name: &str,
+    ) {
+        Self::set_name(self, module_token, name)
+    }
+    #[inline]
+    fn clear_name(
+        self,
+        module_token: &crate::module::Module<
+            'ctx,
+            crate::module::Brand<'ctx>,
+            crate::module::Unverified,
+        >,
+    ) {
+        Self::clear_name(self, module_token)
     }
 }
 impl<'ctx, W: IntWidth> HasDebugLoc for IntValue<'ctx, W> {
@@ -894,9 +999,13 @@ impl<'ctx, const N: u32> From<IntValue<'ctx, crate::int_width::Width<N>>>
 // --------------------------------------------------------------------------
 
 /// Value whose IR type is an IEEE / non-IEEE float.
-pub struct FloatValue<'ctx, K: FloatKind> {
+pub struct FloatValue<
+    'ctx,
+    K: FloatKind,
+    B: crate::module::ModuleBrand = crate::module::Brand<'ctx>,
+> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
     pub(crate) _k: PhantomData<K>,
 }
@@ -952,8 +1061,8 @@ impl<'ctx, K: FloatKind> FloatValue<'ctx, K> {
         }
     }
     #[inline]
-    pub fn module(self) -> &'ctx Module<'ctx> {
-        self.module.module()
+    pub fn module(self) -> ModuleView<'ctx, crate::module::Brand<'ctx>> {
+        ModuleView::new(self.module.module())
     }
     #[inline]
     pub fn ty(self) -> FloatType<'ctx, K> {
@@ -962,8 +1071,26 @@ impl<'ctx, K: FloatKind> FloatValue<'ctx, K> {
     pub fn name(self) -> Option<String> {
         self.as_value().name()
     }
-    pub fn set_name(self, name: Option<&str>) {
-        self.as_value().set_name(name);
+    pub fn set_name(
+        self,
+        module_token: &crate::module::Module<
+            'ctx,
+            crate::module::Brand<'ctx>,
+            crate::module::Unverified,
+        >,
+        name: &str,
+    ) {
+        self.as_value().set_name(module_token, name);
+    }
+    pub fn clear_name(
+        self,
+        module_token: &crate::module::Module<
+            'ctx,
+            crate::module::Brand<'ctx>,
+            crate::module::Unverified,
+        >,
+    ) {
+        self.as_value().clear_name(module_token);
     }
     #[inline]
     pub fn debug_loc(self) -> Option<DebugLoc> {
@@ -997,8 +1124,26 @@ impl<'ctx, K: FloatKind> HasName<'ctx> for FloatValue<'ctx, K> {
     fn name(self) -> Option<String> {
         Self::name(self)
     }
-    fn set_name(self, name: Option<&str>) {
-        Self::set_name(self, name)
+    fn set_name(
+        self,
+        module_token: &crate::module::Module<
+            'ctx,
+            crate::module::Brand<'ctx>,
+            crate::module::Unverified,
+        >,
+        name: &str,
+    ) {
+        Self::set_name(self, module_token, name)
+    }
+    fn clear_name(
+        self,
+        module_token: &crate::module::Module<
+            'ctx,
+            crate::module::Brand<'ctx>,
+            crate::module::Unverified,
+        >,
+    ) {
+        Self::clear_name(self, module_token)
     }
 }
 impl<'ctx, K: FloatKind> HasDebugLoc for FloatValue<'ctx, K> {
@@ -1143,18 +1288,20 @@ impl<'ctx> fmt::Display for Value<'ctx> {
 /// - [`crate::argument::Argument<'ctx>`] (runtime-checked narrow).
 /// - [`Value<'ctx>`] (runtime-checked narrow).
 /// - [`crate::instruction::Instruction<'ctx>`] (runtime-checked narrow).
-pub trait IntoPointerValue<'ctx>: Sized {
+pub trait IntoPointerValue<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>>:
+    Sized
+{
     fn into_pointer_value(
         self,
-        module: &'ctx crate::module::Module<'ctx>,
-    ) -> crate::IrResult<PointerValue<'ctx>>;
+        module: crate::module::ModuleRef<'ctx>,
+    ) -> crate::IrResult<PointerValue<'ctx, B>>;
 }
 
 impl<'ctx> IntoPointerValue<'ctx> for PointerValue<'ctx> {
     #[inline]
     fn into_pointer_value(
         self,
-        _module: &'ctx crate::module::Module<'ctx>,
+        _module: crate::module::ModuleRef<'ctx>,
     ) -> crate::IrResult<PointerValue<'ctx>> {
         Ok(self)
     }
@@ -1164,7 +1311,7 @@ impl<'ctx> IntoPointerValue<'ctx> for crate::constants::ConstantPointerNull<'ctx
     #[inline]
     fn into_pointer_value(
         self,
-        _module: &'ctx crate::module::Module<'ctx>,
+        _module: crate::module::ModuleRef<'ctx>,
     ) -> crate::IrResult<PointerValue<'ctx>> {
         Ok(PointerValue::from_value_unchecked(
             crate::value::IsValue::as_value(self),
@@ -1176,7 +1323,7 @@ impl<'ctx> IntoPointerValue<'ctx> for crate::argument::Argument<'ctx> {
     #[inline]
     fn into_pointer_value(
         self,
-        _module: &'ctx crate::module::Module<'ctx>,
+        _module: crate::module::ModuleRef<'ctx>,
     ) -> crate::IrResult<PointerValue<'ctx>> {
         PointerValue::try_from(self.as_value())
     }
@@ -1186,7 +1333,7 @@ impl<'ctx> IntoPointerValue<'ctx> for Value<'ctx> {
     #[inline]
     fn into_pointer_value(
         self,
-        _module: &'ctx crate::module::Module<'ctx>,
+        _module: crate::module::ModuleRef<'ctx>,
     ) -> crate::IrResult<PointerValue<'ctx>> {
         PointerValue::try_from(self)
     }
@@ -1196,7 +1343,7 @@ impl<'ctx> IntoPointerValue<'ctx> for crate::instruction::Instruction<'ctx> {
     #[inline]
     fn into_pointer_value(
         self,
-        _module: &'ctx crate::module::Module<'ctx>,
+        _module: crate::module::ModuleRef<'ctx>,
     ) -> crate::IrResult<PointerValue<'ctx>> {
         PointerValue::try_from(self.as_value())
     }

@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 use llvmkit_ir::{
-    Dyn, FunctionValue, GlobalAlias, GlobalIFunc, GlobalVariable, Type,
+    Brand, Dyn, FunctionValue, GlobalAlias, GlobalIFunc, GlobalVariable, ModuleBrand, Type,
     attributes::AttributeStorage, metadata::MetadataId,
 };
 
@@ -40,43 +40,43 @@ use crate::numbered_values::NumberedValues;
 /// payload of upstream `SlotMapping::GlobalValues`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum GlobalRef<'ctx> {
+pub enum GlobalRef<'ctx, B: ModuleBrand = Brand<'ctx>> {
     /// Function definition or declaration. Carries the [`Dyn`] return marker
     /// because the parser cannot pin the static return shape without
     /// depending on the IR-side typed-return surface.
-    Function(FunctionValue<'ctx, Dyn>),
+    Function(FunctionValue<'ctx, Dyn, B>),
     /// Module-level data — `@x = global ...` / `@x = constant ...`.
-    Variable(GlobalVariable<'ctx>),
+    Variable(GlobalVariable<'ctx, B>),
     /// Module-level alias — `@x = alias ...`.
-    Alias(GlobalAlias<'ctx>),
+    Alias(GlobalAlias<'ctx, B>),
     /// Module-level indirect function — `@x = ifunc ...`.
-    IFunc(GlobalIFunc<'ctx>),
+    IFunc(GlobalIFunc<'ctx, B>),
 }
 
-impl<'ctx> From<FunctionValue<'ctx, Dyn>> for GlobalRef<'ctx> {
+impl<'ctx, B: ModuleBrand> From<FunctionValue<'ctx, Dyn, B>> for GlobalRef<'ctx, B> {
     #[inline]
-    fn from(v: FunctionValue<'ctx, Dyn>) -> Self {
+    fn from(v: FunctionValue<'ctx, Dyn, B>) -> Self {
         GlobalRef::Function(v)
     }
 }
 
-impl<'ctx> From<GlobalVariable<'ctx>> for GlobalRef<'ctx> {
+impl<'ctx, B: ModuleBrand> From<GlobalVariable<'ctx, B>> for GlobalRef<'ctx, B> {
     #[inline]
-    fn from(v: GlobalVariable<'ctx>) -> Self {
+    fn from(v: GlobalVariable<'ctx, B>) -> Self {
         GlobalRef::Variable(v)
     }
 }
 
-impl<'ctx> From<GlobalAlias<'ctx>> for GlobalRef<'ctx> {
+impl<'ctx, B: ModuleBrand> From<GlobalAlias<'ctx, B>> for GlobalRef<'ctx, B> {
     #[inline]
-    fn from(v: GlobalAlias<'ctx>) -> Self {
+    fn from(v: GlobalAlias<'ctx, B>) -> Self {
         GlobalRef::Alias(v)
     }
 }
 
-impl<'ctx> From<GlobalIFunc<'ctx>> for GlobalRef<'ctx> {
+impl<'ctx, B: ModuleBrand> From<GlobalIFunc<'ctx, B>> for GlobalRef<'ctx, B> {
     #[inline]
-    fn from(v: GlobalIFunc<'ctx>) -> Self {
+    fn from(v: GlobalIFunc<'ctx, B>) -> Self {
         GlobalRef::IFunc(v)
     }
 }
@@ -91,21 +91,21 @@ impl<'ctx> From<GlobalIFunc<'ctx>> for GlobalRef<'ctx> {
 /// [`llvmkit_ir::Module`]. Cross-module mixing is rejected by the borrow
 /// checker (Doctrine D7).
 #[derive(Debug)]
-pub struct SlotMapping<'ctx> {
+pub struct SlotMapping<'ctx, B: ModuleBrand = Brand<'ctx>> {
     /// Numbered globals — `@0`, `@1`, ... — keyed by slot id.
-    pub global_values: NumberedValues<GlobalRef<'ctx>>,
+    pub global_values: NumberedValues<GlobalRef<'ctx, B>>,
     /// Named struct / opaque-struct types — `%foo` / `%bar`.
-    pub named_types: HashMap<String, Type<'ctx>>,
+    pub named_types: HashMap<String, Type<'ctx, B>>,
     /// Numbered types — `%0`, `%1`, ... — sorted by slot id to match
     /// upstream's `std::map<unsigned, Type *>` ordering.
-    pub numbered_types: BTreeMap<u32, Type<'ctx>>,
+    pub numbered_types: BTreeMap<u32, Type<'ctx, B>>,
     /// Numbered attribute groups — `#0`, `#1`, ...
     pub attribute_groups: NumberedValues<AttributeStorage>,
     /// Numbered metadata nodes — `!0`, `!1`, ...
     pub metadata_nodes: NumberedValues<MetadataId>,
 }
 
-impl<'ctx> Default for SlotMapping<'ctx> {
+impl<'ctx, B: ModuleBrand> Default for SlotMapping<'ctx, B> {
     #[inline]
     fn default() -> Self {
         Self {
@@ -118,7 +118,7 @@ impl<'ctx> Default for SlotMapping<'ctx> {
     }
 }
 
-impl<'ctx> SlotMapping<'ctx> {
+impl<'ctx, B: ModuleBrand> SlotMapping<'ctx, B> {
     /// Empty mapping. Equivalent to `SlotMapping{}` in upstream.
     #[inline]
     pub fn new() -> Self {
@@ -153,22 +153,23 @@ mod tests {
     /// caught only by post-hoc lookups.
     #[test]
     fn slot_mapping_records_typed_globals() {
-        let m = Module::new("slot_mapping_records_typed_globals");
-        let i32_ty = m.i32_type();
-        let g = m
-            .add_external_global("g", i32_ty.as_type())
-            .expect("fresh global");
+        Module::with_new("slot_mapping_records_typed_globals", |m| {
+            let i32_ty = m.i32_type();
+            let g = m
+                .add_external_global("g", i32_ty.as_type())
+                .expect("fresh global");
 
-        let mut mapping: SlotMapping<'_> = SlotMapping::new();
-        mapping
-            .global_values
-            .add(0, GlobalRef::Variable(g))
-            .expect("first slot");
+            let mut mapping: SlotMapping<'_> = SlotMapping::new();
+            mapping
+                .global_values
+                .add(0, GlobalRef::Variable(g))
+                .expect("first slot");
 
-        assert_eq!(mapping.global_values.get_next(), 1);
-        match mapping.global_values.get(0) {
-            Some(GlobalRef::Variable(stored)) => assert_eq!(*stored, g),
-            other => panic!("unexpected entry: {other:?}"),
-        }
+            assert_eq!(mapping.global_values.get_next(), 1);
+            match mapping.global_values.get(0) {
+                Some(GlobalRef::Variable(stored)) => assert_eq!(*stored, g),
+                other => panic!("unexpected entry: {other:?}"),
+            }
+        });
     }
 }

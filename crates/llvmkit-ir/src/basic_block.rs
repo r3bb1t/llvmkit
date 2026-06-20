@@ -20,7 +20,7 @@
 
 use crate::block_state::{BlockSealState, Unsealed};
 use crate::marker::{Dyn, ReturnMarker};
-use crate::module::{Module, ModuleRef};
+use crate::module::{Brand, Module, ModuleRef, ModuleView, Unverified};
 use crate::r#type::TypeId;
 use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
 use crate::{DebugLoc, IrError, IrResult, Type};
@@ -115,7 +115,11 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> core::fmt::Debug for BasicBloc
 
 impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
     #[inline]
-    pub(crate) fn from_parts(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
+    pub(crate) fn from_parts(
+        id: ValueId,
+        module: &'ctx crate::module::ModuleCore,
+        ty: TypeId,
+    ) -> Self {
         Self {
             id,
             module: ModuleRef::new(module),
@@ -182,15 +186,22 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
     }
 
     /// Set or clear the textual name.
+    /// Set the textual name.
     #[inline]
-    pub fn set_name(self, name: Option<&str>) {
-        self.as_value().set_name(name);
+    pub fn set_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: &str) {
+        self.as_value().set_name(module_token, name);
+    }
+
+    /// Clear the textual name.
+    #[inline]
+    pub fn clear_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>) {
+        self.as_value().clear_name(module_token);
     }
 
     /// Owning module reference.
     #[inline]
-    pub fn module(self) -> &'ctx Module<'ctx> {
-        self.module.module()
+    pub fn module(self) -> ModuleView<'ctx, crate::module::Brand<'ctx>> {
+        ModuleView::new(self.module.module())
     }
 
     /// Owning function value-id, or `None` if the block is an orphan.
@@ -322,8 +333,12 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
     /// errors with [`IrError::ForeignValue`].
     pub fn splice_into<R2: ReturnMarker, S2: BlockSealState>(
         self,
+        module_token: &Module<'ctx, Brand<'ctx>, Unverified>,
         dest: BasicBlock<'ctx, R2, S2>,
     ) -> IrResult<()> {
+        if module_token.id() != self.module.id() {
+            return Err(IrError::ForeignValue);
+        }
         if self.module.module().id() != dest.module.module().id() {
             return Err(IrError::ForeignValue);
         }
@@ -350,17 +365,23 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
     /// block. Mirrors `BasicBlock::splitBasicBlock` in `lib/IR/BasicBlock.cpp`.
     pub fn split_at(
         self,
+        module_token: &Module<'ctx, Brand<'ctx>, Unverified>,
         before: &crate::instruction::Instruction<'ctx, crate::instruction::state::Attached>,
         name: impl Into<String>,
     ) -> IrResult<BasicBlock<'ctx, R, Unsealed>> {
-        let module = self.module.module();
+        if module_token.id() != self.module.id() {
+            return Err(IrError::ForeignValue);
+        }
+        let module = module_token.core_ref();
         let parent_fn_id = match self.parent_id() {
             Some(id) => id,
             None => return Err(IrError::ForeignValue),
         };
-        let parent_fn =
-            crate::function::FunctionValue::<'ctx, R>::from_parts_unchecked(parent_fn_id, module);
-        let new_block = parent_fn.append_basic_block(name);
+        let parent_fn = crate::function::FunctionValue::<'ctx, R>::from_parts_unchecked(
+            parent_fn_id,
+            self.module,
+        );
+        let new_block = parent_fn.append_basic_block(module_token, name);
         let split_id = before.as_value().id;
         let suffix: Vec<ValueId> = {
             let mut src = self.data().instructions.borrow_mut();
@@ -401,8 +422,12 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> HasName<'ctx> for BasicBlock<'
         BasicBlock::name(self)
     }
     #[inline]
-    fn set_name(self, name: Option<&str>) {
-        BasicBlock::set_name(self, name);
+    fn set_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: &str) {
+        BasicBlock::set_name(self, module_token, name);
+    }
+    #[inline]
+    fn clear_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>) {
+        BasicBlock::clear_name(self, module_token);
     }
 }
 impl<R: ReturnMarker, Seal: BlockSealState> HasDebugLoc for BasicBlock<'_, R, Seal> {

@@ -5,9 +5,11 @@
 //! one-shot parsing, while [`crate::ll_parser::Parser`] keeps the recursive
 //! descent state private to the parsing operation.
 
+use std::fs::read as read_file;
 use std::path::Path;
+use std::str::from_utf8;
 
-use llvmkit_ir::{Constant, Module, Type};
+use llvmkit_ir::{Brand, Constant, Module, Type, Unverified};
 
 use crate::file_loc::{FileLoc, FileLocRange};
 
@@ -17,29 +19,59 @@ use crate::module_summary::{self, ModuleSummaryIndex};
 use crate::parse_error::{ParseError, ParseResult};
 use crate::slot_mapping::SlotMapping;
 
-/// Parse a complete textual IR module from bytes into `module`.
-pub fn parse_assembly_into<'ctx>(
-    src: &[u8],
-    module: &'ctx Module<'ctx>,
-) -> ParseResult<ParsedModule<'ctx>> {
-    Parser::new(src, module)?.parse_module()
+/// Parse a complete textual IR module from bytes under a fresh module brand.
+pub fn parse_assembly<R, S, F>(src: S, f: F) -> ParseResult<R>
+where
+    S: AsRef<[u8]>,
+    F: for<'ctx> FnOnce(
+        Module<'ctx, Brand<'ctx>, Unverified>,
+        ParsedModule<'ctx, Brand<'ctx>>,
+    ) -> R,
+{
+    parse_assembly_with_name("asm", src, f)
 }
 
-/// Parse a complete textual IR module from a UTF-8 string into `module`.
-pub fn parse_assembly_string_into<'ctx>(
-    src: &str,
-    module: &'ctx Module<'ctx>,
-) -> ParseResult<ParsedModule<'ctx>> {
-    parse_assembly_into(src.as_bytes(), module)
+fn parse_assembly_with_name<R, S, F>(name: &str, src: S, f: F) -> ParseResult<R>
+where
+    S: AsRef<[u8]>,
+    F: for<'ctx> FnOnce(
+        Module<'ctx, Brand<'ctx>, Unverified>,
+        ParsedModule<'ctx, Brand<'ctx>>,
+    ) -> R,
+{
+    Module::with_new::<_, _, _>(name, |module| {
+        let parsed = Parser::new(src.as_ref(), &module)?.parse_module()?;
+        Ok(f(module, parsed))
+    })
 }
 
-/// Read and parse a complete textual IR module into `module`.
-pub fn parse_assembly_file_into<'ctx>(
-    path: impl AsRef<Path>,
-    module: &'ctx Module<'ctx>,
-) -> ParseResult<ParsedModule<'ctx>> {
-    let bytes = std::fs::read(path).map_err(|e| ParseError::Io(e.to_string()))?;
-    parse_assembly_into(&bytes, module)
+/// Parse a complete textual IR module from a UTF-8 string under a fresh brand.
+pub fn parse_assembly_string<R, F>(src: &str, f: F) -> ParseResult<R>
+where
+    F: for<'ctx> FnOnce(
+        Module<'ctx, Brand<'ctx>, Unverified>,
+        ParsedModule<'ctx, Brand<'ctx>>,
+    ) -> R,
+{
+    parse_assembly(src.as_bytes(), f)
+}
+
+/// Read and parse a complete textual IR module under a fresh module brand.
+pub fn parse_assembly_file<R, P, F>(path: P, f: F) -> ParseResult<R>
+where
+    P: AsRef<Path>,
+    F: for<'ctx> FnOnce(
+        Module<'ctx, Brand<'ctx>, Unverified>,
+        ParsedModule<'ctx, Brand<'ctx>>,
+    ) -> R,
+{
+    let path = path.as_ref();
+    let module_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("asm");
+    let bytes = read_file(path).map_err(|e| ParseError::Io(e.to_string()))?;
+    parse_assembly_with_name(module_name, bytes, f)
 }
 
 /// Parse a textual LLVM module summary index from bytes.
@@ -48,26 +80,37 @@ pub fn parse_summary_index_assembly(src: &[u8]) -> ParseResult<ModuleSummaryInde
 }
 
 /// Read and parse a textual LLVM module summary index.
-pub fn parse_summary_index_assembly_file(
-    path: impl AsRef<Path>,
-) -> ParseResult<ModuleSummaryIndex> {
-    let bytes = std::fs::read(path).map_err(|e| ParseError::Io(e.to_string()))?;
+pub fn parse_summary_index_assembly_file<P>(path: P) -> ParseResult<ModuleSummaryIndex>
+where
+    P: AsRef<Path>,
+{
+    let bytes = read_file(path).map_err(|e| ParseError::Io(e.to_string()))?;
     parse_summary_index_assembly(&bytes)
 }
-pub fn parse_assembly_into_with_context<'ctx>(
-    src: &[u8],
-    module: &'ctx Module<'ctx>,
-    context: &mut AsmParserContext<'ctx>,
-) -> ParseResult<ParsedModule<'ctx>> {
-    let parsed = Parser::new(src, module)?.parse_module()?;
-    record_parser_context(src, module, context)?;
-    Ok(parsed)
+
+/// Parse a complete textual IR module and return source locations inside the closure.
+pub fn parse_assembly_with_context<R, S, F>(src: S, f: F) -> ParseResult<R>
+where
+    S: AsRef<[u8]>,
+    F: for<'ctx> FnOnce(
+        Module<'ctx, Brand<'ctx>, Unverified>,
+        ParsedModule<'ctx, Brand<'ctx>>,
+        AsmParserContext<'ctx>,
+    ) -> R,
+{
+    Module::with_new::<_, _, _>("asm", |module| {
+        let bytes = src.as_ref();
+        let parsed = Parser::new(bytes, &module)?.parse_module()?;
+        let mut context = AsmParserContext::new();
+        record_parser_context(bytes, &module, &mut context)?;
+        Ok(f(module, parsed, context))
+    })
 }
 
 /// Parse a single LLVM type and require end-of-input.
 pub fn parse_type<'ctx>(
     src: &[u8],
-    module: &'ctx Module<'ctx>,
+    module: &Module<'ctx, Brand<'ctx>, Unverified>,
     slots: Option<&SlotMapping<'ctx>>,
 ) -> ParseResult<Type<'ctx>> {
     let parser = match slots {
@@ -86,7 +129,7 @@ pub fn parse_type<'ctx>(
 /// Parse one LLVM type prefix and report the number of consumed bytes.
 pub fn parse_type_at_beginning<'ctx>(
     src: &[u8],
-    module: &'ctx Module<'ctx>,
+    module: &Module<'ctx, Brand<'ctx>, Unverified>,
     slots: Option<&SlotMapping<'ctx>>,
 ) -> ParseResult<(Type<'ctx>, usize)> {
     let parser = match slots {
@@ -99,7 +142,7 @@ pub fn parse_type_at_beginning<'ctx>(
 /// Parse one constant value of the supplied LLVM type and require EOF.
 pub fn parse_constant_value<'ctx>(
     src: &[u8],
-    module: &'ctx Module<'ctx>,
+    module: &Module<'ctx, Brand<'ctx>, Unverified>,
     ty: Type<'ctx>,
     slots: Option<&SlotMapping<'ctx>>,
 ) -> ParseResult<Constant<'ctx>> {
@@ -112,11 +155,14 @@ pub fn parse_constant_value<'ctx>(
 
 fn record_parser_context<'ctx>(
     src: &[u8],
-    module: &'ctx Module<'ctx>,
+    module: &Module<'ctx, Brand<'ctx>, Unverified>,
     context: &mut AsmParserContext<'ctx>,
 ) -> ParseResult<()> {
     let lines = source_lines(src);
-    for function in module.iter_functions() {
+    for function_view in module.as_view().iter_functions() {
+        let Some(function) = module.function_by_name(function_view.name()) else {
+            continue;
+        };
         let Some((start, end)) = function_range(&lines, Some(function.name())) else {
             continue;
         };
@@ -162,7 +208,7 @@ fn location_error(_: crate::asm_parser_context::LocationError) -> ParseError {
 }
 
 fn source_lines(src: &[u8]) -> Vec<&str> {
-    std::str::from_utf8(src).unwrap_or("").lines().collect()
+    from_utf8(src).unwrap_or("").lines().collect()
 }
 
 fn function_range(lines: &[&str], name: Option<&str>) -> Option<(FileLoc, FileLoc)> {

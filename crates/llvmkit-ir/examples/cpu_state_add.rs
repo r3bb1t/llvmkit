@@ -61,7 +61,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
         .param_name(3, "rdx")
         .build()?;
 
-    let entry = add_fn.append_basic_block("entry");
+    let entry = add_fn.append_basic_block(m, "entry");
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
 
     let rax: IntValue<i64> = add_fn.param(0)?.try_into()?;
@@ -86,7 +86,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
         .unnamed_addr(UnnamedAddr::Local)
         .return_attribute(AttrKind::NoUndef)
         .build()?;
-    let entry = main_fn.append_basic_block("entry");
+    let entry = main_fn.append_basic_block(m, "entry");
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
     let one = i32_ty.const_int(1_i32);
     let one_v = IntValue::<i32>::try_from(one.as_value())?;
@@ -96,10 +96,12 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
 }
 
 pub fn main() {
-    let m = Module::new("cpu_state_add");
-    if let Err(e) = build(&m) {
-        eprintln!("error: {e}");
+    if let Err(e) = Module::with_new("cpu_state_add", |m| {
+        build(&m)?;
+        print!("{m}");
+        Ok::<(), IrError>(())
+    }) {
+        eprintln!("error: {e:?}");
         std::process::exit(1);
     }
-    print!("{m}");
 }

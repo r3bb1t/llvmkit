@@ -6,7 +6,14 @@
 
 LLVM IR data model in pure safe Rust.
 
-This crate mirrors the relevant `llvm/lib/IR/` and `llvm/include/llvm/IR/` surfaces from LLVM 22.1.4. The shipped layer includes typed IR construction, AsmWriter support, structural verification, shared CFG queries, recompute-on-demand dominance, and a minimal new-pass-manager-inspired analysis / pass substrate.
+This crate mirrors the relevant `llvm/lib/IR/` and `llvm/include/llvm/IR/`
+surfaces from LLVM 22.1.4. The shipped layer includes typed IR construction,
+AsmWriter support, structural verification, shared CFG queries,
+recompute-on-demand dominance, and effect-typed new-pass-manager-inspired
+analysis / pass managers: read-only pipelines preserve `Module<Verified>`,
+while transform pipelines return `Module<Unverified>`. Raw `ModuleCore`
+storage stays crate-private; public APIs use branded `Module` tokens and gate
+saved-handle mutators on `&Module<Unverified>`.
 
 Use the umbrella `llvmkit` crate when you want one dependency that also exposes the textual IR parser and shared support utilities.
 

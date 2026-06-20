@@ -1,0 +1,14 @@
+error[E0521]: borrowed data escapes outside of closure
+  --> tests/compile_fail/cross_module_value_brand.rs:13:21
+   |
+ 5 |         let left_value = left.i64_type().const_int(1_i64);
+   |             ---------- `left_value` declared here, outside of the closure body
+ 6 |         Module::with_new::<_, _, _>("right", |right| {
+   |                                               ----- `right` is a reference that is only valid in the closure body
+...
+13 |             let _ = builder.build_int_add(left_value, left_value, "bad");
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `right` escapes the closure body here
+   |
+   = note: requirement occurs because of the type `ConstantIntValue<'_, i64, Brand<'_>>`, which makes the generic argument `Brand<'_>` invariant
+   = note: the struct `ConstantIntValue<'ctx, W, B>` is invariant over the parameter `B`
+   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance

@@ -11,6 +11,8 @@ use crate::cfg::{BasicBlockEdge, FunctionCfg};
 use crate::function::FunctionValue;
 use crate::instruction::{Instruction, InstructionKindData, state};
 use crate::marker::{Dyn, ReturnMarker};
+use crate::module::ModuleBrand;
+use crate::pass_context::BasicBlockView;
 use crate::r#use::Use;
 use crate::value::{Value, ValueId, ValueKindData};
 
@@ -35,6 +37,42 @@ pub struct DominatorTree {
     instruction_order: HashMap<ValueId, (ValueId, usize)>,
 }
 
+mod dominator_block_sealed {
+    pub trait Sealed {}
+}
+
+/// Basic-block identity accepted by dominator-tree block queries.
+pub trait DominatorTreeBlock<'ctx>: dominator_block_sealed::Sealed {
+    fn dominator_block_id(self) -> ValueId;
+}
+
+impl<'ctx, R, S> dominator_block_sealed::Sealed for BasicBlock<'ctx, R, S>
+where
+    R: ReturnMarker,
+    S: BlockSealState,
+{
+}
+
+impl<'ctx, R, S> DominatorTreeBlock<'ctx> for BasicBlock<'ctx, R, S>
+where
+    R: ReturnMarker,
+    S: BlockSealState,
+{
+    #[inline]
+    fn dominator_block_id(self) -> ValueId {
+        self.as_dyn().as_value().id
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> dominator_block_sealed::Sealed for BasicBlockView<'ctx, B> {}
+
+impl<'ctx, B: ModuleBrand + 'ctx> DominatorTreeBlock<'ctx> for BasicBlockView<'ctx, B> {
+    #[inline]
+    fn dominator_block_id(self) -> ValueId {
+        self.as_basic_block().as_value().id
+    }
+}
+
 impl DominatorTree {
     /// Recompute dominance for `function`.
     pub fn new<'ctx>(function: FunctionValue<'ctx, Dyn>) -> Self {
@@ -47,30 +85,23 @@ impl DominatorTree {
     }
 
     /// Whether `block` is statically reachable from the entry block.
-    pub fn is_reachable_from_entry<'ctx, R, S>(&self, block: BasicBlock<'ctx, R, S>) -> bool
+    pub fn is_reachable_from_entry<'ctx, B>(&self, block: B) -> bool
     where
-        R: ReturnMarker,
-        S: BlockSealState,
+        B: DominatorTreeBlock<'ctx>,
     {
-        self.reachable.contains(&block.as_dyn().as_value().id)
+        self.reachable.contains(&block.dominator_block_id())
     }
 
     /// Inclusive block dominance. For an unreachable use block, LLVM answers
     /// as if every reachable block dominates it; an unreachable block only
     /// dominates itself.
-    pub fn dominates_block<'ctx, RA, SA, RB, SB>(
-        &self,
-        a: BasicBlock<'ctx, RA, SA>,
-        b: BasicBlock<'ctx, RB, SB>,
-    ) -> bool
+    pub fn dominates_block<'ctx, A, B>(&self, a: A, b: B) -> bool
     where
-        RA: ReturnMarker,
-        SA: BlockSealState,
-        RB: ReturnMarker,
-        SB: BlockSealState,
+        A: DominatorTreeBlock<'ctx>,
+        B: DominatorTreeBlock<'ctx>,
     {
-        let a_id = a.as_dyn().as_value().id;
-        let b_id = b.as_dyn().as_value().id;
+        let a_id = a.dominator_block_id();
+        let b_id = b.dominator_block_id();
         if a_id == b_id {
             return true;
         }
@@ -88,18 +119,14 @@ impl DominatorTree {
     }
 
     /// Strict block dominance.
-    pub fn properly_dominates_block<'ctx, RA, SA, RB, SB>(
-        &self,
-        a: BasicBlock<'ctx, RA, SA>,
-        b: BasicBlock<'ctx, RB, SB>,
-    ) -> bool
+    pub fn properly_dominates_block<'ctx, A, B>(&self, a: A, b: B) -> bool
     where
-        RA: ReturnMarker,
-        SA: BlockSealState,
-        RB: ReturnMarker,
-        SB: BlockSealState,
+        A: DominatorTreeBlock<'ctx>,
+        B: DominatorTreeBlock<'ctx>,
     {
-        a.as_dyn().as_value().id != b.as_dyn().as_value().id && self.dominates_block(a, b)
+        let a_id = a.dominator_block_id();
+        let b_id = b.dominator_block_id();
+        a_id != b_id && self.dominates_block_ids(a_id, b_id)
     }
 
     /// Whether instruction `def` dominates all ordinary uses in `user`.
@@ -132,35 +159,30 @@ impl DominatorTree {
     }
 
     /// Whether instruction `def` dominates every possible use in `block`.
-    pub fn dominates_instruction_block<'ctx, R, S>(
+    pub fn dominates_instruction_block<'ctx, B>(
         &self,
         def: &Instruction<'ctx, state::Attached>,
-        block: BasicBlock<'ctx, R, S>,
+        block: B,
     ) -> bool
     where
-        R: ReturnMarker,
-        S: BlockSealState,
+        B: DominatorTreeBlock<'ctx>,
     {
-        let use_bb = block.as_dyn();
+        let use_bb_id = block.dominator_block_id();
         let def_bb = def.parent();
         let def_id = def.as_value().id;
-        if !self.is_reachable_from_entry(use_bb) {
+        if !self.reachable.contains(&use_bb_id) {
             return true;
         }
         if !self.is_reachable_from_entry(def_bb) {
             return false;
         }
-        if def_bb.as_value().id == use_bb.as_value().id {
+        if def_bb.as_value().id == use_bb_id {
             return false;
         }
         if let Some(normal_dest) = self.normal_dest.get(&def_id).copied() {
-            return self.dominates_edge_ids(
-                def_bb.as_value().id,
-                normal_dest,
-                use_bb.as_value().id,
-            );
+            return self.dominates_edge_ids(def_bb.as_value().id, normal_dest, use_bb_id);
         }
-        self.dominates_block(def_bb, use_bb)
+        self.dominates_block_ids(def_bb.as_value().id, use_bb_id)
     }
 
     /// Whether `def` dominates this specific operand use. Non-instruction
@@ -198,19 +220,14 @@ impl DominatorTree {
     }
 
     /// Whether edge `edge` dominates all uses in `block`.
-    pub fn dominates_edge<'ctx, R, S>(
-        &self,
-        edge: BasicBlockEdge<'ctx>,
-        block: BasicBlock<'ctx, R, S>,
-    ) -> bool
+    pub fn dominates_edge<'ctx, B>(&self, edge: BasicBlockEdge<'ctx>, block: B) -> bool
     where
-        R: ReturnMarker,
-        S: BlockSealState,
+        B: DominatorTreeBlock<'ctx>,
     {
         self.dominates_edge_ids(
             edge.start().as_value().id,
             edge.end().as_value().id,
-            block.as_dyn().as_value().id,
+            block.dominator_block_id(),
         )
     }
 

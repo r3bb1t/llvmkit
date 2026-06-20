@@ -1,25 +1,22 @@
 //! Textual `.ll` printer. Mirrors a slice of `llvm/lib/IR/AsmWriter.cpp`.
 //!
-//! Public surface is just the [`Display`](core::fmt::Display) impls on the IR handles
-//! ([`Module`], [`FunctionValue`], [`BasicBlock`], [`Instruction`],
-//! [`Value`]). The slot-tracking and per-construct printers stay
-//! `pub(crate)` because consumers should reach for `format!("{module}")`
-//! (or [`std::io::Write`] via `write!`) rather than poking at the
-//! internals.
+//! Public surface is just the [`Display`](core::fmt::Display) impls on the IR
+//! handles ([`Module`](crate::Module), [`FunctionValue`], [`BasicBlock`],
+//! [`Instruction`], [`Value`]). The slot-tracking and per-construct printers
+//! stay `pub(crate)` because consumers should reach for `format!("{module}")`
+//! (or [`std::io::Write`] via `write!`) rather than poking at the internals.
 //!
 //! ## What's shipped
 //!
-//! - Modules, named structs, function definitions.
-//! - Basic blocks with terminators (`ret`).
-//! - Instructions: `add`, `sub`, `mul`, `trunc`, `ret`.
-//! - Constants: integer, float, undef, poison, null pointer, simple
-//!   aggregates.
+//! - Modules, named structs, target directives, module asm, globals, aliases,
+//!   ifuncs, functions, and COMDATs.
+//! - Basic blocks with every shipped terminator family.
+//! - Instructions across arithmetic, casts, compares, memory, GEP, calls,
+//!   select, PHI, aggregate/vector operations, atomics, and EH / funclet pads.
+//! - Constants: integer, float, undef, poison, null pointer, aggregates,
+//!   global references, block addresses, inline asm, and constant expressions.
 //! - Operand printing via slot numbering for unnamed values.
-//! - Function-level `local_unnamed_addr` / `unnamed_addr`.
-//! - Parameter and return attribute printing.
-//!
-//! Future opcodes hook into the per-instruction printer one match
-//! arm at a time as their builders land.
+//! - Function/global attributes and calling conventions.
 
 use core::fmt;
 use core::fmt::Write as _;
@@ -36,7 +33,7 @@ use crate::instr_types::{
 };
 use crate::instruction::{Instruction, InstructionKindData};
 use crate::marker::Dyn;
-use crate::module::{Module, UseListOrderBBRecord, UseListOrderRecord};
+use crate::module::{ModuleCore, UseListOrderBBRecord, UseListOrderRecord};
 use crate::r#type::{StructBody, Type, TypeData};
 use crate::value::{Value, ValueId, ValueKindData};
 
@@ -183,9 +180,9 @@ fn inst_kind_data<'ctx>(inst: &Instruction<'ctx>) -> &'ctx InstructionKindData {
 
 /// Print a value as an operand: `<type> <ref>`, where `<ref>` is
 /// `%name`, `@name`, `%slot`, or a constant literal.
-pub(crate) fn fmt_operand(
+pub(crate) fn fmt_operand<'ctx, B: crate::module::ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
-    v: Value<'_>,
+    v: Value<'ctx, B>,
     slots: Option<&SlotTracker>,
 ) -> fmt::Result {
     write!(f, "{} ", v.ty())?;
@@ -194,9 +191,9 @@ pub(crate) fn fmt_operand(
 
 /// Print just the SSA reference part: `%name` / `@name` / `%slot` /
 /// constant body.
-pub(crate) fn fmt_operand_ref(
+pub(crate) fn fmt_operand_ref<'ctx, B: crate::module::ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
-    v: Value<'_>,
+    v: Value<'ctx, B>,
     slots: Option<&SlotTracker>,
 ) -> fmt::Result {
     let data = v.data();
@@ -225,7 +222,8 @@ pub(crate) fn fmt_operand_ref(
         // `MetadataAsValue` delegates to the metadata printer. MDStrings
         // print inline as `!"..."`; MDNodes print as their numbered slot.
         ValueKindData::MetadataAsValue(id) => {
-            let md = v.module().metadata_store();
+            let module_view = v.module();
+            let md = module_view.metadata_store();
             fmt_metadata_operand(f, *id, &md, &metadata_slot_map(md.nodes()))
         }
         // An inline-asm value only ever appears as a `call` callee, where
@@ -249,7 +247,7 @@ fn fmt_indexes(f: &mut fmt::Formatter<'_>, indexes: &[u32]) -> fmt::Result {
 
 fn fmt_use_list_order(
     f: &mut fmt::Formatter<'_>,
-    m: &Module<'_>,
+    m: &ModuleCore,
     record: &UseListOrderRecord,
     slots: Option<&SlotTracker>,
 ) -> fmt::Result {
@@ -262,7 +260,7 @@ fn fmt_use_list_order(
 
 fn fmt_use_list_order_bb(
     f: &mut fmt::Formatter<'_>,
-    m: &Module<'_>,
+    m: &ModuleCore,
     record: &UseListOrderBBRecord,
 ) -> fmt::Result {
     let function_data = m.context().value_data(record.function);
@@ -316,17 +314,17 @@ fn fmt_inline_asm(f: &mut fmt::Formatter<'_>, d: &crate::inline_asm::InlineAsmDa
 // Constant printing
 // --------------------------------------------------------------------------
 
-pub(crate) fn fmt_constant(
+pub(crate) fn fmt_constant<'ctx, B: crate::module::ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
-    host: Value<'_>,
+    host: Value<'ctx, B>,
     c: &ConstantData,
 ) -> fmt::Result {
     match c {
         ConstantData::Int(words) => fmt_int_constant(f, host.ty(), words),
         ConstantData::Expr(expr) => fmt_constant_expr(f, host, expr),
         ConstantData::GlobalValueRef { value } => {
-            let module = host.module.module();
-            let global = Value::from_parts(*value, module, module.context().value_data(*value).ty);
+            let module = host.module;
+            let global = Value::from_parts(*value, module, module.value_data(*value).ty);
             fmt_operand_ref(f, global, None)
         }
         ConstantData::Float(bits) => fmt_float_constant(f, host.ty(), *bits),
@@ -454,14 +452,14 @@ pub(crate) fn fmt_constant(
     }
 }
 
-fn is_zero_int_constant(module: &Module<'_>, id: ValueId) -> bool {
+fn is_zero_int_constant(module: &ModuleCore, id: ValueId) -> bool {
     matches!(
         &module.context().value_data(id).kind,
         ValueKindData::Constant(ConstantData::Int(words)) if words.iter().all(|word| *word == 0)
     )
 }
 
-fn is_null_pointer_constant(module: &Module<'_>, id: ValueId) -> bool {
+fn is_null_pointer_constant(module: &ModuleCore, id: ValueId) -> bool {
     matches!(
         &module.context().value_data(id).kind,
         ValueKindData::Constant(ConstantData::PointerNull)
@@ -584,9 +582,9 @@ fn mask_apint_top_word(words: &mut [u64], bit_width: u32) {
     }
 }
 
-fn fmt_constant_expr(
+fn fmt_constant_expr<'ctx, B: crate::module::ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
-    host: Value<'_>,
+    host: Value<'ctx, B>,
     expr: &ConstantExprData,
 ) -> fmt::Result {
     let module = host.module();
@@ -618,7 +616,7 @@ fn fmt_constant_expr(
     if matches!(expr.opcode, ConstantExprOpcode::GetElementPtr) {
         let source_ty = expr
             .source_ty
-            .unwrap_or_else(|| infer_gep_source_ty(module, expr));
+            .unwrap_or_else(|| infer_gep_source_ty(module.core_ref(), expr));
         write!(f, "{}, ", Type::new(source_ty, module))?;
     }
     let mut first = true;
@@ -646,7 +644,7 @@ fn fmt_constant_expr(
     }
     f.write_str(")")
 }
-fn infer_gep_source_ty(module: &Module<'_>, expr: &ConstantExprData) -> crate::r#type::TypeId {
+fn infer_gep_source_ty(module: &ModuleCore, expr: &ConstantExprData) -> crate::r#type::TypeId {
     let Some(first) = expr.operands.first() else {
         return expr.result_ty;
     };
@@ -657,7 +655,9 @@ fn infer_gep_source_ty(module: &Module<'_>, expr: &ConstantExprData) -> crate::r
     expr.result_ty
 }
 
-fn constant_ptr_operand_type<'ctx>(value: Value<'ctx>) -> Type<'ctx> {
+fn constant_ptr_operand_type<'ctx, B: crate::module::ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Type<'ctx, B> {
     match &value.data().kind {
         ValueKindData::Function(_) => value.module().ptr_type(0).as_type(),
         ValueKindData::GlobalAlias(_) | ValueKindData::GlobalIFunc(_) => value.ty(),
@@ -665,7 +665,11 @@ fn constant_ptr_operand_type<'ctx>(value: Value<'ctx>) -> Type<'ctx> {
     }
 }
 
-fn fmt_int_constant(f: &mut fmt::Formatter<'_>, ty: Type<'_>, words: &[u64]) -> fmt::Result {
+fn fmt_int_constant<B: crate::module::ModuleBrand>(
+    f: &mut fmt::Formatter<'_>,
+    ty: Type<'_, B>,
+    words: &[u64],
+) -> fmt::Result {
     let bits = match ty.data() {
         TypeData::Integer { bits } => *bits,
         _ => unreachable!("integer-constant ty invariant"),
@@ -801,7 +805,11 @@ fn low_u64(bits: u128) -> u64 {
     ])
 }
 
-fn fmt_float_constant(f: &mut fmt::Formatter<'_>, ty: Type<'_>, bits: u128) -> fmt::Result {
+fn fmt_float_constant<B: crate::module::ModuleBrand>(
+    f: &mut fmt::Formatter<'_>,
+    ty: Type<'_, B>,
+    bits: u128,
+) -> fmt::Result {
     match ty.data() {
         TypeData::Half => write!(f, "0xH{:04x}", bits as u16),
         TypeData::BFloat => write!(f, "0xR{:04x}", bits as u16),
@@ -862,9 +870,9 @@ fn print_escaped_string(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result
 /// `ConstantInt`, return the underlying byte sequence; else `None`.
 /// Mirrors `ConstantDataArray::isString` (in C++ this is a runtime
 /// downcast plus a per-element check).
-fn collect_byte_string<'ctx>(
-    module: &'ctx crate::module::Module<'ctx>,
-    ty: Type<'_>,
+fn collect_byte_string<B: crate::module::ModuleBrand>(
+    module: &crate::module::ModuleCore,
+    ty: Type<'_, B>,
     elem_ids: &[ValueId],
 ) -> Option<Vec<u8>> {
     match ty.data() {
@@ -889,14 +897,14 @@ fn collect_byte_string<'ctx>(
     }
 }
 
-fn fmt_aggregate_constant(
+fn fmt_aggregate_constant<'ctx, B: crate::module::ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
-    host: Value<'_>,
+    host: Value<'ctx, B>,
     elem_ids: &[ValueId],
 ) -> fmt::Result {
     let module = host.module();
     let ty = host.ty();
-    if let Some(bytes) = collect_byte_string(module, ty, elem_ids) {
+    if let Some(bytes) = collect_byte_string(module.core_ref(), ty, elem_ids) {
         f.write_str("c\"")?;
         print_escaped_string(f, &bytes)?;
         return f.write_str("\"");
@@ -1006,7 +1014,8 @@ pub(crate) fn fmt_instruction(
         InstructionKindData::Unreachable(_) => f.write_str("unreachable"),
         InstructionKindData::Ret(r) => fmt_ret(f, inst, r, slots),
     }?;
-    let md = inst.module().metadata_store();
+    let module_view = inst.module();
+    let md = module_view.metadata_store();
     let md_slots = metadata_slot_map(md.nodes());
     fmt_metadata_attachments(f, &inst.metadata(), &md, &md_slots)
 }
@@ -1634,7 +1643,7 @@ fn fmt_call(
     for group in c.attrs.function_attr_groups.iter() {
         write!(f, " #{group}")?;
     }
-    fmt_operand_bundles(f, &c.attrs.operand_bundles, module, slots)
+    fmt_operand_bundles(f, &c.attrs.operand_bundles, module.core_ref(), slots)
 }
 
 fn operand_bundle_tag_name(tag: &crate::instr_types::OperandBundleTag) -> &str {
@@ -1658,7 +1667,7 @@ fn operand_bundle_tag_name(tag: &crate::instr_types::OperandBundleTag) -> &str {
 fn fmt_operand_bundles(
     f: &mut fmt::Formatter<'_>,
     bundles: &[crate::instr_types::OperandBundleData],
-    module: &crate::Module<'_>,
+    module: &crate::module::ModuleCore,
     slots: &SlotTracker,
 ) -> fmt::Result {
     if bundles.is_empty() {
@@ -1913,7 +1922,7 @@ fn fmt_invoke(
     for group in d.attrs.function_attr_groups.iter() {
         write!(f, " #{group}")?;
     }
-    fmt_operand_bundles(f, &d.attrs.operand_bundles, module, slots)?;
+    fmt_operand_bundles(f, &d.attrs.operand_bundles, module.core_ref(), slots)?;
     f.write_str("\n          to ")?;
     let nd = module.context().value_data(d.normal_dest.get());
     let nbb = Value::from_parts(d.normal_dest.get(), module, nd.ty);
@@ -1975,7 +1984,7 @@ fn fmt_callbr(
     for group in d.attrs.function_attr_groups.iter() {
         write!(f, " #{group}")?;
     }
-    fmt_operand_bundles(f, &d.attrs.operand_bundles, module, slots)?;
+    fmt_operand_bundles(f, &d.attrs.operand_bundles, module.core_ref(), slots)?;
     f.write_str("\n          to ")?;
     let dd = module.context().value_data(d.default_dest.get());
     let dbb = Value::from_parts(d.default_dest.get(), module, dd.ty);
@@ -2180,7 +2189,7 @@ fn fmt_attribute_stored(f: &mut fmt::Formatter<'_>, attr: &AttributeStored) -> f
 fn fmt_debug_metadata_operand(
     f: &mut fmt::Formatter<'_>,
     operand: crate::metadata::DebugMetadataOperand,
-    module: &Module<'_>,
+    module: &ModuleCore,
     store: &crate::metadata::MetadataStore,
     md_slots: &[Option<usize>],
     slots: &SlotTracker,
@@ -2199,7 +2208,7 @@ fn fmt_debug_metadata_operand(
 fn fmt_debug_record(
     f: &mut fmt::Formatter<'_>,
     record: &crate::metadata::DebugRecord,
-    module: &Module<'_>,
+    module: &ModuleCore,
     store: &crate::metadata::MetadataStore,
     md_slots: &[Option<usize>],
     slots: &SlotTracker,
@@ -2256,11 +2265,12 @@ pub(crate) fn fmt_basic_block(
         f.write_str("<unnamed>:")?;
     }
     f.write_str("\n")?;
-    let md = bb.module().metadata_store();
+    let module_view = bb.module();
+    let md = module_view.metadata_store();
     let md_slots = metadata_slot_map(md.nodes());
     for inst in bb.instructions() {
         for record in inst.debug_records().iter() {
-            fmt_debug_record(f, record, bb.module(), &md, &md_slots, slots)?;
+            fmt_debug_record(f, record, module_view.core_ref(), &md, &md_slots, slots)?;
             f.write_str("\n")?;
         }
         fmt_instruction(f, &inst, slots)?;
@@ -2383,7 +2393,8 @@ pub(crate) fn fmt_function(
         fmt_operand(f, personality.as_value(), None)?;
     }
     {
-        let md = func.module().metadata_store();
+        let module_view = func.module();
+        let md = module_view.metadata_store();
         let md_slots = metadata_slot_map(md.nodes());
         fmt_metadata_attachments(f, &func.metadata(), &md, &md_slots)?;
     }
@@ -2398,7 +2409,7 @@ pub(crate) fn fmt_function(
     }
     for directive in func.use_list_orders() {
         f.write_str("  ")?;
-        fmt_use_list_order(f, func.module(), &directive, Some(&slots))?;
+        fmt_use_list_order(f, func.module().core_ref(), &directive, Some(&slots))?;
         f.write_str("\n")?;
     }
     f.write_str("}\n")
@@ -2408,7 +2419,7 @@ pub(crate) fn fmt_function(
 /// packed). Mirrors the literal-struct arm of `Type`'s `Display`
 /// (`type.rs`), recursing into elements via `Type::new` — which renders a
 /// *named* element as `%Name` and any other type structurally.
-fn fmt_struct_body(f: &mut fmt::Formatter<'_>, body: &StructBody, m: &Module<'_>) -> fmt::Result {
+fn fmt_struct_body(f: &mut fmt::Formatter<'_>, body: &StructBody, m: &ModuleCore) -> fmt::Result {
     if body.packed {
         f.write_str("<{ ")?;
     } else {
@@ -2429,7 +2440,7 @@ fn fmt_struct_body(f: &mut fmt::Formatter<'_>, body: &StructBody, m: &Module<'_>
     }
 }
 
-pub(crate) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &Module<'_>) -> fmt::Result {
+pub(crate) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Result {
     writeln!(f, "; ModuleID = '{}'", m.name())?;
     if let Some(source_filename) = m.source_filename() {
         f.write_str("source_filename = \"")?;
@@ -2513,7 +2524,7 @@ pub(crate) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &Module<'_>) -> fmt::Res
     // M->globals())` loop in `printModule`.
     if !m.global_empty() {
         f.write_str("\n")?;
-        for g in m.iter_globals() {
+        for g in m.iter_globals::<crate::module::Brand<'_>>() {
             fmt_global(f, g)?;
             f.write_str("\n")?;
         }
@@ -2521,25 +2532,25 @@ pub(crate) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &Module<'_>) -> fmt::Res
 
     if !m.alias_empty() {
         f.write_str("\n")?;
-        for a in m.iter_aliases() {
+        for a in m.iter_aliases::<crate::module::Brand<'_>>() {
             fmt_alias(f, a)?;
         }
     }
 
     if !m.ifunc_empty() {
         f.write_str("\n")?;
-        for i in m.iter_ifuncs() {
+        for i in m.iter_ifuncs::<crate::module::Brand<'_>>() {
             fmt_ifunc(f, i)?;
         }
     }
 
     let mut first = true;
-    for func in m.iter_functions() {
+    for func in m.iter_functions::<crate::module::Brand<'_>>() {
         if !first
             || !m.global_empty()
             || !m.alias_empty()
             || !m.ifunc_empty()
-            || m.iter_comdats().len() > 0
+            || m.iter_comdats::<crate::module::Brand<'_>>().len() > 0
         {
             f.write_str("\n")?;
         }
@@ -2769,9 +2780,9 @@ fn fmt_comdat(f: &mut fmt::Formatter<'_>, c: crate::comdat::ComdatRef<'_>) -> fm
     writeln!(f, "${} = comdat {}", c.name(), c.selection_kind())
 }
 
-fn fmt_global(
+fn fmt_global<'ctx, B: crate::module::ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
-    g: crate::global_variable::GlobalVariable<'_>,
+    g: crate::global_variable::GlobalVariable<'ctx, B>,
 ) -> fmt::Result {
     // Mirrors `AssemblyWriter::printGlobal` in
     // `lib/IR/AsmWriter.cpp`.
@@ -2860,12 +2871,16 @@ fn fmt_global(
     if let Some(a) = g.align().align() {
         write!(f, ", align {}", a.value())?;
     }
-    let md = g.module().metadata_store();
+    let module_view = g.module();
+    let md = module_view.metadata_store();
     let md_slots = metadata_slot_map(md.nodes());
     fmt_metadata_attachments(f, &g.metadata(), &md, &md_slots)
 }
 
-pub(crate) fn fmt_alias(f: &mut fmt::Formatter<'_>, a: crate::GlobalAlias<'_>) -> fmt::Result {
+pub(crate) fn fmt_alias<'ctx, B: crate::module::ModuleBrand + 'ctx>(
+    f: &mut fmt::Formatter<'_>,
+    a: crate::GlobalAlias<'ctx, B>,
+) -> fmt::Result {
     write!(f, "@{} = ", a.name())?;
     let linkage_kw = a.linkage().keyword();
     if !linkage_kw.is_empty() {
@@ -2896,13 +2911,17 @@ pub(crate) fn fmt_alias(f: &mut fmt::Formatter<'_>, a: crate::GlobalAlias<'_>) -
         print_escaped_string(f, partition.as_bytes())?;
         f.write_str("\"")?;
     }
-    let md = a.module().metadata_store();
+    let module_view = a.module();
+    let md = module_view.metadata_store();
     let md_slots = metadata_slot_map(md.nodes());
     fmt_metadata_attachments(f, &a.metadata(), &md, &md_slots)?;
     f.write_str("\n")
 }
 
-pub(crate) fn fmt_ifunc(f: &mut fmt::Formatter<'_>, i: crate::GlobalIFunc<'_>) -> fmt::Result {
+pub(crate) fn fmt_ifunc<'ctx, B: crate::module::ModuleBrand + 'ctx>(
+    f: &mut fmt::Formatter<'_>,
+    i: crate::GlobalIFunc<'ctx, B>,
+) -> fmt::Result {
     write!(f, "@{} = ", i.name())?;
     let linkage_kw = i.linkage().keyword();
     if !linkage_kw.is_empty() {
@@ -2921,7 +2940,8 @@ pub(crate) fn fmt_ifunc(f: &mut fmt::Formatter<'_>, i: crate::GlobalIFunc<'_>) -
         print_escaped_string(f, partition.as_bytes())?;
         f.write_str("\"")?;
     }
-    let md = i.module().metadata_store();
+    let module_view = i.module();
+    let md = module_view.metadata_store();
     let md_slots = metadata_slot_map(md.nodes());
     fmt_metadata_attachments(f, &i.metadata(), &md, &md_slots)?;
     f.write_str("\n")

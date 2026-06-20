@@ -1,0 +1,30 @@
+error[E0521]: borrowed data escapes outside of closure
+  --> tests/compile_fail/function_analysis_wrong_brand.rs:20:61
+   |
+16 |         let left_function = left.add_function::<()>("left", fn_ty, Linkage::External).unwrap();
+   |             ------------- `left_function` declared here, outside of the closure body
+17 |
+18 |         Module::with_new::<_, _, _>("right", |right| {
+   |                                               ----- `right` is a reference that is only valid in the closure body
+19 |             let mut fam = manager_for(right.as_view());
+20 |             let _ = fam.get_result::<DominatorTreeAnalysis>(left_function.as_view());
+   |                                                             ^^^^^^^^^^^^^^^^^^^^^^^ `right` escapes the closure body here
+   |
+   = note: requirement occurs because of the type `FunctionValue<'_, (), Brand<'_>>`, which makes the generic argument `Brand<'_>` invariant
+   = note: the struct `FunctionValue<'ctx, R, B>` is invariant over the parameter `B`
+   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+
+error[E0521]: borrowed data escapes outside of closure
+  --> tests/compile_fail/function_analysis_wrong_brand.rs:19:39
+   |
+12 |     Module::with_new::<_, _, _>("left", |left| {
+   |                                          ----
+   |                                          |
+   |                                          `left` is a reference that is only valid in the closure body
+   |                                          has type `Module<'1>`
+...
+19 |             let mut fam = manager_for(right.as_view());
+   |                                       ^^^^^^^^^^^^^^^
+   |                                       |
+   |                                       `left` escapes the closure body here
+   |                                       argument requires that `'1` must outlive `'static`

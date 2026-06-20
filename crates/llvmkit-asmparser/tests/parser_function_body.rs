@@ -3,16 +3,10 @@
 //! Each `#[test]` mirrors a constructive `.ll` fixture or unit-test case
 //! from upstream LLVM. Citations live in `UPSTREAM.md`.
 
-use llvmkit_asmparser::ll_parser::Parser;
-use llvmkit_ir::Module;
+use llvmkit_asmparser::parser;
 
 fn parse_and_print(src: &str) -> String {
-    let m = Module::new("session3");
-    Parser::new(src.as_bytes(), &m)
-        .expect("lex")
-        .parse_module()
-        .expect("parse");
-    format!("{m}")
+    parser::parse_assembly_string(src, |module, _parsed| format!("{module}")).expect("parse")
 }
 
 /// Mirrors `LLParser::parseRet`'s `void` arm on the smallest body shape:
@@ -109,13 +103,11 @@ fn parses_sub_and_mul() {
 /// Uses `store` (no result) with an LHS `%x =` to trigger the `_` arm.
 #[test]
 fn unsupported_opcode_is_typed_error() {
-    let m = Module::new("unsupported_opcode");
-    let parser = Parser::new(
-        b"define i32 @f(i32 %a) {\nentry:\n  %x = store i32 %a, ptr null\n  ret i32 %a\n}\n",
-        &m,
+    let err = parser::parse_assembly_string(
+        "define i32 @f(i32 %a) {\nentry:\n  %x = store i32 %a, ptr null\n  ret i32 %a\n}\n",
+        |_module, _parsed| (),
     )
-    .unwrap();
-    let err = parser.parse_module().unwrap_err();
+    .unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("instruction opcode supported by this parser"),

@@ -1,0 +1,5 @@
+error[E0599]: no method named `core` found for struct `Module<'ctx, B, S>` in the current scope
+ --> tests/compile_fail/verified_module_core_escape.rs:5:27
+  |
+5 |         let core = module.core();
+  |                           ^^^^ private field, not a method

@@ -8,20 +8,22 @@ use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_ir::Module;
 
 fn parse_and_print(src: &str) -> String {
-    let module = Module::new("parser_use_list");
-    Parser::new(src.as_bytes(), &module)
-        .expect("lexer primes")
-        .parse_module()
-        .expect("parser succeeds");
-    format!("{module}")
+    Module::with_new("parser_use_list", |module| {
+        Parser::new(src.as_bytes(), &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect("parser succeeds");
+        format!("{module}")
+    })
 }
 
 fn parse_err(src: &str) -> ParseError {
-    let module = Module::new("parser_use_list");
-    Parser::new(src.as_bytes(), &module)
-        .expect("lexer primes")
-        .parse_module()
-        .expect_err("parser rejects malformed use-list directive")
+    Module::with_new("parser_use_list", |module| {
+        Parser::new(src.as_bytes(), &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("parser rejects malformed use-list directive")
+    })
 }
 
 /// Mirrors `LLParser.cpp::parseUseListOrder`: module-level

@@ -570,24 +570,26 @@ fn wasm32_round_trip() {
 /// has a non-default layout.
 #[test]
 fn module_emits_target_datalayout_directive() {
-    let m = Module::new("m");
-    m.set_data_layout("e-m:e-p:64:64-i64:64-n8:16:32:64-S128")
-        .expect("parse");
-    let text = format!("{m}");
-    assert_line(
-        &text,
-        "target datalayout = \"e-m:e-p:64:64-i64:64-n8:16:32:64-S128\"",
-    );
+    Module::with_new("m", |m| {
+        m.set_data_layout("e-m:e-p:64:64-i64:64-n8:16:32:64-S128")
+            .expect("parse");
+        let text = format!("{m}");
+        assert_line(
+            &text,
+            "target datalayout = \"e-m:e-p:64:64-i64:64-n8:16:32:64-S128\"",
+        );
+    })
 }
 
 /// `llvmkit-specific`: mirrors `Module::setTargetTriple` /
 /// `Module::getTargetTriple`. Asserts emission of the directive.
 #[test]
 fn module_emits_target_triple_directive() {
-    let m = Module::new("m");
-    m.set_target_triple(Some("x86_64-pc-linux-gnu"));
-    let text = format!("{m}");
-    assert_line(&text, "target triple = \"x86_64-pc-linux-gnu\"");
+    Module::with_new("m", |m| {
+        m.set_target_triple(Some("x86_64-pc-linux-gnu"));
+        let text = format!("{m}");
+        assert_line(&text, "target triple = \"x86_64-pc-linux-gnu\"");
+    })
 }
 
 /// `llvmkit-specific`: mirrors `Module::setModuleInlineAsm` and the
@@ -595,10 +597,11 @@ fn module_emits_target_triple_directive() {
 /// `lib/IR/AsmWriter.cpp::printModule`.
 #[test]
 fn module_emits_module_asm_directive() {
-    let m = Module::new("m");
-    m.set_module_asm("beep boop");
-    let text = format!("{m}");
-    assert_line(&text, "module asm \"beep boop\"");
+    Module::with_new("m", |m| {
+        m.set_module_asm("beep boop");
+        let text = format!("{m}");
+        assert_line(&text, "module asm \"beep boop\"");
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -610,28 +613,30 @@ fn module_emits_module_asm_directive() {
 /// table).
 #[test]
 fn type_size_in_bits_basic_types() {
-    let m = Module::new("m");
-    let dl = DataLayout::default();
-    assert_eq!(dl.type_size_in_bits(m.bool_type().as_type()), 1);
-    assert_eq!(dl.type_size_in_bits(m.i8_type().as_type()), 8);
-    assert_eq!(dl.type_size_in_bits(m.i32_type().as_type()), 32);
-    assert_eq!(dl.type_size_in_bits(m.i64_type().as_type()), 64);
-    assert_eq!(dl.type_size_in_bits(m.half_type().as_type()), 16);
-    assert_eq!(dl.type_size_in_bits(m.f32_type().as_type()), 32);
-    assert_eq!(dl.type_size_in_bits(m.f64_type().as_type()), 64);
-    assert_eq!(dl.type_size_in_bits(m.fp128_type().as_type()), 128);
-    assert_eq!(dl.type_size_in_bits(m.x86_fp80_type().as_type()), 80);
+    Module::with_new("m", |m| {
+        let dl = DataLayout::default();
+        assert_eq!(dl.type_size_in_bits(m.bool_type().as_type()), 1);
+        assert_eq!(dl.type_size_in_bits(m.i8_type().as_type()), 8);
+        assert_eq!(dl.type_size_in_bits(m.i32_type().as_type()), 32);
+        assert_eq!(dl.type_size_in_bits(m.i64_type().as_type()), 64);
+        assert_eq!(dl.type_size_in_bits(m.half_type().as_type()), 16);
+        assert_eq!(dl.type_size_in_bits(m.f32_type().as_type()), 32);
+        assert_eq!(dl.type_size_in_bits(m.f64_type().as_type()), 64);
+        assert_eq!(dl.type_size_in_bits(m.fp128_type().as_type()), 128);
+        assert_eq!(dl.type_size_in_bits(m.x86_fp80_type().as_type()), 80);
+    })
 }
 
 /// `llvmkit-specific`: mirrors `DataLayout::getTypeStoreSize` for
 /// non-power-of-two integers (i36 -> 5 bytes, x86_fp80 -> 10 bytes).
 #[test]
 fn type_store_size_non_power_of_two() {
-    let m = Module::new("m");
-    let dl = DataLayout::default();
-    let i36 = m.custom_width_int_type(36).expect("i36");
-    assert_eq!(dl.type_store_size(i36.as_type()), 5);
-    assert_eq!(dl.type_store_size(m.x86_fp80_type().as_type()), 10);
+    Module::with_new("m", |m| {
+        let dl = DataLayout::default();
+        let i36 = m.custom_width_int_type(36).expect("i36");
+        assert_eq!(dl.type_store_size(i36.as_type()), 5);
+        assert_eq!(dl.type_store_size(m.x86_fp80_type().as_type()), 10);
+    })
 }
 
 /// `llvmkit-specific`: mirrors `DataLayout::getTypeAllocSize` for the
@@ -639,27 +644,29 @@ fn type_store_size_non_power_of_two() {
 /// padding.
 #[test]
 fn type_alloc_size_i64_default() {
-    let m = Module::new("m");
-    let dl = DataLayout::default();
-    // Default i64 spec is `i64:32:64` (ABI=4, pref=8). So an i64
-    // alloc-size rounds 8 up to 4-byte alignment -- still 8.
-    assert_eq!(dl.type_alloc_size(m.i64_type().as_type()), 8);
+    Module::with_new("m", |m| {
+        let dl = DataLayout::default();
+        // Default i64 spec is `i64:32:64` (ABI=4, pref=8). So an i64
+        // alloc-size rounds 8 up to 4-byte alignment -- still 8.
+        assert_eq!(dl.type_alloc_size(m.i64_type().as_type()), 8);
+    })
 }
 
 /// `llvmkit-specific`: mirrors `DataLayout::getABITypeAlign` for
 /// integers using the default `i32:32:32` spec.
 #[test]
 fn abi_type_align_i32_default() {
-    let m = Module::new("m");
-    let dl = DataLayout::default();
-    assert_eq!(
-        dl.abi_type_align(m.i32_type().as_type()),
-        Align::new(4).expect("a")
-    );
-    assert_eq!(
-        dl.abi_type_align(m.f64_type().as_type()),
-        Align::new(8).expect("a")
-    );
+    Module::with_new("m", |m| {
+        let dl = DataLayout::default();
+        assert_eq!(
+            dl.abi_type_align(m.i32_type().as_type()),
+            Align::new(4).expect("a")
+        );
+        assert_eq!(
+            dl.abi_type_align(m.f64_type().as_type()),
+            Align::new(8).expect("a")
+        );
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -674,31 +681,33 @@ fn abi_type_align_i32_default() {
 /// to 4).
 #[test]
 fn struct_layout_simple() {
-    let m = Module::new("m");
-    let dl = DataLayout::default();
-    let i32_ty = m.i32_type();
-    let i64_ty = m.i64_type();
-    let st = m.struct_type([i32_ty.as_type(), i64_ty.as_type()], false);
-    let layout = dl.struct_layout(st.as_type());
-    assert_eq!(layout.element_offset(0), 0);
-    // i64 default ABI alignment is 4, so i64 placed at offset 4.
-    assert_eq!(layout.element_offset(1), 4);
-    assert_eq!(layout.size_in_bytes(), 12);
+    Module::with_new("m", |m| {
+        let dl = DataLayout::default();
+        let i32_ty = m.i32_type();
+        let i64_ty = m.i64_type();
+        let st = m.struct_type([i32_ty.as_type(), i64_ty.as_type()], false);
+        let layout = dl.struct_layout(st.as_type());
+        assert_eq!(layout.element_offset(0), 0);
+        // i64 default ABI alignment is 4, so i64 placed at offset 4.
+        assert_eq!(layout.element_offset(1), 4);
+        assert_eq!(layout.size_in_bytes(), 12);
+    })
 }
 
 /// `llvmkit-specific`: mirrors `StructLayout::StructLayout` packed
 /// arm: every field has alignment 1.
 #[test]
 fn struct_layout_packed() {
-    let m = Module::new("m");
-    let dl = DataLayout::default();
-    let i8_ty = m.i8_type();
-    let i32_ty = m.i32_type();
-    let st = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], true);
-    let layout = dl.struct_layout(st.as_type());
-    assert_eq!(layout.element_offset(0), 0);
-    assert_eq!(layout.element_offset(1), 1);
-    assert_eq!(layout.size_in_bytes(), 5);
+    Module::with_new("m", |m| {
+        let dl = DataLayout::default();
+        let i8_ty = m.i8_type();
+        let i32_ty = m.i32_type();
+        let st = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], true);
+        let layout = dl.struct_layout(st.as_type());
+        assert_eq!(layout.element_offset(0), 0);
+        assert_eq!(layout.element_offset(1), 1);
+        assert_eq!(layout.size_in_bytes(), 5);
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -720,15 +729,16 @@ fn default_layout_is_default() {
 /// `DataLayout::getValueOrABITypeAlignment`.
 #[test]
 fn value_or_abi_type_align() {
-    let m = Module::new("m");
-    let dl = DataLayout::default();
-    let custom = MaybeAlign::from(Align::new(16).expect("a"));
-    assert_eq!(
-        dl.value_or_abi_type_align(custom.align(), m.i32_type().as_type()),
-        Align::new(16).expect("a")
-    );
-    assert_eq!(
-        dl.value_or_abi_type_align(MaybeAlign::default().align(), m.i32_type().as_type()),
-        Align::new(4).expect("a")
-    );
+    Module::with_new("m", |m| {
+        let dl = DataLayout::default();
+        let custom = MaybeAlign::from(Align::new(16).expect("a"));
+        assert_eq!(
+            dl.value_or_abi_type_align(custom.align(), m.i32_type().as_type()),
+            Align::new(16).expect("a")
+        );
+        assert_eq!(
+            dl.value_or_abi_type_align(MaybeAlign::default().align(), m.i32_type().as_type()),
+            Align::new(4).expect("a")
+        );
+    })
 }

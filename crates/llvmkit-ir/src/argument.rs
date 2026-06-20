@@ -8,16 +8,16 @@
 //! common accessors do not round-trip through the value arena.
 
 use crate::function::FunctionValue;
-use crate::module::{Module, ModuleRef};
+use crate::module::{Brand, Module, ModuleCore, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeId};
 use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
 use crate::{DebugLoc, IrError, IrResult};
 
 /// Typed handle for a function parameter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Argument<'ctx> {
+pub struct Argument<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
     pub(crate) parent_fn: ValueId,
     pub(crate) slot: u32,
@@ -27,7 +27,7 @@ impl<'ctx> Argument<'ctx> {
     #[inline]
     pub(crate) fn from_parts(
         id: ValueId,
-        module: &'ctx Module<'ctx>,
+        module: &'ctx ModuleCore,
         ty: TypeId,
         parent_fn: ValueId,
         slot: u32,
@@ -79,10 +79,16 @@ impl<'ctx> Argument<'ctx> {
         self.as_value().name()
     }
 
-    /// Set or clear the textual name.
+    /// Set the textual name.
     #[inline]
-    pub fn set_name(self, name: Option<&str>) {
-        self.as_value().set_name(name);
+    pub fn set_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: &str) {
+        self.as_value().set_name(module_token, name);
+    }
+
+    /// Clear the textual name.
+    #[inline]
+    pub fn clear_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>) {
+        self.as_value().clear_name(module_token);
     }
 }
 
@@ -105,8 +111,12 @@ impl<'ctx> HasName<'ctx> for Argument<'ctx> {
         Argument::name(self)
     }
     #[inline]
-    fn set_name(self, name: Option<&str>) {
-        Argument::set_name(self, name);
+    fn set_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: &str) {
+        Argument::set_name(self, module_token, name);
+    }
+    #[inline]
+    fn clear_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>) {
+        Argument::clear_name(self, module_token);
     }
 }
 impl HasDebugLoc for Argument<'_> {

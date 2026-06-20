@@ -38,32 +38,32 @@ fn main() -> ExitCode {
         }
     };
 
-    // The module's `'ctx` brand keeps parser state from leaking past this
-    // borrow (mirrors upstream `LLVMContext` ownership).
+    // A generative module brand keeps parser state from leaking past this
+    // closure (mirrors upstream `LLVMContext` ownership).
     let module_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("input");
-    let module = Module::new(module_name);
+    Module::with_new::<_, _, _>(module_name, |module| {
+        let parser = match Parser::new(&bytes, &module) {
+            Ok(p) => p,
+            Err(err) => {
+                report_error(&path, &bytes, &err);
+                return ExitCode::from(1);
+            }
+        };
 
-    let parser = match Parser::new(&bytes, &module) {
-        Ok(p) => p,
-        Err(err) => {
-            report_error(&path, &bytes, &err);
-            return ExitCode::from(1);
+        match parser.parse_module() {
+            Ok(_parsed) => {
+                // `_parsed.slot_mapping` carries the numbered-global table for
+                // follow-on `parse_constant_value` / `parse_type` calls; this
+                // example just round-trips the module.
+                print!("{module}");
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                report_error(&path, &bytes, &err);
+                ExitCode::from(1)
+            }
         }
-    };
-
-    match parser.parse_module() {
-        Ok(_parsed) => {
-            // `_parsed.slot_mapping` carries the numbered-global table for
-            // follow-on `parse_constant_value` / `parse_type` calls; this
-            // example just round-trips the module.
-            print!("{module}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => {
-            report_error(&path, &bytes, &err);
-            ExitCode::from(1)
-        }
-    }
+    })
 }
 
 fn report_error(path: &Path, src: &[u8], err: &ParseError) {

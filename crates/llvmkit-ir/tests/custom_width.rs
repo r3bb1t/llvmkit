@@ -18,12 +18,13 @@ use llvmkit_ir::{Module, Width};
 /// print form is the canonical `i3`.
 #[test]
 fn int_type_n_constructor_matches_upstream_int3() {
-    let m = Module::new("c");
-    let i3_ty = m.int_type_n::<3>();
-    assert_eq!(i3_ty.bit_width(), 3);
-    // LangRef: integer types print as `i<N>`. Our AsmWriter must
-    // match.
-    assert_eq!(format!("{}", i3_ty.as_type()), "i3");
+    Module::with_new("c", |m| {
+        let i3_ty = m.int_type_n::<3>();
+        assert_eq!(i3_ty.bit_width(), 3);
+        // LangRef: integer types print as `i<N>`. Our AsmWriter must
+        // match.
+        assert_eq!(format!("{}", i3_ty.as_type()), "i3");
+    })
 }
 
 /// Type-level: `Width<N>` participates in the same trait surface as
@@ -34,9 +35,10 @@ fn int_type_n_constructor_matches_upstream_int3() {
 /// tests, e.g. `srem-seteq-illegal-types.ll`).
 #[test]
 fn width_marker_works_as_return_marker() -> Result<(), llvmkit_ir::IrError> {
-    let m = Module::new("c");
-    let i17_ty = m.int_type_n::<17>();
-    let fn_ty = m.fn_type(i17_ty, [i17_ty.as_type()], false);
-    let _f = m.add_function::<Width<17>>("identity17", fn_ty, llvmkit_ir::Linkage::External)?;
-    Ok(())
+    Module::with_new("c", |m| {
+        let i17_ty = m.int_type_n::<17>();
+        let fn_ty = m.fn_type(i17_ty, [i17_ty.as_type()], false);
+        let _f = m.add_function::<Width<17>>("identity17", fn_ty, llvmkit_ir::Linkage::External)?;
+        Ok(())
+    })
 }

@@ -9,13 +9,14 @@
 use llvmkit_ir::Module;
 
 fn main() {
-    let m = Module::new("t");
-    let i32_ty = m.i32_type();
-    let opaque = m.opaque_struct("S").unwrap();
-    let body_set = m
-        .set_struct_body_typed(opaque, [i32_ty.as_type()], false)
-        .unwrap();
-    // `body_set` is `StructType<'_, BodySet>`, not `Opaque`; passing it
-    // to `set_struct_body_typed` is a compile error.
-    let _ = m.set_struct_body_typed(body_set, [i32_ty.as_type()], false);
+    Module::with_new("t", |m| {
+        let i32_ty = m.i32_type();
+        let opaque = m.opaque_struct("S").unwrap();
+        let body_set = m
+            .set_struct_body_typed(opaque, [i32_ty.as_type()], false)
+            .unwrap();
+        // `body_set` is `StructType<'_, BodySet>`, not `Opaque`; passing it
+        // to `set_struct_body_typed` is a compile error.
+        let _ = m.set_struct_body_typed(body_set, [i32_ty.as_type()], false);
+    });
 }

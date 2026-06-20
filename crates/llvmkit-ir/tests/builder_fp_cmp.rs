@@ -13,16 +13,17 @@
 use llvmkit_ir::{FloatPredicate, IRBuilder, IrError, Linkage, Module};
 
 fn module_with_pred(pred: FloatPredicate, name: &str) -> Result<String, IrError> {
-    let m = Module::new("fcmp");
-    let f64_ty = m.f64_type();
-    let bool_ty = m.bool_type();
-    let fn_ty = m.fn_type(bool_ty, [f64_ty.as_type(), f64_ty.as_type()], false);
-    let f = m.add_function::<bool>(name, fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block("entry");
-    let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);
-    let r = b.build_fp_cmp::<f64, _, _>(pred, f.param(0)?, f.param(1)?, "r")?;
-    b.build_ret(r)?;
-    Ok(format!("{m}"))
+    Module::with_new("fcmp", |m| {
+        let f64_ty = m.f64_type();
+        let bool_ty = m.bool_type();
+        let fn_ty = m.fn_type(bool_ty, [f64_ty.as_type(), f64_ty.as_type()], false);
+        let f = m.add_function::<bool>(name, fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);
+        let r = b.build_fp_cmp::<f64, _, _>(pred, f.param(0)?, f.param(1)?, "r")?;
+        b.build_ret(r)?;
+        Ok(format!("{m}"))
+    })
 }
 
 /// llvmkit-specific: AsmWriter parity check for `fcmp oeq`. Closest

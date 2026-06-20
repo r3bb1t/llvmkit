@@ -6,7 +6,7 @@ use crate::DebugLoc;
 use crate::constant::{Constant, IsConstant};
 use crate::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
 use crate::global_value::{Linkage, Visibility};
-use crate::module::{Module, ModuleRef};
+use crate::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use crate::r#type::{Type, TypeId, TypeKind};
 use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
 
@@ -23,28 +23,27 @@ pub(crate) struct GlobalIFuncData {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct GlobalIFunc<'ctx> {
+pub struct GlobalIFunc<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
-impl<'ctx> GlobalIFunc<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
     #[inline]
-    pub(crate) fn from_parts_unchecked(
-        id: ValueId,
-        module: &'ctx Module<'ctx>,
-        ty: TypeId,
-    ) -> Self {
+    pub(crate) fn from_parts_unchecked<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    where
+        M: Into<ModuleRef<'ctx, B>>,
+    {
         Self {
             id,
-            module: ModuleRef::new(module),
+            module: module.into(),
             ty,
         }
     }
 
     #[inline]
-    pub fn as_value(self) -> Value<'ctx> {
+    pub fn as_value(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -53,7 +52,7 @@ impl<'ctx> GlobalIFunc<'ctx> {
     }
 
     #[inline]
-    pub fn as_constant(self) -> Constant<'ctx> {
+    pub fn as_constant(self) -> Constant<'ctx, B> {
         Constant {
             id: self.id,
             module: self.module,
@@ -62,7 +61,7 @@ impl<'ctx> GlobalIFunc<'ctx> {
     }
 
     #[inline]
-    pub fn as_global_constant_ptr(self) -> Constant<'ctx> {
+    pub fn as_global_constant_ptr(self) -> Constant<'ctx, B> {
         self.as_constant()
     }
 
@@ -74,18 +73,18 @@ impl<'ctx> GlobalIFunc<'ctx> {
     }
 
     #[inline]
-    pub fn module(self) -> &'ctx Module<'ctx> {
-        self.module.module()
+    pub fn module(self) -> ModuleView<'ctx, B> {
+        ModuleView::new(self.module.module())
     }
 
     #[inline]
-    pub fn ty(self) -> crate::PointerType<'ctx> {
-        crate::PointerType::new(self.ty, self.module.module())
+    pub fn ty(self) -> crate::PointerType<'ctx, B> {
+        crate::PointerType::new(self.ty, self.module)
     }
 
     #[inline]
-    pub fn value_type(self) -> Type<'ctx> {
-        Type::new(self.data().value_type, self.module.module())
+    pub fn value_type(self) -> Type<'ctx, B> {
+        Type::new(self.data().value_type, self.module)
     }
 
     #[inline]
@@ -98,7 +97,7 @@ impl<'ctx> GlobalIFunc<'ctx> {
         &self.data().name
     }
 
-    pub fn resolver(self) -> Constant<'ctx> {
+    pub fn resolver(self) -> Constant<'ctx, B> {
         let id = self.data().resolver.get();
         let value_data = self.module.value_data(id);
         Constant {
@@ -108,7 +107,11 @@ impl<'ctx> GlobalIFunc<'ctx> {
         }
     }
 
-    pub fn set_resolver<C: IsConstant<'ctx>>(self, resolver: C) -> IrResult<()> {
+    pub fn set_resolver<C: IsConstant<'ctx, B>>(
+        self,
+        _module: &Module<'ctx, B, Unverified>,
+        resolver: C,
+    ) -> IrResult<()> {
         let constant = resolver.as_constant();
         if constant.module != self.module {
             return Err(IrError::ForeignValue);
@@ -135,7 +138,7 @@ impl<'ctx> GlobalIFunc<'ctx> {
     }
 
     #[inline]
-    pub fn set_linkage(self, linkage: Linkage) {
+    pub fn set_linkage(self, _module: &Module<'ctx, B, Unverified>, linkage: Linkage) {
         self.data().linkage.set(linkage);
     }
 
@@ -145,7 +148,7 @@ impl<'ctx> GlobalIFunc<'ctx> {
     }
 
     #[inline]
-    pub fn set_visibility(self, visibility: Visibility) {
+    pub fn set_visibility(self, _module: &Module<'ctx, B, Unverified>, visibility: Visibility) {
         self.data().visibility.set(visibility);
     }
 
@@ -155,6 +158,7 @@ impl<'ctx> GlobalIFunc<'ctx> {
 
     pub fn set_metadata(
         self,
+        _module: &Module<'ctx, B, Unverified>,
         kind: crate::metadata::MetadataAttachmentKind,
         id: crate::metadata::MetadataId,
     ) {
@@ -165,59 +169,64 @@ impl<'ctx> GlobalIFunc<'ctx> {
         self.data().partition.borrow().clone()
     }
 
-    pub fn set_partition(self, partition: Option<impl Into<String>>) {
+    pub fn set_partition(
+        self,
+        _module: &Module<'ctx, B, Unverified>,
+        partition: Option<impl Into<String>>,
+    ) {
         *self.data().partition.borrow_mut() = partition.map(Into::into);
     }
 }
 
-impl<'ctx> sealed::Sealed for GlobalIFunc<'ctx> {}
-impl<'ctx> IsValue<'ctx> for GlobalIFunc<'ctx> {
+impl<'ctx, B: ModuleBrand> sealed::Sealed for GlobalIFunc<'ctx, B> {}
+impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalIFunc<'ctx, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx> {
+    fn as_value(self) -> Value<'ctx, B> {
         GlobalIFunc::as_value(self)
     }
 }
-impl<'ctx> IsConstant<'ctx> for GlobalIFunc<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for GlobalIFunc<'ctx, B> {
     #[inline]
-    fn as_constant(self) -> Constant<'ctx> {
+    fn as_constant(self) -> Constant<'ctx, B> {
         GlobalIFunc::as_constant(self)
     }
 }
-impl<'ctx> Typed<'ctx> for GlobalIFunc<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for GlobalIFunc<'ctx, B> {
     #[inline]
-    fn ty(self) -> Type<'ctx> {
-        Type::new(self.ty, self.module.module())
+    fn ty(self) -> Type<'ctx, B> {
+        Type::new(self.ty, self.module)
     }
 }
-impl<'ctx> HasName<'ctx> for GlobalIFunc<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalIFunc<'ctx, B> {
     fn name(self) -> Option<String> {
         Some(self.data().name.clone())
     }
-    fn set_name(self, _name: Option<&str>) {}
+    fn set_name(self, _module_token: &Module<'ctx, B, Unverified>, _name: &str) {}
+    fn clear_name(self, _module_token: &Module<'ctx, B, Unverified>) {}
 }
-impl HasDebugLoc for GlobalIFunc<'_> {
+impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalIFunc<'_, B> {
     fn debug_loc(self) -> Option<DebugLoc> {
         None
     }
 }
 
-impl<'ctx> From<GlobalIFunc<'ctx>> for Value<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalIFunc<'ctx, B>> for Value<'ctx, B> {
     #[inline]
-    fn from(i: GlobalIFunc<'ctx>) -> Self {
+    fn from(i: GlobalIFunc<'ctx, B>) -> Self {
         i.as_value()
     }
 }
-impl<'ctx> From<GlobalIFunc<'ctx>> for Constant<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalIFunc<'ctx, B>> for Constant<'ctx, B> {
     #[inline]
-    fn from(i: GlobalIFunc<'ctx>) -> Self {
+    fn from(i: GlobalIFunc<'ctx, B>) -> Self {
         i.as_constant()
     }
 }
 
-impl<'ctx> TryFrom<Value<'ctx>> for GlobalIFunc<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalIFunc<'ctx, B> {
     type Error = IrError;
 
-    fn try_from(v: Value<'ctx>) -> IrResult<Self> {
+    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
         match &v.data().kind {
             ValueKindData::GlobalIFunc(_) => Ok(Self {
                 id: v.id,
@@ -232,8 +241,8 @@ impl<'ctx> TryFrom<Value<'ctx>> for GlobalIFunc<'ctx> {
     }
 }
 
-pub struct GlobalIFuncBuilder<'ctx> {
-    module: &'ctx Module<'ctx>,
+pub struct GlobalIFuncBuilder<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+    module: ModuleRef<'ctx, B>,
     name: String,
     value_type: TypeId,
     resolver: ValueId,
@@ -244,13 +253,18 @@ pub struct GlobalIFuncBuilder<'ctx> {
     partition: Option<String>,
 }
 
-impl<'ctx> GlobalIFuncBuilder<'ctx> {
-    pub(crate) fn new<C: IsConstant<'ctx>>(
-        module: &'ctx Module<'ctx>,
+impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
+    pub(crate) fn new<M, C>(
+        module: M,
         name: impl Into<String>,
-        value_type: Type<'ctx>,
+        value_type: Type<'ctx, B>,
         resolver: C,
-    ) -> Self {
+    ) -> Self
+    where
+        M: Into<ModuleRef<'ctx, B>>,
+        C: IsConstant<'ctx, B>,
+    {
+        let module = module.into();
         let resolver = resolver.as_constant();
         let address_space = pointer_address_space(resolver.ty()).unwrap_or(0);
         Self {
@@ -281,13 +295,13 @@ impl<'ctx> GlobalIFuncBuilder<'ctx> {
         self
     }
 
-    pub fn build(self) -> IrResult<GlobalIFunc<'ctx>> {
+    pub fn build(self) -> IrResult<GlobalIFunc<'ctx, B>> {
         if !is_valid_ifunc_linkage(self.linkage) {
             return Err(IrError::InvalidOperation {
                 message: "invalid linkage type for ifunc",
             });
         }
-        if self.module.context().value_data(self.resolver).ty != self.resolver_type {
+        if self.module.module().context().value_data(self.resolver).ty != self.resolver_type {
             return Err(IrError::InvalidOperation {
                 message: "ifunc resolver type changed before build",
             });
@@ -301,7 +315,7 @@ impl<'ctx> GlobalIFuncBuilder<'ctx> {
                 got: Type::new(self.resolver_type, self.module).kind_label(),
             });
         }
-        self.module.install_global_ifunc(self)
+        self.module.module().install_global_ifunc::<B>(self)
     }
 
     pub(crate) fn into_data(self) -> (String, GlobalIFuncData, u32) {
@@ -331,7 +345,7 @@ impl<'ctx> GlobalIFuncBuilder<'ctx> {
 }
 
 #[inline]
-fn pointer_address_space(ty: Type<'_>) -> Option<u32> {
+fn pointer_address_space<B: ModuleBrand>(ty: Type<'_, B>) -> Option<u32> {
     match ty.kind() {
         TypeKind::Pointer { addr_space } => Some(addr_space),
         _ => None,
@@ -353,7 +367,7 @@ pub const fn is_valid_ifunc_linkage(linkage: Linkage) -> bool {
     )
 }
 
-impl<'ctx> core::fmt::Display for GlobalIFunc<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for GlobalIFunc<'ctx, B> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         crate::asm_writer::fmt_ifunc(f, *self)
     }

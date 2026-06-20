@@ -5,25 +5,19 @@
 //! `IRBuilder` and the `.ll` parser. Functions, globals, named metadata,
 //! and the data-layout subsystem land in Phase D.
 //!
-//! ## Identity model
+//! ## Identity and verification model
 //!
-//! Each `Module` carries:
+//! A [`Module`] is a linear token over crate-private `ModuleCore` storage.
+//! The token carries a generative [`ModuleBrand`] and a verification state:
+//! [`Unverified`] while IR is still being built and [`Verified`] after
+//! structural verification succeeds. Handles store a state-erased
+//! [`ModuleRef`] with the same brand, so same-brand APIs reject cross-module
+//! values statically and erased/parser paths can still fall back to
+//! [`ModuleId`] checks.
 //!
-//! - A globally-unique [`ModuleId`] (process-wide atomic counter)
-//!   that backs handle equality and hashing across modules.
-//! - A `'ctx` brand parameter that scopes every typed handle the module
-//!   produces. Cross-module mixing is rejected by the borrow checker for
-//!   the common short-lived borrow case (each `let m = Module::new()`
-//!   gets a fresh elided lifetime); the [`ModuleRef`] helper inside each
-//!   handle additionally compares by `ModuleId`, so even when lifetimes
-//!   happen to unify, two distinct modules' handles do not.
-//!
-//! ## Borrow shape
-//!
-//! Type constructors take `&'ctx self` so the returned typed handles
-//! borrow the module for at least `'ctx`. The module's interior is
-//! mutated through `RefCell` from the same `&self`, so this does not
-//! block subsequent type or value construction.
+//! Public handle accessors expose [`ModuleView`], a read-only branded view of
+//! the storage. Construction and mutation require the unverified [`Module`]
+//! token instead of a raw storage reference.
 
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
@@ -72,68 +66,572 @@ impl ModuleId {
 }
 
 // --------------------------------------------------------------------------
+// Module brands and verification state
+// --------------------------------------------------------------------------
+
+pub(crate) mod brand_sealed {
+    pub trait Sealed {}
+}
+
+/// Sealed marker for a generative module identity brand.
+pub trait ModuleBrand: brand_sealed::Sealed + Copy + core::fmt::Debug + Eq + Hash {}
+
+/// Concrete lifetime-generated module brand used by [`Module::with_new`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct Brand<'id>(PhantomData<fn(&'id ()) -> &'id ()>);
+impl<'id> brand_sealed::Sealed for Brand<'id> {}
+impl<'id> ModuleBrand for Brand<'id> {}
+
+/// Module state before successful structural verification.
+#[derive(Debug)]
+pub enum Unverified {}
+
+/// Module state after successful structural verification.
+#[derive(Debug)]
+pub enum Verified {}
+
+pub(crate) type Invariant<T> = PhantomData<fn(T) -> T>;
+
+// --------------------------------------------------------------------------
 // ModuleRef helper
 // --------------------------------------------------------------------------
 
-/// `&Module<'ctx>` wrapped so its `Hash`/`PartialEq`/`Eq`/`Debug` go
-/// through [`ModuleId`] instead of pointer-identity or deep field
-/// comparison.
+/// State-erased reference to a module's storage.
 ///
-/// This is the single hand-rolled `Hash`/`Eq` impl in the IR crate;
-/// every public type and value handle holds a `ModuleRef<'ctx>` and
-/// derives the rest of its trait surface.
-#[derive(Clone, Copy)]
-pub struct ModuleRef<'ctx>(&'ctx Module<'ctx>);
+/// The reference carries the invariant module brand `B`, but it points at
+/// crate-private `ModuleCore` storage rather than a `Module<..., State>` token,
+/// so handles do not borrow the verification state.
+pub struct ModuleRef<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    core: &'ctx ModuleCore,
+    _brand: Invariant<B>,
+}
 
-impl<'ctx> ModuleRef<'ctx> {
+impl<B: ModuleBrand> Clone for ModuleRef<'_, B> {
     #[inline]
-    pub(crate) fn new(m: &'ctx Module<'ctx>) -> Self {
-        Self(m)
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<B: ModuleBrand> Copy for ModuleRef<'_, B> {}
+
+impl<'ctx, B: ModuleBrand> ModuleRef<'ctx, B> {
+    #[inline]
+    pub(crate) fn new(core: &'ctx ModuleCore) -> Self {
+        Self {
+            core,
+            _brand: PhantomData,
+        }
     }
 
-    /// Borrow the underlying [`Module`].
-    #[inline]
-    pub fn module(self) -> &'ctx Module<'ctx> {
-        self.0
+    /// Borrow the underlying state-erased module storage.
+    pub(crate) fn module(self) -> &'ctx ModuleCore {
+        self.core
     }
 
     /// Owning module's [`ModuleId`].
     #[inline]
     pub fn id(self) -> ModuleId {
-        self.0.id
+        self.core.id
     }
 
     /// Crate-internal: resolve a [`TypeId`] to its payload via the
     /// owning module's context.
     #[inline]
     pub(crate) fn type_data(self, id: crate::r#type::TypeId) -> &'ctx crate::r#type::TypeData {
-        self.0.context().type_data(id)
+        self.core.context().type_data(id)
     }
 
     /// Crate-internal: resolve a [`ValueId`](crate::value::ValueId) to its
     /// payload via the owning module's context.
     #[inline]
     pub(crate) fn value_data(self, id: crate::value::ValueId) -> &'ctx crate::value::ValueData {
-        self.0.context().value_data(id)
+        self.core.context().value_data(id)
     }
 }
 
-impl PartialEq for ModuleRef<'_> {
+impl<'ctx> From<&'ctx ModuleCore> for ModuleRef<'ctx, Brand<'ctx>> {
+    #[inline]
+    fn from(core: &'ctx ModuleCore) -> Self {
+        ModuleRef::new(core)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, S> From<&'ctx Module<'ctx, B, S>> for ModuleRef<'ctx, B> {
+    #[inline]
+    fn from(module: &'ctx Module<'ctx, B, S>) -> Self {
+        ModuleRef::new(module.core)
+    }
+}
+
+impl<B: ModuleBrand> PartialEq for ModuleRef<'_, B> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        self.0.id == other.0.id
+        self.core.id == other.core.id
     }
 }
-impl Eq for ModuleRef<'_> {}
-impl Hash for ModuleRef<'_> {
+impl<B: ModuleBrand> Eq for ModuleRef<'_, B> {}
+impl<B: ModuleBrand> Hash for ModuleRef<'_, B> {
     #[inline]
     fn hash<H: Hasher>(&self, h: &mut H) {
-        self.0.id.hash(h);
+        self.core.id.hash(h);
     }
 }
-impl core::fmt::Debug for ModuleRef<'_> {
+impl<B: ModuleBrand> core::fmt::Debug for ModuleRef<'_, B> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_tuple("ModuleRef").field(&self.0.id).finish()
+        f.debug_tuple("ModuleRef").field(&self.core.id).finish()
+    }
+}
+
+// --------------------------------------------------------------------------
+// ModuleView helper
+// --------------------------------------------------------------------------
+
+/// Read-only branded view of a module.
+///
+/// `ModuleView` lets handles report their owning module without exposing the
+/// crate-private storage or the linear verification-state token.
+#[derive(Clone, Copy)]
+pub struct ModuleView<'ctx, B: ModuleBrand> {
+    core: &'ctx ModuleCore,
+    _brand: Invariant<B>,
+}
+
+/// Read-only branded view of a global variable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GlobalVariableView<'ctx, B: ModuleBrand> {
+    global: crate::global_variable::GlobalVariable<'ctx, B>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariableView<'ctx, B> {
+    #[inline]
+    pub(crate) fn new(global: crate::global_variable::GlobalVariable<'ctx, B>) -> Self {
+        Self { global }
+    }
+
+    #[inline]
+    pub fn module(self) -> ModuleView<'ctx, B> {
+        self.global.module()
+    }
+
+    #[inline]
+    pub fn ty(self) -> PointerType<'ctx, B> {
+        self.global.ty()
+    }
+
+    #[inline]
+    pub fn value_type(self) -> Type<'ctx, B> {
+        self.global.value_type()
+    }
+
+    #[inline]
+    pub fn address_space(self) -> u32 {
+        self.global.address_space()
+    }
+
+    #[inline]
+    pub fn name(self) -> &'ctx str {
+        self.global.name()
+    }
+
+    #[inline]
+    pub fn is_constant(self) -> bool {
+        self.global.is_constant()
+    }
+
+    #[inline]
+    pub fn is_externally_initialized(self) -> bool {
+        self.global.is_externally_initialized()
+    }
+
+    #[inline]
+    pub fn has_initializer(self) -> bool {
+        self.global.has_initializer()
+    }
+
+    #[inline]
+    pub fn initializer(self) -> Option<crate::Constant<'ctx, B>> {
+        self.global.initializer()
+    }
+
+    #[inline]
+    pub fn linkage(self) -> crate::Linkage {
+        self.global.linkage()
+    }
+
+    #[inline]
+    pub fn visibility(self) -> crate::Visibility {
+        self.global.visibility()
+    }
+
+    #[inline]
+    pub fn dll_storage_class(self) -> crate::DllStorageClass {
+        self.global.dll_storage_class()
+    }
+
+    #[inline]
+    pub fn thread_local_mode(self) -> crate::ThreadLocalMode {
+        self.global.thread_local_mode()
+    }
+
+    #[inline]
+    pub fn unnamed_addr(self) -> crate::UnnamedAddr {
+        self.global.unnamed_addr()
+    }
+
+    #[inline]
+    pub fn align(self) -> crate::MaybeAlign {
+        self.global.align()
+    }
+
+    #[inline]
+    pub fn has_section(self) -> bool {
+        self.global.has_section()
+    }
+
+    #[inline]
+    pub fn section(self) -> Option<String> {
+        self.global.section()
+    }
+
+    #[inline]
+    pub fn partition(self) -> Option<String> {
+        self.global.partition()
+    }
+
+    #[inline]
+    pub fn comdat(self) -> Option<ComdatView<'ctx, B>> {
+        self.global.comdat().map(ComdatView::new)
+    }
+
+    #[inline]
+    pub fn metadata(self) -> core::cell::Ref<'ctx, crate::metadata::MetadataAttachmentSet> {
+        self.global.metadata()
+    }
+}
+
+/// Read-only branded view of a global alias.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GlobalAliasView<'ctx, B: ModuleBrand> {
+    alias: crate::global_alias::GlobalAlias<'ctx, B>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasView<'ctx, B> {
+    #[inline]
+    pub(crate) fn new(alias: crate::global_alias::GlobalAlias<'ctx, B>) -> Self {
+        Self { alias }
+    }
+
+    #[inline]
+    pub fn module(self) -> ModuleView<'ctx, B> {
+        self.alias.module()
+    }
+
+    #[inline]
+    pub fn ty(self) -> PointerType<'ctx, B> {
+        self.alias.ty()
+    }
+
+    #[inline]
+    pub fn value_type(self) -> Type<'ctx, B> {
+        self.alias.value_type()
+    }
+
+    #[inline]
+    pub fn address_space(self) -> u32 {
+        self.alias.address_space()
+    }
+
+    #[inline]
+    pub fn name(self) -> &'ctx str {
+        self.alias.name()
+    }
+
+    #[inline]
+    pub fn aliasee(self) -> crate::Constant<'ctx, B> {
+        self.alias.aliasee()
+    }
+
+    #[inline]
+    pub fn linkage(self) -> crate::Linkage {
+        self.alias.linkage()
+    }
+
+    #[inline]
+    pub fn visibility(self) -> crate::Visibility {
+        self.alias.visibility()
+    }
+
+    #[inline]
+    pub fn dll_storage_class(self) -> crate::DllStorageClass {
+        self.alias.dll_storage_class()
+    }
+
+    #[inline]
+    pub fn thread_local_mode(self) -> crate::ThreadLocalMode {
+        self.alias.thread_local_mode()
+    }
+
+    #[inline]
+    pub fn unnamed_addr(self) -> crate::UnnamedAddr {
+        self.alias.unnamed_addr()
+    }
+
+    #[inline]
+    pub fn metadata(self) -> core::cell::Ref<'ctx, crate::metadata::MetadataAttachmentSet> {
+        self.alias.metadata()
+    }
+
+    #[inline]
+    pub fn partition(self) -> Option<String> {
+        self.alias.partition()
+    }
+}
+
+/// Read-only branded view of a global ifunc.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GlobalIFuncView<'ctx, B: ModuleBrand> {
+    ifunc: crate::global_ifunc::GlobalIFunc<'ctx, B>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncView<'ctx, B> {
+    #[inline]
+    pub(crate) fn new(ifunc: crate::global_ifunc::GlobalIFunc<'ctx, B>) -> Self {
+        Self { ifunc }
+    }
+
+    #[inline]
+    pub fn module(self) -> ModuleView<'ctx, B> {
+        self.ifunc.module()
+    }
+
+    #[inline]
+    pub fn ty(self) -> PointerType<'ctx, B> {
+        self.ifunc.ty()
+    }
+
+    #[inline]
+    pub fn value_type(self) -> Type<'ctx, B> {
+        self.ifunc.value_type()
+    }
+
+    #[inline]
+    pub fn address_space(self) -> u32 {
+        self.ifunc.address_space()
+    }
+
+    #[inline]
+    pub fn name(self) -> &'ctx str {
+        self.ifunc.name()
+    }
+
+    #[inline]
+    pub fn resolver(self) -> crate::Constant<'ctx, B> {
+        self.ifunc.resolver()
+    }
+
+    #[inline]
+    pub fn linkage(self) -> crate::Linkage {
+        self.ifunc.linkage()
+    }
+
+    #[inline]
+    pub fn visibility(self) -> crate::Visibility {
+        self.ifunc.visibility()
+    }
+
+    #[inline]
+    pub fn metadata(self) -> core::cell::Ref<'ctx, crate::metadata::MetadataAttachmentSet> {
+        self.ifunc.metadata()
+    }
+
+    #[inline]
+    pub fn partition(self) -> Option<String> {
+        self.ifunc.partition()
+    }
+}
+
+/// Read-only branded view of a COMDAT.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ComdatView<'ctx, B: ModuleBrand> {
+    comdat: crate::comdat::ComdatRef<'ctx, B>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> ComdatView<'ctx, B> {
+    #[inline]
+    pub(crate) fn new(comdat: crate::comdat::ComdatRef<'ctx, B>) -> Self {
+        Self { comdat }
+    }
+
+    #[inline]
+    pub fn module(self) -> ModuleView<'ctx, B> {
+        ModuleView::new(self.comdat.module.module())
+    }
+
+    #[inline]
+    pub fn name(self) -> &'ctx str {
+        self.comdat.name()
+    }
+
+    #[inline]
+    pub fn selection_kind(self) -> crate::SelectionKind {
+        self.comdat.selection_kind()
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
+    #[inline]
+    pub(crate) fn new(core: &'ctx ModuleCore) -> Self {
+        Self {
+            core,
+            _brand: PhantomData,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn core_ref(self) -> &'ctx ModuleCore {
+        self.core
+    }
+
+    #[inline]
+    pub(crate) fn context(self) -> &'ctx Context {
+        self.core.context()
+    }
+
+    /// Owning module's [`ModuleId`].
+    #[inline]
+    pub fn id(self) -> ModuleId {
+        self.core.id()
+    }
+
+    /// Module identifier.
+    #[inline]
+    pub fn name(self) -> &'ctx str {
+        self.core.name()
+    }
+
+    /// `source_filename = "..."` directive.
+    #[inline]
+    pub fn source_filename(self) -> Option<core::cell::Ref<'ctx, str>> {
+        self.core.source_filename()
+    }
+
+    /// Parsed data layout.
+    #[inline]
+    pub fn data_layout(self) -> core::cell::Ref<'ctx, crate::data_layout::DataLayout> {
+        self.core.data_layout()
+    }
+
+    /// Target triple directive.
+    #[inline]
+    pub fn target_triple(self) -> Option<String> {
+        self.core.target_triple()
+    }
+
+    /// Module-level inline assembly.
+    #[inline]
+    pub fn module_asm(self) -> String {
+        self.core.module_asm()
+    }
+
+    #[inline]
+    pub(crate) fn metadata_store(self) -> core::cell::Ref<'ctx, crate::metadata::MetadataStore> {
+        self.core.metadata_store()
+    }
+
+    #[inline]
+    pub(crate) fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, B> {
+        PointerType::new(
+            self.core.ptr_type(addr_space).as_type().id(),
+            ModuleRef::new(self.core),
+        )
+    }
+
+    #[inline]
+    pub(crate) fn label_type(self) -> LabelType<'ctx, B> {
+        LabelType::new(
+            self.core.label_type().as_type().id(),
+            ModuleRef::new(self.core),
+        )
+    }
+
+    /// Iterate functions in declaration order.
+    #[inline]
+    pub fn iter_functions(
+        self,
+    ) -> impl ExactSizeIterator<Item = crate::pass_context::FunctionView<'ctx, B>> + 'ctx {
+        self.core
+            .iter_functions::<B>()
+            .map(crate::pass_context::FunctionView::new)
+    }
+
+    /// Iterate globals in declaration order.
+    #[inline]
+    pub fn iter_globals(self) -> impl ExactSizeIterator<Item = GlobalVariableView<'ctx, B>> + 'ctx {
+        self.core.iter_globals::<B>().map(GlobalVariableView::new)
+    }
+
+    /// Iterate aliases in declaration order.
+    #[inline]
+    pub fn iter_aliases(self) -> impl ExactSizeIterator<Item = GlobalAliasView<'ctx, B>> + 'ctx {
+        self.core.iter_aliases::<B>().map(GlobalAliasView::new)
+    }
+
+    /// Iterate ifuncs in declaration order.
+    #[inline]
+    pub fn iter_ifuncs(self) -> impl ExactSizeIterator<Item = GlobalIFuncView<'ctx, B>> + 'ctx {
+        self.core.iter_ifuncs::<B>().map(GlobalIFuncView::new)
+    }
+
+    /// Iterate COMDATs in insertion order.
+    #[inline]
+    pub fn iter_comdats(self) -> impl ExactSizeIterator<Item = ComdatView<'ctx, B>> + 'ctx {
+        self.core.iter_comdats::<B>().map(ComdatView::new)
+    }
+}
+
+impl<'ctx, B: ModuleBrand> From<ModuleView<'ctx, B>> for ModuleRef<'ctx, B> {
+    #[inline]
+    fn from(view: ModuleView<'ctx, B>) -> Self {
+        ModuleRef::new(view.core)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, S> From<&Module<'ctx, B, S>> for ModuleView<'ctx, B> {
+    #[inline]
+    fn from(module: &Module<'ctx, B, S>) -> Self {
+        module.as_view()
+    }
+}
+
+impl<B: ModuleBrand> PartialEq for ModuleView<'_, B> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.core.id == other.core.id
+    }
+}
+
+impl<B: ModuleBrand> Eq for ModuleView<'_, B> {}
+
+impl<B: ModuleBrand> Hash for ModuleView<'_, B> {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.core.id.hash(state);
+    }
+}
+
+impl<B: ModuleBrand> core::fmt::Debug for ModuleView<'_, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ModuleView")
+            .field("id", &self.core.id)
+            .field("name", &self.core.name)
+            .finish()
+    }
+}
+
+impl<B: ModuleBrand> core::fmt::Display for ModuleView<'_, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        crate::asm_writer::fmt_module(f, self.core)
     }
 }
 
@@ -171,7 +669,7 @@ pub(crate) fn validate_use_list_order_indexes(indexes: &[u32]) -> IrResult<()> {
 }
 
 /// Top-level IR container.
-pub struct Module<'ctx> {
+pub(crate) struct ModuleCore {
     id: ModuleId,
     name: String,
     /// `source_filename = "..."` directive. Optional; upstream stores an
@@ -229,16 +727,19 @@ pub struct Module<'ctx> {
     metadata_as_value_cache: core::cell::RefCell<
         std::collections::HashMap<crate::metadata::MetadataId, crate::value::ValueId>,
     >,
-    /// Brand carrier. Without it, `Module<'ctx>` would have no use of
-    /// `'ctx` in its fields (since `Context` is lifetime-free) and the
-    /// parameter would be unconstrained.
-    _brand: PhantomData<&'ctx ()>,
 }
 
-impl<'ctx> Module<'ctx> {
+/// Linear module token carrying a generative brand `B` and verification state `S`.
+pub struct Module<'ctx, B: ModuleBrand = Brand<'ctx>, S = Unverified> {
+    core: &'ctx ModuleCore,
+    _brand: Invariant<B>,
+    _state: PhantomData<S>,
+}
+
+impl<'ctx> ModuleCore {
     /// Construct a fresh, empty module with a freshly-allocated
     /// [`ModuleId`].
-    pub fn new(name: impl Into<String>) -> Self {
+    pub(crate) fn new(name: impl Into<String>) -> Self {
         Self {
             id: ModuleId::fresh(),
             name: name.into(),
@@ -263,7 +764,6 @@ impl<'ctx> Module<'ctx> {
             metadata: core::cell::RefCell::new(crate::metadata::MetadataStore::default()),
             named_metadata: core::cell::RefCell::new(Vec::new()),
             metadata_as_value_cache: core::cell::RefCell::new(std::collections::HashMap::new()),
-            _brand: PhantomData,
         }
     }
 
@@ -321,11 +821,6 @@ impl<'ctx> Module<'ctx> {
         LabelType::new(self.ctx.label(), self)
     }
 
-    /// `metadata`.
-    pub fn metadata_type(&'ctx self) -> MetadataType<'ctx> {
-        MetadataType::new(self.ctx.metadata(), self)
-    }
-
     /// `token`.
     pub fn token_type(&'ctx self) -> TokenType<'ctx> {
         TokenType::new(self.ctx.token(), self)
@@ -366,21 +861,11 @@ impl<'ctx> Module<'ctx> {
         FloatType::new(self.ctx.ppc_fp128(), self)
     }
 
-    /// `x86_amx` (X86 AMX matrix register).
-    pub fn x86_amx_type(&'ctx self) -> Type<'ctx> {
-        Type::new(self.ctx.x86_amx(), self)
-    }
-
     // ---- Integer types ----
 
     /// `i1`. Convenience for [`Self::custom_width_int_type`] with `bits = 1`.
     pub fn bool_type(&'ctx self) -> IntType<'ctx, bool> {
         IntType::new(self.ctx.int_type(1), self)
-    }
-    /// Alias for [`Self::bool_type`] mirroring inkwell's spelling.
-    #[inline]
-    pub fn i1_type(&'ctx self) -> IntType<'ctx, bool> {
-        self.bool_type()
     }
     pub fn i8_type(&'ctx self) -> IntType<'ctx, i8> {
         IntType::new(self.ctx.int_type(8), self)
@@ -396,15 +881,6 @@ impl<'ctx> Module<'ctx> {
     }
     pub fn i128_type(&'ctx self) -> IntType<'ctx, i128> {
         IntType::new(self.ctx.int_type(128), self)
-    }
-
-    /// Arbitrary-width integer (`iN`). Returns `Err` if `bits` is
-    /// outside `[`[`MIN_INT_BITS`]`, `[`MAX_INT_BITS`]`]`.
-    pub fn custom_width_int_type(&'ctx self, bits: u32) -> IrResult<IntType<'ctx, IntDyn>> {
-        if !(MIN_INT_BITS..=MAX_INT_BITS).contains(&bits) {
-            return Err(IrError::InvalidIntegerWidth { bits });
-        }
-        Ok(IntType::new(self.ctx.int_type(bits), self))
     }
 
     /// Const-generic integer type. Returns [`IntType<'ctx, Width<N>>`](
@@ -428,23 +904,7 @@ impl<'ctx> Module<'ctx> {
         PointerType::new(self.ctx.ptr_type(addr_space), self)
     }
 
-    /// Typed pointer (legacy GPU-target form).
-    pub fn typed_pointer_type(
-        &'ctx self,
-        pointee: impl Into<Type<'ctx>>,
-        addr_space: u32,
-    ) -> TypedPointerType<'ctx> {
-        let pointee_id = pointee.into().id();
-        TypedPointerType::new(self.ctx.typed_pointer_type(pointee_id, addr_space), self)
-    }
-
     // ---- Array / vector ----
-
-    /// `[N x T]`.
-    pub fn array_type(&'ctx self, elem: impl Into<Type<'ctx>>, n: u64) -> ArrayType<'ctx> {
-        let elem_id = elem.into().id();
-        ArrayType::new(self.ctx.array_type(elem_id, n), self)
-    }
 
     /// Fixed `<N x T>` or scalable `<vscale x N x T>` vector.
     pub fn vector_type(
@@ -472,148 +932,6 @@ impl<'ctx> Module<'ctx> {
     {
         let elems: Box<[TypeId]> = elements.into_iter().map(|t| t.into().id()).collect();
         StructType::new(self.ctx.literal_struct_type(elems, packed), self)
-    }
-
-    /// Identified (named) struct. If `name` already exists, returns the
-    /// existing handle (which may be opaque if its body has not yet
-    /// been set).
-    pub fn named_struct(&'ctx self, name: &str) -> StructType<'ctx> {
-        let (id, _existed) = self.ctx.get_or_create_named_struct(name);
-        StructType::new(id, self)
-    }
-
-    /// Identified opaque struct in its [`Opaque`](crate::Opaque)
-    /// typestate. Doctrine D1: returns a handle whose `B` parameter
-    /// is `Opaque`, gating [`Self::set_struct_body_typed`] (which
-    /// consumes `Opaque` -> `BodySet`) at compile time.
-    ///
-    /// Errors with [`IrError::StructBodyAlreadySet`] if `name` was
-    /// previously declared and already has a body. The runtime check
-    /// is required because `'ctx`-shared contexts may have created
-    /// the struct earlier.
-    pub fn opaque_struct(
-        &'ctx self,
-        name: &str,
-    ) -> IrResult<StructType<'ctx, crate::struct_body_state::Opaque>> {
-        let (id, existed) = self.ctx.get_or_create_named_struct(name);
-        if existed {
-            let s = self
-                .ctx
-                .type_data(id)
-                .as_struct()
-                .expect("named struct invariant");
-            if s.body.borrow().is_some() {
-                return Err(IrError::StructBodyAlreadySet {
-                    name: name.to_owned(),
-                });
-            }
-        }
-        Ok(StructType::new(id, self))
-    }
-
-    /// Look up an existing identified struct by name without creating
-    /// one on miss.
-    pub fn get_named_struct(&'ctx self, name: &str) -> Option<StructType<'ctx>> {
-        self.ctx
-            .get_named_struct(name)
-            .map(|id| StructType::new(id, self))
-    }
-
-    /// Set the body of an identified struct. Errors if the struct is
-    /// literal or if the body has already been set.
-    pub fn set_struct_body<I, T>(
-        &self,
-        st: StructType<'ctx>,
-        elements: I,
-        packed: bool,
-    ) -> IrResult<()>
-    where
-        I: IntoIterator<Item = T>,
-        T: Into<Type<'ctx>>,
-    {
-        let elems: Box<[TypeId]> = elements.into_iter().map(|t| t.into().id()).collect();
-        let body = StructBody {
-            elements: elems,
-            packed,
-        };
-        // Reject a struct that's actually literal — `set_struct_body` is
-        // only meaningful for identified structs.
-        let s = self
-            .ctx
-            .type_data(st.id)
-            .as_struct()
-            .expect("StructType invariant: wraps Struct");
-        if s.name.is_none() {
-            return Err(IrError::TypeMismatch {
-                expected: TypeKindLabel::Struct,
-                got: TypeKindLabel::Struct,
-            });
-        }
-        self.ctx.set_named_struct_body(st.id, body)
-    }
-
-    /// Typed-state `set_struct_body`: consumes a `StructType<Opaque>`
-    /// and produces a `StructType<BodySet>` (Doctrine D1). Calling
-    /// this twice is a compile error because there is no second
-    /// `StructType<Opaque>` for the same id.
-    pub fn set_struct_body_typed<I, T>(
-        &self,
-        opaque: StructType<'ctx, crate::struct_body_state::Opaque>,
-        elements: I,
-        packed: bool,
-    ) -> IrResult<StructType<'ctx, crate::struct_body_state::BodySet>>
-    where
-        I: IntoIterator<Item = T>,
-        T: Into<Type<'ctx>>,
-    {
-        let elems: Box<[TypeId]> = elements.into_iter().map(|t| t.into().id()).collect();
-        let body = StructBody {
-            elements: elems,
-            packed,
-        };
-        self.ctx.set_named_struct_body(opaque.id, body)?;
-        Ok(opaque.retag::<crate::struct_body_state::BodySet>())
-    }
-
-    // ---- Function ----
-
-    /// Function signature `<ret>(params...)` (or `(...)` for varargs).
-    pub fn fn_type<I, T>(
-        &'ctx self,
-        ret: impl Into<Type<'ctx>>,
-        params: I,
-        is_var_arg: bool,
-    ) -> FunctionType<'ctx>
-    where
-        I: IntoIterator<Item = T>,
-        T: Into<Type<'ctx>>,
-    {
-        let ret_id = ret.into().id();
-        let params: Box<[TypeId]> = params.into_iter().map(|t| t.into().id()).collect();
-        FunctionType::new(self.ctx.function_type(ret_id, params, is_var_arg), self)
-    }
-
-    // ---- Target extension ----
-
-    /// `target("name", T1, T2, ..., I1, I2, ...)` opaque target type.
-    pub fn target_ext_type<I, T, J>(
-        &'ctx self,
-        name: impl Into<String>,
-        type_params: I,
-        int_params: J,
-    ) -> TargetExtType<'ctx>
-    where
-        I: IntoIterator<Item = T>,
-        T: Into<Type<'ctx>>,
-        J: IntoIterator<Item = u32>,
-    {
-        let name: String = name.into();
-        let type_params: Box<[TypeId]> = type_params.into_iter().map(|t| t.into().id()).collect();
-        let int_params: Box<[u32]> = int_params.into_iter().collect();
-        TargetExtType::new(
-            self.ctx.target_ext_type(name, type_params, int_params),
-            self,
-        )
     }
 
     // ---- Function creation ----
@@ -701,69 +1019,17 @@ impl<'ctx> Module<'ctx> {
         Ok(crate::function::FunctionValue::<'ctx, R>::from_parts_unchecked(fn_id, self))
     }
 
-    /// Look up a function by name, widened to the runtime-checked
-    /// [`Dyn`](crate::marker::Dyn) form. Mirrors `Module::getFunction`. Use
-    /// [`Self::function_by_name_typed`] when the caller knows the
-    /// expected return shape and wants a typed handle.
-    pub fn function_by_name(
-        &'ctx self,
-        name: &str,
-    ) -> Option<crate::function::FunctionValue<'ctx, crate::marker::Dyn>> {
-        self.function_by_name.borrow().get(name).copied().map(|id| {
-            crate::function::FunctionValue::<'ctx, crate::marker::Dyn>::from_parts_unchecked(
-                id, self,
-            )
-        })
-    }
-
-    /// Look up a function by name and narrow to a specific
-    /// [`ReturnMarker`](crate::marker::ReturnMarker). Errors with
-    /// [`IrError::ReturnTypeMismatch`] if the signature does not
-    /// match `R`, or returns `Ok(None)` for an unknown name.
-    pub fn function_by_name_typed<R>(
-        &'ctx self,
-        name: &str,
-    ) -> IrResult<Option<crate::function::FunctionValue<'ctx, R>>>
-    where
-        R: crate::marker::ReturnMarker,
-    {
-        let Some(id) = self.function_by_name.borrow().get(name).copied() else {
-            return Ok(None);
-        };
-        let value_data = self.ctx.value_data(id);
-        let signature_id = match &value_data.kind {
-            crate::value::ValueKindData::Function(f) => f.signature,
-            _ => unreachable!("function_by_name table only stores function ids"),
-        };
-        let ret_id = self
-            .ctx
-            .type_data(signature_id)
-            .as_function()
-            .unwrap_or_else(|| unreachable!("function value carries a function signature"))
-            .0;
-        let ret_data = self.ctx.type_data(ret_id);
-        if !crate::function::signature_matches_marker::<R>(ret_data) {
-            let label = crate::r#type::Type::new(ret_id, self).kind_label();
-            return Err(IrError::ReturnTypeMismatch {
-                expected: label,
-                got: label,
-            });
-        }
-        Ok(Some(
-            crate::function::FunctionValue::<'ctx, R>::from_parts_unchecked(id, self),
-        ))
-    }
-
     /// Iterate the module's functions in declaration order, widened
     /// to [`Dyn`](crate::marker::Dyn). Mirrors `Module::functions`.
-    pub fn iter_functions(
+    pub fn iter_functions<B: ModuleBrand + 'ctx>(
         &'ctx self,
-    ) -> impl ExactSizeIterator<Item = crate::function::FunctionValue<'ctx, crate::marker::Dyn>> + 'ctx
+    ) -> impl ExactSizeIterator<Item = crate::function::FunctionValue<'ctx, crate::marker::Dyn, B>> + 'ctx
     {
         let ids: Vec<crate::value::ValueId> = self.functions.borrow().clone();
         ids.into_iter().map(move |id| {
-            crate::function::FunctionValue::<'ctx, crate::marker::Dyn>::from_parts_unchecked(
-                id, self,
+            crate::function::FunctionValue::<'ctx, crate::marker::Dyn, B>::from_parts_unchecked(
+                id,
+                ModuleRef::<B>::new(self),
             )
         })
     }
@@ -785,149 +1051,33 @@ impl<'ctx> Module<'ctx> {
 
     // ---- Verification (Phase F) ----
 
-    /// Verify the module's structural invariants without consuming
-    /// it. Mirrors `verifyModule` (`Verifier.h`) for the diagnostic-
-    /// only path.
-    ///
-    /// Returns the first invariant violation as an
-    /// [`IrError::VerifierFailure`]. Use [`Self::verify`] when you
-    /// want a branded [`VerifiedModule<'ctx>`] for the (future) pass
-    /// manager.
-    pub fn verify_borrowed(&'ctx self) -> IrResult<()> {
-        crate::verifier::Verifier::new(self).run()
-    }
-
-    /// Verify the module and -- on success -- consume it into a
-    /// brand-checked [`VerifiedModule<'ctx>`]. Future pass APIs
-    /// require `&VerifiedModule` to guarantee the IR they operate
-    /// on is well-formed.
-    ///
-    /// On failure, the underlying `Module` is destroyed; recover the
-    /// IR by re-parsing or re-building.
-    pub fn verify(self) -> IrResult<VerifiedModule<'ctx>> {
-        // Borrow-checker dance: `verify_borrowed` requires `&'ctx self`,
-        // which we satisfy by referencing the about-to-be-moved value
-        // through a temporary borrow before the move.
-        {
-            crate::verifier::Verifier::new(&self).run()?;
-        }
-        Ok(VerifiedModule {
-            inner: self,
-            _brand: core::marker::PhantomData,
-        })
-    }
-
-    // ---- Globals ----
-
-    /// Add a `global` definition with an initializer. Mirrors the
-    /// in-module `GlobalVariable::GlobalVariable(Module&, Type*,
-    /// bool, LinkageTypes, Constant*, ...)` ctor.
-    ///
-    /// Returns `Err(IrError::DuplicateFunctionName)` if `name` is
-    /// already bound at module scope (the same table covers
-    /// functions and globals; mirrors LLVM's
-    /// `Module::getValueSymbolTable`). Returns
-    /// [`IrError::TypeMismatch`] when the initializer's type does
-    /// not match `value_type`.
-    pub fn add_global(
-        &'ctx self,
-        name: impl AsRef<str>,
-        value_type: Type<'ctx>,
-        initializer: impl crate::constant::IsConstant<'ctx>,
-    ) -> IrResult<crate::global_variable::GlobalVariable<'ctx>> {
-        crate::global_variable::GlobalBuilder::new(self, name.as_ref().to_owned(), value_type)
-            .initializer(initializer)
-            .build()
-    }
-
-    /// Add a `constant` (immutable) global with an initializer.
-    /// Mirrors the same ctor with `isConstant=true`.
-    pub fn add_global_constant(
-        &'ctx self,
-        name: impl AsRef<str>,
-        value_type: Type<'ctx>,
-        initializer: impl crate::constant::IsConstant<'ctx>,
-    ) -> IrResult<crate::global_variable::GlobalVariable<'ctx>> {
-        crate::global_variable::GlobalBuilder::new(self, name.as_ref().to_owned(), value_type)
-            .constant(true)
-            .initializer(initializer)
-            .build()
-    }
-
-    /// Add an external global declaration (no initializer).
-    /// Mirrors `Module::getOrInsertGlobal` in its declaration-form.
-    pub fn add_external_global(
-        &'ctx self,
-        name: impl AsRef<str>,
-        value_type: Type<'ctx>,
-    ) -> IrResult<crate::global_variable::GlobalVariable<'ctx>> {
-        crate::global_variable::GlobalBuilder::new(self, name.as_ref().to_owned(), value_type)
-            .linkage(crate::global_value::Linkage::External)
-            .build()
-    }
-
-    /// Begin a chainable [`GlobalBuilder`](crate::global_variable::GlobalBuilder)
-    /// for full control over linkage, visibility, address space,
-    /// alignment, comdat, etc.
-    pub fn global_builder(
-        &'ctx self,
-        name: impl Into<String>,
-        value_type: Type<'ctx>,
-    ) -> crate::global_variable::GlobalBuilder<'ctx> {
-        crate::global_variable::GlobalBuilder::new(self, name, value_type)
-    }
-
-    /// Look up a global by name. Mirrors `Module::getNamedGlobal`.
-    pub fn get_global(
-        &'ctx self,
-        name: &str,
-    ) -> Option<crate::global_variable::GlobalVariable<'ctx>> {
-        let id = self.global_by_name.borrow().get(name).copied()?;
-        let value_data = self.ctx.value_data(id);
-        Some(crate::global_variable::GlobalVariable::from_parts_unchecked(id, self, value_data.ty))
-    }
-
     /// Iterate the module's globals in declaration order. Mirrors
     /// `Module::globals`.
-    pub fn iter_globals(
+    pub fn iter_globals<B: ModuleBrand + 'ctx>(
         &'ctx self,
-    ) -> impl ExactSizeIterator<Item = crate::global_variable::GlobalVariable<'ctx>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = crate::global_variable::GlobalVariable<'ctx, B>> + 'ctx {
         let ids: Vec<crate::value::ValueId> = self.globals.borrow().clone();
         ids.into_iter().map(move |id| {
             let value_data = self.ctx.value_data(id);
-            crate::global_variable::GlobalVariable::from_parts_unchecked(id, self, value_data.ty)
+            crate::global_variable::GlobalVariable::from_parts_unchecked(
+                id,
+                ModuleRef::<B>::new(self),
+                value_data.ty,
+            )
         })
     }
 
-    /// `true` if the module contains no globals. Mirrors
-    /// `Module::global_empty`.
-    #[inline]
-    pub fn alias_builder<C: crate::constant::IsConstant<'ctx>>(
+    pub fn iter_aliases<B: ModuleBrand + 'ctx>(
         &'ctx self,
-        name: impl Into<String>,
-        value_type: Type<'ctx>,
-        aliasee: C,
-    ) -> crate::global_alias::GlobalAliasBuilder<'ctx> {
-        crate::global_alias::GlobalAliasBuilder::new(self, name, value_type, aliasee)
-    }
-
-    pub fn get_alias(&'ctx self, name: &str) -> Option<crate::global_alias::GlobalAlias<'ctx>> {
-        let id = self.alias_by_name.borrow().get(name).copied()?;
-        let value_data = self.ctx.value_data(id);
-        Some(crate::global_alias::GlobalAlias::from_parts_unchecked(
-            id,
-            self,
-            value_data.ty,
-        ))
-    }
-
-    pub fn iter_aliases(
-        &'ctx self,
-    ) -> impl ExactSizeIterator<Item = crate::global_alias::GlobalAlias<'ctx>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = crate::global_alias::GlobalAlias<'ctx, B>> + 'ctx {
         let ids: Vec<crate::value::ValueId> = self.aliases.borrow().clone();
         ids.into_iter().map(move |id| {
             let value_data = self.ctx.value_data(id);
-            crate::global_alias::GlobalAlias::from_parts_unchecked(id, self, value_data.ty)
+            crate::global_alias::GlobalAlias::from_parts_unchecked(
+                id,
+                ModuleRef::<B>::new(self),
+                value_data.ty,
+            )
         })
     }
 
@@ -935,32 +1085,17 @@ impl<'ctx> Module<'ctx> {
         self.aliases.borrow().is_empty()
     }
 
-    pub fn ifunc_builder<C: crate::constant::IsConstant<'ctx>>(
+    pub fn iter_ifuncs<B: ModuleBrand + 'ctx>(
         &'ctx self,
-        name: impl Into<String>,
-        value_type: Type<'ctx>,
-        resolver: C,
-    ) -> crate::global_ifunc::GlobalIFuncBuilder<'ctx> {
-        crate::global_ifunc::GlobalIFuncBuilder::new(self, name, value_type, resolver)
-    }
-
-    pub fn get_ifunc(&'ctx self, name: &str) -> Option<crate::global_ifunc::GlobalIFunc<'ctx>> {
-        let id = self.ifunc_by_name.borrow().get(name).copied()?;
-        let value_data = self.ctx.value_data(id);
-        Some(crate::global_ifunc::GlobalIFunc::from_parts_unchecked(
-            id,
-            self,
-            value_data.ty,
-        ))
-    }
-
-    pub fn iter_ifuncs(
-        &'ctx self,
-    ) -> impl ExactSizeIterator<Item = crate::global_ifunc::GlobalIFunc<'ctx>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = crate::global_ifunc::GlobalIFunc<'ctx, B>> + 'ctx {
         let ids: Vec<crate::value::ValueId> = self.ifuncs.borrow().clone();
         ids.into_iter().map(move |id| {
             let value_data = self.ctx.value_data(id);
-            crate::global_ifunc::GlobalIFunc::from_parts_unchecked(id, self, value_data.ty)
+            crate::global_ifunc::GlobalIFunc::from_parts_unchecked(
+                id,
+                ModuleRef::<B>::new(self),
+                value_data.ty,
+            )
         })
     }
 
@@ -975,10 +1110,10 @@ impl<'ctx> Module<'ctx> {
     /// Crate-internal: install a built [`GlobalBuilder`] into the
     /// module. Performs the duplicate-name check and the comdat
     /// existence check, then pushes to the value arena.
-    pub(crate) fn install_global_variable(
+    pub(crate) fn install_global_variable<B: ModuleBrand + 'ctx>(
         &'ctx self,
-        builder: crate::global_variable::GlobalBuilder<'ctx>,
-    ) -> IrResult<crate::global_variable::GlobalVariable<'ctx>> {
+        builder: crate::global_variable::GlobalBuilder<'ctx, B>,
+    ) -> IrResult<crate::global_variable::GlobalVariable<'ctx, B>> {
         let (name, data, _initializer, address_space, value_type) = builder.into_data();
         if self.global_name_exists(&name) {
             return Err(IrError::DuplicateFunctionName { name });
@@ -999,15 +1134,17 @@ impl<'ctx> Module<'ctx> {
         self.global_by_name.borrow_mut().insert(name, value_id);
         Ok(
             crate::global_variable::GlobalVariable::from_parts_unchecked(
-                value_id, self, pointer_ty,
+                value_id,
+                ModuleRef::<B>::new(self),
+                pointer_ty,
             ),
         )
     }
 
-    pub(crate) fn install_global_alias(
+    pub(crate) fn install_global_alias<B: ModuleBrand + 'ctx>(
         &'ctx self,
-        builder: crate::global_alias::GlobalAliasBuilder<'ctx>,
-    ) -> IrResult<crate::global_alias::GlobalAlias<'ctx>> {
+        builder: crate::global_alias::GlobalAliasBuilder<'ctx, B>,
+    ) -> IrResult<crate::global_alias::GlobalAlias<'ctx, B>> {
         let (name, data, address_space) = builder.into_data();
         if self.global_name_exists(&name) {
             return Err(IrError::DuplicateFunctionName { name });
@@ -1023,14 +1160,16 @@ impl<'ctx> Module<'ctx> {
         self.aliases.borrow_mut().push(value_id);
         self.alias_by_name.borrow_mut().insert(name, value_id);
         Ok(crate::global_alias::GlobalAlias::from_parts_unchecked(
-            value_id, self, pointer_ty,
+            value_id,
+            ModuleRef::<B>::new(self),
+            pointer_ty,
         ))
     }
 
-    pub(crate) fn install_global_ifunc(
+    pub(crate) fn install_global_ifunc<B: ModuleBrand + 'ctx>(
         &'ctx self,
-        builder: crate::global_ifunc::GlobalIFuncBuilder<'ctx>,
-    ) -> IrResult<crate::global_ifunc::GlobalIFunc<'ctx>> {
+        builder: crate::global_ifunc::GlobalIFuncBuilder<'ctx, B>,
+    ) -> IrResult<crate::global_ifunc::GlobalIFunc<'ctx, B>> {
         let (name, data, address_space) = builder.into_data();
         if self.global_name_exists(&name) {
             return Err(IrError::DuplicateFunctionName { name });
@@ -1046,7 +1185,9 @@ impl<'ctx> Module<'ctx> {
         self.ifuncs.borrow_mut().push(value_id);
         self.ifunc_by_name.borrow_mut().insert(name, value_id);
         Ok(crate::global_ifunc::GlobalIFunc::from_parts_unchecked(
-            value_id, self, pointer_ty,
+            value_id,
+            ModuleRef::<B>::new(self),
+            pointer_ty,
         ))
     }
 
@@ -1145,64 +1286,8 @@ impl<'ctx> Module<'ctx> {
         groups.sort_by_key(|(slot, _)| *slot);
     }
 
-    pub fn attribute_group(&self, id: u32) -> Option<crate::attributes::AttributeStorage> {
-        self.attribute_groups
-            .borrow()
-            .iter()
-            .find_map(|(slot, storage)| (*slot == id).then(|| storage.clone()))
-    }
-
     pub fn attribute_groups(&self) -> Vec<(u32, crate::attributes::AttributeStorage)> {
         self.attribute_groups.borrow().clone()
-    }
-
-    /// Create an inline-assembly value usable as a `call` callee. Mirrors
-    /// `InlineAsm::get` in `llvm/include/llvm/IR/InlineAsm.h`.
-    ///
-    /// `fn_ty` is the conceptual function type the asm wraps — it governs
-    /// the return type and argument types of any `call` through this
-    /// value. `asm` is the assembly template (e.g. `"add $1, $0"`), and
-    /// `constraints` is the constraint string (e.g. `"=r,r,r"`). The
-    /// boolean flags map to the `sideeffect` / `alignstack` keywords, and
-    /// `dialect` selects AT&T (default) or Intel syntax (the latter prints
-    /// the `inteldialect` keyword).
-    ///
-    /// The returned [`InlineAsm`](crate::inline_asm::InlineAsm) value's
-    /// [`ty`](crate::value::Value::ty) is the module's `ptr` type — LLVM
-    /// types inline asm as a pointer — while the wrapped function type is
-    /// recovered via
-    /// [`InlineAsm::function_type`](crate::inline_asm::InlineAsm::function_type).
-    /// It is context-global: it carries no function-local SSA definition,
-    /// is never assigned a `%N` slot, and is not registered in the
-    /// function-by-name table. Pass it to
-    /// [`build_inline_asm_call`](crate::ir_builder::IRBuilder::build_inline_asm_call).
-    pub fn inline_asm(
-        &'ctx self,
-        fn_ty: FunctionType<'ctx>,
-        asm: impl Into<String>,
-        constraints: impl Into<String>,
-        options: crate::inline_asm::InlineAsmOptions,
-    ) -> crate::inline_asm::InlineAsm<'ctx> {
-        // LLVM types inline asm as a plain pointer; the function type the
-        // asm wraps is carried in the payload for the call to consume.
-        let ptr_ty = self.ptr_type(0).as_type().id();
-        let data = crate::inline_asm::InlineAsmData {
-            asm_string: asm.into(),
-            constraint_string: constraints.into(),
-            fn_ty: fn_ty.as_type().id(),
-            has_side_effects: options.has_side_effects,
-            is_align_stack: options.is_align_stack,
-            can_unwind: options.can_unwind,
-            dialect: options.dialect,
-        };
-        let id = self.ctx.push_value(crate::value::ValueData {
-            ty: ptr_ty,
-            name: core::cell::RefCell::new(None),
-            debug_loc: None,
-            kind: crate::value::ValueKindData::InlineAsm(data),
-            use_list: core::cell::RefCell::new(Vec::new()),
-        });
-        crate::inline_asm::InlineAsm::from_parts(id, self, ptr_ty)
     }
 
     // ---- Metadata ----
@@ -1263,39 +1348,6 @@ impl<'ctx> Module<'ctx> {
                 id
             }
         }
-    }
-
-    /// Wrap a metadata node as a [`Value`](crate::value::Value) so it can
-    /// be used where a value is expected — e.g. as a `metadata`-typed
-    /// argument to a `call` (the named-register intrinsics
-    /// `@llvm.read_register` / `@llvm.write_register`). Mirrors LLVM's
-    /// `MetadataAsValue::get`.
-    ///
-    /// The returned value has the module's `metadata` type, implements
-    /// [`IsValue`](crate::value::IsValue), and can be passed straight into
-    /// [`build_call`](crate::ir_builder::IRBuilder::build_call). It is
-    /// context-global: it carries no function-local SSA definition and is
-    /// never assigned a `%N` slot; it prints as the bare `!N` reference.
-    pub fn metadata_as_value(
-        &'ctx self,
-        md: crate::metadata::MetadataId,
-    ) -> crate::value::Value<'ctx> {
-        let ty = self.ctx.metadata();
-        // Unique by metadata node, mirroring `MetadataAsValue::get`: the
-        // same node always yields the identical `Value` (one arena entry,
-        // one use-list), so value identity/equality stays meaningful.
-        if let Some(&id) = self.metadata_as_value_cache.borrow().get(&md) {
-            return crate::value::Value::from_parts(id, self, ty);
-        }
-        let id = self.ctx.push_value(crate::value::ValueData {
-            ty,
-            name: core::cell::RefCell::new(None),
-            debug_loc: None,
-            kind: crate::value::ValueKindData::MetadataAsValue(md),
-            use_list: core::cell::RefCell::new(Vec::new()),
-        });
-        self.metadata_as_value_cache.borrow_mut().insert(md, id);
-        crate::value::Value::from_parts(id, self, ty)
     }
 
     /// Reserve a fresh metadata node id with placeholder content, to be
@@ -1379,10 +1431,10 @@ impl<'ctx> Module<'ctx> {
     /// [`SelectionKind::Any`](crate::comdat::SelectionKind::Any);
     /// callers can refine via
     /// [`ComdatRef::set_selection_kind`](crate::comdat::ComdatRef::set_selection_kind).
-    pub fn get_or_insert_comdat(
+    pub fn get_or_insert_comdat<B: ModuleBrand>(
         &'ctx self,
         name: impl AsRef<str>,
-    ) -> crate::comdat::ComdatRef<'ctx> {
+    ) -> crate::comdat::ComdatRef<'ctx, B> {
         let name = name.as_ref();
         if let Some(&id) = self.comdat_by_name.borrow().get(name) {
             return crate::comdat::ComdatRef {
@@ -1404,7 +1456,10 @@ impl<'ctx> Module<'ctx> {
 
     /// Look up an existing comdat by name. Returns `None` when not
     /// present.
-    pub fn get_comdat(&'ctx self, name: &str) -> Option<crate::comdat::ComdatRef<'ctx>> {
+    pub fn get_comdat<B: ModuleBrand>(
+        &'ctx self,
+        name: &str,
+    ) -> Option<crate::comdat::ComdatRef<'ctx, B>> {
         let id = *self.comdat_by_name.borrow().get(name)?;
         Some(crate::comdat::ComdatRef {
             module: ModuleRef::new(self),
@@ -1422,9 +1477,9 @@ impl<'ctx> Module<'ctx> {
 
     /// Iterate comdat refs in insertion order. Mirrors
     /// `Module::getComdatSymbolTable` (insertion-order traversal).
-    pub fn iter_comdats(
+    pub fn iter_comdats<B: ModuleBrand + 'ctx>(
         &'ctx self,
-    ) -> impl ExactSizeIterator<Item = crate::comdat::ComdatRef<'ctx>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = crate::comdat::ComdatRef<'ctx, B>> + 'ctx {
         let count = self.comdats.count();
         (0..count).map(move |i| crate::comdat::ComdatRef {
             module: ModuleRef::new(self),
@@ -1433,42 +1488,973 @@ impl<'ctx> Module<'ctx> {
     }
 }
 
-// --------------------------------------------------------------------------
-// VerifiedModule
-// --------------------------------------------------------------------------
-
-/// Brand-wrapper for a [`Module`] that has passed [`Module::verify`].
-///
-/// Constructed only by `Module::verify`, the wrapper signals to (future)
-/// pass-manager APIs that the contained IR satisfies every verifier rule
-/// at the moment of construction. Mutating the underlying module via
-/// [`Self::unverify`] strips the brand; re-running [`Module::verify`] on
-/// the resulting `Module` is required before passes that demand
-/// well-formed IR can run again.
-///
-/// The wrapper carries a `'ctx` lifetime parameter so handles minted
-/// against the contained module continue to compose with the rest of
-/// the IR API.
-pub struct VerifiedModule<'ctx> {
-    pub(crate) inner: Module<'ctx>,
-    /// Brand-only ZST; the only construction path is
-    /// [`Module::verify`].
-    pub(crate) _brand: core::marker::PhantomData<*const ()>,
+impl Module<'static, Brand<'static>, Unverified> {
+    /// Construct a fresh module under a generative brand closure.
+    pub fn with_new<N, R, F>(name: N, f: F) -> R
+    where
+        N: Into<String>,
+        F: for<'brand> FnOnce(Module<'brand, Brand<'brand>, Unverified>) -> R,
+    {
+        let core = ModuleCore::new(name);
+        let module = Module {
+            core: &core,
+            _brand: PhantomData,
+            _state: PhantomData,
+        };
+        f(module)
+    }
 }
 
-impl<'ctx> VerifiedModule<'ctx> {
-    /// Borrow the wrapped module for read-only inspection.
+impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
+    /// Owning module's [`ModuleId`].
     #[inline]
-    pub fn as_module(&'ctx self) -> &'ctx Module<'ctx> {
-        &self.inner
+    pub fn id(&self) -> ModuleId {
+        self.core.id()
     }
 
-    /// Strip the brand and recover the inner [`Module`]. Any
-    /// subsequent mutation invalidates the verification status; the
-    /// caller can re-run [`Module::verify`] to recover a fresh
-    /// [`VerifiedModule`].
-    pub fn unverify(self) -> Module<'ctx> {
-        self.inner
+    /// Module identifier.
+    #[inline]
+    pub fn name(&self) -> &str {
+        self.core.name()
+    }
+
+    /// Read-only branded view.
+    #[inline]
+    pub fn as_view(&self) -> ModuleView<'ctx, B> {
+        ModuleView::new(self.core)
+    }
+
+    /// Crate-internal borrow of the state-erased module storage.
+    #[inline]
+    pub(crate) fn core_ref(&self) -> &'ctx ModuleCore {
+        self.core
+    }
+
+    /// Crate-internal state-erased module handle with this token's brand.
+    #[inline]
+    pub(crate) fn module_ref(&self) -> ModuleRef<'ctx, B> {
+        ModuleRef::new(self.core)
+    }
+
+    /// `source_filename = "..."` directive.
+    #[inline]
+    pub fn source_filename(&self) -> Option<core::cell::Ref<'_, str>> {
+        self.core.source_filename()
+    }
+
+    /// Borrow the parsed data layout.
+    #[inline]
+    pub fn data_layout(&self) -> core::cell::Ref<'_, crate::data_layout::DataLayout> {
+        self.core.data_layout()
+    }
+
+    /// Target triple directive.
+    #[inline]
+    pub fn target_triple(&self) -> Option<String> {
+        self.core.target_triple()
+    }
+
+    /// Module-level inline assembly.
+    #[inline]
+    pub fn module_asm(&self) -> String {
+        self.core.module_asm()
+    }
+
+    pub fn attribute_groups(&self) -> Vec<(u32, crate::attributes::AttributeStorage)> {
+        self.core.attribute_groups()
+    }
+
+    /// Iterate globals in declaration order with this module token's brand.
+    pub fn iter_globals(
+        &self,
+    ) -> impl ExactSizeIterator<Item = crate::global_variable::GlobalVariable<'ctx, B>> + 'ctx {
+        self.core.iter_globals::<B>()
+    }
+
+    /// Look up a function by name with this module token's brand.
+    pub fn function_by_name(
+        &self,
+        name: &str,
+    ) -> Option<crate::function::FunctionValue<'ctx, crate::marker::Dyn, B>> {
+        self.core
+            .function_by_name
+            .borrow()
+            .get(name)
+            .copied()
+            .map(|id| {
+                crate::function::FunctionValue::<'ctx, crate::marker::Dyn, B>::from_parts_unchecked(
+                    id,
+                    ModuleRef::<B>::new(self.core),
+                )
+            })
+    }
+
+    /// Look up a function by name and narrow to a specific return marker.
+    pub fn function_by_name_typed<R>(
+        &self,
+        name: &str,
+    ) -> IrResult<Option<crate::function::FunctionValue<'ctx, R, B>>>
+    where
+        R: crate::marker::ReturnMarker,
+    {
+        let Some(id) = self.core.function_by_name.borrow().get(name).copied() else {
+            return Ok(None);
+        };
+        let value_data = self.core.ctx.value_data(id);
+        let signature_id = match &value_data.kind {
+            crate::value::ValueKindData::Function(f) => f.signature,
+            _ => unreachable!("function_by_name table only stores function ids"),
+        };
+        let ret_id = self
+            .core
+            .ctx
+            .type_data(signature_id)
+            .as_function()
+            .unwrap_or_else(|| unreachable!("function value carries a function signature"))
+            .0;
+        let ret_data = self.core.ctx.type_data(ret_id);
+        if !crate::function::signature_matches_marker::<R>(ret_data) {
+            let label =
+                crate::r#type::Type::new(ret_id, ModuleRef::<B>::new(self.core)).kind_label();
+            return Err(IrError::ReturnTypeMismatch {
+                expected: label,
+                got: label,
+            });
+        }
+        Ok(Some(
+            crate::function::FunctionValue::<'ctx, R, B>::from_parts_unchecked(
+                id,
+                ModuleRef::<B>::new(self.core),
+            ),
+        ))
+    }
+    /// Verify the module's structural invariants without consuming it.
+    pub fn verify_borrowed(&self) -> IrResult<()> {
+        crate::verifier::Verifier::new(self.as_view()).run()
+    }
+}
+
+impl<'ctx> Module<'ctx, Brand<'ctx>, Unverified> {
+    pub fn function_builder<R>(
+        &self,
+        name: impl Into<String>,
+        signature: FunctionType<'ctx>,
+    ) -> crate::function::FunctionBuilder<'ctx, R>
+    where
+        R: crate::marker::ReturnMarker,
+    {
+        self.core.function_builder(name, signature)
+    }
+
+    pub fn constant_expr(
+        &self,
+        result_ty: Type<'ctx>,
+        opcode: crate::ConstantExprOpcode,
+        operands: impl IntoIterator<Item = crate::Value<'ctx>>,
+        indices: impl IntoIterator<Item = u32>,
+        mask: impl IntoIterator<Item = i32>,
+        flags: crate::ConstantExprFlags,
+    ) -> IrResult<crate::Constant<'ctx>> {
+        self.core
+            .constant_expr(result_ty, opcode, operands, indices, mask, flags)
+    }
+
+    pub fn constant_expr_with_options(
+        &self,
+        result_ty: Type<'ctx>,
+        opcode: crate::ConstantExprOpcode,
+        operands: impl IntoIterator<Item = crate::Value<'ctx>>,
+        indices: impl IntoIterator<Item = u32>,
+        mask: impl IntoIterator<Item = i32>,
+        options: crate::ConstantExprOptions<'ctx>,
+    ) -> IrResult<crate::Constant<'ctx>> {
+        self.core
+            .constant_expr_with_options(result_ty, opcode, operands, indices, mask, options)
+    }
+
+    pub fn block_address<R, S>(
+        &self,
+        function: crate::FunctionValue<'ctx, R>,
+        block: crate::BasicBlock<'ctx, R, S>,
+    ) -> IrResult<crate::Constant<'ctx>>
+    where
+        R: crate::ReturnMarker,
+        S: crate::BlockSealState,
+    {
+        self.core.block_address(function, block)
+    }
+
+    pub fn block_address_placeholder(
+        &self,
+        ty: Type<'ctx>,
+    ) -> IrResult<crate::BlockAddressPlaceholder<'ctx>> {
+        self.core.block_address_placeholder(ty)
+    }
+
+    pub fn dso_local_equivalent(
+        &self,
+        function: crate::FunctionValue<'ctx, crate::Dyn>,
+    ) -> crate::Constant<'ctx> {
+        self.core.dso_local_equivalent(function)
+    }
+
+    pub fn dso_local_equivalent_global(
+        &self,
+        global: crate::Constant<'ctx>,
+    ) -> IrResult<crate::Constant<'ctx>> {
+        self.core.dso_local_equivalent_global(global)
+    }
+
+    pub fn no_cfi(
+        &self,
+        function: crate::FunctionValue<'ctx, crate::Dyn>,
+    ) -> crate::Constant<'ctx> {
+        self.core.no_cfi(function)
+    }
+
+    pub fn no_cfi_global(&self, global: crate::Constant<'ctx>) -> IrResult<crate::Constant<'ctx>> {
+        self.core.no_cfi_global(global)
+    }
+
+    pub fn ptr_auth(
+        &self,
+        pointer: impl crate::IsConstant<'ctx>,
+        key: impl crate::IsConstant<'ctx>,
+        discriminator: impl crate::IsConstant<'ctx>,
+        addr_discriminator: impl crate::IsConstant<'ctx>,
+        deactivation_symbol: impl crate::IsConstant<'ctx>,
+    ) -> IrResult<crate::Constant<'ctx>> {
+        self.core.ptr_auth(
+            pointer,
+            key,
+            discriminator,
+            addr_discriminator,
+            deactivation_symbol,
+        )
+    }
+
+    pub fn token_none(&self) -> crate::Constant<'ctx> {
+        self.core.token_none()
+    }
+
+    pub fn target_ext_none(&self, ty: Type<'ctx>) -> IrResult<crate::Constant<'ctx>> {
+        self.core.target_ext_none(ty)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
+    /// `void`.
+    #[inline]
+    pub fn void_type(&self) -> VoidType<'ctx, B> {
+        VoidType::new(self.core.ctx.void(), self.module_ref())
+    }
+
+    /// `label`.
+    #[inline]
+    pub fn label_type(&self) -> LabelType<'ctx, B> {
+        LabelType::new(self.core.ctx.label(), self.module_ref())
+    }
+
+    /// `metadata`.
+    #[inline]
+    pub fn metadata_type(&self) -> MetadataType<'ctx, B> {
+        MetadataType::new(self.core.ctx.metadata(), self.module_ref())
+    }
+
+    /// `token`.
+    #[inline]
+    pub fn token_type(&self) -> TokenType<'ctx, B> {
+        TokenType::new(self.core.ctx.token(), self.module_ref())
+    }
+
+    /// `half`.
+    #[inline]
+    pub fn half_type(&self) -> FloatType<'ctx, Half, B> {
+        FloatType::new(self.core.ctx.half(), self.module_ref())
+    }
+
+    /// `bfloat`.
+    #[inline]
+    pub fn bfloat_type(&self) -> FloatType<'ctx, BFloat, B> {
+        FloatType::new(self.core.ctx.bfloat(), self.module_ref())
+    }
+
+    /// `float` (32-bit IEEE 754).
+    #[inline]
+    pub fn f32_type(&self) -> FloatType<'ctx, f32, B> {
+        FloatType::new(self.core.ctx.float(), self.module_ref())
+    }
+
+    /// `double` (64-bit IEEE 754).
+    #[inline]
+    pub fn f64_type(&self) -> FloatType<'ctx, f64, B> {
+        FloatType::new(self.core.ctx.double(), self.module_ref())
+    }
+
+    /// `fp128`.
+    #[inline]
+    pub fn fp128_type(&self) -> FloatType<'ctx, Fp128, B> {
+        FloatType::new(self.core.ctx.fp128(), self.module_ref())
+    }
+
+    /// `x86_fp80`.
+    #[inline]
+    pub fn x86_fp80_type(&self) -> FloatType<'ctx, X86Fp80, B> {
+        FloatType::new(self.core.ctx.x86_fp80(), self.module_ref())
+    }
+
+    /// `ppc_fp128`.
+    #[inline]
+    pub fn ppc_fp128_type(&self) -> FloatType<'ctx, PpcFp128, B> {
+        FloatType::new(self.core.ctx.ppc_fp128(), self.module_ref())
+    }
+
+    /// `x86_amx`.
+    #[inline]
+    pub fn x86_amx_type(&self) -> Type<'ctx, B> {
+        Type::new(self.core.ctx.x86_amx(), self.module_ref())
+    }
+
+    /// `i1`.
+    #[inline]
+    pub fn bool_type(&self) -> IntType<'ctx, bool, B> {
+        IntType::new(self.core.ctx.int_type(1), self.module_ref())
+    }
+
+    /// Alias for [`Self::bool_type`].
+    #[inline]
+    pub fn i1_type(&self) -> IntType<'ctx, bool, B> {
+        self.bool_type()
+    }
+
+    #[inline]
+    pub fn i8_type(&self) -> IntType<'ctx, i8, B> {
+        IntType::new(self.core.ctx.int_type(8), self.module_ref())
+    }
+
+    #[inline]
+    pub fn i16_type(&self) -> IntType<'ctx, i16, B> {
+        IntType::new(self.core.ctx.int_type(16), self.module_ref())
+    }
+
+    #[inline]
+    pub fn i32_type(&self) -> IntType<'ctx, i32, B> {
+        IntType::new(self.core.ctx.int_type(32), self.module_ref())
+    }
+
+    #[inline]
+    pub fn i64_type(&self) -> IntType<'ctx, i64, B> {
+        IntType::new(self.core.ctx.int_type(64), self.module_ref())
+    }
+
+    #[inline]
+    pub fn i128_type(&self) -> IntType<'ctx, i128, B> {
+        IntType::new(self.core.ctx.int_type(128), self.module_ref())
+    }
+
+    pub fn custom_width_int_type(&self, bits: u32) -> IrResult<IntType<'ctx, IntDyn, B>> {
+        if !(MIN_INT_BITS..=MAX_INT_BITS).contains(&bits) {
+            return Err(IrError::InvalidIntegerWidth { bits });
+        }
+        Ok(IntType::new(
+            self.core.ctx.int_type(bits),
+            self.module_ref(),
+        ))
+    }
+
+    pub fn int_type_n<const N: u32>(&self) -> IntType<'ctx, crate::int_width::Width<N>, B> {
+        const {
+            assert!(
+                N >= MIN_INT_BITS && N <= MAX_INT_BITS,
+                "integer width N outside [MIN_INT_BITS, MAX_INT_BITS]",
+            );
+        }
+        IntType::new(self.core.ctx.int_type(N), self.module_ref())
+    }
+
+    pub fn ptr_type(&self, addr_space: u32) -> PointerType<'ctx, B> {
+        PointerType::new(self.core.ctx.ptr_type(addr_space), self.module_ref())
+    }
+
+    pub fn typed_pointer_type<T>(&self, pointee: T, addr_space: u32) -> TypedPointerType<'ctx, B>
+    where
+        T: Into<Type<'ctx, B>>,
+    {
+        let pointee_id = pointee.into().id();
+        TypedPointerType::new(
+            self.core.ctx.typed_pointer_type(pointee_id, addr_space),
+            self.module_ref(),
+        )
+    }
+
+    pub fn array_type<T>(&self, elem: T, n: u64) -> ArrayType<'ctx, B>
+    where
+        T: Into<Type<'ctx, B>>,
+    {
+        let elem_id = elem.into().id();
+        ArrayType::new(self.core.ctx.array_type(elem_id, n), self.module_ref())
+    }
+
+    pub fn vector_type<T>(&self, elem: T, n: u32, scalable: bool) -> VectorType<'ctx, B>
+    where
+        T: Into<Type<'ctx, B>>,
+    {
+        let elem_id = elem.into().id();
+        let id = if scalable {
+            self.core.ctx.scalable_vector_type(elem_id, n)
+        } else {
+            self.core.ctx.fixed_vector_type(elem_id, n)
+        };
+        VectorType::new(id, self.module_ref())
+    }
+
+    pub fn struct_type<I, T>(
+        &self,
+        elements: I,
+        packed: bool,
+    ) -> StructType<'ctx, crate::struct_body_state::StructBodyDyn, B>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Type<'ctx, B>>,
+    {
+        let elems: Box<[TypeId]> = elements.into_iter().map(|t| t.into().id()).collect();
+        StructType::new(
+            self.core.ctx.literal_struct_type(elems, packed),
+            self.module_ref(),
+        )
+    }
+
+    pub fn named_struct(
+        &self,
+        name: &str,
+    ) -> StructType<'ctx, crate::struct_body_state::StructBodyDyn, B> {
+        let (id, _existed) = self.core.ctx.get_or_create_named_struct(name);
+        StructType::new(id, self.module_ref())
+    }
+
+    pub fn opaque_struct(
+        &self,
+        name: &str,
+    ) -> IrResult<StructType<'ctx, crate::struct_body_state::Opaque, B>> {
+        let (id, existed) = self.core.ctx.get_or_create_named_struct(name);
+        if existed {
+            let s = self
+                .core
+                .ctx
+                .type_data(id)
+                .as_struct()
+                .unwrap_or_else(|| unreachable!("named struct id stores struct data"));
+            if s.body.borrow().is_some() {
+                return Err(IrError::StructBodyAlreadySet {
+                    name: name.to_owned(),
+                });
+            }
+        }
+        Ok(StructType::new(id, self.module_ref()))
+    }
+
+    pub fn get_named_struct(
+        &self,
+        name: &str,
+    ) -> Option<StructType<'ctx, crate::struct_body_state::StructBodyDyn, B>> {
+        self.core
+            .ctx
+            .get_named_struct(name)
+            .map(|id| StructType::new(id, self.module_ref()))
+    }
+
+    pub fn set_struct_body<I, T>(
+        &self,
+        st: StructType<'ctx, crate::struct_body_state::StructBodyDyn, B>,
+        elements: I,
+        packed: bool,
+    ) -> IrResult<()>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Type<'ctx, B>>,
+    {
+        let elems: Box<[TypeId]> = elements.into_iter().map(|t| t.into().id()).collect();
+        let body = StructBody {
+            elements: elems,
+            packed,
+        };
+        let s = self
+            .core
+            .ctx
+            .type_data(st.id)
+            .as_struct()
+            .unwrap_or_else(|| unreachable!("StructType wraps struct data"));
+        if s.name.is_none() {
+            return Err(IrError::TypeMismatch {
+                expected: TypeKindLabel::Struct,
+                got: TypeKindLabel::Struct,
+            });
+        }
+        self.core.ctx.set_named_struct_body(st.id, body)
+    }
+
+    pub fn set_struct_body_typed<I, T>(
+        &self,
+        opaque: StructType<'ctx, crate::struct_body_state::Opaque, B>,
+        elements: I,
+        packed: bool,
+    ) -> IrResult<StructType<'ctx, crate::struct_body_state::BodySet, B>>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Type<'ctx, B>>,
+    {
+        let elems: Box<[TypeId]> = elements.into_iter().map(|t| t.into().id()).collect();
+        let body = StructBody {
+            elements: elems,
+            packed,
+        };
+        self.core.ctx.set_named_struct_body(opaque.id, body)?;
+        Ok(opaque.retag::<crate::struct_body_state::BodySet>())
+    }
+
+    pub fn fn_type<I, R, T>(&self, ret: R, params: I, is_var_arg: bool) -> FunctionType<'ctx, B>
+    where
+        I: IntoIterator<Item = T>,
+        R: Into<Type<'ctx, B>>,
+        T: Into<Type<'ctx, B>>,
+    {
+        let ret = ret.into();
+        let params: Box<[TypeId]> = params.into_iter().map(|t| t.into().id()).collect();
+        FunctionType::new(
+            self.core.ctx.function_type(ret.id(), params, is_var_arg),
+            self.module_ref(),
+        )
+    }
+
+    pub fn target_ext_type<I, T, J>(
+        &self,
+        name: impl Into<String>,
+        type_params: I,
+        int_params: J,
+    ) -> TargetExtType<'ctx, B>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Type<'ctx, B>>,
+        J: IntoIterator<Item = u32>,
+    {
+        let name: String = name.into();
+        let type_params: Box<[TypeId]> = type_params.into_iter().map(|t| t.into().id()).collect();
+        let int_params: Box<[u32]> = int_params.into_iter().collect();
+        TargetExtType::new(
+            self.core.ctx.target_ext_type(name, type_params, int_params),
+            self.module_ref(),
+        )
+    }
+
+    pub fn add_function<R>(
+        &self,
+        name: impl AsRef<str>,
+        signature: FunctionType<'ctx, B>,
+        linkage: crate::global_value::Linkage,
+    ) -> IrResult<crate::function::FunctionValue<'ctx, R, B>>
+    where
+        R: crate::marker::ReturnMarker,
+    {
+        let name = name.as_ref();
+        if self.core.global_name_exists(name) {
+            return Err(IrError::DuplicateFunctionName {
+                name: name.to_owned(),
+            });
+        }
+        let ret_data = self.core.ctx.type_data(signature.return_type().id());
+        if !crate::function::signature_matches_marker::<R>(ret_data) {
+            return Err(IrError::ReturnTypeMismatch {
+                expected: signature.return_type().kind_label(),
+                got: signature.return_type().kind_label(),
+            });
+        }
+        let signature_id = signature.id;
+        let fn_data = crate::function::FunctionData::new(
+            name.to_owned(),
+            signature_id,
+            linkage,
+            crate::CallingConv::default(),
+        );
+        let fn_id = self.core.ctx.push_value(crate::value::ValueData {
+            ty: signature_id,
+            name: core::cell::RefCell::new(Some(name.to_owned())),
+            debug_loc: None,
+            kind: crate::value::ValueKindData::Function(Box::new(fn_data)),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        let param_types: Vec<TypeId> = signature.params().map(|t| t.id()).collect();
+        let mut arg_ids = Vec::with_capacity(param_types.len());
+        for (slot, &ty) in param_types.iter().enumerate() {
+            let slot_u32 = u32::try_from(slot)
+                .unwrap_or_else(|_| unreachable!("function parameter slot exceeds u32::MAX"));
+            let id = self.core.ctx.push_value(crate::value::ValueData {
+                ty,
+                name: core::cell::RefCell::new(None),
+                debug_loc: None,
+                kind: crate::value::ValueKindData::Argument {
+                    parent_fn: fn_id,
+                    slot: slot_u32,
+                },
+                use_list: core::cell::RefCell::new(Vec::new()),
+            });
+            arg_ids.push(id);
+        }
+        let fn_value_data = self.core.ctx.value_data(fn_id);
+        let fn_inner = match &fn_value_data.kind {
+            crate::value::ValueKindData::Function(f) => f,
+            _ => unreachable!("just pushed Function variant"),
+        };
+        *fn_inner.args.borrow_mut() = arg_ids.into_boxed_slice();
+        self.core.functions.borrow_mut().push(fn_id);
+        self.core
+            .function_by_name
+            .borrow_mut()
+            .insert(name.to_owned(), fn_id);
+        Ok(
+            crate::function::FunctionValue::<'ctx, R, B>::from_parts_unchecked(
+                fn_id,
+                self.module_ref(),
+            ),
+        )
+    }
+
+    pub fn add_global<N, C>(
+        &self,
+        name: N,
+        value_type: Type<'ctx, B>,
+        initializer: C,
+    ) -> IrResult<crate::global_variable::GlobalVariable<'ctx, B>>
+    where
+        N: AsRef<str>,
+        C: crate::constant::IsConstant<'ctx, B>,
+    {
+        crate::global_variable::GlobalBuilder::<B>::new(
+            self.module_ref(),
+            name.as_ref().to_owned(),
+            value_type,
+        )
+        .initializer(initializer)
+        .build()
+    }
+
+    pub fn add_global_constant<N, C>(
+        &self,
+        name: N,
+        value_type: Type<'ctx, B>,
+        initializer: C,
+    ) -> IrResult<crate::global_variable::GlobalVariable<'ctx, B>>
+    where
+        N: AsRef<str>,
+        C: crate::constant::IsConstant<'ctx, B>,
+    {
+        crate::global_variable::GlobalBuilder::<B>::new(
+            self.module_ref(),
+            name.as_ref().to_owned(),
+            value_type,
+        )
+        .constant(true)
+        .initializer(initializer)
+        .build()
+    }
+
+    pub fn add_external_global<N>(
+        &self,
+        name: N,
+        value_type: Type<'ctx, B>,
+    ) -> IrResult<crate::global_variable::GlobalVariable<'ctx, B>>
+    where
+        N: AsRef<str>,
+    {
+        crate::global_variable::GlobalBuilder::<B>::new(
+            self.module_ref(),
+            name.as_ref().to_owned(),
+            value_type,
+        )
+        .linkage(crate::global_value::Linkage::External)
+        .build()
+    }
+
+    pub fn global_builder<N>(
+        &self,
+        name: N,
+        value_type: Type<'ctx, B>,
+    ) -> crate::global_variable::GlobalBuilder<'ctx, B>
+    where
+        N: Into<String>,
+    {
+        crate::global_variable::GlobalBuilder::new(self.module_ref(), name, value_type)
+    }
+
+    pub fn get_global(
+        &self,
+        name: &str,
+    ) -> Option<crate::global_variable::GlobalVariable<'ctx, B>> {
+        let id = self.core.global_by_name.borrow().get(name).copied()?;
+        let value_data = self.core.ctx.value_data(id);
+        Some(
+            crate::global_variable::GlobalVariable::from_parts_unchecked(
+                id,
+                self.module_ref(),
+                value_data.ty,
+            ),
+        )
+    }
+
+    pub fn alias_builder<C>(
+        &self,
+        name: impl Into<String>,
+        value_type: Type<'ctx, B>,
+        aliasee: C,
+    ) -> crate::global_alias::GlobalAliasBuilder<'ctx, B>
+    where
+        C: crate::constant::IsConstant<'ctx, B>,
+    {
+        crate::global_alias::GlobalAliasBuilder::new(self.module_ref(), name, value_type, aliasee)
+    }
+
+    pub fn get_alias(&self, name: &str) -> Option<crate::global_alias::GlobalAlias<'ctx, B>> {
+        let id = self.core.alias_by_name.borrow().get(name).copied()?;
+        let value_data = self.core.ctx.value_data(id);
+        Some(crate::global_alias::GlobalAlias::from_parts_unchecked(
+            id,
+            self.module_ref(),
+            value_data.ty,
+        ))
+    }
+
+    pub fn alias_empty(&self) -> bool {
+        self.core.alias_empty()
+    }
+
+    pub fn ifunc_builder<C>(
+        &self,
+        name: impl Into<String>,
+        value_type: Type<'ctx, B>,
+        resolver: C,
+    ) -> crate::global_ifunc::GlobalIFuncBuilder<'ctx, B>
+    where
+        C: crate::constant::IsConstant<'ctx, B>,
+    {
+        crate::global_ifunc::GlobalIFuncBuilder::new(self.module_ref(), name, value_type, resolver)
+    }
+
+    pub fn get_ifunc(&self, name: &str) -> Option<crate::global_ifunc::GlobalIFunc<'ctx, B>> {
+        let id = self.core.ifunc_by_name.borrow().get(name).copied()?;
+        let value_data = self.core.ctx.value_data(id);
+        Some(crate::global_ifunc::GlobalIFunc::from_parts_unchecked(
+            id,
+            self.module_ref(),
+            value_data.ty,
+        ))
+    }
+
+    pub fn ifunc_empty(&self) -> bool {
+        self.core.ifunc_empty()
+    }
+
+    pub fn global_empty(&self) -> bool {
+        self.core.global_empty()
+    }
+
+    pub fn set_source_filename<N>(&self, filename: N)
+    where
+        N: Into<String>,
+    {
+        self.core.set_source_filename(filename);
+    }
+
+    pub fn clear_source_filename(&self) {
+        self.core.clear_source_filename();
+    }
+
+    pub fn set_data_layout<L>(&self, layout: L) -> IrResult<()>
+    where
+        L: AsRef<str>,
+    {
+        self.core.set_data_layout(layout)
+    }
+
+    pub fn set_data_layout_value(&self, layout: crate::data_layout::DataLayout) {
+        self.core.set_data_layout_value(layout);
+    }
+
+    pub fn set_target_triple<T>(&self, triple: Option<T>)
+    where
+        T: Into<String>,
+    {
+        self.core.set_target_triple(triple);
+    }
+
+    pub fn set_module_asm<A>(&self, asm: A)
+    where
+        A: Into<String>,
+    {
+        self.core.set_module_asm(asm);
+    }
+
+    pub fn append_module_asm<A>(&self, line: A)
+    where
+        A: AsRef<str>,
+    {
+        self.core.append_module_asm(line);
+    }
+
+    pub fn get_or_insert_comdat(&self, name: &str) -> crate::comdat::ComdatRef<'ctx, B> {
+        self.core.get_or_insert_comdat::<B>(name)
+    }
+
+    pub fn get_comdat(&self, name: &str) -> Option<crate::comdat::ComdatRef<'ctx, B>> {
+        self.core.get_comdat::<B>(name)
+    }
+
+    pub fn inline_asm(
+        &self,
+        fn_ty: FunctionType<'ctx, B>,
+        asm: impl Into<String>,
+        constraints: impl Into<String>,
+        options: crate::inline_asm::InlineAsmOptions,
+    ) -> crate::inline_asm::InlineAsm<'ctx, B> {
+        let ptr_ty = self.ptr_type(0).as_type().id();
+        let data = crate::inline_asm::InlineAsmData {
+            asm_string: asm.into(),
+            constraint_string: constraints.into(),
+            fn_ty: fn_ty.as_type().id(),
+            has_side_effects: options.has_side_effects,
+            is_align_stack: options.is_align_stack,
+            can_unwind: options.can_unwind,
+            dialect: options.dialect,
+        };
+        let id = self.core.ctx.push_value(crate::value::ValueData {
+            ty: ptr_ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: crate::value::ValueKindData::InlineAsm(data),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        crate::inline_asm::InlineAsm::from_parts(id, self.module_ref(), ptr_ty)
+    }
+
+    pub fn metadata_string(&self, s: impl Into<String>) -> crate::metadata::MetadataId {
+        self.core.metadata_string(s)
+    }
+
+    pub fn metadata_tuple(
+        &self,
+        operands: impl AsRef<[crate::metadata::MetadataRef]>,
+    ) -> crate::metadata::MetadataId {
+        self.core.metadata_tuple(operands)
+    }
+
+    pub fn metadata_tuple_with_distinct(
+        &self,
+        distinct: bool,
+        operands: impl AsRef<[crate::metadata::MetadataRef]>,
+    ) -> crate::metadata::MetadataId {
+        self.core.metadata_tuple_with_distinct(distinct, operands)
+    }
+
+    pub fn metadata_specialized(
+        &self,
+        node: crate::metadata::SpecializedMetadataNode,
+    ) -> crate::metadata::MetadataId {
+        self.core.metadata_specialized(node)
+    }
+
+    pub fn metadata_node(
+        &self,
+        kind: crate::metadata::MetadataKind,
+    ) -> crate::metadata::MetadataId {
+        self.core.metadata_node(kind)
+    }
+
+    pub fn metadata_as_value(
+        &self,
+        md: crate::metadata::MetadataId,
+    ) -> crate::value::Value<'ctx, B> {
+        let ty = self.core.ctx.metadata();
+        if let Some(&id) = self.core.metadata_as_value_cache.borrow().get(&md) {
+            return crate::value::Value::from_parts(id, self.module_ref(), ty);
+        }
+        let id = self.core.ctx.push_value(crate::value::ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: crate::value::ValueKindData::MetadataAsValue(md),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        self.core
+            .metadata_as_value_cache
+            .borrow_mut()
+            .insert(md, id);
+        crate::value::Value::from_parts(id, self.module_ref(), ty)
+    }
+
+    pub fn metadata_reserve(&self) -> crate::metadata::MetadataId {
+        self.core.metadata_reserve()
+    }
+
+    pub fn metadata_set(
+        &self,
+        id: crate::metadata::MetadataId,
+        kind: crate::metadata::MetadataKind,
+    ) {
+        self.core.metadata_set(id, kind);
+    }
+
+    pub fn metadata_get(
+        &self,
+        id: crate::metadata::MetadataId,
+    ) -> Option<crate::metadata::MetadataKind> {
+        self.core.metadata_get(id)
+    }
+
+    pub fn metadata_count(&self) -> usize {
+        self.core.metadata_count()
+    }
+
+    pub fn get_or_insert_named_metadata(&self, name: impl Into<String>) -> usize {
+        self.core.get_or_insert_named_metadata(name)
+    }
+
+    pub fn named_metadata_add_operand(&self, index: usize, op: crate::metadata::MetadataRef) {
+        self.core.named_metadata_add_operand(index, op);
+    }
+
+    pub fn named_metadata_count(&self) -> usize {
+        self.core.named_metadata_count()
+    }
+
+    pub fn append_use_list_order(&self, record: UseListOrderRecord) -> IrResult<()> {
+        self.core.append_use_list_order(record)
+    }
+
+    pub fn append_use_list_order_bb(&self, record: UseListOrderBBRecord) -> IrResult<()> {
+        self.core.append_use_list_order_bb(record)
+    }
+
+    pub fn set_attribute_group(&self, id: u32, storage: crate::attributes::AttributeStorage) {
+        self.core.set_attribute_group(id, storage);
+    }
+
+    /// Verify the module and consume it into the `Verified` state.
+    pub fn verify(self) -> IrResult<Module<'ctx, B, Verified>> {
+        crate::verifier::Verifier::new(self.as_view()).run()?;
+        Ok(Module {
+            core: self.core,
+            _brand: PhantomData,
+            _state: PhantomData,
+        })
+    }
+}
+
+impl<'ctx, B: ModuleBrand> Module<'ctx, B, Verified> {
+    /// Strip the verified state after mutation is required.
+    pub fn unverify(self) -> Module<'ctx, B, Unverified> {
+        Module {
+            core: self.core,
+            _brand: PhantomData,
+            _state: PhantomData,
+        }
     }
 }
 
@@ -1481,19 +2467,10 @@ impl<'ctx> VerifiedModule<'ctx> {
 // blocked by `&'ctx` references in handles transitively, which is fine
 // for a "one context per thread" model.
 
-impl<'ctx> core::fmt::Display for Module<'ctx> {
+impl<'ctx, B: ModuleBrand, S> core::fmt::Display for Module<'ctx, B, S> {
     /// Print the module as textual `.ll`. Mirrors `Module::print` from
     /// `llvm/lib/IR/AsmWriter.cpp`.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        crate::asm_writer::fmt_module(f, self)
-    }
-}
-
-impl<'ctx> core::fmt::Display for VerifiedModule<'ctx> {
-    /// Forward to the wrapped [`Module`]'s [`fmt::Display`](core::fmt::Display) impl. Mirrors
-    /// `Module::print`.
-    #[inline]
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        <Module<'ctx> as core::fmt::Display>::fmt(&self.inner, f)
+        crate::asm_writer::fmt_module(f, self.core)
     }
 }

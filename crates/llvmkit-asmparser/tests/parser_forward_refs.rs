@@ -8,11 +8,12 @@ use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_ir::Module;
 
 fn parse_err(src: &str) -> ParseError {
-    let module = Module::new("forward_refs");
-    Parser::new(src.as_bytes(), &module)
-        .expect("lexer primes")
-        .parse_module()
-        .expect_err("parser rejects malformed input")
+    Module::with_new("forward_refs", |module| {
+        Parser::new(src.as_bytes(), &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("parser rejects malformed input")
+    })
 }
 
 /// Mirrors `test/Assembler/skip-value-numbers-invalid.ll`: stale numbered
@@ -63,10 +64,11 @@ fn undefined_block_label_is_rejected() {
 /// SlotMappingTest)`: numbered declarations populate global slots.
 #[test]
 fn numbered_declare_records_slot_mapping() {
-    let module = Module::new("numbered_declare");
-    let parsed = Parser::new(b"declare void @0()\n", &module)
-        .expect("lexer primes")
-        .parse_module()
-        .expect("parser succeeds");
-    assert!(parsed.slot_mapping.global_values.get(0).is_some());
+    Module::with_new("numbered_declare", |module| {
+        let parsed = Parser::new(b"declare void @0()\n", &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect("parser succeeds");
+        assert!(parsed.slot_mapping.global_values.get(0).is_some());
+    });
 }

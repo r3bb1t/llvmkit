@@ -14,28 +14,29 @@ Goals, in priority order:
 What `llvmkit` is *not*:
 
 - Not a binding crate (`llvm-sys`, `inkwell`, `llvm-ir`-style wrappers are all out of scope).
-- Not a code generator and not a target backend. `llvmkit` doesn't lower IR to machine code or link objects — use upstream LLVM (`llvm-sys`, `inkwell`) for that. Optimization / transform / analysis passes are *planned* future work, not excluded; they will land once the IR data model, builder, parser, and verifier are stable.
+- Not a code generator and not a target backend. `llvmkit` doesn't lower IR to machine code or link objects — use upstream LLVM (`llvm-sys`, `inkwell`) for that. Pass and analysis infrastructure is in-tree; built-in optimization transforms, `PassBuilder`-style pipeline builders, loop PM, and CGSCC PM remain future work.
 
 ## Project Status
 
 The repo is a Cargo workspace at `C:/Users/Aslan/llvmkit/`. Implemented today:
 
 - The `.ll` lexer (`llvmkit-asmparser/src/ll_lexer.rs`).
+- The `.ll` parser (`llvmkit-asmparser/src/ll_parser.rs` and `parser.rs`) for the constructive module/function/instruction subset: target datalayout/triple, module asm, types, globals, declarations/definitions, metadata records, use-list directives, summaries, and every shipped opcode.
 - The IR data model with **width-typed integers** (`IntType<'ctx, W>`, `W in { bool, i8, i16, i32, i64, i128, IntDyn, Width<const N: u32> }`) and **kind-typed floats** (`FloatType<'ctx, K>`, `K in { f32, f64, Half, BFloat, Fp128, X86Fp80, PpcFp128, FloatDyn }`).
 - Sealed marker traits: `IntWidth`, `StaticIntWidth`, `FloatKind`, `StaticFloatKind`, `WiderThan`, `FloatWiderThan`, `ReturnMarker`, `SelectArm`.
 - Multi-source operand traits: `IntoIntValue<W>`, `IntoFloatValue<K>`, `IntoPointerValue`, `IntoConstantInt<W>`, `IntoConstantFloat<K>`, `IntoReturnValue<R>`.
 - The full medium IRBuilder: every integer binop (`add`/`sub`/`mul`/`udiv`/`sdiv`/`urem`/`srem`/`shl`/`lshr`/`ashr`/`and`/`or`/`xor`) plus per-opcode flag types (`AddFlags`/`UDivFlags`/...), every float binop (`fadd`/`fsub`/`fmul`/`fdiv`/`frem`), every cast (`trunc`/`zext`/`sext`/`bitcast`/`ptrtoint`/`inttoptr`/`fptrunc`/`fpext`/`fptosi`/`fptoui`/`sitofp`/`uitofp`/`addrspacecast`), `icmp`/`fcmp`, control flow (`br`/`cond_br`/`unreachable`), `phi` (chainable `add_incoming`), memory (`alloca`/`load`/`store` with optional `Align`), `getelementptr` (`build_gep`/`build_inbounds_gep`/`build_struct_gep`), `call` (flat + chainable `CallBuilder`), and `select` (sealed `SelectArm` for int/float/pointer arms).
 - AsmWriter producing real `.ll` output via `format!("{module}")` for every shipped opcode.
-- **Verifier** (`crates/llvmkit-ir/src/verifier.rs`): `Module::verify_borrowed(&self) -> IrResult<()>` for diagnostic-only validation and `Module::verify(self) -> IrResult<VerifiedModule<'ctx>>` for the typestate path that brands a module as well-formed. Implements the constructive subset of `llvm/lib/IR/Verifier.cpp::visit*` for every shipped opcode (binary int/float, icmp/fcmp, all casts, alloca/load/store, GEP, call, select, phi, ret/br/unreachable). Catches type mismatches, terminator placement, phi-predecessor coherence, ambiguous phi, in-block use-before-def, and self-reference. Cross-block dominance is deferred to Session 4 (DominatorTree).
+- **Verifier** (`crates/llvmkit-ir/src/verifier.rs`): `Module::verify_borrowed(&self) -> IrResult<()>` validates without consuming, and `Module::verify(self) -> IrResult<Module<'ctx, B, Verified>>` consumes an unverified token into the verified typestate. The verifier covers the shipped opcode surface, including CFG-backed PHI checks and cross-block SSA dominance through `DominatorTree`.
 - **Mutation API (T1)**: full instruction-lifecycle typestate. `Instruction<'ctx, S = state::Attached>` is parameterised by `S: state::InstructionState` (sealed; variants `Attached` / `Detached`). `Instruction` is intentionally **`!Copy` and `!Clone`** (Doctrine D2): the linear-typed handle prevents use-after-erase / double-erase at compile time. Per-opcode handles (`AddInst`, `LoadInst`, ...) stay `Copy` and now hold `(ValueId, ModuleRef, TypeId)` directly; their `as_instruction(self)` materialises a fresh `Instruction<Attached>` on demand. Every operand slot in `instr_types.rs` is wrapped in `core::cell::Cell<ValueId>` (and `Cell<Option<ValueId>>` for the optional `alloca` / `ret` operands) so RAUW can rewrite the operand wiring through `&self`. The shipped lifecycle methods are:
-    - `Instruction<Attached>::replace_all_uses_with(self, replacement)` --- `Value::replaceAllUsesWith` in `lib/IR/Value.cpp`.
-    - `Instruction<Attached>::erase_from_parent(self)` --- `Instruction::eraseFromParent`.
-    - `Instruction<Attached>::detach_from_parent(self) -> Instruction<Detached>` --- `Instruction::removeFromParent`.
-    - `Instruction<Attached>::move_before(self, other)` / `move_after` --- `Instruction::moveBefore` / `moveAfter`.
-    - `Instruction<Detached>::insert_before(self, other)` / `insert_after` / `append_to(block)` --- `Instruction::insertBefore` / `insertAfter` / `insertInto`.
-    - `Instruction<Detached>::drop_detached(self)` --- discard a detached instruction without inserting it (deregisters its operands' use-list entries).
-    - `BasicBlock::splice_into(self, dest)` --- `BasicBlock::splice`.
-    - `BasicBlock::split_at(self, before, name) -> BasicBlock<R>` --- `BasicBlock::splitBasicBlock`.
+    - `Instruction<Attached>::replace_all_uses_with(self, &Module<Unverified>, replacement)` --- `Value::replaceAllUsesWith` in `lib/IR/Value.cpp`.
+    - `Instruction<Attached>::erase_from_parent(self, &Module<Unverified>)` --- `Instruction::eraseFromParent`.
+    - `Instruction<Attached>::detach_from_parent(self, &Module<Unverified>) -> Instruction<Detached>` --- `Instruction::removeFromParent`.
+    - `Instruction<Attached>::move_before(self, &Module<Unverified>, other)` / `move_after` --- `Instruction::moveBefore` / `moveAfter`.
+    - `Instruction<Detached>::insert_before(self, &Module<Unverified>, other)` / `insert_after` / `append_to(&Module<Unverified>, block)` --- `Instruction::insertBefore` / `insertAfter` / `insertInto`.
+    - `Instruction<Detached>::drop_detached(self, &Module<Unverified>)` --- discard a detached instruction without inserting it (deregisters its operands' use-list entries).
+    - `BasicBlock::splice_into(self, &Module<Unverified>, dest)` --- `BasicBlock::splice`.
+    - `BasicBlock::split_at(self, &Module<Unverified>, before, name) -> BasicBlock<R>` --- `BasicBlock::splitBasicBlock`.
     - `iter::BlockCursor::at_start(block)` and `cursor.next() -> Option<(Instruction<Attached>, BlockCursor)>` --- the canonical advance-then-mutate iteration helper (Doctrine D9). Yields each instruction by value while consuming the cursor; the next call sees the precomputed snapshot, so erasing the yielded handle does not invalidate the iteration.
   Note: `IsValue` keeps its `Copy` supertrait bound (every other implementer is a thin `Copy` handle); `Instruction<Attached>` is therefore *not* an `IsValue` impl. Callers that need an erased view use [`Instruction::as_value(&self)`] (inherent, `&self`).
 - **Test provenance registry (T0)**: `UPSTREAM.md` (repo root) is the authoritative answer to "where does this llvmkit test come from?". Every `#[test]` in the workspace ships with a per-test doc comment citing the upstream `unittests/IR/*Test.cpp::TEST(...)` or `test/{Assembler,Verifier}/*.ll` fixture it ports (Doctrine D11).
@@ -50,19 +51,16 @@ The repo is a Cargo workspace at `C:/Users/Aslan/llvmkit/`. Implemented today:
 - **Builder-A4: vector splat + ptr_add convenience**. `IRBuilder::build_vector_splat(count, scalar, name)` mirrors `IRBuilderBase::CreateVectorSplat(unsigned, Value*, const Twine&)` (`lib/IR/IRBuilder.cpp` lines 1141-1158): inserts `scalar` at lane 0 of a poison `<count x T>` vector, then shufflevectors with a zero-mask. The intermediate `insertelement` is named `<name>.splatinsert` and the result `<name>.splat`, byte-for-byte matching upstream. `build_ptr_add(ptr, offset, name)` and `build_inbounds_ptr_add` mirror `IRBuilder::CreatePtrAdd` / `CreateInBoundsPtrAdd` (lines 2039 / 2044) -- thin wrappers around `CreateGEP(getInt8Ty(), Ptr, Offset, ...)`. New `VectorValue::from_value_unchecked` crate-internal constructor parallels the existing `PointerValue` / `IntValue` / `FloatValue` shapes for builder-result narrowing. `CreateAggregateRet` is deferred -- upstream lacks a dedicated `TEST_F` and the construct is genuinely niche (multi-value-return through poison + insertvalue chain).
 - **Globals-B1: GlobalVariable + Comdat + AsmWriter / Verifier hookup**. New [`crate::global_variable::GlobalVariable<'ctx>`] handle (Copy, ValueId-keyed, mirrors `class GlobalVariable` in `IR/GlobalVariable.h`) carries the full upstream slot set: `value_type`, `address_space`, `is_constant`, `externally_initialized`, optional `initializer`, [`Linkage`], [`Visibility`], [`DllStorageClass`], [`ThreadLocalMode`], [`UnnamedAddr`], [`MaybeAlign`], `section`, `partition`, optional comdat reference. Construction goes through [`Module::add_global`] / [`Module::add_global_constant`] / [`Module::add_external_global`] (one-shot ctors mirroring upstream's two `GlobalVariable::GlobalVariable` overloads) or the chainable [`crate::global_variable::GlobalBuilder`]. Per-module storage mirrors the function shape (`globals: RefCell<Vec<ValueId>>` + `global_by_name: RefCell<HashMap<...>>`), and a new `ValueKindData::GlobalVariable(GlobalVariableData)` arm closes the value-kind enum (Doctrine D5 -- exhaustive operand/category matches updated). Comdat support ports `IR/Comdat.h`: [`crate::comdat::SelectionKind`] (`Any` / `ExactMatch` / `Largest` / `NoDeduplicate` / `SameSize`), [`crate::comdat::ComdatRef<'ctx>`] backed by a `boxcar::Vec<ComdatData>` arena (stable `&ComdatData` borrows under `&self`), and [`Module::get_or_insert_comdat`] / [`Module::get_comdat`] / [`Module::iter_comdats`] mirroring `Module::getOrInsertComdat`. AsmWriter ships byte-for-byte parity with `lib/IR/AsmWriter.cpp::printGlobal` (linkage / visibility / DLL / TLS / unnamed-addr / addrspace / external_initialised / global-vs-constant / initializer / section / partition / comdat / align) and `Comdat::print` (`$<name> = comdat <kind>`). c-string detection in `fmt_aggregate_constant` mirrors `ConstantDataArray::isString`: `[N x i8]` constants of all `ConstantInt` elements emit as `c"..."` (with `printEscapedString` semantics). Verifier ships [`Verifier::visit_global_variable`] for the constructive subset (initializer-type-matches-value-type, initializer-must-be-sized, common-linkage zero-init/not-constant/no-comdat, scalable-vector rejection); new [`VerifierRule`] variants `GlobalInitializerTypeMismatch` / `GlobalInitializerUnsized` / `CommonLinkageInvariantViolated` / `GlobalScalableType` and a new [`ValueCategoryLabel::GlobalVariable`] arm complete the diagnostic surface. 43 new ported tests under `crates/llvmkit-ir/tests/globals_basic.rs`, all anchored on `test/Bitcode/compatibility.ll` line citations or `unittests/IR/{Module,Constants}Test.cpp::TEST(...)` blocks (Doctrine D11).
 - **DataLayout-B2: target-datalayout / target-triple / module-asm directives**. New [`crate::data_layout::DataLayout`] ports `class DataLayout` from `IR/DataLayout.h` + the parser slice of `lib/IR/DataLayout.cpp`. The parser accepts every upstream specifier: endianness (`e` / `E`), mangling (`m:e` / `m:o` / `m:w` / `m:x` / `m:l` / `m:m` / `m:a`), per-bit-width primitive alignment (`i<N>:<abi>:<pref>` / `f<...>` / `v<...>`), aggregate alignment (`a<...>`), pointer specs with optional flags + symbolic name (`p[<flags>][<as>][(<name>)]:<size>:<abi>[:<pref>[:<idx>]]`), native integer widths (`n<...>`), stack-natural alignment (`S<n>`), function-pointer alignment + kind (`F[in]<n>`), program / alloca / globals address spaces (`P<n>` / `A<n>` / `G<n>`), and the trailing non-integral-AS post-pass (`ni:<as>...`). Error messages mirror upstream byte-for-byte ("unknown specifier '...'", "address space must be a 24-bit integer", "preferred alignment cannot be less than the ABI alignment", etc.). Accessor surface: [`DataLayout::is_little_endian`] / `is_big_endian`, [`mangling_mode`], [`stack_alignment`], [`function_ptr_align`] / [`function_ptr_align_type`], [`alloca_addr_space`] / [`program_addr_space`] / [`default_globals_addr_space`], [`is_legal_integer`] / [`is_illegal_integer`] / [`fits_in_legal_integer`] / [`largest_legal_int_type_size_in_bits`], [`address_space_name`] / [`named_address_space`] / [`is_non_integral_address_space`] / [`has_unstable_representation`] / [`has_external_state`], [`pointer_size`] / [`pointer_size_in_bits`] / [`index_size`] / [`index_size_in_bits`], [`pointer_abi_align`] / [`pointer_pref_align`], type-walking accessors [`type_size_in_bits`] / [`type_store_size`] / [`type_store_size_in_bits`] / [`type_alloc_size`] / [`type_alloc_size_in_bits`] / [`abi_type_align`] / [`pref_type_align`] / [`abi_integer_type_align`] / [`value_or_abi_type_align`], and a [`StructLayoutInfo`] returned from [`struct_layout`] (mirrors `StructLayout::StructLayout`'s field-placement walk including padding flags and per-field offsets). Target-extension layout-type table ports `getTargetTypeInfo` from `lib/IR/Type.cpp` end-to-end (SPIR-V image / typed / padding / IntegralConstant / Literal, AArch64 `svcount`, RISC-V `riscv.vector.tuple`, DirectX `dx.*`, AMDGPU `amdgcn.named.barrier`, the test extension `llvm.test.vectorelement`, void default). [`Module`] gains [`data_layout`] / [`set_data_layout`] / [`set_data_layout_value`] / [`target_triple`] / [`set_target_triple`] / [`module_asm`] / [`set_module_asm`] / [`append_module_asm`] mirroring the matching `Module::*` methods. AsmWriter emits `target datalayout = "..."` (when non-default), `target triple = "..."` (when set), and one `module asm "..."` line per newline-split entry, mirroring `lib/IR/AsmWriter.cpp::printModule`. New [`IrError::InvalidDataLayout { reason }`] for parse failures. 48 new ported tests under `crates/llvmkit-ir/tests/data_layout_round_trip.rs`, one per upstream `TEST(DataLayout*, ...)` block plus standard-target round-trip cases for x86_64-linux / aarch64-darwin / wasm32 (Doctrine D11).
+- **Pass-C1: effect-typed pass managers + raw-core closure**. Public raw `ModuleCore` access is closed: `Module` exposes direct constructors/mutators, public handles return read-only `ModuleView`, and IR construction requires `&Module<'ctx, B, Unverified>`. Saved-handle mutators (`FunctionValue`, globals, instruction lifecycle, block splice/split, names) require the matching unverified module token, so `verify(self)` consumes mutation capability. `ModulePassManager<_, PreservesVerification>::new_read_only()` and `FunctionPassManager<_, PreservesVerification>::new_read_only()` accept `ReadOnly*Pass` and return `Module<Verified>`; the corresponding `<_, MutatesIr>::new_transform()` managers accept mutation-capable passes and return `Module<Unverified>` until re-verified.
 
-
-
-
-
-Still ahead: parser, const-generic `VectorType<E, const N: u32, Scalable>` / `ArrayType<E, const N: u64>` (T4 follow-up; the sealed-trait scaffolding ships today), brand-based module identity (Doctrine D7 follow-up), DominatorTree + cross-block dominance verifier, pass infrastructure, transforms, bitcode, debug info, intrinsics.
+Still ahead: const-generic `VectorType<E, const N: u32, Scalable>` / `ArrayType<E, const N: u64>` (T4 follow-up; the sealed-trait scaffolding ships today), optimization transforms, bitcode, debug info, and fuller intrinsics coverage.
 
 Workspace shape (see each crate's `Cargo.toml` for details):
 
 - Root `Cargo.toml` carries only `[workspace]` metadata.
-- `llvmkit/` — the public umbrella crate; re-exports `llvmkit-support` and `llvmkit-asmparser`. `default-members` points at it so plain `cargo run` / `cargo doc` resolve here.
+- `llvmkit/` — the public umbrella crate; re-exports `llvmkit-ir`, `llvmkit-support`, and `llvmkit-asmparser`. `default-members` points at it so plain `cargo run` / `cargo doc` resolve here.
 - `crates/llvmkit-support/` — shared helpers (`Span`, `Spanned<T>`, `SourceMap`).
-- `crates/llvmkit-asmparser/` — textual IR lexer (parser later).
+- `crates/llvmkit-asmparser/` — textual IR lexer and `.ll` parser.
 
 The crate name `llvmkit` was chosen because `llvmkit` is taken on crates.io. The
 repo directory is still `llvmkit/` to avoid churn; rename whenever convenient.
@@ -145,10 +143,8 @@ If a translation unit genuinely benefits from a split, use the modern Rust
 containing private helper files — the parent `foo.rs` stays the canonical
 navigation entry-point.
 
-Current shape (the lexer plus the IR data-model + value layer +
-minimal IRBuilder are implemented; the rest are listed for parity
-with `lib/IR/` and `lib/AsmParser/` and will land in subsequent
-sessions):
+Current shape (abridged; files are listed when they are useful navigation
+anchors, not as an exhaustive inventory):
 
 ```
 <repo root>/
@@ -211,7 +207,8 @@ sessions):
     │   │   ├── build_add_function.rs # cargo run --example build_add_function
     │   │   ├── cpu_state_add.rs     # multi-fn / params / unnamed_addr / trunc demo
     │   │   ├── factorial.rs         # phi + br + icmp + mul + sub loop demo
-    │   │   └── concurrent_counter.rs # fence + atomicrmw + switch (Open/Closed) demo
+    │   │   ├── concurrent_counter.rs # fence + atomicrmw + switch (Open/Closed) demo
+    │   │   └── pass_manager_demo.rs  # DominatorTreeAnalysis + effect-typed pass demo
     │   └── tests/
     │       ├── asm_writer_basic.rs
     │       ├── cpu_state_add_example.rs
@@ -231,40 +228,35 @@ sessions):
         ├── src/
         │   ├── lib.rs
         │   ├── ll_lexer.rs          # LLLexer.h + LLLexer.cpp
-        │   ├── ll_lexer/            # private impl-details for ll_lexer.rs
-        │   │   ├── escape.rs        # mirrors UnEscapeLexed
-        │   │   └── keywords.rs      # mirrors the keyword switch in LexIdentifier
-        │   ├── ll_lexer_tests.rs    # unit tests, included via #[path]
-        │   └── ll_token.rs          # LLToken.h
+        │   ├── ll_parser.rs         # LLParser.h + LLParser.cpp
+        │   ├── parser.rs            # Parser.h + Parser.cpp facade
+        │   ├── asm_parser_context.rs # AsmParserContext.{h,cpp}
+        │   ├── file_loc.rs          # FileLoc.h
+        │   ├── slot_mapping.rs      # SlotMapping.h
+        │   ├── numbered_values.rs   # NumberedValues.h
+        │   ├── module_summary.rs    # summary/index record placeholders parsed from .ll
+        │   ├── parse_error.rs       # parser diagnostics
+        │   ├── ll_token.rs          # LLToken.h
+        │   └── ll_lexer/            # private lexer helpers
         ├── examples/
-        │   ├── demo.ll              # tiny fixture used by the example
-        │   └── lex_file.rs          # cargo run --example lex_file -- file.ll
+        │   ├── demo.ll
+        │   ├── parser_demo.ll
+        │   ├── lex_file.rs          # cargo run --example lex_file -- file.ll
+        │   └── parse_file.rs        # cargo run --example parse_file -- file.ll
         └── tests/
-            ├── fixtures/demo.ll
-            └── lexer_integration.rs
+            ├── lexer_integration.rs
+            ├── parser_*.rs          # facade, module, function-body, metadata, EH, summary coverage
+            └── fixtures/            # parser corpus inputs and expected output
 ```
 
-Future work — each entry pairs to a single LLVM C++ file:
+Future work — each entry pairs to a single LLVM C++ file or subsystem:
 
-| Future Rust file                                  | LLVM source                          |
-|---------------------------------------------------|--------------------------------------|
-| `llvmkit-asmparser/src/ll_parser.rs`              | `LLParser.{h,cpp}`                   |
-| `llvmkit-asmparser/src/parser.rs`                 | `Parser.{h,cpp}`                     |
-| `llvmkit-asmparser/src/asm_parser_context.rs`     | `AsmParserContext.{h,cpp}`           |
-| `llvmkit-asmparser/src/file_loc.rs`               | `FileLoc.h`                          |
-| `llvmkit-asmparser/src/slot_mapping.rs`           | `SlotMapping.h`                      |
-| `llvmkit-asmparser/src/numbered_values.rs`        | `NumberedValues.h`                   |
-| `crates/llvmkit-ir/src/global_alias.rs`           | `IR/GlobalAlias.h` + `Globals.cpp`   |
-| `crates/llvmkit-ir/src/global_ifunc.rs`           | `IR/GlobalIFunc.h` + `Globals.cpp`   |
-| `crates/llvmkit-ir/src/data_layout.rs`            | `IR/DataLayout.{h,cpp}`              |
-| `crates/llvmkit-ir/src/intrinsic_inst.rs`         | `IR/IntrinsicInst.{h,cpp}`           |
-| `crates/llvmkit-ir/src/inline_asm.rs`             | `IR/InlineAsm.{h,cpp}`               |
-| `crates/llvmkit-ir/src/intrinsics.rs`             | `IR/Intrinsics.h`                    |
-| `crates/llvmkit-ir/src/metadata.rs`               | `IR/Metadata.{h,cpp}`                |
+| Future Rust file / subsystem                         | LLVM source                          |
+|------------------------------------------------------|--------------------------------------|
+| `crates/llvmkit-ir/src/intrinsic_inst.rs`            | `IR/IntrinsicInst.{h,cpp}`           |
 | `crates/llvmkit-ir/src/assembly_annotation_writer.rs` | `IR/AssemblyAnnotationWriter.h` |
-| `crates/llvmkit-ir/src/verifier.rs`               | `IR/Verifier.{h,cpp}`                |
-| `crates/llvmkit-ir/src/asm_writer.rs` (extensions) | `IR/AsmWriter.cpp` (full opcode set) |
-| `crates/llvmkit-bitcode/` (new crate)             | `lib/Bitcode/`, `lib/Bitstream/`     |
+| `crates/llvmkit-bitcode/` (new crate)                | `lib/Bitcode/`, `lib/Bitstream/`     |
+| optimization transforms / pipeline builders          | `lib/Transforms/`, new PM builders   |
 
 **Do not add empty stub files.** A file in the tree should reflect existing
 behavior; placeholders that pretend to do work are a smell. The future-files
@@ -305,7 +297,7 @@ Eleven rules govern every API in `llvmkit`. They are NOT optional and are NOT gr
 5. **D5.** Operand registration is structural (one place per primitive; exhaustive `match`).
 6. **D6.** Aggregate types parameterise over element shape (`VectorType<E, N>`, etc.).
 7. **D7.** Cross-module mixing is statically rejected (`'ctx` brand + `ModuleRef` check).
-8. **D8.** Verified guarantees flow through references (analyses bound to `&VerifiedModule<'ctx>`).
+8. **D8.** Verified guarantees flow through typestate: analyses and pass managers require `Module<'ctx, B, Verified>`, read-only pass managers return verified modules, and transform managers return unverified modules until `verify()` runs again.
 9. **D9.** Iteration safety is structural (`BlockCursor`'s consume-on-step).
 10. **D10.** No undefined behaviour, by design (Cranelift-style; no silent bad-codegen).
 11. **D11.** Tests are ported, not invented (every `#[test]` cites upstream; registry at `UPSTREAM.md`).
@@ -353,10 +345,10 @@ A single crate-level `enum Error` with variants per failure mode is preferred. W
 
 C++ takes `const char *Filename` or `MemoryBufferRef`. Rust takes:
 
-- `impl AsRef<Path>` for filesystem entry points (`Module::from_ll_file`).
-- `impl Read` / `impl BufRead` for streaming readers (`Module::from_ll_reader`).
-- `impl Write` for printers (`module.write_ll(&mut out)`).
-- `&str` / `&[u8]` for in-memory variants (`Module::from_ll_str`).
+- `impl AsRef<Path>` for filesystem entry points (`parser::parse_assembly_file`).
+- `&str` / `&[u8]` for in-memory parser variants (`parse_assembly_string` / `parse_assembly_bytes`).
+- `impl Read` helpers should read once into owned bytes before handing a borrowed slice to the lexer / parser.
+- `fmt::Display` (`format!("{module}")`) for printers until a dedicated `Write` facade exists.
 
 This mirrors `serde_json::from_reader` / `from_slice` / `from_str`. **Default to streaming**; load into a `Vec<u8>` only when the parser genuinely requires random access.
 

@@ -64,7 +64,7 @@ impl<'ctx> FunctionCfg<'ctx> {
                 predecessors.entry(*succ_id).or_default().push(block.id);
                 edges.push(BasicBlockEdge::new(
                     block,
-                    BasicBlock::from_parts(*succ_id, module, label_ty),
+                    BasicBlock::from_parts(*succ_id, module.core_ref(), label_ty),
                 ));
             }
             successors.insert(block.id, succ_ids);
@@ -90,7 +90,10 @@ impl<'ctx> FunctionCfg<'ctx> {
         R: ReturnMarker,
         S: BlockSealState,
     {
-        ids_to_blocks(block.module(), self.successors.get(&block.as_dyn().id))
+        ids_to_blocks(
+            block.module().core_ref(),
+            self.successors.get(&block.as_dyn().id),
+        )
     }
 
     /// Predecessors of `block`, preserving duplicate incoming edges.
@@ -99,7 +102,10 @@ impl<'ctx> FunctionCfg<'ctx> {
         R: ReturnMarker,
         S: BlockSealState,
     {
-        ids_to_blocks(block.module(), self.predecessors.get(&block.as_dyn().id))
+        ids_to_blocks(
+            block.module().core_ref(),
+            self.predecessors.get(&block.as_dyn().id),
+        )
     }
 
     /// Directed edges in function block order and terminator successor order.
@@ -117,11 +123,11 @@ where
 {
     let module = block.module();
     let ids = successor_ids(block.as_dyn());
-    ids_to_blocks(module, Some(&ids))
+    ids_to_blocks(module.core_ref(), Some(&ids))
 }
 
 fn ids_to_blocks<'ctx>(
-    module: &'ctx crate::Module<'ctx>,
+    module: &'ctx crate::module::ModuleCore,
     ids: Option<&Vec<ValueId>>,
 ) -> Vec<BasicBlock<'ctx, Dyn>> {
     let label_ty = module.label_type().as_type().id();

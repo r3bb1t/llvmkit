@@ -20,7 +20,7 @@ use crate::constant::{Constant, IsConstant};
 use crate::derived_types::PointerType;
 use crate::error::{IrError, IrResult, ValueCategoryLabel};
 use crate::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
-use crate::module::{Module, ModuleRef};
+use crate::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use crate::r#type::{Type, TypeId};
 use crate::unnamed_addr::UnnamedAddr;
 use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
@@ -73,30 +73,29 @@ pub(crate) struct GlobalVariableData {
 /// of the stored data, and [`Self::initializer`] to read the
 /// initializer when one is present.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct GlobalVariable<'ctx> {
+pub struct GlobalVariable<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     /// Cached pointer type id (`ptr addrspace(N)`).
     pub(crate) ty: TypeId,
 }
 
-impl<'ctx> GlobalVariable<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     #[inline]
-    pub(crate) fn from_parts_unchecked(
-        id: ValueId,
-        module: &'ctx Module<'ctx>,
-        ty: TypeId,
-    ) -> Self {
+    pub(crate) fn from_parts_unchecked<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    where
+        M: Into<ModuleRef<'ctx, B>>,
+    {
         Self {
             id,
-            module: ModuleRef::new(module),
+            module: module.into(),
             ty,
         }
     }
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx> {
+    pub fn as_value(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -109,7 +108,7 @@ impl<'ctx> GlobalVariable<'ctx> {
     /// this lets them appear in initializers of other globals or as
     /// `ConstantExpr` operands.
     #[inline]
-    pub fn as_constant(self) -> Constant<'ctx> {
+    pub fn as_constant(self) -> Constant<'ctx, B> {
         Constant {
             id: self.id,
             module: self.module,
@@ -121,7 +120,7 @@ impl<'ctx> GlobalVariable<'ctx> {
     /// `GlobalValue::getType`: the global's stored value type is separate from
     /// the `ptr addrspace(N)` type used when its address appears as a constant.
     #[inline]
-    pub fn as_global_constant_ptr(self) -> Constant<'ctx> {
+    pub fn as_global_constant_ptr(self) -> Constant<'ctx, B> {
         let module = self.module.module();
         let ptr_ty = module.ptr_type(self.address_space()).as_type().id();
         let id = module
@@ -143,7 +142,7 @@ impl<'ctx> GlobalVariable<'ctx> {
     /// inside an embedded data section that targets another section's interior).
     /// `off == 0` is equivalent to [`Self::as_constant`] but always prints the
     /// gep form; prefer `as_constant` for the zero case.
-    pub fn as_global_constant_ptr_offset(self, off: i64, addr_space: u32) -> Constant<'ctx> {
+    pub fn as_global_constant_ptr_offset(self, off: i64, addr_space: u32) -> Constant<'ctx, B> {
         let module = self.module.module();
         let ptr_ty = module.ptr_type(addr_space).as_type().id();
         let id = module
@@ -158,7 +157,7 @@ impl<'ctx> GlobalVariable<'ctx> {
 
     /// A `ptr`-typed constant pointing `off` bytes into this global, preserving
     /// this global's address space in both the GEP result and pointer operand.
-    pub fn ptr_offset(self, off: i64) -> Constant<'ctx> {
+    pub fn ptr_offset(self, off: i64) -> Constant<'ctx, B> {
         let module = self.module.module();
         let ptr_ty = module.ptr_type(self.address_space()).as_type().id();
         let id = module
@@ -185,8 +184,8 @@ impl<'ctx> GlobalVariable<'ctx> {
     /// in the final image.
     pub fn try_delta_from(
         self,
-        other: GlobalVariable<'ctx>,
-    ) -> IrResult<crate::ConstantIntValue<'ctx, i64>> {
+        other: GlobalVariable<'ctx, B>,
+    ) -> IrResult<crate::ConstantIntValue<'ctx, i64, B>> {
         if self.module != other.module {
             return Err(IrError::ForeignValue);
         }
@@ -195,11 +194,13 @@ impl<'ctx> GlobalVariable<'ctx> {
         let id = module
             .context()
             .intern_constant_symbol_delta(i64_ty, self.id, other.id);
-        Ok(crate::ConstantIntValue::from_parts_typed(Constant {
-            id,
-            module: self.module,
-            ty: i64_ty,
-        }))
+        Ok(crate::ConstantIntValue::<i64, B>::from_parts_typed(
+            Constant {
+                id,
+                module: self.module,
+                ty: i64_ty,
+            },
+        ))
     }
 
     /// An `i64` constant equal to `(self_addr - other_addr) + addend`, printed
@@ -207,9 +208,9 @@ impl<'ctx> GlobalVariable<'ctx> {
     /// i64 K)` -- the encrypted-delta form.
     pub fn try_delta_from_plus(
         self,
-        other: GlobalVariable<'ctx>,
+        other: GlobalVariable<'ctx, B>,
         addend: i64,
-    ) -> IrResult<crate::ConstantIntValue<'ctx, i64>> {
+    ) -> IrResult<crate::ConstantIntValue<'ctx, i64, B>> {
         if self.module != other.module {
             return Err(IrError::ForeignValue);
         }
@@ -218,11 +219,13 @@ impl<'ctx> GlobalVariable<'ctx> {
         let id = module
             .context()
             .intern_constant_symbol_delta_plus(i64_ty, self.id, other.id, addend);
-        Ok(crate::ConstantIntValue::from_parts_typed(Constant {
-            id,
-            module: self.module,
-            ty: i64_ty,
-        }))
+        Ok(crate::ConstantIntValue::<i64, B>::from_parts_typed(
+            Constant {
+                id,
+                module: self.module,
+                ty: i64_ty,
+            },
+        ))
     }
 
     fn data(self) -> &'ctx GlobalVariableData {
@@ -234,21 +237,21 @@ impl<'ctx> GlobalVariable<'ctx> {
 
     /// Owning module (borrowed for the lifetime of the handle).
     #[inline]
-    pub fn module(self) -> &'ctx Module<'ctx> {
-        self.module.module()
+    pub fn module(self) -> ModuleView<'ctx, B> {
+        ModuleView::new(self.module.module())
     }
 
     /// Pointer type (`ptr addrspace(N)`) of `@<name>`.
     #[inline]
-    pub fn ty(self) -> PointerType<'ctx> {
-        PointerType::new(self.ty, self.module.module())
+    pub fn ty(self) -> PointerType<'ctx, B> {
+        PointerType::new(self.ty, self.module)
     }
 
     /// Type of the stored data (the *pointee* type). Mirrors
     /// `GlobalValue::getValueType`.
     #[inline]
-    pub fn value_type(self) -> Type<'ctx> {
-        Type::new(self.data().value_type, self.module.module())
+    pub fn value_type(self) -> Type<'ctx, B> {
+        Type::new(self.data().value_type, self.module)
     }
 
     /// Address space of the global. Mirrors
@@ -288,7 +291,7 @@ impl<'ctx> GlobalVariable<'ctx> {
 
     /// Initializer constant, if any. Mirrors
     /// `GlobalVariable::getInitializer`.
-    pub fn initializer(self) -> Option<Constant<'ctx>> {
+    pub fn initializer(self) -> Option<Constant<'ctx, B>> {
         let id = self.data().initializer.get()?;
         let value_data = self.module.value_data(id);
         Some(Constant {
@@ -303,7 +306,11 @@ impl<'ctx> GlobalVariable<'ctx> {
     /// [`IrError::TypeMismatch`] when the initializer's type does not
     /// match the global's value type, with [`IrError::ForeignValue`]
     /// when the constant belongs to a different module.
-    pub fn set_initializer(self, init: Option<impl IsConstant<'ctx>>) -> IrResult<()> {
+    pub fn set_initializer(
+        self,
+        _module: &Module<'ctx, B, Unverified>,
+        init: Option<impl IsConstant<'ctx, B>>,
+    ) -> IrResult<()> {
         match init {
             None => {
                 self.data().initializer.set(None);
@@ -335,7 +342,7 @@ impl<'ctx> GlobalVariable<'ctx> {
 
     /// Update the linkage. Mirrors `GlobalValue::setLinkage`.
     #[inline]
-    pub fn set_linkage(self, linkage: Linkage) {
+    pub fn set_linkage(self, _module: &Module<'ctx, B, Unverified>, linkage: Linkage) {
         self.data().linkage.set(linkage);
     }
 
@@ -347,7 +354,7 @@ impl<'ctx> GlobalVariable<'ctx> {
 
     /// Update visibility. Mirrors `GlobalValue::setVisibility`.
     #[inline]
-    pub fn set_visibility(self, vis: Visibility) {
+    pub fn set_visibility(self, _module: &Module<'ctx, B, Unverified>, vis: Visibility) {
         self.data().visibility.set(vis);
     }
 
@@ -360,7 +367,11 @@ impl<'ctx> GlobalVariable<'ctx> {
     /// Update DLL storage class. Mirrors
     /// `GlobalValue::setDLLStorageClass`.
     #[inline]
-    pub fn set_dll_storage_class(self, cls: DllStorageClass) {
+    pub fn set_dll_storage_class(
+        self,
+        _module: &Module<'ctx, B, Unverified>,
+        cls: DllStorageClass,
+    ) {
         self.data().dll_storage_class.set(cls);
     }
 
@@ -373,7 +384,11 @@ impl<'ctx> GlobalVariable<'ctx> {
     /// Update thread-local mode. Mirrors
     /// `GlobalValue::setThreadLocalMode`.
     #[inline]
-    pub fn set_thread_local_mode(self, tlm: ThreadLocalMode) {
+    pub fn set_thread_local_mode(
+        self,
+        _module: &Module<'ctx, B, Unverified>,
+        tlm: ThreadLocalMode,
+    ) {
         self.data().thread_local_mode.set(tlm);
     }
 
@@ -386,7 +401,7 @@ impl<'ctx> GlobalVariable<'ctx> {
     /// Update unnamed-addr marker. Mirrors
     /// `GlobalValue::setUnnamedAddr`.
     #[inline]
-    pub fn set_unnamed_addr(self, value: UnnamedAddr) {
+    pub fn set_unnamed_addr(self, _module: &Module<'ctx, B, Unverified>, value: UnnamedAddr) {
         self.data().unnamed_addr.set(value);
     }
 
@@ -398,7 +413,7 @@ impl<'ctx> GlobalVariable<'ctx> {
 
     /// Set or clear the alignment. Mirrors `GlobalValue::setAlignment`.
     #[inline]
-    pub fn set_align(self, align: MaybeAlign) {
+    pub fn set_align(self, _module: &Module<'ctx, B, Unverified>, align: MaybeAlign) {
         self.data().align.set(align);
     }
 
@@ -415,7 +430,11 @@ impl<'ctx> GlobalVariable<'ctx> {
     }
 
     /// Set or clear the section. Mirrors `GlobalValue::setSection`.
-    pub fn set_section(self, section: Option<impl Into<String>>) {
+    pub fn set_section(
+        self,
+        _module: &Module<'ctx, B, Unverified>,
+        section: Option<impl Into<String>>,
+    ) {
         *self.data().section.borrow_mut() = section.map(Into::into);
     }
 
@@ -427,21 +446,25 @@ impl<'ctx> GlobalVariable<'ctx> {
 
     /// Set or clear the partition. Mirrors
     /// `GlobalValue::setPartition`.
-    pub fn set_partition(self, partition: Option<impl Into<String>>) {
+    pub fn set_partition(
+        self,
+        _module: &Module<'ctx, B, Unverified>,
+        partition: Option<impl Into<String>>,
+    ) {
         *self.data().partition.borrow_mut() = partition.map(Into::into);
     }
 
     /// Toggle the `externally_initialized` marker. Mirrors
     /// `GlobalVariable::setExternallyInitialized`.
     #[inline]
-    pub fn set_externally_initialized(self, value: bool) {
+    pub fn set_externally_initialized(self, _module: &Module<'ctx, B, Unverified>, value: bool) {
         self.data().externally_initialized.set(value);
     }
 
     /// Comdat reference, if attached. Mirrors `GlobalValue::getComdat`.
-    pub fn comdat(self) -> Option<ComdatRef<'ctx>> {
+    pub fn comdat(self) -> Option<ComdatRef<'ctx, B>> {
         let name = self.data().comdat.borrow().clone()?;
-        self.module.module().get_comdat(&name)
+        self.module.module().get_comdat::<B>(&name)
     }
 
     /// Attach (or clear) a comdat. The comdat must already exist in
@@ -450,7 +473,11 @@ impl<'ctx> GlobalVariable<'ctx> {
     /// to materialise one). Errors with
     /// [`IrError::InvalidOperation`] if the comdat does not belong
     /// to this module.
-    pub fn set_comdat(self, comdat: Option<ComdatRef<'ctx>>) -> IrResult<()> {
+    pub fn set_comdat(
+        self,
+        _module: &Module<'ctx, B, Unverified>,
+        comdat: Option<ComdatRef<'ctx, B>>,
+    ) -> IrResult<()> {
         match comdat {
             None => {
                 *self.data().comdat.borrow_mut() = None;
@@ -473,6 +500,7 @@ impl<'ctx> GlobalVariable<'ctx> {
 
     pub fn set_metadata(
         self,
+        _module: &Module<'ctx, B, Unverified>,
         kind: crate::metadata::MetadataAttachmentKind,
         id: crate::metadata::MetadataId,
     ) {
@@ -480,57 +508,58 @@ impl<'ctx> GlobalVariable<'ctx> {
     }
 }
 
-impl<'ctx> sealed::Sealed for GlobalVariable<'ctx> {}
-impl<'ctx> IsValue<'ctx> for GlobalVariable<'ctx> {
+impl<'ctx, B: ModuleBrand> sealed::Sealed for GlobalVariable<'ctx, B> {}
+impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalVariable<'ctx, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx> {
+    fn as_value(self) -> Value<'ctx, B> {
         GlobalVariable::as_value(self)
     }
 }
-impl<'ctx> IsConstant<'ctx> for GlobalVariable<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for GlobalVariable<'ctx, B> {
     #[inline]
-    fn as_constant(self) -> Constant<'ctx> {
+    fn as_constant(self) -> Constant<'ctx, B> {
         GlobalVariable::as_constant(self)
     }
 }
-impl<'ctx> Typed<'ctx> for GlobalVariable<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for GlobalVariable<'ctx, B> {
     #[inline]
-    fn ty(self) -> Type<'ctx> {
-        Type::new(self.ty, self.module.module())
+    fn ty(self) -> Type<'ctx, B> {
+        Type::new(self.ty, self.module)
     }
 }
-impl<'ctx> HasName<'ctx> for GlobalVariable<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalVariable<'ctx, B> {
     fn name(self) -> Option<String> {
         Some(self.data().name.clone())
     }
-    fn set_name(self, _name: Option<&str>) {
+    fn set_name(self, _module_token: &Module<'ctx, B, Unverified>, _name: &str) {
         // GlobalVariable names are immutable through this interface
         // -- they participate in the module's name table. Renaming
         // requires a dedicated path that keeps the table consistent.
     }
+    fn clear_name(self, _module_token: &Module<'ctx, B, Unverified>) {}
 }
-impl HasDebugLoc for GlobalVariable<'_> {
+impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalVariable<'_, B> {
     fn debug_loc(self) -> Option<DebugLoc> {
         None
     }
 }
 
-impl<'ctx> From<GlobalVariable<'ctx>> for Value<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalVariable<'ctx, B>> for Value<'ctx, B> {
     #[inline]
-    fn from(g: GlobalVariable<'ctx>) -> Self {
+    fn from(g: GlobalVariable<'ctx, B>) -> Self {
         g.as_value()
     }
 }
-impl<'ctx> From<GlobalVariable<'ctx>> for Constant<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalVariable<'ctx, B>> for Constant<'ctx, B> {
     #[inline]
-    fn from(g: GlobalVariable<'ctx>) -> Self {
+    fn from(g: GlobalVariable<'ctx, B>) -> Self {
         g.as_constant()
     }
 }
 
-impl<'ctx> TryFrom<Value<'ctx>> for GlobalVariable<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalVariable<'ctx, B> {
     type Error = IrError;
-    fn try_from(v: Value<'ctx>) -> IrResult<Self> {
+    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
         match &v.data().kind {
             ValueKindData::GlobalVariable(_) => Ok(Self {
                 id: v.id,
@@ -558,8 +587,8 @@ impl<'ctx> TryFrom<Value<'ctx>> for GlobalVariable<'ctx> {
 ///
 /// Constructed by
 /// [`Module::global_builder`](crate::Module::global_builder).
-pub struct GlobalBuilder<'ctx> {
-    module: &'ctx Module<'ctx>,
+pub struct GlobalBuilder<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+    module: ModuleRef<'ctx, B>,
     name: String,
     value_type: TypeId,
     address_space: u32,
@@ -578,14 +607,13 @@ pub struct GlobalBuilder<'ctx> {
     comdat: Option<String>,
 }
 
-impl<'ctx> GlobalBuilder<'ctx> {
-    pub(crate) fn new(
-        module: &'ctx Module<'ctx>,
-        name: impl Into<String>,
-        value_type: Type<'ctx>,
-    ) -> Self {
+impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
+    pub(crate) fn new<M>(module: M, name: impl Into<String>, value_type: Type<'ctx, B>) -> Self
+    where
+        M: Into<ModuleRef<'ctx, B>>,
+    {
         Self {
-            module,
+            module: module.into(),
             name: name.into(),
             value_type: value_type.id(),
             address_space: 0,
@@ -671,7 +699,7 @@ impl<'ctx> GlobalBuilder<'ctx> {
 
     /// Attach a comdat. Errors at build time if the comdat does not
     /// belong to this module.
-    pub fn comdat(mut self, comdat: ComdatRef<'ctx>) -> Self {
+    pub fn comdat(mut self, comdat: ComdatRef<'ctx, B>) -> Self {
         // Defer the cross-module check to `build` so the builder
         // remains infallible per call.
         self.comdat = Some(comdat.name().to_owned());
@@ -687,7 +715,7 @@ impl<'ctx> GlobalBuilder<'ctx> {
 
     /// Attach an initializer. Errors at build time if the
     /// initializer's type does not match the value type.
-    pub fn initializer<C: IsConstant<'ctx>>(mut self, init: C) -> Self {
+    pub fn initializer<C: IsConstant<'ctx, B>>(mut self, init: C) -> Self {
         let constant = init.as_constant();
         self.initializer = Some(constant.id);
         self.initializer_type = Some(constant.ty);
@@ -696,7 +724,7 @@ impl<'ctx> GlobalBuilder<'ctx> {
 
     /// Materialise the global. Mirrors the second
     /// `GlobalVariable::GlobalVariable(Module &M, ...)` ctor.
-    pub fn build(self) -> IrResult<GlobalVariable<'ctx>> {
+    pub fn build(self) -> IrResult<GlobalVariable<'ctx, B>> {
         if let Some(init_ty) = self.initializer_type
             && init_ty != self.value_type
         {
@@ -709,13 +737,13 @@ impl<'ctx> GlobalBuilder<'ctx> {
             });
         }
         if let Some(name) = &self.comdat
-            && self.module.get_comdat(name).is_none()
+            && self.module.module().get_comdat::<B>(name).is_none()
         {
             return Err(IrError::InvalidOperation {
                 message: "comdat does not belong to this module",
             });
         }
-        self.module.install_global_variable(self)
+        self.module.module().install_global_variable::<B>(self)
     }
 
     pub(crate) fn into_data(self) -> (String, GlobalVariableData, Option<ValueId>, u32, TypeId) {

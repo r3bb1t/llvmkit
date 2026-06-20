@@ -492,6 +492,9 @@ pub enum IrError {
     /// An analysis result was requested before its analysis pass was registered.
     #[error("analysis {name} is not registered")]
     AnalysisNotRegistered { name: &'static str },
+    /// An invalidator asked for a cached analysis result that is absent.
+    #[error("analysis {name} is not cached")]
+    AnalysisNotCached { name: &'static str },
     /// IR validation failure detected by [`Module::verify`](crate::Module::verify) /
     /// [`Module::verify_borrowed`](crate::Module::verify_borrowed). The
     /// `rule` discriminator names the LangRef invariant that was

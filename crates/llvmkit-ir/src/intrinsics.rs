@@ -5,7 +5,7 @@
 
 use crate::derived_types::FunctionType;
 use crate::error::{IrError, IrResult};
-use crate::module::Module;
+use crate::module::{Module, ModuleBrand, ModuleRef, Unverified};
 use crate::r#type::Type;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -87,23 +87,34 @@ impl IntrinsicId {
         }
     }
 
-    pub fn function_type<'ctx>(
+    pub fn function_type<'ctx, B>(
         self,
-        module: &'ctx Module<'ctx>,
+        module: &Module<'ctx, B, Unverified>,
         name: &str,
-    ) -> IrResult<FunctionType<'ctx>> {
+    ) -> IrResult<FunctionType<'ctx, B>>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        self.function_type_ref(module.module_ref(), name)
+    }
+
+    pub(crate) fn function_type_ref<'ctx, B>(
+        self,
+        module: ModuleRef<'ctx, B>,
+        name: &str,
+    ) -> IrResult<FunctionType<'ctx, B>>
+    where
+        B: ModuleBrand + 'ctx,
+    {
         match self {
             Self::LifetimeStart | Self::LifetimeEnd => {
                 let addr_space = lifetime_addr_space(name).ok_or(IrError::InvalidOperation {
                     message: "intrinsic signature mismatch",
                 })?;
-                Ok(module.fn_type(
-                    module.void_type(),
-                    [
-                        module.i64_type().as_type(),
-                        module.ptr_type(addr_space).as_type(),
-                    ],
-                    false,
+                Ok(fn_type(
+                    module,
+                    void_type(module),
+                    [int_type(module, 64), ptr_type(module, addr_space)],
                 ))
             }
             Self::Memcpy | Self::Memmove => {
@@ -118,15 +129,15 @@ impl IntrinsicId {
                 .ok_or(IrError::InvalidOperation {
                     message: "intrinsic signature mismatch",
                 })?;
-                Ok(module.fn_type(
-                    module.void_type(),
+                Ok(fn_type(
+                    module,
+                    void_type(module),
                     [
-                        module.ptr_type(dst_as).as_type(),
-                        module.ptr_type(src_as).as_type(),
-                        module.i64_type().as_type(),
-                        module.i1_type().as_type(),
+                        ptr_type(module, dst_as),
+                        ptr_type(module, src_as),
+                        int_type(module, 64),
+                        int_type(module, 1),
                     ],
-                    false,
                 ))
             }
             Self::Memset => {
@@ -135,36 +146,82 @@ impl IntrinsicId {
                         message: "intrinsic signature mismatch",
                     },
                 )?;
-                Ok(module.fn_type(
-                    module.void_type(),
+                Ok(fn_type(
+                    module,
+                    void_type(module),
                     [
-                        module.ptr_type(dst_as).as_type(),
-                        module.i8_type().as_type(),
-                        module.i64_type().as_type(),
-                        module.i1_type().as_type(),
+                        ptr_type(module, dst_as),
+                        int_type(module, 8),
+                        int_type(module, 64),
+                        int_type(module, 1),
                     ],
-                    false,
                 ))
             }
-            Self::Trap | Self::Donothing => {
-                Ok(module.fn_type(module.void_type(), std::iter::empty::<Type<'ctx>>(), false))
-            }
-            Self::ReadRegisterI64 => {
-                Ok(module.fn_type(module.i64_type(), [module.metadata_type().as_type()], false))
-            }
-            Self::WriteRegisterI64 => Ok(module.fn_type(
-                module.void_type(),
-                [
-                    module.metadata_type().as_type(),
-                    module.i64_type().as_type(),
-                ],
-                false,
+            Self::Trap | Self::Donothing => Ok(fn_type(
+                module,
+                void_type(module),
+                Vec::<Type<'ctx, B>>::new(),
+            )),
+            Self::ReadRegisterI64 => Ok(fn_type(
+                module,
+                int_type(module, 64),
+                [metadata_type(module)],
+            )),
+            Self::WriteRegisterI64 => Ok(fn_type(
+                module,
+                void_type(module),
+                [metadata_type(module), int_type(module, 64)],
             )),
             Self::Expect => Err(IrError::InvalidOperation {
                 message: "intrinsic signature mismatch",
             }),
         }
     }
+}
+
+fn void_type<'ctx, B>(module: ModuleRef<'ctx, B>) -> Type<'ctx, B>
+where
+    B: ModuleBrand + 'ctx,
+{
+    Type::new(module.module().context().void(), module)
+}
+
+fn metadata_type<'ctx, B>(module: ModuleRef<'ctx, B>) -> Type<'ctx, B>
+where
+    B: ModuleBrand + 'ctx,
+{
+    Type::new(module.module().context().metadata(), module)
+}
+
+fn int_type<'ctx, B>(module: ModuleRef<'ctx, B>, bits: u32) -> Type<'ctx, B>
+where
+    B: ModuleBrand + 'ctx,
+{
+    Type::new(module.module().context().int_type(bits), module)
+}
+
+fn ptr_type<'ctx, B>(module: ModuleRef<'ctx, B>, addr_space: u32) -> Type<'ctx, B>
+where
+    B: ModuleBrand + 'ctx,
+{
+    Type::new(module.module().context().ptr_type(addr_space), module)
+}
+
+fn fn_type<'ctx, B, I>(
+    module: ModuleRef<'ctx, B>,
+    ret: Type<'ctx, B>,
+    params: I,
+) -> FunctionType<'ctx, B>
+where
+    B: ModuleBrand + 'ctx,
+    I: IntoIterator<Item = Type<'ctx, B>>,
+{
+    let param_ids: Vec<_> = params.into_iter().map(Type::id).collect();
+    let id = module
+        .module()
+        .context()
+        .function_type(ret.id(), param_ids.into_boxed_slice(), false);
+    FunctionType::new(id, module)
 }
 
 fn lifetime_addr_space(name: &str) -> Option<u32> {

@@ -9,20 +9,22 @@ fn parse_and_render(src: &str) -> String {
 }
 
 fn parse_and_render_bytes(module_name: &str, src: &[u8]) -> String {
-    let module = Module::new(module_name);
-    Parser::new(src, &module)
-        .expect("lexer primes")
-        .parse_module()
-        .expect("parser succeeds");
-    format!("{module}")
+    Module::with_new(module_name, |module| {
+        Parser::new(src, &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect("parser succeeds");
+        format!("{module}")
+    })
 }
 
 fn parse_fixture_err(module_name: &str, src: &[u8]) -> ParseError {
-    let module = Module::new(module_name);
-    Parser::new(src, &module)
-        .expect("lexer primes")
-        .parse_module()
-        .expect_err("parser rejects malformed input")
+    Module::with_new(module_name, |module| {
+        Parser::new(src, &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("parser rejects malformed input")
+    })
 }
 
 fn assert_check_lines(text: &str, check_lines: &[&str]) {

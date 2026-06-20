@@ -6,9 +6,10 @@ use llvmkit_asmparser::parser;
 const SUMMARY: &str = include_str!("fixtures/summary_minimal.ll");
 
 fn assert_summary_round_trip(printed: &str) {
+    let expected = SUMMARY.replace("\r\n", "\n");
     assert_eq!(
         printed.trim_end_matches('\n'),
-        SUMMARY.trim_end_matches('\n')
+        expected.trim_end_matches('\n')
     );
 }
 

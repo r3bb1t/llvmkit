@@ -24,7 +24,7 @@ use crate::instr_types::{
     BinaryOpData, BranchInstData, BranchKind, CastOpData, CmpInstData, FCmpInstData, PhiData,
     ReturnOpData, UnreachableInstData,
 };
-use crate::module::{Module, ModuleRef};
+use crate::module::{Brand, Module, ModuleCore, ModuleRef, Unverified};
 use crate::r#type::TypeId;
 use crate::r#use::Use;
 use crate::user::User;
@@ -299,9 +299,13 @@ pub mod state {
 /// and the compiler then prevents use-after-erase. Per-opcode handles
 /// (`AddInst`, ...) remain `Copy`; reach for `as_instruction()` on a per-opcode handle
 /// when you need a single-use lifecycle handle from a per-opcode view.
-pub struct Instruction<'ctx, S: state::InstructionState = state::Attached> {
+pub struct Instruction<
+    'ctx,
+    S: state::InstructionState = state::Attached,
+    B: crate::module::ModuleBrand = crate::module::Brand<'ctx>,
+> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
     pub(crate) _state: core::marker::PhantomData<S>,
 }
@@ -309,7 +313,9 @@ pub struct Instruction<'ctx, S: state::InstructionState = state::Attached> {
 // Hand-rolled trait impls so that consumers do not have to spell `S`
 // bounds at every match position, and so that `Instruction` is
 // definitively neither `Clone` nor `Copy`.
-impl<'ctx, S: state::InstructionState> core::fmt::Debug for Instruction<'ctx, S> {
+impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand> core::fmt::Debug
+    for Instruction<'ctx, S, B>
+{
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Instruction")
             .field("id", &self.id)
@@ -317,14 +323,21 @@ impl<'ctx, S: state::InstructionState> core::fmt::Debug for Instruction<'ctx, S>
             .finish()
     }
 }
-impl<'ctx, S: state::InstructionState> PartialEq for Instruction<'ctx, S> {
+impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand> PartialEq
+    for Instruction<'ctx, S, B>
+{
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
     }
 }
-impl<'ctx, S: state::InstructionState> Eq for Instruction<'ctx, S> {}
-impl<'ctx, S: state::InstructionState> core::hash::Hash for Instruction<'ctx, S> {
+impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand> Eq
+    for Instruction<'ctx, S, B>
+{
+}
+impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand> core::hash::Hash
+    for Instruction<'ctx, S, B>
+{
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
@@ -332,11 +345,13 @@ impl<'ctx, S: state::InstructionState> core::hash::Hash for Instruction<'ctx, S>
     }
 }
 
-impl<'ctx, S: state::InstructionState> Instruction<'ctx, S> {
+impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand + 'ctx>
+    Instruction<'ctx, S, B>
+{
     /// Widen to the erased [`Value`] handle. Read-only access; safe in
     /// either lifecycle state.
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx> {
+    pub fn as_value(&self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -354,14 +369,14 @@ impl<'ctx, S: state::InstructionState> Instruction<'ctx, S> {
 
     /// Owning module reference.
     #[inline]
-    pub fn module(&self) -> &'ctx Module<'ctx> {
-        self.module.module()
+    pub fn module(&self) -> crate::module::ModuleView<'ctx, B> {
+        crate::module::ModuleView::new(self.module.module())
     }
 
     /// Result type. `void` for terminators and stores.
     #[inline]
-    pub fn ty(&self) -> Type<'ctx> {
-        Type::new(self.ty, self.module.module())
+    pub fn ty(&self) -> Type<'ctx, B> {
+        Type::new(self.ty, self.module)
     }
 
     /// Optional textual name. Mirrors `Value::getName`.
@@ -391,9 +406,16 @@ impl<'ctx, S: state::InstructionState> Instruction<'ctx, S> {
     pub fn push_debug_record(&self, record: crate::metadata::DebugRecord) {
         self.data().debug_records.borrow_mut().push(record);
     }
+    /// Set the textual name.
     #[inline]
-    pub fn set_name(&self, name: Option<&str>) {
-        self.as_value().set_name(name);
+    pub fn set_name(&self, module_token: &Module<'ctx, B, Unverified>, name: &str) {
+        self.as_value().set_name(module_token, name);
+    }
+
+    /// Clear the textual name.
+    #[inline]
+    pub fn clear_name(&self, module_token: &Module<'ctx, B, Unverified>) {
+        self.as_value().clear_name(module_token);
     }
 
     /// Read-only opcode discriminator for non-terminator opcodes.
@@ -600,16 +622,20 @@ impl<'ctx, S: state::InstructionState> Instruction<'ctx, S> {
     }
 }
 
-impl<'ctx> Instruction<'ctx, state::Attached> {
+impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// Construct an attached handle from raw parts. Crate-internal:
     /// only the IR builder hands these out, and only after the value-id
     /// has been pushed onto the parent block's instruction list.
     #[inline]
-    pub(crate) fn from_parts(id: ValueId, module: &'ctx Module<'ctx>) -> Self {
-        let data = module.context().value_data(id);
+    pub(crate) fn from_parts<M>(id: ValueId, module: M) -> Self
+    where
+        M: Into<ModuleRef<'ctx, B>>,
+    {
+        let module = module.into();
+        let data = module.value_data(id);
         Self {
             id,
-            module: ModuleRef::new(module),
+            module,
             ty: data.ty,
             _state: core::marker::PhantomData,
         }
@@ -636,9 +662,16 @@ impl<'ctx> Instruction<'ctx, state::Attached> {
     /// erased); call [`Self::erase_from_parent`] separately if needed.
     /// Mirrors LLVM's two-step pattern
     /// `I->replaceAllUsesWith(V); I->eraseFromParent();`.
-    pub fn replace_all_uses_with<V: IsValue<'ctx>>(self, replacement: V) -> IrResult<()> {
+    pub fn replace_all_uses_with<V: IsValue<'ctx, B>>(
+        self,
+        module_token: &Module<'ctx, B, Unverified>,
+        replacement: V,
+    ) -> IrResult<()> {
+        if module_token.id() != self.module.id() {
+            return Err(IrError::ForeignValue);
+        }
         let new_value = replacement.as_value();
-        if new_value.module().id() != self.module.module().id() {
+        if new_value.module().id() != self.module.id() {
             return Err(IrError::ForeignValue);
         }
         if new_value.id == self.id {
@@ -651,7 +684,7 @@ impl<'ctx> Instruction<'ctx, state::Attached> {
                 got: new_value.ty().kind_label(),
             });
         }
-        let module = self.module.module();
+        let module = module_token.core_ref();
         let self_id = self.id;
         let new_id = new_value.id;
         // Snapshot the user list under a borrow so we can release it
@@ -689,9 +722,12 @@ impl<'ctx> Instruction<'ctx, state::Attached> {
     /// `Instruction::eraseFromParent` in `lib/IR/Instruction.cpp`.
     ///
     /// Consumes `self`: use-after-erase is a *compile* error.
-    pub fn erase_from_parent(self) {
+    pub fn erase_from_parent(self, module_token: &Module<'ctx, B, Unverified>) {
+        if module_token.id() != self.module.id() {
+            return;
+        }
         let self_id = self.id;
-        let module = self.module.module();
+        let module = module_token.core_ref();
         deregister_operand_uses(self_id, &self.data().kind, module);
         let parent_block_id = self.data().parent.get();
         let bb = crate::basic_block::BasicBlock::<crate::marker::Dyn>::from_parts(
@@ -707,8 +743,19 @@ impl<'ctx> Instruction<'ctx, state::Attached> {
     /// it can be reattached elsewhere via [`Instruction::insert_before`] /
     /// [`Instruction::insert_after`] / [`Instruction::append_to`].
     /// Mirrors `Instruction::removeFromParent` in `lib/IR/Instruction.cpp`.
-    pub fn detach_from_parent(self) -> Instruction<'ctx, state::Detached> {
-        let module = self.module.module();
+    pub fn detach_from_parent(
+        self,
+        module_token: &Module<'ctx, B, Unverified>,
+    ) -> Instruction<'ctx, state::Detached, B> {
+        if module_token.id() != self.module.id() {
+            return Instruction {
+                id: self.id,
+                module: self.module,
+                ty: self.ty,
+                _state: core::marker::PhantomData,
+            };
+        }
+        let module = module_token.core_ref();
         let self_id = self.id;
         let parent_block_id = self.data().parent.get();
         let bb = crate::basic_block::BasicBlock::<crate::marker::Dyn>::from_parts(
@@ -730,11 +777,15 @@ impl<'ctx> Instruction<'ctx, state::Attached> {
     /// Move this instruction so it appears immediately before `other`
     /// in `other`'s parent block. Mirrors `Instruction::moveBefore` in
     /// `lib/IR/Instruction.cpp`.
-    pub fn move_before(self, other: &Instruction<'ctx, state::Attached>) -> IrResult<()> {
-        if self.module.module().id() != other.module.module().id() {
+    pub fn move_before(
+        self,
+        module_token: &Module<'ctx, B, Unverified>,
+        other: &Instruction<'ctx, state::Attached, B>,
+    ) -> IrResult<()> {
+        if module_token.id() != self.module.id() || self.module.id() != other.module.id() {
             return Err(IrError::ForeignValue);
         }
-        let module = self.module.module();
+        let module = module_token.core_ref();
         let self_id = self.id;
         let other_id = other.id;
         // Remove from current parent.
@@ -759,11 +810,15 @@ impl<'ctx> Instruction<'ctx, state::Attached> {
 
     /// Move this instruction so it appears immediately after `other` in
     /// `other`'s parent block. Mirrors `Instruction::moveAfter`.
-    pub fn move_after(self, other: &Instruction<'ctx, state::Attached>) -> IrResult<()> {
-        if self.module.module().id() != other.module.module().id() {
+    pub fn move_after(
+        self,
+        module_token: &Module<'ctx, B, Unverified>,
+        other: &Instruction<'ctx, state::Attached, B>,
+    ) -> IrResult<()> {
+        if module_token.id() != self.module.id() || self.module.id() != other.module.id() {
             return Err(IrError::ForeignValue);
         }
-        let module = self.module.module();
+        let module = module_token.core_ref();
         let self_id = self.id;
         let other_id = other.id;
         let cur_parent = self.data().parent.get();
@@ -785,18 +840,19 @@ impl<'ctx> Instruction<'ctx, state::Attached> {
     }
 }
 
-impl<'ctx> Instruction<'ctx, state::Detached> {
+impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// Insert this detached instruction immediately before `other` in
     /// `other`'s parent block. Mirrors `Instruction::insertBefore` in
     /// `lib/IR/Instruction.cpp`.
     pub fn insert_before(
         self,
-        other: &Instruction<'ctx, state::Attached>,
-    ) -> IrResult<Instruction<'ctx, state::Attached>> {
-        if self.module.module().id() != other.module.module().id() {
+        module_token: &Module<'ctx, B, Unverified>,
+        other: &Instruction<'ctx, state::Attached, B>,
+    ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
+        if module_token.id() != self.module.id() || self.module.id() != other.module.id() {
             return Err(IrError::ForeignValue);
         }
-        let module = self.module.module();
+        let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
         let bb = crate::basic_block::BasicBlock::<crate::marker::Dyn>::from_parts(
             parent_id,
@@ -805,19 +861,20 @@ impl<'ctx> Instruction<'ctx, state::Detached> {
         );
         bb.insert_instruction_before(self.id, other.id)?;
         update_instruction_parent(module, self.id, parent_id);
-        Ok(Instruction::from_parts(self.id, module))
+        Ok(Instruction::from_parts(self.id, self.module))
     }
 
     /// Insert this detached instruction immediately after `other` in
     /// `other`'s parent block. Mirrors `Instruction::insertAfter`.
     pub fn insert_after(
         self,
-        other: &Instruction<'ctx, state::Attached>,
-    ) -> IrResult<Instruction<'ctx, state::Attached>> {
-        if self.module.module().id() != other.module.module().id() {
+        module_token: &Module<'ctx, B, Unverified>,
+        other: &Instruction<'ctx, state::Attached, B>,
+    ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
+        if module_token.id() != self.module.id() || self.module.id() != other.module.id() {
             return Err(IrError::ForeignValue);
         }
-        let module = self.module.module();
+        let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
         let bb = crate::basic_block::BasicBlock::<crate::marker::Dyn>::from_parts(
             parent_id,
@@ -826,23 +883,26 @@ impl<'ctx> Instruction<'ctx, state::Detached> {
         );
         bb.insert_instruction_after(self.id, other.id)?;
         update_instruction_parent(module, self.id, parent_id);
-        Ok(Instruction::from_parts(self.id, module))
+        Ok(Instruction::from_parts(self.id, self.module))
     }
 
     /// Append this detached instruction to the end of `block`'s
     /// instruction list. Mirrors `Instruction::insertInto(BB, BB->end())`.
     pub fn append_to<R: crate::marker::ReturnMarker>(
         self,
+        module_token: &Module<'ctx, B, Unverified>,
         block: &crate::basic_block::BasicBlock<'ctx, R>,
-    ) -> IrResult<Instruction<'ctx, state::Attached>> {
-        if self.module.module().id() != block.as_value().module().id() {
+    ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
+        if module_token.id() != self.module.id()
+            || self.module.id() != block.as_value().module().id()
+        {
             return Err(IrError::ForeignValue);
         }
-        let module = self.module.module();
+        let module = module_token.core_ref();
         let parent_id = block.as_value().id;
         block.as_dyn().append_instruction(self.id);
         update_instruction_parent(module, self.id, parent_id);
-        Ok(Instruction::from_parts(self.id, module))
+        Ok(Instruction::from_parts(self.id, self.module))
     }
 
     /// Discard a detached instruction without inserting it. Removes the
@@ -850,9 +910,9 @@ impl<'ctx> Instruction<'ctx, state::Detached> {
     /// the value-arena slot tombstoned (still occupied for id-stability,
     /// but unreferenced by any block). Mirrors `Instruction::deleteValue`
     /// in `lib/IR/Instruction.cpp`.
-    pub fn drop_detached(self) {
+    pub fn drop_detached(self, module_token: &Module<'ctx, B, Unverified>) {
         let self_id = self.id;
-        let module = self.module.module();
+        let module = module_token.core_ref();
         deregister_operand_uses(self_id, &self.data().kind, module);
     }
 }
@@ -1032,7 +1092,7 @@ pub(crate) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueId, t
 
 /// Remove `inst_id` from the reverse use-list of every operand it
 /// references. Used by both `erase_from_parent` and `drop_detached`.
-fn deregister_operand_uses(inst_id: ValueId, kind: &InstructionKindData, module: &Module<'_>) {
+fn deregister_operand_uses(inst_id: ValueId, kind: &InstructionKindData, module: &ModuleCore) {
     use std::collections::HashMap;
     let mut occurrences: HashMap<ValueId, usize> = HashMap::new();
     for op_id in kind.operand_ids() {
@@ -1048,7 +1108,7 @@ fn deregister_operand_uses(inst_id: ValueId, kind: &InstructionKindData, module:
     }
 }
 
-fn update_instruction_parent(module: &Module<'_>, inst_id: ValueId, new_parent: ValueId) {
+fn update_instruction_parent(module: &ModuleCore, inst_id: ValueId, new_parent: ValueId) {
     let data = module.context().value_data(inst_id);
     if let ValueKindData::Instruction(_) = &data.kind {
         // The parent field is plain; mutate via a dedicated helper on
@@ -1076,8 +1136,12 @@ impl<'ctx> HasName<'ctx> for Instruction<'ctx, state::Attached> {
         Instruction::name(&self)
     }
     #[inline]
-    fn set_name(self, name: Option<&str>) {
-        Instruction::set_name(&self, name);
+    fn set_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: &str) {
+        Instruction::set_name(&self, module_token, name);
+    }
+    #[inline]
+    fn clear_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>) {
+        Instruction::clear_name(&self, module_token);
     }
 }
 impl HasDebugLoc for Instruction<'_, state::Attached> {

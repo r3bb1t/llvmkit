@@ -98,12 +98,12 @@ impl ComdatData {
 /// passes `Comdat *` around: cheap, copy-able. Identity is
 /// (module, ComdatId).
 #[derive(Clone, Copy)]
-pub struct ComdatRef<'ctx> {
-    pub(crate) module: crate::module::ModuleRef<'ctx>,
+pub struct ComdatRef<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
+    pub(crate) module: crate::module::ModuleRef<'ctx, B>,
     pub(crate) id: ComdatId,
 }
 
-impl<'ctx> ComdatRef<'ctx> {
+impl<'ctx, B: crate::module::ModuleBrand> ComdatRef<'ctx, B> {
     #[inline]
     pub(crate) fn data(self) -> &'ctx ComdatData {
         self.module.module().comdat_at(self.id)
@@ -134,22 +134,22 @@ impl<'ctx> ComdatRef<'ctx> {
     }
 }
 
-impl PartialEq for ComdatRef<'_> {
+impl<B: crate::module::ModuleBrand> PartialEq for ComdatRef<'_, B> {
     fn eq(&self, other: &Self) -> bool {
         self.module == other.module && self.id == other.id
     }
 }
 
-impl Eq for ComdatRef<'_> {}
+impl<B: crate::module::ModuleBrand> Eq for ComdatRef<'_, B> {}
 
-impl core::hash::Hash for ComdatRef<'_> {
+impl<B: crate::module::ModuleBrand> core::hash::Hash for ComdatRef<'_, B> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.module.hash(h);
         self.id.hash(h);
     }
 }
 
-impl fmt::Debug for ComdatRef<'_> {
+impl<B: crate::module::ModuleBrand> fmt::Debug for ComdatRef<'_, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ComdatRef")
             .field("name", &self.name())

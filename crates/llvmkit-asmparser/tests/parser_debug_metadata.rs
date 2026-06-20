@@ -4,12 +4,13 @@ use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::Module;
 
 fn parse_and_render(src: &str) -> String {
-    let module = Module::new("parser_debug_metadata");
-    Parser::new(src.as_bytes(), &module)
-        .expect("lexer primes")
-        .parse_module()
-        .expect("parser succeeds");
-    format!("{module}")
+    Module::with_new("parser_debug_metadata", |module| {
+        Parser::new(src.as_bytes(), &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect("parser succeeds");
+        format!("{module}")
+    })
 }
 
 const DEBUG_MODULE: &str = r#"

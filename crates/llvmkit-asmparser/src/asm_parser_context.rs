@@ -267,20 +267,21 @@ mod tests {
     fn locmap_round_trip() {
         // Exercises the inner table directly; the typed wrapper test waits
         // on parser integration in Session 2.
-        let m = llvmkit_ir::Module::new("locmap_round_trip");
-        let i32_ty = m.i32_type();
-        let g = m
-            .add_external_global("g", i32_ty.as_type())
-            .expect("fresh global");
+        llvmkit_ir::Module::with_new("locmap_round_trip", |m| {
+            let i32_ty = m.i32_type();
+            let g = m
+                .add_external_global("g", i32_ty.as_type())
+                .expect("fresh global");
 
-        let mut map: LocMap<'_> = LocMap::default();
-        let r = FileLocRange::new(FileLoc::new(2, 0), FileLoc::new(4, 0));
-        map.add(g.as_value(), r).unwrap();
-        assert_eq!(map.location_of(g.as_value()), Some(r));
-        assert_eq!(
-            map.add(g.as_value(), r),
-            Err(LocationError::DuplicateHandle)
-        );
+            let mut map: LocMap<'_> = LocMap::default();
+            let r = FileLocRange::new(FileLoc::new(2, 0), FileLoc::new(4, 0));
+            map.add(g.as_value(), r).unwrap();
+            assert_eq!(map.location_of(g.as_value()), Some(r));
+            assert_eq!(
+                map.add(g.as_value(), r),
+                Err(LocationError::DuplicateHandle)
+            );
+        });
     }
 
     /// Ports the half-open semantics of `getXAtLocation(FileLoc)` in
@@ -288,20 +289,21 @@ mod tests {
     /// handle, a query at `End` returns `None`.
     #[test]
     fn locmap_reverse_lookup_is_half_open() {
-        let m = llvmkit_ir::Module::new("locmap_reverse_lookup_is_half_open");
-        let i32_ty = m.i32_type();
-        let g = m
-            .add_external_global("g", i32_ty.as_type())
-            .expect("fresh global");
+        llvmkit_ir::Module::with_new("locmap_reverse_lookup_is_half_open", |m| {
+            let i32_ty = m.i32_type();
+            let g = m
+                .add_external_global("g", i32_ty.as_type())
+                .expect("fresh global");
 
-        let mut map: LocMap<'_> = LocMap::default();
-        let r = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(1, 5));
-        map.add(g.as_value(), r).unwrap();
+            let mut map: LocMap<'_> = LocMap::default();
+            let r = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(1, 5));
+            map.add(g.as_value(), r).unwrap();
 
-        assert_eq!(map.handle_at(FileLoc::new(1, 0)), Some(g.as_value()));
-        assert_eq!(map.handle_at(FileLoc::new(1, 4)), Some(g.as_value()));
-        assert_eq!(map.handle_at(FileLoc::new(1, 5)), None);
-        assert_eq!(map.handle_at(FileLoc::new(0, 0)), None);
+            assert_eq!(map.handle_at(FileLoc::new(1, 0)), Some(g.as_value()));
+            assert_eq!(map.handle_at(FileLoc::new(1, 4)), Some(g.as_value()));
+            assert_eq!(map.handle_at(FileLoc::new(1, 5)), None);
+            assert_eq!(map.handle_at(FileLoc::new(0, 0)), None);
+        });
     }
 
     /// Ports the range-equality semantics of
@@ -309,26 +311,27 @@ mod tests {
     /// `query.start` and ends at-or-before `query.end` match.
     #[test]
     fn locmap_reverse_range_lookup() {
-        let m = llvmkit_ir::Module::new("locmap_reverse_range_lookup");
-        let i32_ty = m.i32_type();
-        let g_inner = m
-            .add_external_global("g_inner", i32_ty.as_type())
-            .expect("fresh global");
-        let g_far = m
-            .add_external_global("g_far", i32_ty.as_type())
-            .expect("fresh global");
+        llvmkit_ir::Module::with_new("locmap_reverse_range_lookup", |m| {
+            let i32_ty = m.i32_type();
+            let g_inner = m
+                .add_external_global("g_inner", i32_ty.as_type())
+                .expect("fresh global");
+            let g_far = m
+                .add_external_global("g_far", i32_ty.as_type())
+                .expect("fresh global");
 
-        let mut map: LocMap<'_> = LocMap::default();
-        let inner = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(2, 0));
-        let far = FileLocRange::new(FileLoc::new(5, 0), FileLoc::new(6, 0));
-        map.add(g_inner.as_value(), inner).unwrap();
-        map.add(g_far.as_value(), far).unwrap();
+            let mut map: LocMap<'_> = LocMap::default();
+            let inner = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(2, 0));
+            let far = FileLocRange::new(FileLoc::new(5, 0), FileLoc::new(6, 0));
+            map.add(g_inner.as_value(), inner).unwrap();
+            map.add(g_far.as_value(), far).unwrap();
 
-        let outer = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(3, 0));
-        assert_eq!(map.handle_at_range(outer), Some(g_inner.as_value()));
+            let outer = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(3, 0));
+            assert_eq!(map.handle_at_range(outer), Some(g_inner.as_value()));
 
-        // Mismatched start — no hit.
-        let shifted = FileLocRange::new(FileLoc::new(1, 1), FileLoc::new(3, 0));
-        assert_eq!(map.handle_at_range(shifted), None);
+            // Mismatched start — no hit.
+            let shifted = FileLocRange::new(FileLoc::new(1, 1), FileLoc::new(3, 0));
+            assert_eq!(map.handle_at_range(shifted), None);
+        });
     }
 }

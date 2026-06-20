@@ -1,10 +1,8 @@
 //! Module verifier. Mirrors `llvm/include/llvm/IR/Verifier.h` and
 //! `llvm/lib/IR/Verifier.cpp` for the constructive subset of opcodes
-//! the IRBuilder ships today (`add`/`sub`/`mul`/`udiv`/`sdiv`/`urem`/
-//! `srem`/`shl`/`lshr`/`ashr`/`and`/`or`/`xor`, `fadd`/`fsub`/`fmul`/
-//! `fdiv`/`frem`, `icmp`, `fcmp`, every cast in [`CastOpcode`],
-//! `alloca`/`load`/`store`, `getelementptr`, `call`, `select`, `phi`,
-//! `ret`/`br`/`unreachable`).
+//! modeled by `llvmkit-ir`: arithmetic, casts, compares, memory, GEP,
+//! calls, select, PHI, terminators, aggregate/vector operations, atomics,
+//! EH / funclet pads, and the parser-era terminator families.
 //!
 //! The verifier walks every function, block, and instruction in
 //! declaration order, applying per-opcode invariants. Each rule cites
@@ -12,22 +10,19 @@
 //!
 //! ## Public surface
 //!
-//! - [`Module::verify_borrowed`] — borrow-only diagnostic check.
-//! - [`Module::verify`] — consumes the module and returns a branded
-//!   [`VerifiedModule`](crate::VerifiedModule) handle, which the (future) pass manager
-//!   will require for any pass that assumes well-formed IR.
+//! - [`Module::verify_borrowed`](crate::Module::verify_borrowed) — borrow-only
+//!   diagnostic check.
+//! - [`Module::verify`](crate::Module::verify) — consumes the module and returns
+//!   `Module<'ctx, B, Verified>`, which the pass manager requires for
+//!   module pipelines that assume well-formed IR.
 //!
 //! ## Coverage gaps (deferred)
 //!
-//! - Cross-block use-before-def needs a dominator tree (Session 4).
-//!   Today the verifier catches every in-block use-before-def
-//!   (including the `Verifier/SelfReferential.ll` case) and trusts
-//!   cross-block uses.
-//! - Metadata / debug-info / intrinsic / inline-asm rules are not
-//!   ported because we do not ship those subsystems yet.
-//! - GEP index-walks-the-aggregate-type checks are deferred until
-//!   the parser lands; today the verifier checks that every GEP
-//!   index is integer-typed and that the source type is sized.
+//! - Metadata / debug-info / intrinsic / inline-asm verifier rules are not
+//!   fully ported yet.
+//! - GEP index-walks-the-aggregate-type checks are deferred; today the
+//!   verifier checks that every GEP index is integer-typed and that the
+//!   source type is sized.
 //! - Per-function attribute coherence rules (`noalias` /
 //!   `byval` / ...) are out of scope for Session 1.
 
@@ -44,7 +39,7 @@ use crate::instr_types::{
 };
 use crate::instruction::{Instruction, InstructionKindData};
 use crate::marker::Dyn;
-use crate::module::Module;
+use crate::module::{ModuleCore, ModuleView};
 use crate::r#type::{Type, TypeData, TypeId};
 use crate::value::{ValueId, ValueKindData};
 
@@ -67,12 +62,14 @@ struct FunctionContext<'a> {
 /// Module verifier. Stateless apart from the per-function CFG cache
 /// it builds during a [`Self::run`] traversal.
 pub(crate) struct Verifier<'ctx> {
-    module: &'ctx Module<'ctx>,
+    module: &'ctx ModuleCore,
 }
 
 impl<'ctx> Verifier<'ctx> {
-    pub(crate) fn new(module: &'ctx Module<'ctx>) -> Self {
-        Self { module }
+    pub(crate) fn new<B: crate::module::ModuleBrand + 'ctx>(module: ModuleView<'ctx, B>) -> Self {
+        Self {
+            module: module.core_ref(),
+        }
     }
 
     /// Verify every function in the module. Returns the first
@@ -388,11 +385,11 @@ impl<'ctx> Verifier<'ctx> {
         let id = crate::intrinsics::IntrinsicId::lookup(name).ok_or(IrError::InvalidOperation {
             message: "unknown intrinsic",
         })?;
-        let expected =
-            id.function_type(self.module, name)
-                .map_err(|_| IrError::InvalidOperation {
-                    message: "intrinsic signature mismatch",
-                })?;
+        let expected = id
+            .function_type_ref(crate::module::ModuleRef::new(self.module), name)
+            .map_err(|_| IrError::InvalidOperation {
+                message: "intrinsic signature mismatch",
+            })?;
         if f.signature() != expected {
             return Err(IrError::InvalidOperation {
                 message: "intrinsic signature mismatch",
@@ -2483,7 +2480,7 @@ fn build_predecessors(f: FunctionValue<'_, Dyn>) -> HashMap<ValueId, Vec<ValueId
 
 /// Recursively detects whether a type contains any scalable vector.
 /// Mirrors `Type::isScalableTy` in `llvm/lib/IR/Type.cpp`.
-fn type_contains_scalable(m: &Module<'_>, ty: TypeId) -> bool {
+fn type_contains_scalable(m: &ModuleCore, ty: TypeId) -> bool {
     match m.context().type_data(ty) {
         TypeData::ScalableVector { .. } => true,
         TypeData::FixedVector { elem, .. } | TypeData::Array { elem, .. } => {
@@ -2497,7 +2494,7 @@ fn type_contains_scalable(m: &Module<'_>, ty: TypeId) -> bool {
     }
 }
 
-fn is_int_or_int_vector(m: &Module<'_>, ty: TypeId) -> bool {
+fn is_int_or_int_vector(m: &ModuleCore, ty: TypeId) -> bool {
     let d = m.context().type_data(ty);
     if d.as_integer().is_some() {
         return true;
@@ -2516,7 +2513,7 @@ enum AggWalkErr {
 }
 
 fn walk_aggregate_path(
-    m: &Module<'_>,
+    m: &ModuleCore,
     root: TypeId,
     indices: &[u32],
 ) -> Result<TypeId, AggWalkErr> {
@@ -2550,7 +2547,7 @@ fn walk_aggregate_path(
     Ok(cur)
 }
 
-fn is_fp_or_fp_vector(m: &Module<'_>, ty: TypeId) -> bool {
+fn is_fp_or_fp_vector(m: &ModuleCore, ty: TypeId) -> bool {
     let d = m.context().type_data(ty);
     if is_fp_data(d) {
         return true;
@@ -2563,7 +2560,7 @@ fn is_fp_or_fp_vector(m: &Module<'_>, ty: TypeId) -> bool {
     false
 }
 
-fn is_pointer_or_pointer_vector(m: &Module<'_>, ty: TypeId) -> bool {
+fn is_pointer_or_pointer_vector(m: &ModuleCore, ty: TypeId) -> bool {
     let d = m.context().type_data(ty);
     if d.is_pointer_data() {
         return true;
@@ -2576,11 +2573,11 @@ fn is_pointer_or_pointer_vector(m: &Module<'_>, ty: TypeId) -> bool {
     false
 }
 
-fn is_i1(m: &Module<'_>, ty: TypeId) -> bool {
+fn is_i1(m: &ModuleCore, ty: TypeId) -> bool {
     matches!(m.context().type_data(ty).as_integer(), Some(1))
 }
 
-fn is_i1_vector(m: &Module<'_>, ty: TypeId) -> bool {
+fn is_i1_vector(m: &ModuleCore, ty: TypeId) -> bool {
     if let Some((elem, _, _)) = m.context().type_data(ty).as_vector() {
         is_i1(m, elem)
     } else {
@@ -2611,7 +2608,7 @@ fn is_fp_data(d: &TypeData) -> bool {
 /// bits; LangRef accepts conversions in either direction so long as
 /// they are not the identity, which the per-opcode width check
 /// (`s != d`) catches separately.
-fn fp_rank(m: &Module<'_>, ty: TypeId) -> Option<u32> {
+fn fp_rank(m: &ModuleCore, ty: TypeId) -> Option<u32> {
     match m.context().type_data(ty) {
         TypeData::Half => Some(16),
         TypeData::BFloat => Some(16),
@@ -2627,7 +2624,7 @@ fn fp_rank(m: &Module<'_>, ty: TypeId) -> Option<u32> {
 /// Bit width of a value-bearing type, or `None` if it has no defined
 /// width (function/void/label/...). Mirrors `Type::getPrimitiveSizeInBits`
 /// for the cases bitcast cares about.
-fn type_bit_width(m: &Module<'_>, ty: TypeId) -> Option<u32> {
+fn type_bit_width(m: &ModuleCore, ty: TypeId) -> Option<u32> {
     match m.context().type_data(ty) {
         TypeData::Integer { bits } => Some(*bits),
         TypeData::Half | TypeData::BFloat => Some(16),
@@ -2651,7 +2648,7 @@ fn type_bit_width(m: &Module<'_>, ty: TypeId) -> Option<u32> {
 
 /// Best-effort label for a basic-block id. Used in diagnostics; not a
 /// faithful slot tracker.
-fn slot_label(m: &Module<'_>, block_id: ValueId) -> String {
+fn slot_label(m: &ModuleCore, block_id: ValueId) -> String {
     let v = m.context().value_data(block_id);
     if let Some(name) = v.name.borrow().as_ref() {
         return name.clone();
@@ -2715,6 +2712,7 @@ mod tests {
         result_ty: TypeId,
         kind: InstructionKindData,
     ) -> ValueId {
+        let m = m.core_ref();
         let v = build_instruction_value(result_ty, bb_id, kind, None);
         let id = m.context().push_value(v);
         let bb_data = match &m.context().value_data(bb_id).kind {
@@ -2727,6 +2725,7 @@ mod tests {
 
     /// Push a fresh constant-int value of the given type.
     fn fab_const_int_id(m: &Module<'_>, ty: TypeId, value: u64) -> ValueId {
+        let m = m.core_ref();
         m.context().push_value(ValueData {
             ty,
             name: core::cell::RefCell::new(None),
@@ -2738,6 +2737,7 @@ mod tests {
 
     /// Push a fresh `ptr null` value.
     fn fab_null_ptr_id(m: &Module<'_>, ptr_ty: TypeId) -> ValueId {
+        let m = m.core_ref();
         m.context().push_value(ValueData {
             ty: ptr_ty,
             name: core::cell::RefCell::new(None),
@@ -2746,18 +2746,15 @@ mod tests {
             use_list: core::cell::RefCell::new(Vec::new()),
         })
     }
-
-    /// Skeleton: build a `define <ret> @<name>(<params>) { entry: }` and
-    /// return the function and entry-block ids.
-    fn skeleton<R: crate::marker::ReturnMarker>(
-        m: &Module<'_>,
-        ret_ty: crate::Type<'_>,
-        params: &[crate::Type<'_>],
+    fn skeleton<'ctx, R: crate::marker::ReturnMarker>(
+        m: &Module<'ctx>,
+        ret_ty: crate::Type<'ctx>,
+        params: &[crate::Type<'ctx>],
         name: &str,
     ) -> (ValueId, ValueId) {
         let fn_ty = m.fn_type(ret_ty, params.iter().copied(), false);
         let f = m.add_function::<R>(name, fn_ty, Linkage::External).unwrap();
-        let bb = f.append_basic_block("entry");
+        let bb = f.append_basic_block(m, "entry");
         // Reach the value-id pair without leaking R into the return.
         let f_id = {
             // FunctionValue<R> has a private id field; widen via as_dyn.
@@ -2788,281 +2785,291 @@ mod tests {
     /// (ptr) does not match function return type (i32).
     #[test]
     fn ret_type_mismatch_ptr_in_i32_function() {
-        let m = Module::new("t");
-        let i32_ty = m.i32_type().as_type();
-        let ptr_ty = m.ptr_type(0).as_type();
-        let (_, bb_id) = skeleton::<i32>(&m, i32_ty, &[], "f");
-        let null_id = fab_null_ptr_id(&m, ptr_ty.id());
-        fabricate_instruction(
-            &m,
-            bb_id,
-            m.void_type().as_type().id(),
-            InstructionKindData::Ret(ReturnOpData::new(Some(null_id))),
-        );
-        let err = m.verify_borrowed().unwrap_err();
-        assert_rule(&err, VerifierRule::ReturnTypeMismatch);
+        Module::with_new("t", |m| {
+            let i32_ty = m.i32_type().as_type();
+            let ptr_ty = m.ptr_type(0).as_type();
+            let (_, bb_id) = skeleton::<i32>(&m, i32_ty, &[], "f");
+            let null_id = fab_null_ptr_id(&m, ptr_ty.id());
+            fabricate_instruction(
+                &m,
+                bb_id,
+                m.void_type().as_type().id(),
+                InstructionKindData::Ret(ReturnOpData::new(Some(null_id))),
+            );
+            let err = m.verify_borrowed().unwrap_err();
+            assert_rule(&err, VerifierRule::ReturnTypeMismatch);
+        });
     }
 
     /// `test/Verifier/2008-11-15-RetVoid.ll` -- void function with a
     /// returned operand.
     #[test]
     fn ret_value_in_void_function() {
-        let m = Module::new("t");
-        let void_ty = m.void_type().as_type();
-        let i32_ty = m.i32_type().as_type();
-        let (_, bb_id) = skeleton::<()>(&m, void_ty, &[], "f");
-        let zero_id = fab_const_int_id(&m, i32_ty.id(), 0);
-        fabricate_instruction(
-            &m,
-            bb_id,
-            void_ty.id(),
-            InstructionKindData::Ret(ReturnOpData::new(Some(zero_id))),
-        );
-        let err = m.verify_borrowed().unwrap_err();
-        assert_rule(&err, VerifierRule::ReturnTypeMismatch);
+        Module::with_new("t", |m| {
+            let void_ty = m.void_type().as_type();
+            let i32_ty = m.i32_type().as_type();
+            let (_, bb_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            let zero_id = fab_const_int_id(&m, i32_ty.id(), 0);
+            fabricate_instruction(
+                &m,
+                bb_id,
+                void_ty.id(),
+                InstructionKindData::Ret(ReturnOpData::new(Some(zero_id))),
+            );
+            let err = m.verify_borrowed().unwrap_err();
+            assert_rule(&err, VerifierRule::ReturnTypeMismatch);
+        });
     }
 
     /// Binary operands have differing types: `add i32 %a, i64 %b`.
     /// Mirrors `Verifier::visitBinaryOperator` operand-equality rule.
     #[test]
     fn binary_operand_type_mismatch() {
-        let m = Module::new("t");
-        let i32_ty = m.i32_type().as_type();
-        let i64_ty = m.i64_type().as_type();
-        let void_ty = m.void_type().as_type();
-        let (f_id, bb_id) = skeleton::<()>(&m, void_ty, &[i32_ty, i64_ty], "f");
-        let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, &m);
-        let p0 = f.param(0).unwrap();
-        let p1 = f.param(1).unwrap();
-        fabricate_instruction(
-            &m,
-            bb_id,
-            i32_ty.id(),
-            InstructionKindData::Add(BinaryOpData::new(p0.as_value().id, p1.as_value().id)),
-        );
-        append_ret_void(&m, bb_id);
-        let err = m.verify_borrowed().unwrap_err();
-        assert_rule(&err, VerifierRule::BinaryOperandsTypeMismatch);
+        Module::with_new("t", |m| {
+            let i32_ty = m.i32_type().as_type();
+            let i64_ty = m.i64_type().as_type();
+            let void_ty = m.void_type().as_type();
+            let (f_id, bb_id) = skeleton::<()>(&m, void_ty, &[i32_ty, i64_ty], "f");
+            let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
+            let p0 = f.param(0).unwrap();
+            let p1 = f.param(1).unwrap();
+            fabricate_instruction(
+                &m,
+                bb_id,
+                i32_ty.id(),
+                InstructionKindData::Add(BinaryOpData::new(p0.as_value().id, p1.as_value().id)),
+            );
+            append_ret_void(&m, bb_id);
+            let err = m.verify_borrowed().unwrap_err();
+            assert_rule(&err, VerifierRule::BinaryOperandsTypeMismatch);
+        });
     }
 
     /// Conditional branch with non-i1 condition.
     /// Mirrors `Verifier::visitBranchInst`.
     #[test]
     fn br_condition_not_i1() {
-        let m = Module::new("t");
-        let void_ty = m.void_type().as_type();
-        let i32_ty = m.i32_type().as_type();
-        let (f_id, entry_id) = skeleton::<()>(&m, void_ty, &[i32_ty], "f");
-        let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, &m);
-        let then_bb = f.append_basic_block("then");
-        let else_bb = f.append_basic_block("else");
-        append_ret_void(&m, then_bb.as_value().id);
-        append_ret_void(&m, else_bb.as_value().id);
-        let p0 = f.param(0).unwrap();
-        fabricate_instruction(
-            &m,
-            entry_id,
-            void_ty.id(),
-            InstructionKindData::Br(BranchInstData {
-                kind: BranchKind::Conditional {
-                    cond: core::cell::Cell::new(p0.as_value().id),
-                    then_bb: then_bb.as_value().id,
-                    else_bb: else_bb.as_value().id,
-                },
-            }),
-        );
-        let err = m.verify_borrowed().unwrap_err();
-        assert_rule(&err, VerifierRule::BranchConditionNotI1);
+        Module::with_new("t", |m| {
+            let void_ty = m.void_type().as_type();
+            let i32_ty = m.i32_type().as_type();
+            let (f_id, entry_id) = skeleton::<()>(&m, void_ty, &[i32_ty], "f");
+            let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
+            let then_bb = f.append_basic_block(&m, "then");
+            let else_bb = f.append_basic_block(&m, "else");
+            append_ret_void(&m, then_bb.as_value().id);
+            append_ret_void(&m, else_bb.as_value().id);
+            let p0 = f.param(0).unwrap();
+            fabricate_instruction(
+                &m,
+                entry_id,
+                void_ty.id(),
+                InstructionKindData::Br(BranchInstData {
+                    kind: BranchKind::Conditional {
+                        cond: core::cell::Cell::new(p0.as_value().id),
+                        then_bb: then_bb.as_value().id,
+                        else_bb: else_bb.as_value().id,
+                    },
+                }),
+            );
+            let err = m.verify_borrowed().unwrap_err();
+            assert_rule(&err, VerifierRule::BranchConditionNotI1);
+        });
     }
 
     /// Two terminators in a row -- second one is misplaced.
     /// Mirrors `Verifier::visitInstruction` terminator-position rule.
     #[test]
     fn misplaced_terminator() {
-        let m = Module::new("t");
-        let void_ty = m.void_type().as_type();
-        let (_, bb_id) = skeleton::<()>(&m, void_ty, &[], "f");
-        for _ in 0..2 {
-            append_ret_void(&m, bb_id);
-        }
-        let err = m.verify_borrowed().unwrap_err();
-        assert_rule(&err, VerifierRule::MisplacedTerminator);
+        Module::with_new("t", |m| {
+            let void_ty = m.void_type().as_type();
+            let (_, bb_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            for _ in 0..2 {
+                append_ret_void(&m, bb_id);
+            }
+            let err = m.verify_borrowed().unwrap_err();
+            assert_rule(&err, VerifierRule::MisplacedTerminator);
+        });
     }
 
     /// `test/Verifier/PhiGrouping.ll` -- phi appears after a non-phi.
     #[test]
     fn phi_not_at_top() {
-        let m = Module::new("t");
-        let i32_ty = m.i32_type().as_type();
-        let void_ty = m.void_type().as_type();
-        let (f_id, entry_id) = skeleton::<()>(&m, void_ty, &[i32_ty, i32_ty], "f");
-        let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, &m);
-        let p0 = f.param(0).unwrap();
-        let p1 = f.param(1).unwrap();
-        fabricate_instruction(
-            &m,
-            entry_id,
-            i32_ty.id(),
-            InstructionKindData::Add(BinaryOpData::new(p0.as_value().id, p1.as_value().id)),
-        );
-        fabricate_instruction(
-            &m,
-            entry_id,
-            i32_ty.id(),
-            InstructionKindData::Phi(PhiData::new()),
-        );
-        append_ret_void(&m, entry_id);
-        let err = m.verify_borrowed().unwrap_err();
-        assert_rule(&err, VerifierRule::PhiNotAtTop);
+        Module::with_new("t", |m| {
+            let i32_ty = m.i32_type().as_type();
+            let void_ty = m.void_type().as_type();
+            let (f_id, entry_id) = skeleton::<()>(&m, void_ty, &[i32_ty, i32_ty], "f");
+            let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
+            let p0 = f.param(0).unwrap();
+            let p1 = f.param(1).unwrap();
+            fabricate_instruction(
+                &m,
+                entry_id,
+                i32_ty.id(),
+                InstructionKindData::Add(BinaryOpData::new(p0.as_value().id, p1.as_value().id)),
+            );
+            fabricate_instruction(
+                &m,
+                entry_id,
+                i32_ty.id(),
+                InstructionKindData::Phi(PhiData::new()),
+            );
+            append_ret_void(&m, entry_id);
+            let err = m.verify_borrowed().unwrap_err();
+            assert_rule(&err, VerifierRule::PhiNotAtTop);
+        });
     }
 
     /// `test/Verifier/SelfReferential.ll` -- non-phi instruction whose
     /// operand is itself.
     #[test]
     fn self_reference_in_non_phi() {
-        let m = Module::new("t");
-        let i32_ty = m.i32_type().as_type();
-        let void_ty = m.void_type().as_type();
-        let (_, bb_id) = skeleton::<()>(&m, void_ty, &[], "f");
-        // Predict the next value-id by pushing a probe and reading
-        // its arena index.
-        let probe = fab_const_int_id(&m, i32_ty.id(), 0);
-        let next_index = probe.arena_index() + 1;
-        let next_id = ValueId::from_index(next_index);
-        // Push an `add i32 next_id, probe` -- next_id IS this add's id.
-        let pushed = fabricate_instruction(
-            &m,
-            bb_id,
-            i32_ty.id(),
-            InstructionKindData::Add(BinaryOpData::new(next_id, probe)),
-        );
-        assert_eq!(pushed, next_id, "id prediction must match arena order");
-        append_ret_void(&m, bb_id);
-        let err = m.verify_borrowed().unwrap_err();
-        assert_rule(&err, VerifierRule::SelfReference);
+        Module::with_new("t", |m| {
+            let i32_ty = m.i32_type().as_type();
+            let void_ty = m.void_type().as_type();
+            let (_, bb_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            // Predict the next value-id by pushing a probe and reading
+            // its arena index.
+            let probe = fab_const_int_id(&m, i32_ty.id(), 0);
+            let next_index = probe.arena_index() + 1;
+            let next_id = ValueId::from_index(next_index);
+            // Push an `add i32 next_id, probe` -- next_id IS this add's id.
+            let pushed = fabricate_instruction(
+                &m,
+                bb_id,
+                i32_ty.id(),
+                InstructionKindData::Add(BinaryOpData::new(next_id, probe)),
+            );
+            assert_eq!(pushed, next_id, "id prediction must match arena order");
+            append_ret_void(&m, bb_id);
+            let err = m.verify_borrowed().unwrap_err();
+            assert_rule(&err, VerifierRule::SelfReference);
+        });
     }
 
     /// `test/Verifier/AmbiguousPhi.ll` -- duplicate predecessor with
     /// differing values.
     #[test]
     fn ambiguous_phi_duplicate_predecessor() {
-        let m = Module::new("t");
-        let i1_ty = m.bool_type().as_type();
-        let i32_ty = m.i32_type().as_type();
-        let void_ty = m.void_type().as_type();
-        let (f_id, entry_id) = skeleton::<()>(&m, void_ty, &[i1_ty], "f");
-        let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, &m);
-        let target = f.append_basic_block("target");
-        let cond_id = f.param(0).unwrap().as_value().id;
-        fabricate_instruction(
-            &m,
-            entry_id,
-            void_ty.id(),
-            InstructionKindData::Br(BranchInstData {
-                kind: BranchKind::Conditional {
-                    cond: core::cell::Cell::new(cond_id),
-                    then_bb: target.as_value().id,
-                    else_bb: target.as_value().id,
-                },
-            }),
-        );
-        let one = fab_const_int_id(&m, i32_ty.id(), 1);
-        let two = fab_const_int_id(&m, i32_ty.id(), 2);
-        let phi = PhiData::new();
-        phi.incoming
-            .borrow_mut()
-            .push((core::cell::Cell::new(one), entry_id));
-        phi.incoming
-            .borrow_mut()
-            .push((core::cell::Cell::new(two), entry_id));
-        fabricate_instruction(
-            &m,
-            target.as_value().id,
-            i32_ty.id(),
-            InstructionKindData::Phi(phi),
-        );
-        append_ret_void(&m, target.as_value().id);
-        let err = m.verify_borrowed().unwrap_err();
-        assert_rule(&err, VerifierRule::AmbiguousPhi);
+        Module::with_new("t", |m| {
+            let i1_ty = m.bool_type().as_type();
+            let i32_ty = m.i32_type().as_type();
+            let void_ty = m.void_type().as_type();
+            let (f_id, entry_id) = skeleton::<()>(&m, void_ty, &[i1_ty], "f");
+            let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
+            let target = f.append_basic_block(&m, "target");
+            let cond_id = f.param(0).unwrap().as_value().id;
+            fabricate_instruction(
+                &m,
+                entry_id,
+                void_ty.id(),
+                InstructionKindData::Br(BranchInstData {
+                    kind: BranchKind::Conditional {
+                        cond: core::cell::Cell::new(cond_id),
+                        then_bb: target.as_value().id,
+                        else_bb: target.as_value().id,
+                    },
+                }),
+            );
+            let one = fab_const_int_id(&m, i32_ty.id(), 1);
+            let two = fab_const_int_id(&m, i32_ty.id(), 2);
+            let phi = PhiData::new();
+            phi.incoming
+                .borrow_mut()
+                .push((core::cell::Cell::new(one), entry_id));
+            phi.incoming
+                .borrow_mut()
+                .push((core::cell::Cell::new(two), entry_id));
+            fabricate_instruction(
+                &m,
+                target.as_value().id,
+                i32_ty.id(),
+                InstructionKindData::Phi(phi),
+            );
+            append_ret_void(&m, target.as_value().id);
+            let err = m.verify_borrowed().unwrap_err();
+            assert_rule(&err, VerifierRule::AmbiguousPhi);
+        });
     }
 
     /// Phi references a block that is not a CFG predecessor.
     #[test]
     fn phi_predecessor_mismatch() {
-        let m = Module::new("t");
-        let i32_ty = m.i32_type().as_type();
-        let void_ty = m.void_type().as_type();
-        let (f_id, entry_id) = skeleton::<()>(&m, void_ty, &[], "f");
-        let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, &m);
-        let target = f.append_basic_block("target");
-        let unrelated = f.append_basic_block("unrelated");
-        fabricate_instruction(
-            &m,
-            entry_id,
-            void_ty.id(),
-            InstructionKindData::Br(BranchInstData {
-                kind: BranchKind::Unconditional(target.as_value().id),
-            }),
-        );
-        append_ret_void(&m, unrelated.as_value().id);
-        let bogus = fab_const_int_id(&m, i32_ty.id(), 7);
-        let phi = PhiData::new();
-        phi.incoming
-            .borrow_mut()
-            .push((core::cell::Cell::new(bogus), unrelated.as_value().id));
-        fabricate_instruction(
-            &m,
-            target.as_value().id,
-            i32_ty.id(),
-            InstructionKindData::Phi(phi),
-        );
-        append_ret_void(&m, target.as_value().id);
-        let err = m.verify_borrowed().unwrap_err();
-        assert_rule(&err, VerifierRule::PhiPredecessorMismatch);
+        Module::with_new("t", |m| {
+            let i32_ty = m.i32_type().as_type();
+            let void_ty = m.void_type().as_type();
+            let (f_id, entry_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
+            let target = f.append_basic_block(&m, "target");
+            let unrelated = f.append_basic_block(&m, "unrelated");
+            fabricate_instruction(
+                &m,
+                entry_id,
+                void_ty.id(),
+                InstructionKindData::Br(BranchInstData {
+                    kind: BranchKind::Unconditional(target.as_value().id),
+                }),
+            );
+            append_ret_void(&m, unrelated.as_value().id);
+            let bogus = fab_const_int_id(&m, i32_ty.id(), 7);
+            let phi = PhiData::new();
+            phi.incoming
+                .borrow_mut()
+                .push((core::cell::Cell::new(bogus), unrelated.as_value().id));
+            fabricate_instruction(
+                &m,
+                target.as_value().id,
+                i32_ty.id(),
+                InstructionKindData::Phi(phi),
+            );
+            append_ret_void(&m, target.as_value().id);
+            let err = m.verify_borrowed().unwrap_err();
+            assert_rule(&err, VerifierRule::PhiPredecessorMismatch);
+        });
     }
 
     /// Call argument count mismatch -- non-vararg callee with wrong
     /// argc. Mirrors `Verifier::visitCallBase`.
     #[test]
     fn call_arg_count_mismatch() {
-        let m = Module::new("t");
-        let i32_ty = m.i32_type().as_type();
-        let void_ty = m.void_type().as_type();
-        // Callee: `define i32 @callee(i32, i32)` -- empty body, terminator
-        // fabricated to make it valid.
-        let callee_fn_ty = m.fn_type(i32_ty, [i32_ty, i32_ty], false);
-        let callee = m
-            .add_function::<i32>("callee", callee_fn_ty, Linkage::External)
-            .unwrap();
-        let cb = callee.append_basic_block("entry");
-        let zero = fab_const_int_id(&m, i32_ty.id(), 0);
-        fabricate_instruction(
-            &m,
-            cb.as_value().id,
-            void_ty.id(),
-            InstructionKindData::Ret(ReturnOpData::new(Some(zero))),
-        );
-        // Caller: passes only ONE arg.
-        let caller_fn_ty = m.fn_type(void_ty, [i32_ty], false);
-        let caller = m
-            .add_function::<()>("caller", caller_fn_ty, Linkage::External)
-            .unwrap();
-        let entry = caller.append_basic_block("entry");
-        let arg_id = caller.param(0).unwrap().as_value().id;
-        fabricate_instruction(
-            &m,
-            entry.as_value().id,
-            i32_ty.id(),
-            InstructionKindData::Call(crate::instr_types::CallInstData::new(
-                callee.as_value().id,
-                callee_fn_ty.as_type().id(),
-                [arg_id],
-                crate::CallingConv::default(),
-                crate::instr_types::TailCallKind::None,
-            )),
-        );
-        append_ret_void(&m, entry.as_value().id);
-        let err = m.verify_borrowed().unwrap_err();
-        assert_rule(&err, VerifierRule::CallArgCountMismatch);
+        Module::with_new("t", |m| {
+            let i32_ty = m.i32_type().as_type();
+            let void_ty = m.void_type().as_type();
+            // Callee: `define i32 @callee(i32, i32)` -- empty body, terminator
+            // fabricated to make it valid.
+            let callee_fn_ty = m.fn_type(i32_ty, [i32_ty, i32_ty], false);
+            let callee = m
+                .add_function::<i32>("callee", callee_fn_ty, Linkage::External)
+                .unwrap();
+            let cb = callee.append_basic_block(&m, "entry");
+            let zero = fab_const_int_id(&m, i32_ty.id(), 0);
+            fabricate_instruction(
+                &m,
+                cb.as_value().id,
+                void_ty.id(),
+                InstructionKindData::Ret(ReturnOpData::new(Some(zero))),
+            );
+            // Caller: passes only ONE arg.
+            let caller_fn_ty = m.fn_type(void_ty, [i32_ty], false);
+            let caller = m
+                .add_function::<()>("caller", caller_fn_ty, Linkage::External)
+                .unwrap();
+            let entry = caller.append_basic_block(&m, "entry");
+            let arg_id = caller.param(0).unwrap().as_value().id;
+            fabricate_instruction(
+                &m,
+                entry.as_value().id,
+                i32_ty.id(),
+                InstructionKindData::Call(crate::instr_types::CallInstData::new(
+                    callee.as_value().id,
+                    callee_fn_ty.as_type().id(),
+                    [arg_id],
+                    crate::CallingConv::default(),
+                    crate::instr_types::TailCallKind::None,
+                )),
+            );
+            append_ret_void(&m, entry.as_value().id);
+            let err = m.verify_borrowed().unwrap_err();
+            assert_rule(&err, VerifierRule::CallArgCountMismatch);
+        });
     }
 }

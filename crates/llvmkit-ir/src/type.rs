@@ -26,10 +26,11 @@
 
 use core::cell::RefCell;
 use core::fmt;
+use core::hash::{Hash, Hasher};
 use core::num::NonZeroU32;
 
 use crate::TypeKindLabel;
-use crate::module::{Module, ModuleRef};
+use crate::module::{ModuleBrand, ModuleCore, ModuleRef, ModuleView};
 
 /// Minimum legal integer width. Mirrors `IntegerType::MIN_INT_BITS`
 /// (`DerivedTypes.h`).
@@ -245,24 +246,57 @@ pub(crate) struct TargetExtTypeData {
 /// Erased public handle for any IR type.
 ///
 /// Two-field record: an arena index plus a brand-carrying module
-/// reference. The `ModuleRef<'ctx>` helper makes the `Module` field
-/// equality-and-hash-by-`ModuleId`, so the entire handle derives
-/// `PartialEq + Eq + Hash + Debug + Copy + Clone` without any hand-rolled
-/// impls.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Type<'ctx> {
+/// reference. Equality and hashing compare the branded module reference by
+/// [`ModuleId`](crate::ModuleId), so the handle remains cheap to copy and
+/// store in maps.
+pub struct Type<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: TypeId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
 }
 
-impl<'ctx> Type<'ctx> {
+impl<B: ModuleBrand> Clone for Type<'_, B> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<B: ModuleBrand> Copy for Type<'_, B> {}
+
+impl<B: ModuleBrand> PartialEq for Type<'_, B> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.module == other.module
+    }
+}
+
+impl<B: ModuleBrand> Eq for Type<'_, B> {}
+
+impl<B: ModuleBrand> Hash for Type<'_, B> {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+        self.module.hash(state);
+    }
+}
+
+impl<B: ModuleBrand> fmt::Debug for Type<'_, B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Type").field("id", &self.id).finish()
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     /// Construct from raw parts. Crate-internal: a public Module method
     /// is the only path that hands out type handles.
     #[inline]
-    pub(crate) fn new(id: TypeId, module: &'ctx Module<'ctx>) -> Self {
+    pub(crate) fn new<M>(id: TypeId, module: M) -> Self
+    where
+        M: Into<ModuleRef<'ctx, B>>,
+    {
         Self {
             id,
-            module: ModuleRef::new(module),
+            module: module.into(),
         }
     }
 
@@ -281,8 +315,8 @@ impl<'ctx> Type<'ctx> {
 
     /// Owning module reference.
     #[inline]
-    pub fn module(self) -> &'ctx Module<'ctx> {
-        self.module.module()
+    pub fn module(self) -> ModuleView<'ctx, B> {
+        ModuleView::new(self.module.module())
     }
 
     /// Analysis-mode discriminator. Pattern-match here for read-only IR
@@ -475,7 +509,7 @@ pub enum TypeKind {
 // Display
 // --------------------------------------------------------------------------
 
-impl<'ctx> fmt::Display for Type<'ctx> {
+impl<'ctx, B: ModuleBrand> fmt::Display for Type<'ctx, B> {
     /// IR-textual form. Placeholder until the full `AsmWriter.cpp` port
     /// lands; deterministic but not a faithful reproduction of every
     /// LLVM corner case (notably padding/alignment annotations).
@@ -501,7 +535,7 @@ impl<'ctx> fmt::Display for Type<'ctx> {
                 params,
                 is_var_arg,
             } => {
-                let m = self.module.module();
+                let m = self.module;
                 write!(f, "{} (", Type::new(*ret, m))?;
                 let mut first = true;
                 for p in params.iter() {
@@ -520,17 +554,13 @@ impl<'ctx> fmt::Display for Type<'ctx> {
                 f.write_str(")")
             }
             TypeData::Array { elem, n } => {
-                write!(f, "[{n} x {}]", Type::new(*elem, self.module.module()))
+                write!(f, "[{n} x {}]", Type::new(*elem, self.module))
             }
             TypeData::FixedVector { elem, n } => {
-                write!(f, "<{n} x {}>", Type::new(*elem, self.module.module()))
+                write!(f, "<{n} x {}>", Type::new(*elem, self.module))
             }
             TypeData::ScalableVector { elem, min } => {
-                write!(
-                    f,
-                    "<vscale x {min} x {}>",
-                    Type::new(*elem, self.module.module())
-                )
+                write!(f, "<vscale x {min} x {}>", Type::new(*elem, self.module))
             }
             TypeData::Struct(s) => {
                 if let Some(name) = &s.name {
@@ -538,7 +568,7 @@ impl<'ctx> fmt::Display for Type<'ctx> {
                 }
                 let body = s.body.borrow();
                 let body = body.as_ref().expect("literal struct must have body");
-                let m = self.module.module();
+                let m = self.module;
                 if body.packed {
                     f.write_str("<{ ")?;
                 } else {
@@ -589,7 +619,7 @@ impl<'ctx> fmt::Display for Type<'ctx> {
 // Helpers
 // --------------------------------------------------------------------------
 
-fn is_sized(module: &Module<'_>, id: TypeId) -> bool {
+fn is_sized(module: &ModuleCore, id: TypeId) -> bool {
     let data = module.context().type_data(id);
     match data {
         TypeData::Void
@@ -638,15 +668,17 @@ pub(crate) mod sealed {
 /// not an extension point. Bound generic code with `T: IrType<'ctx>`
 /// when a function should accept any type without enumerating every
 /// concrete handle.
-pub trait IrType<'ctx>: sealed::Sealed + Copy + Sized + core::fmt::Debug {
+pub trait IrType<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>>:
+    sealed::Sealed + Copy + Sized + core::fmt::Debug
+{
     /// Widen to the erased [`Type`] handle.
-    fn as_type(self) -> Type<'ctx>;
+    fn as_type(self) -> Type<'ctx, B>;
 }
 
-impl<'ctx> sealed::Sealed for Type<'ctx> {}
-impl<'ctx> IrType<'ctx> for Type<'ctx> {
+impl<'ctx, B: ModuleBrand> sealed::Sealed for Type<'ctx, B> {}
+impl<'ctx, B: ModuleBrand> IrType<'ctx, B> for Type<'ctx, B> {
     #[inline]
-    fn as_type(self) -> Type<'ctx> {
+    fn as_type(self) -> Type<'ctx, B> {
         self
     }
 }

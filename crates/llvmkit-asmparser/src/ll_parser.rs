@@ -28,13 +28,15 @@
 //! - Cross-module mixing is rejected by the borrow checker through the
 //!   `'ctx` brand on [`llvmkit_ir::Module`].
 
+use core::marker::PhantomData;
 use llvmkit_ir::attributes::{AttrIndex, AttrKind, Attribute, AttributeStorage};
 use std::collections::HashMap;
 
 use llvmkit_ir::{
-    Align, AnyTypeEnum, AtomicOrdering, CallingConv, DllStorageClass, FastMathFlags, IrError,
-    Linkage, MaybeAlign, Module, SelectionKind, StructType, SyncScope, ThreadLocalMode, Type,
-    UnnamedAddr, UseListOrderBBRecord, UseListOrderRecord, Visibility, derived_types::PointerType,
+    Align, AnyTypeEnum, AtomicOrdering, Brand, CallingConv, ConstantFolder, DllStorageClass, Dyn,
+    FastMathFlags, IRBuilder, IrError, Linkage, MaybeAlign, Module, ModuleBrand, Positioned,
+    SelectionKind, StructType, SyncScope, ThreadLocalMode, Type, TypeKind, UnnamedAddr, Unverified,
+    UseListOrderBBRecord, UseListOrderRecord, Visibility, derived_types::PointerType,
 };
 use llvmkit_support::{Span, Spanned};
 
@@ -149,8 +151,8 @@ fn keyword_text(k: Keyword) -> &'static str {
 /// most recent forward reference so Session 3 / `validateEndOfModule` can
 /// blame the right span if the definition never lands.
 #[derive(Debug, Clone, Copy)]
-struct TypeEntry<'ctx> {
-    ty: Type<'ctx>,
+struct TypeEntry<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    ty: Type<'ctx, B>,
 }
 
 struct MetadataSlotEntry {
@@ -182,26 +184,26 @@ struct FunctionSuffix<'ctx> {
 /// Core parser state. Holds the lexer, a one-token cache, the IR module
 /// being populated, and the slot tables that mirror upstream's
 /// `LLParser::NumberedTypes` / `NamedTypes` / `NumberedVals` fields.
-pub struct Parser<'src, 'ctx> {
+pub struct Parser<'src, 'm, 'ctx, B: ModuleBrand = Brand<'ctx>> {
     lex: Lexer<'src>,
     src: &'src [u8],
     /// Most recently produced token. The constructor primes this with the
     /// first token (mirrors `LLParser::Run`'s leading `Lex.Lex();`).
     current: Spanned<Token<'src>>,
 
-    /// The module being populated.
-    module: &'ctx Module<'ctx>,
+    /// The module token being populated.
+    module: &'m Module<'ctx, B, Unverified>,
 
     /// Named struct-type table (`%foo = type {...}`).
-    named_types: HashMap<String, TypeEntry<'ctx>>,
+    named_types: HashMap<String, TypeEntry<'ctx, B>>,
     /// Numbered struct-type table (`%0 = type {...}`).
-    numbered_types: HashMap<u32, TypeEntry<'ctx>>,
+    numbered_types: HashMap<u32, TypeEntry<'ctx, B>>,
     /// Slot id of the next anonymous numbered type, mirroring upstream's
     /// `LLParser::NumberedTypes`'s `getNext()` discipline.
     next_unnamed_type_id: u32,
 
     /// Numbered global / function table. Exposed via [`Parser::take_slot_mapping`].
-    numbered_globals: NumberedValues<GlobalRef<'ctx>>,
+    numbered_globals: NumberedValues<GlobalRef<'ctx, B>>,
     numbered_attr_groups: NumberedValues<llvmkit_ir::attributes::AttributeStorage>,
 
     /// Maps a textual metadata slot (`!N`) to the `MetadataId` it names and
@@ -210,6 +212,7 @@ pub struct Parser<'src, 'ctx> {
     deferred_global_initializers: Vec<DeferredGlobalInitializer<'ctx>>,
     deferred_block_addresses: Vec<DeferredBlockAddress<'ctx>>,
     unresolved_intrinsic_uses: Vec<UnresolvedIntrinsicUse<'ctx>>,
+    _brand: PhantomData<B>,
 }
 
 /// What the parser produces at end-of-module. Successful runs return the
@@ -217,8 +220,8 @@ pub struct Parser<'src, 'ctx> {
 /// `parse_constant_value` / `parse_type` calls (mirrors upstream's
 /// `parseAssemblyString(..., SlotMapping *)` pattern).
 #[derive(Debug, Default)]
-pub struct ParsedModule<'ctx> {
-    pub slot_mapping: SlotMapping<'ctx>,
+pub struct ParsedModule<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    pub slot_mapping: SlotMapping<'ctx, B>,
     pub summary_index: Option<crate::module_summary::ModuleSummaryIndex>,
 }
 
@@ -620,18 +623,22 @@ fn apint_word(words: &[u64], idx: usize, bit_width: u32) -> u64 {
     word
 }
 
-fn is_valid_extractelement(result_ty: Type<'_>, vector_ty: Type<'_>, index_ty: Type<'_>) -> bool {
+fn is_valid_extractelement<'ctx>(
+    result_ty: Type<'ctx>,
+    vector_ty: Type<'ctx>,
+    index_ty: Type<'ctx>,
+) -> bool {
     let AnyTypeEnum::Vector(vector_ty) = AnyTypeEnum::from(vector_ty) else {
         return false;
     };
     vector_ty.element() == result_ty && index_ty.is_integer()
 }
 
-fn is_valid_insertelement(
-    result_ty: Type<'_>,
-    vector_ty: Type<'_>,
-    value_ty: Type<'_>,
-    index_ty: Type<'_>,
+fn is_valid_insertelement<'ctx>(
+    result_ty: Type<'ctx>,
+    vector_ty: Type<'ctx>,
+    value_ty: Type<'ctx>,
+    index_ty: Type<'ctx>,
 ) -> bool {
     let AnyTypeEnum::Vector(vector_ty) = AnyTypeEnum::from(vector_ty) else {
         return false;
@@ -639,11 +646,11 @@ fn is_valid_insertelement(
     vector_ty.as_type() == result_ty && vector_ty.element() == value_ty && index_ty.is_integer()
 }
 
-fn is_valid_shufflevector(
-    result_ty: Type<'_>,
-    lhs_ty: Type<'_>,
-    rhs_ty: Type<'_>,
-    mask_ty: Type<'_>,
+fn is_valid_shufflevector<'ctx>(
+    result_ty: Type<'ctx>,
+    lhs_ty: Type<'ctx>,
+    rhs_ty: Type<'ctx>,
+    mask_ty: Type<'ctx>,
 ) -> bool {
     let AnyTypeEnum::Vector(lhs_ty) = AnyTypeEnum::from(lhs_ty) else {
         return false;
@@ -660,7 +667,7 @@ fn is_valid_shufflevector(
     lhs_ty.element() == rhs_ty.element()
         && lhs_ty.min_len() == rhs_ty.min_len()
         && lhs_ty.is_scalable() == rhs_ty.is_scalable()
-        && mask_ty.element() == mask_ty.as_type().module().i32_type().as_type()
+        && matches!(mask_ty.element().kind(), TypeKind::Integer { bits: 32 })
         && result_ty.element() == lhs_ty.element()
         && result_ty.min_len() == mask_ty.min_len()
         && result_ty.is_scalable() == mask_ty.is_scalable()
@@ -688,10 +695,13 @@ fn map_lex_error(e: LexError) -> ParseError {
     }
 }
 
-impl<'src, 'ctx> Parser<'src, 'ctx> {
+impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
     /// Construct a parser over `src`, populating `module`. Primes the lexer
     /// once (mirrors `LLParser::Run`'s leading `Lex.Lex()`).
-    pub fn new(src: &'src [u8], module: &'ctx Module<'ctx>) -> ParseResult<Self> {
+    pub fn new(
+        src: &'src [u8],
+        module: &'m Module<'ctx, Brand<'ctx>, Unverified>,
+    ) -> ParseResult<Self> {
         let mut lex = Lexer::new(src);
         let current = lex.next_token().map_err(map_lex_error)?;
         Ok(Self {
@@ -708,12 +718,13 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             metadata_slots: HashMap::new(),
             deferred_global_initializers: Vec::new(),
             unresolved_intrinsic_uses: Vec::new(),
+            _brand: PhantomData,
         })
     }
 
     pub fn with_slot_mapping(
         src: &'src [u8],
-        module: &'ctx Module<'ctx>,
+        module: &'m Module<'ctx, Brand<'ctx>, Unverified>,
         slots: &SlotMapping<'ctx>,
     ) -> ParseResult<Self> {
         let mut parser = Self::new(src, module)?;
@@ -753,7 +764,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
 
     pub fn with_context(
         src: &'src [u8],
-        module: &'ctx Module<'ctx>,
+        module: &'m Module<'ctx, Brand<'ctx>, Unverified>,
         _context: &'ctx mut crate::asm_parser_context::AsmParserContext<'ctx>,
     ) -> ParseResult<Self> {
         Self::new(src, module)
@@ -887,7 +898,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                 }
             };
             item.global
-                .set_initializer(Some(constant))
+                .set_initializer(self.module, Some(constant))
                 .map_err(|e| self.builder_err("deferred global initializer", e))?;
         }
         Ok(())
@@ -1445,7 +1456,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
         } else {
             return Err(self.expected("comdat selection kind"));
         };
-        let comdat = self.module.get_or_insert_comdat(name);
+        let comdat = self.module.get_or_insert_comdat(&name);
         comdat.set_selection_kind(kind);
         Ok(())
     }
@@ -2843,7 +2854,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             builder = builder.partition(p);
         }
         if let Some(name) = comdat_name {
-            let comdat = self.module.get_or_insert_comdat(name);
+            let comdat = self.module.get_or_insert_comdat(&name);
             builder = builder.comdat(comdat);
         }
         let g = builder.build().map_err(|e| ParseError::Expected {
@@ -2851,7 +2862,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
             loc: DiagLoc::span(decl_loc),
         })?;
         for (kind, id) in metadata {
-            g.set_metadata(kind, id);
+            g.set_metadata(self.module, kind, id);
         }
         if let Some(value) = deferred_initializer {
             self.deferred_global_initializers
@@ -4696,74 +4707,78 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                     loc: DiagLoc::span(decl_loc),
                 });
             }
-            existing.set_linkage(linkage);
-            existing.set_visibility(visibility);
-            existing.set_dll_storage_class(dll_storage_class);
-            existing.set_dso_locality(dso_locality);
-            existing.set_calling_conv(calling_conv);
-            existing.set_unnamed_addr(unnamed_addr);
-            existing.set_address_space(address_space);
-            existing.set_attributes(attrs);
+            existing.set_linkage(self.module, linkage);
+            existing.set_visibility(self.module, visibility);
+            existing.set_dll_storage_class(self.module, dll_storage_class);
+            existing.set_dso_locality(self.module, dso_locality);
+            existing.set_calling_conv(self.module, calling_conv);
+            existing.set_unnamed_addr(self.module, unnamed_addr);
+            existing.set_address_space(self.module, address_space);
+            existing.set_attributes(self.module, attrs);
             existing
         } else {
-            let mut fb = self
+            let f = self
                 .module
-                .function_builder::<llvmkit_ir::Dyn>(name, fn_ty)
-                .linkage(linkage)
-                .visibility(visibility)
-                .dll_storage_class(dll_storage_class)
-                .dso_locality(dso_locality)
-                .calling_conv(calling_conv)
-                .unnamed_addr(unnamed_addr)
-                .address_space(address_space)
-                .attribute_storage(attrs);
+                .add_function::<llvmkit_ir::Dyn>(&name, fn_ty, linkage)
+                .map_err(|e| ParseError::Expected {
+                    expected: format!("valid function declaration: {e}"),
+                    loc: DiagLoc::span(decl_loc),
+                })?;
+            f.set_visibility(self.module, visibility);
+            f.set_dll_storage_class(self.module, dll_storage_class);
+            f.set_dso_locality(self.module, dso_locality);
+            f.set_calling_conv(self.module, calling_conv);
+            f.set_unnamed_addr(self.module, unnamed_addr);
+            f.set_address_space(self.module, address_space);
+            f.set_attributes(self.module, attrs);
             for (slot, name) in param_names.into_iter().enumerate() {
                 if let Some(name) = name {
                     let slot = u32::try_from(slot).map_err(|_| ParseError::Expected {
                         expected: "parameter slot fits in u32".into(),
                         loc: DiagLoc::span(decl_loc),
                     })?;
-                    fb = fb.param_name(slot, name);
+                    let arg = f.param(slot).map_err(|e| ParseError::Expected {
+                        expected: format!("function parameter slot {slot}: {e}"),
+                        loc: DiagLoc::span(decl_loc),
+                    })?;
+                    arg.set_name(self.module, &name);
                 }
             }
-            fb.build().map_err(|e| ParseError::Expected {
-                expected: format!("valid function declaration: {e}"),
-                loc: DiagLoc::span(decl_loc),
-            })?
+            f
         };
         for group in suffix.attr_groups {
-            f.add_function_attr_group(group);
+            f.add_function_attr_group(self.module, group);
         }
         if let Some(section) = suffix.section {
-            f.set_section(Some(section));
+            f.set_section(self.module, Some(section));
         }
         if let Some(partition) = suffix.partition {
-            f.set_partition(Some(partition));
+            f.set_partition(self.module, Some(partition));
         }
         if let Some(comdat_name) = suffix.comdat {
             let name = comdat_name.unwrap_or_else(|| f.name().to_owned());
-            let comdat = self.module.get_or_insert_comdat(name);
-            f.set_comdat(Some(comdat))
+            let comdat = self.module.get_or_insert_comdat(&name);
+            f.set_comdat(self.module, Some(comdat))
                 .map_err(|e| self.builder_err("function comdat", e))?;
         }
-        f.set_align(suffix.align);
+        f.set_align(self.module, suffix.align);
         if let Some(gc) = suffix.gc {
-            f.set_gc(Some(gc));
+            f.set_gc(self.module, Some(gc));
         }
         if let Some(prefix_data) = suffix.prefix_data {
-            f.set_prefix_data(Some(prefix_data))
+            f.set_prefix_data(self.module, Some(prefix_data))
                 .map_err(|e| self.builder_err("function prefix", e))?;
         }
         if let Some(prologue_data) = suffix.prologue_data {
-            f.set_prologue_data(Some(prologue_data))
+            f.set_prologue_data(self.module, Some(prologue_data))
                 .map_err(|e| self.builder_err("function prologue", e))?;
         }
         if let Some(personality_fn) = suffix.personality_fn {
-            f.set_personality_fn(Some(personality_fn))
+            f.set_personality_fn(self.module, Some(personality_fn))
                 .map_err(|e| self.builder_err("function personality", e))?;
         }
         for (kind, id) in suffix.metadata {
-            f.set_metadata(kind, id);
+            f.set_metadata(self.module, kind, id);
         }
         if let NameOrId::Id(id) = name_id {
             self.numbered_globals
@@ -4865,74 +4880,78 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                     loc: DiagLoc::span(decl_loc),
                 });
             }
-            existing.set_linkage(linkage);
-            existing.set_visibility(visibility);
-            existing.set_dll_storage_class(dll_storage_class);
-            existing.set_dso_locality(dso_locality);
-            existing.set_calling_conv(calling_conv);
-            existing.set_unnamed_addr(unnamed_addr);
-            existing.set_address_space(address_space);
-            existing.set_attributes(attrs);
+            existing.set_linkage(self.module, linkage);
+            existing.set_visibility(self.module, visibility);
+            existing.set_dll_storage_class(self.module, dll_storage_class);
+            existing.set_dso_locality(self.module, dso_locality);
+            existing.set_calling_conv(self.module, calling_conv);
+            existing.set_unnamed_addr(self.module, unnamed_addr);
+            existing.set_address_space(self.module, address_space);
+            existing.set_attributes(self.module, attrs);
             existing
         } else {
-            let mut fb = self
+            let f = self
                 .module
-                .function_builder::<llvmkit_ir::Dyn>(name.clone(), fn_ty)
-                .linkage(linkage)
-                .visibility(visibility)
-                .dll_storage_class(dll_storage_class)
-                .dso_locality(dso_locality)
-                .calling_conv(calling_conv)
-                .unnamed_addr(unnamed_addr)
-                .address_space(address_space)
-                .attribute_storage(attrs);
+                .add_function::<llvmkit_ir::Dyn>(&name, fn_ty, linkage)
+                .map_err(|e| ParseError::Expected {
+                    expected: format!("valid function definition: {e}"),
+                    loc: DiagLoc::span(decl_loc),
+                })?;
+            f.set_visibility(self.module, visibility);
+            f.set_dll_storage_class(self.module, dll_storage_class);
+            f.set_dso_locality(self.module, dso_locality);
+            f.set_calling_conv(self.module, calling_conv);
+            f.set_unnamed_addr(self.module, unnamed_addr);
+            f.set_address_space(self.module, address_space);
+            f.set_attributes(self.module, attrs);
             for (slot, p) in param_names.iter().enumerate() {
                 if let Some(ParamName::Named(n)) = p {
                     let slot_u32 = u32::try_from(slot).map_err(|_| ParseError::Expected {
                         expected: "parameter slot fits in u32".into(),
                         loc: DiagLoc::span(decl_loc),
                     })?;
-                    fb = fb.param_name(slot_u32, n.clone());
+                    let arg = f.param(slot_u32).map_err(|e| ParseError::Expected {
+                        expected: format!("function parameter slot {slot}: {e}"),
+                        loc: DiagLoc::span(decl_loc),
+                    })?;
+                    arg.set_name(self.module, n);
                 }
             }
-            fb.build().map_err(|e| ParseError::Expected {
-                expected: format!("valid function definition: {e}"),
-                loc: DiagLoc::span(decl_loc),
-            })?
+            f
         };
         for group in suffix.attr_groups {
-            f.add_function_attr_group(group);
+            f.add_function_attr_group(self.module, group);
         }
         if let Some(section) = suffix.section {
-            f.set_section(Some(section));
+            f.set_section(self.module, Some(section));
         }
         if let Some(partition) = suffix.partition {
-            f.set_partition(Some(partition));
+            f.set_partition(self.module, Some(partition));
         }
         if let Some(comdat_name) = suffix.comdat {
             let name = comdat_name.unwrap_or_else(|| f.name().to_owned());
-            let comdat = self.module.get_or_insert_comdat(name);
-            f.set_comdat(Some(comdat))
+            let comdat = self.module.get_or_insert_comdat(&name);
+            f.set_comdat(self.module, Some(comdat))
                 .map_err(|e| self.builder_err("function comdat", e))?;
         }
-        f.set_align(suffix.align);
+        f.set_align(self.module, suffix.align);
         if let Some(gc) = suffix.gc {
-            f.set_gc(Some(gc));
+            f.set_gc(self.module, Some(gc));
         }
         if let Some(prefix_data) = suffix.prefix_data {
-            f.set_prefix_data(Some(prefix_data))
+            f.set_prefix_data(self.module, Some(prefix_data))
                 .map_err(|e| self.builder_err("function prefix", e))?;
         }
         if let Some(prologue_data) = suffix.prologue_data {
-            f.set_prologue_data(Some(prologue_data))
+            f.set_prologue_data(self.module, Some(prologue_data))
                 .map_err(|e| self.builder_err("function prologue", e))?;
         }
         if let Some(personality_fn) = suffix.personality_fn {
-            f.set_personality_fn(Some(personality_fn))
+            f.set_personality_fn(self.module, Some(personality_fn))
                 .map_err(|e| self.builder_err("function personality", e))?;
         }
         for (kind, id) in suffix.metadata {
-            f.set_metadata(kind, id);
+            f.set_metadata(self.module, kind, id);
         }
         if let NameOrId::Id(id) = name_id {
             self.numbered_globals
@@ -5333,7 +5352,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_ret(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: ParsedBlockBuilder<'ctx>,
+        b: ParsedBlockBuilder<'m, 'ctx>,
     ) -> ParseResult<()> {
         self.bump()?; // eat `ret`
         if let Token::PrimitiveType(crate::ll_token::PrimitiveTy::Void) = self.peek() {
@@ -5358,7 +5377,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_br(
         &mut self,
         state: &mut PerFunctionState<'ctx>,
-        b: ParsedBlockBuilder<'ctx>,
+        b: ParsedBlockBuilder<'m, 'ctx>,
     ) -> ParseResult<()> {
         self.bump()?; // eat `br`
         if matches!(
@@ -5414,7 +5433,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_int_binop(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         op: IntBinOp,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
@@ -5570,7 +5589,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_icmp(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let samesign = self.eat_keyword(Keyword::Samesign)?;
@@ -5615,7 +5634,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_int_cast(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         op: IntCast,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
@@ -5675,7 +5694,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_ptr_to_int(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let src_ty = self.parse_type(false)?;
@@ -5700,7 +5719,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_int_to_ptr(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let src_ty = self.parse_type(false)?;
@@ -5724,7 +5743,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_fneg(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let fmf = self.parse_optional_fmf()?;
@@ -5747,7 +5766,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_fp_binop(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         op: FpBinOp,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
@@ -5807,7 +5826,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_fcmp(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let fmf = self.parse_optional_fmf()?;
@@ -5859,7 +5878,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     /// Mirrors `LLParser::parseAlloc` (LLParser.cpp ~8540).
     fn parse_alloca(
         &mut self,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let ty = self.parse_type(false)?;
@@ -5881,7 +5900,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_load(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let is_atomic = self.eat_keyword(Keyword::Atomic)?;
@@ -5933,7 +5952,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_store(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
     ) -> ParseResult<()> {
         let is_atomic = self.eat_keyword(Keyword::Atomic)?;
         let volatile = self.eat_keyword(Keyword::Volatile)?;
@@ -5976,7 +5995,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_gep(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let inbounds = self.eat_keyword(Keyword::Inbounds)?;
@@ -6026,7 +6045,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_select(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let cond_ty = self.parse_type(false)?;
@@ -6095,7 +6114,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_fp_to_int(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         op: FpToInt,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
@@ -6129,7 +6148,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_int_to_fp(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         op: IntToFp,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
@@ -6176,7 +6195,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_addrspace_cast(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let src_ty = self.parse_type(false)?;
@@ -6206,7 +6225,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_bitcast(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let src_ty = self.parse_type(false)?;
@@ -6227,7 +6246,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_fptrunc(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let src_ty = self.parse_type(false)?;
@@ -6254,7 +6273,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_fpext(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let src_ty = self.parse_type(false)?;
@@ -6282,7 +6301,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_ptrtoaddr(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         // Reuse the existing ptrtoint logic.
@@ -6296,7 +6315,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_extractelement(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let vec_ty = self.parse_type(false)?;
@@ -6320,7 +6339,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_insertelement(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let vec_ty = self.parse_type(false)?;
@@ -6348,7 +6367,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_shufflevector(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let v1_ty = self.parse_type(false)?;
@@ -6428,7 +6447,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_extractvalue(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let agg_ty = self.parse_type(false)?;
@@ -6451,7 +6470,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_insertvalue(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let agg_ty = self.parse_type(false)?;
@@ -6479,7 +6498,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_phi(
         &mut self,
         state: &mut PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let _fmf = self.parse_optional_fmf()?;
@@ -6664,7 +6683,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_call(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let tail_kind = if self.eat_keyword(Keyword::Tail)? {
@@ -6869,9 +6888,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
                 if name.starts_with("llvm.") {
                     let f = self
                         .module
-                        .function_builder::<llvmkit_ir::Dyn>(name.clone(), parsed_fn_ty)
-                        .linkage(Linkage::External)
-                        .build()
+                        .add_function::<llvmkit_ir::Dyn>(&name, parsed_fn_ty, Linkage::External)
                         .map_err(|_| ParseError::Expected {
                             expected: "intrinsic signature mismatch".into(),
                             loc: DiagLoc::span(loc),
@@ -6951,7 +6968,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_vaarg(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let list_ty = self.parse_type(false)?;
@@ -6973,7 +6990,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_freeze(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let ty = self.parse_type(false)?;
@@ -6991,7 +7008,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_switch(
         &mut self,
         state: &mut PerFunctionState<'ctx>,
-        b: ParsedBlockBuilder<'ctx>,
+        b: ParsedBlockBuilder<'m, 'ctx>,
     ) -> ParseResult<()> {
         self.bump()?; // eat `switch`
         let cond_ty = self.parse_type(false)?;
@@ -7038,7 +7055,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_indirectbr(
         &mut self,
         state: &mut PerFunctionState<'ctx>,
-        b: ParsedBlockBuilder<'ctx>,
+        b: ParsedBlockBuilder<'m, 'ctx>,
     ) -> ParseResult<()> {
         self.bump()?; // eat `indirectbr`
         let addr_ty = self.parse_type(false)?;
@@ -7075,7 +7092,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     /// Mirrors `LLParser::parseFence` (LLParser.cpp ~8476).
     ///
     /// Upstream: `test/Assembler/fence.ll`.
-    fn parse_fence(&mut self, b: &ParsedBlockBuilder<'ctx>) -> ParseResult<()> {
+    fn parse_fence(&mut self, b: &ParsedBlockBuilder<'m, 'ctx>) -> ParseResult<()> {
         let sync_scope = self.parse_optional_syncscope()?;
         let ordering = self.parse_atomic_ordering("fence ordering")?;
         let _ = b
@@ -7092,7 +7109,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_cmpxchg(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let weak = self.eat_keyword(Keyword::Weak)?;
@@ -7145,7 +7162,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_atomicrmw(
         &mut self,
         state: &mut PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let volatile = self.eat_keyword(Keyword::Volatile)?;
@@ -7231,7 +7248,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_landingpad(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let result_ty = self.parse_type(false)?;
@@ -7271,7 +7288,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_cleanuppad(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         self.expect_keyword(Keyword::Within, "'within' in cleanuppad")?;
@@ -7290,7 +7307,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_catchpad(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: &ParsedBlockBuilder<'ctx>,
+        b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         self.expect_keyword(Keyword::Within, "'within' in catchpad")?;
@@ -7310,7 +7327,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_resume(
         &mut self,
         state: &PerFunctionState<'ctx>,
-        b: ParsedBlockBuilder<'ctx>,
+        b: ParsedBlockBuilder<'m, 'ctx>,
     ) -> ParseResult<()> {
         let ty = self.parse_type(false)?;
         let v = self.parse_value(state, ty)?;
@@ -7327,7 +7344,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_cleanupret(
         &mut self,
         state: &mut PerFunctionState<'ctx>,
-        b: ParsedBlockBuilder<'ctx>,
+        b: ParsedBlockBuilder<'m, 'ctx>,
     ) -> ParseResult<()> {
         self.expect_keyword(Keyword::From, "'from' in cleanupret")?;
         let pad_ty = self.parse_type(false)?;
@@ -7359,7 +7376,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_catchret(
         &mut self,
         state: &mut PerFunctionState<'ctx>,
-        b: ParsedBlockBuilder<'ctx>,
+        b: ParsedBlockBuilder<'m, 'ctx>,
     ) -> ParseResult<()> {
         self.expect_keyword(Keyword::From, "'from' in catchret")?;
         let pad_ty = self.parse_type(false)?;
@@ -7384,7 +7401,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_catchswitch(
         &mut self,
         state: &mut PerFunctionState<'ctx>,
-        b: ParsedBlockBuilder<'ctx>,
+        b: ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         self.bump()?; // eat `catchswitch`
@@ -7439,7 +7456,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_invoke(
         &mut self,
         state: &mut PerFunctionState<'ctx>,
-        b: ParsedBlockBuilder<'ctx>,
+        b: ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<Option<llvmkit_ir::Value<'ctx>>> {
         // parse_lhs_before_invoke already consumed `invoke` and optionally LHS.
@@ -7541,7 +7558,7 @@ impl<'src, 'ctx> Parser<'src, 'ctx> {
     fn parse_callbr(
         &mut self,
         state: &mut PerFunctionState<'ctx>,
-        b: ParsedBlockBuilder<'ctx>,
+        b: ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         self.bump()?; // eat `callbr`
@@ -7905,13 +7922,13 @@ impl<'ctx> PerFunctionState<'ctx> {
     /// fill it in when the label is later observed.
     fn ensure_block(
         &mut self,
-        _module: &'ctx llvmkit_ir::Module<'ctx>,
+        module: &Module<'ctx, Brand<'ctx>, Unverified>,
         name: &str,
     ) -> llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed> {
         if let Some(bb) = self.blocks.get(name) {
             return *bb;
         }
-        let bb = self.func.append_basic_block(name);
+        let bb = self.func.append_basic_block(module, name);
         self.blocks.insert(name.to_owned(), bb);
         bb
     }
@@ -7958,7 +7975,7 @@ impl<'ctx> PerFunctionState<'ctx> {
     /// been fully parsed. Called by `Parser::parse_define` before `}`.
     fn finish(
         mut self,
-        module: &'ctx llvmkit_ir::Module<'ctx>,
+        module: &Module<'ctx, Brand<'ctx>, Unverified>,
     ) -> crate::parse_error::ParseResult<()> {
         for (name, loc) in &self.block_refs {
             if !self.defined_blocks.contains(name) {
@@ -8113,12 +8130,8 @@ enum IntToFp {
 /// emitting one block's instructions. The terminator-emitting calls
 /// (`build_ret` / `build_br` / etc.) take this by value, so the parser
 /// stores it inside an `Option<Self>` for the duration of the block.
-type ParsedBlockBuilder<'ctx> = llvmkit_ir::IRBuilder<
-    'ctx,
-    llvmkit_ir::ConstantFolder,
-    llvmkit_ir::Positioned,
-    llvmkit_ir::Dyn,
->;
+type ParsedBlockBuilder<'m, 'ctx> =
+    IRBuilder<'m, 'ctx, Brand<'ctx>, ConstantFolder, Positioned, Dyn>;
 
 fn live_builder_error(loc: Span) -> ParseError {
     ParseError::Expected {
@@ -8127,17 +8140,17 @@ fn live_builder_error(loc: Span) -> ParseError {
     }
 }
 
-fn take_live_builder<'ctx>(
-    builder: &mut Option<ParsedBlockBuilder<'ctx>>,
+fn take_live_builder<'m, 'ctx>(
+    builder: &mut Option<ParsedBlockBuilder<'m, 'ctx>>,
     loc: Span,
-) -> ParseResult<ParsedBlockBuilder<'ctx>> {
+) -> ParseResult<ParsedBlockBuilder<'m, 'ctx>> {
     builder.take().ok_or_else(|| live_builder_error(loc))
 }
 
-fn borrow_live_builder<'b, 'ctx>(
-    builder: &'b Option<ParsedBlockBuilder<'ctx>>,
+fn borrow_live_builder<'b, 'm, 'ctx>(
+    builder: &'b Option<ParsedBlockBuilder<'m, 'ctx>>,
     loc: Span,
-) -> ParseResult<&'b ParsedBlockBuilder<'ctx>> {
+) -> ParseResult<&'b ParsedBlockBuilder<'m, 'ctx>> {
     builder.as_ref().ok_or_else(|| live_builder_error(loc))
 }
 
@@ -8200,12 +8213,14 @@ impl<'ctx> IntoTypeEnum<'ctx> for Type<'ctx> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use llvmkit_ir::Module;
 
     fn parse(src: &str) -> ParseResult<()> {
-        let m = Module::new("parse_test");
-        let p = Parser::new(src.as_bytes(), &m)?;
-        let _ = p.parse_module()?;
-        Ok(())
+        Module::with_new::<_, _, _>("parse_test", |m| {
+            let p = Parser::new(src.as_bytes(), &m)?;
+            let _ = p.parse_module()?;
+            Ok(())
+        })
     }
 
     /// Mirrors `test/Assembler/datalayout.ll` — the parser accepts the
@@ -8213,39 +8228,42 @@ mod tests {
     #[test]
     fn parses_target_datalayout() {
         let src = "target datalayout = \"e-m:e-i64:64\"\n";
-        let m = Module::new("dl");
-        Parser::new(src.as_bytes(), &m)
-            .unwrap()
-            .parse_module()
-            .unwrap();
-        let dl = m.data_layout();
-        assert!(dl.is_little_endian());
+        Module::with_new::<_, _, _>("dl", |m| {
+            Parser::new(src.as_bytes(), &m)
+                .unwrap()
+                .parse_module()
+                .unwrap();
+            let dl = m.data_layout();
+            assert!(dl.is_little_endian());
+        });
     }
 
     /// Mirrors `test/Assembler/target-triple.ll` — `target triple = "..."`.
     #[test]
     fn parses_target_triple() {
         let src = "target triple = \"x86_64-pc-linux-gnu\"\n";
-        let m = Module::new("triple");
-        Parser::new(src.as_bytes(), &m)
-            .unwrap()
-            .parse_module()
-            .unwrap();
-        assert_eq!(m.target_triple().as_deref(), Some("x86_64-pc-linux-gnu"));
+        Module::with_new::<_, _, _>("triple", |m| {
+            Parser::new(src.as_bytes(), &m)
+                .unwrap()
+                .parse_module()
+                .unwrap();
+            assert_eq!(m.target_triple().as_deref(), Some("x86_64-pc-linux-gnu"));
+        });
     }
 
     /// Mirrors the `module asm` arm of `test/Assembler/module-asm.ll`.
     #[test]
     fn parses_module_asm() {
         let src = "module asm \"hello\"\nmodule asm \"world\"\n";
-        let m = Module::new("masm");
-        Parser::new(src.as_bytes(), &m)
-            .unwrap()
-            .parse_module()
-            .unwrap();
-        let asm = m.module_asm();
-        assert!(asm.contains("hello"));
-        assert!(asm.contains("world"));
+        Module::with_new::<_, _, _>("masm", |m| {
+            Parser::new(src.as_bytes(), &m)
+                .unwrap()
+                .parse_module()
+                .unwrap();
+            let asm = m.module_asm();
+            assert!(asm.contains("hello"));
+            assert!(asm.contains("world"));
+        });
     }
 
     /// Mirrors `test/Assembler/named-types.ll` shape: a named struct

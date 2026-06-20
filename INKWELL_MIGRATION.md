@@ -6,11 +6,11 @@ around `libLLVM`. Migration from
 renames of crate path + a few intentional API tightenings; this page
 lists every difference so the diff stays mechanical.
 
-The migration is currently feasible for code that builds on the **type
-system surface** (Phase A) and **attributes** (Phase B). Function,
-global, instruction, and full IRBuilder surfaces are scheduled per the
-plan as separate sessions; check `local://IR_FOUNDATION_PLAN.md` for
-the current state.
+Migration is feasible for the shipped textual-IR and IR-construction surface:
+types, constants, functions, globals, instructions, the modeled IRBuilder,
+parser entry points, verifier typestate, and pass / analysis infrastructure.
+Built-in optimization transforms, `PassBuilder`-style pipelines, bitcode, and
+code generation remain outside the shipped surface.
 
 ## Crate path
 
@@ -37,22 +37,26 @@ let i32 = ctx.i32_type();
 llvmkit:
 
 ```rust
-let module = Module::new("foo");
-let i32 = module.i32_type();
+use llvmkit_ir::Module;
+
+Module::with_new("foo", |module| {
+    let i32 = module.i32_type();
+    // Build or parse IR using `&module` here.
+});
 ```
 
-`Module<'ctx>` carries its own interning state. There is no separate
-`Context` value to construct first. If you really need a shared
-"context" across modules, that's tracked as future work
-(`TypePool<'ctx>`, Tier-3) and not currently shipped.
+`Module<'ctx, B, Unverified>` is created inside `Module::with_new`; the closure
+carries the fresh brand and the unverified mutation token. There is no separate
+`Context` value to construct first, and there is no public raw `ModuleCore`
+handle.
 
 ## Type identity
 
 Inkwell hands out typed wrappers around `LLVMTypeRef` — a `*mut LLVMType`.
 Equality is pointer-identity at the FFI boundary.
 
-llvmkit handles are `(TypeId, ModuleRef<'ctx>)` records, where
-`ModuleRef<'ctx>` carries a process-global `ModuleId`. Identity is
+llvmkit handles are `(TypeId, ModuleRef<'ctx, B>)` records, where
+`ModuleRef<'ctx, B>` carries a process-global `ModuleId`. Identity is
 derived from these integer fields — no pointers, no `as` casts. Two
 modules' handles compare unequal even if their numeric `TypeId` happens
 to match.
@@ -65,8 +69,8 @@ These come from upstream LLVM, not from llvmkit's design choices:
   is gone (already so in inkwell-era LLVM 17+). `ptr` carries no
   pointee; `getelementptr` / `load` / `store` carry the element type
   explicitly.
-- **`ptrtoaddr` instruction** is new in LLVM 22 alongside `ptrtoint`.
-  Phase E adds it to the instruction model.
+- **`ptrtoaddr` syntax** is new in LLVM 22 alongside `ptrtoint`.
+  llvmkit accepts it in parser / constant-expression paths where modeled.
 - **Switch case values** are no longer instruction operands.
 - **`@llvm.masked.{load,store,gather,scatter}`** lost their alignment
   arg.
@@ -78,33 +82,33 @@ check at runtime:
 
 |Invariant|Inkwell|llvmkit|
 |---|---|---|
-|"this is a sized type"|runtime `is_sized()`|`SizedType<'ctx>` refinement; `build_alloca` will take it directly (Phase G)|
+|"this is a sized type"|runtime `is_sized()`|`SizedType<'ctx>` refinement; `build_alloca` takes sized element types directly|
 |"this is first-class"|n/a|`BasicTypeEnum<'ctx>` excludes function / label / metadata / token / void / opaque-struct|
 |"this is an aggregate"|n/a|`AggregateType<'ctx>` (array or struct only — vector is *first-class but not aggregate* per LangRef)|
 |"this is basic-or-metadata" (variadic intrinsic)|n/a|`BasicMetadataTypeEnum<'ctx>`|
 |"this is any IR type"|n/a|sealed `IrType<'ctx>` trait — closed extension point|
 |"int predicate vs FP predicate"|inkwell uses two distinct enums (good)|`IntPredicate` + `FloatPredicate` are distinct types|
 |"integer width is valid"|panic on bad width|`Module::custom_width_int_type` returns `IrResult`|
-||"the builder has an insertion point"|runtime `BuilderError::NoInsertionPoint`|`IRBuilder<'ctx, F, S, R>` typestate: `S = Unpositioned` has no `build_*` methods at all; `position_at_end` consumes `self` and returns `IRBuilder<'ctx, F, Positioned, R>`. Calling `build_int_add` on an unpositioned builder is a compile-time error.|
-||"this value is an integer"|runtime `is_int_value()` / `as_int_value()`|`IntValue<'ctx>` per-kind handle. `build_int_add(lhs: IntValue, rhs: IntValue, name)` rejects non-int arguments at the type level. Same for `FloatValue`, `PointerValue`, etc.|
-||"add operands have the same width"|runtime `assert_eq!(lhs.ty(), rhs.ty())` inside LLVM|`build_int_add<W: IntWidth, ...>(IntValue<'ctx, W>, IntValue<'ctx, W>, name)` enforces equal widths at compile time via the `W` marker. Mixing `IntValue<i32>` with `IntValue<i64>` is a compile error — no runtime check.|
-||"`build_ret` value matches function return type"|runtime `BuilderError::TypeMismatch`|`FunctionValue<'ctx, R>` carries a `ReturnMarker`. The IRBuilder's `build_ret` is dispatched per `R`: `RInt<W>` requires an `IntValue<'ctx, W>`, `RFloat<K>` requires a `FloatValue<'ctx, K>`, `RPtr` requires a `PointerValue<'ctx>`, `RVoid` exposes only `build_ret_void()`. The runtime type-equality check survives only on `RDyn`-marked builders.|
+|"the builder has an insertion point"|runtime `BuilderError::NoInsertionPoint`|`IRBuilder<'_, 'ctx, B, F, S, R>` typestate: `S = Unpositioned` has no `build_*` methods at all; `position_at_end` consumes `self` and returns `IRBuilder<..., Positioned, R>`. Calling `build_int_add` on an unpositioned builder is a compile-time error.|
+|"this value is an integer"|runtime `is_int_value()` / `as_int_value()`|`IntValue<'ctx>` per-kind handle. `build_int_add(lhs: IntValue, rhs: IntValue, name)` rejects non-int arguments at the type level. Same for `FloatValue`, `PointerValue`, etc.|
+|"add operands have the same width"|runtime `assert_eq!(lhs.ty(), rhs.ty())` inside LLVM|`build_int_add<W: IntWidth, ...>(IntValue<'ctx, W>, IntValue<'ctx, W>, name)` enforces equal widths at compile time via the `W` marker. Mixing `IntValue<i32>` with `IntValue<i64>` is a compile error — no runtime check.|
+|"`build_ret` value matches function return type"|runtime `BuilderError::TypeMismatch`|`FunctionValue<'ctx, R>` carries a `ReturnMarker`. The IRBuilder's `build_ret` is dispatched per `R`: integer Rust marker types require the matching `IntValue`, float Rust marker types require the matching `FloatValue`, `Ptr` requires a `PointerValue`, and `()` exposes only `build_ret_void()`. The runtime type-equality check survives only on `Dyn`-marked builders.|
 
 Width markers are **Rust scalar types**: `bool`, `i8`, `i16`, `i32`,
-`i64`, `i128` for static widths, `Dyn` for parsed-IR / runtime widths.
-Float kinds follow the same shape: `f32`, `f64` for the binary32 /
-binary64 IEEE kinds; `Half`, `BFloat`, `Fp128`, `X86Fp80`, `PpcFp128`
-for kinds without a Rust scalar counterpart; `Dyn` for the runtime-
-checked path. The same `Dyn` is shared between `IntType<Dyn>` and
-`FloatType<Dyn>` — the surrounding container disambiguates.
+`i64`, `i128` for static widths, plus `IntDyn` for parsed-IR / runtime
+integer widths. Float kinds follow the same shape: `f32`, `f64` for the
+binary32 / binary64 IEEE kinds; `Half`, `BFloat`, `Fp128`, `X86Fp80`,
+`PpcFp128` for kinds without a Rust scalar counterpart; `FloatDyn` for the
+runtime-checked float path. The top-level `Dyn` marks fully-erased return
+shapes and is distinct from `IntDyn` / `FloatDyn`.
 
 ## Method-name deltas
 
 |Inkwell|llvmkit|Notes|
 |---|---|---|
-|`Context::create()`|`Module::new(name)`|no separate context value|
-|`context.create_module(n)`|`Module::new(n)`|same|
-|`context.i32_type()`|`module.i32_type()`|on `Module`, not on a context|
+|`Context::create()`|`Module::with_new(name, |m| ...)`|fresh branded module token scoped to the closure|
+|`context.create_module(n)`|`Module::with_new(n, |m| ...)`|same|
+|`context.i32_type()`|`m.i32_type()`|inside the `with_new` closure, not on a context|
 |`context.custom_width_int_type(n)`|`module.custom_width_int_type(n)?`|fallible (returns `IrResult`)|
 |`context.struct_type(&fields, packed)`|`module.struct_type(fields, packed)`|takes any `IntoIterator<Item = impl Into<Type<'ctx>>>`|
 |`context.opaque_struct_type(n)`|`module.named_struct(n)`|name preserved|
@@ -123,13 +127,13 @@ checked path. The same `Dyn` is shared between `IntType<Dyn>` and
 ||`function.get_param_iter()`|`f.params()`|`ExactSizeIterator<Item = Argument>`|
 ||`function.get_first_basic_block()`|`f.entry_block()`|`Option<BasicBlock>`|
 ||`function.get_basic_blocks()`|`f.basic_blocks()`|`ExactSizeIterator<Item = BasicBlock>`|
-||`function.append_basic_block("l")`|`f.append_basic_block("l")`|same; mutates via interior mutability|
+||`function.append_basic_block("l")`|`f.append_basic_block(&m, "l")`|requires the matching unverified module token|
 ||`Builder::build_int_add(a, b, name)`|`b.build_int_add::<W, _, _>(lhs: IntValue<'ctx, W>, rhs: IntValue<'ctx, W>, name)?` "" `W` is inferred at the call site, mismatched widths reject at compile time.|
 ||`Builder::build_int_sub` / `_mul`|`b.build_int_sub(...)` / `b.build_int_mul(...)`|same shape as `add`|
 ||`Builder::build_return(Some(v))`|`b.build_ret(value)?`|`value: impl IsValue<'ctx>`; type must match the function's return type|
 ||`Builder::build_return(None)`|`b.build_ret_void()?`|errors if return type isn't `void`|
-||`Builder::position_at_end(bb)`|`IRBuilder::new(&m).position_at_end(bb)`|consumes `self` and transitions `Unpositioned` \u2192 `Positioned` typestate; `build_*` methods are only reachable in `Positioned`|
-||—|`IRBuilder::new_for::<R>(&m)`|new — produces an [`RInt<W>`](crate::return_marker::RInt) / [`RFloat<K>`](crate::return_marker::RFloat) / [`RPtr`](crate::return_marker::RPtr) / [`RVoid`](crate::return_marker::RVoid)-tagged builder for compile-time-checked `build_ret`|
+||`Builder::position_at_end(bb)`|`IRBuilder::new(&m).position_at_end(bb)`|consumes `self` and transitions `Unpositioned` → `Positioned`; `build_*` methods are only reachable in `Positioned`|
+||—|`IRBuilder::new_for::<R>(&m)`|new — produces a return-marker-tagged builder for compile-time-checked `build_ret`|
 ||—|`m.add_function::<R>(name, fn_ty, linkage)?`|new — typed-return form; errors with `IrError::ReturnTypeMismatch` if the signature's return type does not match `R`|
 ||—|`m.function_builder::<R>(name, fn_ty)`|chainable: `.linkage()` / `.calling_conv()` / `.unnamed_addr()` / `.attribute()` / `.return_attribute(kind)` / `.param_attribute(slot, kind)` / `.param_name(slot, name)` / `.build()?`|
 ||`Builder::build_int_truncate(v, dst, name)`|`b.build_trunc::<Src, Dst>(value, dst_ty, name)?`|widths checked at compile time via `Src: WiderThan<Dst>`; widening fails to compile|
@@ -150,19 +154,17 @@ Inkwell's `BuilderError` becomes llvmkit's crate-level `IrError`
 aliased as `IrResult<T>`. Pure constructors (`module.i32_type()`,
 `module.bool_type()`) stay infallible.
 
-There is no `IrError::NoInsertionPoint` — Phase G's typestate-positioned
-`IRBuilder<'ctx, S>` will make that bug class unreachable. There is no
-`IrError::WrongModule` either — the `'ctx` brand catches it at compile
-time for short-lived borrows.
+There is no `IrError::NoInsertionPoint`: `IRBuilder<'_, 'ctx, B, F, S, R>`
+encodes insertion state, and `S = Unpositioned` has no `build_*` methods. There
+is no `IrError::WrongModule` for the common branded path; the module brand plus
+`ModuleRef` checks reject cross-module values.
 
 ## Lifetime brand
 
-llvmkit handles carry a `'ctx` brand: every `Module::new()` borrow
-introduces a fresh lifetime that distinguishes the handles it produces.
-Mixing handles from two modules is rejected by the borrow checker for
-the common case. Bullet-proof isolation against intentional mixing
-requires `for<'brand>` HRTB construction (ghost-cell style); we do not
-ship that.
+llvmkit handles carry a generative module brand. Each `Module::with_new` call
+creates a fresh `Brand<'brand>` and passes
+`Module<'brand, Brand<'brand>, Unverified>` into a `for<'brand>` closure, so
+handles from separate modules cannot be mixed in normal code.
 
 ## Things you give up
 
@@ -170,25 +172,25 @@ ship that.
   to drop down to.
 - **No code generation.** llvmkit ends at IR; lowering / linking still
   goes through upstream LLVM.
-- **No completed builder body yet.** Phase G is its own session per
-  the foundation plan.
+- **No public raw `LLVMValueRef` / `ModuleCore` escape hatch.** Mutation requires
+  the unverified `Module` token, and verification consumes that capability.
 
 
 ## AsmWriter (`format!("{module}")`)
 
-`Module`, `FunctionValue`, `BasicBlock`, `Instruction`, `Value` all
-implement `Display` and produce real `.ll`. Mirrors
-`llvm/lib/IR/AsmWriter.cpp` for the supported opcode set
-(`add`/`sub`/`mul`/`ret` plus every constant kind). Slot numbering for
-unnamed values shares a single per-function counter (arguments,
-block labels, instruction results), matching the upstream
-`SlotTracker`.
+`Module`, `FunctionValue`, `BasicBlock`, `Instruction`, and `Value` implement
+`Display` and produce real `.ll`. The printer mirrors
+`llvm/lib/IR/AsmWriter.cpp` for the shipped opcode surface: arithmetic, casts,
+memory, GEP, calls, select, phi, terminators / EH / atomics, globals, target
+directives, module asm, and modeled metadata forms. Slot numbering for unnamed
+values shares a single per-function counter (arguments, block labels,
+instruction results), matching the upstream `SlotTracker`.
 
 ## Compile-time invariants
 
-Phase A3 promotes one more LLVM runtime check to the type system. The
-current ledger of bugs that compile down to a Rust type error rather
-than a runtime [`IrError`]:
+llvmkit promotes LLVM runtime checks into Rust types where the modeled surface
+can make invalid states unrepresentable. The current ledger of bugs that
+compile down to a Rust type error rather than a runtime [`IrError`]:
 
 - The IRBuilder must be positioned (`Unpositioned` has no `build_*`).
 - Integer-arithmetic operands must share a width (`W: IntWidth`).
@@ -204,9 +206,13 @@ than a runtime [`IrError`]:
   invariant flows transitively across branches.
 - Phi incoming widths match the phi's static `W`.
 - `build_ret` on a typed-return builder requires a value of the
-  function's exact return shape (`RInt<W>` / `RFloat<K>` / `RPtr`).
-- `build_ret_void` is *only* reachable on a `void`-returning builder
-  (`RVoid`) or on `RDyn` with a runtime check.
-- The runtime [`IrError::ReturnTypeMismatch`] survives only on the
-  `RDyn` path — every static marker enforces the invariant at
-  compile time.
+  function's exact return shape (`i32` / `f32` / `Ptr` / `()` markers).
+- `build_ret_void` is *only* reachable on a `void`-returning builder (`()`)
+  or on `Dyn` with a runtime check.
+- The runtime [`IrError::ReturnTypeMismatch`] survives only on the `Dyn` path
+  — every static marker enforces the invariant at compile time.
+- Verification consumes `Module<Unverified>` and yields `Module<Verified>`.
+- Read-only pass managers preserve `Module<Verified>`; transform pass managers
+  return `Module<Unverified>`.
+- Saved-handle mutators require `&Module<Unverified>`, so verified modules
+  cannot be mutated through old handles without explicitly `unverify()`ing.

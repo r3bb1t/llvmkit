@@ -17,7 +17,7 @@
 //!   round-trip through the user/use machinery exactly like any other
 //!   value.
 //! - Basic blocks live in a `RefCell<Vec<ValueId>>` so the IRBuilder
-//!   can append while holding a `&'ctx Module<'ctx>` borrow.
+//!   can append while holding a `&'ctx ModuleCore` borrow.
 //!
 //! ## Return-type safety (Phase A3)
 //!
@@ -47,7 +47,10 @@ use crate::float_kind::FloatKind;
 use crate::global_value::{DllStorageClass, DsoLocality, Linkage, Visibility};
 use crate::int_width::IntWidth;
 use crate::marker::{Dyn, ReturnMarker};
-use crate::module::{Module, ModuleRef, UseListOrderRecord, validate_use_list_order_indexes};
+use crate::module::{
+    Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified, UseListOrderRecord,
+    validate_use_list_order_indexes,
+};
 use crate::r#type::{Type, TypeData, TypeId};
 use crate::unnamed_addr::UnnamedAddr;
 use crate::value::{
@@ -138,9 +141,13 @@ impl FunctionData {
 /// The `R: ReturnMarker` parameter encodes the return type at compile
 /// time (see [`crate::marker`]). Use [`FunctionValue::as_dyn`]
 /// to widen to the runtime-checked [`Dyn`] form.
-pub struct FunctionValue<'ctx, R: ReturnMarker> {
+pub struct FunctionValue<
+    'ctx,
+    R: ReturnMarker,
+    B: crate::module::ModuleBrand = crate::module::Brand<'ctx>,
+> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     /// Cached signature type id. The value's value-arena type is the
     /// pointer-to-function on real LLVM; here we cache the function-
     /// type id directly so `signature()` is a thin lookup.
@@ -151,28 +158,28 @@ pub struct FunctionValue<'ctx, R: ReturnMarker> {
 // Manual derives — `derive` would propagate `R: Trait` bounds that
 // callers should not have to spell. The fields themselves are all
 // trivially `Copy`/`Hash`/`Eq`.
-impl<'ctx, R: ReturnMarker> Clone for FunctionValue<'ctx, R> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand> Clone for FunctionValue<'ctx, R, B> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'ctx, R: ReturnMarker> Copy for FunctionValue<'ctx, R> {}
-impl<'ctx, R: ReturnMarker> PartialEq for FunctionValue<'ctx, R> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand> Copy for FunctionValue<'ctx, R, B> {}
+impl<'ctx, R: ReturnMarker, B: ModuleBrand> PartialEq for FunctionValue<'ctx, R, B> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.signature == other.signature
     }
 }
-impl<'ctx, R: ReturnMarker> Eq for FunctionValue<'ctx, R> {}
-impl<'ctx, R: ReturnMarker> core::hash::Hash for FunctionValue<'ctx, R> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand> Eq for FunctionValue<'ctx, R, B> {}
+impl<'ctx, R: ReturnMarker, B: ModuleBrand> core::hash::Hash for FunctionValue<'ctx, R, B> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
         self.signature.hash(h);
     }
 }
-impl<'ctx, R: ReturnMarker> core::fmt::Debug for FunctionValue<'ctx, R> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand> core::fmt::Debug for FunctionValue<'ctx, R, B> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("FunctionValue")
             .field("id", &self.id)
@@ -181,20 +188,24 @@ impl<'ctx, R: ReturnMarker> core::fmt::Debug for FunctionValue<'ctx, R> {
     }
 }
 
-impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// Construct from raw parts. Crate-internal: only the
     /// function-creation paths hand these out, after they've
     /// validated that the signature's return type matches `R`.
     #[inline]
-    pub(crate) fn from_parts_unchecked(id: ValueId, module: &'ctx Module<'ctx>) -> Self {
-        let data = module.context().value_data(id);
+    pub(crate) fn from_parts_unchecked<M>(id: ValueId, module: M) -> Self
+    where
+        M: Into<ModuleRef<'ctx, B>>,
+    {
+        let module = module.into();
+        let data = module.value_data(id);
         let signature = match &data.kind {
             ValueKindData::Function(f) => f.signature,
             _ => unreachable!("FunctionValue handle invariant: kind is Function"),
         };
         Self {
             id,
-            module: ModuleRef::new(module),
+            module,
             signature,
             _r: PhantomData,
         }
@@ -206,7 +217,7 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
     /// LLVM 17+ pointers are opaque (so the signature is the only
     /// useful per-value type-side information).
     #[inline]
-    pub fn as_value(self) -> Value<'ctx> {
+    pub fn as_value(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -217,13 +228,19 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
     /// Erase the return-shape marker, producing a runtime-checked
     /// [`Dyn`] handle.
     #[inline]
-    pub fn as_dyn(self) -> FunctionValue<'ctx, Dyn> {
+    pub fn as_dyn(self) -> FunctionValue<'ctx, Dyn, B> {
         FunctionValue {
             id: self.id,
             module: self.module,
             signature: self.signature,
             _r: PhantomData,
         }
+    }
+
+    /// Read-only function view for analysis and pass contexts.
+    #[inline]
+    pub fn as_view(self) -> crate::pass_context::FunctionView<'ctx, B> {
+        crate::pass_context::FunctionView::from(self)
     }
 
     /// Borrow the storage payload.
@@ -242,19 +259,19 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
 
     /// Owning module reference.
     #[inline]
-    pub fn module(self) -> &'ctx Module<'ctx> {
-        self.module.module()
+    pub fn module(self) -> ModuleView<'ctx, B> {
+        ModuleView::new(self.module.module())
     }
 
     /// Function signature.
     #[inline]
-    pub fn signature(self) -> FunctionType<'ctx> {
-        FunctionType::new(self.signature, self.module.module())
+    pub fn signature(self) -> FunctionType<'ctx, B> {
+        FunctionType::new(self.signature, self.module)
     }
 
     /// Function return type.
     #[inline]
-    pub fn return_type(self) -> Type<'ctx> {
+    pub fn return_type(self) -> Type<'ctx, B> {
         self.signature().return_type()
     }
 
@@ -266,7 +283,7 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
 
     /// Update linkage.
     #[inline]
-    pub fn set_linkage(self, linkage: Linkage) {
+    pub fn set_linkage(self, _module: &Module<'ctx, B, Unverified>, linkage: Linkage) {
         *self.data().linkage.borrow_mut() = linkage;
     }
 
@@ -276,7 +293,7 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
     }
 
     #[inline]
-    pub fn set_visibility(self, visibility: Visibility) {
+    pub fn set_visibility(self, _module: &Module<'ctx, B, Unverified>, visibility: Visibility) {
         *self.data().visibility.borrow_mut() = visibility;
     }
 
@@ -286,7 +303,11 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
     }
 
     #[inline]
-    pub fn set_dll_storage_class(self, cls: DllStorageClass) {
+    pub fn set_dll_storage_class(
+        self,
+        _module: &Module<'ctx, B, Unverified>,
+        cls: DllStorageClass,
+    ) {
         *self.data().dll_storage_class.borrow_mut() = cls;
     }
 
@@ -296,7 +317,7 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
     }
 
     #[inline]
-    pub fn set_dso_locality(self, locality: DsoLocality) {
+    pub fn set_dso_locality(self, _module: &Module<'ctx, B, Unverified>, locality: DsoLocality) {
         *self.data().dso_locality.borrow_mut() = locality;
     }
 
@@ -308,7 +329,7 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
 
     /// Update calling convention.
     #[inline]
-    pub fn set_calling_conv(self, cc: CallingConv) {
+    pub fn set_calling_conv(self, _module: &Module<'ctx, B, Unverified>, cc: CallingConv) {
         *self.data().calling_conv.borrow_mut() = cc;
     }
 
@@ -321,7 +342,7 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
     /// Update the unnamed-address marker. Mirrors
     /// `GlobalValue::setUnnamedAddr`.
     #[inline]
-    pub fn set_unnamed_addr(self, value: UnnamedAddr) {
+    pub fn set_unnamed_addr(self, _module: &Module<'ctx, B, Unverified>, value: UnnamedAddr) {
         *self.data().unnamed_addr.borrow_mut() = value;
     }
 
@@ -331,7 +352,7 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
     }
 
     #[inline]
-    pub fn set_address_space(self, address_space: u32) {
+    pub fn set_address_space(self, _module: &Module<'ctx, B, Unverified>, address_space: u32) {
         *self.data().address_space.borrow_mut() = address_space;
     }
 
@@ -339,7 +360,11 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
         self.data().section.borrow().clone()
     }
 
-    pub fn set_section(self, section: Option<impl Into<String>>) {
+    pub fn set_section(
+        self,
+        _module: &Module<'ctx, B, Unverified>,
+        section: Option<impl Into<String>>,
+    ) {
         *self.data().section.borrow_mut() = section.map(Into::into);
     }
 
@@ -347,7 +372,11 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
         self.data().partition.borrow().clone()
     }
 
-    pub fn set_partition(self, partition: Option<impl Into<String>>) {
+    pub fn set_partition(
+        self,
+        _module: &Module<'ctx, B, Unverified>,
+        partition: Option<impl Into<String>>,
+    ) {
         *self.data().partition.borrow_mut() = partition.map(Into::into);
     }
 
@@ -357,7 +386,7 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
     }
 
     #[inline]
-    pub fn set_align(self, align: MaybeAlign) {
+    pub fn set_align(self, _module: &Module<'ctx, B, Unverified>, align: MaybeAlign) {
         *self.data().align.borrow_mut() = align;
     }
 
@@ -365,10 +394,10 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
         self.data().gc.borrow().clone()
     }
 
-    pub fn set_gc(self, gc: Option<impl Into<String>>) {
+    pub fn set_gc(self, _module: &Module<'ctx, B, Unverified>, gc: Option<impl Into<String>>) {
         *self.data().gc.borrow_mut() = gc.map(Into::into);
     }
-    pub fn prefix_data(self) -> Option<Constant<'ctx>> {
+    pub fn prefix_data(self) -> Option<Constant<'ctx, B>> {
         self.data().prefix_data.get().map(|id| {
             let data = self.module.module().context().value_data(id);
             Constant {
@@ -379,13 +408,17 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
         })
     }
 
-    pub fn set_prefix_data(self, data: Option<impl IsConstant<'ctx>>) -> IrResult<()> {
+    pub fn set_prefix_data(
+        self,
+        _module: &Module<'ctx, B, Unverified>,
+        data: Option<impl IsConstant<'ctx, B>>,
+    ) -> IrResult<()> {
         let id = self.checked_constant_id(data)?;
         self.data().prefix_data.set(id);
         Ok(())
     }
 
-    pub fn prologue_data(self) -> Option<Constant<'ctx>> {
+    pub fn prologue_data(self) -> Option<Constant<'ctx, B>> {
         self.data().prologue_data.get().map(|id| {
             let data = self.module.module().context().value_data(id);
             Constant {
@@ -396,13 +429,17 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
         })
     }
 
-    pub fn set_prologue_data(self, data: Option<impl IsConstant<'ctx>>) -> IrResult<()> {
+    pub fn set_prologue_data(
+        self,
+        _module: &Module<'ctx, B, Unverified>,
+        data: Option<impl IsConstant<'ctx, B>>,
+    ) -> IrResult<()> {
         let id = self.checked_constant_id(data)?;
         self.data().prologue_data.set(id);
         Ok(())
     }
 
-    pub fn personality_fn(self) -> Option<Constant<'ctx>> {
+    pub fn personality_fn(self) -> Option<Constant<'ctx, B>> {
         self.data().personality_fn.get().map(|id| {
             let data = self.module.module().context().value_data(id);
             Constant {
@@ -413,13 +450,20 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
         })
     }
 
-    pub fn set_personality_fn(self, data: Option<impl IsConstant<'ctx>>) -> IrResult<()> {
+    pub fn set_personality_fn(
+        self,
+        _module: &Module<'ctx, B, Unverified>,
+        data: Option<impl IsConstant<'ctx, B>>,
+    ) -> IrResult<()> {
         let id = self.checked_constant_id(data)?;
         self.data().personality_fn.set(id);
         Ok(())
     }
 
-    fn checked_constant_id(self, data: Option<impl IsConstant<'ctx>>) -> IrResult<Option<ValueId>> {
+    fn checked_constant_id(
+        self,
+        data: Option<impl IsConstant<'ctx, B>>,
+    ) -> IrResult<Option<ValueId>> {
         match data {
             None => Ok(None),
             Some(value) => {
@@ -432,12 +476,16 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
         }
     }
 
-    pub fn comdat(self) -> Option<ComdatRef<'ctx>> {
+    pub fn comdat(self) -> Option<ComdatRef<'ctx, B>> {
         let name = self.data().comdat.borrow().clone()?;
-        self.module.module().get_comdat(&name)
+        self.module.module().get_comdat::<B>(&name)
     }
 
-    pub fn set_comdat(self, comdat: Option<ComdatRef<'ctx>>) -> IrResult<()> {
+    pub fn set_comdat(
+        self,
+        _module: &Module<'ctx, B, Unverified>,
+        comdat: Option<ComdatRef<'ctx, B>>,
+    ) -> IrResult<()> {
         match comdat {
             None => {
                 *self.data().comdat.borrow_mut() = None;
@@ -460,6 +508,7 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
 
     pub fn set_metadata(
         self,
+        _module: &Module<'ctx, B, Unverified>,
         kind: crate::metadata::MetadataAttachmentKind,
         id: crate::metadata::MetadataId,
     ) {
@@ -474,17 +523,26 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
     /// attributes only once its body is being emitted. De-duplicates by
     /// structural equality.
     #[inline]
-    pub fn add_attribute(self, index: AttrIndex, attr: crate::Attribute<'ctx>) {
+    pub fn add_attribute(
+        self,
+        _module: &Module<'ctx, B, Unverified>,
+        index: AttrIndex,
+        attr: crate::Attribute<'ctx>,
+    ) {
         self.data().attributes.borrow_mut().add(index, attr);
     }
 
-    pub fn add_function_attr_group(self, group: u32) {
+    pub fn add_function_attr_group(self, _module: &Module<'ctx, B, Unverified>, group: u32) {
         let mut groups = self.data().function_attr_groups.borrow_mut();
         if !groups.contains(&group) {
             groups.push(group);
         }
     }
-    pub fn set_attributes(self, attributes: AttributeStorage) {
+    pub fn set_attributes(
+        self,
+        _module: &Module<'ctx, B, Unverified>,
+        attributes: AttributeStorage,
+    ) {
         *self.data().attributes.borrow_mut() = attributes;
     }
 
@@ -498,11 +556,12 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
     #[inline]
     pub fn set_string_attribute(
         self,
+        module: &Module<'ctx, B, Unverified>,
         index: AttrIndex,
         key: impl Into<String>,
         value: impl Into<String>,
     ) {
-        self.add_attribute(index, crate::Attribute::string(key, value));
+        self.add_attribute(module, index, crate::Attribute::string(key, value));
     }
 
     /// Number of parameters.
@@ -566,7 +625,11 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
     /// `BasicBlock::Create(ctx, name, parent)`. The block inherits
     /// the function's [`ReturnMarker`], so positioned IRBuilders see
     /// the typed return shape transitively.
-    pub fn append_basic_block(self, name: impl Into<String>) -> BasicBlock<'ctx, R> {
+    pub fn append_basic_block(
+        self,
+        _module: &Module<'ctx, B, Unverified>,
+        name: impl Into<String>,
+    ) -> BasicBlock<'ctx, R> {
         let name = name.into();
         let label_ty = self.module.module().label_type().as_type().id();
         let bb_id = self.module.module().context().push_value(ValueData {
@@ -629,7 +692,7 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
     /// signature, while the constant's type is the default-address-space
     /// pointer returned by `GlobalValue::getType`.
     #[inline]
-    pub fn as_global_constant_ptr(self) -> crate::constant::Constant<'ctx> {
+    pub fn as_global_constant_ptr(self) -> crate::constant::Constant<'ctx, B> {
         let module = self.module.module();
         let ptr_ty = module.ptr_type(0).as_type().id();
         let id = module
@@ -653,7 +716,7 @@ impl<'ctx, R: ReturnMarker> FunctionValue<'ctx, R> {
     /// (invalid — "functions are not values"), whereas this prints as a proper
     /// `ptr getelementptr (...)` element. The byte offset is always 0 (the
     /// function entry).
-    pub fn as_aggregate_ptr(self, addr_space: u32) -> crate::constant::Constant<'ctx> {
+    pub fn as_aggregate_ptr(self, addr_space: u32) -> crate::constant::Constant<'ctx, B> {
         let module = self.module.module();
         let ptr_ty = module.ptr_type(addr_space).as_type().id();
         let id = module
@@ -709,48 +772,52 @@ pub(crate) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool 
     }
 }
 
-impl<'ctx, R: ReturnMarker> sealed::Sealed for FunctionValue<'ctx, R> {}
-impl<'ctx, R: ReturnMarker> IsValue<'ctx> for FunctionValue<'ctx, R> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand> sealed::Sealed for FunctionValue<'ctx, R, B> {}
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for FunctionValue<'ctx, R, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx> {
+    fn as_value(self) -> Value<'ctx, B> {
         FunctionValue::as_value(self)
     }
 }
-impl<'ctx, R: ReturnMarker> Typed<'ctx> for FunctionValue<'ctx, R> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Typed<'ctx, B> for FunctionValue<'ctx, R, B> {
     #[inline]
-    fn ty(self) -> Type<'ctx> {
-        Type::new(self.signature, self.module.module())
+    fn ty(self) -> Type<'ctx, B> {
+        Type::new(self.signature, self.module)
     }
 }
-impl<'ctx, R: ReturnMarker> HasName<'ctx> for FunctionValue<'ctx, R> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand> HasName<'ctx, B> for FunctionValue<'ctx, R, B> {
     #[inline]
     fn name(self) -> Option<String> {
         Some(FunctionValue::name(self).to_owned())
     }
     #[inline]
-    fn set_name(self, _name: Option<&str>) {
+    fn set_name(self, _module_token: &Module<'ctx, B, Unverified>, _name: &str) {
         // Renaming a function in place is its own diff: the symbol
         // table needs updating, and external linkers care. Phase D
         // adds the proper path; today this is a no-op.
     }
+    #[inline]
+    fn clear_name(self, _module_token: &Module<'ctx, B, Unverified>) {}
 }
-impl<R: ReturnMarker> HasDebugLoc for FunctionValue<'_, R> {
+impl<R: ReturnMarker, B: ModuleBrand> HasDebugLoc for FunctionValue<'_, R, B> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
         self.as_value().debug_loc()
     }
 }
 
-impl<'ctx, R: ReturnMarker> From<FunctionValue<'ctx, R>> for Value<'ctx> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> From<FunctionValue<'ctx, R, B>>
+    for Value<'ctx, B>
+{
     #[inline]
-    fn from(f: FunctionValue<'ctx, R>) -> Self {
+    fn from(f: FunctionValue<'ctx, R, B>) -> Self {
         f.as_value()
     }
 }
 
-impl<'ctx> TryFrom<Value<'ctx>> for FunctionValue<'ctx, Dyn> {
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for FunctionValue<'ctx, Dyn, B> {
     type Error = IrError;
-    fn try_from(v: Value<'ctx>) -> IrResult<Self> {
+    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
         match &v.data().kind {
             ValueKindData::Function(f) => Ok(Self {
                 id: v.id,
@@ -790,7 +857,7 @@ impl<'ctx> TryFrom<Value<'ctx>> for FunctionValue<'ctx, Dyn> {
 ///     .build()?;
 /// ```
 pub struct FunctionBuilder<'ctx, R: ReturnMarker> {
-    module: &'ctx Module<'ctx>,
+    module: &'ctx ModuleCore,
     name: String,
     signature: FunctionType<'ctx>,
     linkage: Linkage,
@@ -820,7 +887,7 @@ impl<'ctx, R: ReturnMarker> FunctionBuilder<'ctx, R> {
     /// Crate-internal constructor; users start through
     /// [`Module::function_builder`].
     pub(crate) fn new(
-        module: &'ctx Module<'ctx>,
+        module: &'ctx ModuleCore,
         name: impl Into<String>,
         signature: FunctionType<'ctx>,
     ) -> Self {
@@ -976,43 +1043,63 @@ impl<'ctx, R: ReturnMarker> FunctionBuilder<'ctx, R> {
         let f = self
             .module
             .add_function::<R>(&self.name, self.signature, self.linkage)?;
-        f.set_visibility(self.visibility);
-        f.set_dll_storage_class(self.dll_storage_class);
-        f.set_dso_locality(self.dso_locality);
-        f.set_calling_conv(self.calling_conv);
-        f.set_unnamed_addr(self.unnamed_addr);
-        f.set_address_space(self.address_space);
+        *f.data().visibility.borrow_mut() = self.visibility;
+        *f.data().dll_storage_class.borrow_mut() = self.dll_storage_class;
+        *f.data().dso_locality.borrow_mut() = self.dso_locality;
+        *f.data().calling_conv.borrow_mut() = self.calling_conv;
+        *f.data().unnamed_addr.borrow_mut() = self.unnamed_addr;
+        *f.data().address_space.borrow_mut() = self.address_space;
         if let Some(section) = self.section {
-            f.set_section(Some(section));
+            *f.data().section.borrow_mut() = Some(section);
         }
         if let Some(partition) = self.partition {
-            f.set_partition(Some(partition));
+            *f.data().partition.borrow_mut() = Some(partition);
         }
-        f.set_align(self.align);
+        *f.data().align.borrow_mut() = self.align;
         if let Some(gc) = self.gc {
-            f.set_gc(Some(gc));
+            *f.data().gc.borrow_mut() = Some(gc);
         }
         if let Some(prefix_data) = self.prefix_data {
-            f.set_prefix_data(Some(prefix_data))?;
+            if prefix_data.module != f.module {
+                return Err(IrError::ForeignValue);
+            }
+            f.data().prefix_data.set(Some(prefix_data.as_value().id));
         }
         if let Some(prologue_data) = self.prologue_data {
-            f.set_prologue_data(Some(prologue_data))?;
+            if prologue_data.module != f.module {
+                return Err(IrError::ForeignValue);
+            }
+            f.data()
+                .prologue_data
+                .set(Some(prologue_data.as_value().id));
         }
         if let Some(personality_fn) = self.personality_fn {
-            f.set_personality_fn(Some(personality_fn))?;
+            if personality_fn.module != f.module {
+                return Err(IrError::ForeignValue);
+            }
+            f.data()
+                .personality_fn
+                .set(Some(personality_fn.as_value().id));
         }
         if let Some(comdat) = self.comdat {
-            f.set_comdat(Some(comdat))?;
+            if comdat.module != f.module {
+                return Err(IrError::InvalidOperation {
+                    message: "comdat does not belong to this module",
+                });
+            }
+            *f.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
         }
-        // Move the accumulated attribute set into the function.
         *f.data().attributes.borrow_mut() = self.attributes;
         for group in self.function_attr_groups {
-            f.add_function_attr_group(group);
+            let mut groups = f.data().function_attr_groups.borrow_mut();
+            if !groups.contains(&group) {
+                groups.push(group);
+            }
         }
         // Apply parameter names.
         for (slot, name) in self.param_names {
             let arg = f.param(slot)?;
-            arg.set_name(Some(&name));
+            arg.as_value().set_name_internal(Some(name));
         }
         Ok(f)
     }
@@ -1027,22 +1114,22 @@ impl<'ctx, R: ReturnMarker> FunctionBuilder<'ctx, R> {
 // the type-state-aware impl blocks where the IRBuilder constructs
 // them; here we expose only what's universally needed.
 
-impl<'ctx, W: IntWidth + ReturnMarker> FunctionValue<'ctx, W> {
+impl<'ctx, W: IntWidth + ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, W, B> {
     /// Return type as an integer-typed handle. Mirrors the
     /// `Function::getReturnType()` round-trip on a typed function.
     #[inline]
-    pub fn return_int_type(self) -> crate::derived_types::IntType<'ctx, W> {
+    pub fn return_int_type(self) -> crate::derived_types::IntType<'ctx, W, B> {
         let signature = self.signature();
-        crate::derived_types::IntType::new(signature.return_type().id(), self.module.module())
+        crate::derived_types::IntType::new(signature.return_type().id(), self.module)
     }
 }
 
-impl<'ctx, K: FloatKind + ReturnMarker> FunctionValue<'ctx, K> {
+impl<'ctx, K: FloatKind + ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, K, B> {
     /// Return type as a kind-typed float handle.
     #[inline]
-    pub fn return_float_type(self) -> crate::derived_types::FloatType<'ctx, K> {
+    pub fn return_float_type(self) -> crate::derived_types::FloatType<'ctx, K, B> {
         let signature = self.signature();
-        crate::derived_types::FloatType::new(signature.return_type().id(), self.module.module())
+        crate::derived_types::FloatType::new(signature.return_type().id(), self.module)
     }
 }
 

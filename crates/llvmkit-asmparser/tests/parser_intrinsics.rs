@@ -4,20 +4,22 @@ use llvmkit_asmparser::{ll_parser::Parser, parse_error::ParseError};
 use llvmkit_ir::Module;
 
 fn parse_and_render(src: &str) -> String {
-    let module = Module::new("parser_intrinsics");
-    Parser::new(src.as_bytes(), &module)
-        .expect("lexer primes")
-        .parse_module()
-        .expect("parser succeeds");
-    format!("{module}")
+    Module::with_new("parser_intrinsics", |module| {
+        Parser::new(src.as_bytes(), &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect("parser succeeds");
+        format!("{module}")
+    })
 }
 
 fn parse_err(src: &str) -> ParseError {
-    let module = Module::new("parser_intrinsics_err");
-    Parser::new(src.as_bytes(), &module)
-        .expect("lexer primes")
-        .parse_module()
-        .expect_err("parser rejects intrinsic misuse")
+    Module::with_new("parser_intrinsics_err", |module| {
+        Parser::new(src.as_bytes(), &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("parser rejects intrinsic misuse")
+    })
 }
 
 /// Mirrors `llvm/include/llvm/IR/Intrinsics.td::int_lifetime_start` and

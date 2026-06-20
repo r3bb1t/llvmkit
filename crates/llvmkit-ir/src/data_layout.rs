@@ -28,7 +28,7 @@ use core::fmt;
 
 use crate::align::Align;
 use crate::error::{IrError, IrResult};
-use crate::module::Module;
+use crate::module::ModuleCore;
 use crate::r#type::{Type, TypeData, TypeId};
 
 // --------------------------------------------------------------------------
@@ -493,7 +493,7 @@ impl DataLayout {
     /// `DataLayout::getTypeSizeInBits` (the inline definition in
     /// `DataLayout.h`).
     pub fn type_size_in_bits(&self, ty: Type<'_>) -> u64 {
-        self.type_size_in_bits_inner(ty.module(), ty.id())
+        self.type_size_in_bits_inner(ty.module().core_ref(), ty.id())
     }
 
     /// Mirrors `DataLayout::getTypeStoreSize`. Bytes.
@@ -516,7 +516,7 @@ impl DataLayout {
     /// Mirrors `DataLayout::getTypeAllocSize`. Bytes including
     /// trailing alignment padding.
     pub fn type_alloc_size(&self, ty: Type<'_>) -> u64 {
-        self.type_alloc_size_inner(ty.module(), ty.id())
+        self.type_alloc_size_inner(ty.module().core_ref(), ty.id())
     }
 
     /// Mirrors `DataLayout::getTypeAllocSizeInBits`.
@@ -526,12 +526,12 @@ impl DataLayout {
 
     /// Mirrors `DataLayout::getABITypeAlign`.
     pub fn abi_type_align(&self, ty: Type<'_>) -> Align {
-        self.alignment(ty.module(), ty.id(), true)
+        self.alignment(ty.module().core_ref(), ty.id(), true)
     }
 
     /// Mirrors `DataLayout::getPrefTypeAlign`.
     pub fn pref_type_align(&self, ty: Type<'_>) -> Align {
-        self.alignment(ty.module(), ty.id(), false)
+        self.alignment(ty.module().core_ref(), ty.id(), false)
     }
 
     /// Mirrors `DataLayout::getValueOrABITypeAlignment`. If
@@ -551,7 +551,7 @@ impl DataLayout {
 // --------------------------------------------------------------------------
 
 impl DataLayout {
-    fn type_size_in_bits_inner(&self, module: &Module<'_>, id: TypeId) -> u64 {
+    fn type_size_in_bits_inner(&self, module: &ModuleCore, id: TypeId) -> u64 {
         match module.context().type_data(id) {
             TypeData::Label => u64::from(self.pointer_size_in_bits(0)),
             TypeData::Pointer { addr_space } => u64::from(self.pointer_size_in_bits(*addr_space)),
@@ -585,7 +585,7 @@ impl DataLayout {
         }
     }
 
-    fn type_alloc_size_inner(&self, module: &Module<'_>, id: TypeId) -> u64 {
+    fn type_alloc_size_inner(&self, module: &ModuleCore, id: TypeId) -> u64 {
         match module.context().type_data(id) {
             TypeData::Array { elem, n } => {
                 n.saturating_mul(self.type_alloc_size_inner(module, *elem))
@@ -628,12 +628,12 @@ impl DataLayout {
         }
     }
 
-    fn type_store_size_inner(&self, module: &Module<'_>, id: TypeId) -> u64 {
+    fn type_store_size_inner(&self, module: &ModuleCore, id: TypeId) -> u64 {
         let bits = self.type_size_in_bits_inner(module, id);
         align_to_power_of_two(bits, 8) / 8
     }
 
-    fn alignment(&self, module: &Module<'_>, id: TypeId, abi_or_pref: bool) -> Align {
+    fn alignment(&self, module: &ModuleCore, id: TypeId, abi_or_pref: bool) -> Align {
         match module.context().type_data(id) {
             TypeData::Integer { bits } => self.integer_alignment(*bits, abi_or_pref),
             TypeData::Half
@@ -748,10 +748,10 @@ impl DataLayout {
     /// Compute (without caching) the layout of an aggregate struct.
     /// Mirrors `StructLayout::StructLayout` in `DataLayout.cpp`.
     pub fn struct_layout(&self, ty: Type<'_>) -> StructLayoutInfo {
-        self.struct_layout_inner(ty.module(), ty.id())
+        self.struct_layout_inner(ty.module().core_ref(), ty.id())
     }
 
-    fn struct_layout_inner(&self, module: &Module<'_>, id: TypeId) -> StructLayoutInfo {
+    fn struct_layout_inner(&self, module: &ModuleCore, id: TypeId) -> StructLayoutInfo {
         let s = match module.context().type_data(id) {
             TypeData::Struct(s) => s,
             _ => unreachable!("struct_layout invariant: TypeData::Struct"),
@@ -1367,7 +1367,7 @@ fn parse_addr_space_and_name(s: &str) -> IrResult<(u32, String)> {
 /// (`aarch64.svcount`), RISC-V (`riscv.vector.tuple`), DirectX
 /// (`dx.*`), AMDGPU (`amdgcn.named.barrier`), and the test
 /// extension (`llvm.test.vectorelement`).
-fn target_ext_layout_type(module: &Module<'_>, id: TypeId) -> Option<TypeId> {
+fn target_ext_layout_type(module: &ModuleCore, id: TypeId) -> Option<TypeId> {
     let data = module.context().type_data(id);
     let TypeData::TargetExt(ext) = data else {
         return None;

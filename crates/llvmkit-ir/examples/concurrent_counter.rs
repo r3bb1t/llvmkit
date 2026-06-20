@@ -5,7 +5,7 @@
 //!   counter using `fence` + `atomicrmw add` + `fence`.
 //! - `dispatch`: a 3-way `switch` on an opcode argument that selects
 //!   `add`/`sub`/`mul` and returns the result. Uses the `Open`/`Closed`
-//!   typestate on the [`SwitchInst`](llvmkit_ir::SwitchInst) handle.
+//!   typestate on the `SwitchInst` handle.
 //!
 //! Target IR:
 //!
@@ -45,18 +45,19 @@
 //! ```
 
 use llvmkit_ir::{
-    AtomicOrdering, AtomicRMWBinOp, AtomicRMWConfig, AtomicRMWFlags, IRBuilder, IntValue, IrError,
-    Linkage, MaybeAlign, Module, PointerValue, SyncScope,
+    AtomicOrdering, AtomicRMWBinOp, AtomicRMWConfig, AtomicRMWFlags, Brand, IRBuilder, IntValue,
+    IrError, Linkage, MaybeAlign, Module, PointerValue, SyncScope, Unverified,
 };
 
 pub fn main() -> Result<(), IrError> {
-    let m = Module::new("concurrent_counter");
-    build_atomic_inc(&m)?;
-    build_dispatch(&m)?;
+    Module::with_new("concurrent_counter", |m| {
+        build_atomic_inc(&m)?;
+        build_dispatch(&m)?;
 
-    let text = format!("{m}");
-    print!("{text}");
-    Ok(())
+        let text = format!("{m}");
+        print!("{text}");
+        Ok(())
+    })
 }
 
 /// `atomic_inc` --- a fence-bracketed `monotonic` atomic counter
@@ -73,12 +74,12 @@ pub fn main() -> Result<(), IrError> {
 ///    returns the old value.
 /// 3. `fence acquire` --- ensures subsequent reads observe other
 ///    threads' releases.
-pub fn build_atomic_inc(m: &Module<'_>) -> Result<(), IrError> {
+pub fn build_atomic_inc<'ctx>(m: &Module<'ctx, Brand<'ctx>, Unverified>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
     let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
     let f = m.add_function::<i32>("atomic_inc", fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block("entry");
+    let entry = f.append_basic_block(m, "entry");
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
 
     // fence release
@@ -111,12 +112,10 @@ pub fn build_atomic_inc(m: &Module<'_>) -> Result<(), IrError> {
 
 /// `dispatch` --- 3-way `switch` over an opcode value, selecting
 /// `add` / `sub` / `mul` over two operands. Demonstrates the
-/// [`Open`](llvmkit_ir::term_open_state::Open) /
-/// [`Closed`](llvmkit_ir::term_open_state::Closed) typestate on
-/// [`SwitchInst`](llvmkit_ir::SwitchInst): cases are added through the
-/// chainable `add_case` API and the case list is sealed with
-/// `finish()`.
-pub fn build_dispatch(m: &Module<'_>) -> Result<(), IrError> {
+/// `Open` / `Closed` typestate on `SwitchInst`: cases are added
+/// through the chainable `add_case` API and the case list is sealed
+/// with `finish()`.
+pub fn build_dispatch<'ctx>(m: &Module<'ctx, Brand<'ctx>, Unverified>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(
         i32_ty,
@@ -124,11 +123,11 @@ pub fn build_dispatch(m: &Module<'_>) -> Result<(), IrError> {
         false,
     );
     let f = m.add_function::<i32>("dispatch", fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block("entry");
-    let do_add = f.append_basic_block("do_add");
-    let do_sub = f.append_basic_block("do_sub");
-    let do_mul = f.append_basic_block("do_mul");
-    let default_bb = f.append_basic_block("default");
+    let entry = f.append_basic_block(m, "entry");
+    let do_add = f.append_basic_block(m, "do_add");
+    let do_sub = f.append_basic_block(m, "do_sub");
+    let do_mul = f.append_basic_block(m, "do_mul");
+    let default_bb = f.append_basic_block(m, "default");
 
     // Each case body computes a single arithmetic op and returns.
     let a: IntValue<i32> = f.param(1)?.try_into()?;

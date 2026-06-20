@@ -10,14 +10,14 @@
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::Module;
 
-fn parse_snippet(src: &str) -> (Module<'_>, String) {
-    let module = Module::new("test");
-    let _ = Parser::new(src.as_bytes(), &module)
-        .expect("parse constructor")
-        .parse_module()
-        .expect("parse succeeded");
-    let text = format!("{module}");
-    (module, text)
+fn parse_snippet(src: &str) -> String {
+    Module::with_new("test", |module| {
+        let _ = Parser::new(src.as_bytes(), &module)
+            .expect("parse constructor")
+            .parse_module()
+            .expect("parse succeeded");
+        format!("{module}")
+    })
 }
 
 // ── landingpad / resume ───────────────────────────────────────────────────────
@@ -26,7 +26,7 @@ fn parse_snippet(src: &str) -> (Module<'_>, String) {
 /// accepted via `LLParser::parseLandingPad`.
 #[test]
 fn landingpad_round_trips() {
-    let (_, text) = parse_snippet(
+    let text = parse_snippet(
         r#"define void @f() {
 entry:
   br label %lpad
@@ -46,7 +46,7 @@ lpad:
 /// `LLParser::parseResume`.
 #[test]
 fn resume_round_trips() {
-    let (_, text) = parse_snippet(
+    let text = parse_snippet(
         r#"define void @f() {
 entry:
   br label %lpad
@@ -65,7 +65,7 @@ lpad:
 /// label %lpad` accepted via `LLParser::parseInvoke`.
 #[test]
 fn invoke_round_trips() {
-    let (_, text) = parse_snippet(
+    let text = parse_snippet(
         r#"declare void @may_throw()
 define void @f() {
 entry:
@@ -90,7 +90,7 @@ lpad:
 /// `cleanupret from token %cp unwind to caller` parser acceptance.
 #[test]
 fn cleanuppad_cleanupret_round_trips() {
-    let (_, text) = parse_snippet(
+    let text = parse_snippet(
         r#"define void @f() {
 entry:
   br label %pad_bb

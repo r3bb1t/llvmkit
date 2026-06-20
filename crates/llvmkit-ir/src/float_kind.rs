@@ -213,20 +213,25 @@ impl<'ctx> IntoConstantFloat<'ctx, FloatDyn> for f64 {
 // IntoFloatValue: ergonomic operand input for the float IRBuilder
 // --------------------------------------------------------------------------
 
-use crate::module::Module;
+use crate::module::ModuleRef;
 use crate::value::FloatValue;
 
 /// Inputs that can be lifted into a [`FloatValue<'ctx, K>`] operand
 /// for the IR builder. Mirrors the int-side [`crate::IntoIntValue`]
 /// for the float family.
-pub trait IntoFloatValue<'ctx, K: FloatKind>: Sized {
-    fn into_float_value(self, module: &'ctx Module<'ctx>) -> IrResult<FloatValue<'ctx, K>>;
+pub trait IntoFloatValue<
+    'ctx,
+    K: FloatKind,
+    B: crate::module::ModuleBrand = crate::module::Brand<'ctx>,
+>: Sized
+{
+    fn into_float_value(self, module: ModuleRef<'ctx>) -> IrResult<FloatValue<'ctx, K, B>>;
 }
 
 // Identity
 impl<'ctx, K: FloatKind> IntoFloatValue<'ctx, K> for FloatValue<'ctx, K> {
     #[inline]
-    fn into_float_value(self, _module: &'ctx Module<'ctx>) -> IrResult<FloatValue<'ctx, K>> {
+    fn into_float_value(self, _module: ModuleRef<'ctx>) -> IrResult<FloatValue<'ctx, K>> {
         Ok(self)
     }
 }
@@ -234,7 +239,7 @@ impl<'ctx, K: FloatKind> IntoFloatValue<'ctx, K> for FloatValue<'ctx, K> {
 // ConstantFloatValue<K> -> FloatValue<K>
 impl<'ctx, K: FloatKind> IntoFloatValue<'ctx, K> for ConstantFloatValue<'ctx, K> {
     #[inline]
-    fn into_float_value(self, _module: &'ctx Module<'ctx>) -> IrResult<FloatValue<'ctx, K>> {
+    fn into_float_value(self, _module: ModuleRef<'ctx>) -> IrResult<FloatValue<'ctx, K>> {
         Ok(FloatValue::<K>::from_value_unchecked(
             crate::value::IsValue::as_value(self),
         ))
@@ -247,9 +252,9 @@ macro_rules! impl_into_float_value_static {
         impl<'ctx> IntoFloatValue<'ctx, $marker> for $rust_ty {
             fn into_float_value(
                 self,
-                module: &'ctx Module<'ctx>,
+                module: ModuleRef<'ctx>,
             ) -> IrResult<FloatValue<'ctx, $marker>> {
-                let ty = module.$ty_method();
+                let ty = module.module().$ty_method();
                 match self.into_constant_float(ty) {
                     Ok(c) => Ok(FloatValue::<$marker>::from_value_unchecked(
                         crate::value::IsValue::as_value(c),
@@ -273,7 +278,7 @@ macro_rules! impl_into_float_value_via_try_from {
             #[inline]
             fn into_float_value(
                 self,
-                _module: &'ctx Module<'ctx>,
+                _module: ModuleRef<'ctx>,
             ) -> IrResult<FloatValue<'ctx, $k>> {
                 FloatValue::<'ctx, $k>::try_from(self)
             }
@@ -319,7 +324,7 @@ impl_into_float_value_via_try_from!(
 // --------------------------------------------------------------------------
 
 /// Sealed: float-kind markers whose `FloatType<'ctx, Self>` can be
-/// projected from a [`Module`] without an extra runtime parameter.
+/// projected from a [`Module`](crate::Module) without an extra runtime parameter.
 /// Lets the IR builder accept `b.build_fp_load::<f32>(p, "v")?`
 /// instead of `b.build_fp_load(f32_ty, p, "v")?`.
 ///
@@ -334,7 +339,7 @@ pub trait StaticFloatKind: FloatKind {
     /// Usable as `K::STATIC_BITS` in `const { ... }` assertions.
     const STATIC_BITS: u32;
 
-    fn ir_type<'ctx>(module: &'ctx Module<'ctx>) -> FloatType<'ctx, Self>
+    fn ir_type<'ctx>(module: ModuleRef<'ctx>) -> FloatType<'ctx, Self>
     where
         Self: Sized;
 }
@@ -344,8 +349,8 @@ macro_rules! impl_static_float_kind {
         impl StaticFloatKind for $ty {
             const STATIC_BITS: u32 = $bits;
             #[inline]
-            fn ir_type<'ctx>(module: &'ctx Module<'ctx>) -> FloatType<'ctx, Self> {
-                module.$method()
+            fn ir_type<'ctx>(module: ModuleRef<'ctx>) -> FloatType<'ctx, Self> {
+                module.module().$method()
             }
         }
     };

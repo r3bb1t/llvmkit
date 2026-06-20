@@ -4,7 +4,7 @@
 [![docs.rs](https://docs.rs/llvmkit-asmparser/badge.svg)](https://docs.rs/llvmkit-asmparser)
 [![License](https://img.shields.io/crates/l/llvmkit-asmparser.svg)](https://github.com/r3bb1t/llvmkit#license)
 
-Lexer (and eventually parser) for LLVM textual IR (`.ll`).
+Lexer and parser for LLVM textual IR (`.ll`).
 
 The Rust files mirror `llvm/lib/AsmParser/` and `llvm/include/llvm/AsmParser/`
 file-for-file: `LLLexer.{h,cpp}` → `ll_lexer.rs`, `LLToken.h` → `ll_token.rs`.
@@ -15,8 +15,9 @@ Tracking **LLVM 22.1.4**.
 - **`.ll` lexer** — borrows from a pre-loaded `&[u8]`; tokens carry `Cow<[u8]>`
   payloads that allocate only when an escape sequence actually changes bytes.
 - **`.ll` parser** — recursive-descent, one-token lookahead. Builds into an
-  existing `llvmkit_ir::Module<'ctx>`; the `'ctx` brand prevents cross-module
-  mixing at compile time. Covers `target datalayout` / `target triple`,
+  existing `Module<'ctx, _, Unverified>` from `llvmkit-ir`; the `'ctx` brand
+  prevents cross-module mixing at compile time. Covers `target datalayout` /
+  `target triple`,
   `source_filename`, `module asm`, type definitions, globals, declarations,
   definitions, function attributes/comdats/header operands, metadata and
   debug records, use-list directives, summaries, and every shipped opcode.

@@ -1,0 +1,11 @@
+error[E0599]: no method named `set_linkage` found for struct `GlobalVariableView<'ctx, B>` in the current scope
+  --> tests/compile_fail/module_analysis_readonly_globals.rs:18:20
+   |
+18 |             global.set_linkage(Linkage::Internal);
+   |                    ^^^^^^^^^^^
+   |
+help: there is a method `linkage` with a similar name, but with different arguments
+  --> src/module.rs
+   |
+   |     pub fn linkage(self) -> crate::Linkage {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

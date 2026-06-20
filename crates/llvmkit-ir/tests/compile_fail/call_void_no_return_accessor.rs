@@ -10,21 +10,22 @@
 use llvmkit_ir::{IRBuilder, Linkage, Module};
 
 fn main() {
-    let m = Module::new("c");
-    let void_ty = m.void_type();
-    let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-    let callee = m
-        .add_function::<()>("sink", callee_ty, Linkage::External)
-        .unwrap();
-    let caller_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-    let caller = m
-        .add_function::<()>("c", caller_ty, Linkage::External)
-        .unwrap();
-    let entry = caller.append_basic_block("entry");
-    let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-    let inst = b
-        .build_call(callee, Vec::<llvmkit_ir::Value>::new(), "")
-        .unwrap();
-    // `return_int_value` is not in scope for `CallInst<'_, ()>`.
-    let _ = inst.return_int_value();
+    Module::with_new("c", |m| {
+        let void_ty = m.void_type();
+        let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let callee = m
+            .add_function::<()>("sink", callee_ty, Linkage::External)
+            .unwrap();
+        let caller_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let caller = m
+            .add_function::<()>("c", caller_ty, Linkage::External)
+            .unwrap();
+        let entry = caller.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let inst = b
+            .build_call(callee, Vec::<llvmkit_ir::Value>::new(), "")
+            .unwrap();
+        // `return_int_value` is not in scope for `CallInst<'_, ()>`.
+        let _ = inst.return_int_value();
+    });
 }

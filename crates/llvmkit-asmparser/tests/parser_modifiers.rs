@@ -7,12 +7,13 @@ use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::Module;
 
 fn parse_fixture(module_name: &str, src: &[u8]) -> String {
-    let module = Module::new(module_name);
-    Parser::new(src, &module)
-        .expect("parse constructor")
-        .parse_module()
-        .expect("parse succeeded");
-    format!("{module}")
+    Module::with_new(module_name, |module| {
+        Parser::new(src, &module)
+            .expect("parse constructor")
+            .parse_module()
+            .expect("parse succeeded");
+        format!("{module}")
+    })
 }
 
 fn assert_check_lines(text: &str, check_lines: &[&str]) {

@@ -1,0 +1,508 @@
+//! Pass-author context types.
+//!
+//! The pass managers pass these narrow contexts to user passes instead of raw
+//! module storage. Read-only contexts expose verified views and analysis
+//! queries; transform contexts carry an unverified module capability.
+
+use core::marker::PhantomData;
+
+use crate::BasicBlock;
+use crate::analysis::{
+    FunctionAnalysis, FunctionAnalysisManager, ModuleAnalysis, ModuleAnalysisManager,
+};
+use crate::function::FunctionValue;
+use crate::marker::{Dyn, ReturnMarker};
+use crate::module::{Invariant, Module, ModuleBrand, ModuleRef, ModuleView, Unverified, Verified};
+
+/// Read-only view of a basic block under its owning module brand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BasicBlockView<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+    block: BasicBlock<'ctx, Dyn>,
+    _brand: Invariant<B>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
+    #[inline]
+    pub(crate) fn new(block: BasicBlock<'ctx, Dyn>) -> Self {
+        Self {
+            block,
+            _brand: PhantomData,
+        }
+    }
+
+    /// Underlying basic-block handle.
+    #[inline]
+    pub(crate) fn as_basic_block(self) -> BasicBlock<'ctx, Dyn> {
+        self.block
+    }
+
+    /// Optional textual name.
+    #[inline]
+    pub fn name(self) -> Option<String> {
+        self.block.name()
+    }
+
+    /// Parent function if the block is attached.
+    #[inline]
+    pub fn parent_function(self) -> Option<FunctionView<'ctx, B>> {
+        let id = self.block.parent_id()?;
+        Some(FunctionView::new(FunctionValue::from_parts_unchecked(
+            id,
+            ModuleRef::<B>::new(self.block.module().core_ref()),
+        )))
+    }
+
+    /// Number of instructions in program order.
+    #[inline]
+    pub fn instruction_count(self) -> usize {
+        self.block.instructions().len()
+    }
+
+    /// `true` if the block currently has no instructions.
+    #[inline]
+    pub fn is_empty(self) -> bool {
+        self.block.is_empty()
+    }
+}
+
+/// Read-only view of a function under its owning module brand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FunctionView<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+    function: FunctionValue<'ctx, Dyn, B>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionView<'ctx, B> {
+    #[inline]
+    pub(crate) fn new(function: FunctionValue<'ctx, Dyn, B>) -> Self {
+        Self { function }
+    }
+
+    /// Underlying typed function handle in erased-return form.
+    #[inline]
+    pub(crate) fn as_function(self) -> FunctionValue<'ctx, Dyn, B> {
+        self.function
+    }
+
+    /// Function name.
+    #[inline]
+    pub fn name(self) -> &'ctx str {
+        self.function.name()
+    }
+
+    /// Owning module.
+    #[inline]
+    pub fn module(self) -> ModuleView<'ctx, B> {
+        self.function.module()
+    }
+
+    /// Entry block if the function is a definition.
+    #[inline]
+    pub fn entry_block(self) -> Option<BasicBlockView<'ctx, B>> {
+        self.function.entry_block().map(BasicBlockView::new)
+    }
+
+    /// Basic blocks in insertion order.
+    #[inline]
+    pub fn basic_blocks(self) -> impl ExactSizeIterator<Item = BasicBlockView<'ctx, B>> + 'ctx {
+        self.function.basic_blocks().map(BasicBlockView::new)
+    }
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> From<FunctionValue<'ctx, R, B>>
+    for FunctionView<'ctx, B>
+{
+    #[inline]
+    fn from(function: FunctionValue<'ctx, R, B>) -> Self {
+        Self::new(function.as_dyn())
+    }
+}
+
+/// Mutation-capable view of one function body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FunctionBody<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+    function: FunctionValue<'ctx, Dyn, B>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionBody<'ctx, B> {
+    #[inline]
+    pub(crate) fn new(function: FunctionValue<'ctx, Dyn, B>) -> Self {
+        Self { function }
+    }
+
+    /// Read-only view of the same function.
+    #[inline]
+    pub fn as_view(self) -> FunctionView<'ctx, B> {
+        FunctionView::new(self.function)
+    }
+
+    /// Underlying function handle for body-local mutation APIs.
+    #[inline]
+    pub fn as_function(self) -> FunctionValue<'ctx, Dyn, B> {
+        self.function
+    }
+
+    /// Function name.
+    #[inline]
+    pub fn name(self) -> &'ctx str {
+        self.function.name()
+    }
+
+    /// Entry block if the function is a definition.
+    #[inline]
+    pub fn entry_block(self) -> Option<BasicBlock<'ctx, Dyn>> {
+        self.function.entry_block()
+    }
+
+    /// Basic blocks in insertion order.
+    #[inline]
+    pub fn basic_blocks(self) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, Dyn>> + 'ctx {
+        self.function.basic_blocks()
+    }
+}
+
+/// Iterator over read-only function views in module order.
+pub struct ModuleFunctionViews<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+    inner: Box<dyn ExactSizeIterator<Item = FunctionView<'ctx, B>> + 'ctx>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> ModuleFunctionViews<'ctx, B> {
+    #[inline]
+    pub(crate) fn new(module: ModuleView<'ctx, B>) -> Self {
+        Self {
+            inner: Box::new(module.iter_functions()),
+        }
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> Iterator for ModuleFunctionViews<'ctx, B> {
+    type Item = FunctionView<'ctx, B>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> ExactSizeIterator for ModuleFunctionViews<'ctx, B> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+}
+
+/// Context passed to a read-only function pass.
+pub struct ReadOnlyFunctionPassContext<'pm, 'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+    function: FunctionView<'ctx, B>,
+    mam: Option<&'pm ModuleAnalysisManager<'ctx, B>>,
+    fam: &'pm mut FunctionAnalysisManager<'ctx, B>,
+}
+
+impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ReadOnlyFunctionPassContext<'pm, 'ctx, B> {
+    #[inline]
+    pub(crate) fn new(
+        function: FunctionView<'ctx, B>,
+        mam: Option<&'pm ModuleAnalysisManager<'ctx, B>>,
+        fam: &'pm mut FunctionAnalysisManager<'ctx, B>,
+    ) -> Self {
+        Self { function, mam, fam }
+    }
+
+    /// Owning module view.
+    #[inline]
+    pub fn module(&self) -> ModuleView<'ctx, B> {
+        self.function.module()
+    }
+
+    /// Read-only function view.
+    #[inline]
+    pub fn function(&self) -> FunctionView<'ctx, B> {
+        self.function
+    }
+
+    /// Query a function analysis for this pass's function.
+    #[inline]
+    pub fn analysis<A>(&mut self) -> crate::IrResult<&A::Result>
+    where
+        A: FunctionAnalysis<'ctx, B>,
+    {
+        self.fam.get_result::<A>(self.function)
+    }
+
+    /// Read a cached function analysis without computing it.
+    #[inline]
+    pub fn cached_analysis<A>(&self) -> Option<&A::Result>
+    where
+        A: FunctionAnalysis<'ctx, B>,
+    {
+        self.fam.get_cached_result::<A>(self.function)
+    }
+
+    /// Read a cached module analysis without computing it.
+    #[inline]
+    pub fn cached_module_analysis<A>(&self) -> Option<&A::Result>
+    where
+        A: ModuleAnalysis<'ctx, B>,
+    {
+        self.mam?.get_cached_result::<A>(self.module())
+    }
+
+    #[inline]
+    pub(crate) fn function_analysis_manager_mut(
+        &mut self,
+    ) -> &mut FunctionAnalysisManager<'ctx, B> {
+        self.fam
+    }
+}
+
+/// Context passed to a transform-capable function pass.
+pub struct FunctionPassContext<'pm, 'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+    module: &'pm Module<'ctx, B, Unverified>,
+    function: FunctionView<'ctx, B>,
+    mam: Option<&'pm ModuleAnalysisManager<'ctx, B>>,
+    fam: &'pm mut FunctionAnalysisManager<'ctx, B>,
+}
+
+impl<'pm, 'ctx, B: ModuleBrand + 'ctx> FunctionPassContext<'pm, 'ctx, B> {
+    #[inline]
+    pub(crate) fn new(
+        module: &'pm Module<'ctx, B, Unverified>,
+        function: FunctionView<'ctx, B>,
+        mam: Option<&'pm ModuleAnalysisManager<'ctx, B>>,
+        fam: &'pm mut FunctionAnalysisManager<'ctx, B>,
+    ) -> Self {
+        Self {
+            module,
+            function,
+            mam,
+            fam,
+        }
+    }
+
+    /// Read-only module view.
+    #[inline]
+    pub fn module(&self) -> ModuleView<'ctx, B> {
+        self.module.as_view()
+    }
+
+    /// Mutation-capable module token for saved-handle mutators.
+    #[inline]
+    pub fn module_mut(&self) -> &Module<'ctx, B, Unverified> {
+        self.module
+    }
+
+    /// Read-only function view.
+    #[inline]
+    pub fn function(&self) -> FunctionView<'ctx, B> {
+        self.function
+    }
+
+    /// Mutation-capable function-body view.
+    #[inline]
+    pub fn function_mut(&self) -> FunctionBody<'ctx, B> {
+        FunctionBody::new(self.function.as_function())
+    }
+
+    /// Query a function analysis for this pass's function.
+    #[inline]
+    pub fn analysis<A>(&mut self) -> crate::IrResult<&A::Result>
+    where
+        A: FunctionAnalysis<'ctx, B>,
+    {
+        self.fam.get_result::<A>(self.function)
+    }
+
+    /// Read a cached function analysis without computing it.
+    #[inline]
+    pub fn cached_analysis<A>(&self) -> Option<&A::Result>
+    where
+        A: FunctionAnalysis<'ctx, B>,
+    {
+        self.fam.get_cached_result::<A>(self.function)
+    }
+
+    /// Read a cached module analysis without computing it.
+    #[inline]
+    pub fn cached_module_analysis<A>(&self) -> Option<&A::Result>
+    where
+        A: ModuleAnalysis<'ctx, B>,
+    {
+        self.mam?.get_cached_result::<A>(self.module())
+    }
+
+    /// Function analysis manager for this module brand.
+    #[inline]
+    pub fn analysis_manager_mut(&mut self) -> &mut FunctionAnalysisManager<'ctx, B> {
+        self.fam
+    }
+}
+
+/// Context passed to a read-only module pass.
+pub struct ReadOnlyModulePassContext<'pm, 'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+    module: &'pm Module<'ctx, B, Verified>,
+    mam: &'pm mut ModuleAnalysisManager<'ctx, B>,
+    fam: &'pm mut FunctionAnalysisManager<'ctx, B>,
+}
+
+impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ReadOnlyModulePassContext<'pm, 'ctx, B> {
+    #[inline]
+    pub(crate) fn new(
+        module: &'pm Module<'ctx, B, Verified>,
+        mam: &'pm mut ModuleAnalysisManager<'ctx, B>,
+        fam: &'pm mut FunctionAnalysisManager<'ctx, B>,
+    ) -> Self {
+        Self { module, mam, fam }
+    }
+
+    /// Read-only module view.
+    #[inline]
+    pub fn module(&self) -> ModuleView<'ctx, B> {
+        self.module.as_view()
+    }
+
+    /// Function views in declaration order.
+    #[inline]
+    pub fn functions(&self) -> ModuleFunctionViews<'ctx, B> {
+        ModuleFunctionViews::new(self.module())
+    }
+
+    /// Query a module analysis.
+    #[inline]
+    pub fn module_analysis<A>(&mut self) -> crate::IrResult<&A::Result>
+    where
+        A: ModuleAnalysis<'ctx, B>,
+    {
+        self.mam.get_result::<A>(self.module)
+    }
+
+    /// Read a cached module analysis without computing it.
+    #[inline]
+    pub fn cached_module_analysis<A>(&self) -> Option<&A::Result>
+    where
+        A: ModuleAnalysis<'ctx, B>,
+    {
+        self.mam.get_cached_result::<A>(self.module())
+    }
+
+    /// Query a function analysis for a function in this module.
+    #[inline]
+    pub fn function_analysis<A>(
+        &mut self,
+        function: FunctionView<'ctx, B>,
+    ) -> crate::IrResult<&A::Result>
+    where
+        A: FunctionAnalysis<'ctx, B>,
+    {
+        self.fam.get_result::<A>(function)
+    }
+
+    #[inline]
+    pub(crate) fn module_analysis_manager_mut(&mut self) -> &mut ModuleAnalysisManager<'ctx, B> {
+        self.mam
+    }
+
+    #[inline]
+    pub(crate) fn function_analysis_manager_mut(
+        &mut self,
+    ) -> &mut FunctionAnalysisManager<'ctx, B> {
+        self.fam
+    }
+
+    #[inline]
+    pub(crate) fn analysis_managers_for_function_passes(
+        &mut self,
+    ) -> (
+        &ModuleAnalysisManager<'ctx, B>,
+        &mut FunctionAnalysisManager<'ctx, B>,
+    ) {
+        (self.mam, self.fam)
+    }
+}
+
+/// Context passed to a transform-capable module pass.
+pub struct ModulePassContext<'pm, 'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+    module: Module<'ctx, B, Unverified>,
+    mam: &'pm mut ModuleAnalysisManager<'ctx, B>,
+    fam: &'pm mut FunctionAnalysisManager<'ctx, B>,
+}
+
+impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ModulePassContext<'pm, 'ctx, B> {
+    #[inline]
+    pub(crate) fn new(
+        module: Module<'ctx, B, Unverified>,
+        mam: &'pm mut ModuleAnalysisManager<'ctx, B>,
+        fam: &'pm mut FunctionAnalysisManager<'ctx, B>,
+    ) -> Self {
+        Self { module, mam, fam }
+    }
+
+    /// Read-only module view.
+    #[inline]
+    pub fn module(&self) -> ModuleView<'ctx, B> {
+        self.module.as_view()
+    }
+
+    /// Mutation-capable module token.
+    #[inline]
+    pub fn module_mut(&self) -> &Module<'ctx, B, Unverified> {
+        &self.module
+    }
+
+    /// Function views in declaration order.
+    #[inline]
+    pub fn functions(&self) -> ModuleFunctionViews<'ctx, B> {
+        ModuleFunctionViews::new(self.module())
+    }
+
+    /// Read a cached module analysis without computing it.
+    #[inline]
+    pub fn cached_module_analysis<A>(&self) -> Option<&A::Result>
+    where
+        A: ModuleAnalysis<'ctx, B>,
+    {
+        self.mam.get_cached_result::<A>(self.module())
+    }
+
+    /// Query a function analysis for a function in this module.
+    #[inline]
+    pub fn function_analysis<A>(
+        &mut self,
+        function: FunctionView<'ctx, B>,
+    ) -> crate::IrResult<&A::Result>
+    where
+        A: FunctionAnalysis<'ctx, B>,
+    {
+        self.fam.get_result::<A>(function)
+    }
+
+    #[inline]
+    pub(crate) fn module_analysis_manager_mut(&mut self) -> &mut ModuleAnalysisManager<'ctx, B> {
+        self.mam
+    }
+
+    #[inline]
+    pub(crate) fn function_analysis_manager_mut(
+        &mut self,
+    ) -> &mut FunctionAnalysisManager<'ctx, B> {
+        self.fam
+    }
+
+    #[inline]
+    pub(crate) fn module_and_analysis_managers_for_function_passes(
+        &mut self,
+    ) -> (
+        &Module<'ctx, B, Unverified>,
+        &ModuleAnalysisManager<'ctx, B>,
+        &mut FunctionAnalysisManager<'ctx, B>,
+    ) {
+        (&self.module, self.mam, self.fam)
+    }
+
+    #[inline]
+    pub(crate) fn finish(self) -> Module<'ctx, B, Unverified> {
+        self.module
+    }
+}

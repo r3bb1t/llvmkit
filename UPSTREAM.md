@@ -19,7 +19,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 786.
+Total `#[test]` functions: 797.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -305,7 +305,11 @@ Total `#[test]` functions: 786.
 | `crates/llvmkit-ir/tests/builder_typestate_seal.rs::phi_range_iterates_three_phis` | `unittests/IR/BasicBlockTest.cpp::TEST(BasicBlockTest, PhiRange)` | port |
 | `crates/llvmkit-ir/tests/builder_typestate_seal.rs::seal_typestate_does_not_change_asm_output` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_typestate_phi.rs::phi_finishes_after_all_incomings` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)` | llvmkit-specific |
-| `crates/llvmkit-ir/tests/typestate_compile_fail.rs::typestate_compile_fail` | `lib/IR/Verifier.cpp::visitBasicBlock` + `visitPHINode` (runtime forms) | llvmkit-specific |
+| `crates/llvmkit-ir/tests/typestate_compile_fail.rs::typestate_compile_fail` | `lib/IR/Verifier.cpp::visitBasicBlock` + `visitPHINode` (runtime forms); llvmkit-specific D7/D8 module-brand, raw-core, saved-handle, and verified-state capability tests | llvmkit-specific |
+| `crates/llvmkit-ir/tests/type_safety_brand.rs::user_owned_value_tables_remain_usable` | llvmkit-specific D7 module-brand value-table usability | llvmkit-specific |
+| `crates/llvmkit-ir/tests/type_safety_brand.rs::read_only_module_pass_returns_verified` | llvmkit-specific D8 effect-typed read-only pass pipeline guarantee | llvmkit-specific |
+| `crates/llvmkit-ir/tests/type_safety_brand.rs::transform_module_pass_returns_unverified` | llvmkit-specific D8 effect-typed module-transform reverify requirement | llvmkit-specific |
+| `crates/llvmkit-ir/tests/type_safety_brand.rs::transform_function_adaptor_returns_unverified` | llvmkit-specific D8 effect-typed function-adaptor reverify requirement | llvmkit-specific |
 | `crates/llvmkit-ir/tests/struct_typestate.rs::named_struct_retains_name` | `unittests/IR/TypesTest.cpp::TEST(TypesTest, StructType)` | port |
 | `crates/llvmkit-ir/tests/struct_typestate.rs::opaque_to_body_set_transition` | `unittests/IR/TypesTest.cpp::TEST(TypesTest, LayoutIdenticalEmptyStructs)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/struct_typestate.rs::double_set_body_runtime_path_rejects` | `unittests/IR/TypesTest.cpp::TEST(TypesTest, StructType)` | llvmkit-specific |
@@ -537,11 +541,15 @@ Total `#[test]` functions: 786.
 | `crates/llvmkit-ir/tests/verifier_basic.rs::verify_phi_incoming_edge_dominance_fails` | `llvm/lib/IR/Verifier.cpp::verifyDominatesUse`; `llvm/lib/IR/Dominators.cpp` PHI incoming-edge semantics | mirror |
 | `crates/llvmkit-ir/tests/verifier_basic.rs::verify_invoke_result_used_on_unwind_edge_fails` | `llvm/lib/IR/Verifier.cpp::verifyDominatesUse`; `llvm/lib/IR/Dominators.cpp` invoke normal-edge semantics | mirror |
 | `crates/llvmkit-ir/tests/analysis_basic.rs::preserved_analyses_checker_behavior` | `unittests/IR/PassManagerTest.cpp::TEST(PreservedAnalysesTest, Basic/Preserve/PreserveSets/Intersect/Abandon)` (raw `AnalysisKey` checker omitted; no llvmkit API) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/analysis_basic.rs::preserved_analyses_explicit_keys_intersect_and_abandon` | `llvm/include/llvm/IR/Analysis.h::PreservedAnalyses` explicit-key APIs and abandoned-ID precedence | mirror |
 | `crates/llvmkit-ir/tests/analysis_basic.rs::function_analysis_runs_once_caches_and_invalidates` | `unittests/IR/PassManagerTest.cpp` local `TestFunctionAnalysis` cache/invalidation behavior | mirror |
 | `crates/llvmkit-ir/tests/analysis_basic.rs::module_analysis_runs_once_caches_and_invalidates` | `unittests/IR/PassManagerTest.cpp` local `TestModuleAnalysis` cache/invalidation behavior | mirror |
+| `crates/llvmkit-ir/tests/analysis_basic.rs::invalidator_reports_missing_cached_dependency` | LLVM invalidator dependency behavior for missing cached analysis results | mirror |
+| `crates/llvmkit-ir/tests/analysis_basic.rs::module_level_invalidation_honors_fam_proxy_and_function_set` | `FunctionAnalysisManagerModuleProxy::Result::invalidate` module-level function-analysis cache invalidation/preservation | mirror |
 | `crates/llvmkit-ir/tests/analysis_basic.rs::dominator_tree_analysis_caches_and_cfg_preserves` | `llvm/lib/IR/Dominators.cpp::DominatorTreeAnalysis::run` and `DominatorTree::invalidate` | port |
 | `crates/llvmkit-ir/tests/pass_manager_basic.rs::module_pass_manager_runs_in_order` | `unittests/IR/PassManagerTest.cpp::TEST_F(PassManagerTest, Basic)` (insertion/intersection subset; proxy invalidation and `RequireAnalysisPass` counters omitted) | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/pass_manager_basic.rs::module_pass_manager_counts_supported_cache_and_invalidation` | `unittests/IR/PassManagerTest.cpp::TEST_F(PassManagerTest, Basic)` (supported function-pass counters/cache/one-function invalidation; proxy invalidation and `RequireAnalysisPass` omitted) | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/pass_manager_basic.rs::module_pass_invalidates_function_analysis_cache` | `unittests/IR/PassManagerTest.cpp` proxy invalidation subset: module passes that do not preserve function analyses clear the function-analysis cache | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/pass_manager_basic.rs::module_to_function_adaptor_runs_defined_functions_only` | `unittests/IR/PassManagerTest.cpp` module-to-function adaptor definition-walk subset; loop/CGSCC/proxy surfaces omitted | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/pass_manager_basic.rs::function_pass_can_query_dominator_tree_analysis` | `unittests/IR/PassManagerTest.cpp` function-pass analysis query subset; module/function analysis proxy cache surface omitted | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/pass_instrumentation_basic.rs::instrumentation_orders_and_skips_optional_passes` | `unittests/IR/PassBuilderCallbacksTest.cpp` optional-pass skip subset; skipped/non-skipped callback APIs omitted | llvmkit-specific subset |
@@ -688,8 +696,8 @@ Total `#[test]` functions: 786.
 | `crates/llvmkit-asmparser/tests/parser_value_forms.rs::function_call_global_reference` | `test/Assembler/call.ll`; `LLParser::parseCall` with `@func` callee reference | mirror |
 | `crates/llvmkit-asmparser/tests/parser_errors.rs::malformed_integer_type_rejects_width_overflow` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType` integer width rejection | mirror |
 | `crates/llvmkit-asmparser/tests/parser_errors.rs::malformed_shuffle_mask_rejects_bad_element` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` shufflevector mask element parsing | mirror |
-| `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_assembly_string_into_round_trips_module` | `unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, ParseAssemblyString)` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_assembly_file_into_reads_file` | `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_assembly_string_round_trips_module` | `unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, ParseAssemblyString)` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_assembly_file_reads_file` | `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_type_at_beginning_reports_read_count` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseTypeAtBeginning` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_type_requires_end` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType` EOF wrapper | mirror |
 | `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_constant_value_uses_slot_mapping` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseStandaloneConstantValue` | mirror |

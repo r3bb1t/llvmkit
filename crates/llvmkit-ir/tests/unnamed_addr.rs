@@ -8,17 +8,18 @@
 use llvmkit_ir::{Linkage, Module, UnnamedAddr};
 
 fn declare(name: &str, value: UnnamedAddr) -> String {
-    let m = Module::new("u");
-    let void = m.void_type();
-    let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-    let f = m
-        .function_builder::<()>(name, fn_ty)
-        .linkage(Linkage::External)
-        .unnamed_addr(value)
-        .build()
-        .expect("build");
-    let _ = f;
-    format!("{m}")
+    Module::with_new("u", |m| {
+        let void = m.void_type();
+        let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let f = m
+            .function_builder::<()>(name, fn_ty)
+            .linkage(Linkage::External)
+            .unnamed_addr(value)
+            .build()
+            .expect("build");
+        let _ = f;
+        format!("{m}")
+    })
 }
 
 /// Mirrors the negative case in `test/Assembler/unnamed-addr.ll` -- a function

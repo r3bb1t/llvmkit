@@ -14,7 +14,7 @@ use crate::instr_types::{
     ReturnOpData,
 };
 use crate::instruction::{Instruction, InstructionKindData, state};
-use crate::module::{Module, ModuleRef};
+use crate::module::{ModuleCore, ModuleRef};
 use crate::phi_state::{Closed, Open, PhiState};
 use crate::r#type::TypeId;
 use crate::value::{Value, ValueId, ValueKindData};
@@ -27,15 +27,15 @@ macro_rules! decl_binop_handle {
     ) => {
         $(#[$attr])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        pub struct $name<'ctx> {
+        pub struct $name<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
             pub(crate) id: ValueId,
-            pub(crate) module: ModuleRef<'ctx>,
+            pub(crate) module: ModuleRef<'ctx, B>,
             pub(crate) ty: TypeId,
         }
 
         impl<'ctx> $name<'ctx> {
             #[inline]
-            pub(crate) fn from_raw(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
+            pub(crate) fn from_raw(id: ValueId, module: &'ctx ModuleCore, ty: TypeId) -> Self {
                 Self { id, module: ModuleRef::new(module), ty }
             }
 
@@ -178,7 +178,7 @@ macro_rules! decl_handle_scaffold {
     ($name:ident) => {
         impl<'ctx> $name<'ctx> {
             #[inline]
-            pub(crate) fn from_raw(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
+            pub(crate) fn from_raw(id: ValueId, module: &'ctx ModuleCore, ty: TypeId) -> Self {
                 Self {
                     id,
                     module: ModuleRef::new(module),
@@ -206,9 +206,9 @@ macro_rules! decl_handle_scaffold {
 /// `alloca` stack-slot allocation. Mirrors `AllocaInst`
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct AllocaInst<'ctx> {
+pub struct AllocaInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -248,9 +248,9 @@ impl<'ctx> AllocaInst<'ctx> {
 
 /// `load` instruction. Mirrors `LoadInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LoadInst<'ctx> {
+pub struct LoadInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -298,9 +298,9 @@ impl<'ctx> LoadInst<'ctx> {
 
 /// `store` instruction. Mirrors `StoreInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StoreInst<'ctx> {
+pub struct StoreInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -355,9 +355,9 @@ impl<'ctx> StoreInst<'ctx> {
 /// `getelementptr` instruction. Mirrors `GetElementPtrInst`
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct GepInst<'ctx> {
+pub struct GepInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -405,9 +405,13 @@ impl<'ctx> GepInst<'ctx> {
 /// `return_int_value()` accessor without a runtime
 /// [`crate::IrError::TypeMismatch`].
 #[derive(Debug)]
-pub struct CallInst<'ctx, R: crate::marker::ReturnMarker = crate::marker::Dyn> {
+pub struct CallInst<
+    'ctx,
+    R: crate::marker::ReturnMarker = crate::marker::Dyn,
+    B: crate::module::ModuleBrand = crate::module::Brand<'ctx>,
+> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
     _r: core::marker::PhantomData<R>,
 }
@@ -435,7 +439,7 @@ impl<'ctx, R: crate::marker::ReturnMarker> core::hash::Hash for CallInst<'ctx, R
 
 impl<'ctx, R: crate::marker::ReturnMarker> CallInst<'ctx, R> {
     #[inline]
-    pub(crate) fn from_raw(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
+    pub(crate) fn from_raw(id: ValueId, module: &'ctx ModuleCore, ty: TypeId) -> Self {
         Self {
             id,
             module: ModuleRef::new(module),
@@ -583,9 +587,9 @@ impl<'ctx, R: crate::marker::ReturnMarker> From<CallInst<'ctx, R>>
 
 /// `select` instruction. Mirrors `SelectInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SelectInst<'ctx> {
+pub struct SelectInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -625,9 +629,9 @@ impl<'ctx> SelectInst<'ctx> {
 /// `ret` terminator instruction. Mirrors `ReturnInst` in
 /// `Instructions.h`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RetInst<'ctx> {
+pub struct RetInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -656,9 +660,9 @@ impl<'ctx> RetInst<'ctx> {
 /// Cast instruction (`trunc`, `zext`, `sext`, `bitcast`, ...).
 /// Mirrors `CastInst` in `InstrTypes.h`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CastInst<'ctx> {
+pub struct CastInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -695,9 +699,9 @@ impl<'ctx> CastInst<'ctx> {
 
 /// `icmp` integer comparison. Mirrors `ICmpInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ICmpInst<'ctx> {
+pub struct ICmpInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -736,9 +740,9 @@ impl<'ctx> ICmpInst<'ctx> {
 /// `fcmp` floating-point comparison. Mirrors `FCmpInst`
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FCmpInst<'ctx> {
+pub struct FCmpInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -780,9 +784,9 @@ impl<'ctx> FCmpInst<'ctx> {
 
 /// `br` terminator. Mirrors `BranchInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BranchInst<'ctx> {
+pub struct BranchInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -838,9 +842,9 @@ impl<'ctx> BranchInst<'ctx> {
 /// `unreachable` terminator. Mirrors `UnreachableInst`
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct UnreachableInst<'ctx> {
+pub struct UnreachableInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -860,9 +864,14 @@ decl_handle_scaffold!(UnreachableInst);
 /// [`PhiInst::finish`] consumes the open phi and returns a [`Closed`]
 /// view; the closed view exposes only read accessors.
 #[derive(Debug)]
-pub struct PhiInst<'ctx, W: crate::int_width::IntWidth, P: PhiState = Open> {
+pub struct PhiInst<
+    'ctx,
+    W: crate::int_width::IntWidth,
+    P: PhiState = Open,
+    B: crate::module::ModuleBrand = crate::module::Brand<'ctx>,
+> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
     _w: core::marker::PhantomData<fn() -> W>,
     _p: core::marker::PhantomData<P>,
@@ -878,7 +887,7 @@ impl<'ctx, W: crate::int_width::IntWidth, P: PhiState> Copy for PhiInst<'ctx, W,
 
 impl<'ctx, W: crate::int_width::IntWidth, P: PhiState> PhiInst<'ctx, W, P> {
     #[inline]
-    pub(crate) fn from_raw(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
+    pub(crate) fn from_raw(id: ValueId, module: &'ctx ModuleCore, ty: TypeId) -> Self {
         Self {
             id,
             module: ModuleRef::new(module),
@@ -975,7 +984,7 @@ impl<'ctx, W: crate::int_width::IntWidth> PhiInst<'ctx, W, Open> {
         S: crate::block_state::BlockSealState,
     {
         let module = self.module.module();
-        let value = value.into_int_value(module)?;
+        let value = value.into_int_value(self.module)?;
         if value.as_value().module().id() != module.id()
             || block.as_value().module().id() != module.id()
         {
@@ -1048,9 +1057,14 @@ impl<'ctx, W: crate::int_width::IntWidth, P: PhiState> From<PhiInst<'ctx, W, P>>
 /// per-opcode handle pattern in this crate (the unified-trait alternative
 /// would force every read accessor through dyn dispatch).
 #[derive(Debug)]
-pub struct FpPhiInst<'ctx, K: crate::float_kind::FloatKind, P: PhiState = Open> {
+pub struct FpPhiInst<
+    'ctx,
+    K: crate::float_kind::FloatKind,
+    P: PhiState = Open,
+    B: crate::module::ModuleBrand = crate::module::Brand<'ctx>,
+> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
     _k: core::marker::PhantomData<fn() -> K>,
     _p: core::marker::PhantomData<P>,
@@ -1066,7 +1080,7 @@ impl<'ctx, K: crate::float_kind::FloatKind, P: PhiState> Copy for FpPhiInst<'ctx
 
 impl<'ctx, K: crate::float_kind::FloatKind, P: PhiState> FpPhiInst<'ctx, K, P> {
     #[inline]
-    pub(crate) fn from_raw(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
+    pub(crate) fn from_raw(id: ValueId, module: &'ctx ModuleCore, ty: TypeId) -> Self {
         Self {
             id,
             module: ModuleRef::new(module),
@@ -1131,7 +1145,7 @@ impl<'ctx, K: crate::float_kind::FloatKind> FpPhiInst<'ctx, K, Open> {
         S: crate::block_state::BlockSealState,
     {
         let module = self.module.module();
-        let value = value.into_float_value(module)?;
+        let value = value.into_float_value(self.module)?;
         if value.as_value().module().id() != module.id()
             || block.as_value().module().id() != module.id()
         {
@@ -1199,9 +1213,13 @@ impl<'ctx, K: crate::float_kind::FloatKind, P: PhiState> From<FpPhiInst<'ctx, K,
 /// element-kind type parameter (only addrspace, which is encoded in
 /// the type id), so the handle is parameterised only by `P: PhiState`.
 #[derive(Debug)]
-pub struct PointerPhiInst<'ctx, P: PhiState = Open> {
+pub struct PointerPhiInst<
+    'ctx,
+    P: PhiState = Open,
+    B: crate::module::ModuleBrand = crate::module::Brand<'ctx>,
+> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
     _p: core::marker::PhantomData<P>,
 }
@@ -1216,7 +1234,7 @@ impl<'ctx, P: PhiState> Copy for PointerPhiInst<'ctx, P> {}
 
 impl<'ctx, P: PhiState> PointerPhiInst<'ctx, P> {
     #[inline]
-    pub(crate) fn from_raw(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
+    pub(crate) fn from_raw(id: ValueId, module: &'ctx ModuleCore, ty: TypeId) -> Self {
         Self {
             id,
             module: ModuleRef::new(module),
@@ -1278,7 +1296,7 @@ impl<'ctx> PointerPhiInst<'ctx, Open> {
         S: crate::block_state::BlockSealState,
     {
         let module = self.module.module();
-        let value = value.into_pointer_value(module)?;
+        let value = value.into_pointer_value(self.module)?;
         if crate::value::IsValue::as_value(value).module().id() != module.id()
             || block.as_value().module().id() != module.id()
         {
@@ -1342,9 +1360,9 @@ impl<'ctx, P: PhiState> From<PointerPhiInst<'ctx, P>> for Instruction<'ctx, stat
 /// `InstrTypes.h`. Carries [`crate::FastMathFlags`] like every
 /// `FPMathOperator`-class instruction (`Operator.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FNegInst<'ctx> {
+pub struct FNegInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -1377,9 +1395,9 @@ impl<'ctx> FNegInst<'ctx> {
 /// `freeze` poison/undef-removing operator. Mirrors `FreezeInst`
 /// (`Instructions.h`). The result type matches the operand type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FreezeInst<'ctx> {
+pub struct FreezeInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -1409,9 +1427,9 @@ impl<'ctx> FreezeInst<'ctx> {
 /// Loads the next argument from a `va_list` pointer; the destination
 /// type lives on [`Self::result_type`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct VAArgInst<'ctx> {
+pub struct VAArgInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -1448,9 +1466,9 @@ impl<'ctx> VAArgInst<'ctx> {
 /// `extractvalue` reads a single sub-element of an aggregate by
 /// constant indices. Mirrors `ExtractValueInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ExtractValueInst<'ctx> {
+pub struct ExtractValueInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -1483,9 +1501,9 @@ impl<'ctx> ExtractValueInst<'ctx> {
 /// `insertvalue` writes a sub-element back into an aggregate by
 /// constant indices. Mirrors `InsertValueInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InsertValueInst<'ctx> {
+pub struct InsertValueInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -1526,9 +1544,9 @@ impl<'ctx> InsertValueInst<'ctx> {
 /// `extractelement` reads a single element from a vector. Mirrors
 /// `ExtractElementInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ExtractElementInst<'ctx> {
+pub struct ExtractElementInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -1562,9 +1580,9 @@ impl<'ctx> ExtractElementInst<'ctx> {
 /// `insertelement` writes a single element back into a vector.
 /// Mirrors `InsertElementInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InsertElementInst<'ctx> {
+pub struct InsertElementInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -1605,9 +1623,9 @@ impl<'ctx> InsertElementInst<'ctx> {
 /// input vectors per a constant integer mask. Mirrors
 /// `ShuffleVectorInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ShuffleVectorInst<'ctx> {
+pub struct ShuffleVectorInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -1650,9 +1668,9 @@ impl<'ctx> ShuffleVectorInst<'ctx> {
 /// `fence` instruction. Mirrors `FenceInst` (`Instructions.h`).
 /// No SSA operands; carries memory ordering and synchronization scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FenceInst<'ctx> {
+pub struct FenceInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -1683,9 +1701,9 @@ impl<'ctx> FenceInst<'ctx> {
 /// (`Instructions.h`). Result type is the literal struct
 /// `{ <pointee>, i1 }`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct AtomicCmpXchgInst<'ctx> {
+pub struct AtomicCmpXchgInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -1743,9 +1761,9 @@ impl<'ctx> AtomicCmpXchgInst<'ctx> {
 /// `atomicrmw` read-modify-write. Mirrors `AtomicRMWInst`
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct AtomicRMWInst<'ctx> {
+pub struct AtomicRMWInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -1834,10 +1852,13 @@ impl<'ctx> AtomicRMWInst<'ctx> {
 /// list is still editable. `add_case` is gated to `P = Open`;
 /// `finish` consumes the open handle and returns `Closed`.
 #[derive(Debug)]
-pub struct SwitchInst<'ctx, P: crate::term_open_state::TermOpenState = crate::term_open_state::Open>
-{
+pub struct SwitchInst<
+    'ctx,
+    P: crate::term_open_state::TermOpenState = crate::term_open_state::Open,
+    B: crate::module::ModuleBrand = crate::module::Brand<'ctx>,
+> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
     _p: core::marker::PhantomData<P>,
 }
@@ -1865,7 +1886,7 @@ impl<'ctx, P: crate::term_open_state::TermOpenState> core::hash::Hash for Switch
 
 impl<'ctx, P: crate::term_open_state::TermOpenState> SwitchInst<'ctx, P> {
     #[inline]
-    pub(crate) fn from_raw(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
+    pub(crate) fn from_raw(id: ValueId, module: &'ctx ModuleCore, ty: TypeId) -> Self {
         Self {
             id,
             module: ModuleRef::new(module),
@@ -1983,9 +2004,10 @@ impl<'ctx, P: crate::term_open_state::TermOpenState> From<SwitchInst<'ctx, P>>
 pub struct IndirectBrInst<
     'ctx,
     P: crate::term_open_state::TermOpenState = crate::term_open_state::Open,
+    B: crate::module::ModuleBrand = crate::module::Brand<'ctx>,
 > {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
     _p: core::marker::PhantomData<P>,
 }
@@ -2013,7 +2035,7 @@ impl<'ctx, P: crate::term_open_state::TermOpenState> core::hash::Hash for Indire
 
 impl<'ctx, P: crate::term_open_state::TermOpenState> IndirectBrInst<'ctx, P> {
     #[inline]
-    pub(crate) fn from_raw(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
+    pub(crate) fn from_raw(id: ValueId, module: &'ctx ModuleCore, ty: TypeId) -> Self {
         Self {
             id,
             module: ModuleRef::new(module),
@@ -2104,9 +2126,13 @@ impl<'ctx, P: crate::term_open_state::TermOpenState> From<IndirectBrInst<'ctx, P
 /// successors (`normal` / `unwind`). The `R` parameter mirrors
 /// [`CallInst`]'s typed-return marker.
 #[derive(Debug)]
-pub struct InvokeInst<'ctx, R: crate::marker::ReturnMarker = crate::marker::Dyn> {
+pub struct InvokeInst<
+    'ctx,
+    R: crate::marker::ReturnMarker = crate::marker::Dyn,
+    B: crate::module::ModuleBrand = crate::module::Brand<'ctx>,
+> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
     _r: core::marker::PhantomData<R>,
 }
@@ -2134,7 +2160,7 @@ impl<'ctx, R: crate::marker::ReturnMarker> core::hash::Hash for InvokeInst<'ctx,
 
 impl<'ctx, R: crate::marker::ReturnMarker> InvokeInst<'ctx, R> {
     #[inline]
-    pub(crate) fn from_raw(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
+    pub(crate) fn from_raw(id: ValueId, module: &'ctx ModuleCore, ty: TypeId) -> Self {
         Self {
             id,
             module: ModuleRef::new(module),
@@ -2225,9 +2251,9 @@ impl<'ctx, R: crate::marker::ReturnMarker> From<InvokeInst<'ctx, R>>
 /// A call-like terminator with one fallthrough destination plus zero
 /// or more indirect destination labels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CallBrInst<'ctx> {
+pub struct CallBrInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -2303,9 +2329,10 @@ impl<'ctx> CallBrInst<'ctx> {
 pub struct LandingPadInst<
     'ctx,
     P: crate::term_open_state::TermOpenState = crate::term_open_state::Open,
+    B: crate::module::ModuleBrand = crate::module::Brand<'ctx>,
 > {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
     _p: core::marker::PhantomData<P>,
 }
@@ -2333,7 +2360,7 @@ impl<'ctx, P: crate::term_open_state::TermOpenState> core::hash::Hash for Landin
 
 impl<'ctx, P: crate::term_open_state::TermOpenState> LandingPadInst<'ctx, P> {
     #[inline]
-    pub(crate) fn from_raw(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
+    pub(crate) fn from_raw(id: ValueId, module: &'ctx ModuleCore, ty: TypeId) -> Self {
         Self {
             id,
             module: ModuleRef::new(module),
@@ -2446,9 +2473,9 @@ impl<'ctx, P: crate::term_open_state::TermOpenState> From<LandingPadInst<'ctx, P
 /// `resume` terminator. Mirrors `ResumeInst` (`Instructions.h`).
 /// Single value operand (typically a `landingpad` result).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ResumeInst<'ctx> {
+pub struct ResumeInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -2480,9 +2507,9 @@ impl<'ctx> ResumeInst<'ctx> {
 /// `cleanuppad` instruction. Mirrors `CleanupPadInst` (`Instructions.h`).
 /// Result is a `token`-typed value used as a funclet pad.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CleanupPadInst<'ctx> {
+pub struct CleanupPadInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -2521,9 +2548,9 @@ impl<'ctx> CleanupPadInst<'ctx> {
 /// Result is a `token`-typed value used as a funclet pad. Parent must
 /// be a `catchswitch` (verifier rule).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CatchPadInst<'ctx> {
+pub struct CatchPadInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -2558,9 +2585,9 @@ impl<'ctx> CatchPadInst<'ctx> {
 
 /// `catchret` terminator. Mirrors `CatchReturnInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CatchReturnInst<'ctx> {
+pub struct CatchReturnInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -2592,9 +2619,9 @@ impl<'ctx> CatchReturnInst<'ctx> {
 
 /// `cleanupret` terminator. Mirrors `CleanupReturnInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CleanupReturnInst<'ctx> {
+pub struct CleanupReturnInst<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
 }
 
@@ -2634,9 +2661,10 @@ impl<'ctx> CleanupReturnInst<'ctx> {
 pub struct CatchSwitchInst<
     'ctx,
     P: crate::term_open_state::TermOpenState = crate::term_open_state::Open,
+    B: crate::module::ModuleBrand = crate::module::Brand<'ctx>,
 > {
     pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeId,
     _p: core::marker::PhantomData<P>,
 }
@@ -2664,7 +2692,7 @@ impl<'ctx, P: crate::term_open_state::TermOpenState> core::hash::Hash for CatchS
 
 impl<'ctx, P: crate::term_open_state::TermOpenState> CatchSwitchInst<'ctx, P> {
     #[inline]
-    pub(crate) fn from_raw(id: ValueId, module: &'ctx Module<'ctx>, ty: TypeId) -> Self {
+    pub(crate) fn from_raw(id: ValueId, module: &'ctx ModuleCore, ty: TypeId) -> Self {
         Self {
             id,
             module: ModuleRef::new(module),
