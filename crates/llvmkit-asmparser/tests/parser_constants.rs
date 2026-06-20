@@ -374,15 +374,14 @@ fn constant_expr_shufflevector_rejects_out_of_range_mask() {
     );
 }
 
-/// Ports `ConstantExpr::isSupportedGetElementPtr` plus recursive
-/// `Type::isScalableTy`: aggregate source types containing scalable vectors are
-/// invalid constant-GEP base elements.
+/// Exact negative constant-GEP fixture from
+/// `test/Assembler/constant-getelementptr-scalable_pointee.ll`.
 #[test]
-fn constant_expr_gep_rejects_scalable_aggregate_pointee() {
-    assert_parse_error(
-        b"define ptr @bad() {\n  ret ptr getelementptr ([2 x <vscale x 1 x i8>], ptr null, i64 1)\n}\n",
-        "invalid base element for constant getelementptr",
-    );
+fn constant_expr_gep_rejects_scalable_vector_pointee() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/constant-getelementptr-scalable_pointee.ll");
+
+    assert_parse_error(FIXTURE, "invalid base element for constant getelementptr");
 }
 
 /// Mirrors `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none`

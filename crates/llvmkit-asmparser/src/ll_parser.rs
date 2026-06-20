@@ -3989,6 +3989,9 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 let parsed_flags = self.parse_gep_constant_expr_flags()?;
                 self.expect_punct(PunctKind::LParen, "expected '(' in constantexpr")?;
                 let source_ty = self.parse_type(false)?;
+                if type_contains_scalable_vector(source_ty) {
+                    return Err(self.expected("invalid base element for constant getelementptr"));
+                }
                 self.expect_punct(
                     PunctKind::Comma,
                     "expected comma after getelementptr's type",
