@@ -3,8 +3,8 @@
 //! Every test cites its upstream source per Doctrine D11.
 
 use llvmkit_ir::{
-    FastMathFlags, FloatValue, IRBuilder, IntValue, IrError, Linkage, Module, PointerValue, Ptr,
-    VerifierRule,
+    Constant, ConstantFloatValue, FastMathFlags, FloatValue, IRBuilder, IntValue, IrError, Linkage,
+    Module, PointerValue, Ptr, VerifierRule,
 };
 
 // --------------------------------------------------------------------------
@@ -76,6 +76,28 @@ fn fneg_double_no_flags_unnamed_result() -> Result<(), IrError> {
         let text = format!("{m}");
         // Mirrors `; CHECK: fneg double %op1` (compatibility.ll line 1445).
         assert!(text.contains("fneg double %0\n"), "got:\n{text}");
+        Ok(())
+    })
+}
+
+/// llvmkit-specific regression for `ConstantFolder.h::FoldUnOpFMF` delegating
+/// constant `fneg` operands to `ConstantFoldUnaryInstruction` instead of
+/// materialising an instruction.
+#[test]
+fn default_constant_folder_folds_fneg_to_constant() -> Result<(), IrError> {
+    Module::with_new("u-fold", |m| {
+        let f64_ty = m.f64_type();
+        let fn_ty = m.fn_type(f64_ty, Vec::<llvmkit_ir::Type>::new(), false);
+        let f = m.add_function::<f64, _>("neg", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<f64>(&m).position_at_end(entry);
+        let result = b.build_float_neg::<f64, _, _>(f64_ty.const_double(1.25), "neg")?;
+        let folded = ConstantFloatValue::<f64>::try_from(Constant::try_from(result.as_value())?)?;
+        assert!(folded.ap_float().is_exactly_value_f64(-1.25));
+        assert!(
+            !format!("{m}").contains("fneg"),
+            "constant fneg emitted an instruction"
+        );
         Ok(())
     })
 }

@@ -22,6 +22,84 @@ use crate::fmf::FastMathFlags;
 use crate::sync_scope::SyncScope;
 use crate::value::ValueId;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BinaryOpcode {
+    Add,
+    Sub,
+    Mul,
+    UDiv,
+    SDiv,
+    URem,
+    SRem,
+    Shl,
+    LShr,
+    AShr,
+    And,
+    Or,
+    Xor,
+    FAdd,
+    FSub,
+    FMul,
+    FDiv,
+    FRem,
+}
+
+impl BinaryOpcode {
+    pub const fn keyword(self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Sub => "sub",
+            Self::Mul => "mul",
+            Self::UDiv => "udiv",
+            Self::SDiv => "sdiv",
+            Self::URem => "urem",
+            Self::SRem => "srem",
+            Self::Shl => "shl",
+            Self::LShr => "lshr",
+            Self::AShr => "ashr",
+            Self::And => "and",
+            Self::Or => "or",
+            Self::Xor => "xor",
+            Self::FAdd => "fadd",
+            Self::FSub => "fsub",
+            Self::FMul => "fmul",
+            Self::FDiv => "fdiv",
+            Self::FRem => "frem",
+        }
+    }
+
+    pub const fn is_commutative(self) -> bool {
+        matches!(
+            self,
+            Self::Add | Self::Mul | Self::And | Self::Or | Self::Xor | Self::FAdd | Self::FMul
+        )
+    }
+
+    pub const fn is_associative(self) -> bool {
+        matches!(
+            self,
+            Self::Add | Self::Mul | Self::And | Self::Or | Self::Xor
+        )
+    }
+
+    pub const fn is_int_div_rem(self) -> bool {
+        matches!(self, Self::UDiv | Self::SDiv | Self::URem | Self::SRem)
+    }
+
+    pub const fn is_desirable_constant_expr(self) -> bool {
+        matches!(self, Self::Add | Self::Sub | Self::Xor)
+    }
+
+    pub const fn is_supported_constant_expr(self) -> bool {
+        self.is_desirable_constant_expr()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UnaryOpcode {
+    FNeg,
+}
+
 /// Storage payload for the binary-operator opcodes (`add`, `sub`,
 /// `mul`, ...). Mirrors the operand/flag layout of `BinaryOperator`
 /// (`InstrTypes.h`).
@@ -167,6 +245,8 @@ pub enum CastOpcode {
     UIToFp,
     /// `sitofp` — signed integer to float.
     SIToFp,
+    /// `ptrtoaddr` — pointer to integer address bits.
+    PtrToAddr,
     /// `ptrtoint` — pointer to integer.
     PtrToInt,
     /// `inttoptr` — integer to pointer.
@@ -190,11 +270,28 @@ impl CastOpcode {
             Self::FpToSI => "fptosi",
             Self::UIToFp => "uitofp",
             Self::SIToFp => "sitofp",
+            Self::PtrToAddr => "ptrtoaddr",
             Self::PtrToInt => "ptrtoint",
             Self::IntToPtr => "inttoptr",
             Self::BitCast => "bitcast",
             Self::AddrSpaceCast => "addrspacecast",
         }
+    }
+
+    pub const fn is_desirable_constant_expr(self) -> bool {
+        matches!(
+            self,
+            Self::Trunc
+                | Self::PtrToAddr
+                | Self::PtrToInt
+                | Self::IntToPtr
+                | Self::BitCast
+                | Self::AddrSpaceCast
+        )
+    }
+
+    pub const fn is_supported_constant_expr(self) -> bool {
+        self.is_desirable_constant_expr()
     }
 }
 

@@ -190,6 +190,47 @@ fn parses_ptr_int_casts() {
     assert!(printed.contains("%q = inttoptr i64 %i to ptr\n"));
 }
 
+/// Exact scalar instruction excerpt from `llvm/test/Assembler/ptrtoaddr.ll`.
+#[test]
+fn parses_ptrtoaddr_instruction_distinct_from_ptrtoint() {
+    let printed = parse_and_print(
+        "target datalayout = \"p1:64:64:64:32\"\n\
+         define i64 @test_as0(ptr %p) {\n\
+           %addr = ptrtoaddr ptr %p to i64\n\
+           ret i64 %addr\n\
+         }\n",
+    );
+    assert!(printed.contains("%addr = ptrtoaddr ptr %p to i64\n"));
+}
+
+/// Exact scalar addrspace(1) instruction excerpt from
+/// `llvm/test/Assembler/ptrtoaddr.ll` lines 17-21.
+#[test]
+fn parses_ptrtoaddr_as1_scalar_instruction() {
+    let printed = parse_and_print(
+        "target datalayout = \"p1:64:64:64:32\"\n\
+         define i32 @test_as1(ptr addrspace(1) %p) {\n\
+           %addr = ptrtoaddr ptr addrspace(1) %p to i32\n\
+           ret i32 %addr\n\
+         }\n",
+    );
+    assert!(printed.contains("%addr = ptrtoaddr ptr addrspace(1) %p to i32\n"));
+}
+
+/// Exact vector addrspace(1) instruction excerpt from
+/// `llvm/test/Assembler/ptrtoaddr.ll` lines 23-27.
+#[test]
+fn parses_ptrtoaddr_as1_vector_instruction() {
+    let printed = parse_and_print(
+        "target datalayout = \"p1:64:64:64:32\"\n\
+         define <2 x i32> @test_vec_as1(<2 x ptr addrspace(1)> %p) {\n\
+           %addr = ptrtoaddr <2 x ptr addrspace(1)> %p to <2 x i32>\n\
+           ret <2 x i32> %addr\n\
+         }\n",
+    );
+    assert!(printed.contains("%addr = ptrtoaddr <2 x ptr addrspace(1)> %p to <2 x i32>\n"));
+}
+
 /// Ports the FP arithmetic arms of `LLParser::parseArithmetic`.
 /// Mirrors `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)`
 /// shape (no FMF here).

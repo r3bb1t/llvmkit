@@ -1,0 +1,427 @@
+//! Target library call availability.
+//!
+//! This is the narrow slice of LLVM's `TargetLibraryInfo` needed by analysis
+//! constant folding. LLVM models hundreds of `LibFunc_*` entries; llvmkit adds
+//! entries as the corresponding folds are ported.
+
+/// Library function identifiers used by constant folding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LibFunc {
+    Acos,
+    Acosf,
+    AcosFinite,
+    AcosfFinite,
+    Asin,
+    Asinf,
+    AsinFinite,
+    AsinfFinite,
+    Atan,
+    Atanf,
+    Atan2,
+    Atan2f,
+    Atan2Finite,
+    Atan2fFinite,
+    Ceil,
+    Ceilf,
+    Cos,
+    Cosf,
+    Cosh,
+    Coshf,
+    CoshFinite,
+    CoshfFinite,
+    Exp,
+    Expf,
+    ExpFinite,
+    ExpfFinite,
+    Exp2,
+    Exp2f,
+    Exp2Finite,
+    Exp2fFinite,
+    Erf,
+    Erff,
+    Fabs,
+    Fabsf,
+    Floor,
+    Floorf,
+    Fmod,
+    Fmodf,
+    Ilogb,
+    Ilogbf,
+    Log,
+    Logf,
+    Logl,
+    Log2,
+    Log2f,
+    Log10,
+    Log10f,
+    LogFinite,
+    LogfFinite,
+    Log10Finite,
+    Log10fFinite,
+    Logb,
+    Logbf,
+    Log1p,
+    Log1pf,
+    Nearbyint,
+    Nearbyintf,
+    Pow,
+    Powf,
+    PowFinite,
+    PowfFinite,
+    Remainder,
+    Remainderf,
+    Rint,
+    Rintf,
+    Round,
+    Roundf,
+    Roundeven,
+    Roundevenf,
+    Sin,
+    Sinf,
+    Sinh,
+    Sinhf,
+    SinhFinite,
+    SinhfFinite,
+    Sqrt,
+    Sqrtf,
+    Tan,
+    Tanf,
+    Tanh,
+    Tanhf,
+    Trunc,
+    Truncf,
+    Log2Finite,
+    Log2fFinite,
+}
+
+impl LibFunc {
+    /// Canonical library symbol name.
+    #[inline]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Acos => "acos",
+            Self::Acosf => "acosf",
+            Self::AcosFinite => "__acos_finite",
+            Self::AcosfFinite => "__acosf_finite",
+            Self::Asin => "asin",
+            Self::Asinf => "asinf",
+            Self::AsinFinite => "__asin_finite",
+            Self::AsinfFinite => "__asinf_finite",
+            Self::Atan => "atan",
+            Self::Atanf => "atanf",
+            Self::Atan2 => "atan2",
+            Self::Atan2f => "atan2f",
+            Self::Atan2Finite => "__atan2_finite",
+            Self::Atan2fFinite => "__atan2f_finite",
+            Self::Ceil => "ceil",
+            Self::Ceilf => "ceilf",
+            Self::Cos => "cos",
+            Self::Cosf => "cosf",
+            Self::Cosh => "cosh",
+            Self::Coshf => "coshf",
+            Self::CoshFinite => "__cosh_finite",
+            Self::CoshfFinite => "__coshf_finite",
+            Self::Exp => "exp",
+            Self::Expf => "expf",
+            Self::ExpFinite => "__exp_finite",
+            Self::ExpfFinite => "__expf_finite",
+            Self::Exp2 => "exp2",
+            Self::Exp2f => "exp2f",
+            Self::Exp2Finite => "__exp2_finite",
+            Self::Exp2fFinite => "__exp2f_finite",
+            Self::Erf => "erf",
+            Self::Erff => "erff",
+            Self::Fabs => "fabs",
+            Self::Fabsf => "fabsf",
+            Self::Floor => "floor",
+            Self::Floorf => "floorf",
+            Self::Fmod => "fmod",
+            Self::Fmodf => "fmodf",
+            Self::Ilogb => "ilogb",
+            Self::Ilogbf => "ilogbf",
+            Self::Log => "log",
+            Self::Logf => "logf",
+            Self::Logl => "logl",
+            Self::Log2 => "log2",
+            Self::Log2f => "log2f",
+            Self::Log10 => "log10",
+            Self::Log10f => "log10f",
+            Self::LogFinite => "__log_finite",
+            Self::LogfFinite => "__logf_finite",
+            Self::Log10Finite => "__log10_finite",
+            Self::Log10fFinite => "__log10f_finite",
+            Self::Log2Finite => "__log2_finite",
+            Self::Log2fFinite => "__log2f_finite",
+            Self::Logb => "logb",
+            Self::Logbf => "logbf",
+            Self::Log1p => "log1p",
+            Self::Log1pf => "log1pf",
+            Self::Nearbyint => "nearbyint",
+            Self::Nearbyintf => "nearbyintf",
+            Self::Pow => "pow",
+            Self::Powf => "powf",
+            Self::PowFinite => "__pow_finite",
+            Self::PowfFinite => "__powf_finite",
+            Self::Remainder => "remainder",
+            Self::Remainderf => "remainderf",
+            Self::Rint => "rint",
+            Self::Rintf => "rintf",
+            Self::Round => "round",
+            Self::Roundf => "roundf",
+            Self::Roundeven => "roundeven",
+            Self::Roundevenf => "roundevenf",
+            Self::Sin => "sin",
+            Self::Sinf => "sinf",
+            Self::Sinh => "sinh",
+            Self::Sinhf => "sinhf",
+            Self::SinhFinite => "__sinh_finite",
+            Self::SinhfFinite => "__sinhf_finite",
+            Self::Sqrt => "sqrt",
+            Self::Sqrtf => "sqrtf",
+            Self::Tan => "tan",
+            Self::Tanf => "tanf",
+            Self::Tanh => "tanh",
+            Self::Tanhf => "tanhf",
+            Self::Trunc => "trunc",
+            Self::Truncf => "truncf",
+        }
+    }
+
+    /// Recognise a function name as a known library function.
+    #[inline]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "acos" => Self::Acos,
+            "acosf" => Self::Acosf,
+            "__acos_finite" => Self::AcosFinite,
+            "__acosf_finite" => Self::AcosfFinite,
+            "asin" => Self::Asin,
+            "asinf" => Self::Asinf,
+            "__asin_finite" => Self::AsinFinite,
+            "__asinf_finite" => Self::AsinfFinite,
+            "atan" => Self::Atan,
+            "atanf" => Self::Atanf,
+            "atan2" => Self::Atan2,
+            "atan2f" => Self::Atan2f,
+            "__atan2_finite" => Self::Atan2Finite,
+            "__atan2f_finite" => Self::Atan2fFinite,
+            "ceil" => Self::Ceil,
+            "ceilf" => Self::Ceilf,
+            "cos" => Self::Cos,
+            "cosf" => Self::Cosf,
+            "cosh" => Self::Cosh,
+            "coshf" => Self::Coshf,
+            "__cosh_finite" => Self::CoshFinite,
+            "__coshf_finite" => Self::CoshfFinite,
+            "exp" => Self::Exp,
+            "expf" => Self::Expf,
+            "__exp_finite" => Self::ExpFinite,
+            "__expf_finite" => Self::ExpfFinite,
+            "exp2" => Self::Exp2,
+            "exp2f" => Self::Exp2f,
+            "__exp2_finite" => Self::Exp2Finite,
+            "__exp2f_finite" => Self::Exp2fFinite,
+            "erf" => Self::Erf,
+            "erff" => Self::Erff,
+            "fabs" => Self::Fabs,
+            "fabsf" => Self::Fabsf,
+            "floor" => Self::Floor,
+            "floorf" => Self::Floorf,
+            "fmod" => Self::Fmod,
+            "fmodf" => Self::Fmodf,
+            "ilogb" => Self::Ilogb,
+            "ilogbf" => Self::Ilogbf,
+            "log" => Self::Log,
+            "logf" => Self::Logf,
+            "logl" => Self::Logl,
+            "log2" => Self::Log2,
+            "log2f" => Self::Log2f,
+            "log10" => Self::Log10,
+            "log10f" => Self::Log10f,
+            "__log_finite" => Self::LogFinite,
+            "__logf_finite" => Self::LogfFinite,
+            "__log10_finite" => Self::Log10Finite,
+            "__log10f_finite" => Self::Log10fFinite,
+            "__log2_finite" => Self::Log2Finite,
+            "__log2f_finite" => Self::Log2fFinite,
+            "logb" => Self::Logb,
+            "logbf" => Self::Logbf,
+            "log1p" => Self::Log1p,
+            "log1pf" => Self::Log1pf,
+            "nearbyint" => Self::Nearbyint,
+            "nearbyintf" => Self::Nearbyintf,
+            "pow" => Self::Pow,
+            "powf" => Self::Powf,
+            "__pow_finite" => Self::PowFinite,
+            "__powf_finite" => Self::PowfFinite,
+            "remainder" => Self::Remainder,
+            "remainderf" => Self::Remainderf,
+            "rint" => Self::Rint,
+            "rintf" => Self::Rintf,
+            "round" => Self::Round,
+            "roundf" => Self::Roundf,
+            "roundeven" => Self::Roundeven,
+            "roundevenf" => Self::Roundevenf,
+            "sin" => Self::Sin,
+            "sinf" => Self::Sinf,
+            "sinh" => Self::Sinh,
+            "sinhf" => Self::Sinhf,
+            "__sinh_finite" => Self::SinhFinite,
+            "__sinhf_finite" => Self::SinhfFinite,
+            "sqrt" => Self::Sqrt,
+            "sqrtf" => Self::Sqrtf,
+            "tan" => Self::Tan,
+            "tanf" => Self::Tanf,
+            "tanh" => Self::Tanh,
+            "tanhf" => Self::Tanhf,
+            "trunc" => Self::Trunc,
+            "truncf" => Self::Truncf,
+            _ => return None,
+        })
+    }
+
+    #[inline]
+    const fn bit(self) -> u128 {
+        1_u128 << self.index()
+    }
+
+    const fn index(self) -> u32 {
+        match self {
+            Self::Acos => 0,
+            Self::Acosf => 1,
+            Self::AcosFinite => 2,
+            Self::AcosfFinite => 3,
+            Self::Asin => 4,
+            Self::Asinf => 5,
+            Self::AsinFinite => 6,
+            Self::AsinfFinite => 7,
+            Self::Atan => 8,
+            Self::Atanf => 9,
+            Self::Atan2 => 10,
+            Self::Atan2f => 11,
+            Self::Atan2Finite => 12,
+            Self::Atan2fFinite => 13,
+            Self::Ceil => 14,
+            Self::Ceilf => 15,
+            Self::Cos => 16,
+            Self::Cosf => 17,
+            Self::Cosh => 18,
+            Self::Coshf => 19,
+            Self::CoshFinite => 20,
+            Self::CoshfFinite => 21,
+            Self::Exp => 22,
+            Self::Expf => 23,
+            Self::ExpFinite => 24,
+            Self::ExpfFinite => 25,
+            Self::Exp2 => 26,
+            Self::Exp2f => 27,
+            Self::Exp2Finite => 28,
+            Self::Exp2fFinite => 29,
+            Self::Erf => 30,
+            Self::Erff => 31,
+            Self::Fabs => 32,
+            Self::Fabsf => 33,
+            Self::Floor => 34,
+            Self::Floorf => 35,
+            Self::Fmod => 36,
+            Self::Fmodf => 37,
+            Self::Ilogb => 38,
+            Self::Ilogbf => 39,
+            Self::Log => 40,
+            Self::Logf => 41,
+            Self::Logl => 42,
+            Self::Log2 => 43,
+            Self::Log2f => 44,
+            Self::Log10 => 45,
+            Self::Log10f => 46,
+            Self::LogFinite => 47,
+            Self::LogfFinite => 48,
+            Self::Log10Finite => 49,
+            Self::Log10fFinite => 50,
+            Self::Logb => 51,
+            Self::Logbf => 52,
+            Self::Log1p => 53,
+            Self::Log1pf => 54,
+            Self::Nearbyint => 55,
+            Self::Nearbyintf => 56,
+            Self::Pow => 57,
+            Self::Powf => 58,
+            Self::PowFinite => 59,
+            Self::PowfFinite => 60,
+            Self::Remainder => 61,
+            Self::Remainderf => 62,
+            Self::Rint => 63,
+            Self::Rintf => 64,
+            Self::Round => 65,
+            Self::Roundf => 66,
+            Self::Roundeven => 67,
+            Self::Roundevenf => 68,
+            Self::Sin => 69,
+            Self::Sinf => 70,
+            Self::Sinh => 71,
+            Self::Sinhf => 72,
+            Self::SinhFinite => 73,
+            Self::SinhfFinite => 74,
+            Self::Sqrt => 75,
+            Self::Sqrtf => 76,
+            Self::Tan => 77,
+            Self::Tanf => 78,
+            Self::Tanh => 79,
+            Self::Tanhf => 80,
+            Self::Trunc => 81,
+            Self::Truncf => 82,
+            Self::Log2Finite => 83,
+            Self::Log2fFinite => 84,
+        }
+    }
+}
+
+/// Target-specific library availability table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TargetLibraryInfo {
+    unavailable: u128,
+}
+
+impl TargetLibraryInfo {
+    /// Construct a table with every modelled library function available.
+    #[inline]
+    pub const fn new() -> Self {
+        Self { unavailable: 0 }
+    }
+
+    /// Construct a table with `lib_func` unavailable.
+    #[inline]
+    pub const fn without(lib_func: LibFunc) -> Self {
+        Self {
+            unavailable: lib_func.bit(),
+        }
+    }
+
+    /// Mark `lib_func` unavailable.
+    #[must_use]
+    #[inline]
+    pub const fn disable(mut self, lib_func: LibFunc) -> Self {
+        self.unavailable |= lib_func.bit();
+        self
+    }
+
+    /// True when the target provides `lib_func` with normal semantics.
+    #[inline]
+    pub const fn has(self, lib_func: LibFunc) -> bool {
+        self.unavailable & lib_func.bit() == 0
+    }
+
+    /// Recognise a function name and check target availability.
+    #[inline]
+    pub fn lib_func_for_name(self, name: &str) -> Option<LibFunc> {
+        let lib_func = LibFunc::from_name(name)?;
+        self.has(lib_func).then_some(lib_func)
+    }
+}
+
+impl Default for TargetLibraryInfo {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}

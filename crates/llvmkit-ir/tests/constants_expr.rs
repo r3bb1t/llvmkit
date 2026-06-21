@@ -18,28 +18,26 @@ fn assert_line(text: &str, expected: &str) {
     panic!("missing line `{expected}` in:\n{text}");
 }
 
-/// `llvmkit-specific subset`: exercises the `bitcast` constant-expression
-/// storage and `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` print arm.
-/// Upstream `ConstantExprNoFold.ll` covers no-folding for addrspacecast/GEP,
-/// but not this bitcast spelling.
+/// Port of `ConstantFold.cpp::FoldBitCast`: PPC double-double bitcasts need
+/// target endianness, so target-independent `ConstantExpr::getBitCast` keeps a
+/// `ConstantExpr` instead of folding the initializer.
 #[test]
 fn constant_expr_bitcast_round_trips() -> Result<(), IrError> {
     Module::with_new("constexpr_bitcast", |m| {
-        let i32_ty = m.i32_type();
-        let zero = i32_ty.const_int(0i32);
-        let g = m.add_global("g", i32_ty.as_type(), zero)?;
-        let ptr_ty = m.ptr_type(0).as_type();
+        let i128_ty = m.i128_type();
+        let bits = i128_ty.const_int(0_i128);
+        let ppc_ty = m.ppc_fp128_type();
         let bitcast = m.constant_expr(
-            ptr_ty,
+            ppc_ty.as_type(),
             ConstantExprOpcode::BitCast,
-            [g.as_global_constant_ptr().as_value()],
+            [bits.as_value()],
             [],
             [],
             ConstantExprFlags::none(),
         )?;
-        m.add_global("p", ptr_ty, bitcast)?;
+        m.add_global("p", ppc_ty.as_type(), bitcast)?;
         let text = module_text(&m);
-        assert_line(&text, "@p = global ptr bitcast (ptr @g to ptr)");
+        assert_line(&text, "@p = global ppc_fp128 bitcast (i128 0 to ppc_fp128)");
         m.verify_borrowed()?;
         Ok(())
     })
@@ -347,6 +345,44 @@ fn invalid_shufflevector_constant_expr_out_of_range_mask_is_rejected() -> Result
                 message: "invalid shufflevector constant expression"
             }
         );
+        Ok(())
+    })
+}
+
+/// Mirrors `llvm/lib/IR/ConstantFold.cpp::ConstantFoldShuffleVectorInstruction`:
+/// constant-expression `shufflevector` folds using the vector mask operand.
+#[test]
+fn shufflevector_constant_expr_uses_mask_operand_when_folding() -> Result<(), IrError> {
+    Module::with_new("constexpr_shuffle_fold", |m| {
+        let i32_ty = m.i32_type();
+        let src_ty = m.vector_type(i32_ty.as_type(), 2, false);
+        let result_ty = m.vector_type(i32_ty.as_type(), 3, false);
+        let one = i32_ty.const_int(1_i32);
+        let two = i32_ty.const_int(2_i32);
+        let three = i32_ty.const_int(3_i32);
+        let four = i32_ty.const_int(4_i32);
+        let lhs = src_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([one, two])?;
+        let rhs = src_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([three, four])?;
+        let zero = i32_ty.const_zero();
+        let rhs_lane_one = i32_ty.const_int(3_i32);
+        let lhs_lane_one = i32_ty.const_int(1_i32);
+        let mask = result_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([
+            zero,
+            rhs_lane_one,
+            lhs_lane_one,
+        ])?;
+
+        let folded = m.constant_expr(
+            result_ty.as_type(),
+            ConstantExprOpcode::ShuffleVector,
+            [lhs.as_value(), rhs.as_value(), mask.as_value()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+        m.add_global("shuf", result_ty.as_type(), folded)?;
+        let text = module_text(&m);
+        assert_line(&text, "@shuf = global <3 x i32> <i32 1, i32 4, i32 2>");
         Ok(())
     })
 }
@@ -687,13 +723,13 @@ fn ptrauth_constructor_requires_five_operand_shape() -> Result<(), IrError> {
             })
         );
 
-        let constant_expr_pointer = m.constant_expr(
+        let constant_expr_pointer = m.constant_expr_with_options(
             m.ptr_type(0).as_type(),
-            ConstantExprOpcode::BitCast,
-            [addr_disc.as_value()],
+            ConstantExprOpcode::GetElementPtr,
+            [addr_disc.as_value(), disc.as_value()],
             [],
             [],
-            ConstantExprFlags::none(),
+            llvmkit_ir::ConstantExprOptions::new().source_ty(i8_ty.as_type()),
         )?;
         let bad_deactivation = m.ptr_auth(ptr, key, disc, addr_disc, constant_expr_pointer);
         assert_eq!(

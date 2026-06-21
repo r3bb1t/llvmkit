@@ -19,22 +19,31 @@
 //! LLVM's pointer-identity-after-uniquing semantics with no
 //! pointer-based identity in our own code.
 
+use crate::DebugLoc;
+use crate::ap_float::{ApFloat, ApFloatSemantics};
+use crate::ap_int::ApInt;
 use crate::basic_block::BasicBlock;
 use crate::block_state::BlockSealState;
 use crate::constant::{
     BlockAddressPlaceholder, Constant, ConstantData, ConstantExprData, ConstantExprFlags,
     ConstantExprInRange, ConstantExprOpcode, IsConstant,
 };
+use crate::constant_fold::{
+    constant_fold_binary_instruction, constant_fold_cast_instruction,
+    constant_fold_extract_element_instruction, constant_fold_get_element_ptr,
+    constant_fold_insert_element_instruction, constant_fold_shuffle_vector_instruction,
+    shufflevector_mask_from_constant,
+};
 use crate::derived_types::{
     ArrayType, FloatType, IntType, PointerType, StructType, TargetExtProperty, VectorType,
 };
 use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::function::FunctionValue;
+use crate::instr_types::{BinaryOpcode, CastOpcode};
 use crate::marker::{Dyn, ReturnMarker};
 use crate::module::{Module, ModuleBrand, ModuleCore, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeData, TypeId};
 use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
-use crate::{DebugLoc, MAX_INT_BITS};
 use core::convert::Infallible;
 use core::fmt;
 use core::hash::{Hash, Hasher};
@@ -310,13 +319,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>> for ConstantIntValu
     type Error = IrError;
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
         let ty = c.ty();
-        if matches!(ty.data(), TypeData::Integer { .. }) {
-            Ok(Self::from_parts_typed(c))
-        } else {
-            Err(IrError::TypeMismatch {
+        match (ty.data(), &c.as_value().data().kind) {
+            (TypeData::Integer { .. }, ValueKindData::Constant(ConstantData::Int(_))) => {
+                Ok(Self::from_parts_typed(c))
+            }
+            (TypeData::Integer { .. }, _) => Err(IrError::InvalidOperation {
+                message: "constant is not an integer constant",
+            }),
+            _ => Err(IrError::TypeMismatch {
                 expected: TypeKindLabel::Integer,
                 got: ty.kind_label(),
-            })
+            }),
         }
     }
 }
@@ -329,9 +342,18 @@ macro_rules! impl_constant_int_static_try_from {
             type Error = IrError;
             fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
                 let ty = c.ty();
-                match ty.data() {
-                    TypeData::Integer { bits } if *bits == $bits => Ok(Self::from_parts_typed(c)),
-                    TypeData::Integer { bits } => Err(IrError::OperandWidthMismatch {
+                match (ty.data(), &c.as_value().data().kind) {
+                    (TypeData::Integer { bits }, ValueKindData::Constant(ConstantData::Int(_)))
+                        if *bits == $bits =>
+                    {
+                        Ok(Self::from_parts_typed(c))
+                    }
+                    (TypeData::Integer { bits }, _) if *bits == $bits => {
+                        Err(IrError::InvalidOperation {
+                            message: "constant is not an integer constant",
+                        })
+                    }
+                    (TypeData::Integer { bits }, _) => Err(IrError::OperandWidthMismatch {
                         lhs: $bits,
                         rhs: *bits,
                     }),
@@ -504,22 +526,33 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
     type Error = IrError;
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
         let ty = c.ty();
-        if matches!(
-            ty.data(),
-            TypeData::Half
+        match (ty.data(), &c.as_value().data().kind) {
+            (
+                TypeData::Half
                 | TypeData::BFloat
                 | TypeData::Float
                 | TypeData::Double
                 | TypeData::X86Fp80
                 | TypeData::Fp128
-                | TypeData::PpcFp128
-        ) {
-            Ok(Self::from_parts_typed(c))
-        } else {
-            Err(IrError::TypeMismatch {
+                | TypeData::PpcFp128,
+                ValueKindData::Constant(ConstantData::Float(_)),
+            ) => Ok(Self::from_parts_typed(c)),
+            (
+                TypeData::Half
+                | TypeData::BFloat
+                | TypeData::Float
+                | TypeData::Double
+                | TypeData::X86Fp80
+                | TypeData::Fp128
+                | TypeData::PpcFp128,
+                _,
+            ) => Err(IrError::InvalidOperation {
+                message: "constant is not a floating-point constant",
+            }),
+            _ => Err(IrError::TypeMismatch {
                 expected: TypeKindLabel::Float,
                 got: ty.kind_label(),
-            })
+            }),
         }
     }
 }
@@ -532,8 +565,13 @@ macro_rules! impl_constant_float_static_try_from {
             type Error = IrError;
             fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
                 let ty = c.ty();
-                match ty.data() {
-                    TypeData::$variant => Ok(Self::from_parts_typed(c)),
+                match (ty.data(), &c.as_value().data().kind) {
+                    (TypeData::$variant, ValueKindData::Constant(ConstantData::Float(_))) => {
+                        Ok(Self::from_parts_typed(c))
+                    }
+                    (TypeData::$variant, _) => Err(IrError::InvalidOperation {
+                        message: "constant is not a floating-point constant",
+                    }),
                     _ => Err(IrError::TypeMismatch {
                         expected: TypeKindLabel::$label,
                         got: ty.kind_label(),
@@ -581,9 +619,18 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntType<'ctx, W, B> {
         value: u64,
         sign_extend: bool,
     ) -> IrResult<ConstantIntValue<'ctx, W, B>> {
-        let bits = self.bit_width();
-        let storage = encode_int_value(value, bits, sign_extend)?;
-        Ok(intern_int_constant(self, storage))
+        let signedness = if sign_extend {
+            crate::ApIntSignedness::Signed
+        } else {
+            crate::ApIntSignedness::Unsigned
+        };
+        let ap = ApInt::new(
+            self.bit_width(),
+            value,
+            signedness,
+            crate::ApIntTruncation::RejectOverflow,
+        )?;
+        self.const_ap_int(&ap)
     }
 
     /// Construct an integer constant. The Rust input type drives the
@@ -611,6 +658,16 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntType<'ctx, W, B> {
         v.into_constant_int(self)
     }
 
+    pub fn const_ap_int(self, value: &ApInt) -> IrResult<ConstantIntValue<'ctx, W, B>> {
+        if value.bit_width() != self.bit_width() {
+            return Err(IrError::OperandWidthMismatch {
+                lhs: self.bit_width(),
+                rhs: value.bit_width(),
+            });
+        }
+        Ok(intern_int_constant(self, value.words().into()))
+    }
+
     /// Construct an integer constant from a precomputed
     /// little-endian-words magnitude. Mirrors
     /// `ConstantInt::get(IntegerType*, ArrayRef<uint64_t>)`.
@@ -626,30 +683,19 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntType<'ctx, W, B> {
                 bits,
             });
         }
-        Ok(intern_int_constant(self, normalise_words(words)))
+        self.const_ap_int(&ApInt::from_words(bits, words))
     }
 
     /// `iN 0`. Mirrors `Constant::getNullValue(IntegerType*)`.
     pub fn const_zero(self) -> ConstantIntValue<'ctx, W, B> {
-        intern_int_constant(self, Box::<[u64]>::from([]))
+        self.const_ap_int(&ApInt::zero(self.bit_width()))
+            .unwrap_or_else(|_| unreachable!("zero ApInt has matching width"))
     }
 
     /// `iN -1` (all-ones). Mirrors `Constant::getAllOnesValue`.
     pub fn const_all_ones(self) -> ConstantIntValue<'ctx, W, B> {
-        let bits = self.bit_width();
-        let bits_usize =
-            usize::try_from(bits).unwrap_or_else(|_| unreachable!("u32 bit-width fits in usize"));
-        let limbs = bits_usize.div_ceil(64);
-        let mut words = vec![u64::MAX; limbs].into_boxed_slice();
-        if let Some(top) = words.last_mut() {
-            let unused = limbs * 64 - bits_usize;
-            if unused > 0 {
-                let unused_u32 = u32::try_from(unused)
-                    .unwrap_or_else(|_| unreachable!("unused bits fit in u32"));
-                *top &= u64::MAX.checked_shr(unused_u32).unwrap_or(0);
-            }
-        }
-        intern_int_constant(self, normalise_words(&words))
+        self.const_ap_int(&ApInt::all_ones(self.bit_width()))
+            .unwrap_or_else(|_| unreachable!("all-ones ApInt has matching width"))
     }
 }
 
@@ -671,14 +717,12 @@ impl<'ctx, W: IntWidth, B: crate::module::ModuleBrand + 'ctx> ConstantIntValue<'
         }
     }
 
+    pub fn ap_int(self) -> ApInt {
+        ApInt::from_words(self.bit_width(), self.words())
+    }
+
     pub fn value_zext_u128(self) -> Option<u128> {
-        let w = self.words();
-        match w.len() {
-            0 => Some(0),
-            1 => Some(u128::from(w[0])),
-            2 => Some(u128::from(w[0]) | (u128::from(w[1]) << 64)),
-            _ => None,
-        }
+        self.ap_int().try_zext_u128()
     }
 
     /// Sign-extend the constant to a 128-bit signed integer. Mirrors
@@ -691,33 +735,7 @@ impl<'ctx, W: IntWidth, B: crate::module::ModuleBrand + 'ctx> ConstantIntValue<'
     /// of the type's width is set: this method propagates it across
     /// the upper bits, [`Self::value_zext_u128`] zero-fills.
     pub fn value_sext_i128(self) -> Option<i128> {
-        let w = self.words();
-        let n = self.bit_width();
-        if n > 128 {
-            return None;
-        }
-        let raw = match w.len() {
-            0 => 0u128,
-            1 => u128::from(w[0]),
-            2 => u128::from(w[0]) | (u128::from(w[1]) << 64),
-            _ => return None,
-        };
-        let extended = if n == 128 {
-            // Width matches; the bit pattern *is* the i128 value.
-            raw
-        } else {
-            let sign_bit = 1u128 << (n - 1);
-            let mask = (1u128 << n) - 1;
-            let lo = raw & mask;
-            if (lo & sign_bit) != 0 {
-                // High bit set -> propagate ones across the upper bits.
-                lo | !mask
-            } else {
-                lo
-            }
-        };
-        // Reinterpret the u128 bit pattern as i128 without `as`.
-        Some(i128::from_ne_bytes(extended.to_ne_bytes()))
+        self.ap_int().try_sext_i128()
     }
 }
 
@@ -725,25 +743,60 @@ impl<'ctx, W: IntWidth, B: crate::module::ModuleBrand + 'ctx> ConstantIntValue<'
 // FloatType: float-constant constructors
 // --------------------------------------------------------------------------
 
-impl<'ctx> FloatType<'ctx, f64> {
+impl<'ctx, B: ModuleBrand + 'ctx> FloatType<'ctx, f64, B> {
     /// Construct a `double` constant from an `f64`. Infallible.
-    pub fn const_double(self, value: f64) -> ConstantFloatValue<'ctx, f64> {
+    pub fn const_double(self, value: f64) -> ConstantFloatValue<'ctx, f64, B> {
         intern_float_constant(self, u128::from(value.to_bits()))
     }
 }
 
-impl<'ctx> FloatType<'ctx, f32> {
+impl<'ctx, B: ModuleBrand + 'ctx> FloatType<'ctx, f32, B> {
     /// Construct a `float` constant from an `f32`. Infallible.
-    pub fn const_float(self, value: f32) -> ConstantFloatValue<'ctx, f32> {
+    pub fn const_float(self, value: f32) -> ConstantFloatValue<'ctx, f32, B> {
         intern_float_constant(self, u128::from(value.to_bits()))
     }
 }
 
-impl<'ctx, K: FloatKind> FloatType<'ctx, K> {
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatType<'ctx, K, B> {
+    pub fn semantics(self) -> ApFloatSemantics {
+        match self.as_type().data() {
+            TypeData::Half => ApFloatSemantics::IeeeHalf,
+            TypeData::BFloat => ApFloatSemantics::BFloat,
+            TypeData::Float => ApFloatSemantics::IeeeSingle,
+            TypeData::Double => ApFloatSemantics::IeeeDouble,
+            TypeData::Fp128 => ApFloatSemantics::IeeeQuad,
+            TypeData::X86Fp80 => ApFloatSemantics::X87DoubleExtended,
+            TypeData::PpcFp128 => ApFloatSemantics::PpcDoubleDouble,
+            _ => unreachable!("FloatType invariant: type data is floating-point"),
+        }
+    }
+
+    pub fn const_ap_float(self, value: &ApFloat) -> IrResult<ConstantFloatValue<'ctx, K, B>> {
+        if value.semantics() != self.semantics() {
+            return Err(IrError::TypeMismatch {
+                expected: self.as_type().kind_label(),
+                got: TypeKindLabel::Double,
+            });
+        }
+        let Some(bits) = value.to_bits().try_zext_u128() else {
+            return Err(IrError::ImmediateOverflow {
+                value: u128::MAX,
+                bits: self.semantics().bit_width(),
+            });
+        };
+        Ok(intern_float_constant(self, bits))
+    }
+
     /// Construct a float constant directly from its bit pattern. Width
     /// of the pattern is implied by the kind.
-    pub fn const_from_bits(self, bits: u128) -> ConstantFloatValue<'ctx, K> {
-        intern_float_constant(self, bits)
+    pub fn const_from_bits(self, bits: u128) -> ConstantFloatValue<'ctx, K, B> {
+        let ap = ApFloat::from_bits(
+            self.semantics(),
+            &ApInt::from_words(self.semantics().bit_width(), &u128_to_words_for_float(bits)),
+        )
+        .unwrap_or_else(|_| unreachable!("const_from_bits constructs matching-width ApFloat"));
+        self.const_ap_float(&ap)
+            .unwrap_or_else(|_| unreachable!("const_from_bits preserves FloatType semantics"))
     }
 }
 
@@ -758,6 +811,15 @@ impl<'ctx, K: FloatKind, B: crate::module::ModuleBrand + 'ctx> ConstantFloatValu
             ValueKindData::Constant(ConstantData::Float(b)) => *b,
             _ => unreachable!("ConstantFloatValue invariant: kind is Constant::Float"),
         }
+    }
+
+    pub fn ap_float(self) -> ApFloat {
+        let bits = ApInt::from_words(
+            self.ty().semantics().bit_width(),
+            &u128_to_words_for_float(self.bit_pattern()),
+        );
+        ApFloat::from_bits(self.ty().semantics(), &bits)
+            .unwrap_or_else(|_| unreachable!("ConstantFloatValue bit-pattern width matches type"))
     }
 }
 
@@ -782,13 +844,13 @@ impl<'ctx> PointerType<'ctx> {
 // Aggregate constructors
 // --------------------------------------------------------------------------
 
-impl<'ctx> ArrayType<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> ArrayType<'ctx, B> {
     /// `[N x T] [...]`. Each element must have type `T` exactly.
     /// Mirrors `ConstantArray::get`.
-    pub fn const_array<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx>>
+    pub fn const_array<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx, B>>
     where
         I: IntoIterator<Item = C>,
-        C: IsConstant<'ctx>,
+        C: IsConstant<'ctx, B>,
     {
         let elem_ty = self.element().id();
         let expected_len = self.len();
@@ -815,13 +877,15 @@ impl<'ctx> ArrayType<'ctx> {
     }
 }
 
-impl<'ctx, B: crate::struct_body_state::StructBodyState> StructType<'ctx, B> {
+impl<'ctx, Body: crate::struct_body_state::StructBodyState, B: ModuleBrand + 'ctx>
+    StructType<'ctx, Body, B>
+{
     /// `T { ... }`. Element types must match the struct's declared
     /// body. Mirrors `ConstantStruct::get`.
-    pub fn const_struct<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx>>
+    pub fn const_struct<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx, B>>
     where
         I: IntoIterator<Item = C>,
-        C: IsConstant<'ctx>,
+        C: IsConstant<'ctx, B>,
     {
         // The struct must already have a body (literal structs always
         // do; identified structs need `set_struct_body` first).
@@ -851,12 +915,12 @@ impl<'ctx, B: crate::struct_body_state::StructBodyState> StructType<'ctx, B> {
     }
 }
 
-impl<'ctx> VectorType<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> VectorType<'ctx, B> {
     /// `<N x T> < ... >`. Mirrors `ConstantVector::get`.
-    pub fn const_vector<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx>>
+    pub fn const_vector<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx, B>>
     where
         I: IntoIterator<Item = C>,
-        C: IsConstant<'ctx>,
+        C: IsConstant<'ctx, B>,
     {
         let elem_ty = self.element().id();
         let mut ids = Vec::new();
@@ -994,6 +1058,9 @@ impl<'ctx> ModuleCore {
         };
         canonicalize_constant_expr_data(self, &mut data)?;
         validate_constant_expr_data(self, &data)?;
+        if let Some(folded) = fold_constant_expr_data(self, result_ty, &data)? {
+            return Ok(folded);
+        }
         let id = self.context().intern_constant_expr(data);
         Ok(constant_handle(id, self, result_ty.id()))
     }
@@ -1235,18 +1302,106 @@ impl<'ctx> ModuleCore {
     }
 }
 
+fn fold_constant_expr_data<'ctx>(
+    module: &'ctx ModuleCore,
+    result_ty: Type<'ctx>,
+    data: &ConstantExprData,
+) -> IrResult<Option<Constant<'ctx>>> {
+    let Some(operands) = constant_expr_operands(module, &data.operands) else {
+        return Ok(None);
+    };
+    match data.opcode {
+        ConstantExprOpcode::Add | ConstantExprOpcode::Sub | ConstantExprOpcode::Xor => {
+            let [lhs, rhs] = operands.as_slice() else {
+                return Ok(None);
+            };
+            let opcode = match data.opcode {
+                ConstantExprOpcode::Add => BinaryOpcode::Add,
+                ConstantExprOpcode::Sub => BinaryOpcode::Sub,
+                ConstantExprOpcode::Xor => BinaryOpcode::Xor,
+                _ => return Ok(None),
+            };
+            constant_fold_binary_instruction(opcode, *lhs, *rhs)
+        }
+        ConstantExprOpcode::Trunc
+        | ConstantExprOpcode::PtrToAddr
+        | ConstantExprOpcode::PtrToInt
+        | ConstantExprOpcode::IntToPtr
+        | ConstantExprOpcode::BitCast
+        | ConstantExprOpcode::AddrSpaceCast => {
+            let [operand] = operands.as_slice() else {
+                return Ok(None);
+            };
+            let opcode = match data.opcode {
+                ConstantExprOpcode::Trunc => CastOpcode::Trunc,
+                ConstantExprOpcode::PtrToAddr => CastOpcode::PtrToAddr,
+                ConstantExprOpcode::PtrToInt => CastOpcode::PtrToInt,
+                ConstantExprOpcode::IntToPtr => CastOpcode::IntToPtr,
+                ConstantExprOpcode::BitCast => CastOpcode::BitCast,
+                ConstantExprOpcode::AddrSpaceCast => CastOpcode::AddrSpaceCast,
+                _ => return Ok(None),
+            };
+            constant_fold_cast_instruction(opcode, *operand, result_ty)
+        }
+        ConstantExprOpcode::GetElementPtr => {
+            let Some(source_ty) = data.source_ty.map(|id| Type::new(id, module)) else {
+                return Ok(None);
+            };
+            let Some((base, indices)) = operands.split_first() else {
+                return Ok(None);
+            };
+            constant_fold_get_element_ptr(source_ty, *base, indices)
+        }
+        ConstantExprOpcode::ExtractElement => {
+            let [vector, index] = operands.as_slice() else {
+                return Ok(None);
+            };
+            constant_fold_extract_element_instruction(*vector, *index)
+        }
+        ConstantExprOpcode::InsertElement => {
+            let [vector, element, index] = operands.as_slice() else {
+                return Ok(None);
+            };
+            constant_fold_insert_element_instruction(*vector, *element, *index)
+        }
+        ConstantExprOpcode::ShuffleVector => {
+            let [lhs, rhs, mask] = operands.as_slice() else {
+                return Ok(None);
+            };
+            let Some(mask) = shufflevector_mask_from_constant(*mask) else {
+                return Ok(None);
+            };
+            constant_fold_shuffle_vector_instruction(*lhs, *rhs, &mask)
+        }
+    }
+}
+
+fn constant_expr_operands<'ctx>(
+    module: &'ctx ModuleCore,
+    operands: &[ValueId],
+) -> Option<Vec<Constant<'ctx>>> {
+    operands
+        .iter()
+        .map(|id| {
+            let data = module.context().value_data(*id);
+            matches!(&data.kind, ValueKindData::Constant(_))
+                .then(|| constant_handle(*id, module, data.ty))
+        })
+        .collect()
+}
+
 // --------------------------------------------------------------------------
 // Undef / Poison
 // --------------------------------------------------------------------------
 
-impl<'ctx> Type<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     /// `undef <type>`. Mirrors `UndefValue::get`.
-    pub fn get_undef(self) -> UndefValue<'ctx> {
+    pub fn get_undef(self) -> UndefValue<'ctx, B> {
         intern_undef(self)
     }
 
     /// `poison <type>`. Mirrors `PoisonValue::get`.
-    pub fn get_poison(self) -> PoisonValue<'ctx> {
+    pub fn get_poison(self) -> PoisonValue<'ctx, B> {
         intern_poison(self)
     }
 }
@@ -1527,6 +1682,10 @@ fn constant_with_replaced_operand(
             }
             canonicalize_constant_expr_data(module, &mut expr)?;
             validate_constant_expr_data(module, &expr)?;
+            let result_ty = Type::new(expr.result_ty, module);
+            if let Some(folded) = fold_constant_expr_data(module, result_ty, &expr)? {
+                return Ok(Some(folded.as_value().id));
+            }
             Ok(Some(module.context().intern_constant_expr(expr)))
         }
         ConstantData::PtrAuth {
@@ -1741,7 +1900,7 @@ pub(crate) fn validate_constant_expr_data(
         ConstantExprOpcode::PtrToAddr | ConstantExprOpcode::PtrToInt => {
             let [src_ty] = operand_tys.as_slice() else {
                 return Err(IrError::InvalidOperation {
-                    message: "ptrtoint constant expression expects one operand",
+                    message: "ptrtoaddr/ptrtoint constant expression expects one operand",
                 });
             };
             if !is_ptr_or_ptr_vector(module, src_ty.id())
@@ -1749,7 +1908,7 @@ pub(crate) fn validate_constant_expr_data(
                 || !lane_shape_matches(module, src_ty.id(), result_ty.id())
             {
                 return Err(IrError::InvalidOperation {
-                    message: "invalid ptrtoint constant expression",
+                    message: "invalid ptrtoaddr/ptrtoint constant expression",
                 });
             }
         }
@@ -1920,7 +2079,7 @@ pub(crate) fn verify_constant_expr_data(
         };
         let src_ty = Type::new(module.context().value_data(*src).ty, module);
         let addr_bits = pointer_address_space(module, scalar_type_id(module, src_ty.id()))
-            .map(|as_id| module.data_layout().pointer_size_in_bits(as_id));
+            .map(|as_id| module.data_layout().index_size_in_bits(as_id));
         if addr_bits != scalar_int_bits(module, result_ty.id()) {
             return Err(IrError::InvalidOperation {
                 message: "PtrToAddr result must be address width",
@@ -2172,60 +2331,6 @@ fn is_int_or_int_vector(module: &ModuleCore, id: TypeId) -> bool {
 // Internal helpers
 // --------------------------------------------------------------------------
 
-fn encode_int_value(value: u64, bits: u32, sign_extend: bool) -> IrResult<Box<[u64]>> {
-    debug_assert!((1..=MAX_INT_BITS).contains(&bits));
-    if bits == 0 {
-        return Err(IrError::InvalidIntegerWidth { bits });
-    }
-    let bit_count =
-        usize::try_from(bits).unwrap_or_else(|_| unreachable!("u32 bit-width fits in usize"));
-
-    if sign_extend && bits < 64 {
-        // Sign-extend: treat `value` as a `bits`-wide signed integer.
-        let bits_u32 = bits;
-        let upper_mask: u64 = u64::MAX.checked_shl(bits_u32).unwrap_or(0);
-        // Reject inputs whose top bits don't form a clean
-        // sign-extension (i.e. top bits are neither all-zero for
-        // non-negative nor all-one for negative).
-        let masked = value & !upper_mask;
-        let sign = (masked >> (bits_u32 - 1)) & 1 == 1;
-        if sign {
-            // Expected upper bits == upper_mask.
-            if value & upper_mask != upper_mask {
-                return Err(IrError::ImmediateOverflow {
-                    value: u128::from(value),
-                    bits,
-                });
-            }
-        } else if value & upper_mask != 0 {
-            return Err(IrError::ImmediateOverflow {
-                value: u128::from(value),
-                bits,
-            });
-        }
-        // Truncate to `bits` and store the canonical zext form so
-        // structurally-equal values share a value-id regardless of
-        // sign-extension input shape.
-        let truncated = masked;
-        Ok(normalise_words(&[truncated]))
-    } else if !sign_extend && bits < 64 {
-        // Zero-extend: reject set bits above `bits`.
-        let bits_u32 = bits;
-        let lo_mask: u64 = (1u64 << bits_u32) - 1;
-        if value & !lo_mask != 0 {
-            return Err(IrError::ImmediateOverflow {
-                value: u128::from(value),
-                bits,
-            });
-        }
-        Ok(normalise_words(&[value & lo_mask]))
-    } else {
-        // bits >= 64: every u64 fits.
-        let _ = bit_count;
-        Ok(normalise_words(&[value]))
-    }
-}
-
 fn normalise_words(words: &[u64]) -> Box<[u64]> {
     let mut end = words.len();
     while end > 0 && words[end - 1] == 0 {
@@ -2258,12 +2363,19 @@ fn intern_int_constant<'ctx, W: IntWidth, B: ModuleBrand + 'ctx>(
     ConstantIntValue::from_parts_typed(constant_handle(id, module, ty.id))
 }
 
-fn intern_float_constant<'ctx, K: FloatKind>(
-    ty: FloatType<'ctx, K>,
+fn u128_to_words_for_float(bits: u128) -> [u64; 2] {
+    let lo = u64::try_from(bits & 0xffff_ffff_ffff_ffff)
+        .unwrap_or_else(|_| unreachable!("low 64 bits fit in u64"));
+    let hi = u64::try_from(bits >> 64).unwrap_or_else(|_| unreachable!("high 64 bits fit in u64"));
+    [lo, hi]
+}
+
+fn intern_float_constant<'ctx, K: FloatKind, B: ModuleBrand + 'ctx>(
+    ty: FloatType<'ctx, K, B>,
     bits: u128,
-) -> ConstantFloatValue<'ctx, K> {
-    let module = ty.module.module();
-    let id = module.context().intern_constant_float(ty.id, bits);
+) -> ConstantFloatValue<'ctx, K, B> {
+    let module = ty.module;
+    let id = module.module().context().intern_constant_float(ty.id, bits);
     ConstantFloatValue::from_parts_typed(constant_handle(id, module, ty.id))
 }
 
@@ -2273,22 +2385,25 @@ fn intern_pointer_null<'ctx>(ty: PointerType<'ctx>) -> ConstantPointerNull<'ctx>
     ConstantPointerNull::from_parts(constant_handle(id, module, ty.id))
 }
 
-fn intern_undef<'ctx>(ty: Type<'ctx>) -> UndefValue<'ctx> {
+fn intern_undef<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> UndefValue<'ctx, B> {
     let module = ty.module();
-    let id = module.context().intern_constant_undef(ty.id());
-    UndefValue::from_parts(constant_handle(id, module.core_ref(), ty.id()))
+    let id = module.core_ref().context().intern_constant_undef(ty.id());
+    UndefValue::from_parts(constant_handle(id, module, ty.id()))
 }
 
-fn intern_poison<'ctx>(ty: Type<'ctx>) -> PoisonValue<'ctx> {
+fn intern_poison<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> PoisonValue<'ctx, B> {
     let module = ty.module();
-    let id = module.context().intern_constant_poison(ty.id());
-    PoisonValue::from_parts(constant_handle(id, module.core_ref(), ty.id()))
+    let id = module.core_ref().context().intern_constant_poison(ty.id());
+    PoisonValue::from_parts(constant_handle(id, module, ty.id()))
 }
 
-fn intern_aggregate<'ctx>(ty: Type<'ctx>, ids: Box<[ValueId]>) -> ConstantAggregate<'ctx> {
+pub(crate) fn intern_aggregate<'ctx, B: ModuleBrand + 'ctx>(
+    ty: Type<'ctx, B>,
+    ids: Box<[ValueId]>,
+) -> ConstantAggregate<'ctx, B> {
     let module = ty.module();
     let id = module.context().intern_constant_aggregate(ty.id(), ids);
-    ConstantAggregate::from_parts(constant_handle(id, module.core_ref(), ty.id()))
+    ConstantAggregate::from_parts(constant_handle(id, module, ty.id()))
 }
 
 #[inline]
@@ -2298,4 +2413,44 @@ where
     M: Into<ModuleRef<'ctx, B>>,
 {
     Constant::from_parts(Value::from_parts(id, module, ty))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rewritten_constant_expr_folds_before_reinterning() -> IrResult<()> {
+        Module::with_new("constexpr-rewrite-fold", |m| {
+            let i32_ty = m.i32_type();
+            let i64_ty = m.i64_type();
+            let global = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+            let ptr_as_int = m.constant_expr(
+                i64_ty.as_type(),
+                ConstantExprOpcode::PtrToInt,
+                [global.as_global_constant_ptr().as_value()],
+                [],
+                [],
+                ConstantExprFlags::none(),
+            )?;
+            let expr = m.constant_expr(
+                i64_ty.as_type(),
+                ConstantExprOpcode::Add,
+                [ptr_as_int.as_value(), i64_ty.const_int(1_i64).as_value()],
+                [],
+                [],
+                ConstantExprFlags::none(),
+            )?;
+            let replacement = i64_ty.const_zero().as_constant();
+            let rewritten = constant_with_replaced_operand(
+                m.core_ref(),
+                expr.as_value().id,
+                ptr_as_int.as_value().id,
+                replacement.as_value().id,
+            )?;
+
+            assert_eq!(rewritten, Some(i64_ty.const_int(1_i64).as_value().id));
+            Ok(())
+        })
+    }
 }

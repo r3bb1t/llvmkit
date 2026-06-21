@@ -22,7 +22,6 @@ use core::fmt;
 use core::fmt::Write as _;
 use std::collections::HashMap;
 
-use crate::AttrIndex;
 use crate::attributes::{AttributeStorage, AttributeStored};
 use crate::basic_block::BasicBlock;
 use crate::constant::{ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode};
@@ -36,6 +35,7 @@ use crate::marker::Dyn;
 use crate::module::{ModuleCore, UseListOrderBBRecord, UseListOrderRecord};
 use crate::r#type::{StructBody, Type, TypeData};
 use crate::value::{Value, ValueId, ValueKindData};
+use crate::{ApInt, ApIntSignedness, AttrIndex};
 
 // --------------------------------------------------------------------------
 // SlotTracker
@@ -469,119 +469,8 @@ fn is_null_pointer_constant(module: &ModuleCore, id: ValueId) -> bool {
 }
 
 fn fmt_apint_signed(f: &mut fmt::Formatter<'_>, words: &[u64], bit_width: u32) -> fmt::Result {
-    if bit_width == 0 {
-        return f.write_str("0");
-    }
-    if bit_width <= 64 {
-        return fmt_small_apint_signed(f, words, bit_width);
-    }
-    let negative = apint_sign_bit(words, bit_width);
-    let mut magnitude = masked_apint_words(words, bit_width);
-    if negative {
-        f.write_str("-")?;
-        twos_complement_negate(&mut magnitude, bit_width);
-    }
-    fmt_apint_unsigned(f, &mut magnitude)
-}
-
-fn fmt_small_apint_signed(
-    f: &mut fmt::Formatter<'_>,
-    words: &[u64],
-    bit_width: u32,
-) -> fmt::Result {
-    let raw = apint_word(words, 0, bit_width);
-    let sign_bit = 1u64 << (bit_width - 1);
-    let value = if raw & sign_bit != 0 {
-        i128::from(raw) - (1i128 << bit_width)
-    } else {
-        i128::from(raw)
-    };
-    write!(f, "{value}")
-}
-
-fn masked_apint_words(words: &[u64], bit_width: u32) -> Vec<u64> {
-    let word_count = usize::try_from(bit_width.div_ceil(64)).unwrap_or(0);
-    (0..word_count)
-        .map(|idx| apint_word(words, idx, bit_width))
-        .collect()
-}
-
-fn twos_complement_negate(words: &mut [u64], bit_width: u32) {
-    for word in words.iter_mut() {
-        *word = !*word;
-    }
-    mask_apint_top_word(words, bit_width);
-    let mut carry = true;
-    for word in words.iter_mut() {
-        if !carry {
-            break;
-        }
-        let (next, overflowed) = word.overflowing_add(1);
-        *word = next;
-        carry = overflowed;
-    }
-    mask_apint_top_word(words, bit_width);
-}
-
-fn fmt_apint_unsigned(f: &mut fmt::Formatter<'_>, words: &mut [u64]) -> fmt::Result {
-    if words.iter().all(|word| *word == 0) {
-        return f.write_str("0");
-    }
-    let mut digits = Vec::new();
-    while words.iter().any(|word| *word != 0) {
-        let mut carry = 0u128;
-        for word in words.iter_mut().rev() {
-            let combined = (carry << 64) | u128::from(*word);
-            let quotient = combined / 10;
-            let remainder = combined % 10;
-            let Ok(next_word) = u64::try_from(quotient) else {
-                return Err(fmt::Error);
-            };
-            *word = next_word;
-            carry = remainder;
-        }
-        let Ok(digit) = u8::try_from(carry) else {
-            return Err(fmt::Error);
-        };
-        digits.push(digit);
-    }
-    for digit in digits.iter().rev() {
-        f.write_char(char::from(b'0' + *digit))?;
-    }
-    Ok(())
-}
-
-fn apint_sign_bit(words: &[u64], bit_width: u32) -> bool {
-    if bit_width == 0 {
-        return false;
-    }
-    let bit_index = bit_width - 1;
-    let word_index = usize::try_from(bit_index / 64).unwrap_or(usize::MAX);
-    let bit_in_word = bit_index % 64;
-    words
-        .get(word_index)
-        .is_some_and(|word| ((word >> bit_in_word) & 1) != 0)
-}
-
-fn apint_word(words: &[u64], idx: usize, bit_width: u32) -> u64 {
-    let mut word = words.get(idx).copied().unwrap_or(0);
-    let word_count = usize::try_from(bit_width.div_ceil(64)).unwrap_or(0);
-    if word_count != 0 && idx + 1 == word_count {
-        let top_bits = bit_width % 64;
-        if top_bits != 0 {
-            word &= (1u64 << top_bits) - 1;
-        }
-    }
-    word
-}
-
-fn mask_apint_top_word(words: &mut [u64], bit_width: u32) {
-    let top_bits = bit_width % 64;
-    if top_bits != 0
-        && let Some(top) = words.last_mut()
-    {
-        *top &= (1u64 << top_bits) - 1;
-    }
+    let value = ApInt::from_words(bit_width, words);
+    f.write_str(&value.to_string_radix(10, ApIntSignedness::Signed))
 }
 
 fn fmt_constant_expr<'ctx, B: crate::module::ModuleBrand + 'ctx>(
@@ -681,39 +570,7 @@ fn fmt_int_constant<B: crate::module::ModuleBrand>(
         let v = words.first().copied().unwrap_or(0) & 1;
         return f.write_str(if v == 0 { "false" } else { "true" });
     }
-    if bits <= 64 {
-        // Print as a signed decimal: sign-extend the active bits.
-        let raw = words.first().copied().unwrap_or(0);
-        let active_mask: u64 = if bits == 64 {
-            u64::MAX
-        } else {
-            (1u64 << bits) - 1
-        };
-        let raw = raw & active_mask;
-        let sign_bit: u64 = 1u64 << (bits - 1);
-        let signed_value = if raw & sign_bit != 0 {
-            // Sign-extend: subtract 2^bits.
-            let two_n: i128 = 1i128 << bits;
-            (raw as i128) - two_n
-        } else {
-            raw as i128
-        };
-        return write!(f, "{signed_value}");
-    }
-    // Wide integers: print as zero-padded hex magnitude with a `u`
-    // prefix to mark unsigned. Mirrors LLVM's APInt textual fallback
-    // for widths >64.
-    f.write_str("u0x")?;
-    // A zero magnitude normalises to an empty `words` slice; emit a single
-    // `0` digit so the result is `u0x0` (a valid token) rather than the bare
-    // `u0x` the parser rejects.
-    if words.iter().all(|&w| w == 0) {
-        return f.write_str("0");
-    }
-    for word in words.iter().rev() {
-        write!(f, "{word:016x}")?;
-    }
-    Ok(())
+    fmt_apint_signed(f, words, bits)
 }
 
 struct FloatDecimalBuffer {
@@ -796,6 +653,11 @@ fn write_llvm_float_decimal(f: &mut fmt::Formatter<'_>, text: &str) -> fmt::Resu
     f.write_str(digits)
 }
 
+fn low_u16(bits: u128) -> u16 {
+    let bytes = bits.to_le_bytes();
+    u16::from_le_bytes([bytes[0], bytes[1]])
+}
+
 fn low_u32(bits: u128) -> u32 {
     let bytes = bits.to_le_bytes();
     u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
@@ -814,8 +676,8 @@ fn fmt_float_constant<B: crate::module::ModuleBrand>(
     bits: u128,
 ) -> fmt::Result {
     match ty.data() {
-        TypeData::Half => write!(f, "0xH{:04x}", bits as u16),
-        TypeData::BFloat => write!(f, "0xR{:04x}", bits as u16),
+        TypeData::Half => write!(f, "0xH{:04X}", low_u16(bits)),
+        TypeData::BFloat => write!(f, "0xR{:04X}", low_u16(bits)),
         TypeData::Float => {
             let value = f32::from_bits(low_u32(bits));
             if value.is_finite() && try_write_finite_float_decimal(f, f64::from(value))? {
@@ -832,19 +694,19 @@ fn fmt_float_constant<B: crate::module::ModuleBrand>(
             write!(f, "0x{:016x}", value.to_bits())
         }
         TypeData::X86Fp80 => {
-            let lo = bits as u64;
-            let hi = (bits >> 64) as u16;
-            write!(f, "0xK{hi:04x}{lo:016x}")
+            let lo = low_u64(bits);
+            let hi = low_u16(bits >> 64);
+            write!(f, "0xK{hi:04X}{lo:016X}")
         }
         TypeData::Fp128 => {
-            let lo = bits as u64;
-            let hi = (bits >> 64) as u64;
-            write!(f, "0xL{lo:016x}{hi:016x}")
+            let lo = low_u64(bits);
+            let hi = low_u64(bits >> 64);
+            write!(f, "0xL{lo:016X}{hi:016X}")
         }
         TypeData::PpcFp128 => {
-            let lo = bits as u64;
-            let hi = (bits >> 64) as u64;
-            write!(f, "0xM{lo:016x}{hi:016x}")
+            let lo = low_u64(bits);
+            let hi = low_u64(bits >> 64);
+            write!(f, "0xM{lo:016X}{hi:016X}")
         }
         _ => unreachable!("float-constant ty invariant"),
     }
@@ -886,8 +748,11 @@ fn collect_byte_string<B: crate::module::ModuleBrand>(
                     let data = module.context().value_data(*id);
                     match &data.kind {
                         ValueKindData::Constant(ConstantData::Int(words)) => {
-                            let v = words.first().copied().unwrap_or(0);
-                            bytes.push(v as u8);
+                            let v = words.first().copied().unwrap_or(0) & 0xff;
+                            let Ok(byte) = u8::try_from(v) else {
+                                return None;
+                            };
+                            bytes.push(byte);
                         }
                         _ => return None,
                     }

@@ -35,13 +35,14 @@ use core::marker::PhantomData;
 use crate::AttrIndex;
 use crate::DebugLoc;
 use crate::align::MaybeAlign;
+use crate::ap_float::ApFloatSemantics;
 use crate::argument::Argument;
-use crate::attributes::AttributeStorage;
-use crate::attributes::{AttrKind, Attribute};
+use crate::attributes::{AttrKind, Attribute, AttributeStorage, AttributeStored};
 use crate::basic_block::{BasicBlock, BasicBlockData};
 use crate::calling_conv::CallingConv;
 use crate::comdat::ComdatRef;
 use crate::constant::{Constant, IsConstant};
+use crate::denormal_mode::DenormalMode;
 use crate::derived_types::FunctionType;
 use crate::derived_types::{FloatType, IntType};
 use crate::error::{IrError, IrResult};
@@ -591,6 +592,76 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         ValueText: Into<String>,
     {
         self.add_attribute(module, index, crate::Attribute::string(key, value));
+    }
+
+    fn string_attribute_in_storage(storage: &AttributeStorage, key: &str) -> Option<String> {
+        storage
+            .get(AttrIndex::Function)?
+            .iter()
+            .rev()
+            .find_map(|attr| match attr {
+                AttributeStored::String {
+                    key: attr_key,
+                    value,
+                } if attr_key == key => Some(value.clone()),
+                _ => None,
+            })
+    }
+
+    fn function_string_attribute(self, key: &str) -> Option<String> {
+        {
+            let attrs = self.data().attributes.borrow();
+            if let Some(value) = Self::string_attribute_in_storage(&attrs, key) {
+                return Some(value);
+            }
+        }
+
+        let module_attr_groups = self.module.module().attribute_groups();
+        for group in self.data().function_attr_groups.borrow().iter().rev() {
+            if let Some((_, storage)) = module_attr_groups.iter().rev().find(|(id, _)| id == group)
+                && let Some(value) = Self::string_attribute_in_storage(storage, key)
+            {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    /// Return the representational value of `"denormal-fp-math"`.
+    ///
+    /// Mirrors `Function::getDenormalModeRaw` in
+    /// `llvm/lib/IR/Function.cpp`.
+    pub fn denormal_mode_raw(self) -> Option<DenormalMode> {
+        DenormalMode::from_attribute_value(
+            self.function_string_attribute("denormal-fp-math")
+                .as_deref()
+                .unwrap_or(""),
+        )
+    }
+
+    /// Return the representational value of `"denormal-fp-math-f32"`.
+    ///
+    /// Mirrors `Function::getDenormalModeF32Raw`; `None` means the f32-specific
+    /// attribute was not present or could not be parsed.
+    pub fn denormal_mode_f32_raw(self) -> Option<DenormalMode> {
+        self.function_string_attribute("denormal-fp-math-f32")
+            .as_deref()
+            .and_then(DenormalMode::from_attribute_value)
+    }
+
+    /// Denormal handling mode for a floating-point operation in this function.
+    ///
+    /// Mirrors `Function::getDenormalMode`: f32-specific attributes override
+    /// the generic mode, and invalid generic text makes analysis decline by
+    /// returning the dynamic mode.
+    pub fn denormal_mode(self, semantics: ApFloatSemantics) -> DenormalMode {
+        if semantics == ApFloatSemantics::IeeeSingle
+            && let Some(mode) = self.denormal_mode_f32_raw()
+        {
+            return mode;
+        }
+        self.denormal_mode_raw()
+            .unwrap_or_else(DenormalMode::dynamic)
     }
 
     /// Number of parameters.

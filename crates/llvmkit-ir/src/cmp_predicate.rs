@@ -25,6 +25,24 @@
 
 use core::fmt;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CmpPredicate {
+    Int(IntPredicate),
+    Float(FloatPredicate),
+}
+
+impl From<IntPredicate> for CmpPredicate {
+    fn from(value: IntPredicate) -> Self {
+        Self::Int(value)
+    }
+}
+
+impl From<FloatPredicate> for CmpPredicate {
+    fn from(value: FloatPredicate) -> Self {
+        Self::Float(value)
+    }
+}
+
 /// Floating-point comparison predicate.
 ///
 /// Discriminants (0..15) match LLVM's `FCMP_*` exactly; bit pattern is

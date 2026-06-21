@@ -111,15 +111,26 @@ fn constant_expr_casts_round_trip() {
     assert_parse_print_parse_stable(&text);
 }
 
-/// Direct port of `LLParser::parseValID`'s integer binary
-/// constant-expression branch: the accepted `add (ty lhs, ty rhs)` shape.
+/// Exact integer-binary constant-expression folding assertions from
+/// `test/Assembler/ConstantExprFold.ll`.
 #[test]
-fn constant_expr_binary_round_trip() {
-    const FIXTURE: &[u8] =
-        include_bytes!("fixtures/upstream/LLParser-parseValID/constant_expr_binary_round_trip.ll");
+fn constant_expr_binary_identity_folds_like_upstream() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/ConstantExprFold/constant_expr_binary_identity_folds_like_upstream.ll"
+    );
 
-    let text = parse_and_render("constant_expr_binary_round_trip", FIXTURE);
-    assert_check_lines(&text, &["@sum = global i32 add (i32 1, i32 2)"]);
+    let text = parse_and_render("constant_expr_binary_identity_folds_like_upstream", FIXTURE);
+    assert_eq!(
+        text,
+        concat!(
+            "; ModuleID = 'constant_expr_binary_identity_folds_like_upstream'\n",
+            "\n",
+            "@A = global i64 0\n",
+            "@add = global ptr inttoptr (i64 ptrtoint (ptr @A to i64) to ptr)\n",
+            "@sub = global ptr inttoptr (i64 ptrtoint (ptr @A to i64) to ptr)\n",
+            "@xor = global ptr inttoptr (i64 ptrtoint (ptr @A to i64) to ptr)\n"
+        )
+    );
     assert_parse_print_parse_stable(&text);
 }
 
@@ -291,6 +302,23 @@ fn ptrtoaddr_constant_expr_round_trips() {
     assert_check_lines(
         &text,
         &["@global_cast_as0 = global i64 ptrtoaddr (ptr @i_as0 to i64)"],
+    );
+    assert_parse_print_parse_stable(&text);
+}
+
+/// Exact addrspace(1) `ptrtoaddr` constant expression from
+/// `llvm/test/Assembler/ptrtoaddr.ll` lines 7-9.
+#[test]
+fn ptrtoaddr_as1_constant_expr_round_trips() {
+    const FIXTURE: &[u8] = br#"target datalayout = "p1:64:64:64:32"
+@i_as1 = addrspace(1) global i32 0
+@global_cast_as1 = global i32 ptrtoaddr (ptr addrspace(1) @i_as1 to i32)
+"#;
+
+    let text = parse_and_render("ptrtoaddr_as1_constant_expr_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["@global_cast_as1 = global i32 ptrtoaddr (ptr addrspace(1) @i_as1 to i32)"],
     );
     assert_parse_print_parse_stable(&text);
 }

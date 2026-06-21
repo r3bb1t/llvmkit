@@ -7,8 +7,8 @@
 //! atomic-rule rejection paths.
 
 use llvmkit_ir::{
-    Align, AtomicLoadConfig, AtomicOrdering, AtomicStoreConfig, IRBuilder, IntValue, IrError,
-    Linkage, Module, SyncScope, VerifierRule,
+    Align, AtomicLoadConfig, AtomicOrdering, AtomicStoreConfig, Constant, ConstantFloatValue,
+    IRBuilder, IntValue, IrError, Linkage, Module, SyncScope, VerifierRule,
 };
 
 // --- Atomic load shapes (compatibility.ll lines 902-906) ---------------
@@ -346,6 +346,27 @@ fn bitcast_int_to_fp_emits_text() -> Result<(), IrError> {
             text.contains("%bc = bitcast i32 %0 to float\n"),
             "got:\n{text}"
         );
+        Ok(())
+    })
+}
+
+/// llvmkit-specific regression for
+/// `ConstantFold.cpp::ConstantFoldCastInstruction`'s `bitcast` arm: typed
+/// bitcast builder methods must fold all-constant operands through the shared
+/// folder.
+#[test]
+fn default_constant_folder_folds_bitcast_int_to_fp() -> Result<(), IrError> {
+    Module::with_new("bitcast-fold", |m| {
+        let i32_ty = m.i32_type();
+        let f32_ty = m.f32_type();
+        let fn_ty = m.fn_type(f32_ty, Vec::<llvmkit_ir::Type>::new(), false);
+        let f = m.add_function::<f32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
+        let one_bits: IntValue<i32> = i32_ty.const_int(0x3f80_0000_i32).as_value().try_into()?;
+        let result = b.build_bitcast_int_to_fp::<i32, f32, _, _>(one_bits, f32_ty, "bc")?;
+        let folded = ConstantFloatValue::<f32>::try_from(Constant::try_from(result.as_value())?)?;
+        assert!(folded.ap_float().is_exactly_value_f64(1.0));
         Ok(())
     })
 }

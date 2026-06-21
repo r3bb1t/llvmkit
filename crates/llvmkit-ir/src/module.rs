@@ -556,6 +556,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
             ModuleRef::new(self.core),
         )
     }
+    #[inline]
+    pub(crate) fn vector_type<T>(self, elem: T, n: u32, scalable: bool) -> VectorType<'ctx, B>
+    where
+        T: Into<Type<'ctx, B>>,
+    {
+        let elem_id = elem.into().id();
+        let id = if scalable {
+            self.core.context().scalable_vector_type(elem_id, n)
+        } else {
+            self.core.context().fixed_vector_type(elem_id, n)
+        };
+        VectorType::new(id, ModuleRef::new(self.core))
+    }
 
     #[inline]
     pub(crate) fn label_type(self) -> LabelType<'ctx, B> {

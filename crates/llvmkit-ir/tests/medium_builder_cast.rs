@@ -8,7 +8,9 @@
 //! CastInst)` (the canonical cast-shape suite) and/or marks `llvmkit-specific:`
 //! for the typestate-driven coverage that has no C++ analogue.
 
-use llvmkit_ir::{IRBuilder, IntDyn, IntType, IntValue, IrError, Linkage, Module};
+use llvmkit_ir::{
+    Constant, ConstantIntValue, IRBuilder, IntDyn, IntType, IntValue, IrError, Linkage, Module,
+};
 
 /// Mirrors `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, CastInst)`
 /// (`Trunc` portion: i64 -> i32 narrowing produces a `trunc` instruction).
@@ -133,6 +135,26 @@ fn build_sext_static_static_emits_sext() -> Result<(), IrError> {
 
         let text = format!("{m}");
         assert!(text.contains("%s = sext i32 %0 to i64\n"), "got:\n{text}");
+        Ok(())
+    })
+}
+
+/// llvmkit-specific regression for
+/// `ConstantFold.cpp::ConstantFoldCastInstruction`: the default builder
+/// folder must fold all-constant integer casts to constants.
+#[test]
+fn default_constant_folder_folds_zext_to_constant() -> Result<(), IrError> {
+    Module::with_new("zext-fold", |m| {
+        let i32_ty = m.i32_type();
+        let i64_ty = m.i64_type();
+        let fn_ty = m.fn_type(i64_ty, Vec::<llvmkit_ir::Type>::new(), false);
+        let f = m.add_function::<i64, _>("widen", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
+        let value: IntValue<i32> = i32_ty.const_int(42_i32).as_value().try_into()?;
+        let result = b.build_zext(value, i64_ty, "z")?;
+        let folded = ConstantIntValue::<i64>::try_from(Constant::try_from(result.as_value())?)?;
+        assert_eq!(folded.ap_int().try_zext_u64(), Some(42));
         Ok(())
     })
 }

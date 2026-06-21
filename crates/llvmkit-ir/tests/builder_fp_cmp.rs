@@ -10,7 +10,7 @@
 //! per-predicate textual print form is locked by
 //! `test/Assembler/fast-math-flags.ll` (and the LangRef).
 
-use llvmkit_ir::{FloatPredicate, IRBuilder, IrError, Linkage, Module};
+use llvmkit_ir::{Constant, ConstantIntValue, FloatPredicate, IRBuilder, IrError, Linkage, Module};
 
 fn module_with_pred(pred: FloatPredicate, name: &str) -> Result<String, IrError> {
     Module::with_new("fcmp", |m| {
@@ -81,4 +81,28 @@ fn fcmp_uno() -> Result<(), IrError> {
     let text = module_with_pred(FloatPredicate::Uno, "uno_d")?;
     assert!(text.contains("%r = fcmp uno double %0, %1"), "got:\n{text}");
     Ok(())
+}
+
+/// llvmkit-specific regression for
+/// `ConstantFold.cpp::ConstantFoldCompareInstruction`: the default builder
+/// folder must fold all-constant floating compares to an `i1` constant.
+#[test]
+fn default_constant_folder_folds_float_compare() -> Result<(), IrError> {
+    Module::with_new("fcmp-fold", |m| {
+        let f64_ty = m.f64_type();
+        let bool_ty = m.bool_type();
+        let fn_ty = m.fn_type(bool_ty, Vec::<llvmkit_ir::Type>::new(), false);
+        let f = m.add_function::<bool, _>("cmp", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);
+        let result = b.build_fp_cmp::<f64, _, _, _>(
+            FloatPredicate::Olt,
+            f64_ty.const_double(1.0),
+            f64_ty.const_double(2.0),
+            "is_lt",
+        )?;
+        let folded = ConstantIntValue::<bool>::try_from(Constant::try_from(result.as_value())?)?;
+        assert_eq!(folded.ap_int().try_zext_u64(), Some(1));
+        Ok(())
+    })
 }

@@ -191,9 +191,9 @@ pub struct IntLit<'src> {
 
 /// Borrowed floating-point literal lexeme.
 ///
-/// Each variant carries the *digits* — the lexer strips the syntactic prefix
-/// but does not perform numeric conversion (deferred to the IR layer once
-/// `APFloat` is ported).
+/// Each variant carries the *digits* — the lexer strips the syntactic prefix,
+/// while `LLParser` performs the APFloat semantic conversion once the
+/// destination IR type is known.
 ///
 /// * `Decimal` is the full lexeme including any leading sign, decimal point,
 ///   and exponent — it parses as `IEEEdouble` per LLLexer.cpp:1225/1262.

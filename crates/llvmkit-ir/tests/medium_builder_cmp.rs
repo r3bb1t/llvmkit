@@ -8,7 +8,9 @@
 //! `icmp <pred>` rendering) additionally mirror Assembler fixtures in
 //! `test/Assembler/` exercising integer predicates.
 
-use llvmkit_ir::{IRBuilder, IntPredicate, IntValue, IrError, Linkage, Module};
+use llvmkit_ir::{
+    Constant, ConstantIntValue, IRBuilder, IntPredicate, IntValue, IrError, Linkage, Module, Type,
+};
 
 fn build_eq_module() -> Result<String, IrError> {
     Module::with_new("c", |m| {
@@ -95,6 +97,24 @@ fn build_int_cmp_ule_emits_icmp_ule() -> Result<(), IrError> {
         b.build_ret(r)?;
         let text = format!("{m}");
         assert!(text.contains("%r = icmp ule i32 %0, %1"), "got:\n{text}");
+        Ok(())
+    })
+}
+
+/// llvmkit-specific regression for
+/// `ConstantFold.cpp::ConstantFoldCompareInstruction`: the default builder
+/// folder must fold all-constant compares to an `i1` constant.
+#[test]
+fn default_constant_folder_folds_integer_compare() -> Result<(), IrError> {
+    Module::with_new("cmp-fold", |m| {
+        let bool_ty = m.bool_type();
+        let fn_ty = m.fn_type(bool_ty, Vec::<Type>::new(), false);
+        let f = m.add_function::<bool, _>("cmp", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);
+        let result = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ugt, 9_i32, 3_i32, "is_gt")?;
+        let folded = ConstantIntValue::<bool>::try_from(Constant::try_from(result.as_value())?)?;
+        assert!(folded.ap_int().try_zext_u64() == Some(1));
         Ok(())
     })
 }

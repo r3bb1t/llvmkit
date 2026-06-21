@@ -1012,7 +1012,15 @@ impl<'ctx> Verifier<'ctx> {
         // length should equal mask length. We compare via vector data.
         match self.module.context().type_data(inst.ty().id).as_vector() {
             Some((re, n, _)) => {
-                if re != l_elem || (n as usize) != d.mask.len() {
+                let Ok(result_len) = usize::try_from(n) else {
+                    return Err(self.fail(
+                        f,
+                        bb,
+                        VerifierRule::ShuffleVectorTypeMismatch,
+                        "result vector length does not fit this host".to_string(),
+                    ));
+                };
+                if re != l_elem || result_len != d.mask.len() {
                     return Err(self.fail(
                         f,
                         bb,
@@ -1417,14 +1425,15 @@ impl<'ctx> Verifier<'ctx> {
                     ));
                 }
             }
-            CastOpcode::PtrToInt => {
+            CastOpcode::PtrToAddr | CastOpcode::PtrToInt => {
                 if !is_pointer_or_pointer_vector(self.module, src_ty) {
                     return Err(self.fail(
                         f,
                         bb,
                         VerifierRule::CastTypeMismatch,
                         format!(
-                            "ptrtoint source must be pointer, got {}",
+                            "{} source must be pointer, got {}",
+                            c.kind.keyword(),
                             self.type_label(src_ty)
                         ),
                     ));
@@ -1435,10 +1444,40 @@ impl<'ctx> Verifier<'ctx> {
                         bb,
                         VerifierRule::CastTypeMismatch,
                         format!(
-                            "ptrtoint destination must be integer, got {}",
+                            "{} destination must be integer, got {}",
+                            c.kind.keyword(),
                             self.type_label(dst_ty)
                         ),
                     ));
+                }
+                if c.kind == CastOpcode::PtrToAddr {
+                    let Some((addr_space, src_shape)) = pointer_source_shape(self.module, src_ty)
+                    else {
+                        return Err(self.fail(
+                            f,
+                            bb,
+                            VerifierRule::CastTypeMismatch,
+                            "ptrtoaddr source must be pointer".to_owned(),
+                        ));
+                    };
+                    let Some((dst_bits, dst_shape)) = integer_result_shape(self.module, dst_ty)
+                    else {
+                        return Err(self.fail(
+                            f,
+                            bb,
+                            VerifierRule::CastTypeMismatch,
+                            "ptrtoaddr destination must be integer".to_owned(),
+                        ));
+                    };
+                    let index_bits = self.module.data_layout().index_size_in_bits(addr_space);
+                    if dst_bits != index_bits || src_shape != dst_shape {
+                        return Err(self.fail(
+                            f,
+                            bb,
+                            VerifierRule::CastTypeMismatch,
+                            "ptrtoaddr result must be address width".to_owned(),
+                        ));
+                    }
                 }
             }
             CastOpcode::IntToPtr => {
@@ -2536,7 +2575,10 @@ fn walk_aggregate_path(
                         if idx >= count {
                             return Err(AggWalkErr::OutOfRange { idx, count });
                         }
-                        cur = b.elements[idx as usize];
+                        let Ok(field_index) = usize::try_from(idx) else {
+                            return Err(AggWalkErr::OutOfRange { idx, count });
+                        };
+                        cur = b.elements[field_index];
                     }
                     None => return Err(AggWalkErr::NotAggregate(cur)),
                 }
@@ -2571,6 +2613,35 @@ fn is_pointer_or_pointer_vector(m: &ModuleCore, ty: TypeId) -> bool {
         return true;
     }
     false
+}
+fn pointer_source_shape(m: &ModuleCore, ty: TypeId) -> Option<(u32, Option<(u32, bool)>)> {
+    match m.context().type_data(ty) {
+        TypeData::Pointer { addr_space } => Some((*addr_space, None)),
+        TypeData::FixedVector { elem, n } => match m.context().type_data(*elem) {
+            TypeData::Pointer { addr_space } => Some((*addr_space, Some((*n, false)))),
+            _ => None,
+        },
+        TypeData::ScalableVector { elem, min } => match m.context().type_data(*elem) {
+            TypeData::Pointer { addr_space } => Some((*addr_space, Some((*min, true)))),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn integer_result_shape(m: &ModuleCore, ty: TypeId) -> Option<(u32, Option<(u32, bool)>)> {
+    match m.context().type_data(ty) {
+        TypeData::Integer { bits } => Some((*bits, None)),
+        TypeData::FixedVector { elem, n } => match m.context().type_data(*elem) {
+            TypeData::Integer { bits } => Some((*bits, Some((*n, false)))),
+            _ => None,
+        },
+        TypeData::ScalableVector { elem, min } => match m.context().type_data(*elem) {
+            TypeData::Integer { bits } => Some((*bits, Some((*min, true)))),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn is_i1(m: &ModuleCore, ty: TypeId) -> bool {
@@ -3072,6 +3143,34 @@ mod tests {
             append_ret_void(&m, entry.as_value().id);
             let err = m.verify_borrowed().unwrap_err();
             assert_rule(&err, VerifierRule::CallArgCountMismatch);
+        });
+    }
+    /// Mirrors `Verifier::visitPtrToAddrInst`: result integer width must match
+    /// the `DataLayout` index width for the source pointer address space.
+    #[test]
+    fn ptrtoaddr_result_uses_index_width() {
+        Module::with_new("t", |m| {
+            m.set_data_layout("p1:64:64:64:32").unwrap();
+            let void_ty = m.void_type().as_type();
+            let i64_ty = m.i64_type().as_type();
+            let ptr1_ty = m.ptr_type(1).as_type();
+            let (_f_id, bb_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            let ptr = fab_null_ptr_id(&m, ptr1_ty.id());
+            fabricate_instruction(
+                &m,
+                bb_id,
+                i64_ty.id(),
+                InstructionKindData::Cast(CastOpData::new(CastOpcode::PtrToAddr, ptr)),
+            );
+            append_ret_void(&m, bb_id);
+            let err = m.verify_borrowed().unwrap_err();
+            assert_rule(&err, VerifierRule::CastTypeMismatch);
+            match err {
+                IrError::VerifierFailure { message, .. } => {
+                    assert!(message.contains("ptrtoaddr result must be address width"));
+                }
+                _ => panic!("expected verifier failure"),
+            }
         });
     }
 }

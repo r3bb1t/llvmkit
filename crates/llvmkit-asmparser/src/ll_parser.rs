@@ -33,9 +33,13 @@ use llvmkit_ir::attributes::{AttrIndex, AttrKind, Attribute, AttributeStorage};
 use std::collections::HashMap;
 
 use llvmkit_ir::{
-    Align, AnyTypeEnum, AtomicOrdering, Brand, CallingConv, ConstantFolder, DllStorageClass, Dyn,
-    FastMathFlags, IRBuilder, IrError, Linkage, MaybeAlign, Module, ModuleBrand, Positioned,
-    SelectionKind, StructType, SyncScope, ThreadLocalMode, Type, TypeKind, UnnamedAddr, Unverified,
+    Align, AnyTypeEnum, ApFloat, ApFloatSemantics, ApInt, ApIntSignedness, AtomicLoadConfig,
+    AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, Brand, CallingConv, Constant,
+    ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
+    DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType, FloatValue,
+    GepNoWrapFlags, IRBuilder, IntDyn, IntValue, IrError, IrResult, Linkage, MaybeAlign, Module,
+    ModuleBrand, NoFolder, PointerValue, Positioned, RoundingMode, SelectionKind, StructType,
+    SyncScope, ThreadLocalMode, Type, TypeKind, UIToFpFlags, UnnamedAddr, Unverified,
     UseListOrderBBRecord, UseListOrderRecord, Visibility, derived_types::PointerType,
 };
 use llvmkit_support::{Span, Spanned};
@@ -273,14 +277,38 @@ enum ParsedCallee<'ctx> {
     InlineAsm(llvmkit_ir::InlineAsm<'ctx>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParsedSign {
+    Positive,
+    Negative,
+}
+
+#[derive(Debug, Clone)]
+enum ParsedApsInt {
+    SignedMagnitude {
+        sign: ParsedSign,
+        magnitude: ApInt,
+    },
+    Hex {
+        signedness: ApIntSignedness,
+        value: ApInt,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ExpectedIntWidth {
+    Infer,
+    Bits(u32),
+}
+
 #[derive(Debug)]
 enum ValId<'ctx> {
     LocalId(u32),
     GlobalId(u32),
     LocalName(String),
     GlobalName(String),
-    ApsInt { negative: bool, words: Box<[u64]> },
-    ApFloat(u128),
+    ApsInt(ParsedApsInt),
+    ApFloat(ApFloat),
     Null,
     Undef,
     Poison,
@@ -288,6 +316,51 @@ enum ValId<'ctx> {
     Constant(llvmkit_ir::Constant<'ctx>),
     Value(llvmkit_ir::Value<'ctx>),
     ConstantSplat(llvmkit_ir::Constant<'ctx>),
+}
+
+fn inferred_decimal_bits(digits: &str) -> u32 {
+    let digit_count = u32::try_from(digits.len()).unwrap_or(u32::MAX / 4);
+    digit_count.saturating_mul(4).max(1)
+}
+
+fn inferred_hex_bits(digits: &str) -> u32 {
+    let digit_count = u32::try_from(digits.len()).unwrap_or(u32::MAX / 4);
+    digit_count.saturating_mul(4).max(1)
+}
+
+fn lower_parsed_apsint(parsed: &ParsedApsInt, dest_width: u32) -> ApInt {
+    match parsed {
+        ParsedApsInt::SignedMagnitude { sign, magnitude } => {
+            let magnitude = magnitude.zext_or_trunc(dest_width);
+            if matches!(sign, ParsedSign::Negative) {
+                magnitude.negate()
+            } else {
+                magnitude
+            }
+        }
+        ParsedApsInt::Hex { signedness, value } => match signedness {
+            ApIntSignedness::Unsigned => value.zext_or_trunc(dest_width),
+            ApIntSignedness::Signed => value.sext_or_trunc(dest_width),
+        },
+    }
+}
+
+fn parsed_apsint_to_i128(parsed: &ParsedApsInt) -> Option<i128> {
+    match parsed {
+        ParsedApsInt::SignedMagnitude { sign, magnitude } => {
+            let value = magnitude.try_zext_u128()?;
+            let signed = i128::try_from(value).ok()?;
+            Some(if matches!(sign, ParsedSign::Negative) {
+                -signed
+            } else {
+                signed
+            })
+        }
+        ParsedApsInt::Hex { signedness, value } => match signedness {
+            ApIntSignedness::Unsigned => i128::try_from(value.try_zext_u128()?).ok(),
+            ApIntSignedness::Signed => value.try_sext_i128(),
+        },
+    }
 }
 
 fn is_supported_constant_expr_opcode(op: crate::ll_token::Opcode) -> bool {
@@ -380,7 +453,7 @@ fn type_contains_scalable_vector(ty: Type<'_>) -> bool {
 
 #[derive(Debug, Clone)]
 struct ParsedGepConstantExprFlags {
-    no_wrap: llvmkit_ir::GepNoWrapFlags,
+    no_wrap: GepNoWrapFlags,
     in_range: Option<(ParsedInRangeBound, ParsedInRangeBound)>,
 }
 
@@ -501,7 +574,7 @@ fn mask_apint_top_word(words: &mut [u64], bit_width: u32) {
     }
 }
 
-fn constant_expr_inrange_is_non_empty(range: &llvmkit_ir::ConstantExprInRange) -> bool {
+fn constant_expr_inrange_is_non_empty(range: &ConstantExprInRange) -> bool {
     signed_apint_cmp(range.start(), range.end(), range.bit_width()).is_lt()
 }
 
@@ -1252,26 +1325,43 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         }
     }
 
-    /// Parse a signed 64-bit integer constant (LLVM's `iN` initializer
-    /// values are u64 textually but may be sign-extended; this helper
-    /// returns the textual `u64` payload and a `negative` flag so the
-    /// caller can do the right thing for its destination type).
-    fn parse_int_literal(&mut self) -> ParseResult<(bool, u64)> {
-        let (negative, digits) = match self.peek() {
-            Token::IntegerLit(IntLit {
-                sign,
-                base: NumBase::Dec,
-                digits,
-            }) => (matches!(sign, Sign::Neg), *digits),
-            // Hex APSInt forms are rare in initializers and not modeled in
-            // this session; the parser falls through to a typed error.
+    fn parse_int_literal(&mut self, expected_width: ExpectedIntWidth) -> ParseResult<ParsedApsInt> {
+        let lit = match self.peek() {
+            Token::IntegerLit(lit) => *lit,
             _ => return Err(self.expected("integer literal")),
         };
-        let value = digits
-            .parse::<u64>()
-            .map_err(|_| self.expected("integer literal in u64 range"))?;
+        let parsed = match lit.base {
+            NumBase::Dec => {
+                let width = match expected_width {
+                    ExpectedIntWidth::Bits(bits) => bits,
+                    ExpectedIntWidth::Infer => inferred_decimal_bits(lit.digits),
+                };
+                let magnitude = ApInt::from_string(width, lit.digits, 10)
+                    .map_err(|_| self.expected("valid integer literal"))?;
+                let sign = if matches!(lit.sign, Sign::Neg) {
+                    ParsedSign::Negative
+                } else {
+                    ParsedSign::Positive
+                };
+                ParsedApsInt::SignedMagnitude { sign, magnitude }
+            }
+            NumBase::HexSigned | NumBase::HexUnsigned => {
+                let width = match expected_width {
+                    ExpectedIntWidth::Bits(bits) => bits,
+                    ExpectedIntWidth::Infer => inferred_hex_bits(lit.digits),
+                };
+                let value = ApInt::from_string(width, lit.digits, 16)
+                    .map_err(|_| self.expected("valid hexadecimal integer literal"))?;
+                let signedness = if matches!(lit.base, NumBase::HexSigned) {
+                    ApIntSignedness::Signed
+                } else {
+                    ApIntSignedness::Unsigned
+                };
+                ParsedApsInt::Hex { signedness, value }
+            }
+        };
         self.bump()?;
-        Ok((negative, value))
+        Ok(parsed)
     }
 
     // ── Instruction modifier parsing ──────────────────────────────────────
@@ -1938,8 +2028,9 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 self.parse_string_constant("metadata field string")?,
             )),
             Token::IntegerLit(_) => {
-                let (neg, raw) = self.parse_int_literal()?;
-                let value = if neg { -(raw as i128) } else { raw as i128 };
+                let parsed = self.parse_int_literal(ExpectedIntWidth::Infer)?;
+                let value = parsed_apsint_to_i128(&parsed)
+                    .ok_or_else(|| self.expected("metadata integer literal in i128 range"))?;
                 Ok(MetadataFieldValue::Integer(value))
             }
             Token::MetadataVar(_) => {
@@ -3290,11 +3381,11 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 Ok(ValId::GlobalId(id))
             }
             Token::IntegerLit(_) => {
-                let (negative, value) = self.parse_int_literal()?;
-                Ok(ValId::ApsInt {
-                    negative,
-                    words: Box::from([value]),
-                })
+                let expected_width = match expected_ty.map(Type::into_type_enum) {
+                    Some(AnyTypeEnum::Int(t)) => ExpectedIntWidth::Bits(t.bit_width()),
+                    _ => ExpectedIntWidth::Infer,
+                };
+                self.parse_int_literal(expected_width).map(ValId::ApsInt)
             }
             Token::FloatLit(_) => {
                 let float_ty = match expected_ty.map(Type::into_type_enum) {
@@ -3310,10 +3401,10 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                     return Err(self.expected("i1 type for boolean literal"));
                 }
                 self.bump()?;
-                Ok(ValId::ApsInt {
-                    negative: false,
-                    words: Box::from([1]),
-                })
+                Ok(ValId::ApsInt(ParsedApsInt::SignedMagnitude {
+                    sign: ParsedSign::Positive,
+                    magnitude: ApInt::from_words(1, &[1]),
+                }))
             }
             Token::Kw(Keyword::False) => {
                 let ty = expected_ty.ok_or_else(|| self.expected("i1 type for boolean literal"))?;
@@ -3321,10 +3412,10 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                     return Err(self.expected("i1 type for boolean literal"));
                 }
                 self.bump()?;
-                Ok(ValId::ApsInt {
-                    negative: false,
-                    words: Box::from([0]),
-                })
+                Ok(ValId::ApsInt(ParsedApsInt::SignedMagnitude {
+                    sign: ParsedSign::Positive,
+                    magnitude: ApInt::zero(1),
+                }))
             }
             Token::Kw(Keyword::Null) => {
                 self.bump()?;
@@ -3440,29 +3531,26 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 }),
             ValId::GlobalName(name) => self.resolve_global_name_as_value(name),
             ValId::GlobalId(id) => self.resolve_global_id_as_value(id),
-            ValId::ApsInt { negative, words } => {
+            ValId::ApsInt(parsed) => {
                 let int_ty = match ty.into_type_enum() {
                     AnyTypeEnum::Int(t) => t,
                     _ => return Err(self.expected("integer constant only valid for int type")),
                 };
-                let value = single_apint_word(&words)
-                    .ok_or_else(|| self.expected("single-word integer literal"))?;
-                let raw = if negative {
-                    value.wrapping_neg()
-                } else {
-                    value
-                };
+                let bits = lower_parsed_apsint(&parsed, int_ty.bit_width());
                 let c = int_ty
-                    .const_int_raw(raw, negative)
+                    .const_ap_int(&bits)
                     .map_err(|e| self.builder_err("integer constant", e))?;
                 Ok(c.as_value())
             }
-            ValId::ApFloat(bits) => {
+            ValId::ApFloat(value) => {
                 let float_ty = match ty.into_type_enum() {
                     AnyTypeEnum::Float(t) => t,
                     _ => return Err(self.expected("float constant only valid for float type")),
                 };
-                Ok(float_ty.const_from_bits(bits).as_value())
+                Ok(float_ty
+                    .const_ap_float(&value)
+                    .map_err(|e| self.builder_err("float constant", e))?
+                    .as_value())
             }
             ValId::Null => {
                 let pty = match ty.into_type_enum() {
@@ -3505,32 +3593,29 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 }
                 self.resolve_global_id_as_constant(id)
             }
-            ValId::ApsInt { negative, words } => {
+            ValId::ApsInt(parsed) => {
                 let int_ty = match ty.into_type_enum() {
                     AnyTypeEnum::Int(t) => t,
                     _ => return Err(self.expected("integer constant for non-integer type")),
                 };
-                let value = single_apint_word(&words)
-                    .ok_or_else(|| self.expected("single-word integer literal"))?;
-                let raw = if negative {
-                    value.wrapping_neg()
-                } else {
-                    value
-                };
+                let bits = lower_parsed_apsint(&parsed, int_ty.bit_width());
                 let c = int_ty
-                    .const_int_raw(raw, negative)
+                    .const_ap_int(&bits)
                     .map_err(|e| ParseError::Expected {
                         expected: format!("valid integer constant: {e}"),
                         loc: DiagLoc::span(self.loc()),
                     })?;
                 Ok(c.as_constant())
             }
-            ValId::ApFloat(bits) => {
+            ValId::ApFloat(value) => {
                 let float_ty = match ty.into_type_enum() {
                     AnyTypeEnum::Float(t) => t,
                     _ => return Err(self.expected("float constant only valid for float type")),
                 };
-                Ok(float_ty.const_from_bits(bits).as_constant())
+                Ok(float_ty
+                    .const_ap_float(&value)
+                    .map_err(|e| self.builder_err("float constant", e))?
+                    .as_constant())
             }
             ValId::Null => {
                 let ptr_ty = match ty.into_type_enum() {
@@ -3907,11 +3992,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
             })
     }
 
-    fn parse_constant_expr(
-        &mut self,
-        result_ty: Type<'ctx>,
-    ) -> ParseResult<llvmkit_ir::Constant<'ctx>> {
-        use llvmkit_ir::{ConstantExprFlags, ConstantExprOpcode};
+    fn parse_constant_expr(&mut self, result_ty: Type<'ctx>) -> ParseResult<Constant<'ctx>> {
         let op = match self.peek() {
             Token::Instruction(op) => *op,
             _ => return Err(self.expected("constant expression opcode")),
@@ -4018,9 +4099,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         }
     }
 
-    fn parse_overflowing_constant_expr_flags(
-        &mut self,
-    ) -> ParseResult<llvmkit_ir::ConstantExprFlags> {
+    fn parse_overflowing_constant_expr_flags(&mut self) -> ParseResult<ConstantExprFlags> {
         let mut nuw = false;
         let mut nsw = false;
         if self.eat_keyword(Keyword::Nuw)? {
@@ -4032,18 +4111,18 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 nuw = true;
             }
         }
-        Ok(llvmkit_ir::ConstantExprFlags::overflowing(nuw, nsw))
+        Ok(ConstantExprFlags::overflowing(nuw, nsw))
     }
 
     fn parse_gep_constant_expr_flags(&mut self) -> ParseResult<ParsedGepConstantExprFlags> {
-        let mut no_wrap = llvmkit_ir::GepNoWrapFlags::empty();
+        let mut no_wrap = GepNoWrapFlags::empty();
         loop {
             if self.eat_keyword(Keyword::Inbounds)? {
-                no_wrap |= llvmkit_ir::GepNoWrapFlags::inbounds();
+                no_wrap |= GepNoWrapFlags::inbounds();
             } else if self.eat_keyword(Keyword::Nusw)? {
-                no_wrap |= llvmkit_ir::GepNoWrapFlags::NUSW;
+                no_wrap |= GepNoWrapFlags::NUSW;
             } else if self.eat_keyword(Keyword::Nuw)? {
-                no_wrap |= llvmkit_ir::GepNoWrapFlags::NUW;
+                no_wrap |= GepNoWrapFlags::NUW;
             } else {
                 break;
             }
@@ -4066,10 +4145,10 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
     fn finish_gep_constant_expr_flags(
         &self,
         parsed: ParsedGepConstantExprFlags,
-        operands: &[llvmkit_ir::Constant<'ctx>],
-    ) -> ParseResult<llvmkit_ir::ConstantExprFlags> {
+        operands: &[Constant<'ctx>],
+    ) -> ParseResult<ConstantExprFlags> {
         let Some((start, end)) = parsed.in_range else {
-            return Ok(llvmkit_ir::ConstantExprFlags::gep(parsed.no_wrap));
+            return Ok(ConstantExprFlags::gep(parsed.no_wrap));
         };
         let Some(base) = operands.first() else {
             return Err(self.expected("base of getelementptr must be a pointer"));
@@ -4079,11 +4158,11 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         let bit_width = self.module.data_layout().index_size_in_bits(address_space);
         let start_words = inrange_bound_to_apint_words(&start, bit_width);
         let end_words = inrange_bound_to_apint_words(&end, bit_width);
-        let in_range = llvmkit_ir::ConstantExprInRange::new(start_words, end_words, bit_width);
+        let in_range = ConstantExprInRange::new(start_words, end_words, bit_width);
         if !constant_expr_inrange_is_non_empty(&in_range) {
             return Err(self.expected("expected end to be larger than start"));
         }
-        Ok(llvmkit_ir::ConstantExprFlags::gep_with_in_range(
+        Ok(ConstantExprFlags::gep_with_in_range(
             parsed.no_wrap,
             in_range,
         ))
@@ -4163,12 +4242,12 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
 
     fn validate_parsed_vector_constant_expr(
         &self,
-        opcode: llvmkit_ir::ConstantExprOpcode,
+        opcode: ConstantExprOpcode,
         result_ty: Type<'ctx>,
-        operands: &[llvmkit_ir::Constant<'ctx>],
+        operands: &[Constant<'ctx>],
     ) -> ParseResult<()> {
         match opcode {
-            llvmkit_ir::ConstantExprOpcode::ShuffleVector => {
+            ConstantExprOpcode::ShuffleVector => {
                 let [lhs, rhs, mask] = operands else {
                     return Err(self.expected("expected three operands to shufflevector"));
                 };
@@ -4176,7 +4255,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                     return Err(self.expected("invalid operands to shufflevector"));
                 }
             }
-            llvmkit_ir::ConstantExprOpcode::ExtractElement => {
+            ConstantExprOpcode::ExtractElement => {
                 let [vector, index] = operands else {
                     return Err(self.expected("expected two operands to extractelement"));
                 };
@@ -4184,7 +4263,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                     return Err(self.expected("invalid extractelement operands"));
                 }
             }
-            llvmkit_ir::ConstantExprOpcode::InsertElement => {
+            ConstantExprOpcode::InsertElement => {
                 let [vector, value, index] = operands else {
                     return Err(self.expected("expected three operands to insertelement"));
                 };
@@ -4201,15 +4280,14 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         &self,
         result_ty: Type<'ctx>,
         source_ty: Option<Type<'ctx>>,
-        opcode: llvmkit_ir::ConstantExprOpcode,
-        operands: Vec<llvmkit_ir::Constant<'ctx>>,
-        flags: llvmkit_ir::ConstantExprFlags,
-    ) -> ParseResult<llvmkit_ir::Constant<'ctx>> {
+        opcode: ConstantExprOpcode,
+        operands: Vec<Constant<'ctx>>,
+        flags: ConstantExprFlags,
+    ) -> ParseResult<Constant<'ctx>> {
+        let options = ConstantExprOptions::new().flags(flags);
         let options = match source_ty {
-            Some(source_ty) => llvmkit_ir::ConstantExprOptions::new()
-                .source_ty(source_ty)
-                .flags(flags),
-            None => llvmkit_ir::ConstantExprOptions::new().flags(flags),
+            Some(source_ty) => options.source_ty(source_ty),
+            None => options,
         };
         self.module
             .constant_expr_with_options(
@@ -4222,7 +4300,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
             )
             .map_err(|e| match e {
                 IrError::InvalidOperation { message }
-                    if matches!(opcode, llvmkit_ir::ConstantExprOpcode::ShuffleVector)
+                    if matches!(opcode, ConstantExprOpcode::ShuffleVector)
                         && message == "invalid shufflevector constant expression" =>
                 {
                     ParseError::Expected {
@@ -5046,7 +5124,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         state.defined_blocks.insert(bb_name.clone());
         let bb = state.ensure_block(self.module, &bb_name);
         // Drive the typed builder for this block.
-        let builder = llvmkit_ir::IRBuilder::new(self.module).position_at_end(bb);
+        let builder = IRBuilder::with_folder(self.module, NoFolder).position_at_end(bb);
         // Emit instructions until a terminator consumes `builder`.
         let mut builder = Some(builder);
         let mut pending_debug_records = Vec::new();
@@ -5415,10 +5493,10 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
             "'label' for else-target",
         )?;
         let else_bb = self.parse_block_ref(state)?;
-        let cond_iv: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn> = cond_v
+        let cond_iv: IntValue<'ctx, IntDyn> = cond_v
             .try_into()
             .map_err(|_| self.expected("i1 condition"))?;
-        let cond_i1: llvmkit_ir::IntValue<'ctx, bool> = cond_iv
+        let cond_i1: IntValue<'ctx, bool> = cond_iv
             .try_into()
             .map_err(|_| self.expected("i1 condition"))?;
         let _ = b
@@ -5465,10 +5543,10 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         let lhs_v = self.parse_value(state, ty)?;
         self.expect_punct(PunctKind::Comma, "',' between binop operands")?;
         let rhs_v = self.parse_value_no_type(state, ty)?;
-        let lhs: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn> = lhs_v
+        let lhs: IntValue<'ctx, IntDyn> = lhs_v
             .try_into()
             .map_err(|_| self.expected("integer-typed lhs"))?;
-        let rhs: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn> = rhs_v
+        let rhs: IntValue<'ctx, IntDyn> = rhs_v
             .try_into()
             .map_err(|_| self.expected("integer-typed rhs"))?;
         let name = result_name.as_str();
@@ -5481,7 +5559,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 if nsw {
                     flags = flags.nsw();
                 }
-                b.build_int_add_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
+                b.build_int_add_with_flags::<IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("add", e))?
                     .as_value()
             }
@@ -5650,7 +5728,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
             "'to' between cast operand and destination type",
         )?;
         let dst_ty = self.parse_type(false)?;
-        let src_int: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn> = src_v
+        let src_int: IntValue<'ctx, IntDyn> = src_v
             .try_into()
             .map_err(|_| self.expected("integer-typed cast source"))?;
         let dst_int = match dst_ty.into_type_enum() {
@@ -5703,7 +5781,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         let src_v = self.parse_value(state, src_ty)?;
         self.expect_keyword(Keyword::To, "'to' in ptrtoint")?;
         let dst_ty = self.parse_type(false)?;
-        let src_ptr: llvmkit_ir::PointerValue<'ctx> = src_v
+        let src_ptr: PointerValue<'ctx> = src_v
             .try_into()
             .map_err(|_| self.expected("ptr-typed ptrtoint source"))?;
         let dst_int = match dst_ty.into_type_enum() {
@@ -5751,13 +5829,13 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         let fmf = self.parse_optional_fmf()?;
         let ty = self.parse_type(false)?;
         let v = self.parse_value(state, ty)?;
-        let f: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn> = v
+        let f: FloatValue<'ctx, FloatDyn> = v
             .try_into()
             .map_err(|_| self.expected("float-typed fneg operand"))?;
         let r = if fmf.is_empty() {
-            b.build_float_neg::<llvmkit_ir::FloatDyn, _, _>(f, result_name.as_str())
+            b.build_float_neg::<FloatDyn, _, _>(f, result_name.as_str())
         } else {
-            b.build_float_neg_with_flags::<llvmkit_ir::FloatDyn, _, _>(f, fmf, result_name.as_str())
+            b.build_float_neg_with_flags::<FloatDyn, _, _>(f, fmf, result_name.as_str())
         }
         .map_err(|e| self.builder_err("fneg", e))?;
         Ok(r.as_value())
@@ -5832,7 +5910,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
         let fmf = self.parse_optional_fmf()?;
-        use llvmkit_ir::FloatPredicate as P;
+        use FloatPredicate as P;
         let pred = match self.peek() {
             Token::Kw(Keyword::Oeq) => P::Oeq,
             Token::Kw(Keyword::Ogt) => P::Ogt,
@@ -5920,8 +5998,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
             let ordering = self.parse_atomic_ordering("atomic ordering")?;
             self.expect_punct(PunctKind::Comma, "',' after atomic ordering")?;
             let align = self.parse_align_val()?;
-            let config =
-                llvmkit_ir::instr_types::AtomicLoadConfig::new(ordering, sync_scope, align);
+            let config = AtomicLoadConfig::new(ordering, sync_scope, align);
             let config = if volatile { config.volatile() } else { config };
             let v = b
                 .build_load_atomic(ty, ptr, config, result_name.as_str())
@@ -5968,8 +6045,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
             let ordering = self.parse_atomic_ordering("atomic ordering")?;
             self.expect_punct(PunctKind::Comma, "',' after atomic ordering")?;
             let align = self.parse_align_val()?;
-            let config =
-                llvmkit_ir::instr_types::AtomicStoreConfig::new(ordering, sync_scope, align);
+            let config = AtomicStoreConfig::new(ordering, sync_scope, align);
             let config = if volatile { config.volatile() } else { config };
             b.build_store_atomic(val_v, ptr, config)
                 .map_err(|e| self.builder_err("store", e))?;
@@ -6016,15 +6092,15 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         let name = result_name.as_str();
         let flags = {
             let mut f = if inbounds {
-                llvmkit_ir::GepNoWrapFlags::inbounds()
+                GepNoWrapFlags::inbounds()
             } else {
-                llvmkit_ir::GepNoWrapFlags::empty()
+                GepNoWrapFlags::empty()
             };
             if nuw {
-                f |= llvmkit_ir::GepNoWrapFlags::NUW;
+                f |= GepNoWrapFlags::NUW;
             }
             if nusw {
-                f |= llvmkit_ir::GepNoWrapFlags::NUSW;
+                f |= GepNoWrapFlags::NUSW;
             }
             f
         };
@@ -6171,7 +6247,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                     b.build_ui_to_fp_with_flags_dyn(
                         src_int,
                         dst_fp,
-                        llvmkit_ir::instr_types::UIToFpFlags::new().nneg(),
+                        UIToFpFlags::new().nneg(),
                         name,
                     )
                     .map_err(|e| self.builder_err("uitofp", e))?
@@ -6289,9 +6365,8 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         Ok(v.as_value())
     }
 
-    /// `ptrtoaddr <ptr-ty> <val> to <int-ty>`. The LLVM 22 opaque-pointer
-    /// rename of `ptrtoint`. Mirrors `LLParser::parseCast` for
-    /// `Instruction::PtrToInt` (same wire path). Uses `build_ptr_to_int`.
+    /// `ptrtoaddr <ptr-or-vector-ty> <val> to <int-or-vector-ty>`. Mirrors
+    /// `LLParser::parseCast` for `Instruction::PtrToAddr`.
     ///
     /// Upstream: `test/Assembler/ptrtoaddr.ll`.
     fn parse_ptrtoaddr(
@@ -6300,8 +6375,14 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         b: &ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
-        // Reuse the existing ptrtoint logic.
-        self.parse_ptr_to_int(state, b, result_name)
+        let src_ty = self.parse_type(false)?;
+        let src_v = self.parse_value(state, src_ty)?;
+        self.expect_keyword(Keyword::To, "'to' in ptrtoaddr")?;
+        let dst_ty = self.parse_type(false)?;
+        let v = b
+            .build_ptr_to_addr_dyn(src_v, dst_ty, result_name.as_str())
+            .map_err(|e| self.builder_err("ptrtoaddr", e))?;
+        Ok(v)
     }
 
     /// `extractelement <vec-ty> <vec>, <idx-ty> <idx>`.
@@ -6325,7 +6406,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         let v = b
             .build_extract_element(vec_v, idx, result_name.as_str())
             .map_err(|e| self.builder_err("extractelement", e))?;
-        Ok(v.as_instruction().as_value())
+        Ok(v)
     }
 
     /// `insertelement <vec-ty> <vec>, <elt-ty> <elt>, <idx-ty> <idx>`.
@@ -6352,7 +6433,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         let v = b
             .build_insert_element(vec_v, elt_v, idx, result_name.as_str())
             .map_err(|e| self.builder_err("insertelement", e))?;
-        Ok(v.as_instruction().as_value())
+        Ok(v)
     }
 
     /// `shufflevector <vec-ty> <v1>, <vec-ty> <v2>, <mask>`.
@@ -6377,7 +6458,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         let v = b
             .build_shuffle_vector(v1, v2, &mask, result_name.as_str())
             .map_err(|e| self.builder_err("shufflevector", e))?;
-        Ok(v.as_instruction().as_value())
+        Ok(v)
     }
 
     /// Parse a shufflevector mask: `poison` → all-poison entries, or
@@ -6406,27 +6487,20 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 other => other,
             })?;
             let elem_loc = self.loc();
-            let (neg, val) = self.parse_int_literal().map_err(|_| ParseError::Expected {
-                expected: "valid shufflevector mask element".into(),
-                loc: DiagLoc::span(elem_loc),
-            })?;
-            let entry = if neg {
-                let magnitude = i32::try_from(val).map_err(|_| ParseError::Expected {
+            let parsed = self
+                .parse_int_literal(ExpectedIntWidth::Infer)
+                .map_err(|_| ParseError::Expected {
                     expected: "valid shufflevector mask element".into(),
                     loc: DiagLoc::span(elem_loc),
                 })?;
-                magnitude
-                    .checked_neg()
-                    .ok_or_else(|| ParseError::Expected {
-                        expected: "valid shufflevector mask element".into(),
-                        loc: DiagLoc::span(elem_loc),
-                    })?
-            } else {
-                i32::try_from(val).map_err(|_| ParseError::Expected {
-                    expected: "valid shufflevector mask element".into(),
-                    loc: DiagLoc::span(elem_loc),
-                })?
-            };
+            let value = parsed_apsint_to_i128(&parsed).ok_or_else(|| ParseError::Expected {
+                expected: "valid shufflevector mask element".into(),
+                loc: DiagLoc::span(elem_loc),
+            })?;
+            let entry = i32::try_from(value).map_err(|_| ParseError::Expected {
+                expected: "valid shufflevector mask element".into(),
+                loc: DiagLoc::span(elem_loc),
+            })?;
             mask.push(entry);
             if !self.eat_punct(PunctKind::Comma)? {
                 break;
@@ -6456,7 +6530,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         let v = b
             .build_extract_value(agg_v, indices, result_name.as_str())
             .map_err(|e| self.builder_err("extractvalue", e))?;
-        Ok(v.as_instruction().as_value())
+        Ok(v)
     }
 
     /// `insertvalue <agg-ty> <agg>, <elt-ty> <elt>, <idx>, ...`. Mirrors
@@ -6482,7 +6556,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         let v = b
             .build_insert_value(agg_v, elt_v, indices, result_name.as_str())
             .map_err(|e| self.builder_err("insertvalue", e))?;
-        Ok(v.as_instruction().as_value())
+        Ok(v)
     }
 
     /// `phi <ty> [ <val>, <label> ], ...`. Handles int, float, and pointer
@@ -6565,14 +6639,15 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                     }
                 }
                 Token::IntegerLit(_) => {
-                    let (neg, raw) = self.parse_int_literal()?;
                     let int_ty = match ty.into_type_enum() {
                         AnyTypeEnum::Int(t) => t,
                         _ => return Err(self.expected("integer literal only valid for int phi")),
                     };
-                    let bits = if neg { raw.wrapping_neg() } else { raw };
+                    let parsed =
+                        self.parse_int_literal(ExpectedIntWidth::Bits(int_ty.bit_width()))?;
+                    let bits = lower_parsed_apsint(&parsed, int_ty.bit_width());
                     let c = int_ty
-                        .const_int_raw(bits, neg)
+                        .const_ap_int(&bits)
                         .map_err(|e| self.builder_err("phi constant", e))?;
                     PhiValRef::Resolved(c.as_value())
                 }
@@ -7192,8 +7267,8 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
     }
 
     /// Parse an `atomicrmw` operation keyword.
-    fn parse_atomicrmw_op(&mut self) -> ParseResult<llvmkit_ir::atomicrmw_binop::AtomicRMWBinOp> {
-        use llvmkit_ir::atomicrmw_binop::AtomicRMWBinOp as Op;
+    fn parse_atomicrmw_op(&mut self) -> ParseResult<AtomicRMWBinOp> {
+        use AtomicRMWBinOp as Op;
         let op = match self.peek() {
             Token::Kw(Keyword::Xchg) => Op::Xchg,
             Token::Instruction(crate::ll_token::Opcode::Add) => Op::Add,
@@ -7768,52 +7843,48 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         }
     }
 
-    /// Parse a floating-point literal and return raw bits (u128).
-    /// Handles decimal literals (converted to f64 bits) and hex forms.
-    fn parse_fp_literal(
-        &mut self,
-        _float_ty: &llvmkit_ir::FloatType<'ctx, llvmkit_ir::FloatDyn>,
-    ) -> ParseResult<u128> {
+    /// Parse a floating-point literal and perform APFloat semantic conversion.
+    fn parse_fp_literal(&mut self, float_ty: &FloatType<'ctx, FloatDyn>) -> ParseResult<ApFloat> {
         use crate::ll_token::FpLit;
-        let bits: u128 = match self.peek() {
+        let value = match self.peek() {
             Token::FloatLit(fp) => match *fp {
                 FpLit::Decimal(s) => {
-                    let val: f64 = s
-                        .parse()
-                        .map_err(|_| self.expected("valid decimal float literal"))?;
-                    u128::from(val.to_bits())
+                    ApFloat::from_string(float_ty.semantics(), s, RoundingMode::NearestTiesToEven)
+                        .map(|(value, _status)| value)
+                        .map_err(|_| self.expected("valid decimal float literal"))?
                 }
-                FpLit::HexDouble(s) => u128::from(
-                    u64::from_str_radix(s, 16)
-                        .map_err(|_| self.expected("valid hex double literal"))?,
-                ),
-                FpLit::HexHalf(s) => u128::from(
-                    u16::from_str_radix(s, 16)
-                        .map_err(|_| self.expected("valid hex half literal"))?,
-                ),
-                FpLit::HexBFloat(s) => u128::from(
-                    u16::from_str_radix(s, 16)
-                        .map_err(|_| self.expected("valid hex bfloat literal"))?,
-                ),
-                FpLit::HexX87(s) => u128::from_str_radix(s, 16)
+                FpLit::HexDouble(s) => {
+                    let value = parse_hex_apfloat(ApFloatSemantics::IeeeDouble, s)
+                        .map_err(|_| self.expected("valid hex double literal"))?;
+                    if float_ty.semantics() == ApFloatSemantics::IeeeDouble {
+                        value
+                    } else {
+                        value
+                            .convert(float_ty.semantics(), RoundingMode::NearestTiesToEven)
+                            .0
+                    }
+                }
+                FpLit::HexHalf(s) => parse_hex_apfloat(ApFloatSemantics::IeeeHalf, s)
+                    .map_err(|_| self.expected("valid hex half literal"))?,
+                FpLit::HexBFloat(s) => parse_hex_apfloat(ApFloatSemantics::BFloat, s)
+                    .map_err(|_| self.expected("valid hex bfloat literal"))?,
+                FpLit::HexX87(s) => parse_hex_apfloat(ApFloatSemantics::X87DoubleExtended, s)
                     .map_err(|_| self.expected("valid hex x87 literal"))?,
-                FpLit::HexQuad(s) => u128::from_str_radix(s, 16)
+                FpLit::HexQuad(s) => parse_hex_apfloat(ApFloatSemantics::IeeeQuad, s)
                     .map_err(|_| self.expected("valid hex quad literal"))?,
-                FpLit::HexPpc128(s) => u128::from_str_radix(s, 16)
+                FpLit::HexPpc128(s) => parse_hex_apfloat(ApFloatSemantics::PpcDoubleDouble, s)
                     .map_err(|_| self.expected("valid hex ppc128 literal"))?,
             },
             _ => return Err(self.expected("floating-point literal")),
         };
         self.bump()?;
-        Ok(bits)
+        Ok(value)
     }
 }
 
-fn single_apint_word(words: &[u64]) -> Option<u64> {
-    match words {
-        [word] => Some(*word),
-        _ => None,
-    }
+fn parse_hex_apfloat(semantics: ApFloatSemantics, digits: &str) -> IrResult<ApFloat> {
+    let bits = ApInt::from_string(semantics.bit_width(), digits, 16)?;
+    ApFloat::from_bits(semantics, &bits)
 }
 
 // ── Helper enums ────────────────────────────────────────────────────────────
@@ -8119,8 +8190,7 @@ enum IntToFp {
 /// emitting one block's instructions. The terminator-emitting calls
 /// (`build_ret` / `build_br` / etc.) take this by value, so the parser
 /// stores it inside an `Option<Self>` for the duration of the block.
-type ParsedBlockBuilder<'m, 'ctx> =
-    IRBuilder<'m, 'ctx, Brand<'ctx>, ConstantFolder, Positioned, Dyn>;
+type ParsedBlockBuilder<'m, 'ctx> = IRBuilder<'m, 'ctx, Brand<'ctx>, NoFolder, Positioned, Dyn>;
 
 fn live_builder_error(loc: Span) -> ParseError {
     ParseError::Expected {

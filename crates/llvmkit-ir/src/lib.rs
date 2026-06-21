@@ -15,6 +15,8 @@
 
 pub mod align;
 pub mod analysis;
+pub mod ap_float;
+pub mod ap_int;
 pub mod argument;
 pub mod asm_writer;
 pub mod atomic_ordering;
@@ -28,9 +30,12 @@ pub mod cfg;
 pub mod cmp_predicate;
 pub mod comdat;
 pub mod constant;
+pub mod constant_fold;
+pub mod constant_folding;
 pub mod constants;
 pub mod data_layout;
 pub mod debug_loc;
+pub mod denormal_mode;
 pub mod derived_types;
 pub mod dominator_tree;
 pub mod error;
@@ -63,6 +68,7 @@ pub mod phi_state;
 pub mod sized_element;
 pub mod struct_body_state;
 pub mod sync_scope;
+pub mod target_library_info;
 pub mod term_open_state;
 pub mod r#type;
 pub mod typed_pointer_type;
@@ -81,6 +87,11 @@ pub use analysis::{
     ModuleAnalysisInvalidator, ModuleAnalysisManager, ModuleAnalysisResult, PreservedAnalyses,
     PreservedAnalysisChecker,
 };
+pub use ap_float::{
+    ApFloat, ApFloatCategory, ApFloatCmpResult, ApFloatNextDirection, ApFloatSemantics,
+    ApFloatSign, ApFloatStatus, Exactness, LosesInfo, NanPayload, RoundingMode,
+};
+pub use ap_int::{ApInt, ApIntDivRem, ApIntRounding, ApIntSignedness, ApIntTruncation};
 pub use argument::Argument;
 pub use atomic_ordering::AtomicOrdering;
 pub use atomicrmw_binop::AtomicRMWBinOp;
@@ -90,11 +101,30 @@ pub use basic_block::BasicBlock;
 pub use block_state::{BlockSealState, Sealed, Unsealed};
 pub use calling_conv::CallingConv;
 pub use cfg::{BasicBlockEdge, FunctionCfg};
-pub use cmp_predicate::{FloatPredicate, IntPredicate};
+pub use cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 pub use comdat::{ComdatRef, SelectionKind};
 pub use constant::{
     BlockAddressPlaceholder, Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode,
     ConstantGepFlags, IsConstant, OverflowingConstantExprFlags,
+};
+pub use constant_fold::{
+    constant_fold_binary_instruction, constant_fold_cast_instruction,
+    constant_fold_compare_instruction, constant_fold_extract_element_instruction,
+    constant_fold_extract_value_instruction, constant_fold_get_element_ptr,
+    constant_fold_insert_element_instruction, constant_fold_insert_value_instruction,
+    constant_fold_instruction, constant_fold_select_instruction,
+    constant_fold_shuffle_vector_instruction, constant_fold_unary_instruction,
+};
+pub use constant_folding::{
+    ConstantOffsetFromGlobal, FoldNonDeterminism, PreservedCastFlags, can_constant_fold_call_to,
+    constant_fold_binary_intrinsic, constant_fold_binary_op_operands, constant_fold_call,
+    constant_fold_cast_operand, constant_fold_compare_inst_operands, constant_fold_constant,
+    constant_fold_fp_inst_operands, constant_fold_inst_operands, constant_fold_integer_cast,
+    constant_fold_load_from_const, constant_fold_load_from_const_ptr,
+    constant_fold_load_from_uniform_value, constant_fold_load_through_bitcast,
+    constant_fold_unary_op_operand, constant_offset_from_global, flush_fp_constant,
+    is_constant_offset_from_global, lossless_inv_cast, lossless_signed_trunc,
+    lossless_unsigned_trunc,
 };
 pub use constants::{
     ConstantAggregate, ConstantExprOptions, ConstantFloatValue, ConstantIntValue,
@@ -104,6 +134,7 @@ pub use data_layout::{
     DataLayout, FunctionPtrAlignType, ManglingMode, PointerSpec, PrimitiveSpec, StructLayoutInfo,
 };
 pub use debug_loc::DebugLoc;
+pub use denormal_mode::{DenormalMode, DenormalModeKind, DenormalModeSide};
 pub use derived_types::{
     AggregateType, AnyTypeEnum, ArrayType, BasicMetadataTypeEnum, BasicTypeEnum, FloatType,
     FunctionType, IntType, LabelType, MetadataType, PointerType, SizedType, StructType,
@@ -121,9 +152,9 @@ pub use global_variable::{GlobalBuilder, GlobalVariable};
 pub use inline_asm::{AsmDialect, InlineAsm, InlineAsmOptions};
 pub use instr_types::{
     AShrFlags, AddFlags, AtomicCmpXchgConfig, AtomicLoadConfig, AtomicRMWConfig, AtomicRMWFlags,
-    AtomicStoreConfig, CallAttributeData, CmpXchgFlags, ICmpFlags, LShrFlags, MulFlags,
-    OperandBundleData, OperandBundleTag, OrFlags, SDivFlags, ShlFlags, SubFlags, TailCallKind,
-    TruncFlags, UDivFlags, UIToFpFlags, ZExtFlags,
+    AtomicStoreConfig, BinaryOpcode, CallAttributeData, CmpXchgFlags, ICmpFlags, LShrFlags,
+    MulFlags, OperandBundleData, OperandBundleTag, OrFlags, SDivFlags, ShlFlags, SubFlags,
+    TailCallKind, TruncFlags, UDivFlags, UIToFpFlags, UnaryOpcode, ZExtFlags,
 };
 pub use instruction::{Instruction, InstructionKind, TerminatorKind};
 pub use instructions::{
@@ -168,6 +199,7 @@ pub use phi_state::{Closed, Open, PhiState};
 pub use sized_element::{ArrayDyn, SizedElement};
 pub use struct_body_state::{BodySet, Opaque, StructBodyDyn, StructBodyState};
 pub use sync_scope::SyncScope;
+pub use target_library_info::{LibFunc, TargetLibraryInfo};
 pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeId, TypeKind};
 pub use typed_pointer_type::TypedPointerType;
 pub use unnamed_addr::UnnamedAddr;

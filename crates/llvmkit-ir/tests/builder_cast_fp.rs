@@ -10,7 +10,7 @@
 //! which builds a representative instance of every cast opcode and
 //! checks shape / type correctness.
 
-use llvmkit_ir::{IRBuilder, IrError, Linkage, Module};
+use llvmkit_ir::{Constant, ConstantIntValue, IRBuilder, IrError, Linkage, Module};
 
 /// Port of `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, CastInst)`
 /// (the `FPExtInst` case).
@@ -140,6 +140,26 @@ fn uitofp_i32_to_f32() -> Result<(), IrError> {
         b.build_ret(r)?;
         let text = format!("{m}");
         assert!(text.contains("%y = uitofp i32 %0 to float"), "got:\n{text}");
+        Ok(())
+    })
+}
+
+/// llvmkit-specific regression for
+/// `ConstantFold.cpp::ConstantFoldCastInstruction`: the default builder
+/// folder must fold all-constant floating-point-to-integer casts.
+#[test]
+fn default_constant_folder_folds_fptosi_to_constant() -> Result<(), IrError> {
+    Module::with_new("fptosi-fold", |m| {
+        let f32_ty = m.f32_type();
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
+        let f = m.add_function::<i32, _>("toi", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let value: llvmkit_ir::FloatValue<f32> = f32_ty.const_float(42.0).as_value().try_into()?;
+        let result = b.build_fp_to_si(value, i32_ty, "y")?;
+        let folded = ConstantIntValue::<i32>::try_from(Constant::try_from(result.as_value())?)?;
+        assert_eq!(folded.ap_int().try_zext_u64(), Some(42));
         Ok(())
     })
 }

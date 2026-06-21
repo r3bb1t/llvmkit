@@ -9,7 +9,9 @@
 //! upstream `unittests/IR/IRBuilderTest.cpp` TEST_F it ports, or marks itself
 //! `llvmkit-specific:` (e.g. the Rust-literal coercion that has no C++ analogue).
 
-use llvmkit_ir::{IRBuilder, IntValue, IrError, Linkage, Module};
+use llvmkit_ir::{
+    ApInt, Constant, ConstantIntValue, IRBuilder, IntDyn, IntValue, IrError, Linkage, Module, Width,
+};
 
 /// llvmkit-specific: exercises `IntoIntValue` for `IntValue` LHS plus a Rust
 /// `i32` literal RHS at the same `build_int_add` call site (no C++ analogue;
@@ -78,6 +80,45 @@ fn build_ret_accepts_rust_literal_directly() -> Result<(), IrError> {
 
         let text = format!("{m}");
         assert!(text.contains("ret i32 1\n"), "got:\n{text}");
+        Ok(())
+    })
+}
+
+/// llvmkit-specific APInt regression for
+/// `ConstantFold.cpp::ConstantFoldBinaryInstruction`'s integer `add` path:
+/// wide constants must not be narrowed through `u128` by the default builder
+/// folder.
+#[test]
+fn default_constant_folder_preserves_wide_apint_add() -> Result<(), IrError> {
+    Module::with_new("wide-fold", |m| {
+        let ty = m.int_type_n::<257>();
+        let fn_ty = m.fn_type(ty, Vec::<llvmkit_ir::Type>::new(), false);
+        let f = m.add_function::<Width<257>, _>("wide", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<Width<257>>(&m).position_at_end(entry);
+        let high = ty.const_ap_int(&ApInt::one_bit_set(257, 256))?;
+        let result = b.build_int_add(high, ty.const_zero(), "sum")?;
+        let folded = ConstantIntValue::<IntDyn>::try_from(Constant::try_from(result.as_value())?)?;
+        assert_eq!(folded.ap_int(), ApInt::one_bit_set(257, 256));
+        Ok(())
+    })
+}
+
+/// llvmkit-specific APInt regression for
+/// `ConstantFold.cpp::ConstantFoldBinaryInstruction`'s integer `udiv` path:
+/// the default builder folder must route all integer binary opcodes through
+/// the shared arbitrary-precision folder, not only add/sub/mul.
+#[test]
+fn default_constant_folder_folds_udiv_to_constant() -> Result<(), IrError> {
+    Module::with_new("udiv-fold", |m| {
+        let ty = m.i32_type();
+        let fn_ty = m.fn_type(ty, Vec::<llvmkit_ir::Type>::new(), false);
+        let f = m.add_function::<i32, _>("quotient", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let result = b.build_int_udiv(ty.const_int(9_i32), ty.const_int(3_i32), "q")?;
+        let folded = ConstantIntValue::<IntDyn>::try_from(Constant::try_from(result.as_value())?)?;
+        assert_eq!(folded.ap_int().try_zext_u64(), Some(3));
         Ok(())
     })
 }

@@ -12,7 +12,7 @@
 //! pinned by `test/Assembler/fast-math-flags.ll`. The shared
 //! `build_f32_fn` helper above factors module setup.
 
-use llvmkit_ir::{IRBuilder, IrError, Linkage, Module};
+use llvmkit_ir::{Constant, ConstantFloatValue, IRBuilder, IrError, Linkage, Module};
 
 fn build_f32_fn(op: &str) -> Result<String, IrError> {
     Module::with_new("fp", |m| {
@@ -96,6 +96,25 @@ fn fadd_f64() -> Result<(), IrError> {
         b.build_ret(r)?;
         let text = format!("{m}");
         assert!(text.contains("%z = fadd double %0, %1"), "got:\n{text}");
+        Ok(())
+    })
+}
+
+/// llvmkit-specific APFloat regression for
+/// `ConstantFold.cpp::ConstantFoldBinaryInstruction`'s floating `fadd` path:
+/// the default builder folder delegates FP binops to the shared APFloat folder.
+#[test]
+fn default_constant_folder_folds_fadd_to_constant() -> Result<(), IrError> {
+    Module::with_new("fp-fold", |m| {
+        let ty = m.f64_type();
+        let fn_ty = m.fn_type(ty, Vec::<llvmkit_ir::Type>::new(), false);
+        let f = m.add_function::<f64, _>("sum", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<f64>(&m).position_at_end(entry);
+        let result =
+            b.build_fp_add::<f64, _, _, _>(ty.const_double(1.5), ty.const_double(2.25), "sum")?;
+        let folded = ConstantFloatValue::<f64>::try_from(Constant::try_from(result.as_value())?)?;
+        assert!(folded.ap_float().is_exactly_value_f64(3.75));
         Ok(())
     })
 }
