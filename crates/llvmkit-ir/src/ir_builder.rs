@@ -4198,7 +4198,7 @@ where
     }
 
     /// Runtime-typed bitcast: produce `bitcast <src> to <dst>` with both
-    /// types erased to [`Type`](crate::Type). The caller is responsible for
+    /// types erased to [`Type`]. The caller is responsible for
     /// ensuring `src` and `dst` have the same bit width; the LLVM verifier
     /// will reject ill-formed bitcasts.
     ///
