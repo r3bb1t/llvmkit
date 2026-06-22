@@ -306,11 +306,11 @@ pub(crate) struct CastOpData {
     /// `nneg` flag: applies to `zext` and `uitofp`. When set, the source
     /// value is guaranteed non-negative. Mirrors `PossiblyNonNegInst` in
     /// `Operator.h`.
-    pub(crate) nneg: bool,
+    pub(crate) nneg: Cell<bool>,
     /// `nuw` flag: applies to `trunc`. Mirrors `PossiblyNoUnsignedWrapInst`.
-    pub(crate) nuw: bool,
+    pub(crate) nuw: Cell<bool>,
     /// `nsw` flag: applies to `trunc`. Mirrors `PossiblyNoSignedWrapInst`.
-    pub(crate) nsw: bool,
+    pub(crate) nsw: Cell<bool>,
 }
 
 impl CastOpData {
@@ -318,9 +318,9 @@ impl CastOpData {
         Self {
             kind,
             src: Cell::new(src),
-            nneg: false,
-            nuw: false,
-            nsw: false,
+            nneg: Cell::new(false),
+            nuw: Cell::new(false),
+            nsw: Cell::new(false),
         }
     }
 }
@@ -329,9 +329,9 @@ impl Clone for CastOpData {
         Self {
             kind: self.kind,
             src: Cell::new(self.src.get()),
-            nneg: self.nneg,
-            nuw: self.nuw,
-            nsw: self.nsw,
+            nneg: Cell::new(self.nneg.get()),
+            nuw: Cell::new(self.nuw.get()),
+            nsw: Cell::new(self.nsw.get()),
         }
     }
 }
@@ -339,9 +339,9 @@ impl PartialEq for CastOpData {
     fn eq(&self, other: &Self) -> bool {
         self.kind == other.kind
             && self.src.get() == other.src.get()
-            && self.nneg == other.nneg
-            && self.nuw == other.nuw
-            && self.nsw == other.nsw
+            && self.nneg.get() == other.nneg.get()
+            && self.nuw.get() == other.nuw.get()
+            && self.nsw.get() == other.nsw.get()
     }
 }
 impl Eq for CastOpData {}
@@ -349,9 +349,9 @@ impl core::hash::Hash for CastOpData {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.kind.hash(h);
         self.src.get().hash(h);
-        self.nneg.hash(h);
-        self.nuw.hash(h);
-        self.nsw.hash(h);
+        self.nneg.get().hash(h);
+        self.nuw.get().hash(h);
+        self.nsw.get().hash(h);
     }
 }
 

@@ -43,6 +43,91 @@ fn module_prints_simple_add_function() -> Result<(), IrError> {
     })
 }
 
+/// Mirrors `llvm/lib/IR/AsmWriter.cpp::printLLVMNameWithoutPrefix`: `$` is a
+/// legal bare LLVM identifier character and must not force quotes.
+#[test]
+fn dollar_names_print_without_quotes() -> Result<(), IrError> {
+    Module::with_new("dollar_names", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function::<i32, _>("foo$bar", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry$bb");
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let arg: IntValue<i32> = f.param(0)?.try_into()?;
+        let sum = b.build_int_add::<i32, _, _, _>(arg, 1_i32, "sum$value")?;
+        b.build_ret(sum)?;
+
+        let text = format!("{m}");
+        assert!(text.contains("define i32 @foo$bar(i32 %0)"), "{text}");
+        assert!(text.contains("entry$bb:"), "{text}");
+        assert!(text.contains("%sum$value = add i32 %0, 1"), "{text}");
+        Ok(())
+    })
+}
+/// llvmkit-specific regression for LLVM's function-local `ValueSymbolTable`:
+/// `Value.cpp::getSymTab` sends arguments, basic blocks, and instructions to
+/// the same function symbol table, so they share one local namespace.
+#[test]
+fn function_local_names_share_argument_block_and_instruction_namespace() -> Result<(), IrError> {
+    Module::with_new("local_names", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m
+            .function_builder::<i32, _>("f", fn_ty)
+            .param_name(0, "entry")
+            .build()?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let arg: IntValue<i32> = f.param(0)?.try_into()?;
+        let result = b.build_int_add::<i32, _, _, _>(arg, 1_i32, "entry")?;
+        b.build_ret(result)?;
+
+        assert_eq!(f.param(0)?.name().as_deref(), Some("entry"));
+        assert_eq!(entry.name().as_deref(), Some("entry1"));
+        assert_eq!(result.name().as_deref(), Some("entry2"));
+
+        let expected = "; ModuleID = 'local_names'\n\
+            define i32 @f(i32 %entry) {\n\
+            entry1:\n\
+            \x20\x20%entry2 = add i32 %entry, 1\n\
+            \x20\x20ret i32 %entry2\n\
+            }\n";
+        assert_eq!(format!("{m}"), expected);
+        Ok(())
+    })
+}
+
+/// llvmkit-specific regression for `Value::setNameImpl`: renaming a local value
+/// creates a unique replacement before removing the old binding, then frees the
+/// old name so a later value can reuse it. Closest upstream unit coverage:
+/// `unittests/IR/ValueTest.cpp::TEST(ValueTest, setNameShrink)`.
+#[test]
+fn set_name_reinserts_and_frees_old_binding() -> Result<(), IrError> {
+    Module::with_new("rename", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let arg: IntValue<i32> = f.param(0)?.try_into()?;
+
+        let first = b.build_int_add::<i32, _, _, _>(arg, 1_i32, "tmp")?;
+        let second = b.build_int_add::<i32, _, _, _>(first, 1_i32, "other")?;
+        second.set_name(&m, "tmp");
+        let third = b.build_int_add::<i32, _, _, _>(second, first, "other")?;
+        b.build_ret(third)?;
+
+        assert_eq!(second.name().as_deref(), Some("tmp1"));
+        assert_eq!(third.name().as_deref(), Some("other"));
+        let text = format!("{m}");
+        assert!(text.contains("%tmp = add i32 %0, 1\n"), "{text}");
+        assert!(text.contains("%tmp1 = add i32 %tmp, 1\n"), "{text}");
+        assert!(text.contains("%other = add i32 %tmp1, %tmp\n"), "{text}");
+        assert!(text.contains("ret i32 %other\n"), "{text}");
+        Ok(())
+    })
+}
+
 /// llvmkit-specific: exercises the IRBuilder constant-folder path -- both add
 /// operands are constants so the folder elides the `add` and feeds `42`
 /// directly to `ret`. Closest upstream coverage:

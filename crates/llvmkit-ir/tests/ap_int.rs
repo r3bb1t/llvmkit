@@ -87,4 +87,68 @@ fn trunc_zext_sext_preserve_signed_and_unsigned_views() {
         ApInt::all_ones(64).sext(129).expect("widen"),
         ApInt::all_ones(129)
     );
+    assert_eq!(
+        ApInt::from_words(4, &[0b1011])
+            .sext(8)
+            .expect("same-word widen"),
+        ApInt::from_words(8, &[0b1111_1011])
+    );
+}
+
+/// Port of `llvm/unittests/ADT/APIntTest.cpp` bit mutation and extraction
+/// helper coverage.
+#[test]
+fn bit_mutators_and_slices_match_apint_test_helpers() {
+    let mut value = ApInt::zero(16);
+    value.set_bit(3);
+    value.set_sign_bit();
+    value.set_bit(99);
+    assert_eq!(value, ApInt::from_words(16, &[0x8008]));
+
+    value.clear_bit(3);
+    value.clear_sign_bit();
+    value.clear_bit(99);
+    assert_eq!(value, ApInt::zero(16));
+
+    value.set_low_bits(5);
+    assert_eq!(value, ApInt::from_words(16, &[0x001f]));
+    value.set_high_bits(4);
+    assert_eq!(value, ApInt::from_words(16, &[0xf01f]));
+    value.set_bits_from(12);
+    assert_eq!(value, ApInt::from_words(16, &[0xf01f]));
+
+    let mut inserted = ApInt::from_words(16, &[0xffff]);
+    inserted.insert_bits(&ApInt::from_words(4, &[0x5]), 4);
+    assert_eq!(inserted, ApInt::from_words(16, &[0xff5f]));
+    inserted.insert_bits(&ApInt::from_words(8, &[0xa5]), 12);
+    assert_eq!(inserted, ApInt::from_words(16, &[0x5f5f]));
+
+    assert_eq!(inserted.extract_bits(8, 4), ApInt::from_words(8, &[0xf5]));
+    assert_eq!(inserted.extract_bits(8, 12), ApInt::from_words(8, &[0x05]));
+    assert_eq!(
+        ApInt::from_words(4, &[0xa]).concat(&ApInt::from_words(2, &[0x3])),
+        ApInt::from_words(6, &[0x2b])
+    );
+
+    assert_eq!(inserted.shl(16), ApInt::zero(16));
+    assert_eq!(inserted.lshr(16), ApInt::zero(16));
+}
+
+/// Port of `llvm/unittests/ADT/APIntTest.cpp` byte-swap helpers and
+/// `llvm/unittests/Support/KnownBitsTest.cpp::TEST(KnownBitsTest, UnaryExhaustive)`.
+#[test]
+fn byte_swap_and_reverse_bits_match_knownbits_unary_tests() {
+    let value = ApInt::from_words(32, &[0x1234_abcd]);
+    assert_eq!(value.byte_swap(), ApInt::from_words(32, &[0xcdab_3412]));
+
+    let asymmetric = ApInt::from_words(8, &[0b0001_0110]);
+    assert_eq!(
+        asymmetric.reverse_bits(),
+        ApInt::from_words(8, &[0b0110_1000])
+    );
+    assert_eq!(asymmetric.shl(3), ApInt::from_words(8, &[0b1011_0000]));
+    assert_eq!(asymmetric.lshr(2), ApInt::from_words(8, &[0b0000_0101]));
+
+    let negative = ApInt::from_words(8, &[0b1001_0000]);
+    assert_eq!(negative.ashr(3), ApInt::from_words(8, &[0b1111_0010]));
 }

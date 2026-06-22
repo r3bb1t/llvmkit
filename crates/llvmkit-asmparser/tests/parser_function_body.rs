@@ -9,6 +9,12 @@ fn parse_and_print(src: &str) -> String {
     parser::parse_assembly_string(src, |module, _parsed| format!("{module}")).expect("parse")
 }
 
+fn parse_and_verify(src: &str) {
+    let verify = parser::parse_assembly_string(src, |module, _parsed| module.verify_borrowed())
+        .expect("parse");
+    verify.expect("verify");
+}
+
 /// Mirrors `LLParser::parseRet`'s `void` arm on the smallest body shape:
 /// `define void @f() { ret void }`.
 #[test]
@@ -79,6 +85,91 @@ fn parses_forward_block_reference() {
     );
     assert!(printed.contains("br label %later\n"));
     assert!(printed.contains("ret void\n"));
+}
+
+/// Regression distilled from `llvm/test/Verifier/range-2.ll::invoke_all`:
+/// `LLParser.cpp::parseBasicBlock` defines unlabeled post-terminator blocks
+/// through `PerFunctionState::defineBB(Name.empty())`, consuming the same
+/// numbered frontier used by the later `%2 = add`.
+#[test]
+fn parses_implicit_unnamed_blocks_with_shared_numbering() {
+    let src = "define i32 @implicit_slots(i1 %cond, i32 %x) {\n\
+               entry:\n  \
+                 br i1 %cond, label %0, label %1\n  \
+                 br label %1\n  \
+                 %2 = add i32 %x, 1\n  \
+                 ret i32 %2\n\
+               }\n";
+
+    parse_and_verify(src);
+    let printed = parse_and_print(src);
+
+    assert!(
+        printed.contains("br i1 %cond, label %0, label %1\n"),
+        "{printed}"
+    );
+    assert!(printed.contains("0:\n  br label %1\n"), "{printed}");
+    assert!(
+        printed.contains("1:\n  %2 = add i32 %x, 1\n  ret i32 %2\n"),
+        "{printed}"
+    );
+}
+
+/// Mirrors `LLParser::setInstName(NameID=-1, NameStr="")`: an unnamed
+/// non-void `callbr` result still consumes the next numbered local slot.
+#[test]
+fn parses_unnamed_non_void_callbr_result_numbering() {
+    let src = "declare i32 @callee()\n\
+               define i32 @callbr_unnamed_result() {\n\
+               entry:\n  \
+                 callbr i32 @callee() to label %fallthrough []\n\
+               fallthrough:\n  \
+                 ret i32 %0\n\
+               }\n";
+
+    parse_and_verify(src);
+    let printed = parse_and_print(src);
+    assert!(printed.contains("callbr i32 @callee()"), "{printed}");
+    assert!(printed.contains("ret i32 %0"), "{printed}");
+}
+
+/// Mirrors `LLParser::parseBasicBlock`: quoted digit-only labels are textual
+/// labels, not numbered-label definitions.
+#[test]
+fn parses_quoted_numeric_label_as_named_block() {
+    let src = "define void @quoted_numeric_label() {\n\
+               entry:\n  \
+                 br label %\"42\"\n\
+               \"42\":\n  \
+                 ret void\n\
+               }\n";
+
+    parse_and_verify(src);
+    let printed = parse_and_print(src);
+    assert!(printed.contains("br label %\"42\""), "{printed}");
+    assert!(printed.contains("\"42\":"), "{printed}");
+}
+
+/// Mirrors `LLParser::PerFunctionState::defineBB`: defining a previously
+/// forward-referenced numbered block moves it to the textual definition point.
+#[test]
+fn parses_forward_numbered_block_in_definition_order() {
+    let src = "define i32 @forward_numbered_block_order(i1 %cond, i32 %x) {\n\
+               entry:\n  \
+                 br i1 %cond, label %1, label %0\n  \
+                 ret i32 %x\n\
+               1:\n  \
+                 %2 = add i32 %x, 1\n  \
+                 ret i32 %2\n\
+               }\n";
+
+    parse_and_verify(src);
+    let printed = parse_and_print(src);
+    let zero_pos = printed.find("0:\n  ret i32 %x").expect("prints block 0");
+    let one_pos = printed
+        .find("1:\n  %2 = add i32 %x, 1")
+        .expect("prints block 1");
+    assert!(zero_pos < one_pos, "{printed}");
 }
 
 /// Sub / mul arms of `parse_int_binop`. Mirrors the loop body of

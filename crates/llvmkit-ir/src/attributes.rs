@@ -2,9 +2,8 @@
 //! `llvm/lib/IR/Attributes.cpp`.
 //!
 //! Phase B subset per the IR foundation plan: enum kind, integer attrs
-//! (`align`, `dereferenceable`), string attrs, type attrs.
-//! `ConstantRange`-bearing attributes (`Range`) and the deeper
-//! attribute-set machinery (FoldingSet-keyed `AttributeSetNode`) are
+//! (`align`, `dereferenceable`), range attrs, string attrs, type attrs.
+//! The deeper attribute-set machinery (FoldingSet-keyed `AttributeSetNode`) is
 //! deferred to a later session.
 //!
 //! Type-state shape:
@@ -22,7 +21,8 @@
 
 use std::fmt;
 
-use crate::r#type::Type;
+use crate::ApInt;
+use crate::r#type::{Type, TypeId, TypeKind};
 
 // --------------------------------------------------------------------------
 // AttrKind
@@ -115,6 +115,7 @@ pub enum AttrKind {
     StackAlignment,
     UWTable,
     VScaleRange,
+    Range,
 
     // ---- Type-valued attributes ----
     ByRef,
@@ -207,6 +208,7 @@ impl AttrKind {
             Self::StackAlignment => "alignstack",
             Self::UWTable => "uwtable",
             Self::VScaleRange => "vscale_range",
+            Self::Range => "range",
             // Type
             Self::ByRef => "byref",
             Self::ByVal => "byval",
@@ -245,10 +247,15 @@ impl AttrKind {
         )
     }
 
+    /// `true` for kinds whose payload is an integer constant range.
+    #[inline]
+    pub const fn is_range_kind(self) -> bool {
+        matches!(self, Self::Range)
+    }
     /// `true` for plain enum / flag kinds (no payload).
     #[inline]
     pub const fn is_enum_kind(self) -> bool {
-        !self.is_int_kind() && !self.is_type_kind()
+        !self.is_int_kind() && !self.is_type_kind() && !self.is_range_kind()
     }
 }
 
@@ -277,6 +284,12 @@ pub enum Attribute<'ctx> {
     Int(AttrKind, u64),
     /// Type-valued attribute (`byval(T)`, `sret(T)`, ...).
     Type(AttrKind, Type<'ctx>),
+    /// Integer constant-range attribute (`range(i32 0, 8)`).
+    Range {
+        ty: Type<'ctx>,
+        lower: ApInt,
+        upper: ApInt,
+    },
     /// Free-form key=value string attribute. Used for target-dependent
     /// attributes (`"target-features"`, `"frame-pointer"`, ...).
     String { key: String, value: String },
@@ -313,6 +326,23 @@ impl<'ctx> Attribute<'ctx> {
         }
     }
 
+    /// Construct an integer range attribute. Returns `None` when `ty` is not an
+    /// integer type, when the bounds have the wrong bit width, or when the
+    /// range spells an empty set other than LLVM's canonical full-set form
+    /// `range(T 0, 0)`.
+    pub fn range(ty: Type<'ctx>, lower: ApInt, upper: ApInt) -> Option<Self> {
+        let TypeKind::Integer { bits } = ty.kind() else {
+            return None;
+        };
+        if lower.bit_width() != bits || upper.bit_width() != bits {
+            return None;
+        }
+        if lower.eq_ap_int(&upper) && !lower.is_zero() {
+            return None;
+        }
+        Some(Self::Range { ty, lower, upper })
+    }
+
     /// Construct a string key=value attribute. Always valid.
     pub fn string<Key, ValueText>(key: Key, value: ValueText) -> Self
     where
@@ -335,6 +365,7 @@ impl<'ctx> Attribute<'ctx> {
     pub fn kind(&self) -> Option<AttrKind> {
         match self {
             Self::Enum(k) | Self::Int(k, _) | Self::Type(k, _) => Some(*k),
+            Self::Range { .. } => Some(AttrKind::Range),
             Self::String { .. } => None,
         }
     }
@@ -348,6 +379,12 @@ impl<'ctx> fmt::Display for Attribute<'ctx> {
             Self::Enum(k) => f.write_str(k.name()),
             Self::Int(k, v) => write!(f, "{}({v})", k.name()),
             Self::Type(k, t) => write!(f, "{}({t})", k.name()),
+            Self::Range { ty, lower, upper } => write!(
+                f,
+                "range({ty} {}, {})",
+                lower.to_string_radix(10, crate::ApIntSignedness::Signed),
+                upper.to_string_radix(10, crate::ApIntSignedness::Signed)
+            ),
             Self::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
             Self::String { key, value } => write!(f, "\"{key}\"=\"{value}\""),
         }
@@ -516,8 +553,16 @@ impl<'ctx> AttributeList<'ctx> {
 pub(crate) enum AttributeStored {
     Enum(AttrKind),
     Int(AttrKind, u64),
-    Type(AttrKind, crate::r#type::TypeId),
-    String { key: String, value: String },
+    Type(AttrKind, TypeId),
+    Range {
+        ty: TypeId,
+        lower: ApInt,
+        upper: ApInt,
+    },
+    String {
+        key: String,
+        value: String,
+    },
 }
 
 impl AttributeStored {
@@ -527,6 +572,11 @@ impl AttributeStored {
             Attribute::Enum(k) => Self::Enum(k),
             Attribute::Int(k, v) => Self::Int(k, v),
             Attribute::Type(k, t) => Self::Type(k, t.id()),
+            Attribute::Range { ty, lower, upper } => Self::Range {
+                ty: ty.id(),
+                lower,
+                upper,
+            },
             Attribute::String { key, value } => Self::String { key, value },
         }
     }
@@ -536,8 +586,8 @@ impl fmt::Display for AttributeStored {
         match self {
             Self::Enum(k) => f.write_str(k.name()),
             Self::Int(k, v) => write!(f, "{}({v})", k.name()),
-            Self::Type(_, _) => {
-                unreachable!("type-valued attributes need a module context to print")
+            Self::Type(_, _) | Self::Range { .. } => {
+                unreachable!("typed attributes need a module context to print")
             }
             Self::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
             Self::String { key, value } => write!(f, "\"{key}\"=\"{value}\""),
@@ -617,16 +667,28 @@ mod tests {
 
     /// llvmkit-specific: Rust enum partition. Closest upstream:
     /// `Attribute::isEnumAttribute` / `isIntAttribute` / `isTypeAttribute`
-    /// in `lib/IR/Attributes.cpp`.
+    /// in `lib/IR/Attributes.cpp`, extended for `RangeAttr`.
     #[test]
     fn kind_partition_is_total() {
-        // Every variant is exactly one of enum/int/type.
-        let kinds = [AttrKind::AlwaysInline, AttrKind::Alignment, AttrKind::ByVal];
+        // Every variant is exactly one of enum/int/type/range.
+        let kinds = [
+            AttrKind::AlwaysInline,
+            AttrKind::Alignment,
+            AttrKind::ByVal,
+            AttrKind::Range,
+        ];
         for k in kinds {
-            let e = k.is_enum_kind();
-            let i = k.is_int_kind();
-            let t = k.is_type_kind();
-            assert!(e as u8 + i as u8 + t as u8 == 1, "{k:?} fails partition");
+            let categories = [
+                k.is_enum_kind(),
+                k.is_int_kind(),
+                k.is_type_kind(),
+                k.is_range_kind(),
+            ];
+            assert_eq!(
+                categories.into_iter().filter(|category| *category).count(),
+                1,
+                "{k:?} fails partition"
+            );
         }
     }
 

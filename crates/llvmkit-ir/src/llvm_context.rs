@@ -417,7 +417,10 @@ impl Context {
             return;
         };
         data.for_each_operand(|operand| {
-            self.value_data(operand).use_list.borrow_mut().push(user);
+            self.value_data(operand)
+                .use_list
+                .borrow_mut()
+                .push(crate::value::ValueUse::Constant(user));
         });
     }
 

@@ -24,8 +24,8 @@ Tracking **LLVM 22.1.4**.
   Remaining parser work is tracked by the workspace roadmap rather than by
   empty parser stubs.
 
-Bitcode is out of scope for this crate today; see
-the workspace [`README`](../../README.md) for the roadmap.
+Bitcode is out of scope for this crate today; see the workspace
+[`README`](https://github.com/r3bb1t/llvmkit#readme) for the roadmap.
 
 ## Usage
 
@@ -72,4 +72,4 @@ to llvmkit's current expected output.
 ## License
 
 Apache-2.0 WITH LLVM-exception (same as upstream LLVM). See the workspace
-[LICENSE](../../LICENSE).
+[`LICENSE`](https://github.com/r3bb1t/llvmkit/blob/main/LICENSE).

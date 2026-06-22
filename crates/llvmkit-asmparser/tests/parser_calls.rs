@@ -140,6 +140,27 @@ entry:\n\
     );
 }
 
+/// Mirrors `llvm/test/Assembler/amdgcn-intrinsic-attributes.ll` range
+/// attribute spelling on call return values.
+#[test]
+fn call_return_range_attribute_round_trips() {
+    let text = parse_and_render(
+        "declare range(i8 0, 64) i8 @callee()\n\
+define i8 @f() {\n\
+entry:\n\
+  %r = call range(i8 0, 64) i8 @callee()\n\
+  ret i8 %r\n\
+}\n",
+    );
+    assert_check_lines(
+        &text,
+        &[
+            "declare range(i8 0, 64) i8 @callee()",
+            "%r = call range(i8 0, 64) i8 @callee()",
+        ],
+    );
+}
+
 /// llvmkit-specific subset of `test/Bitcode/operand-bundles.ll`: call/invoke
 /// operand-bundle lists are parsed into CallBase storage and printed after call-site attrs.
 #[test]

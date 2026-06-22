@@ -10,14 +10,16 @@ Shipped today:
 - Typed IR model, constants, globals, functions, basic blocks, instructions, verifier, AsmWriter.
 - CFG and dominator-tree queries.
 - Effect-typed module/function pass managers.
-- One built-in analysis: `DominatorTreeAnalysis`.
-- A minimal `ConstantFolder` that only folds integer `add` / `sub` / `mul` for constants representable through the current `u128` helper path.
+- Built-in analyses: `DominatorTreeAnalysis`, `KnownBitsAnalysis`, and
+  `DemandedBitsAnalysis`; initial `SimplifyDemandedBitsPass`.
+- A widened but still partial constant-folding layer: APInt-backed constants and selected LLVM-source-derived folds for modeled integer/cast/compare/select/GEP/aggregate/libcall cases; full LLVM `ConstantFolder` parity remains future work.
 
 Hard gaps for replacing more LLVM/Inkwell workflows:
 
 - No real LLVM-equivalent constant folder.
-- No KnownBits / ValueTracking layer.
-- No canonical scalar optimization pipeline (`instcombine`, `simplifycfg`, SCCP, GVN, DCE, etc.).
+- KnownBits / ValueTracking is still a represented integer, pointer,
+  fixed-vector, and intrinsic-fact subset; LLVM ValueTracking parity remains
+  incomplete.
 - No pass-builder/textual-pipeline surface.
 - No loop PM / CGSCC PM.
 - No alias analysis, MemorySSA, ScalarEvolution, LazyValueInfo, or post-dominance.
@@ -103,68 +105,160 @@ Replace the minimal `ConstantFolder` with a trustworthy LLVM-style folding layer
 
 ### Goal
 
-Implement a reusable `KnownBits` analysis equivalent to LLVM's ValueTracking core and expose it as a pass-manager analysis.
+Continue growing the already-landed KnownBits / ValueTracking subset against
+LLVM 22.1.4 reference behavior, enabling only facts whose IR representation and
+verifier dependencies are modeled.
 
-### Public API shape
+### Shipped baseline
 
-```rust
-pub struct KnownBits {
-    pub zero: APInt,
-    pub one: APInt,
-}
+The current baseline already includes:
 
-pub struct KnownBitsAnalysis;
+1. **KnownBits data model and core queries**
+   - `KnownBits` with private known-zero / known-one `ApInt` masks and public mask
+     accessors.
+   - `compute_known_bits`, `KnownBitsAnalysis`, recursion budgeting,
+     dominator-tree hooks, and conservative handling for unsupported value
+     categories.
+   - `ValueTrackingQuery` carries context instruction, demanded elements,
+     instruction-info policy (`UseInstrInfo`), optional dominator tree, and a
+     reusable per-analysis cache keyed by the query facts that affect precision.
 
-impl KnownBits {
-    pub fn unknown(width: u32) -> Self;
-    pub fn from_constant(value: ConstantIntValue<'_, IntDyn>) -> Self;
-    pub fn is_known_zero(&self, bit: u32) -> bool;
-    pub fn is_known_one(&self, bit: u32) -> bool;
-    pub fn count_min_trailing_zeros(&self) -> u32;
-    pub fn count_min_leading_zeros(&self) -> u32;
-}
-```
+2. **KnownBits transfer functions**
+   - Constants, bitwise ops, direct `KnownBits.cpp` formula ports for add/sub
+     carry/borrow, flagged add/sub, saturation add/sub overflow-direction
+     clamps (`uadd.sat`, `usub.sat`, `sadd.sat`, `ssub.sat`), wide
+     shifts, division/remainder, comparisons, `abs`, `sextInReg`,
+     concat/extract, bit permutations, high-half multiply, averages, and
+     reduction helpers.
+   - Conservative or enumerated fallbacks remain only for other
+     unsupported-by-representation cases while the parity ledger tracks the
+     remaining direct ports.
+   - ValueTracking already uses the shipped integer/pointer operator subset:
+     signed div/rem, casts, select/phi/freeze/icmp, null pointer, alloca, and
+     DataLayout-derived pointer low-zero-bit facts.
 
-High-level query API:
+3. **Represented intrinsic subset and intrinsic facts**
+   - The represented `llvm.*` intrinsic signature families are
+     `llvm.assume(i1)`; integer or fixed-vector integer overloads of `abs`,
+     `bswap`, `bitreverse`, `ctlz`, `cttz`, `ctpop`, `fshl`, `fshr`, `umax`,
+     `umin`, `smax`, `smin`, `uadd.sat`, `usub.sat`, `sadd.sat`, and
+     `ssub.sat`; fixed-vector `vector.reduce.add`; `ptrmask`; `vscale`; and
+     the lifetime/memory/runtime helpers `lifetime.start`, `lifetime.end`,
+     `memcpy`, `memmove`, `memset`, `trap`, `donothing`, `readcyclecounter`,
+     `read_register.i64`, and `write_register.i64`.
+   - ValueTracking computes known bits for the represented integer facts:
+     `abs`, `bswap`, `bitreverse`, `ctlz`, `cttz`, `ctpop`, constant-amount
+     `fshl`/`fshr`, `uadd.sat`, `usub.sat`, `sadd.sat`, `ssub.sat`,
+     `umax`, `umin`, `smax`, `smin`, fixed-vector `vector.reduce.add`, and
+     `ptrmask`; represented intrinsics outside that fact subset return
+     unknown facts.
+   - DemandedBits intrinsic operand masks are shipped for `bitreverse`,
+     `bswap`, `ctlz`, `cttz`, constant-amount `fshl`/`fshr` source masks plus
+     their shift-amount masks, and `umax`, `umin`, `smax`, and `smin`.
 
-```rust
-pub fn compute_known_bits<'ctx, B>(
-    value: Value<'ctx, B>,
-    data_layout: &DataLayout,
-    ctx: &KnownBitsContext<'_, 'ctx, B>,
-) -> IrResult<KnownBits>;
-```
+4. **Demanded-bits and SimplifyDemandedBits slice**
+   - `DemandedBitsAnalysis` includes the represented scalar integer rules for
+     add/sub/mul, bitwise ops, casts, select, extract/insert/shuffle vectors,
+     constant shifts, known-range variable shifts, and the shipped intrinsic
+     operand-mask subset listed above.
+   - `SimplifyDemandedBitsPass` ships scalar-integer constant replacement,
+     no-use dead instruction-chain erasure, and the upstream
+     `assoc-cast-assoc.ll::AndZextAnd` demanded-mask transform
+     (operand replacement, demanded-constant shrink, and `zext nneg` marking).
 
-### Work items
+5. **APInt and DataLayout dependencies**
+   - Wide `ApInt` arithmetic/comparison/shift/truncation/count helpers used by
+     constants, folding, KnownBits, and demanded-bits code.
+   - DataLayout pointer-size, pointer-alignment, type-size, and struct-layout
+     accessors used by pointer and aggregate facts.
 
-1. **KnownBits data model**
-   - Store known-zero and known-one masks as `APInt`.
-   - Enforce `zero & one == 0`.
-   - Support integer and pointer values; reject or return unknown for unsupported categories without panics.
+6. **Metadata constants and range facts**
+   - `ConstantAsMetadata`-style typed constant operands such as `!{i64 1, i64 5}`
+     are represented, parsed, and printed.
+   - `ConstantRange` plus `!range` / `!absolute_symbol` verifier support match
+     upstream `range-1.ll`, `range-2.ll`, and `absolute_symbol.ll` cases that
+     llvmkit can represent today.
+   - `ValueTracking.cpp::computeKnownBitsFromRangeMetadata` is ported for
+     load/call/invoke range attachments, with malformed metadata producing
+     unknown facts rather than panics.
+   - Range attributes (`range(T lo, hi)`) are represented, parsed, printed for
+     function/call return attributes, and used by call/invoke known-bits queries.
+   - `returned` call/invoke arguments contribute known bits when the returned
+     operand has the call result type.
 
-2. **Transfer functions**
-   - Constants, `undef`, `poison`, `freeze`.
-   - `and`, `or`, `xor`, `not`.
-   - `add`, `sub`, `mul` conservative known-bit transfer.
-   - `shl`, `lshr`, `ashr`.
-   - `trunc`, `zext`, `sext`, `bitcast` where bit-preserving.
-   - `select` as intersection of arms.
-   - PHI as meet over incoming values, with recursion budget.
-   - `icmp` result known width/value where trivially constant.
-   - GEP/pointer alignment low-bit facts from DataLayout and align attributes.
+7. **Structural value edges through metadata/debug records**
+   - Reverse use-lists distinguish instruction operands, constant operands,
+     typed metadata constants, and debug-record value operands.
+   - `Value::users()` stays instruction-only while `num_uses` / `has_uses`,
+     RAUW, and erase account for the non-instruction edges LLVM preserves.
 
-3. **Query context**
-   - Recursion depth budget.
-   - Visited set to avoid cycles.
-   - Optional demanded-bits mask.
-   - DataLayout access.
-   - Per-function cache integrated with `FunctionAnalysisManager`.
+8. **Analysis cache invalidation**
+   - `KnownBitsAnalysisResult` reuses a per-result query cache and records a
+     cached `DominatorTree` dependency when one is already available.
+   - KnownBits invalidation follows new-PM preservation: IR changes invalidate
+     unless KnownBits is preserved, and a captured dominator-tree dependency is
+     invalidated unless dominator tree / CFG analyses are preserved.
+   - `DemandedBits` invalidates unless the analysis or all function analyses are
+     preserved.
+   - Module-level function-analysis invalidation mirrors
+     `FunctionAnalysisManagerModuleProxy::Result::invalidate`: clear cached
+     function analyses when the proxy is not preserved, otherwise walk
+     functions and honor each cached result's `PreservedAnalyses` decision.
 
-4. **Dependent utilities**
-   - `SimplifyDemandedBits` equivalent.
-   - `isKnownNonZero` / `isKnownZero` / `isKnownOne` helpers.
-   - Alignment inference helper for pointers.
-   - Possible-values enumeration for small PHIs/selects to support branch and jump-table recovery.
+### Remaining parity work
+
+1. **KnownBits formula parity follow-up**
+   - Replace the remaining conservative/enumerated fallbacks with direct
+     `KnownBits.cpp` ports for facts not listed in the shipped baseline, where
+     representation dependencies now exist and expanded ValueTracking users need
+     additional facts.
+   - Keep LLVM conflict-state behavior (`zero & one` may be non-zero internally)
+     because upstream uses it for intersections and diagnostics.
+
+2. **ValueTracking operator parity**
+   - Port remaining `computeKnownBitsFromOperator` arms in upstream order for
+     represented opcodes: and/or/xor refinements, additional call/callee
+     attribute facts beyond the shipped range and `returned` cases, pointer
+     alignment/GEP/cast facts, select edge facts, PHI recurrences,
+     fixed-vector demanded-element facts, freeze poison checks, and additional
+     intrinsic facts not listed in the shipped baseline above.
+
+3. **Attribute and intrinsic dependencies**
+   - Remaining intrinsic work means additional or currently unrepresented
+     `llvm.*` IDs/signature families, or new facts beyond the shipped intrinsic
+     facts above. Add IDs and verifier signatures before adding KnownBits or
+     DemandedBits facts; unsupported ordinary functions stay unknown, and
+     unsupported `llvm.*` intrinsics stay errors until represented.
+
+4. **DemandedBits parity**
+   - Extend demanded-bit rules only for additional intrinsic IDs/signatures or
+     facts beyond the shipped `bitreverse` / `bswap` / `ctlz` / `cttz` /
+     constant-amount `fshl` / `fshr` source masks, funnel-shift amount masks,
+     and `umax` / `umin` / `smax` / `smin` operand-mask subset as those IDs,
+     signatures, and facts land.
+   - Add printer/display support only after the analysis facts are verified.
+
+5. **SimplifyDemandedBits parity**
+   - Continue growing the pass along
+     `InstCombineSimplifyDemanded.cpp::SimplifyDemandedUseBits`, verifying
+     printed IR and `Module::verify_borrowed()` for every transform.
+   - Remaining near-term cases include high-bit binary constant shrink with flag
+     repair and additional operand-return transforms that have direct upstream
+     fixtures.
+
+6. **Analysis invalidation follow-up**
+   - Add explicit dependency checks for future analysis inputs as ValueTracking
+     starts using them.
+   - The outer-analysis invalidation registration path used by LLVM's
+     `ModuleAnalysisManagerFunctionProxy` remains future work; do not claim
+     full proxy parity until that surface exists.
+
+7. **Parity ledger and provenance**
+   - Track every upstream anchor needed to close the parity ledger across
+     KnownBits, ValueTracking, DemandedBits, and SimplifyDemandedBits.
+   - Every new test cites its upstream source in a doc comment and in
+     `UPSTREAM.md`; roadmap wording must name the exact shipped subset and must
+     not present the parity ledger as closed while incomplete rows remain.
 
 ### Binary-lifting/deobfuscation use cases
 
@@ -177,11 +271,13 @@ pub fn compute_known_bits<'ctx, B>(
 
 ### Acceptance criteria
 
-- KnownBits handles all integer widths.
+- KnownBits handles all integer widths without panicking on legal IR inputs.
 - It is safe on pointer values and non-integer values.
-- It is deterministic and budgeted.
-- Unit tests mirror LLVM `KnownBits` / `ValueTracking` behavior for bitwise ops, shifts, casts, PHIs, selects, and pointers.
-- It powers at least one real simplification pass in Milestone 3.
+- It is deterministic, budgeted, and cache invalidation is explicit.
+- Unit tests mirror LLVM `KnownBits`, `ValueTracking`, `DemandedBits`, and
+  `InstCombineSimplifyDemanded` behavior for every represented fact.
+- Unsupported-by-construction facts return unknown only while their
+  representation dependency remains incomplete and tracked by the parity ledger.
 
 ---
 

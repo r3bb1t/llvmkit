@@ -26,7 +26,8 @@ Shipped today:
   `format!("{module}")`.
 - **Typed IR data model** — done. `llvmkit-ir` ships interned types, typed
   values, typed constants, functions, basic blocks, globals, comdats, data
-  layout, target triple, and module asm directives.
+  layout, target triple, module asm directives, and LLVM-style function-local
+  value-name uniquing across arguments, blocks, and instructions.
 - **IR construction** — done for the currently modeled instruction families.
   The builder covers integer and floating-point arithmetic, comparisons,
   casts, memory ops, GEP, calls, select, phi, the Parser-1 terminator / EH /
@@ -38,19 +39,52 @@ Shipped today:
 - **CFG and dominance queries** — done. `FunctionCfg`, `BasicBlockEdge`,
   `BasicBlock::successors()`, and `DominatorTree` are available as reusable IR
   queries.
-- **Minimal new-PM-inspired pass substrate** — done.
-  `PreservedAnalyses`, `FunctionAnalysisManager`, `ModuleAnalysisManager`,
-  `FunctionPassManager`, `ModulePassManager`,
-  `ModuleToFunctionPassAdaptor`, and `PassInstrumentationCallbacks` are
-  shipped.
+- **Minimal new-PM-inspired pass substrate** — done, including explicit
+  analysis invalidation. `PreservedAnalyses`, `FunctionAnalysisManager`,
+  `ModuleAnalysisManager`, `FunctionPassManager`, `ModulePassManager`,
+  `ModuleToFunctionPassAdaptor`, `PassInstrumentationCallbacks`, and
+  function/module analysis cache invalidation are shipped.
+- **KnownBits / ValueTracking subset** — shipped for represented integer,
+  pointer, fixed-vector, and intrinsic facts; full LLVM parity is not claimed.
+  The surface includes `KnownBits`, `compute_known_bits`,
+  `KnownBitsAnalysis`, `ValueTrackingQuery`, recursion budgeting,
+  dominator-tree hooks, and a reusable per-analysis cache.
+- **Represented intrinsic signatures and facts** — shipped for the modeled
+  `llvm.*` signature families listed in `ROADMAP.md`: `assume`; integer or
+  fixed-vector overloads of `abs`, bit permutations, counts, funnel shifts,
+  min/max, and saturating arithmetic; fixed-vector `vector.reduce.add`;
+  `ptrmask`; `vscale`; and the represented lifetime, memory, trap,
+  cycle-counter, and register helpers. KnownBits/DemandedBits facts are limited
+  to the shipped subset (for example constant-amount funnel shifts, bit
+  permutations, counts, saturation arithmetic, min/max, vector-reduce add, and
+  `ptrmask`). Range metadata, range attributes on function/call returns, and
+  `returned` call/invoke arguments feed known-bits queries. Unsupported ordinary
+  calls stay unknown, and unsupported `llvm.*` intrinsics are rejected unless
+  their IDs, signatures, and verifier rules are represented.
+- **Demanded-bits and initial SimplifyDemandedBits** — shipped for the modeled
+  scalar-integer slice. `DemandedBitsAnalysis` covers the represented operator
+  and intrinsic operand-mask subset, and `SimplifyDemandedBitsPass` includes
+  scalar-integer constant replacement, no-use dead instruction-chain erasure,
+  and the upstream `assoc-cast-assoc.ll::AndZextAnd` demanded-mask transform.
+- **Strict upstream fixture/provenance policy** — in force. Behavior is derived
+  from LLVM 22.1.4 sources and in-tree fixtures with `UPSTREAM.md` anchors; no
+  shipped analysis fact is a stub, and tests/runtime do not depend on
+  `orig_cpp` or hidden C++ fixtures.
 
 Not shipped yet:
 
-- **Metadata propagation to instructions** (parsed and accepted, not yet stored
-  per-instruction)
+- **Full metadata / attribute surface beyond the represented range,
+  `absolute_symbol`, debug/use-list, and `returned` facts**
 - **Bitcode reader / writer**
-- **Built-in optimization transforms and pipeline builders** (`PassBuilder`,
-  loop PM, CGSCC PM, legacy PM, textual pipelines)
+- **Full KnownBits / ValueTracking / DemandedBits / SimplifyDemandedBits
+  parity** — the parity ledger remains open for remaining `KnownBits.cpp`
+  formulas, `ValueTracking.cpp` operator arms, demanded-bit rules, and
+  `InstCombineSimplifyDemanded` transforms.
+- **Additional or currently unrepresented `llvm.*` intrinsic IDs, signatures,
+  and facts** — new IDs and verifier signatures must land before analysis facts
+  are added.
+- **Full built-in optimization transform library and pipeline builders**
+  (`PassBuilder`, loop PM, CGSCC PM, legacy PM, textual pipelines)
 
 Out of scope:
 
@@ -121,9 +155,15 @@ with `Module::with_new`, whose closure carries the generative module brand;
 read-only pass pipelines preserve `Module<'ctx, B, Verified>`, while transform
 pipelines return `Module<'ctx, B, Unverified>`.
 
-Built-in analysis available today:
+Built-in analyses available today:
 
 - `DominatorTreeAnalysis`
+- `KnownBitsAnalysis`
+- `DemandedBitsAnalysis`
+
+Initial built-in transform available today:
+
+- `SimplifyDemandedBitsPass`
 
 Core pass / analysis infrastructure available today:
 
@@ -192,10 +232,10 @@ For a runnable end-to-end version, see
 | `ModuleToFunctionPassAdaptor` | same name; function passes read cached module analyses only |
 | mutating a module pass | use a `MutatesIr` manager, call `cx.module_mut()`, receive `Module<'ctx, B, Unverified>` |
 
-Important boundary: the crate currently ships **pass infrastructure and one
-built-in analysis**, not a full optimization pipeline. There is no public
-`PassBuilder`, no loop / CGSCC manager surface, and no library of built-in IR
-transform passes yet.
+Important boundary: the crate currently ships **pass infrastructure, built-in
+analyses, and an initial `SimplifyDemandedBitsPass`**, not a full optimization
+pipeline. There is no public `PassBuilder`, no loop / CGSCC / legacy manager or
+textual pipeline surface, and no broad library of built-in transform passes yet.
 
 ## Project Structure
 
@@ -209,10 +249,11 @@ transform passes yet.
     └── llvmkit-ir/                  # Typed IR model, builder, verifier, passes
 ```
 
-Every Rust file pairs to a specific upstream LLVM concept. See
-[AGENTS.md](AGENTS.md) for the detailed source-tree map and the current
-port-status ledger, and [UPSTREAM.md](UPSTREAM.md) for the per-test provenance
-registry.
+Every Rust file that ports LLVM behavior pairs to a specific upstream LLVM
+concept. See [AGENTS.md](AGENTS.md) for the detailed source-tree map and the
+current port-status ledger, and [UPSTREAM.md](UPSTREAM.md) for the per-test and
+fixture provenance registry. The in-tree fixture policy avoids generated stubs,
+and the test and runtime paths do not depend on `orig_cpp`.
 
 ## Design Principles
 
@@ -259,9 +300,10 @@ surface; cite them by id (`D1`-`D11`) in reviews and commit messages.
 - **D10. No undefined behavior, by design.** Legal API calls must produce
   defined IR behavior; deferred traps and invalid combinations surface as typed
   errors or explicit IR states, not silent UB.
-- **D11. Tests are ported, not invented.** Every `#[test]` in the workspace is
-  traced in [UPSTREAM.md](UPSTREAM.md) to an upstream unit test, verifier
-  fixture, assembler fixture, or an explicitly-labeled example lock.
+- **D11. Tests and fixtures are ported, not invented.** Every `#[test]` in the
+  workspace is traced in [UPSTREAM.md](UPSTREAM.md) to an upstream unit test,
+  verifier fixture, assembler fixture, or explicitly-labeled example lock; the
+  fixture and runtime paths do not depend on `orig_cpp`.
 
 ## References
 

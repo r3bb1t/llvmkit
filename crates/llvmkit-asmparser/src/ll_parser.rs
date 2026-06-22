@@ -175,12 +175,17 @@ struct FunctionSuffix<'ctx> {
     gc: Option<String>,
     prefix_data: Option<llvmkit_ir::Constant<'ctx>>,
     prologue_data: Option<llvmkit_ir::Constant<'ctx>>,
-    personality_fn: Option<llvmkit_ir::Constant<'ctx>>,
+    personality_fn: Option<ParsedPersonalityFn<'ctx>>,
     metadata: Vec<(
         llvmkit_ir::metadata::MetadataAttachmentKind,
         llvmkit_ir::metadata::MetadataId,
     )>,
     _marker: core::marker::PhantomData<&'ctx ()>,
+}
+
+enum ParsedPersonalityFn<'ctx> {
+    Resolved(llvmkit_ir::Constant<'ctx>),
+    ForwardName { name: String, loc: Span },
 }
 
 // ── Parser ───────────────────────────────────────────────────────────────────
@@ -215,6 +220,8 @@ pub struct Parser<'src, 'm, 'ctx, B: ModuleBrand = Brand<'ctx>> {
     metadata_slots: HashMap<u32, MetadataSlotEntry>,
     deferred_global_initializers: Vec<DeferredGlobalInitializer<'ctx>>,
     deferred_block_addresses: Vec<DeferredBlockAddress<'ctx>>,
+    deferred_personality_fns: Vec<DeferredPersonalityFn<'ctx>>,
+    forward_function_decls: HashMap<String, Span>,
     unresolved_intrinsic_uses: Vec<UnresolvedIntrinsicUse<'ctx>>,
     _brand: PhantomData<B>,
 }
@@ -245,6 +252,12 @@ struct DeferredBlockAddress<'ctx> {
     loc: Span,
 }
 
+struct DeferredPersonalityFn<'ctx> {
+    function: llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn>,
+    name: String,
+    loc: Span,
+}
+
 enum ParsedBlockAddressFunction<'ctx> {
     Resolved(llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn>),
     Forward { function: NameOrId, loc: Span },
@@ -261,6 +274,7 @@ enum ParsedDirectCallee {
     Name { name: String, loc: Span },
     Id { id: u32, loc: Span },
     InlineAsm(ParsedInlineAsm),
+    Undef { loc: Span },
 }
 
 struct ParsedInlineAsm {
@@ -275,6 +289,7 @@ struct ParsedInlineAsm {
 enum ParsedCallee<'ctx> {
     Function(llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn>),
     InlineAsm(llvmkit_ir::InlineAsm<'ctx>),
+    Indirect(llvmkit_ir::PointerValue<'ctx>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -790,6 +805,8 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
             deferred_block_addresses: Vec::new(),
             metadata_slots: HashMap::new(),
             deferred_global_initializers: Vec::new(),
+            deferred_personality_fns: Vec::new(),
+            forward_function_decls: HashMap::new(),
             unresolved_intrinsic_uses: Vec::new(),
             _brand: PhantomData,
         })
@@ -938,7 +955,9 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
 
         self.resolve_deferred_global_initializers()?;
         self.resolve_deferred_block_addresses()?;
+        self.resolve_deferred_personality_fns()?;
         self.validate_intrinsic_uses()?;
+        self.validate_forward_function_decls()?;
 
         Ok(ParsedModule {
             slot_mapping: self.into_slot_mapping(),
@@ -1014,6 +1033,37 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         }
         Ok(())
     }
+
+    fn resolve_deferred_personality_fns(&mut self) -> ParseResult<()> {
+        let deferred = std::mem::take(&mut self.deferred_personality_fns);
+        for item in deferred {
+            let personality = self
+                .resolve_global_name_as_constant(item.name.clone())
+                .map_err(|err| match err {
+                    ParseError::UndefinedSymbol { kind, id, .. } => ParseError::UndefinedSymbol {
+                        kind,
+                        id,
+                        loc: DiagLoc::span(item.loc),
+                    },
+                    other => other,
+                })?;
+            item.function
+                .set_personality_fn(self.module, personality)
+                .map_err(|e| self.builder_err("function personality", e))?;
+        }
+        Ok(())
+    }
+    fn validate_forward_function_decls(&self) -> ParseResult<()> {
+        if let Some((name, loc)) = self.forward_function_decls.iter().next() {
+            return Err(ParseError::UndefinedSymbol {
+                kind: crate::parse_error::SymbolKind::Global,
+                id: crate::parse_error::SymbolId::Named(name.clone()),
+                loc: DiagLoc::span(*loc),
+            });
+        }
+        Ok(())
+    }
+
     fn validate_intrinsic_uses(&self) -> ParseResult<()> {
         for use_site in &self.unresolved_intrinsic_uses {
             if !use_site.direct_callee {
@@ -1422,15 +1472,19 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
     }
 
     /// Parse `, align N` if lookahead is `,` followed by `align`.
-    /// Returns `None` if no alignment suffix. Eats the comma and `align N`.
+    /// Returns `None` without consuming when the comma starts a different suffix.
     fn parse_optional_comma_align(&mut self) -> ParseResult<Option<Align>> {
-        if self.eat_punct(PunctKind::Comma)? {
-            if matches!(self.peek(), Token::Kw(Keyword::Align)) {
-                Ok(Some(self.parse_align_val()?))
-            } else {
-                Err(self.expected("'align' after ','"))
-            }
+        if !matches!(self.peek(), Token::Comma) {
+            return Ok(None);
+        }
+        let saved_lex = self.lex.clone();
+        let saved_current = self.current.clone();
+        self.bump()?;
+        if matches!(self.peek(), Token::Kw(Keyword::Align)) {
+            Ok(Some(self.parse_align_val()?))
         } else {
+            self.lex = saved_lex;
+            self.current = saved_current;
             Ok(None)
         }
     }
@@ -1898,6 +1952,23 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         if matches!(self.peek(), Token::MetadataVar(_)) {
             let content = self.parse_md_node_after_bang(false)?;
             let id = self.module.metadata_node(content);
+            return Ok(MetadataRef(id));
+        }
+
+        if matches!(
+            self.peek(),
+            Token::PrimitiveType(_)
+                | Token::LBrace
+                | Token::Less
+                | Token::LSquare
+                | Token::LocalVar(_)
+                | Token::LocalVarId(_)
+        ) {
+            let ty = self.parse_type(false)?;
+            let constant = self
+                .parse_constant(ty)?
+                .ok_or_else(|| self.expected("typed metadata constant"))?;
+            let id = self.module.metadata_constant(constant);
             return Ok(MetadataRef(id));
         }
 
@@ -2919,7 +2990,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
 
         let name_string = match &name_id {
             NameOrId::Name(n) => n.clone(),
-            NameOrId::Id(id) => format!("{id}"),
+            NameOrId::Id(_) => String::new(),
         };
         let mut builder = self
             .module
@@ -3049,7 +3120,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
 
         let name_string = match &name_id {
             NameOrId::Name(n) => n.clone(),
-            NameOrId::Id(id) => format!("{id}"),
+            NameOrId::Id(_) => String::new(),
         };
 
         if is_alias {
@@ -3502,6 +3573,71 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
             .map_err(|e| self.builder_err("splat constant", e))
     }
 
+    fn zero_initializer_constant(&self, ty: Type<'ctx>) -> ParseResult<llvmkit_ir::Constant<'ctx>> {
+        match ty.into_type_enum() {
+            AnyTypeEnum::Int(t) => Ok(t.const_zero().as_constant()),
+            AnyTypeEnum::Pointer(t) => Ok(t.const_null().as_constant()),
+            AnyTypeEnum::Float(t) => Ok(t.const_from_bits(0).as_constant()),
+            AnyTypeEnum::Array(t) => {
+                let len = usize::try_from(t.len()).map_err(|_| ParseError::Expected {
+                    expected: "array zeroinitializer length fits in usize".into(),
+                    loc: DiagLoc::span(self.loc()),
+                })?;
+                let element = t.element();
+                let mut elements = Vec::with_capacity(len);
+                for _ in 0..len {
+                    elements.push(self.zero_initializer_constant(element)?);
+                }
+                t.const_array(elements)
+                    .map(|c| c.as_constant())
+                    .map_err(|e| self.builder_err("array zeroinitializer", e))
+            }
+            AnyTypeEnum::Vector(t) => {
+                if t.is_scalable() {
+                    return Err(self.expected("fixed vector zeroinitializer"));
+                }
+                let len = usize::try_from(t.min_len()).map_err(|_| ParseError::Expected {
+                    expected: "vector zeroinitializer length fits in usize".into(),
+                    loc: DiagLoc::span(self.loc()),
+                })?;
+                let element = t.element();
+                let mut elements = Vec::with_capacity(len);
+                for _ in 0..len {
+                    elements.push(self.zero_initializer_constant(element)?);
+                }
+                t.const_vector(elements)
+                    .map(|c| c.as_constant())
+                    .map_err(|e| self.builder_err("vector zeroinitializer", e))
+            }
+            AnyTypeEnum::Struct(t) => {
+                if t.is_opaque() {
+                    return Err(ParseError::Expected {
+                        expected: "invalid type for null constant".into(),
+                        loc: DiagLoc::span(self.loc()),
+                    });
+                }
+                let mut elements = Vec::with_capacity(t.field_count());
+                for idx in 0..t.field_count() {
+                    let field_ty = t
+                        .field_type(idx)
+                        .ok_or_else(|| self.expected("struct field type for zeroinitializer"))?;
+                    elements.push(self.zero_initializer_constant(field_ty)?);
+                }
+                t.const_struct(elements)
+                    .map(|c| c.as_constant())
+                    .map_err(|e| self.builder_err("struct zeroinitializer", e))
+            }
+            AnyTypeEnum::TargetExt(_) => self.module.target_ext_none(ty).map_err(|e| match e {
+                IrError::InvalidOperation { message } => ParseError::Expected {
+                    expected: message.into(),
+                    loc: DiagLoc::span(self.loc()),
+                },
+                other => self.builder_err("target extension none", other),
+            }),
+            _ => Err(self.expected("zeroinitializer for a zeroable type")),
+        }
+    }
+
     fn convert_val_id_to_value(
         &mut self,
         ty: Type<'ctx>,
@@ -3559,12 +3695,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 };
                 Ok(pty.const_null().as_value())
             }
-            ValId::Zero => match ty.into_type_enum() {
-                AnyTypeEnum::Int(t) => Ok(t.const_zero().as_value()),
-                AnyTypeEnum::Pointer(t) => Ok(t.const_null().as_value()),
-                AnyTypeEnum::Float(t) => Ok(t.const_from_bits(0).as_value()),
-                _ => Err(self.expected("zeroinitializer for the modeled scalar types")),
-            },
+            ValId::Zero => self.zero_initializer_constant(ty).map(|c| c.as_value()),
             ValId::Undef => Ok(ty.get_undef().as_value()),
             ValId::Poison => Ok(ty.get_poison().as_value()),
             ValId::Constant(c) => Ok(c.as_value()),
@@ -3624,19 +3755,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 };
                 Ok(ptr_ty.const_null().as_constant())
             }
-            ValId::Zero => match ty.into_type_enum() {
-                AnyTypeEnum::Int(t) => Ok(t.const_zero().as_constant()),
-                AnyTypeEnum::Pointer(t) => Ok(t.const_null().as_constant()),
-                AnyTypeEnum::Float(t) => Ok(t.const_from_bits(0).as_constant()),
-                AnyTypeEnum::TargetExt(_) => self.module.target_ext_none(ty).map_err(|e| match e {
-                    IrError::InvalidOperation { message } => ParseError::Expected {
-                        expected: message.into(),
-                        loc: DiagLoc::span(self.loc()),
-                    },
-                    other => self.builder_err("target extension none", other),
-                }),
-                _ => Err(self.expected("zeroinitializer for the modeled scalar types")),
-            },
+            ValId::Zero => self.zero_initializer_constant(ty),
             ValId::Undef => Ok(ty.get_undef().as_constant()),
             ValId::Poison => Ok(ty.get_poison().as_constant()),
             ValId::Constant(c) => Ok(c),
@@ -3655,6 +3774,27 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
     fn parse_global_type_and_value(&mut self) -> ParseResult<llvmkit_ir::Constant<'ctx>> {
         let ty = self.parse_type(false)?;
         self.parse_global_value(ty)
+    }
+
+    fn parse_personality_fn(&mut self) -> ParseResult<ParsedPersonalityFn<'ctx>> {
+        let ty = self.parse_type(false)?;
+        let value_loc = self.loc();
+        let id = self.parse_val_id(None, Some(ty))?;
+        if let ValId::GlobalName(name) = id {
+            match self.convert_val_id_to_constant(ty, ValId::GlobalName(name.clone())) {
+                Ok(constant) => Ok(ParsedPersonalityFn::Resolved(constant)),
+                Err(ParseError::UndefinedSymbol { .. }) if ty.is_pointer() => {
+                    Ok(ParsedPersonalityFn::ForwardName {
+                        name,
+                        loc: value_loc,
+                    })
+                }
+                Err(err) => Err(err),
+            }
+        } else {
+            self.convert_val_id_to_constant(ty, id)
+                .map(ParsedPersonalityFn::Resolved)
+        }
     }
 
     fn parse_global_value_vector(&mut self) -> ParseResult<Vec<llvmkit_ir::Constant<'ctx>>> {
@@ -4539,7 +4679,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 }
                 Token::Kw(Keyword::Personality) => {
                     self.bump()?;
-                    suffix.personality_fn = Some(self.parse_global_type_and_value()?);
+                    suffix.personality_fn = Some(self.parse_personality_fn()?);
                 }
                 Token::MetadataVar(_) => {
                     suffix
@@ -4606,6 +4746,10 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                         .ok_or_else(|| self.expected("attribute"))?;
                     out.add(index, attr);
                 }
+                Token::Kw(Keyword::Range) => {
+                    let attr = self.parse_range_attribute()?;
+                    out.add(index, attr);
+                }
                 Token::Kw(keyword) => {
                     let Some(kind) = Self::attr_kind_for_keyword(*keyword) else {
                         break;
@@ -4619,6 +4763,25 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
             }
         }
         Ok(groups)
+    }
+
+    fn parse_range_attribute(&mut self) -> ParseResult<Attribute<'ctx>> {
+        self.expect_keyword(Keyword::Range, "'range'")?;
+        self.expect_punct(PunctKind::LParen, "'(' in range attribute")?;
+        let ty = self.parse_type(false)?;
+        let TypeKind::Integer { bits } = ty.kind() else {
+            return Err(self.expected("range attribute integer type"));
+        };
+        let lower = self.parse_int_literal(ExpectedIntWidth::Bits(bits))?;
+        self.expect_punct(PunctKind::Comma, "',' in range attribute")?;
+        let upper = self.parse_int_literal(ExpectedIntWidth::Bits(bits))?;
+        self.expect_punct(PunctKind::RParen, "')' in range attribute")?;
+        Attribute::range(
+            ty,
+            lower_parsed_apsint(&lower, bits),
+            lower_parsed_apsint(&upper, bits),
+        )
+        .ok_or_else(|| self.expected("valid range attribute"))
     }
 
     fn parse_optional_param_attrs(&mut self) -> ParseResult<AttributeStorage> {
@@ -4726,10 +4889,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                     .ok_or_else(|| self.expected("function name"))?;
                 (NameOrId::Name(name.clone()), name)
             }
-            Token::GlobalId(n) => {
-                let id = *n;
-                (NameOrId::Id(id), format!("{id}"))
-            }
+            Token::GlobalId(n) => (NameOrId::Id(*n), String::new()),
             _ => return Err(self.expected("function name after return type")),
         };
         let decl_loc = self.loc();
@@ -4780,7 +4940,17 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         let suffix = self.parse_optional_function_suffix(&mut attrs)?;
 
         let fn_ty = self.module.fn_type(ret_ty, params, var_args);
-        let f = if let Some(existing) = self.module.function_by_name(&name) {
+        let existing_by_id = match &name_id {
+            NameOrId::Id(id) => self.numbered_globals.get(*id).and_then(|r| match r {
+                GlobalRef::Function(f) => Some(*f),
+                _ => None,
+            }),
+            NameOrId::Name(_) => None,
+        };
+        let existing_by_name = (!name.is_empty())
+            .then(|| self.module.function_by_name(&name))
+            .flatten();
+        let f = if let Some(existing) = existing_by_id.or(existing_by_name) {
             if existing.signature() != fn_ty || existing.basic_blocks().len() != 0 {
                 return Err(ParseError::Expected {
                     expected: "forward function declaration with matching signature".into(),
@@ -4794,6 +4964,9 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
             existing.set_calling_conv(self.module, calling_conv);
             existing.set_unnamed_addr(self.module, unnamed_addr);
             existing.set_address_space(self.module, address_space);
+            if !name.is_empty() {
+                self.forward_function_decls.remove(&name);
+            }
             existing.set_attributes(self.module, attrs);
             existing
         } else {
@@ -4854,13 +5027,26 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 .map_err(|e| self.builder_err("function prologue", e))?;
         }
         if let Some(personality_fn) = suffix.personality_fn {
-            f.set_personality_fn(self.module, personality_fn)
-                .map_err(|e| self.builder_err("function personality", e))?;
+            match personality_fn {
+                ParsedPersonalityFn::Resolved(personality_fn) => {
+                    f.set_personality_fn(self.module, personality_fn)
+                        .map_err(|e| self.builder_err("function personality", e))?;
+                }
+                ParsedPersonalityFn::ForwardName { name, loc } => {
+                    self.deferred_personality_fns.push(DeferredPersonalityFn {
+                        function: f,
+                        name,
+                        loc,
+                    });
+                }
+            }
         }
         for (kind, id) in suffix.metadata {
             f.set_metadata(self.module, kind, id);
         }
-        if let NameOrId::Id(id) = name_id {
+        if let NameOrId::Id(id) = name_id
+            && self.numbered_globals.get(id).is_none()
+        {
             self.numbered_globals
                 .add(id, GlobalRef::Function(f))
                 .map_err(|source| ParseError::InvalidSlotId {
@@ -4895,10 +5081,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                     .ok_or_else(|| self.expected("function name"))?;
                 (NameOrId::Name(name.clone()), name)
             }
-            Token::GlobalId(n) => {
-                let id = *n;
-                (NameOrId::Id(id), format!("{id}"))
-            }
+            Token::GlobalId(n) => (NameOrId::Id(*n), String::new()),
             _ => return Err(self.expected("function name after return type")),
         };
         let decl_loc = self.loc();
@@ -4953,7 +5136,17 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         let suffix = self.parse_optional_function_suffix(&mut attrs)?;
 
         let fn_ty = self.module.fn_type(ret_ty, param_types, var_args);
-        let f = if let Some(existing) = self.module.function_by_name(&name) {
+        let existing_by_id = match &name_id {
+            NameOrId::Id(id) => self.numbered_globals.get(*id).and_then(|r| match r {
+                GlobalRef::Function(f) => Some(*f),
+                _ => None,
+            }),
+            NameOrId::Name(_) => None,
+        };
+        let existing_by_name = (!name.is_empty())
+            .then(|| self.module.function_by_name(&name))
+            .flatten();
+        let f = if let Some(existing) = existing_by_id.or(existing_by_name) {
             if existing.signature() != fn_ty || existing.basic_blocks().any(|bb| !bb.is_empty()) {
                 return Err(ParseError::Expected {
                     expected: "forward function definition with matching signature".into(),
@@ -4968,6 +5161,9 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
             existing.set_unnamed_addr(self.module, unnamed_addr);
             existing.set_address_space(self.module, address_space);
             existing.set_attributes(self.module, attrs);
+            if !name.is_empty() {
+                self.forward_function_decls.remove(&name);
+            }
             existing
         } else {
             let f = self
@@ -4984,21 +5180,21 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
             f.set_unnamed_addr(self.module, unnamed_addr);
             f.set_address_space(self.module, address_space);
             f.set_attributes(self.module, attrs);
-            for (slot, p) in param_names.iter().enumerate() {
-                if let Some(ParamName::Named(n)) = p {
-                    let slot_u32 = u32::try_from(slot).map_err(|_| ParseError::Expected {
-                        expected: "parameter slot fits in u32".into(),
-                        loc: DiagLoc::span(decl_loc),
-                    })?;
-                    let arg = f.param(slot_u32).map_err(|e| ParseError::Expected {
-                        expected: format!("function parameter slot {slot}: {e}"),
-                        loc: DiagLoc::span(decl_loc),
-                    })?;
-                    arg.set_name(self.module, n);
-                }
-            }
             f
         };
+        for (slot, p) in param_names.iter().enumerate() {
+            if let Some(ParamName::Named(n)) = p {
+                let slot_u32 = u32::try_from(slot).map_err(|_| ParseError::Expected {
+                    expected: "parameter slot fits in u32".into(),
+                    loc: DiagLoc::span(decl_loc),
+                })?;
+                let arg = f.param(slot_u32).map_err(|e| ParseError::Expected {
+                    expected: format!("function parameter slot {slot}: {e}"),
+                    loc: DiagLoc::span(decl_loc),
+                })?;
+                arg.set_name(self.module, n);
+            }
+        }
         for group in suffix.attr_groups {
             f.add_function_attr_group(self.module, group);
         }
@@ -5027,13 +5223,26 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 .map_err(|e| self.builder_err("function prologue", e))?;
         }
         if let Some(personality_fn) = suffix.personality_fn {
-            f.set_personality_fn(self.module, personality_fn)
-                .map_err(|e| self.builder_err("function personality", e))?;
+            match personality_fn {
+                ParsedPersonalityFn::Resolved(personality_fn) => {
+                    f.set_personality_fn(self.module, personality_fn)
+                        .map_err(|e| self.builder_err("function personality", e))?;
+                }
+                ParsedPersonalityFn::ForwardName { name, loc } => {
+                    self.deferred_personality_fns.push(DeferredPersonalityFn {
+                        function: f,
+                        name,
+                        loc,
+                    });
+                }
+            }
         }
         for (kind, id) in suffix.metadata {
             f.set_metadata(self.module, kind, id);
         }
-        if let NameOrId::Id(id) = name_id {
+        if let NameOrId::Id(id) = name_id
+            && self.numbered_globals.get(id).is_none()
+        {
             self.numbered_globals
                 .add(id, GlobalRef::Function(f))
                 .map_err(|source| ParseError::InvalidSlotId {
@@ -5060,7 +5269,17 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                     state.local_named.insert(n, v);
                 }
                 Some(ParamName::Numbered(id)) => {
-                    state.next_unnamed_value_id = state.next_unnamed_value_id.max(id + 1);
+                    if state.local_numbered.contains_key(&id) || id != state.next_unnamed_value_id {
+                        return Err(ParseError::InvalidSlotId {
+                            source: crate::numbered_values::AddError::StaleId {
+                                id,
+                                next: state.next_unnamed_value_id,
+                            },
+                            loc: DiagLoc::span(decl_loc),
+                        });
+                    }
+                    state.local_numbered.insert(id, v);
+                    state.next_unnamed_value_id = id.saturating_add(1);
                 }
                 None => {
                     let id = state.next_unnamed_value_id;
@@ -5079,9 +5298,9 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
     // ── Function body driver ─────────────────────────────────────────────
 
     fn parse_function_body(&mut self, state: &mut PerFunctionState<'ctx>) -> ParseResult<()> {
-        // First block: optional explicit label, otherwise default-named.
-        // Mirrors `LLParser::parseBasicBlock`: a body must contain at
-        // least one block.
+        // Mirrors `LLParser::parseBasicBlock`: a body must contain at least
+        // one block, and an unlabeled block is assigned the next shared
+        // function-local numbered value slot.
         loop {
             match self.peek() {
                 Token::RBrace => break,
@@ -5089,16 +5308,25 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                     self.parse_function_use_list_order(state)?;
                 }
                 Token::LabelStr(_) => {
+                    let label_loc = self.loc();
                     let label = self
                         .current_label_str()
                         .ok_or_else(|| self.expected("basic-block label"))?;
                     self.bump()?;
-                    self.parse_basic_block(state, BlockHeader::Named(label))?;
+                    let header = if !self.label_span_is_quoted(label_loc) {
+                        numbered_label_id(&label)
+                            .map(BlockHeader::Numbered)
+                            .unwrap_or(BlockHeader::Named(label))
+                    } else {
+                        BlockHeader::Named(label)
+                    };
+                    self.parse_basic_block(state, header, label_loc)?;
                 }
                 _ => {
-                    // Implicit entry block ("entry" by convention) when no
-                    // explicit label opens the body.
-                    self.parse_basic_block(state, BlockHeader::Implicit)?;
+                    // LLVM defines an unlabeled block with the next shared
+                    // function-local numbered value slot.
+                    let loc = self.loc();
+                    self.parse_basic_block(state, BlockHeader::Implicit, loc)?;
                 }
             }
         }
@@ -5112,17 +5340,26 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         }
     }
 
+    fn label_span_is_quoted(&self, loc: Span) -> bool {
+        usize::try_from(loc.start)
+            .ok()
+            .and_then(|idx| self.src.get(idx))
+            .is_some_and(|byte| *byte == b'"')
+    }
+
     fn parse_basic_block(
         &mut self,
         state: &mut PerFunctionState<'ctx>,
         header: BlockHeader,
+        header_loc: Span,
     ) -> ParseResult<()> {
-        let bb_name = match header {
-            BlockHeader::Named(n) => n,
-            BlockHeader::Implicit => "".to_owned(),
+        let bb = match header {
+            BlockHeader::Named(n) => state.define_named_block(self.module, n, header_loc)?,
+            BlockHeader::Numbered(id) => {
+                state.define_numbered_label(self.module, id, header_loc)?
+            }
+            BlockHeader::Implicit => state.define_implicit_block(self.module, header_loc)?,
         };
-        state.defined_blocks.insert(bb_name.clone());
-        let bb = state.ensure_block(self.module, &bb_name);
         // Drive the typed builder for this block.
         let builder = IRBuilder::with_folder(self.module, NoFolder).position_at_end(bb);
         // Emit instructions until a terminator consumes `builder`.
@@ -5228,7 +5465,9 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                     let result_name = self.parse_lhs_assignment()?;
                     let v = self.parse_callbr(state, b, &result_name)?;
                     self.finish_trailing_metadata(bb, &mut pending_debug_records)?;
-                    state.bind_local(&result_name, v, result_loc)?;
+                    if let Some(v) = v {
+                        state.bind_local(&result_name, v, result_loc)?;
+                    }
                     return Ok(());
                 }
                 _ => {}
@@ -5246,6 +5485,19 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 self.finish_trailing_metadata(bb, &mut pending_debug_records)?;
                 state.bind_local(&result_name, value, result_loc)?;
                 continue;
+            }
+            if matches!(
+                self.peek(),
+                Token::Instruction(crate::ll_token::Opcode::Invoke)
+            ) {
+                let b = take_live_builder(&mut builder, self.loc())?;
+                self.bump()?;
+                let value = self.parse_invoke(state, b, &result_name)?;
+                self.finish_trailing_metadata(bb, &mut pending_debug_records)?;
+                if let Some(value) = value {
+                    state.bind_local(&result_name, value, result_loc)?;
+                }
+                return Ok(());
             }
             let opcode = match self.peek() {
                 Token::Instruction(op) => *op,
@@ -6676,24 +6928,16 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                     let v = match ty.into_type_enum() {
                         AnyTypeEnum::Int(t) => t.const_zero().as_value(),
                         AnyTypeEnum::Pointer(t) => t.const_null().as_value(),
-                        AnyTypeEnum::Float(t) => {
-                            // For float phi, we need a float zero constant.
-                            // Use the int type hack: zeroinitializer of a float
-                            // is 0.0. For now, defer this incoming edge.
+                        AnyTypeEnum::Float(_t) => {
+                            self.expect_punct(PunctKind::Comma, "',' in phi incoming pair")?;
+                            let bb_ref = self.parse_phi_label(state)?;
+                            self.expect_punct(PunctKind::RSquare, "']' in phi incoming pair")?;
                             state.deferred_phi.push(DeferredPhiEdge {
                                 phi_val,
                                 val_ref: PhiValRef::Undef,
-                                bb_name: String::new(), // will be filled below
+                                bb_ref,
                                 loc: val_loc,
                             });
-                            // We'll fix the bb_name after parsing
-                            self.expect_punct(PunctKind::Comma, "',' in phi incoming pair")?;
-                            let bb_name = self.parse_phi_label()?;
-                            self.expect_punct(PunctKind::RSquare, "']' in phi incoming pair")?;
-                            if let Some(last) = state.deferred_phi.last_mut() {
-                                last.bb_name = bb_name;
-                            }
-                            let _ = t;
                             continue;
                         }
                         _ => return Err(self.expected("undef for int/float/ptr phi")),
@@ -6703,12 +6947,12 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 _ => return Err(self.expected("value in phi incoming pair")),
             };
             self.expect_punct(PunctKind::Comma, "',' in phi incoming pair")?;
-            let bb_name = self.parse_phi_label()?;
+            let bb_ref = self.parse_phi_label(state)?;
             self.expect_punct(PunctKind::RSquare, "']' to close phi incoming pair")?;
             // Either resolve immediately or defer.
             match val_ref {
                 PhiValRef::Resolved(v) => {
-                    let bb = state.ensure_block(self.module, &bb_name);
+                    let bb = state.resolve_block_ref(self.module, &bb_ref, val_loc)?;
                     let tmp_b = llvmkit_ir::IRBuilder::new(self.module);
                     tmp_b
                         .phi_add_incoming_from_value(phi_val, v, bb)
@@ -6718,7 +6962,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                     state.deferred_phi.push(DeferredPhiEdge {
                         phi_val,
                         val_ref: other,
-                        bb_name,
+                        bb_ref,
                         loc: val_loc,
                     });
                 }
@@ -6728,19 +6972,25 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
     }
 
     /// Parse the label in a `[ val, label %name ]` phi pair.
-    fn parse_phi_label(&mut self) -> ParseResult<String> {
+    fn parse_phi_label(&mut self, state: &mut PerFunctionState<'ctx>) -> ParseResult<BlockRef> {
+        let loc = self.loc();
         match self.peek() {
             Token::LocalVar(_) => {
                 let n = self
                     .current_str_payload()
                     .ok_or_else(|| self.expected("block label in phi pair"))?;
                 self.bump()?;
-                Ok(n)
+                if !state.defined_blocks.contains(&n) {
+                    state.block_refs.entry(n.clone()).or_insert(loc);
+                }
+                state.ensure_block(self.module, &n);
+                Ok(BlockRef::Named(n))
             }
             Token::LocalVarId(id) => {
                 let id = *id;
                 self.bump()?;
-                Ok(format!("{id}"))
+                state.get_or_create_numbered_block(self.module, id, loc)?;
+                Ok(BlockRef::Numbered(id))
             }
             _ => Err(self.expected("block label in phi incoming pair")),
         }
@@ -6846,6 +7096,11 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                     .as_instruction()
                     .as_value()
             }
+            ParsedCallee::Indirect(callee) => b
+                .build_indirect_call::<llvmkit_ir::Dyn, _, _, _>(parsed_fn_ty, callee, args, name)
+                .map_err(|e| self.builder_err("indirect call", e))?
+                .as_instruction()
+                .as_value(),
         };
         Ok(v)
     }
@@ -6938,6 +7193,10 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                     can_unwind,
                 }))
             }
+            Token::Kw(Keyword::Undef) => {
+                self.bump()?;
+                Ok(ParsedDirectCallee::Undef { loc })
+            }
             _ => Err(self.expected("function name after call")),
         }
     }
@@ -6950,6 +7209,12 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         match parsed {
             ParsedDirectCallee::Name { name, loc } => {
                 if let Some(f) = self.module.function_by_name(&name) {
+                    if f.signature() != parsed_fn_ty {
+                        return Err(ParseError::Expected {
+                            expected: "function callee signature mismatch".into(),
+                            loc: DiagLoc::span(loc),
+                        });
+                    }
                     if name.starts_with("llvm.") {
                         self.record_intrinsic_use(name, loc, parsed_fn_ty, f, true);
                     }
@@ -6966,11 +7231,15 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                     self.record_intrinsic_use(name, loc, parsed_fn_ty, f, true);
                     return Ok(ParsedCallee::Function(f));
                 }
-                Err(ParseError::UndefinedSymbol {
-                    kind: crate::parse_error::SymbolKind::Global,
-                    id: crate::parse_error::SymbolId::Named(name),
-                    loc: DiagLoc::span(loc),
-                })
+                let f = self
+                    .module
+                    .add_function::<llvmkit_ir::Dyn, _>(&name, parsed_fn_ty, Linkage::External)
+                    .map_err(|e| ParseError::Expected {
+                        expected: format!("forward function declaration: {e}"),
+                        loc: DiagLoc::span(loc),
+                    })?;
+                self.forward_function_decls.entry(name).or_insert(loc);
+                Ok(ParsedCallee::Function(f))
             }
             ParsedDirectCallee::Id { id, loc } => self
                 .numbered_globals
@@ -6997,6 +7266,16 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                         .with_can_unwind(data.can_unwind),
                 ),
             )),
+            ParsedDirectCallee::Undef { loc } => {
+                let callee = llvmkit_ir::PointerValue::try_from(
+                    self.module.ptr_type(0).as_type().get_undef().as_value(),
+                )
+                .map_err(|e| ParseError::Expected {
+                    expected: format!("undef pointer callee: {e}"),
+                    loc: DiagLoc::span(loc),
+                })?;
+                Ok(ParsedCallee::Indirect(callee))
+            }
         }
     }
 
@@ -7605,10 +7884,15 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 )
                 .map_err(|e| self.builder_err("invoke", e))?
             }
+            ParsedCallee::Indirect(_) => {
+                return Err(self.expected("direct function callee for invoke"));
+            }
         };
-        // For void-returning invokes, don't bind a result.
         let ret_is_void = matches!(ret_ty.into_type_enum(), AnyTypeEnum::Void(_));
-        if ret_is_void || matches!(result_name, LocalLhs::None) {
+        // For void-returning invokes, don't bind a result. Non-void unnamed
+        // invokes still consume the next numbered local slot, matching
+        // `LLParser::setInstName(NameID=-1, NameStr="")`.
+        if ret_is_void {
             Ok(None)
         } else {
             Ok(Some(inst.as_instruction().as_value()))
@@ -7625,7 +7909,7 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         state: &mut PerFunctionState<'ctx>,
         b: ParsedBlockBuilder<'m, 'ctx>,
         result_name: &LocalLhs,
-    ) -> ParseResult<llvmkit_ir::Value<'ctx>> {
+    ) -> ParseResult<Option<llvmkit_ir::Value<'ctx>>> {
         self.bump()?; // eat `callbr`
         let calling_conv = self.parse_optional_calling_conv()?;
         let return_attrs = self.parse_optional_return_attrs()?;
@@ -7724,8 +8008,16 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
                 )
                 .map_err(|e| self.builder_err("callbr", e))?
             }
+            ParsedCallee::Indirect(_) => {
+                return Err(self.expected("direct function callee for callbr"));
+            }
         };
-        Ok(inst.as_instruction().as_value())
+        let ret_is_void = matches!(ret_ty.into_type_enum(), AnyTypeEnum::Void(_));
+        if ret_is_void {
+            Ok(None)
+        } else {
+            Ok(Some(inst.as_instruction().as_value()))
+        }
     }
 
     /// Parse `none` or a local token as a parent-pad value for EH pads.
@@ -7779,18 +8071,24 @@ impl<'src, 'm, 'ctx> Parser<'src, 'm, 'ctx, Brand<'ctx>> {
         state: &mut PerFunctionState<'ctx>,
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed>> {
         let loc = self.loc();
-        let name = match self.peek() {
-            Token::LocalVar(_) => self
-                .current_str_payload()
-                .ok_or_else(|| self.expected("block label name"))?,
-            Token::LocalVarId(n) => format!("{n}"),
-            _ => return Err(self.expected("block label after 'label'")),
-        };
-        self.bump()?;
-        if !state.defined_blocks.contains(&name) {
-            state.block_refs.entry(name.clone()).or_insert(loc);
+        match self.peek() {
+            Token::LocalVar(_) => {
+                let name = self
+                    .current_str_payload()
+                    .ok_or_else(|| self.expected("block label name"))?;
+                self.bump()?;
+                if !state.defined_blocks.contains(&name) {
+                    state.block_refs.entry(name.clone()).or_insert(loc);
+                }
+                Ok(state.ensure_block(self.module, &name))
+            }
+            Token::LocalVarId(id) => {
+                let id = *id;
+                self.bump()?;
+                state.get_or_create_numbered_block(self.module, id, loc)
+            }
+            _ => Err(self.expected("block label after 'label'")),
         }
-        Ok(state.ensure_block(self.module, &name))
     }
 
     /// Parse a value of the given type. Accepts local SSA references,
@@ -7905,6 +8203,12 @@ enum PhiValRef<'ctx> {
     Undef,
 }
 
+#[derive(Clone, Debug)]
+enum BlockRef {
+    Named(String),
+    Numbered(u32),
+}
+
 /// One deferred phi incoming edge. Resolved after all blocks are parsed.
 struct DeferredPhiEdge<'ctx> {
     /// The phi instruction's Value handle. Used by `finish()` with
@@ -7912,8 +8216,8 @@ struct DeferredPhiEdge<'ctx> {
     phi_val: llvmkit_ir::Value<'ctx>,
     /// The incoming value reference (may be a forward ref).
     val_ref: PhiValRef<'ctx>,
-    /// Name of the incoming basic block.
-    bb_name: String,
+    /// Incoming basic block reference.
+    bb_ref: BlockRef,
     /// Source location for error reporting.
     loc: llvmkit_support::Span,
 }
@@ -7936,12 +8240,12 @@ struct PerFunctionState<'ctx> {
     func: llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn>,
     /// `%name` to the bound SSA value.
     local_named: std::collections::HashMap<String, llvmkit_ir::Value<'ctx>>,
-    /// `%N` to the bound SSA value.
+    /// `%N` to the bound function-local value: argument, instruction result,
+    /// or unnamed basic block. LLVM keeps these in one NumberedVals table.
     local_numbered: std::collections::HashMap<u32, llvmkit_ir::Value<'ctx>>,
-    /// Slot id of the next anonymous SSA value (used for `%lhs = ...`
-    /// assignments without an explicit name).
+    /// Slot id of the next anonymous function-local value.
     next_unnamed_value_id: u32,
-    /// `label` to the (Unsealed) basic-block handle. Created on first
+    /// `label` to the (Unsealed) named basic-block handle. Created on first
     /// reference to support `br label %later` forward references.
     blocks: std::collections::HashMap<
         String,
@@ -7949,6 +8253,14 @@ struct PerFunctionState<'ctx> {
     >,
     block_refs: std::collections::HashMap<String, Span>,
     defined_blocks: std::collections::HashSet<String>,
+    /// `%N` block placeholders and definitions, keyed by the shared local
+    /// numbered-value slot.
+    numbered_blocks: std::collections::HashMap<
+        u32,
+        llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed>,
+    >,
+    numbered_block_refs: std::collections::HashMap<u32, Span>,
+    defined_numbered_blocks: std::collections::HashSet<u32>,
     /// Deferred phi incoming edges for forward references. Resolved by
     /// `finish()` after all blocks in the function have been parsed.
     deferred_phi: Vec<DeferredPhiEdge<'ctx>>,
@@ -7971,15 +8283,27 @@ impl<'ctx> PerFunctionState<'ctx> {
             blocks,
             block_refs: std::collections::HashMap::new(),
             defined_blocks: std::collections::HashSet::new(),
+            numbered_blocks: std::collections::HashMap::new(),
+            numbered_block_refs: std::collections::HashMap::new(),
+            defined_numbered_blocks: std::collections::HashSet::new(),
             deferred_phi: Vec::new(),
             deferred_atomicrmw_values: Vec::new(),
         }
     }
 
+    fn invalid_numbered_slot(&self, id: u32, loc: Span) -> ParseError {
+        ParseError::InvalidSlotId {
+            source: crate::numbered_values::AddError::StaleId {
+                id,
+                next: self.next_unnamed_value_id,
+            },
+            loc: DiagLoc::span(loc),
+        }
+    }
+
     /// Look up or lazily create the named basic block. Mirrors
-    /// `PerFunctionState::defineBB` / `getBB` for the constructive subset
-    /// where forward references just create the block in advance and
-    /// fill it in when the label is later observed.
+    /// `PerFunctionState::getBB(StringRef)`: named forward references create
+    /// the block in advance and the label definition later marks it defined.
     fn ensure_block(
         &mut self,
         module: &Module<'ctx, Brand<'ctx>, Unverified>,
@@ -7993,12 +8317,145 @@ impl<'ctx> PerFunctionState<'ctx> {
         bb
     }
 
+    /// Define a textual basic block label.
+    fn define_named_block(
+        &mut self,
+        module: &Module<'ctx, Brand<'ctx>, Unverified>,
+        name: String,
+        _loc: Span,
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed>> {
+        self.defined_blocks.insert(name.clone());
+        Ok(self.ensure_block(module, &name))
+    }
+
+    /// Define an unlabeled block at `NumberedVals.getNext()`, matching
+    /// `PerFunctionState::defineBB(Name.empty())`.
+    fn define_implicit_block(
+        &mut self,
+        module: &Module<'ctx, Brand<'ctx>, Unverified>,
+        loc: Span,
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed>> {
+        let id = self.next_unnamed_value_id;
+        self.define_numbered_block(module, id, loc)
+    }
+
+    fn define_numbered_label(
+        &mut self,
+        module: &Module<'ctx, Brand<'ctx>, Unverified>,
+        id: u32,
+        loc: Span,
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed>> {
+        if self.defined_numbered_blocks.contains(&id) {
+            return Err(ParseError::Redefinition {
+                kind: crate::parse_error::SymbolKind::Block,
+                id: crate::parse_error::SymbolId::Numbered(id),
+                loc: DiagLoc::span(loc),
+            });
+        }
+        if id != self.next_unnamed_value_id {
+            return Err(self.invalid_numbered_slot(id, loc));
+        }
+        self.define_numbered_block(module, id, loc)
+    }
+
+    fn define_numbered_block(
+        &mut self,
+        module: &Module<'ctx, Brand<'ctx>, Unverified>,
+        id: u32,
+        loc: Span,
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed>> {
+        if self.defined_numbered_blocks.contains(&id) {
+            return Err(ParseError::Redefinition {
+                kind: crate::parse_error::SymbolKind::Block,
+                id: crate::parse_error::SymbolId::Numbered(id),
+                loc: DiagLoc::span(loc),
+            });
+        }
+        if self.local_numbered.contains_key(&id) {
+            return Err(self.invalid_numbered_slot(id, loc));
+        }
+        let bb = if let Some(bb) = self.numbered_blocks.get(&id) {
+            *bb
+        } else {
+            let bb = self.func.append_basic_block(module, "");
+            self.numbered_blocks.insert(id, bb);
+            bb
+        };
+        self.func
+            .move_basic_block_to_end(module, bb)
+            .map_err(|e| ParseError::Expected {
+                expected: format!("numbered basic block definition: {e}"),
+                loc: DiagLoc::span(loc),
+            })?;
+        self.local_numbered.insert(id, bb.as_value());
+        self.defined_numbered_blocks.insert(id);
+        self.numbered_block_refs.remove(&id);
+        self.next_unnamed_value_id = self.next_unnamed_value_id.max(id.saturating_add(1));
+        Ok(bb)
+    }
+
+    fn value_as_block(
+        value: llvmkit_ir::Value<'ctx>,
+        loc: Span,
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed>> {
+        let bb: llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed> =
+            value.try_into().map_err(|_| ParseError::Expected {
+                expected: "referenced value is not a basic block".into(),
+                loc: DiagLoc::span(loc),
+            })?;
+        Ok(bb)
+    }
+
+    fn get_or_create_numbered_block(
+        &mut self,
+        module: &Module<'ctx, Brand<'ctx>, Unverified>,
+        id: u32,
+        loc: Span,
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed>> {
+        if let Some(value) = self.local_numbered.get(&id).copied() {
+            return Self::value_as_block(value, loc);
+        }
+        if id < self.next_unnamed_value_id {
+            return Err(self.invalid_numbered_slot(id, loc));
+        }
+        let bb = if let Some(bb) = self.numbered_blocks.get(&id) {
+            *bb
+        } else {
+            let bb = self.func.append_basic_block(module, "");
+            self.numbered_blocks.insert(id, bb);
+            bb
+        };
+        self.numbered_block_refs.entry(id).or_insert(loc);
+        Ok(bb)
+    }
+
+    fn resolve_block_ref(
+        &mut self,
+        module: &Module<'ctx, Brand<'ctx>, Unverified>,
+        block_ref: &BlockRef,
+        loc: Span,
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed>> {
+        match block_ref {
+            BlockRef::Named(name) => Ok(self.ensure_block(module, name)),
+            BlockRef::Numbered(id) => self.get_or_create_numbered_block(module, *id, loc),
+        }
+    }
+
     fn bind_local(
         &mut self,
         lhs: &LocalLhs,
         v: llvmkit_ir::Value<'ctx>,
         loc: Span,
     ) -> ParseResult<()> {
+        if v.ty().is_void() {
+            return match lhs {
+                LocalLhs::None => Ok(()),
+                LocalLhs::Named(_) | LocalLhs::Numbered(_) => Err(ParseError::Expected {
+                    expected: "non-void instruction result for local binding".into(),
+                    loc: DiagLoc::span(loc),
+                }),
+            };
+        }
         match lhs {
             LocalLhs::Named(n) => {
                 if self.local_named.insert(n.clone(), v).is_some() {
@@ -8010,20 +8467,17 @@ impl<'ctx> PerFunctionState<'ctx> {
                 }
             }
             LocalLhs::Numbered(id) => {
-                if self.local_numbered.contains_key(id) {
-                    return Err(ParseError::InvalidSlotId {
-                        source: crate::numbered_values::AddError::StaleId {
-                            id: *id,
-                            next: self.next_unnamed_value_id,
-                        },
-                        loc: DiagLoc::span(loc),
-                    });
+                if self.local_numbered.contains_key(id) || *id != self.next_unnamed_value_id {
+                    return Err(self.invalid_numbered_slot(*id, loc));
                 }
                 self.local_numbered.insert(*id, v);
-                self.next_unnamed_value_id = self.next_unnamed_value_id.max(id.saturating_add(1));
+                self.next_unnamed_value_id = id.saturating_add(1);
             }
             LocalLhs::None => {
                 let id = self.next_unnamed_value_id;
+                if self.local_numbered.contains_key(&id) {
+                    return Err(self.invalid_numbered_slot(id, loc));
+                }
                 self.local_numbered.insert(id, v);
                 self.next_unnamed_value_id = id.saturating_add(1);
             }
@@ -8042,6 +8496,15 @@ impl<'ctx> PerFunctionState<'ctx> {
                 return Err(ParseError::UndefinedSymbol {
                     kind: crate::parse_error::SymbolKind::Block,
                     id: crate::parse_error::SymbolId::Named(name.clone()),
+                    loc: DiagLoc::span(*loc),
+                });
+            }
+        }
+        for (id, loc) in &self.numbered_block_refs {
+            if !self.defined_numbered_blocks.contains(id) {
+                return Err(ParseError::UndefinedSymbol {
+                    kind: crate::parse_error::SymbolKind::Block,
+                    id: crate::parse_error::SymbolId::Numbered(*id),
                     loc: DiagLoc::span(*loc),
                 });
             }
@@ -8106,7 +8569,7 @@ impl<'ctx> PerFunctionState<'ctx> {
                     }
                 }
             };
-            let bb = self.ensure_block(module, &edge.bb_name);
+            let bb = self.resolve_block_ref(module, &edge.bb_ref, edge.loc)?;
             let tmp_b = llvmkit_ir::IRBuilder::new(module);
             tmp_b
                 .phi_add_incoming_from_value(edge.phi_val, val, bb)
@@ -8121,7 +8584,16 @@ impl<'ctx> PerFunctionState<'ctx> {
 
 enum BlockHeader {
     Named(String),
+    Numbered(u32),
     Implicit,
+}
+
+fn numbered_label_id(name: &str) -> Option<u32> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || !bytes.iter().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    name.parse().ok()
 }
 
 enum ParamName {

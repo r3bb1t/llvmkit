@@ -515,6 +515,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
             .downcast_ref::<A::Result>()
     }
 
+    pub(crate) fn get_cached_result_by_type<A, R, F>(&self, function: F) -> Option<&R>
+    where
+        A: 'static,
+        R: 'static,
+        F: Into<FunctionView<'ctx, B>>,
+    {
+        let function = function.into();
+        self.results
+            .get(&function_key::<A, B>(function))?
+            .result
+            .downcast_ref::<R>()
+    }
+
     pub fn invalidate<F>(&mut self, function: F, pa: &PreservedAnalyses) -> IrResult<()>
     where
         F: Into<FunctionView<'ctx, B>>,
@@ -546,14 +559,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
         module: ModuleView<'ctx, B>,
         pa: &PreservedAnalyses,
     ) -> IrResult<()> {
-        let proxy = pa.checker::<FunctionAnalysisManagerModuleProxy>();
-        if pa.are_all_preserved()
-            || (proxy.preserved() && pa.all_analyses_in_set_preserved::<AllAnalysesOnFunction>())
-        {
+        if pa.are_all_preserved() {
             return Ok(());
         }
-        let module_id = module.id();
-        self.results.retain(|key, _| key.0 != module_id);
+
+        let proxy = pa.checker::<FunctionAnalysisManagerModuleProxy>();
+        if !(proxy.preserved() || proxy.preserved_set::<AllAnalysesOnModule>()) {
+            self.clear();
+            return Ok(());
+        }
+
+        if pa.all_analyses_in_set_preserved::<AllAnalysesOnFunction>() {
+            return Ok(());
+        }
+
+        for function in module.iter_functions() {
+            self.invalidate(function, pa)?;
+        }
         Ok(())
     }
 

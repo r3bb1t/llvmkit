@@ -308,6 +308,22 @@ pub enum VerifierRule {
     /// `Verifier::visitGlobalVariable` ("Globals cannot contain
     /// scalable types").
     GlobalScalableType,
+    /// `!range` attached to an instruction kind other than load/call/invoke.
+    /// Mirrors `Verifier::visitInstruction`.
+    RangeMetadataInvalidAttachment,
+    /// `!range` / `!absolute_symbol` operand list shape or integer bounds are invalid.
+    /// Mirrors `Verifier::verifyRangeLikeMetadata`.
+    RangeMetadataMalformed,
+    /// Range bound integer types disagree with each other or with the value type.
+    /// Mirrors `Verifier::verifyRangeLikeMetadata`.
+    RangeMetadataTypeMismatch,
+    /// Range intervals overlap. Mirrors `Verifier::verifyRangeLikeMetadata`.
+    RangeMetadataOverlapping,
+    /// Range intervals are not sorted. Mirrors `Verifier::verifyRangeLikeMetadata`.
+    RangeMetadataOutOfOrder,
+    /// Range intervals are adjacent and should be coalesced.
+    /// Mirrors `Verifier::verifyRangeLikeMetadata`.
+    RangeMetadataContiguous,
 
     UseBeforeDef,
 }
@@ -401,6 +417,14 @@ impl fmt::Display for VerifierRule {
                 "common-linkage global must have a zero initializer, must not be constant, and must not be in a comdat"
             }
             Self::GlobalScalableType => "globals cannot contain scalable types",
+            Self::RangeMetadataInvalidAttachment => {
+                "range metadata is only valid on loads, calls, and invokes"
+            }
+            Self::RangeMetadataMalformed => "range-like metadata operand list is malformed",
+            Self::RangeMetadataTypeMismatch => "range metadata bound types are invalid",
+            Self::RangeMetadataOverlapping => "range intervals overlap",
+            Self::RangeMetadataOutOfOrder => "range intervals are not in order",
+            Self::RangeMetadataContiguous => "range intervals are contiguous",
             Self::UseBeforeDef => "instruction does not dominate all uses",
         };
         f.write_str(s)

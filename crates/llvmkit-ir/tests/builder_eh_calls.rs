@@ -135,7 +135,7 @@ fn callbr_two_indirect_dests_print_form() -> Result<(), IrError> {
         let text = format!("{m}");
         assert!(
             text.contains(
-                "callbr void asm sideeffect \"\", \"~{flags},!i\"()\n          to label %1 [label %2]\n"
+                "callbr void asm sideeffect \"\", \"~{flags},!i\"()\n          to label %\"1\" [label %\"2\"]\n"
             ),
             "got:\n{text}"
         );

@@ -8,7 +8,8 @@
 //! `FunctionValue::add_attribute` setter for forward-declared functions.
 
 use llvmkit_ir::{
-    AttrIndex, AttrKind, Attribute, IRBuilder, IrError, Linkage, MetadataRef, Module,
+    AttrIndex, AttrKind, Attribute, IRBuilder, Instruction, IrError, Linkage,
+    MetadataAttachmentKind, MetadataRef, Module, NoFolder, VerifierRule,
 };
 
 fn assert_line(text: &str, expected: &str) {
@@ -218,5 +219,193 @@ fn string_referenced_by_named_metadata_is_not_dangling() {
         let text = format!("{m}");
         assert_line(&text, r#"!0 = !{!"x"}"#);
         assert_line(&text, "!my.named = !{!0}");
+    })
+}
+
+/// Mirrors `llvm/test/Analysis/ValueTracking/known-bits-from-range-md.ll`
+/// and `llvm/test/Verifier/absolute_symbol.ll` typed integer metadata operands.
+#[test]
+fn metadata_constant_tuple_prints_typed_constants() {
+    Module::with_new("mdc", |m| {
+        let i64_ty = m.i64_type();
+        let one = m.metadata_constant(i64_ty.const_int(1_i64));
+        let five = m.metadata_constant(i64_ty.const_int(5_i64));
+        let tuple = m.metadata_tuple([MetadataRef(one), MetadataRef(five)]);
+        let idx = m.get_or_insert_named_metadata("ranges");
+        m.named_metadata_add_operand(idx, MetadataRef(tuple));
+
+        let text = format!("{m}");
+        assert_line(&text, "!0 = !{i64 1, i64 5}");
+        assert_line(&text, "!ranges = !{!0}");
+    })
+}
+
+/// Mirrors `Verifier::visitRangeMetadata` accepting well-formed `!range`
+/// metadata on loads.
+#[test]
+fn range_metadata_on_load_verifies_and_prints() -> Result<(), IrError> {
+    Module::with_new("range_ok", |m| {
+        let i8_ty = m.i8_type();
+        let ptr_ty = m.ptr_type(0);
+        let fn_ty = m.fn_type(i8_ty, [ptr_ty.as_type()], false);
+        let f = m.add_function::<i8, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i8>(&m).position_at_end(entry);
+        let p: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
+        let ld = b.build_int_load::<i8, _, _>(p, "v")?;
+        let lo = m.metadata_constant(i8_ty.const_int(0x10_u8));
+        let hi = m.metadata_constant(i8_ty.const_int(0x20_u8));
+        let range = m.metadata_tuple([MetadataRef(lo), MetadataRef(hi)]);
+        let inst: Instruction = ld.as_value().try_into()?;
+        inst.set_metadata(MetadataAttachmentKind::Range, range);
+        b.build_ret(ld)?;
+
+        m.verify_borrowed()?;
+        let text = format!("{m}");
+        assert_line(&text, "  %v = load i8, ptr %0, !range !0");
+        assert_line(&text, "!0 = !{i8 16, i8 32}");
+        Ok(())
+    })
+}
+
+/// Mirrors `Verifier::verifyRangeLikeMetadata` rejecting an unfinished
+/// range operand list.
+#[test]
+fn range_metadata_rejects_odd_operand_count() -> Result<(), IrError> {
+    Module::with_new("range_odd", |m| {
+        let i8_ty = m.i8_type();
+        let ptr_ty = m.ptr_type(0);
+        let fn_ty = m.fn_type(i8_ty, [ptr_ty.as_type()], false);
+        let f = m.add_function::<i8, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i8>(&m).position_at_end(entry);
+        let p: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
+        let ld = b.build_int_load::<i8, _, _>(p, "v")?;
+        let lo = m.metadata_constant(i8_ty.const_int(0x10_u8));
+        let range = m.metadata_tuple([MetadataRef(lo)]);
+        let inst: Instruction = ld.as_value().try_into()?;
+        inst.set_metadata(MetadataAttachmentKind::Range, range);
+        b.build_ret(ld)?;
+
+        let err = m
+            .verify_borrowed()
+            .expect_err("odd range metadata must fail");
+        assert!(matches!(
+            err,
+            IrError::VerifierFailure {
+                rule: VerifierRule::RangeMetadataMalformed,
+                ..
+            }
+        ));
+        Ok(())
+    })
+}
+
+/// Mirrors `llvm/test/Verifier/range-2.ll` allowing `!range` on call and
+/// invoke return values.
+#[test]
+fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
+    Module::with_new("range_call_invoke_ok", |m| {
+        let i8_ty = m.i8_type();
+        let ptr_ty = m.ptr_type(0);
+        let callee_ty = m.fn_type(i8_ty, [ptr_ty.as_type()], false);
+        let callee = m.add_function::<i8, _>("callee", callee_ty, Linkage::External)?;
+        let lo = m.metadata_constant(i8_ty.const_int(0_i8));
+        let hi = m.metadata_constant(i8_ty.const_int(1_i8));
+        let range = m.metadata_tuple([MetadataRef(lo), MetadataRef(hi)]);
+
+        let call_host_ty = m.fn_type(i8_ty, [ptr_ty.as_type()], false);
+        let call_host = m.add_function::<i8, _>("call_host", call_host_ty, Linkage::External)?;
+        let call_entry = call_host.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i8>(&m).position_at_end(call_entry);
+        let p: llvmkit_ir::PointerValue = call_host.param(0)?.try_into()?;
+        let call = b.build_call(callee, [p.as_value()], "v")?;
+        call.as_instruction()
+            .set_metadata(MetadataAttachmentKind::Range, range);
+        b.build_ret(call.return_int_value())?;
+
+        let invoke_host_ty = m.fn_type(i8_ty, [ptr_ty.as_type()], false);
+        let invoke_host =
+            m.add_function::<i8, _>("invoke_host", invoke_host_ty, Linkage::External)?;
+        let entry = invoke_host.append_basic_block(&m, "entry");
+        let normal = invoke_host.append_basic_block(&m, "normal");
+        let unwind = invoke_host.append_basic_block(&m, "unwind");
+        let p: llvmkit_ir::PointerValue = invoke_host.param(0)?.try_into()?;
+        let (_entry, invoke) = IRBuilder::new_for::<i8>(&m)
+            .position_at_end(entry)
+            .build_invoke(callee, [p.as_value()], normal, unwind, "v")?;
+        invoke
+            .as_instruction()
+            .set_metadata(MetadataAttachmentKind::Range, range);
+        let invoke_value: llvmkit_ir::IntValue<i8> =
+            invoke.as_instruction().as_value().try_into()?;
+        IRBuilder::new_for::<i8>(&m)
+            .position_at_end(normal)
+            .build_ret(invoke_value)?;
+        IRBuilder::new_for::<i8>(&m)
+            .position_at_end(unwind)
+            .build_ret(i8_ty.const_zero())?;
+
+        m.verify_borrowed()
+    })
+}
+
+/// Mirrors `Verifier::visitInstruction` rejecting `!range` on non
+/// load/call/invoke instructions.
+#[test]
+fn range_metadata_rejects_non_load_call_invoke_user() -> Result<(), IrError> {
+    Module::with_new("range_bad_user", |m| {
+        let i8_ty = m.i8_type();
+        let fn_ty = m.fn_type(i8_ty, Vec::<llvmkit_ir::Type>::new(), false);
+        let f = m.add_function::<i8, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let add =
+            b.build_int_add::<i8, _, _, _>(i8_ty.const_int(1_u8), i8_ty.const_int(2_u8), "sum")?;
+        let lo = m.metadata_constant(i8_ty.const_int(0x10_u8));
+        let hi = m.metadata_constant(i8_ty.const_int(0x20_u8));
+        let range = m.metadata_tuple([MetadataRef(lo), MetadataRef(hi)]);
+        let inst: Instruction = add.as_value().try_into()?;
+        inst.set_metadata(MetadataAttachmentKind::Range, range);
+        b.build_ret(add)?;
+
+        let err = m
+            .verify_borrowed()
+            .expect_err("range metadata on add must fail");
+        assert!(matches!(
+            err,
+            IrError::VerifierFailure {
+                rule: VerifierRule::RangeMetadataInvalidAttachment,
+                ..
+            }
+        ));
+        Ok(())
+    })
+}
+
+/// Mirrors `llvm/test/Verifier/absolute_symbol.ll` rejecting
+/// `!absolute_symbol !{i64 0, i64 0}` as an empty range.
+#[test]
+fn absolute_symbol_zero_zero_is_empty_range() -> Result<(), IrError> {
+    Module::with_new("absolute_symbol_bad", |m| {
+        let i8_ty = m.i8_type();
+        let i64_ty = m.i64_type();
+        let g = m.add_global("absolute_zero_zero", i8_ty.as_type(), i8_ty.const_zero())?;
+        let lo = m.metadata_constant(i64_ty.const_int(0_i64));
+        let hi = m.metadata_constant(i64_ty.const_int(0_i64));
+        let range = m.metadata_tuple([MetadataRef(lo), MetadataRef(hi)]);
+        g.set_metadata(&m, MetadataAttachmentKind::AbsoluteSymbol, range);
+
+        let err = m
+            .verify_borrowed()
+            .expect_err("zero-zero absolute_symbol range must fail");
+        assert!(matches!(
+            err,
+            IrError::VerifierFailure {
+                rule: VerifierRule::RangeMetadataMalformed,
+                ..
+            }
+        ));
+        Ok(())
     })
 }

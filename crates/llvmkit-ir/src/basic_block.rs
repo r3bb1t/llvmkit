@@ -348,17 +348,38 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
             return Err(IrError::ForeignValue);
         }
         let module = self.module.module();
+        let source_fn_id = self.parent_id();
+        let dest_fn_id = dest.parent_id();
+        let rehome_names = source_fn_id != dest_fn_id;
         let dest_id = dest.as_value().id;
         let drained: Vec<ValueId> = {
             let mut src = self.data().instructions.borrow_mut();
             core::mem::take(&mut *src)
         };
+        if rehome_names && let Some(source_fn_id) = source_fn_id {
+            let source_fn = FunctionValue::<Dyn>::from_parts_unchecked(source_fn_id, self.module);
+            for id in &drained {
+                source_fn.remove_local_value_name(*id);
+            }
+        }
         {
             let mut dst = dest.data().instructions.borrow_mut();
             dst.extend(drained.iter().copied());
         }
         for id in &drained {
             module.context().set_instruction_parent(*id, dest_id);
+        }
+        if rehome_names && let Some(dest_fn_id) = dest_fn_id {
+            let dest_fn = FunctionValue::<Dyn>::from_parts_unchecked(dest_fn_id, self.module);
+            for id in &drained {
+                let ty = module.context().value_data(*id).ty;
+                let value = Value::from_parts(*id, module, ty);
+                let current_name = value.name();
+                if let Some(name) = current_name.as_deref() {
+                    value.set_name_internal(None);
+                    dest_fn.set_local_value_name(*id, Some(name));
+                }
+            }
         }
         Ok(())
     }

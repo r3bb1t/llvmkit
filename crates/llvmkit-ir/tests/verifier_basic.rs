@@ -18,7 +18,7 @@
 //! marked accordingly.
 
 use llvmkit_ir::{
-    AShrFlags, AddFlags, Align, FloatPredicate, FloatValue, IRBuilder, IntPredicate, IntValue,
+    AShrFlags, AddFlags, Align, Dyn, FloatPredicate, FloatValue, IRBuilder, IntPredicate, IntValue,
     IrError, LShrFlags, Linkage, Module, MulFlags, PointerValue, SDivFlags, ShlFlags, SubFlags,
     Type, UDivFlags, VerifierRule,
 };
@@ -31,6 +31,75 @@ use llvmkit_ir::{
 fn verify_empty_module() -> Result<(), IrError> {
     Module::with_new::<_, _, _>("empty", |m| {
         m.verify_borrowed()?;
+        Ok(())
+    })
+}
+
+/// Mirrors `llvm/include/llvm/IR/Intrinsics.td` definitions for `int_assume`,
+/// integer bit operations, min/max, saturation arithmetic, `int_vector_reduce_add`,
+/// `int_ptrmask`, and `int_vscale`: canonical overloaded declarations verify.
+#[test]
+fn verify_represented_intrinsic_declarations() -> Result<(), IrError> {
+    Module::with_new::<_, _, _>("intrinsics", |m| {
+        let void_ty = m.void_type().as_type();
+        let i1_ty = m.i1_type().as_type();
+        let i32_ty = m.i32_type().as_type();
+        let i64_ty = m.i64_type().as_type();
+        let v4i32_ty = m.vector_type(i32_ty, 4, false).as_type();
+        let ptr_ty = m.ptr_type(0).as_type();
+
+        for (name, ret, params) in [
+            ("llvm.assume", void_ty, vec![i1_ty]),
+            ("llvm.abs.i32", i32_ty, vec![i32_ty, i1_ty]),
+            ("llvm.bswap.i32", i32_ty, vec![i32_ty]),
+            ("llvm.bitreverse.i32", i32_ty, vec![i32_ty]),
+            ("llvm.ctlz.i32", i32_ty, vec![i32_ty, i1_ty]),
+            ("llvm.cttz.i32", i32_ty, vec![i32_ty, i1_ty]),
+            ("llvm.ctpop.i32", i32_ty, vec![i32_ty]),
+            ("llvm.fshl.i32", i32_ty, vec![i32_ty, i32_ty, i32_ty]),
+            ("llvm.fshr.i32", i32_ty, vec![i32_ty, i32_ty, i32_ty]),
+            ("llvm.umax.i32", i32_ty, vec![i32_ty, i32_ty]),
+            ("llvm.umin.i32", i32_ty, vec![i32_ty, i32_ty]),
+            ("llvm.smax.i32", i32_ty, vec![i32_ty, i32_ty]),
+            ("llvm.smin.i32", i32_ty, vec![i32_ty, i32_ty]),
+            ("llvm.uadd.sat.i32", i32_ty, vec![i32_ty, i32_ty]),
+            ("llvm.usub.sat.i32", i32_ty, vec![i32_ty, i32_ty]),
+            ("llvm.sadd.sat.i32", i32_ty, vec![i32_ty, i32_ty]),
+            ("llvm.ssub.sat.i32", i32_ty, vec![i32_ty, i32_ty]),
+            ("llvm.ctpop.v4i32", v4i32_ty, vec![v4i32_ty]),
+            ("llvm.uadd.sat.v4i32", v4i32_ty, vec![v4i32_ty, v4i32_ty]),
+            ("llvm.vector.reduce.add.v4i32", i32_ty, vec![v4i32_ty]),
+            ("llvm.ptrmask.p0.i64", ptr_ty, vec![ptr_ty, i64_ty]),
+            ("llvm.vscale.i32", i32_ty, Vec::new()),
+        ] {
+            let fn_ty = m.fn_type(ret, params, false);
+            m.add_function::<Dyn, _>(name, fn_ty, Linkage::External)?;
+        }
+
+        m.verify_borrowed()?;
+        Ok(())
+    })
+}
+
+/// Mirrors `llvm/lib/IR/Verifier.cpp` intrinsic validation: declaration type
+/// must match the canonical overloaded type encoded by the `llvm.*` name.
+#[test]
+fn verify_represented_intrinsic_mismatch_fails() -> Result<(), IrError> {
+    Module::with_new::<_, _, _>("intrinsic_mismatch", |m| {
+        let i32_ty = m.i32_type().as_type();
+        let i64_ty = m.i64_type().as_type();
+        let fn_ty = m.fn_type(i64_ty, [i32_ty], false);
+        m.add_function::<Dyn, _>("llvm.bswap.i32", fn_ty, Linkage::External)?;
+
+        let err = m
+            .verify_borrowed()
+            .expect_err("verifier rejects intrinsic signature mismatch");
+        match err {
+            IrError::InvalidOperation { message } => {
+                assert_eq!(message, "intrinsic signature mismatch");
+            }
+            other => panic!("unexpected verifier error: {other:?}"),
+        }
         Ok(())
     })
 }

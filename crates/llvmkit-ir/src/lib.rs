@@ -32,9 +32,11 @@ pub mod comdat;
 pub mod constant;
 pub mod constant_fold;
 pub mod constant_folding;
+pub mod constant_range;
 pub mod constants;
 pub mod data_layout;
 pub mod debug_loc;
+pub mod demanded_bits;
 pub mod denormal_mode;
 pub mod derived_types;
 pub mod dominator_tree;
@@ -55,6 +57,7 @@ pub mod int_width;
 pub mod intrinsics;
 pub mod ir_builder;
 pub mod iter;
+pub mod known_bits;
 pub(crate) mod llvm_context;
 pub mod marker;
 pub mod metadata;
@@ -76,6 +79,7 @@ pub mod r#use;
 pub mod user;
 pub mod value;
 pub mod value_symbol_table;
+pub mod value_tracking;
 pub mod vector_element;
 pub mod verifier;
 
@@ -96,7 +100,9 @@ pub use argument::Argument;
 pub use atomic_ordering::AtomicOrdering;
 pub use atomicrmw_binop::AtomicRMWBinOp;
 pub use attribute_mask::AttributeMask;
-pub use attributes::{AttrIndex, AttrKind, Attribute, AttributeList, AttributeSet};
+pub use attributes::{
+    AttrIndex, AttrKind, Attribute, AttributeList, AttributeSet, AttributeStorage,
+};
 pub use basic_block::BasicBlock;
 pub use block_state::{BlockSealState, Sealed, Unsealed};
 pub use calling_conv::CallingConv;
@@ -126,6 +132,7 @@ pub use constant_folding::{
     is_constant_offset_from_global, lossless_inv_cast, lossless_signed_trunc,
     lossless_unsigned_trunc,
 };
+pub use constant_range::ConstantRange;
 pub use constants::{
     ConstantAggregate, ConstantExprOptions, ConstantFloatValue, ConstantIntValue,
     ConstantPointerNull, PoisonValue, UndefValue,
@@ -134,6 +141,10 @@ pub use data_layout::{
     DataLayout, FunctionPtrAlignType, ManglingMode, PointerSpec, PrimitiveSpec, StructLayoutInfo,
 };
 pub use debug_loc::DebugLoc;
+pub use demanded_bits::{
+    DemandedBits, DemandedBitsAnalysis, SimplifyDemandedBitsPass, SimplifyDemandedBitsResult,
+    simplify_demanded_bits,
+};
 pub use denormal_mode::{DenormalMode, DenormalModeKind, DenormalModeSide};
 pub use derived_types::{
     AggregateType, AnyTypeEnum, ArrayType, BasicMetadataTypeEnum, BasicTypeEnum, FloatType,
@@ -174,6 +185,7 @@ pub use ir_builder::no_folder::NoFolder;
 pub use ir_builder::{
     CallBuilder, CallSiteConfig, IRBuilder, InsertPoint, Positioned, SelectArm, Unpositioned,
 };
+pub use known_bits::KnownBits;
 pub use marker::{Dyn, Ptr, ReturnMarker};
 pub use metadata::{
     MetadataAttachmentKind, MetadataAttachmentSet, MetadataField, MetadataFieldValue, MetadataId,
@@ -220,5 +232,9 @@ pub use float_kind::{
 
 pub use int_width::{
     IntDyn, IntWidth, IntoConstantInt, IntoIntValue, StaticIntWidth, WiderThan, Width,
+};
+pub use value_tracking::{
+    KnownBitsAnalysis, KnownBitsAnalysisResult, MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery,
+    compute_known_bits, is_known_non_zero, is_known_one, is_known_zero, known_bits_from_operator,
 };
 // `bool`/`i8`/`i16`/`i32`/`i64`/`i128` are std types — no re-export.

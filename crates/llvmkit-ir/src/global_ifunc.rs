@@ -204,7 +204,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for GlobalIFunc<'ctx, B> {
 }
 impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalIFunc<'ctx, B> {
     fn name(self) -> Option<String> {
-        Some(self.data().name.clone())
+        self.as_value().name()
     }
     fn set_name<Name>(self, _module_token: &Module<'ctx, B, Unverified>, _name: Name)
     where

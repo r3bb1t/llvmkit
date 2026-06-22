@@ -39,6 +39,7 @@ use crate::ap_float::ApFloatSemantics;
 use crate::argument::Argument;
 use crate::attributes::{AttrKind, Attribute, AttributeStorage, AttributeStored};
 use crate::basic_block::{BasicBlock, BasicBlockData};
+use crate::block_state::BlockSealState;
 use crate::calling_conv::CallingConv;
 use crate::comdat::ComdatRef;
 use crate::constant::{Constant, IsConstant};
@@ -722,9 +723,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     // ---- Basic blocks ----
 
     /// Append a fresh basic block to this function. Mirrors
-    /// `BasicBlock::Create(ctx, name, parent)`. The block inherits
-    /// the function's [`ReturnMarker`], so positioned IRBuilders see
-    /// the typed return shape transitively.
+    /// `BasicBlock::Create(ctx, name, parent)`. Non-empty names are assigned
+    /// through the function's `ValueSymbolTable::rename_value`, so the returned
+    /// block already carries its final function-local unique name.
     pub fn append_basic_block<Name>(
         self,
         _module: &Module<'ctx, B, Unverified>,
@@ -737,17 +738,47 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         let label_ty = self.module.module().label_type().as_type().id();
         let bb_id = self.module.module().context().push_value(ValueData {
             ty: label_ty,
-            name: RefCell::new((!name.is_empty()).then(|| name.clone())),
+            name: RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::BasicBlock(BasicBlockData::new(Some(self.id))),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
-        // Register the block under its name in the per-function symbol table.
-        if !name.is_empty() {
-            self.data().symbol_table.insert(&name, bb_id);
-        }
         self.data().basic_blocks.borrow_mut().push(bb_id);
+        if !name.is_empty() {
+            self.set_local_value_name(bb_id, Some(&name));
+        }
         BasicBlock::from_parts(bb_id, self.module.module(), label_ty)
+    }
+
+    /// Move an already-attached basic block to the end of this function's
+    /// block list. Mirrors the `F.splice(F.end(), &F, BB->getIterator())`
+    /// step in LLVM's `LLParser::PerFunctionState::defineBB`.
+    pub fn move_basic_block_to_end<R2, S2>(
+        self,
+        module: &Module<'ctx, B, Unverified>,
+        block: BasicBlock<'ctx, R2, S2>,
+    ) -> IrResult<()>
+    where
+        R2: ReturnMarker,
+        S2: BlockSealState,
+    {
+        if module.id() != self.module.module().id() || block.as_value().module().id() != module.id()
+        {
+            return Err(IrError::ForeignValue);
+        }
+        let ValueKindData::BasicBlock(data) = &block.as_value().data().kind else {
+            return Err(IrError::ForeignValue);
+        };
+        if *data.parent.borrow() != Some(self.id) {
+            return Err(IrError::ForeignValue);
+        }
+        let mut blocks = self.data().basic_blocks.borrow_mut();
+        let Some(pos) = blocks.iter().position(|id| *id == block.as_value().id) else {
+            return Err(IrError::ForeignValue);
+        };
+        let id = blocks.remove(pos);
+        blocks.push(id);
+        Ok(())
     }
 
     /// Iterate the basic blocks in insertion order.
@@ -779,12 +810,26 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             module.label_type().as_type().id(),
         ))
     }
+    pub(crate) fn set_local_value_name(
+        self,
+        id: ValueId,
+        requested: Option<&str>,
+    ) -> Option<String> {
+        let value = self.module.module().context().value_data(id);
+        let current = value.name.borrow().clone();
+        let final_name =
+            self.data()
+                .symbol_table
+                .rename_value(current.as_deref(), requested, id, false);
+        *value.name.borrow_mut() = final_name.clone();
+        final_name
+    }
 
-    /// Bind a name to a value id in the symbol table. Mirrors the
-    /// behavior of `ValueSymbolTable::reinsertWithName` on
-    /// well-formed first inserts; conflicts return `false`.
-    pub(crate) fn register_value_name(self, name: &str, id: ValueId) -> bool {
-        self.data().symbol_table.insert(name, id)
+    pub(crate) fn remove_local_value_name(self, id: ValueId) {
+        let value = self.module.module().context().value_data(id);
+        if let Some(name) = value.name.borrow().as_deref() {
+            self.data().symbol_table.remove_value_name(name, id);
+        }
     }
 
     /// View this function as a `ptr`-typed [`Constant`] referencing it by
@@ -891,7 +936,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Typed<'ctx, B> for FunctionVa
 impl<'ctx, R: ReturnMarker, B: ModuleBrand> HasName<'ctx, B> for FunctionValue<'ctx, R, B> {
     #[inline]
     fn name(self) -> Option<String> {
-        Some(FunctionValue::name(self).to_owned())
+        self.as_value().name()
     }
     #[inline]
     fn set_name<Name>(self, _module_token: &Module<'ctx, B, Unverified>, _name: Name)
@@ -1226,7 +1271,7 @@ impl<'ctx, R: ReturnMarker> FunctionBuilder<'ctx, R> {
         // Apply parameter names.
         for (slot, name) in self.param_names {
             let arg = f.param(slot)?;
-            arg.as_value().set_name_internal(Some(name));
+            f.set_local_value_name(arg.as_value().id, Some(&name));
         }
         Ok(f)
     }

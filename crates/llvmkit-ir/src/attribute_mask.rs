@@ -47,6 +47,9 @@ impl AttributeMask {
                 Attribute::Enum(k) | Attribute::Int(k, _) | Attribute::Type(k, _) => {
                     self.enum_kinds.insert(*k);
                 }
+                Attribute::Range { .. } => {
+                    self.enum_kinds.insert(AttrKind::Range);
+                }
                 Attribute::String { key, .. } => {
                     self.target_dep_attrs.insert(key.clone());
                 }
@@ -71,6 +74,7 @@ impl AttributeMask {
             Attribute::Enum(k) | Attribute::Int(k, _) | Attribute::Type(k, _) => {
                 self.contains_kind(*k)
             }
+            Attribute::Range { .. } => self.contains_kind(AttrKind::Range),
             Attribute::String { key, .. } => self.contains_string(key),
         }
     }

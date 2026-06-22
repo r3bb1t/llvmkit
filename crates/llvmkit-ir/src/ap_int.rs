@@ -247,6 +247,122 @@ impl ApInt {
         Self::bits_set(bit_width, 0, count.min(bit_width))
     }
 
+    pub fn set_sign_bit(&mut self) {
+        if self.bit_width == 0 {
+            return;
+        }
+        self.set_bit(self.bit_width - 1);
+    }
+
+    pub fn clear_sign_bit(&mut self) {
+        if self.bit_width == 0 {
+            return;
+        }
+        self.clear_bit(self.bit_width - 1);
+    }
+
+    pub fn set_low_bits(&mut self, count: u32) {
+        let mask = Self::low_bits_set(self.bit_width, count);
+        let updated = ApInt::bitor(self, &mask);
+        self.words = updated.words;
+    }
+
+    pub fn set_high_bits(&mut self, count: u32) {
+        let mask = Self::high_bits_set(self.bit_width, count);
+        let updated = ApInt::bitor(self, &mask);
+        self.words = updated.words;
+    }
+
+    pub fn set_bits_from(&mut self, lo: u32) {
+        let mask = Self::bits_set_from(self.bit_width, lo);
+        let updated = ApInt::bitor(self, &mask);
+        self.words = updated.words;
+    }
+
+    pub fn insert_bits(&mut self, src: &ApInt, bit_position: u32) {
+        let mut bit = 0;
+        while bit < src.bit_width {
+            let Some(dst) = bit_position.checked_add(bit) else {
+                break;
+            };
+            if dst >= self.bit_width {
+                break;
+            }
+            self.clear_bit(dst);
+            if src.bit(bit) {
+                self.set_bit(dst);
+            }
+            bit += 1;
+        }
+    }
+
+    pub fn extract_bits(&self, num_bits: u32, bit_position: u32) -> ApInt {
+        let mut out = Self::zero(num_bits);
+        let mut bit = 0;
+        while bit < num_bits {
+            let Some(src_bit) = bit_position.checked_add(bit) else {
+                break;
+            };
+            if self.bit(src_bit) {
+                out.set_bit(bit);
+            }
+            bit += 1;
+        }
+        out
+    }
+
+    pub fn concat(&self, lo: &ApInt) -> ApInt {
+        let width = self.bit_width.saturating_add(lo.bit_width);
+        let mut out = Self::zero(width);
+        out.insert_bits(lo, 0);
+        out.insert_bits(self, lo.bit_width);
+        out
+    }
+
+    pub fn byte_swap(&self) -> ApInt {
+        let num_bytes = self.bit_width.saturating_add(7) / 8;
+        let mut out = Self::zero(self.bit_width);
+        let mut byte = 0;
+        while byte < num_bytes {
+            let src_bit = byte.saturating_mul(8);
+            let dst_byte = num_bytes - 1 - byte;
+            let dst_bit = dst_byte.saturating_mul(8);
+            out.insert_bits(&self.extract_bits(8, src_bit), dst_bit);
+            byte += 1;
+        }
+        out
+    }
+
+    pub fn reverse_bits(&self) -> ApInt {
+        let mut out = Self::zero(self.bit_width);
+        let mut bit = 0;
+        while bit < self.bit_width {
+            if self.bit(bit) {
+                out.set_bit(self.bit_width - 1 - bit);
+            }
+            bit += 1;
+        }
+        out
+    }
+
+    pub fn shl(&self, amount: u32) -> ApInt {
+        if amount >= self.bit_width {
+            Self::zero(self.bit_width)
+        } else {
+            self.shl_truncating(amount)
+        }
+    }
+
+    pub fn lshr(&self, amount: u32) -> ApInt {
+        self.checked_lshr(amount)
+            .unwrap_or_else(|| Self::zero(self.bit_width))
+    }
+
+    pub fn ashr(&self, amount: u32) -> ApInt {
+        self.checked_ashr(amount)
+            .unwrap_or_else(|| Self::zero(self.bit_width))
+    }
+
     pub fn splat(new_len: u32, value: &ApInt) -> Self {
         if value.bit_width == 0 || new_len == 0 {
             return Self::zero(new_len);
@@ -856,16 +972,11 @@ impl ApInt {
         if width < self.bit_width {
             return None;
         }
-        if !self.is_negative() {
-            return Some(Self::from_words(width, &self.words));
+        let mut out = Self::from_words(width, &self.words);
+        if self.is_negative() {
+            out.set_bits_from(self.bit_width);
         }
-        let mut words = vec![u64::MAX; words_for_bits_usize(width)];
-        for (idx, word) in self.words.iter().enumerate() {
-            if let Some(dst) = words.get_mut(idx) {
-                *dst = *word;
-            }
-        }
-        Some(Self::from_words(width, &words))
+        Some(out)
     }
 
     pub fn zext_or_trunc(&self, width: u32) -> ApInt {
@@ -1071,8 +1182,10 @@ impl ApInt {
         if self.is_zero() {
             return String::from("0");
         }
-        let divisor = Self::from_words(self.bit_width, &[u64::from(radix)]);
-        let mut n = self.clone();
+        let radix_bits = 64u32.saturating_sub(u64::from(radix).leading_zeros());
+        let work_width = self.bit_width.max(radix_bits);
+        let divisor = Self::from_words(work_width, &[u64::from(radix)]);
+        let mut n = self.zext(work_width).unwrap_or_else(|| self.clone());
         let mut digits = Vec::new();
         while !n.is_zero() {
             let Some(qr) = n.udivrem(&divisor) else {
@@ -1094,7 +1207,7 @@ impl ApInt {
         (word_at(&self.words, idx, self.bit_width) & (1u64 << shift)) != 0
     }
 
-    fn set_bit(&mut self, bit: u32) {
+    pub fn set_bit(&mut self, bit: u32) {
         if bit >= self.bit_width {
             return;
         }
@@ -1112,7 +1225,7 @@ impl ApInt {
         self.words = words.into_boxed_slice();
     }
 
-    fn clear_bit(&mut self, bit: u32) {
+    pub fn clear_bit(&mut self, bit: u32) {
         if bit >= self.bit_width {
             return;
         }

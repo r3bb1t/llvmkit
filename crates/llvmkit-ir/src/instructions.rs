@@ -21,8 +21,8 @@ use crate::fmf::FastMathFlags;
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::instr_types::TailCallKind;
 use crate::instr_types::{
-    BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData, PhiData,
-    ReturnOpData,
+    BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
+    LandingPadClauseKind, PhiData, ReturnOpData,
 };
 use crate::instruction::{Instruction, InstructionKindData, state};
 use crate::marker::Dyn;
@@ -31,7 +31,9 @@ use crate::phi_state::{Closed, Open, PhiState};
 use crate::sync_scope::SyncScope;
 use crate::term_open_state::Closed as TermClosed;
 use crate::r#type::{Type, TypeId};
-use crate::value::{FloatValue, IntValue, IsValue, PointerValue, Value, ValueId, ValueKindData};
+use crate::value::{
+    FloatValue, IntValue, IsValue, PointerValue, Value, ValueId, ValueKindData, ValueUse,
+};
 
 macro_rules! decl_binop_handle {
     (
@@ -1017,7 +1019,7 @@ impl<'ctx, W: crate::int_width::IntWidth> PhiInst<'ctx, W, Open> {
                 .value_data(value_id)
                 .use_list
                 .borrow_mut()
-                .push(self.id);
+                .push(ValueUse::Instruction(self.id));
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
@@ -1177,7 +1179,7 @@ impl<'ctx, K: crate::float_kind::FloatKind> FpPhiInst<'ctx, K, Open> {
                 .value_data(value_id)
                 .use_list
                 .borrow_mut()
-                .push(self.id);
+                .push(ValueUse::Instruction(self.id));
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
@@ -1310,13 +1312,13 @@ impl<'ctx> PointerPhiInst<'ctx, Open> {
     {
         let module = self.module.module();
         let value = value.into_pointer_value(self.module)?;
-        if crate::value::IsValue::as_value(value).module().id() != module.id()
+        if value.as_value().module().id() != module.id()
             || block.as_value().module().id() != module.id()
         {
             return Err(crate::IrError::ForeignValue);
         }
-        if crate::value::IsValue::as_value(value).ty == self.ty {
-            let value_id = crate::value::IsValue::as_value(value).id;
+        if value.as_value().ty == self.ty {
+            let value_id = value.as_value().id;
             let block_id = block.as_value().id;
             self.payload()
                 .incoming
@@ -1327,7 +1329,7 @@ impl<'ctx> PointerPhiInst<'ctx, Open> {
                 .value_data(value_id)
                 .use_list
                 .borrow_mut()
-                .push(self.id);
+                .push(ValueUse::Instruction(self.id));
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
@@ -1828,7 +1830,10 @@ impl<'ctx> AtomicRMWInst<'ctx> {
         }
         {
             let mut old_uses = module.context().value_data(old_id).use_list.borrow_mut();
-            if let Some(pos) = old_uses.iter().position(|id| *id == self.id) {
+            if let Some(pos) = old_uses
+                .iter()
+                .position(|edge| *edge == ValueUse::Instruction(self.id))
+            {
                 old_uses.remove(pos);
             }
         }
@@ -1837,7 +1842,7 @@ impl<'ctx> AtomicRMWInst<'ctx> {
             .value_data(value.id)
             .use_list
             .borrow_mut()
-            .push(self.id);
+            .push(ValueUse::Instruction(self.id));
         Ok(())
     }
     pub fn align(self) -> Option<Align> {
@@ -1989,7 +1994,7 @@ impl<'ctx> SwitchInst<'ctx, crate::term_open_state::Open> {
             .value_data(v_id)
             .use_list
             .borrow_mut()
-            .push(self.id);
+            .push(ValueUse::Instruction(self.id));
         Ok(self)
     }
     /// Consume the open switch and return its [`Closed`] view. Mirrors
@@ -2430,16 +2435,16 @@ impl<'ctx> LandingPadInst<'ctx, crate::term_open_state::Open> {
         if v.module().id() != module.id() {
             return Err(crate::IrError::ForeignValue);
         }
-        self.payload().clauses.borrow_mut().push((
-            crate::instr_types::LandingPadClauseKind::Catch,
-            core::cell::Cell::new(v.id),
-        ));
+        self.payload()
+            .clauses
+            .borrow_mut()
+            .push((LandingPadClauseKind::Catch, core::cell::Cell::new(v.id)));
         module
             .context()
             .value_data(v.id)
             .use_list
             .borrow_mut()
-            .push(self.id);
+            .push(ValueUse::Instruction(self.id));
         Ok(self)
     }
     /// Append a `filter <ty> <val>` clause.
@@ -2449,16 +2454,16 @@ impl<'ctx> LandingPadInst<'ctx, crate::term_open_state::Open> {
         if v.module().id() != module.id() {
             return Err(crate::IrError::ForeignValue);
         }
-        self.payload().clauses.borrow_mut().push((
-            crate::instr_types::LandingPadClauseKind::Filter,
-            core::cell::Cell::new(v.id),
-        ));
+        self.payload()
+            .clauses
+            .borrow_mut()
+            .push((LandingPadClauseKind::Filter, core::cell::Cell::new(v.id)));
         module
             .context()
             .value_data(v.id)
             .use_list
             .borrow_mut()
-            .push(self.id);
+            .push(ValueUse::Instruction(self.id));
         Ok(self)
     }
     /// Consume the open landingpad and return its [`Closed`] view.

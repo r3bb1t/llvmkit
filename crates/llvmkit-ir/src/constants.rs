@@ -40,10 +40,13 @@ use crate::derived_types::{
 use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::function::FunctionValue;
 use crate::instr_types::{BinaryOpcode, CastOpcode};
+use crate::instruction::{rewrite_debug_record_value, rewrite_operand_cells};
 use crate::marker::{Dyn, ReturnMarker};
 use crate::module::{Module, ModuleBrand, ModuleCore, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeData, TypeId};
-use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
+use crate::value::{
+    HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, ValueUse, sealed,
+};
 use core::convert::Infallible;
 use core::fmt;
 use core::hash::{Hash, Hasher};
@@ -1599,20 +1602,23 @@ fn replace_value_uses_with_constant(
     from_id: ValueId,
     replacement_id: ValueId,
 ) -> IrResult<()> {
-    let user_ids = module
+    let user_edges = module
         .context()
         .value_data(from_id)
         .use_list
         .borrow()
         .clone();
     let mut direct_users = Vec::new();
-    for user_id in user_ids.iter().copied() {
-        match &module.context().value_data(user_id).kind {
-            ValueKindData::Instruction(inst) => {
-                crate::instruction::rewrite_operand_cells(&inst.kind, from_id, replacement_id);
-                direct_users.push(user_id);
+    for edge in user_edges.iter().copied() {
+        match edge {
+            ValueUse::Instruction(user_id) => {
+                if let ValueKindData::Instruction(inst) = &module.context().value_data(user_id).kind
+                {
+                    rewrite_operand_cells(&inst.kind, from_id, replacement_id);
+                    direct_users.push(edge);
+                }
             }
-            ValueKindData::Constant(_) => {
+            ValueUse::Constant(user_id) => {
                 if let Some(rewritten_id) =
                     constant_with_replaced_operand(module, user_id, from_id, replacement_id)?
                     && rewritten_id != user_id
@@ -1620,14 +1626,14 @@ fn replace_value_uses_with_constant(
                     replace_value_uses_with_constant(module, user_id, rewritten_id)?;
                 }
             }
-            ValueKindData::Argument { .. }
-            | ValueKindData::BasicBlock(_)
-            | ValueKindData::Function(_)
-            | ValueKindData::GlobalVariable(_)
-            | ValueKindData::GlobalAlias(_)
-            | ValueKindData::GlobalIFunc(_)
-            | ValueKindData::InlineAsm(_)
-            | ValueKindData::MetadataAsValue { .. } => {}
+            ValueUse::Metadata(id) => {
+                module.rewrite_metadata_value(id, from_id, replacement_id);
+                direct_users.push(edge);
+            }
+            ValueUse::DebugRecord { inst, record } => {
+                rewrite_debug_record_value(module, inst, record, from_id, replacement_id);
+                direct_users.push(edge);
+            }
         }
     }
     module
@@ -2419,6 +2425,9 @@ where
 mod tests {
     use super::*;
 
+    /// Port of `llvm/lib/IR/Constants.cpp::ConstantExpr::getWithOperands`:
+    /// rewritten binary operands re-enter the canonical `ConstantExpr::get`
+    /// path, so foldable expressions reduce before interning.
     #[test]
     fn rewritten_constant_expr_folds_before_reinterning() -> IrResult<()> {
         Module::with_new("constexpr-rewrite-fold", |m| {

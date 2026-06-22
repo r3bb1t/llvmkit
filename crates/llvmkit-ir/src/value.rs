@@ -94,17 +94,27 @@ pub(crate) struct ValueData {
     pub(crate) name: RefCell<Option<String>>,
     pub(crate) debug_loc: Option<DebugLoc>,
     pub(crate) kind: ValueKindData,
-    /// Reverse-direction use-list: every user (instruction id) that
-    /// references this value as one of its SSA operands. Mirrors
-    /// LLVM's `Value::use_list_` (`Value.h`). Maintained eagerly:
-    /// instruction creation registers entries here for each operand,
-    /// `replace_all_uses_with` walks and rewrites them, and
-    /// `erase_from_parent` deregisters them.
+    /// Reverse-direction use-list: every structural user that references this
+    /// value. Mirrors LLVM's `Value::use_list_` (`Value.h`) while keeping
+    /// non-`User` edges explicit: metadata and debug records are not ordinary
+    /// instructions, but they still keep values alive and must be updated by
+    /// RAUW / erase.
     ///
-    /// User ids may appear more than once if the same instruction
-    /// references this value in multiple slots (e.g. `add %x, %x`).
-    /// Order is registration-order for determinism.
-    pub(crate) use_list: RefCell<Vec<ValueId>>,
+    /// Entries may appear more than once if the same user references this value
+    /// in multiple slots (e.g. `add %x, %x`). Order is registration-order for
+    /// determinism.
+    pub(crate) use_list: RefCell<Vec<ValueUse>>,
+}
+
+/// One reverse use-list edge for a value. Instruction operands, constants,
+/// metadata nodes, and debug records have different mutation paths, so the
+/// edge kind is part of the stored fact rather than inferred from a `ValueId`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ValueUse {
+    Instruction(ValueId),
+    Constant(ValueId),
+    Metadata(crate::metadata::MetadataId),
+    DebugRecord { inst: ValueId, record: usize },
 }
 
 /// Discriminator over the closed value-category set.
@@ -250,20 +260,91 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     where
         Name: Into<String>,
     {
-        if module_token.id() == self.module.id() {
-            self.set_name_internal(Some(name.into()));
+        if module_token.id() != self.module.id() {
+            return;
+        }
+        let requested = name.into();
+        if self.ty().is_void() {
+            self.set_name_internal(None);
+            return;
+        }
+        if let Some(parent_fn_id) = self.local_parent_function_id() {
+            let parent_fn =
+                crate::function::FunctionValue::<crate::marker::Dyn, B>::from_parts_unchecked(
+                    parent_fn_id,
+                    self.module,
+                );
+            parent_fn.set_local_value_name(self.id, Some(requested.as_str()));
+            return;
+        }
+        if self.is_parentless_local_nameable() {
+            self.set_name_internal((!requested.is_empty()).then_some(requested));
         }
     }
 
     /// Clear the textual name.
     pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-        if module_token.id() == self.module.id() {
+        if module_token.id() != self.module.id() {
+            return;
+        }
+        if self.ty().is_void() {
+            self.set_name_internal(None);
+            return;
+        }
+        if let Some(parent_fn_id) = self.local_parent_function_id() {
+            let parent_fn =
+                crate::function::FunctionValue::<crate::marker::Dyn, B>::from_parts_unchecked(
+                    parent_fn_id,
+                    self.module,
+                );
+            parent_fn.set_local_value_name(self.id, None);
+            return;
+        }
+        if self.is_parentless_local_nameable() {
             self.set_name_internal(None);
         }
     }
 
+    /// Raw assignment for already-uniqued names and parentless fabrication.
+    /// Do not use this for attached local values until their owning
+    /// `ValueSymbolTable` has returned the final unique name.
     pub(crate) fn set_name_internal(self, name: Option<String>) {
         *self.data().name.borrow_mut() = name;
+    }
+
+    pub(crate) fn local_parent_function_id(self) -> Option<ValueId> {
+        match &self.data().kind {
+            ValueKindData::Argument { parent_fn, .. } => Some(*parent_fn),
+            ValueKindData::BasicBlock(data) => *data.parent.borrow(),
+            ValueKindData::Instruction(data) => {
+                let parent_block_id = data.parent.get();
+                let parent_block = self.module.value_data(parent_block_id);
+                match &parent_block.kind {
+                    ValueKindData::BasicBlock(block) => {
+                        if block.instructions.borrow().contains(&self.id) {
+                            *block.parent.borrow()
+                        } else {
+                            None
+                        }
+                    }
+                    _ => unreachable!("Instruction parent invariant: parent id is a basic block"),
+                }
+            }
+            ValueKindData::Constant(_)
+            | ValueKindData::Function(_)
+            | ValueKindData::GlobalAlias(_)
+            | ValueKindData::GlobalIFunc(_)
+            | ValueKindData::GlobalVariable(_)
+            | ValueKindData::MetadataAsValue(_)
+            | ValueKindData::InlineAsm(_) => None,
+        }
+    }
+
+    fn is_parentless_local_nameable(self) -> bool {
+        matches!(
+            &self.data().kind,
+            ValueKindData::BasicBlock(_) | ValueKindData::Instruction(_)
+        )
     }
 
     /// Read the optional debug-location attached to this value.
@@ -290,27 +371,39 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
         }
     }
 
-    /// Snapshot the reverse use-list for this value. Each returned
-    /// id is an instruction that references this value as an SSA
-    /// operand. Mirrors `Value::users` in `llvm/include/llvm/IR/Value.h`.
+    /// Snapshot the instruction users for this value. Metadata and debug-record
+    /// uses are tracked structurally and counted by [`Self::num_uses`], but are
+    /// intentionally omitted here because callers of `users()` expect concrete
+    /// instruction handles.
     ///
-    /// The list is a snapshot, not a live view: callers may mutate
-    /// the IR (erase, RAUW) without invalidating the iterator. Order
-    /// is registration-order; user ids may appear more than once if
-    /// the same instruction references this value in multiple slots.
+    /// The list is a snapshot, not a live view: callers may mutate the IR
+    /// (erase, RAUW) without invalidating the iterator. Order is
+    /// registration-order; user ids may appear more than once if the same
+    /// instruction references this value in multiple slots.
     pub fn users(
         self,
     ) -> impl ExactSizeIterator<
         Item = crate::instruction::Instruction<'ctx, crate::instruction::state::Attached, B>,
     > + 'ctx {
         let module = self.module;
-        let snapshot: Vec<ValueId> = self.data().use_list.borrow().clone();
+        let snapshot: Vec<ValueId> = self
+            .data()
+            .use_list
+            .borrow()
+            .iter()
+            .filter_map(|edge| match edge {
+                ValueUse::Instruction(id) => Some(*id),
+                ValueUse::Constant(_) | ValueUse::Metadata(_) | ValueUse::DebugRecord { .. } => {
+                    None
+                }
+            })
+            .collect();
         snapshot
             .into_iter()
             .map(move |id| crate::instruction::Instruction::from_parts(id, module))
     }
 
-    /// `true` when at least one instruction references this value.
+    /// `true` when at least one structural user references this value.
     /// Mirrors `Value::hasUses`. Cheaper than [`Self::users`] for the
     /// common "is this dead?" check.
     #[inline]
@@ -318,7 +411,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
         !self.data().use_list.borrow().is_empty()
     }
 
-    /// Number of currently-registered uses. Mirrors `Value::getNumUses`.
+    /// Number of currently-registered structural uses. Mirrors `Value::getNumUses`.
     #[inline]
     pub fn num_uses(self) -> usize {
         self.data().use_list.borrow().len()

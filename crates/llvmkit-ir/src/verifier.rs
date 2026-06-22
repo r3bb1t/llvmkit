@@ -29,6 +29,7 @@
 use std::collections::HashMap;
 
 use crate::basic_block::BasicBlock;
+use crate::constant_range::{ConstantRange, metadata_constant_int};
 use crate::derived_types::SizedType;
 use crate::dominator_tree::DominatorTree;
 use crate::error::{IrError, IrResult, VerifierRule};
@@ -39,6 +40,7 @@ use crate::instr_types::{
 };
 use crate::instruction::{Instruction, InstructionKindData};
 use crate::marker::Dyn;
+use crate::metadata::{MetadataAttachmentKind, MetadataId, MetadataKind};
 use crate::module::{ModuleCore, ModuleView};
 use crate::r#type::{Type, TypeData, TypeId};
 use crate::value::{ValueId, ValueKindData};
@@ -57,6 +59,12 @@ struct FunctionContext<'a> {
     block_index: &'a HashMap<ValueId, usize>,
     /// Recomputed dominator tree for cross-block SSA dominance checks.
     dom_tree: &'a DominatorTree,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RangeLikeMetadataKind {
+    Range,
+    AbsoluteSymbol,
 }
 
 /// Module verifier. Stateless apart from the per-function CFG cache
@@ -151,6 +159,20 @@ impl<'ctx> Verifier<'ctx> {
             }
             self.verify_constant_tree(init)?;
         }
+        if let Some(range_id) = g.metadata().get(&MetadataAttachmentKind::AbsoluteSymbol) {
+            let pointer_width = self
+                .module
+                .data_layout()
+                .pointer_size_in_bits(g.address_space());
+            let pointer_int_ty = self.module.context().int_type(pointer_width);
+            self.verify_range_like_metadata_global(
+                g,
+                range_id,
+                pointer_int_ty,
+                RangeLikeMetadataKind::AbsoluteSymbol,
+            )?;
+        }
+
         Ok(())
     }
 
@@ -515,7 +537,7 @@ impl<'ctx> Verifier<'ctx> {
             // is that the value-kind is Instruction.
             _ => unreachable!("instruction handle invariant: value kind is Instruction"),
         };
-        match kind {
+        let opcode_result = match kind {
             InstructionKindData::Add(b)
             | InstructionKindData::Sub(b)
             | InstructionKindData::Mul(b)
@@ -571,7 +593,186 @@ impl<'ctx> Verifier<'ctx> {
             | InstructionKindData::CleanupReturn(_)
             | InstructionKindData::CatchSwitch(_) => Ok(()),
             InstructionKindData::Unreachable(_) => Ok(()),
+        };
+        opcode_result?;
+        self.check_instruction_metadata(f, bb, inst, kind)
+    }
+
+    fn check_instruction_metadata(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        inst: &Instruction<'ctx>,
+        kind: &InstructionKindData,
+    ) -> IrResult<()> {
+        let Some(range_id) = inst.metadata().get(&MetadataAttachmentKind::Range) else {
+            return Ok(());
+        };
+        if !matches!(
+            kind,
+            InstructionKindData::Load(_)
+                | InstructionKindData::Call(_)
+                | InstructionKindData::Invoke(_)
+        ) {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::RangeMetadataInvalidAttachment,
+                "Ranges are only for loads, calls and invokes!".to_string(),
+            ));
         }
+        self.verify_range_like_metadata_inst(
+            f,
+            bb,
+            inst,
+            range_id,
+            scalar_type_id(self.module, inst.ty().id),
+            RangeLikeMetadataKind::Range,
+        )
+    }
+
+    fn verify_range_like_metadata_inst(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: BasicBlock<'ctx, Dyn>,
+        _inst: &Instruction<'ctx>,
+        id: MetadataId,
+        expected_scalar_ty: TypeId,
+        kind: RangeLikeMetadataKind,
+    ) -> IrResult<()> {
+        self.verify_range_like_metadata(id, expected_scalar_ty, kind, |rule, message| {
+            self.fail(f, bb, rule, message)
+        })
+    }
+
+    fn verify_range_like_metadata_global(
+        &self,
+        g: crate::global_variable::GlobalVariable<'ctx>,
+        id: MetadataId,
+        expected_scalar_ty: TypeId,
+        kind: RangeLikeMetadataKind,
+    ) -> IrResult<()> {
+        self.verify_range_like_metadata(id, expected_scalar_ty, kind, |rule, message| {
+            self.fail_global(g, rule, message)
+        })
+    }
+
+    fn verify_range_like_metadata<F>(
+        &self,
+        id: MetadataId,
+        expected_scalar_ty: TypeId,
+        kind: RangeLikeMetadataKind,
+        mut fail: F,
+    ) -> IrResult<()>
+    where
+        F: FnMut(VerifierRule, String) -> IrError,
+    {
+        let store = self.module.metadata_store();
+        let Some(MetadataKind::Tuple { operands, .. }) = store.get(id) else {
+            return Err(fail(
+                VerifierRule::RangeMetadataMalformed,
+                "range metadata must be a tuple".to_string(),
+            ));
+        };
+        if operands.len() % 2 != 0 {
+            return Err(fail(
+                VerifierRule::RangeMetadataMalformed,
+                "Unfinished range!".to_string(),
+            ));
+        }
+        let num_ranges = operands.len() / 2;
+        if num_ranges == 0 {
+            return Err(fail(
+                VerifierRule::RangeMetadataMalformed,
+                "It should have at least one range!".to_string(),
+            ));
+        }
+
+        let mut first_range = None;
+        let mut last_range = None;
+        for (idx, pair) in operands.chunks_exact(2).enumerate() {
+            let Some((low_ty, low)) = metadata_constant_int(self.module, &store, pair[0].0) else {
+                return Err(fail(
+                    VerifierRule::RangeMetadataMalformed,
+                    "The lower limit must be an integer!".to_string(),
+                ));
+            };
+            let Some((high_ty, high)) = metadata_constant_int(self.module, &store, pair[1].0)
+            else {
+                return Err(fail(
+                    VerifierRule::RangeMetadataMalformed,
+                    "The upper limit must be an integer!".to_string(),
+                ));
+            };
+            if high_ty != low_ty {
+                return Err(fail(
+                    VerifierRule::RangeMetadataTypeMismatch,
+                    "Range pair types must match!".to_string(),
+                ));
+            }
+            if high_ty != expected_scalar_ty {
+                return Err(fail(
+                    VerifierRule::RangeMetadataTypeMismatch,
+                    "Range types must match instruction type!".to_string(),
+                ));
+            }
+            if low.eq_ap_int(&high) && !low.is_max_value() && !low.is_min_value() {
+                return Err(fail(
+                    VerifierRule::RangeMetadataMalformed,
+                    "The upper and lower limits cannot be the same value".to_string(),
+                ));
+            }
+            let range = ConstantRange::new(low.clone(), high.clone())
+                .map_err(|err| fail(VerifierRule::RangeMetadataTypeMismatch, err.to_string()))?;
+            if range.is_empty_set() || (kind == RangeLikeMetadataKind::Range && range.is_full_set())
+            {
+                return Err(fail(
+                    VerifierRule::RangeMetadataMalformed,
+                    "Range must not be empty!".to_string(),
+                ));
+            }
+            if let Some(prev) = &last_range {
+                if range.intersects_with(prev) {
+                    return Err(fail(
+                        VerifierRule::RangeMetadataOverlapping,
+                        "Intervals are overlapping".to_string(),
+                    ));
+                }
+                if !low.sgt(prev.lower()) {
+                    return Err(fail(
+                        VerifierRule::RangeMetadataOutOfOrder,
+                        "Intervals are not in order".to_string(),
+                    ));
+                }
+                if range.is_contiguous_with(prev) {
+                    return Err(fail(
+                        VerifierRule::RangeMetadataContiguous,
+                        "Intervals are contiguous".to_string(),
+                    ));
+                }
+            }
+            if idx == 0 {
+                first_range = Some(range.clone());
+            }
+            last_range = Some(range);
+        }
+        if num_ranges > 2
+            && let (Some(first), Some(last)) = (&first_range, &last_range)
+        {
+            if first.intersects_with(last) {
+                return Err(fail(
+                    VerifierRule::RangeMetadataOverlapping,
+                    "Intervals are overlapping".to_string(),
+                ));
+            }
+            if first.is_contiguous_with(last) {
+                return Err(fail(
+                    VerifierRule::RangeMetadataContiguous,
+                    "Intervals are contiguous".to_string(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -2530,6 +2731,13 @@ fn type_contains_scalable(m: &ModuleCore, ty: TypeId) -> bool {
             Some(body) => body.elements.iter().any(|e| type_contains_scalable(m, *e)),
         },
         _ => false,
+    }
+}
+
+fn scalar_type_id(m: &ModuleCore, ty: TypeId) -> TypeId {
+    match m.context().type_data(ty) {
+        TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => *elem,
+        _ => ty,
     }
 }
 

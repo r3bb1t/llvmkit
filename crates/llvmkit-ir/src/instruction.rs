@@ -26,13 +26,14 @@ use crate::instr_types::{
     ReturnOpData, UnreachableInstData,
 };
 use crate::marker::{Dyn, ReturnMarker};
-use crate::metadata::{DebugRecord, MetadataAttachmentSet};
+use crate::metadata::{DebugRecord, MetadataAttachmentKind, MetadataAttachmentSet, MetadataId};
 use crate::module::{Brand, Module, ModuleCore, ModuleRef, ModuleView, Unverified};
 use crate::r#type::TypeId;
 use crate::r#use::Use;
 use crate::user::User;
 use crate::value::{
-    HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueId, ValueKindData, sealed,
+    HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueId, ValueKindData, ValueUse,
+    sealed,
 };
 use crate::{DebugLoc, IrError, IrResult, Type};
 
@@ -46,8 +47,8 @@ use crate::{DebugLoc, IrError, IrResult, Type};
 pub(crate) struct InstructionData {
     pub(crate) parent: core::cell::Cell<ValueId>,
     pub(crate) kind: InstructionKindData,
-    pub(crate) metadata: core::cell::RefCell<crate::metadata::MetadataAttachmentSet>,
-    pub(crate) debug_records: core::cell::RefCell<Vec<crate::metadata::DebugRecord>>,
+    pub(crate) metadata: core::cell::RefCell<MetadataAttachmentSet>,
+    pub(crate) debug_records: core::cell::RefCell<Vec<DebugRecord>>,
 }
 
 impl InstructionData {
@@ -394,11 +395,7 @@ impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand + 'ctx>
     }
 
     /// Set or replace one metadata attachment.
-    pub fn set_metadata(
-        &self,
-        kind: crate::metadata::MetadataAttachmentKind,
-        id: crate::metadata::MetadataId,
-    ) {
+    pub fn set_metadata(&self, kind: MetadataAttachmentKind, id: MetadataId) {
         self.data().metadata.borrow_mut().insert(kind, id);
     }
 
@@ -407,7 +404,10 @@ impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand + 'ctx>
     }
 
     pub fn push_debug_record(&self, record: DebugRecord) {
-        self.data().debug_records.borrow_mut().push(record);
+        let mut records = self.data().debug_records.borrow_mut();
+        let record_index = records.len();
+        register_debug_record_uses(self.id, record_index, &record, self.module.module());
+        records.push(record);
     }
     /// Set the textual name.
     #[inline]
@@ -695,20 +695,31 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attach
         let new_id = new_value.id;
         // Snapshot the user list under a borrow so we can release it
         // before mutating each user's operand slots.
-        let user_ids: Vec<ValueId> = module
+        let user_edges: Vec<ValueUse> = module
             .context()
             .value_data(self_id)
             .use_list
             .borrow()
             .clone();
-        // For each user, rewrite every operand slot whose Cell currently
-        // points at `self_id` so it points at `new_id`. We touch the cells
-        // through `rewrite_operand_cells` to keep the operand-walker
-        // exhaustive.
-        for user_id in &user_ids {
-            let user_data = module.context().value_data(*user_id);
-            if let ValueKindData::Instruction(idata) = &user_data.kind {
-                rewrite_operand_cells(&idata.kind, self_id, new_id);
+        // For each user, rewrite the storage slot whose edge points at `self_id`
+        // so it points at `new_id`. Instruction operands use the exhaustive
+        // operand-walker; debug records are outside the operand hierarchy and
+        // update their own value slots.
+        for edge in &user_edges {
+            match *edge {
+                ValueUse::Instruction(user_id) => {
+                    let user_data = module.context().value_data(user_id);
+                    if let ValueKindData::Instruction(idata) = &user_data.kind {
+                        rewrite_operand_cells(&idata.kind, self_id, new_id);
+                    }
+                }
+                ValueUse::DebugRecord { inst, record } => {
+                    rewrite_debug_record_value(module, inst, record, self_id, new_id);
+                }
+                ValueUse::Metadata(id) => {
+                    module.rewrite_metadata_value(id, self_id, new_id);
+                }
+                ValueUse::Constant(_) => {}
             }
         }
         // Migrate use-list entries: drain ours, push onto replacement.
@@ -718,7 +729,7 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attach
         }
         {
             let mut new_uses = module.context().value_data(new_id).use_list.borrow_mut();
-            new_uses.extend(user_ids);
+            new_uses.extend(user_edges);
         }
         Ok(())
     }
@@ -734,6 +745,7 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attach
         }
         let self_id = self.id;
         let module = module_token.core_ref();
+        remove_local_name_from_parent(self.as_value());
         deregister_operand_uses(self_id, &self.data().kind, module);
         let parent_block_id = self.data().parent.get();
         let bb = crate::basic_block::BasicBlock::<crate::marker::Dyn>::from_parts(
@@ -763,6 +775,7 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attach
         }
         let module = module_token.core_ref();
         let self_id = self.id;
+        remove_local_name_from_parent(self.as_value());
         let parent_block_id = self.data().parent.get();
         let bb = crate::basic_block::BasicBlock::<crate::marker::Dyn>::from_parts(
             parent_block_id,
@@ -794,6 +807,11 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attach
         let module = module_token.core_ref();
         let self_id = self.id;
         let other_id = other.id;
+        let old_parent_fn = self.as_value().local_parent_function_id();
+        let new_parent_fn = other.as_value().local_parent_function_id();
+        if old_parent_fn != new_parent_fn {
+            remove_local_name_from_parent(self.as_value());
+        }
         // Remove from current parent.
         let cur_parent = self.data().parent.get();
         let cur_bb = crate::basic_block::BasicBlock::<crate::marker::Dyn>::from_parts(
@@ -811,6 +829,11 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attach
         );
         new_bb.insert_instruction_before(self_id, other_id)?;
         update_instruction_parent(module, self_id, new_parent);
+        if old_parent_fn != new_parent_fn
+            && let Some(parent_fn_id) = new_parent_fn
+        {
+            reinsert_local_name(self.as_value(), parent_fn_id);
+        }
         Ok(())
     }
 
@@ -827,6 +850,11 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attach
         let module = module_token.core_ref();
         let self_id = self.id;
         let other_id = other.id;
+        let old_parent_fn = self.as_value().local_parent_function_id();
+        let new_parent_fn = other.as_value().local_parent_function_id();
+        if old_parent_fn != new_parent_fn {
+            remove_local_name_from_parent(self.as_value());
+        }
         let cur_parent = self.data().parent.get();
         let cur_bb = crate::basic_block::BasicBlock::<crate::marker::Dyn>::from_parts(
             cur_parent,
@@ -842,6 +870,11 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attach
         );
         new_bb.insert_instruction_after(self_id, other_id)?;
         update_instruction_parent(module, self_id, new_parent);
+        if old_parent_fn != new_parent_fn
+            && let Some(parent_fn_id) = new_parent_fn
+        {
+            reinsert_local_name(self.as_value(), parent_fn_id);
+        }
         Ok(())
     }
 }
@@ -860,6 +893,7 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Detach
         }
         let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
+        let parent_fn_id = other.as_value().local_parent_function_id();
         let bb = crate::basic_block::BasicBlock::<crate::marker::Dyn>::from_parts(
             parent_id,
             module,
@@ -867,6 +901,9 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Detach
         );
         bb.insert_instruction_before(self.id, other.id)?;
         update_instruction_parent(module, self.id, parent_id);
+        if let Some(parent_fn_id) = parent_fn_id {
+            reinsert_local_name(self.as_value(), parent_fn_id);
+        }
         Ok(Instruction::from_parts(self.id, self.module))
     }
 
@@ -882,6 +919,7 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Detach
         }
         let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
+        let parent_fn_id = other.as_value().local_parent_function_id();
         let bb = crate::basic_block::BasicBlock::<crate::marker::Dyn>::from_parts(
             parent_id,
             module,
@@ -889,6 +927,9 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Detach
         );
         bb.insert_instruction_after(self.id, other.id)?;
         update_instruction_parent(module, self.id, parent_id);
+        if let Some(parent_fn_id) = parent_fn_id {
+            reinsert_local_name(self.as_value(), parent_fn_id);
+        }
         Ok(Instruction::from_parts(self.id, self.module))
     }
 
@@ -906,8 +947,12 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Detach
         }
         let module = module_token.core_ref();
         let parent_id = block.as_value().id;
+        let parent_fn_id = block.as_value().local_parent_function_id();
         block.as_dyn().append_instruction(self.id);
         update_instruction_parent(module, self.id, parent_id);
+        if let Some(parent_fn_id) = parent_fn_id {
+            reinsert_local_name(self.as_value(), parent_fn_id);
+        }
         Ok(Instruction::from_parts(self.id, self.module))
     }
 
@@ -1107,10 +1152,95 @@ fn deregister_operand_uses(inst_id: ValueId, kind: &InstructionKindData, module:
     for (op_id, n) in occurrences {
         let mut ul = module.context().value_data(op_id).use_list.borrow_mut();
         for _ in 0..n {
-            if let Some(pos) = ul.iter().position(|id| *id == inst_id) {
+            if let Some(pos) = ul
+                .iter()
+                .position(|edge| *edge == ValueUse::Instruction(inst_id))
+            {
                 ul.remove(pos);
             }
         }
+    }
+    deregister_debug_record_uses(inst_id, module);
+}
+
+fn register_debug_record_uses(
+    inst_id: ValueId,
+    record_index: usize,
+    record: &DebugRecord,
+    module: &ModuleCore,
+) {
+    record.for_each_value(|value_id| {
+        module
+            .context()
+            .value_data(value_id)
+            .use_list
+            .borrow_mut()
+            .push(ValueUse::DebugRecord {
+                inst: inst_id,
+                record: record_index,
+            });
+    });
+}
+
+fn deregister_debug_record_uses(inst_id: ValueId, module: &ModuleCore) {
+    let data = module.context().value_data(inst_id);
+    let ValueKindData::Instruction(inst) = &data.kind else {
+        return;
+    };
+    for (record_index, record) in inst.debug_records.borrow().iter().enumerate() {
+        record.for_each_value(|value_id| {
+            let edge = ValueUse::DebugRecord {
+                inst: inst_id,
+                record: record_index,
+            };
+            let mut uses = module.context().value_data(value_id).use_list.borrow_mut();
+            if let Some(pos) = uses.iter().position(|candidate| *candidate == edge) {
+                uses.remove(pos);
+            }
+        });
+    }
+}
+
+pub(crate) fn rewrite_debug_record_value(
+    module: &ModuleCore,
+    inst_id: ValueId,
+    record_index: usize,
+    from: ValueId,
+    to: ValueId,
+) {
+    let data = module.context().value_data(inst_id);
+    let ValueKindData::Instruction(inst) = &data.kind else {
+        return;
+    };
+    if let Some(record) = inst.debug_records.borrow_mut().get_mut(record_index) {
+        record.replace_value_id(from, to);
+    }
+}
+
+fn remove_local_name_from_parent<'ctx, B: crate::module::ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) {
+    if let Some(parent_fn_id) = value.local_parent_function_id() {
+        let parent_fn = crate::function::FunctionValue::<Dyn, B>::from_parts_unchecked(
+            parent_fn_id,
+            value.module,
+        );
+        parent_fn.remove_local_value_name(value.id);
+    }
+}
+
+fn reinsert_local_name<'ctx, B: crate::module::ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    parent_fn_id: ValueId,
+) {
+    let current_name = value.name();
+    if let Some(name) = current_name.as_deref() {
+        value.set_name_internal(None);
+        let parent_fn = crate::function::FunctionValue::<Dyn, B>::from_parts_unchecked(
+            parent_fn_id,
+            value.module,
+        );
+        parent_fn.set_local_value_name(value.id, Some(name));
     }
 }
 

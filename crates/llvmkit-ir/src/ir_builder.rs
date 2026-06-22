@@ -61,7 +61,7 @@ use super::module::{Module, ModuleBrand, ModuleCore, ModuleRef, Unverified};
 use super::sync_scope::SyncScope;
 use super::term_open_state::Open;
 use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeId};
-use super::value::{IntValue, IsValue, PointerValue, Value};
+use super::value::{IntValue, IsValue, PointerValue, Value, ValueId, ValueKindData, ValueUse};
 
 /// Type-state marker: the builder has no insertion point. None of the
 /// `build_*` methods are reachable in this state.
@@ -88,7 +88,7 @@ mod state_sealed {
 #[derive(Debug, Clone, Copy)]
 pub struct InsertPoint<'ctx, R: ReturnMarker> {
     pub(crate) block: Option<BasicBlock<'ctx, R>>,
-    pub(crate) before: Option<super::value::ValueId>,
+    pub(crate) before: Option<ValueId>,
 }
 
 #[derive(Debug, Clone)]
@@ -158,7 +158,7 @@ where
     /// inserted *before* the instruction with this id (mirrors upstream
     /// `IRBuilder::SetInsertPoint(Instruction*)`). When `None`, new
     /// instructions append to the end of `insert_block`.
-    insert_before: Option<super::value::ValueId>,
+    insert_before: Option<ValueId>,
     folder: F,
     fmf: super::fmf::FastMathFlags,
     _state: PhantomData<S>,
@@ -301,7 +301,7 @@ where
         // Find the first non-alloca instruction id, mirroring
         // `BasicBlock::getFirstNonPHIOrDbgOrAlloca`. We don't ship phi/dbg
         // filters yet, so the practical filter here is alloca-only.
-        let mut anchor: Option<super::value::ValueId> = None;
+        let mut anchor: Option<ValueId> = None;
         for inst in entry.instructions() {
             match inst.kind() {
                 Some(super::instruction::InstructionKind::Alloca(_)) => continue,
@@ -383,7 +383,7 @@ where
         // Access the phi payload via the module's instruction data.
         let inst_data = self.module.context().value_data(phi_val.id);
         let inst_kind_data = match &inst_data.kind {
-            crate::value::ValueKindData::Instruction(i) => &i.kind,
+            ValueKindData::Instruction(i) => &i.kind,
             _ => {
                 return Err(IrError::InvalidOperation {
                     message: "phi_add_incoming_from_value: target is not an instruction",
@@ -408,7 +408,7 @@ where
             .value_data(val.id)
             .use_list
             .borrow_mut()
-            .push(phi_val.id);
+            .push(ValueUse::Instruction(phi_val.id));
         Ok(())
     }
 }
@@ -2579,10 +2579,9 @@ where
                 folded,
             ));
         }
-        let mut payload =
-            CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.as_value().id);
-        payload.nuw = flags.nuw;
-        payload.nsw = flags.nsw;
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.as_value().id);
+        payload.nuw.set(flags.nuw);
+        payload.nsw.set(flags.nsw);
         let inst = self.append_instruction(
             dst_ty.as_type().id(),
             InstructionKindData::Cast(payload),
@@ -2640,8 +2639,8 @@ where
                 folded,
             ));
         }
-        let mut payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, src.as_value().id);
-        payload.nneg = flags.nneg;
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, src.as_value().id);
+        payload.nneg.set(flags.nneg);
         let inst =
             self.append_instruction(dst.as_type().id(), InstructionKindData::Cast(payload), name);
         Ok(IntValue::<crate::int_width::IntDyn>::from_value_unchecked(
@@ -3861,9 +3860,8 @@ where
                 ),
             );
         }
-        let mut payload =
-            CastOpData::new(crate::instr_types::CastOpcode::UIToFp, src.as_value().id);
-        payload.nneg = flags.nneg;
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::UIToFp, src.as_value().id);
+        payload.nneg.set(flags.nneg);
         let inst =
             self.append_instruction(dst.as_type().id(), InstructionKindData::Cast(payload), name);
         Ok(
@@ -5703,15 +5701,14 @@ where
         let name = name.as_ref();
         let bb = self.insert_block();
         let bb_id = bb.as_value().id;
-        let stored_name = (!name.is_empty()).then(|| name.to_owned());
-        let value = build_instruction_value(ty, bb_id, kind, stored_name);
+        let value = build_instruction_value(ty, bb_id, kind, None);
         // Snapshot operand ids before the value is moved into the arena;
         // we need them to register the new instruction in each operand's
         // reverse use-list. Mirrors `User::setOperand` in
         // `llvm/lib/IR/User.cpp`, which threads each `Use` into its
         // operand's use-list at construction time.
         let operand_ids = match &value.kind {
-            crate::value::ValueKindData::Instruction(i) => i.kind.operand_ids(),
+            ValueKindData::Instruction(i) => i.kind.operand_ids(),
             // append_instruction always builds an Instruction-kind value.
             _ => unreachable!("append_instruction built non-instruction value"),
         };
@@ -5722,7 +5719,7 @@ where
                 .value_data(op)
                 .use_list
                 .borrow_mut()
-                .push(id);
+                .push(ValueUse::Instruction(id));
         }
         match self.insert_before {
             Some(anchor) => {
@@ -5738,10 +5735,11 @@ where
             None => bb.append_instruction(id),
         }
         if !name.is_empty()
+            && !Type::new(ty, self.module).is_void()
             && let Some(parent_fn_id) = bb.parent_id()
         {
             let parent_fn = FunctionValue::<Dyn>::from_parts_unchecked(parent_fn_id, self.module);
-            parent_fn.register_value_name(name, id);
+            parent_fn.set_local_value_name(id, Some(name));
         }
         Instruction::from_parts(id, self.module)
     }

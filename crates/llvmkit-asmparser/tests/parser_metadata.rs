@@ -4,7 +4,7 @@
 //! Citations live in `UPSTREAM.md`.
 
 use llvmkit_asmparser::ll_parser::Parser;
-use llvmkit_ir::Module;
+use llvmkit_ir::{IrError, Module};
 
 #[derive(Clone, Copy)]
 struct ModuleStats {
@@ -45,6 +45,44 @@ fn parse_fails(src: &str) -> String {
             .expect_err("parse should fail");
         err.to_string()
     })
+}
+
+fn parse_and_verify(src: &str) -> Result<(), IrError> {
+    Module::with_new("test", |module| {
+        let _ = Parser::new(src.as_bytes(), &module)
+            .expect("parse constructor")
+            .parse_module()
+            .expect("parse succeeded");
+        module.verify_borrowed()
+    })
+}
+
+fn parse_and_verify_failure_message(src: &str) -> String {
+    let err = parse_and_verify(src).expect_err("verify should fail");
+    match err {
+        IrError::VerifierFailure { message, .. } => message,
+        other => panic!("expected verifier failure, got {other:?}"),
+    }
+}
+
+fn fixture_function_with_metadata(
+    fixture: &str,
+    function_marker: &str,
+    metadata_marker: &str,
+) -> String {
+    let function_start = fixture
+        .find(function_marker)
+        .unwrap_or_else(|| panic!("missing function marker {function_marker}"));
+    let function_tail = &fixture[function_start..];
+    let function_end = function_tail
+        .find("\n}")
+        .map(|idx| function_start + idx + 3)
+        .unwrap_or_else(|| panic!("missing function end for {function_marker}"));
+    let metadata = fixture
+        .lines()
+        .find(|line| line.starts_with(metadata_marker))
+        .unwrap_or_else(|| panic!("missing metadata marker {metadata_marker}"));
+    format!("{}\n{}\n", &fixture[function_start..function_end], metadata)
 }
 
 // ── Standalone metadata: string operands ─────────────────────────────────
@@ -118,6 +156,124 @@ fn standalone_metadata_tuple_multi_operand() {
     let (m, text) = parse_snippet(src);
     assert_eq!(m.metadata_count(), 1);
     assert!(text.contains(r#"!0 = !{!"a", !"b"}"#), "output: {text}");
+}
+
+/// Mirrors `llvm/test/Analysis/ValueTracking/known-bits-from-range-md.ll`
+/// typed `!range` endpoint operands.
+#[test]
+fn typed_constant_metadata_tuple_round_trips() {
+    let (_stats, text) = parse_snippet("!0 = !{i64 1, i64 5}\n");
+    assert!(text.contains("!0 = !{i64 1, i64 5}"), "{text}");
+}
+
+/// Mirrors `llvm/test/Analysis/ValueTracking/known-bits-from-range-md.ll`
+/// load metadata attachments with typed integer endpoints.
+#[test]
+fn range_metadata_attachment_round_trips() {
+    let src = include_str!("fixtures/upstream/Analysis/ValueTracking/known-bits-from-range-md.ll");
+    let (_stats, text) = parse_snippet(src);
+    assert!(
+        text.contains("  %val = load i8, ptr %ptr, !range !0"),
+        "{text}"
+    );
+    assert!(
+        text.contains("  %val = load i8, ptr %ptr, !range !1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("  %val = load i8, ptr %ptr, !range !2"),
+        "{text}"
+    );
+    assert!(text.contains("!0 = !{i8 -50, i8 0}"), "{text}");
+    assert!(text.contains("!1 = !{i8 64, i8 -128}"), "{text}");
+    assert!(text.contains("!2 = !{i8 64, i8 -127}"), "{text}");
+}
+
+/// Mirrors `llvm/test/Verifier/range-2.ll`: the assembler accepts the valid
+/// load/call/invoke `!range` metadata forms in the fixture without rewrites.
+#[test]
+fn upstream_valid_range_metadata_fixture_parses() {
+    let src = include_str!("fixtures/upstream/Verifier/range-2.ll");
+    let (_stats, text) = parse_snippet(src);
+    parse_and_verify(src).expect("range-2 fixture verifies");
+    assert!(text.contains("call i8 @f1(ptr %x), !range !0"), "{text}");
+    assert!(text.contains("invoke i8 @f1(ptr %x)"), "{text}");
+    assert!(
+        text.contains("personality ptr @__gxx_personality_v0"),
+        "{text}"
+    );
+    assert!(text.contains("filter [0 x ptr] zeroinitializer"), "{text}");
+    assert!(
+        text.contains("declare i32 @__gxx_personality_v0(...)"),
+        "{text}"
+    );
+    assert!(text.contains("!range !0"), "{text}");
+}
+
+/// Mirrors `llvm/test/Verifier/range-1.ll`: every invalid `!range` case
+/// reports the same verifier message checked by the upstream fixture.
+#[test]
+fn upstream_invalid_range_metadata_fixture_messages_match() {
+    let fixture = include_str!("fixtures/upstream/Verifier/range-1.ll");
+    let cases = [
+        (
+            "define void @f1",
+            "!0 = ",
+            "Ranges are only for loads, calls and invokes!",
+        ),
+        (
+            "define i8 @f2",
+            "!1 = ",
+            "It should have at least one range!",
+        ),
+        ("define i8 @f3", "!2 = ", "Unfinished range!"),
+        (
+            "define i8 @f4",
+            "!3 = ",
+            "The lower limit must be an integer!",
+        ),
+        (
+            "define i8 @f5",
+            "!4 = ",
+            "The upper limit must be an integer!",
+        ),
+        ("define i8 @f6", "!5 = ", "Range pair types must match!"),
+        ("define i8 @f7", "!6 = ", "Range pair types must match!"),
+        (
+            "define i8 @f8",
+            "!7 = ",
+            "Range types must match instruction type!",
+        ),
+        ("define i8 @f9", "!8 = ", "Range must not be empty!"),
+        ("define i8 @f10", "!9 = ", "Intervals are overlapping"),
+        ("define i8 @f11", "!10 = ", "Intervals are contiguous"),
+        ("define i8 @f12", "!11 = ", "Intervals are not in order"),
+        ("define i8 @f13", "!12 = ", "Intervals are contiguous"),
+        ("define i8 @f14", "!13 = ", "Intervals are overlapping"),
+        ("define i8 @f15", "!14 = ", "Intervals are overlapping"),
+        ("define i8 @f16", "!16 = ", "Intervals are overlapping"),
+        ("define i8 @f17", "!17 = ", "Intervals are contiguous"),
+        (
+            "define i8 @f18",
+            "!18 = ",
+            "It should have at least one range!",
+        ),
+        (
+            "define <2 x i8> @vector_range_wrong_type",
+            "!19 = ",
+            "Range types must match instruction type!",
+        ),
+        (
+            "define i32 @range_assert",
+            "!20 = ",
+            "The upper and lower limits cannot be the same value",
+        ),
+    ];
+    for (function_marker, metadata_marker, expected) in cases {
+        let src = fixture_function_with_metadata(fixture, function_marker, metadata_marker);
+        let message = parse_and_verify_failure_message(&src);
+        assert_eq!(message, expected, "case {function_marker}");
+    }
 }
 
 /// Tuple operands accept specialized metadata only in LLVM's bang-bearing form.

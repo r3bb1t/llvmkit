@@ -6,11 +6,12 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    DominatorTreeAnalysis, FunctionAnalysis, FunctionAnalysisInvalidator, FunctionAnalysisManager,
-    FunctionAnalysisResult, FunctionPassManager, IRBuilder, IrError, Linkage, Module,
-    ModuleAnalysisManager, ModuleBrand, ModulePassManager, ModuleToFunctionPassAdaptor,
-    PreservedAnalyses, PreservesVerification, ReadOnlyFunctionPass, ReadOnlyFunctionPassContext,
-    ReadOnlyModulePass, ReadOnlyModulePassContext,
+    AllAnalysesOnModule, DominatorTreeAnalysis, FunctionAnalysis, FunctionAnalysisInvalidator,
+    FunctionAnalysisManager, FunctionAnalysisManagerModuleProxy, FunctionAnalysisResult,
+    FunctionPassManager, IRBuilder, IrError, Linkage, Module, ModuleAnalysisManager, ModuleBrand,
+    ModulePassManager, ModuleToFunctionPassAdaptor, PreservedAnalyses, PreservesVerification,
+    ReadOnlyFunctionPass, ReadOnlyFunctionPassContext, ReadOnlyModulePass,
+    ReadOnlyModulePassContext,
 };
 
 fn with_sample_module<R, F>(run: F) -> Result<R, IrError>
@@ -183,8 +184,8 @@ fn module_pass_manager_runs_in_order() -> Result<(), IrError> {
 
 /// `llvmkit-specific subset` of `PassManagerTest.cpp::Basic`: ports the
 /// supported function-pass run counters, function-analysis cache counts, and
-/// one-function invalidation behavior. llvmkit lacks the upstream
-/// module/function proxy invalidation and `RequireAnalysisPass` APIs.
+/// one-function invalidation behavior. Full upstream module/function proxy
+/// APIs and `RequireAnalysisPass` counters remain out of scope here.
 #[test]
 fn module_pass_manager_counts_supported_cache_and_invalidation() -> Result<(), IrError> {
     with_sample_module(|m| {
@@ -276,6 +277,90 @@ fn module_pass_invalidates_function_analysis_cache() -> Result<(), IrError> {
     })
 }
 
+/// Port of `llvm/lib/IR/PassManager.cpp::
+/// FunctionAnalysisManagerModuleProxy::Result::invalidate`, matching the
+/// cache-preservation behavior exercised by
+/// `unittests/IR/PassManagerTest.cpp::TEST_F(PassManagerTest, Basic)`.
+#[test]
+fn module_proxy_invalidation_preserves_explicit_function_analysis() -> Result<(), IrError> {
+    with_sample_module(|m| {
+        let f = m.function_by_name("f").expect("sample has f");
+        let g = m.function_by_name("g").expect("sample has g");
+        let runs = Rc::new(Cell::new(0));
+        let mut fam = FunctionAnalysisManager::new();
+        fam.register_pass(CountingFunctionAnalysis { runs: runs.clone() });
+        assert_eq!(
+            fam.get_result::<CountingFunctionAnalysis, _>(f)?
+                .instructions,
+            3
+        );
+        assert_eq!(
+            fam.get_result::<CountingFunctionAnalysis, _>(g)?
+                .instructions,
+            1
+        );
+
+        let mut preserved = PreservedAnalyses::none();
+        preserved.preserve::<FunctionAnalysisManagerModuleProxy>();
+        preserved.preserve::<CountingFunctionAnalysis>();
+        let mut mpm = ModulePassManager::<_, PreservesVerification>::new_read_only();
+        mpm.add_pass(RecordingModulePass {
+            name: "preserve-counting",
+            order: Rc::new(RefCell::new(Vec::new())),
+            preserved,
+        });
+        let mut mam = ModuleAnalysisManager::new();
+        let _ = mpm.run(m.verify()?, &mut mam, &mut fam)?;
+
+        assert!(
+            fam.get_cached_result::<CountingFunctionAnalysis, _>(f)
+                .is_some()
+        );
+        assert!(
+            fam.get_cached_result::<CountingFunctionAnalysis, _>(g)
+                .is_some()
+        );
+        assert_eq!(runs.get(), 2);
+        Ok(())
+    })
+}
+
+/// Port of `llvm/lib/IR/PassManager.cpp::
+/// FunctionAnalysisManagerModuleProxy::Result::invalidate`: preserving all
+/// module analyses preserves the function-analysis-manager proxy itself.
+#[test]
+fn module_proxy_invalidation_accepts_all_module_analysis_set() -> Result<(), IrError> {
+    with_sample_module(|m| {
+        let f = m.function_by_name("f").expect("sample has f");
+        let runs = Rc::new(Cell::new(0));
+        let mut fam = FunctionAnalysisManager::new();
+        fam.register_pass(CountingFunctionAnalysis { runs: runs.clone() });
+        assert_eq!(
+            fam.get_result::<CountingFunctionAnalysis, _>(f)?
+                .instructions,
+            3
+        );
+
+        let mut preserved = PreservedAnalyses::all_in_set::<AllAnalysesOnModule>();
+        preserved.preserve::<CountingFunctionAnalysis>();
+        let mut mpm = ModulePassManager::<_, PreservesVerification>::new_read_only();
+        mpm.add_pass(RecordingModulePass {
+            name: "preserve-module-set",
+            order: Rc::new(RefCell::new(Vec::new())),
+            preserved,
+        });
+        let mut mam = ModuleAnalysisManager::new();
+        let _ = mpm.run(m.verify()?, &mut mam, &mut fam)?;
+
+        assert!(
+            fam.get_cached_result::<CountingFunctionAnalysis, _>(f)
+                .is_some()
+        );
+        assert_eq!(runs.get(), 1);
+        Ok(())
+    })
+}
+
 /// `llvmkit-specific subset` of `PassManagerTest.cpp`: the
 /// module-to-function adaptor runs function passes over definitions only and
 /// skips declarations. llvmkit lacks loop/CGSCC adaptors and proxy analyses.
@@ -303,8 +388,9 @@ fn module_to_function_adaptor_runs_defined_functions_only() -> Result<(), IrErro
 }
 
 /// `llvmkit-specific subset` of `PassManagerTest.cpp` analysis query behavior:
-/// a function pass can query `DominatorTreeAnalysis` and preserve it, but
-/// llvmkit lacks the upstream module/function analysis proxy cache surface.
+/// a function pass can query `DominatorTreeAnalysis` and preserve it, while the
+/// fuller upstream module/function analysis proxy cache surface remains future
+/// work.
 #[test]
 fn function_pass_can_query_dominator_tree_analysis() -> Result<(), IrError> {
     with_sample_module(|m| {

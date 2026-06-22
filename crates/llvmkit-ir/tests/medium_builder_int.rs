@@ -36,6 +36,45 @@ fn build_int_add_accepts_int_value_and_rust_literal() -> Result<(), IrError> {
         Ok(())
     })
 }
+/// llvmkit-specific regression for LLVM's `Value::setName` uniquing path:
+/// `IRBuilderDefaultInserter::InsertHelper` calls `I->setName(Name)`, and
+/// `ValueSymbolTable::createValueName` appends a function-wide bare integer
+/// suffix for local-value conflicts. Closest upstream unit coverage:
+/// `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, NoFolderNames)`.
+#[test]
+fn build_int_ops_unique_duplicate_requested_names() -> Result<(), IrError> {
+    Module::with_new("names", |m| {
+        let i64_ty = m.i64_type();
+        let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type()], false);
+        let f = m.add_function::<i64, _>("names", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
+        let sp: IntValue<i64> = f.param(0)?.try_into()?;
+
+        let first_push = b.build_int_sub::<i64, _, _, _>(sp, 8_i64, "push_sp")?;
+        let second_push = b.build_int_sub::<i64, _, _, _>(first_push, 8_i64, "push_sp")?;
+        let first_af = b.build_int_xor::<i64, _, _, _>(first_push, second_push, "af_lhs_rhs")?;
+        let second_af = b.build_int_xor::<i64, _, _, _>(second_push, first_af, "af_lhs_rhs")?;
+        b.build_ret(second_af)?;
+
+        assert_eq!(first_push.name().as_deref(), Some("push_sp"));
+        assert_eq!(second_push.name().as_deref(), Some("push_sp1"));
+        assert_eq!(first_af.name().as_deref(), Some("af_lhs_rhs"));
+        assert_eq!(second_af.name().as_deref(), Some("af_lhs_rhs2"));
+
+        let expected = "; ModuleID = 'names'\n\
+            define i64 @names(i64 %0) {\n\
+            entry:\n\
+            \x20\x20%push_sp = sub i64 %0, 8\n\
+            \x20\x20%push_sp1 = sub i64 %push_sp, 8\n\
+            \x20\x20%af_lhs_rhs = xor i64 %push_sp, %push_sp1\n\
+            \x20\x20%af_lhs_rhs2 = xor i64 %push_sp1, %af_lhs_rhs\n\
+            \x20\x20ret i64 %af_lhs_rhs2\n\
+            }\n";
+        assert_eq!(format!("{m}"), expected);
+        Ok(())
+    })
+}
 
 /// llvmkit-specific: `ConstantIntValue` LHS + `IntValue` RHS through
 /// `IntoIntValue`. Closest upstream coverage:

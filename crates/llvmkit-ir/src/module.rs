@@ -27,7 +27,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use crate::align::MaybeAlign;
 use crate::attributes::AttributeStorage;
 use crate::comdat::{ComdatRef, SelectionKind};
-use crate::constant::Constant;
+use crate::constant::{Constant, IsConstant};
 use crate::data_layout::DataLayout;
 use crate::derived_types::{
     ArrayType, FloatType, FunctionType, IntType, LabelType, MetadataType, PointerType, StructType,
@@ -40,12 +40,14 @@ use crate::global_ifunc::GlobalIFunc;
 use crate::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
 use crate::int_width::{IntDyn, Width};
 use crate::llvm_context::Context;
-use crate::metadata::{MetadataAttachmentSet, MetadataId, MetadataRef};
+use crate::metadata::{
+    MetadataAttachmentSet, MetadataId, MetadataKind, MetadataRef, SpecializedMetadataNode,
+};
 use crate::named_md_node::NamedMDNode;
 use crate::r#type::{MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeId};
 use crate::typed_pointer_type::TypedPointerType;
 use crate::unnamed_addr::UnnamedAddr;
-use crate::value::ValueId;
+use crate::value::{ValueId, ValueUse};
 
 // --------------------------------------------------------------------------
 // ModuleId
@@ -1032,7 +1034,7 @@ impl<'ctx> ModuleCore {
         Name: AsRef<str>,
     {
         let name = name.as_ref();
-        if self.global_name_exists(name) {
+        if !name.is_empty() && self.global_name_exists(name) {
             return Err(IrError::DuplicateFunctionName {
                 name: name.to_owned(),
             });
@@ -1060,7 +1062,7 @@ impl<'ctx> ModuleCore {
         );
         let fn_id = self.ctx.push_value(crate::value::ValueData {
             ty: signature_id,
-            name: core::cell::RefCell::new(Some(name.to_owned())),
+            name: core::cell::RefCell::new((!name.is_empty()).then(|| name.to_owned())),
             debug_loc: None,
             kind: crate::value::ValueKindData::Function(Box::new(fn_data)),
             use_list: core::cell::RefCell::new(Vec::new()),
@@ -1094,9 +1096,11 @@ impl<'ctx> ModuleCore {
         *fn_inner.args.borrow_mut() = arg_ids.into_boxed_slice();
 
         self.functions.borrow_mut().push(fn_id);
-        self.function_by_name
-            .borrow_mut()
-            .insert(name.to_owned(), fn_id);
+        if !name.is_empty() {
+            self.function_by_name
+                .borrow_mut()
+                .insert(name.to_owned(), fn_id);
+        }
         Ok(crate::function::FunctionValue::<'ctx, R>::from_parts_unchecked(fn_id, self))
     }
 
@@ -1197,7 +1201,7 @@ impl<'ctx> ModuleCore {
         builder: crate::global_variable::GlobalBuilder<'ctx, B>,
     ) -> IrResult<crate::global_variable::GlobalVariable<'ctx, B>> {
         let (name, data, _initializer, address_space, value_type) = builder.into_data();
-        if self.global_name_exists(&name) {
+        if !name.is_empty() && self.global_name_exists(&name) {
             return Err(IrError::DuplicateFunctionName { name });
         }
         let pointer_ty = self.ctx.ptr_type(address_space);
@@ -1207,13 +1211,15 @@ impl<'ctx> ModuleCore {
         let _ = value_type;
         let value_id = self.ctx.push_value(crate::value::ValueData {
             ty: pointer_ty,
-            name: core::cell::RefCell::new(Some(name.clone())),
+            name: core::cell::RefCell::new((!name.is_empty()).then(|| name.clone())),
             debug_loc: None,
             kind: crate::value::ValueKindData::GlobalVariable(data),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
         self.globals.borrow_mut().push(value_id);
-        self.global_by_name.borrow_mut().insert(name, value_id);
+        if !name.is_empty() {
+            self.global_by_name.borrow_mut().insert(name, value_id);
+        }
         Ok(
             crate::global_variable::GlobalVariable::from_parts_unchecked(
                 value_id,
@@ -1228,19 +1234,21 @@ impl<'ctx> ModuleCore {
         builder: crate::global_alias::GlobalAliasBuilder<'ctx, B>,
     ) -> IrResult<crate::global_alias::GlobalAlias<'ctx, B>> {
         let (name, data, address_space) = builder.into_data();
-        if self.global_name_exists(&name) {
+        if !name.is_empty() && self.global_name_exists(&name) {
             return Err(IrError::DuplicateFunctionName { name });
         }
         let pointer_ty = self.ctx.ptr_type(address_space);
         let value_id = self.ctx.push_value(crate::value::ValueData {
             ty: pointer_ty,
-            name: core::cell::RefCell::new(Some(name.clone())),
+            name: core::cell::RefCell::new((!name.is_empty()).then(|| name.clone())),
             debug_loc: None,
             kind: crate::value::ValueKindData::GlobalAlias(data),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
         self.aliases.borrow_mut().push(value_id);
-        self.alias_by_name.borrow_mut().insert(name, value_id);
+        if !name.is_empty() {
+            self.alias_by_name.borrow_mut().insert(name, value_id);
+        }
         Ok(crate::global_alias::GlobalAlias::from_parts_unchecked(
             value_id,
             ModuleRef::<B>::new(self),
@@ -1253,19 +1261,21 @@ impl<'ctx> ModuleCore {
         builder: crate::global_ifunc::GlobalIFuncBuilder<'ctx, B>,
     ) -> IrResult<crate::global_ifunc::GlobalIFunc<'ctx, B>> {
         let (name, data, address_space) = builder.into_data();
-        if self.global_name_exists(&name) {
+        if !name.is_empty() && self.global_name_exists(&name) {
             return Err(IrError::DuplicateFunctionName { name });
         }
         let pointer_ty = self.ctx.ptr_type(address_space);
         let value_id = self.ctx.push_value(crate::value::ValueData {
             ty: pointer_ty,
-            name: core::cell::RefCell::new(Some(name.clone())),
+            name: core::cell::RefCell::new((!name.is_empty()).then(|| name.clone())),
             debug_loc: None,
             kind: crate::value::ValueKindData::GlobalIFunc(data),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
         self.ifuncs.borrow_mut().push(value_id);
-        self.ifunc_by_name.borrow_mut().insert(name, value_id);
+        if !name.is_empty() {
+            self.ifunc_by_name.borrow_mut().insert(name, value_id);
+        }
         Ok(crate::global_ifunc::GlobalIFunc::from_parts_unchecked(
             value_id,
             ModuleRef::<B>::new(self),
@@ -1414,13 +1424,9 @@ impl<'ctx> ModuleCore {
             .get_tuple(operands.as_ref().to_vec())
     }
     /// Create a tuple node with explicit distinctness.
-    pub fn metadata_tuple_with_distinct<Ops>(
-        &self,
-        distinct: bool,
-        operands: Ops,
-    ) -> crate::metadata::MetadataId
+    pub fn metadata_tuple_with_distinct<Ops>(&self, distinct: bool, operands: Ops) -> MetadataId
     where
-        Ops: AsRef<[crate::metadata::MetadataRef]>,
+        Ops: AsRef<[MetadataRef]>,
     {
         self.metadata
             .borrow_mut()
@@ -1428,31 +1434,35 @@ impl<'ctx> ModuleCore {
     }
 
     /// Create a specialized debug metadata node.
-    pub fn metadata_specialized(
-        &self,
-        node: crate::metadata::SpecializedMetadataNode,
-    ) -> crate::metadata::MetadataId {
+    pub fn metadata_specialized(&self, node: SpecializedMetadataNode) -> MetadataId {
         self.metadata.borrow_mut().get_specialized(node)
     }
     /// Store an already-parsed metadata node and return its id.
-    pub fn metadata_node(
-        &self,
-        kind: crate::metadata::MetadataKind,
-    ) -> crate::metadata::MetadataId {
-        let mut store = self.metadata.borrow_mut();
-        match kind {
-            crate::metadata::MetadataKind::String(s) => store.get_string(s),
-            crate::metadata::MetadataKind::Tuple { distinct, operands } => {
-                store.get_tuple_with_distinct(distinct, operands)
+    pub fn metadata_node(&self, kind: MetadataKind) -> MetadataId {
+        let (id, value_use) = {
+            let mut store = self.metadata.borrow_mut();
+            match kind {
+                MetadataKind::String(s) => (store.get_string(s), None),
+                MetadataKind::Tuple { distinct, operands } => {
+                    (store.get_tuple_with_distinct(distinct, operands), None)
+                }
+                MetadataKind::Specialized(node) => (store.get_specialized(node), None),
+                MetadataKind::Constant(value_id) => {
+                    let id = store.get_constant(value_id);
+                    (id, Some(value_id))
+                }
+                MetadataKind::Ref(id) => (id, None),
+                MetadataKind::Null => {
+                    let id = store.reserve();
+                    store.set(id, MetadataKind::Null);
+                    (id, None)
+                }
             }
-            crate::metadata::MetadataKind::Specialized(node) => store.get_specialized(node),
-            crate::metadata::MetadataKind::Ref(id) => id,
-            crate::metadata::MetadataKind::Null => {
-                let id = store.reserve();
-                store.set(id, crate::metadata::MetadataKind::Null);
-                id
-            }
+        };
+        if let Some(value_id) = value_use {
+            self.register_metadata_value_use(id, value_id);
         }
+        id
     }
 
     /// Reserve a fresh metadata node id with placeholder content, to be
@@ -1465,12 +1475,55 @@ impl<'ctx> ModuleCore {
 
     /// Overwrite a reserved metadata node with concrete content. Pairs
     /// with [`metadata_reserve`](Self::metadata_reserve).
-    pub fn metadata_set(
-        &self,
-        id: crate::metadata::MetadataId,
-        kind: crate::metadata::MetadataKind,
-    ) {
+    pub fn metadata_set(&self, id: MetadataId, kind: MetadataKind) {
+        if let Some(MetadataKind::Constant(value_id)) = self.metadata.borrow().get(id).cloned() {
+            self.deregister_metadata_value_use(id, value_id);
+        }
+        let value_use = match kind {
+            MetadataKind::Constant(value_id) => Some(value_id),
+            MetadataKind::Null
+            | MetadataKind::String(_)
+            | MetadataKind::Tuple { .. }
+            | MetadataKind::Ref(_)
+            | MetadataKind::Specialized(_) => None,
+        };
         self.metadata.borrow_mut().set(id, kind);
+        if let Some(value_id) = value_use {
+            self.register_metadata_value_use(id, value_id);
+        }
+    }
+
+    pub(crate) fn metadata_constant_value(&self, value_id: ValueId) -> MetadataId {
+        let id = self.metadata.borrow_mut().get_constant(value_id);
+        self.register_metadata_value_use(id, value_id);
+        id
+    }
+
+    pub(crate) fn rewrite_metadata_value(&self, id: MetadataId, from: ValueId, to: ValueId) {
+        let mut store = self.metadata.borrow_mut();
+        if let Some(MetadataKind::Constant(value_id)) = store.get_mut(id)
+            && *value_id == from
+        {
+            *value_id = to;
+        }
+    }
+
+    fn register_metadata_value_use(&self, metadata_id: MetadataId, value_id: ValueId) {
+        self.ctx
+            .value_data(value_id)
+            .use_list
+            .borrow_mut()
+            .push(ValueUse::Metadata(metadata_id));
+    }
+
+    fn deregister_metadata_value_use(&self, metadata_id: MetadataId, value_id: ValueId) {
+        let mut uses = self.ctx.value_data(value_id).use_list.borrow_mut();
+        if let Some(pos) = uses
+            .iter()
+            .position(|edge| *edge == ValueUse::Metadata(metadata_id))
+        {
+            uses.remove(pos);
+        }
     }
 
     /// Look up a metadata node by id.
@@ -2181,7 +2234,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Name: AsRef<str>,
     {
         let name = name.as_ref();
-        if self.core.global_name_exists(name) {
+        if !name.is_empty() && self.core.global_name_exists(name) {
             return Err(IrError::DuplicateFunctionName {
                 name: name.to_owned(),
             });
@@ -2202,7 +2255,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         );
         let fn_id = self.core.ctx.push_value(crate::value::ValueData {
             ty: signature_id,
-            name: core::cell::RefCell::new(Some(name.to_owned())),
+            name: core::cell::RefCell::new((!name.is_empty()).then(|| name.to_owned())),
             debug_loc: None,
             kind: crate::value::ValueKindData::Function(Box::new(fn_data)),
             use_list: core::cell::RefCell::new(Vec::new()),
@@ -2231,10 +2284,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         };
         *fn_inner.args.borrow_mut() = arg_ids.into_boxed_slice();
         self.core.functions.borrow_mut().push(fn_id);
-        self.core
-            .function_by_name
-            .borrow_mut()
-            .insert(name.to_owned(), fn_id);
+        if !name.is_empty() {
+            self.core
+                .function_by_name
+                .borrow_mut()
+                .insert(name.to_owned(), fn_id);
+        }
         Ok(
             crate::function::FunctionValue::<'ctx, R, B>::from_parts_unchecked(
                 fn_id,
@@ -2478,33 +2533,31 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
 
     pub fn metadata_tuple<Ops>(&self, operands: Ops) -> MetadataId
     where
-        Ops: AsRef<[crate::metadata::MetadataRef]>,
+        Ops: AsRef<[MetadataRef]>,
     {
         self.core.metadata_tuple(operands)
     }
 
-    pub fn metadata_tuple_with_distinct<Ops>(
-        &self,
-        distinct: bool,
-        operands: Ops,
-    ) -> crate::metadata::MetadataId
+    pub fn metadata_tuple_with_distinct<Ops>(&self, distinct: bool, operands: Ops) -> MetadataId
     where
-        Ops: AsRef<[crate::metadata::MetadataRef]>,
+        Ops: AsRef<[MetadataRef]>,
     {
         self.core.metadata_tuple_with_distinct(distinct, operands)
     }
 
-    pub fn metadata_specialized(
-        &self,
-        node: crate::metadata::SpecializedMetadataNode,
-    ) -> crate::metadata::MetadataId {
+    pub fn metadata_constant<C>(&self, c: C) -> MetadataId
+    where
+        C: IsConstant<'ctx, B>,
+    {
+        let id = c.as_constant().id;
+        self.core.metadata_constant_value(id)
+    }
+
+    pub fn metadata_specialized(&self, node: SpecializedMetadataNode) -> MetadataId {
         self.core.metadata_specialized(node)
     }
 
-    pub fn metadata_node(
-        &self,
-        kind: crate::metadata::MetadataKind,
-    ) -> crate::metadata::MetadataId {
+    pub fn metadata_node(&self, kind: MetadataKind) -> MetadataId {
         self.core.metadata_node(kind)
     }
 

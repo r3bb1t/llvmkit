@@ -4,6 +4,8 @@
 //! attachment sets, and the core specialized DI node surface the assembler
 //! parser needs to round-trip debug metadata without storing opaque IR text.
 
+use crate::value::ValueId;
+
 /// Stable index into the module-level metadata arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MetadataId(pub(crate) usize);
@@ -248,7 +250,22 @@ impl MetadataField {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DebugMetadataOperand {
     Metadata(MetadataRef),
-    Value(crate::value::ValueId),
+    Value(ValueId),
+}
+
+impl DebugMetadataOperand {
+    pub(crate) const fn value_id(self) -> Option<ValueId> {
+        match self {
+            Self::Value(id) => Some(id),
+            Self::Metadata(_) => None,
+        }
+    }
+
+    pub(crate) fn replace_value_id(&mut self, from: ValueId, to: ValueId) {
+        if matches!(self, Self::Value(id) if *id == from) {
+            *self = Self::Value(to);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -359,6 +376,36 @@ pub enum DebugRecord {
     },
 }
 
+impl DebugRecord {
+    pub(crate) fn for_each_value(&self, mut f: impl FnMut(ValueId)) {
+        match self {
+            Self::Variable(record) => {
+                if let Some(id) = record.location.value_id() {
+                    f(id);
+                }
+                if let Some(address) = record.address_location
+                    && let Some(id) = address.value_id()
+                {
+                    f(id);
+                }
+            }
+            Self::Label { .. } => {}
+        }
+    }
+
+    pub(crate) fn replace_value_id(&mut self, from: ValueId, to: ValueId) {
+        match self {
+            Self::Variable(record) => {
+                record.location.replace_value_id(from, to);
+                if let Some(address) = &mut record.address_location {
+                    address.replace_value_id(from, to);
+                }
+            }
+            Self::Label { .. } => {}
+        }
+    }
+}
+
 /// Stored specialized node. Field order is significant and mirrors source.
 #[derive(Debug, Clone)]
 pub struct SpecializedMetadataNode {
@@ -414,6 +461,8 @@ pub enum MetadataKind {
     Null,
     /// `!"..."` — a string node. Mirrors `MDString`.
     String(String),
+    /// `i64 1`, `ptr null`, ... — a typed constant metadata operand.
+    Constant(ValueId),
     /// `!{ op, op, ... }` — a tuple. Mirrors `MDTuple`.
     Tuple {
         distinct: bool,
@@ -505,6 +554,13 @@ impl MetadataStore {
         id
     }
 
+    /// Store a typed constant metadata operand.
+    pub fn get_constant(&mut self, value: ValueId) -> MetadataId {
+        let id = MetadataId(self.nodes.len());
+        self.nodes.push(MetadataKind::Constant(value));
+        id
+    }
+
     /// Create a specialized `DI*` metadata node.
     pub fn get_specialized(&mut self, node: SpecializedMetadataNode) -> MetadataId {
         let id = MetadataId(self.nodes.len());
@@ -544,6 +600,10 @@ impl MetadataStore {
         self.nodes.get(id.0)
     }
 
+    /// Mutably look up a metadata node by id.
+    pub(crate) fn get_mut(&mut self, id: MetadataId) -> Option<&mut MetadataKind> {
+        self.nodes.get_mut(id.0)
+    }
     /// Slice over all nodes, indexed by their `MetadataId.index()`.
     pub(crate) fn nodes(&self) -> &[MetadataKind] {
         &self.nodes
