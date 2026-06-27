@@ -1857,7 +1857,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     pub fn block_address<R, S>(
         &self,
         function: FunctionValue<'ctx, R, B>,
-        block: BasicBlock<'ctx, R, S, B>,
+        block: &BasicBlock<'ctx, R, S, B>,
     ) -> IrResult<Constant<'ctx, B>>
     where
         R: crate::ReturnMarker,

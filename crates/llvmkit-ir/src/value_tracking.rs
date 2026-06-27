@@ -18,7 +18,7 @@ use crate::instr_types::{
     ExtractElementInstData, GepInstData, InsertElementInstData, POISON_MASK_ELEM,
     ShuffleVectorInstData,
 };
-use crate::instruction::{Instruction, InstructionData, InstructionKindData, state};
+use crate::instruction::{InstructionData, InstructionKindData, InstructionView};
 use crate::intrinsics::IntrinsicId;
 use crate::metadata::MetadataAttachmentKind;
 use crate::module::{Brand, ModuleBrand, ModuleCore, ModuleRef};
@@ -231,10 +231,7 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ValueTrackingQuery<'a, 'ctx, B> {
     }
 
     #[inline]
-    pub fn with_context_instruction<S: state::InstructionState>(
-        mut self,
-        instruction: &Instruction<'ctx, S, B>,
-    ) -> Self {
+    pub fn with_context_instruction(mut self, instruction: &InstructionView<'ctx, B>) -> Self {
         self.context_instruction = Some(instruction.as_value());
         self
     }

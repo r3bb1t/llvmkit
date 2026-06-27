@@ -39,8 +39,8 @@ use core::marker::PhantomData;
 
 use super::align::{Align, MaybeAlign};
 use super::atomic_ordering::AtomicOrdering;
-use super::basic_block::BasicBlock;
-use super::block_state::{BlockSealState, Sealed, Unsealed};
+use super::basic_block::{BasicBlock, IntoBasicBlockLabel};
+use super::block_state::{Sealed, Unsealed};
 use super::calling_conv::CallingConv;
 use super::cmp_predicate::CmpPredicate;
 use super::constant::{Constant, ConstantExprFlags, ConstantExprOpcode};
@@ -59,7 +59,7 @@ use super::instr_types::{
     POISON_MASK_ELEM, ReturnOpData, StoreInstData, UnaryOpcode,
 };
 use super::instruction::{
-    Instruction, InstructionKind, InstructionKindData, build_instruction_value, state,
+    Instruction, InstructionKind, InstructionKindData, InstructionView, build_instruction_value,
     state::Attached,
 };
 use super::instructions::{
@@ -136,10 +136,11 @@ mod state_sealed {
 /// `IRBuilderBase::InsertPoint` in `IRBuilder.h`. The `block` is `None`
 /// when the builder was unpositioned at save time; `before` is `None`
 /// when the saved location was end-of-block.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub struct InsertPoint<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) block: Option<BasicBlock<'ctx, R, Unsealed, B>>,
+    pub(super) block_id: Option<ValueId>,
     pub(super) before: Option<ValueId>,
+    pub(super) _marker: PhantomData<fn(&'ctx (), R, B)>,
 }
 
 #[derive(Debug, Clone)]
@@ -322,7 +323,7 @@ where
     /// which sets `BB = I->getParent(); InsertPt = I->getIterator();`.
     pub fn position_before(
         self,
-        anchor: Instruction<'ctx, Attached, B>,
+        anchor: &InstructionView<'ctx, B>,
     ) -> IRBuilder<'m, 'ctx, B, F, Positioned, R> {
         let anchor_id = anchor.as_value().id;
         let parent_block_id = anchor.parent().as_value().id;
@@ -369,7 +370,7 @@ where
         IRBuilder {
             module: self.module,
             _module: PhantomData,
-            insert_block: Some(entry),
+            insert_block: Some(entry.retag_seal::<Unsealed>()),
             insert_before: anchor,
             folder: self.folder,
             fmf: self.fmf,
@@ -381,31 +382,48 @@ where
     /// `IRBuilder::saveIP` (returns `InsertPoint(BB, InsertPt)`).
     pub fn save_insert_point(&self) -> InsertPoint<'ctx, R, B> {
         InsertPoint {
-            block: self.insert_block,
+            block_id: self.insert_block.as_ref().map(|bb| bb.as_value().id),
             before: self.insert_before,
+            _marker: PhantomData,
         }
     }
 
     /// Restore a previously-saved insertion point. Mirrors
-    /// `IRBuilder::restoreIP(InsertPoint)`. Returns a Positioned builder
-    /// when the snapshot carries a block, an Unpositioned one otherwise.
-    /// Restoring a snapshot whose block is `None` should rarely be needed,
-    /// so we return a Positioned builder unconditionally and panic only
-    /// when the snapshot was taken from a state with no block, mirroring
-    /// upstream `restoreIP` which calls `ClearInsertionPoint` in that case.
+    /// `IRBuilder::restoreIP(InsertPoint)`, but returns an error instead of
+    /// reopening a block that has since grown a terminator.
     pub fn restore_insert_point(
         self,
         ip: InsertPoint<'ctx, R, B>,
-    ) -> IRBuilder<'m, 'ctx, B, F, Positioned, R> {
-        IRBuilder {
+    ) -> IrResult<IRBuilder<'m, 'ctx, B, F, Positioned, R>> {
+        let Some(block_id) = ip.block_id else {
+            return Err(IrError::InvalidOperation {
+                message: "cannot restore an empty insert point",
+            });
+        };
+        let label_ty = self.module.label_type().as_type().id();
+        let insert_block = BasicBlock::<R, Unsealed, B>::from_parts(
+            block_id,
+            ModuleRef::<B>::new(self.module),
+            label_ty,
+        );
+        if ip.before.is_none()
+            && insert_block
+                .terminator()
+                .is_some_and(|inst| inst.is_terminator())
+        {
+            return Err(IrError::InvalidOperation {
+                message: "cannot restore insert point at end of terminated block",
+            });
+        }
+        Ok(IRBuilder {
             module: self.module,
             _module: PhantomData,
-            insert_block: ip.block,
+            insert_block: Some(insert_block),
             insert_before: ip.before,
             folder: self.folder,
             fmf: self.fmf,
             _state: PhantomData,
-        }
+        })
     }
 
     /// Add an incoming `(value, block)` pair to a phi instruction identified
@@ -414,8 +432,9 @@ where
     /// use by parsers and passes where compile-time type markers are
     /// unavailable.
     ///
-    /// Errors if `phi_val` does not refer to a phi instruction, or if
-    /// `val`/`block` belong to different modules.
+    /// Errors if `phi_val` does not refer to a phi instruction. `val` and
+    /// `block` already carry the builder brand `B`; remaining value-type and
+    /// predecessor-set coherence is verified by [`Module::verify`](crate::Module::verify).
     pub fn phi_add_incoming_from_value<RBb, SBb>(
         &self,
         phi_val: Value<'ctx, B>,
@@ -495,7 +514,18 @@ where
     /// Current insertion block. Always populated in the positioned
     /// state.
     #[inline]
-    pub fn insert_block(&self) -> BasicBlock<'ctx, R, Unsealed, B> {
+    pub fn insert_block(&self) -> &BasicBlock<'ctx, R, Unsealed, B> {
+        match self.insert_block.as_ref() {
+            Some(bb) => bb,
+            None => unreachable!("Positioned builder always has an insertion point"),
+        }
+    }
+
+    /// Consume this positioned builder without emitting a terminator,
+    /// returning its unsealed insertion block for cursor-driven mutation
+    /// or later repositioning.
+    #[inline]
+    pub fn into_insert_block(self) -> BasicBlock<'ctx, R, Unsealed, B> {
         match self.insert_block {
             Some(bb) => bb,
             None => unreachable!("Positioned builder always has an insertion point"),
@@ -4760,16 +4790,17 @@ where
     /// returned alongside the new terminator instruction. The branch
     /// target may be in any seal state -- backward edges (loop
     /// back-edges) target already-sealed blocks.
-    pub fn build_br<S2: BlockSealState>(
-        self,
-        target: BasicBlock<'ctx, R, S2, B>,
-    ) -> IrResult<SealedBlockInst<'ctx, R, B>> {
+    pub fn build_br<T>(self, target: T) -> IrResult<SealedBlockInst<'ctx, R, B>>
+    where
+        T: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let target = target.into_basic_block_label();
         let payload = crate::instr_types::BranchInstData {
             kind: crate::instr_types::BranchKind::Unconditional(target.as_value().id),
         };
         let void_ty = self.module.void_type().as_type().id();
-        let bb = self.insert_block();
         let inst = self.append_instruction(void_ty, InstructionKindData::Br(payload), "");
+        let bb = self.into_insert_block();
         Ok((bb.retag_seal::<Sealed>(), inst))
     }
 
@@ -4777,17 +4808,19 @@ where
     /// `IRBuilder::CreateCondBr`.
     ///
     /// Consumes `self`; both target blocks may be in any seal state.
-    pub fn build_cond_br<C, ST, SE>(
+    pub fn build_cond_br<C, Then, Else>(
         self,
         cond: C,
-        then_bb: BasicBlock<'ctx, R, ST, B>,
-        else_bb: BasicBlock<'ctx, R, SE, B>,
+        then_bb: Then,
+        else_bb: Else,
     ) -> IrResult<SealedBlockInst<'ctx, R, B>>
     where
         C: IntoIntValue<'ctx, bool, B>,
-        ST: BlockSealState,
-        SE: BlockSealState,
+        Then: IntoBasicBlockLabel<'ctx, R, B>,
+        Else: IntoBasicBlockLabel<'ctx, R, B>,
     {
+        let then_bb = then_bb.into_basic_block_label();
+        let else_bb = else_bb.into_basic_block_label();
         let cond = cond.into_int_value(ModuleRef::new(self.module))?;
         let payload = crate::instr_types::BranchInstData {
             kind: crate::instr_types::BranchKind::Conditional {
@@ -4797,8 +4830,8 @@ where
             },
         };
         let void_ty = self.module.void_type().as_type().id();
-        let bb = self.insert_block();
         let inst = self.append_instruction(void_ty, InstructionKindData::Br(payload), "");
+        let bb = self.into_insert_block();
         Ok((bb.retag_seal::<Sealed>(), inst))
     }
 
@@ -4810,30 +4843,28 @@ where
     /// cases via [`SwitchInst::add_case`](SwitchInst::add_case)
     /// (chainable) and seals the case list with
     /// [`SwitchInst::finish`](SwitchInst::finish).
-    pub fn build_switch<C, S2, Name>(
+    pub fn build_switch<C, DefaultTarget, Name>(
         self,
         cond: C,
-        default_target: BasicBlock<'ctx, R, S2, B>,
+        default_target: DefaultTarget,
         name: Name,
     ) -> IrResult<SealedBlockSwitch<'ctx, R, B>>
     where
         Name: AsRef<str>,
         C: IsValue<'ctx, B>,
-        S2: BlockSealState,
+        DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
     {
+        let default_target = default_target.into_basic_block_label();
         let cond_v = cond.as_value();
-        let bb = self.insert_block();
         let void_ty = self.module.void_type().as_type().id();
         let payload =
             crate::instr_types::SwitchInstData::new(cond_v.id, default_target.as_value().id);
         let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let bb = self.into_insert_block();
         Ok((
             bb.retag_seal::<Sealed>(),
-            SwitchInst::<Open, B>::from_raw(
-                inst.as_value().id,
-                ModuleRef::<B>::new(self.module),
-                void_ty,
-            ),
+            SwitchInst::<Open, B>::from_raw(inst.as_value().id, module_ref, void_ty),
         ))
     }
 
@@ -4854,28 +4885,25 @@ where
         A: IsValue<'ctx, B>,
     {
         let addr_v = address.as_value();
-        let bb = self.insert_block();
         let void_ty = self.module.void_type().as_type().id();
         let payload = crate::instr_types::IndirectBrInstData::new(addr_v.id);
         let inst = self.append_instruction(void_ty, InstructionKindData::IndirectBr(payload), name);
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let bb = self.into_insert_block();
         Ok((
             bb.retag_seal::<Sealed>(),
-            IndirectBrInst::<Open, B>::from_raw(
-                inst.as_value().id,
-                ModuleRef::<B>::new(self.module),
-                void_ty,
-            ),
+            IndirectBrInst::<Open, B>::from_raw(inst.as_value().id, module_ref, void_ty),
         ))
     }
 
     /// Produce `invoke <ret-ty> <callee>(<args>) to label %normal
     /// unwind label %unwind`. Mirrors `IRBuilder::CreateInvoke`.
-    pub fn build_invoke<R2, I, V, S2, SU, Name>(
+    pub fn build_invoke<R2, I, V, Normal, Unwind, Name>(
         self,
         callee: FunctionValue<'ctx, R2, B>,
         args: I,
-        normal_dest: BasicBlock<'ctx, R, S2, B>,
-        unwind_dest: BasicBlock<'ctx, R, SU, B>,
+        normal_dest: Normal,
+        unwind_dest: Unwind,
         name: Name,
     ) -> IrResult<SealedBlockInvoke<'ctx, R, R2, B>>
     where
@@ -4883,8 +4911,8 @@ where
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: IsValue<'ctx, B>,
-        S2: BlockSealState,
-        SU: BlockSealState,
+        Normal: IntoBasicBlockLabel<'ctx, R, B>,
+        Unwind: IntoBasicBlockLabel<'ctx, R, B>,
     {
         self.build_invoke_with_config(
             callee,
@@ -4896,21 +4924,23 @@ where
     }
 
     /// Produce `invoke` with explicit call-site configuration.
-    pub fn build_invoke_with_config<R2, I, V, S2, SU>(
+    pub fn build_invoke_with_config<R2, I, V, Normal, Unwind>(
         self,
         callee: FunctionValue<'ctx, R2, B>,
         args: I,
-        normal_dest: BasicBlock<'ctx, R, S2, B>,
-        unwind_dest: BasicBlock<'ctx, R, SU, B>,
+        normal_dest: Normal,
+        unwind_dest: Unwind,
         config: CallSiteConfig,
     ) -> IrResult<SealedBlockInvoke<'ctx, R, R2, B>>
     where
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: IsValue<'ctx, B>,
-        S2: BlockSealState,
-        SU: BlockSealState,
+        Normal: IntoBasicBlockLabel<'ctx, R, B>,
+        Unwind: IntoBasicBlockLabel<'ctx, R, B>,
     {
+        let normal_dest = normal_dest.into_basic_block_label();
+        let unwind_dest = unwind_dest.into_basic_block_label();
         let callee_v = callee.as_value();
         let fn_ty = callee.signature().as_type().id();
         let ret_ty = self
@@ -4921,7 +4951,6 @@ where
             .map(|(r, _, _)| r)
             .unwrap_or(fn_ty);
         let (name, calling_conv, attrs) = config.into_parts();
-        let bb = self.insert_block();
         let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.as_value().id).collect();
         let payload = crate::instr_types::InvokeInstData::new_with_attrs(
             callee_v.id,
@@ -4933,24 +4962,21 @@ where
             attrs,
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let bb = self.into_insert_block();
         Ok((
             bb.retag_seal::<Sealed>(),
-            InvokeInst::<Dyn, B>::from_raw(
-                inst.as_value().id,
-                ModuleRef::<B>::new(self.module),
-                ret_ty,
-            )
-            .retag::<R2>(),
+            InvokeInst::<Dyn, B>::from_raw(inst.as_value().id, module_ref, ret_ty).retag::<R2>(),
         ))
     }
 
     /// Produce an `invoke` whose callee is an inline-assembly value.
-    pub fn build_inline_asm_invoke<R2, I, V, S2, SU, Name>(
+    pub fn build_inline_asm_invoke<R2, I, V, Normal, Unwind, Name>(
         self,
         asm: InlineAsm<'ctx, B>,
         args: I,
-        normal_dest: BasicBlock<'ctx, R, S2, B>,
-        unwind_dest: BasicBlock<'ctx, R, SU, B>,
+        normal_dest: Normal,
+        unwind_dest: Unwind,
         name: Name,
     ) -> IrResult<SealedBlockInvoke<'ctx, R, R2, B>>
     where
@@ -4958,8 +4984,8 @@ where
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: IsValue<'ctx, B>,
-        S2: BlockSealState,
-        SU: BlockSealState,
+        Normal: IntoBasicBlockLabel<'ctx, R, B>,
+        Unwind: IntoBasicBlockLabel<'ctx, R, B>,
     {
         self.build_inline_asm_invoke_with_config(
             asm,
@@ -4971,21 +4997,23 @@ where
     }
 
     /// Produce an inline-assembly `invoke` with explicit call-site configuration.
-    pub fn build_inline_asm_invoke_with_config<R2, I, V, S2, SU>(
+    pub fn build_inline_asm_invoke_with_config<R2, I, V, Normal, Unwind>(
         self,
         asm: InlineAsm<'ctx, B>,
         args: I,
-        normal_dest: BasicBlock<'ctx, R, S2, B>,
-        unwind_dest: BasicBlock<'ctx, R, SU, B>,
+        normal_dest: Normal,
+        unwind_dest: Unwind,
         config: CallSiteConfig,
     ) -> IrResult<SealedBlockInvoke<'ctx, R, R2, B>>
     where
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: IsValue<'ctx, B>,
-        S2: BlockSealState,
-        SU: BlockSealState,
+        Normal: IntoBasicBlockLabel<'ctx, R, B>,
+        Unwind: IntoBasicBlockLabel<'ctx, R, B>,
     {
+        let normal_dest = normal_dest.into_basic_block_label();
+        let unwind_dest = unwind_dest.into_basic_block_label();
         let asm_v = asm.as_value();
         let fn_ty = asm.function_type();
         let ret_ty = fn_ty.return_type().id();
@@ -5002,7 +5030,6 @@ where
             arg_ids.push(v.id);
         }
         let (name, calling_conv, attrs) = config.into_parts();
-        let bb = self.insert_block();
         let payload = crate::instr_types::InvokeInstData::new_with_attrs(
             asm_v.id,
             fn_ty.as_type().id(),
@@ -5013,25 +5040,22 @@ where
             attrs,
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let bb = self.into_insert_block();
         Ok((
             bb.retag_seal::<Sealed>(),
-            InvokeInst::<Dyn, B>::from_raw(
-                inst.as_value().id,
-                ModuleRef::<B>::new(self.module),
-                ret_ty,
-            )
-            .retag::<R2>(),
+            InvokeInst::<Dyn, B>::from_raw(inst.as_value().id, module_ref, ret_ty).retag::<R2>(),
         ))
     }
 
     /// Produce `callbr <ret-ty> <callee>(<args>) to label %default
     /// [label %indirect1, ...]`. Mirrors `IRBuilder::CreateCallBr`.
-    pub fn build_callbr<R2, I, V, S2, Name>(
+    pub fn build_callbr<R2, I, V, Default, Indirects, Indirect, Name>(
         self,
         callee: FunctionValue<'ctx, R2, B>,
         args: I,
-        default_dest: BasicBlock<'ctx, R, S2, B>,
-        indirect_dests: &[BasicBlock<'ctx, R, S2, B>],
+        default_dest: Default,
+        indirect_dests: Indirects,
         name: Name,
     ) -> IrResult<(BasicBlock<'ctx, R, Sealed, B>, CallBrInst<'ctx, B>)>
     where
@@ -5039,7 +5063,9 @@ where
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: IsValue<'ctx, B>,
-        S2: BlockSealState,
+        Default: IntoBasicBlockLabel<'ctx, R, B>,
+        Indirects: IntoIterator<Item = Indirect>,
+        Indirect: IntoBasicBlockLabel<'ctx, R, B>,
     {
         self.build_callbr_with_config(
             callee,
@@ -5051,20 +5077,23 @@ where
     }
 
     /// Produce `callbr` with explicit call-site configuration.
-    pub fn build_callbr_with_config<R2, I, V, S2>(
+    pub fn build_callbr_with_config<R2, I, V, Default, Indirects, Indirect>(
         self,
         callee: FunctionValue<'ctx, R2, B>,
         args: I,
-        default_dest: BasicBlock<'ctx, R, S2, B>,
-        indirect_dests: &[BasicBlock<'ctx, R, S2, B>],
+        default_dest: Default,
+        indirect_dests: Indirects,
         config: CallSiteConfig,
     ) -> IrResult<(BasicBlock<'ctx, R, Sealed, B>, CallBrInst<'ctx, B>)>
     where
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: IsValue<'ctx, B>,
-        S2: BlockSealState,
+        Default: IntoBasicBlockLabel<'ctx, R, B>,
+        Indirects: IntoIterator<Item = Indirect>,
+        Indirect: IntoBasicBlockLabel<'ctx, R, B>,
     {
+        let default_dest = default_dest.into_basic_block_label();
         let callee_v = callee.as_value();
         let fn_ty = callee.signature().as_type().id();
         let ret_ty = self
@@ -5075,9 +5104,11 @@ where
             .map(|(r, _, _)| r)
             .unwrap_or(fn_ty);
         let (name, calling_conv, attrs) = config.into_parts();
-        let bb = self.insert_block();
         let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.as_value().id).collect();
-        let indirect_ids: Vec<ValueId> = indirect_dests.iter().map(|d| d.as_value().id).collect();
+        let indirect_ids: Vec<ValueId> = indirect_dests
+            .into_iter()
+            .map(|d| d.into_basic_block_label().as_value().id)
+            .collect();
         let payload = crate::instr_types::CallBrInstData::new_with_attrs(
             callee_v.id,
             fn_ty,
@@ -5088,19 +5119,21 @@ where
             attrs,
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name);
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let bb = self.into_insert_block();
         Ok((
             bb.retag_seal::<Sealed>(),
-            CallBrInst::<B>::from_raw(inst.as_value().id, ModuleRef::<B>::new(self.module), ret_ty),
+            CallBrInst::<B>::from_raw(inst.as_value().id, module_ref, ret_ty),
         ))
     }
 
     /// Produce a `callbr` whose callee is an inline-assembly value.
-    pub fn build_inline_asm_callbr<R2, I, V, S2, Name>(
+    pub fn build_inline_asm_callbr<R2, I, V, Default, Indirects, Indirect, Name>(
         self,
         asm: InlineAsm<'ctx, B>,
         args: I,
-        default_dest: BasicBlock<'ctx, R, S2, B>,
-        indirect_dests: &[BasicBlock<'ctx, R, S2, B>],
+        default_dest: Default,
+        indirect_dests: Indirects,
         name: Name,
     ) -> IrResult<(BasicBlock<'ctx, R, Sealed, B>, CallBrInst<'ctx, B>)>
     where
@@ -5108,9 +5141,11 @@ where
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: IsValue<'ctx, B>,
-        S2: BlockSealState,
+        Default: IntoBasicBlockLabel<'ctx, R, B>,
+        Indirects: IntoIterator<Item = Indirect>,
+        Indirect: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        self.build_inline_asm_callbr_with_config::<R2, _, _, _>(
+        self.build_inline_asm_callbr_with_config::<R2, _, _, _, _, _>(
             asm,
             args,
             default_dest,
@@ -5120,20 +5155,23 @@ where
     }
 
     /// Produce an inline-assembly `callbr` with explicit call-site configuration.
-    pub fn build_inline_asm_callbr_with_config<R2, I, V, S2>(
+    pub fn build_inline_asm_callbr_with_config<R2, I, V, Default, Indirects, Indirect>(
         self,
         asm: InlineAsm<'ctx, B>,
         args: I,
-        default_dest: BasicBlock<'ctx, R, S2, B>,
-        indirect_dests: &[BasicBlock<'ctx, R, S2, B>],
+        default_dest: Default,
+        indirect_dests: Indirects,
         config: CallSiteConfig,
     ) -> IrResult<(BasicBlock<'ctx, R, Sealed, B>, CallBrInst<'ctx, B>)>
     where
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: IsValue<'ctx, B>,
-        S2: BlockSealState,
+        Default: IntoBasicBlockLabel<'ctx, R, B>,
+        Indirects: IntoIterator<Item = Indirect>,
+        Indirect: IntoBasicBlockLabel<'ctx, R, B>,
     {
+        let default_dest = default_dest.into_basic_block_label();
         let asm_v = asm.as_value();
         let fn_ty = asm.function_type();
         let ret_ty = fn_ty.return_type().id();
@@ -5149,9 +5187,11 @@ where
             let v = arg.as_value();
             arg_ids.push(v.id);
         }
-        let indirect_ids: Vec<ValueId> = indirect_dests.iter().map(|d| d.as_value().id).collect();
+        let indirect_ids: Vec<ValueId> = indirect_dests
+            .into_iter()
+            .map(|d| d.into_basic_block_label().as_value().id)
+            .collect();
         let (name, calling_conv, attrs) = config.into_parts();
-        let bb = self.insert_block();
         let payload = crate::instr_types::CallBrInstData::new_with_attrs(
             asm_v.id,
             fn_ty.as_type().id(),
@@ -5162,9 +5202,11 @@ where
             attrs,
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name);
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let bb = self.into_insert_block();
         Ok((
             bb.retag_seal::<Sealed>(),
-            CallBrInst::<B>::from_raw(inst.as_value().id, ModuleRef::<B>::new(self.module), ret_ty),
+            CallBrInst::<B>::from_raw(inst.as_value().id, module_ref, ret_ty),
         ))
     }
 
@@ -5206,10 +5248,10 @@ where
         V: IsValue<'ctx, B>,
     {
         let v = value.as_value();
-        let bb = self.insert_block();
         let void_ty = self.module.void_type().as_type().id();
         let payload = crate::instr_types::ResumeInstData::new(v.id);
         let inst = self.append_instruction(void_ty, InstructionKindData::Resume(payload), name);
+        let bb = self.into_insert_block();
         Ok((bb.retag_seal::<Sealed>(), inst))
     }
 
@@ -5293,39 +5335,40 @@ where
 
     /// Produce `catchret from <catchpad> to label <bb>`. Mirrors
     /// `IRBuilder::CreateCatchRet`.
-    pub fn build_catch_ret<S2, Name>(
+    pub fn build_catch_ret<Target, Name>(
         self,
         catch_pad: Value<'ctx, B>,
-        target: BasicBlock<'ctx, R, S2, B>,
+        target: Target,
         name: Name,
     ) -> IrResult<SealedBlockInst<'ctx, R, B>>
     where
         Name: AsRef<str>,
-        S2: BlockSealState,
+        Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let bb = self.insert_block();
+        let target = target.into_basic_block_label();
         let void_ty = self.module.void_type().as_type().id();
         let payload =
             crate::instr_types::CatchReturnInstData::new(catch_pad.id, target.as_value().id);
         let inst =
             self.append_instruction(void_ty, InstructionKindData::CatchReturn(payload), name);
+        let bb = self.into_insert_block();
         Ok((bb.retag_seal::<Sealed>(), inst))
     }
 
     /// Produce `cleanupret from <cleanuppad> unwind label <bb>`.
     /// Mirrors `IRBuilder::CreateCleanupRet`.
-    pub fn build_cleanup_ret<S2, Name>(
+    pub fn build_cleanup_ret<Unwind, Name>(
         self,
         cleanup_pad: Value<'ctx, B>,
-        unwind_dest: BasicBlock<'ctx, R, S2, B>,
+        unwind_dest: Unwind,
         name: Name,
     ) -> IrResult<SealedBlockInst<'ctx, R, B>>
     where
-        S2: BlockSealState,
+        Unwind: IntoBasicBlockLabel<'ctx, R, B>,
         Name: AsRef<str>,
     {
-        let unwind_value = unwind_dest.as_value();
-        self.build_cleanup_ret_raw(cleanup_pad.id, Some(unwind_value.id), name)
+        let unwind_dest = unwind_dest.into_basic_block_label();
+        self.build_cleanup_ret_raw(cleanup_pad.id, Some(unwind_dest.as_value().id), name)
     }
 
     /// Produce `cleanupret from <cleanuppad> unwind to caller`.
@@ -5350,28 +5393,28 @@ where
     where
         Name: AsRef<str>,
     {
-        let bb = self.insert_block();
         let void_ty = self.module.void_type().as_type().id();
         let payload = crate::instr_types::CleanupReturnInstData::new(cleanup_pad_id, unwind_id);
         let inst =
             self.append_instruction(void_ty, InstructionKindData::CleanupReturn(payload), name);
+        let bb = self.into_insert_block();
         Ok((bb.retag_seal::<Sealed>(), inst))
     }
 
     /// Produce `catchswitch within <parent> [...] unwind label <bb>`.
     /// Mirrors `IRBuilder::CreateCatchSwitch`.
-    pub fn build_catch_switch<S2, Name>(
+    pub fn build_catch_switch<Unwind, Name>(
         self,
         parent_pad: Value<'ctx, B>,
-        unwind_dest: BasicBlock<'ctx, R, S2, B>,
+        unwind_dest: Unwind,
         name: Name,
     ) -> IrResult<SealedBlockCatchSwitch<'ctx, R, B>>
     where
-        S2: BlockSealState,
+        Unwind: IntoBasicBlockLabel<'ctx, R, B>,
         Name: AsRef<str>,
     {
-        let unwind_value = unwind_dest.as_value();
-        self.build_catch_switch_raw(Some(parent_pad.id), Some(unwind_value.id), name)
+        let unwind_dest = unwind_dest.into_basic_block_label();
+        self.build_catch_switch_raw(Some(parent_pad.id), Some(unwind_dest.as_value().id), name)
     }
 
     /// Produce `catchswitch within <parent> [...] unwind to caller`.
@@ -5389,17 +5432,17 @@ where
 
     /// Produce `catchswitch within none [...] unwind label <bb>`.
     /// Mirrors `IRBuilder::CreateCatchSwitch`.
-    pub fn build_catch_switch_within_none<S2, Name>(
+    pub fn build_catch_switch_within_none<Unwind, Name>(
         self,
-        unwind_dest: BasicBlock<'ctx, R, S2, B>,
+        unwind_dest: Unwind,
         name: Name,
     ) -> IrResult<SealedBlockCatchSwitch<'ctx, R, B>>
     where
-        S2: BlockSealState,
+        Unwind: IntoBasicBlockLabel<'ctx, R, B>,
         Name: AsRef<str>,
     {
-        let unwind_value = unwind_dest.as_value();
-        self.build_catch_switch_raw(None, Some(unwind_value.id), name)
+        let unwind_dest = unwind_dest.into_basic_block_label();
+        self.build_catch_switch_raw(None, Some(unwind_dest.as_value().id), name)
     }
 
     /// Produce `catchswitch within none [...] unwind to caller`.
@@ -5423,18 +5466,15 @@ where
     where
         Name: AsRef<str>,
     {
-        let bb = self.insert_block();
         let token_ty = self.module.token_type().as_type().id();
         let payload = crate::instr_types::CatchSwitchInstData::new(parent_id, unwind_id);
         let inst =
             self.append_instruction(token_ty, InstructionKindData::CatchSwitch(payload), name);
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let bb = self.into_insert_block();
         Ok((
             bb.retag_seal::<Sealed>(),
-            CatchSwitchInst::<Open, B>::from_raw(
-                inst.as_value().id,
-                ModuleRef::<B>::new(self.module),
-                token_ty,
-            ),
+            CatchSwitchInst::<Open, B>::from_raw(inst.as_value().id, module_ref, token_ty),
         ))
     }
 
@@ -5446,8 +5486,8 @@ where
     ) {
         let payload = crate::instr_types::UnreachableInstData;
         let void_ty = self.module.void_type().as_type().id();
-        let bb = self.insert_block();
         let inst = self.append_instruction(void_ty, InstructionKindData::Unreachable(payload), "");
+        let bb = self.into_insert_block();
         (bb.retag_seal::<Sealed>(), inst)
     }
 
@@ -5716,8 +5756,8 @@ where
                 });
             }
         }
-        let bb = self.insert_block();
         let inst = self.append_ret(Some(v));
+        let bb = self.into_insert_block();
         Ok((bb.retag_seal::<Sealed>(), inst))
     }
 
@@ -5743,8 +5783,8 @@ where
     /// `IntoReturnValue<'ctx, ()>` impls exist), so `build_ret_void`
     /// is the only return option.
     pub fn build_ret_void(self) -> VoidReturnInst<'ctx, B> {
-        let bb = self.insert_block();
         let inst = self.append_ret(None);
+        let bb = self.into_insert_block();
         (bb.retag_seal::<Sealed>(), inst)
     }
 }
@@ -5758,8 +5798,7 @@ where
     /// [`IrError::ReturnTypeMismatch`] if the parent function does
     /// not actually return `void`.
     pub fn build_ret_void(self) -> IrResult<SealedBlockInst<'ctx, Dyn, B>> {
-        let bb = self.insert_block();
-        let parent_id = bb.parent_id().unwrap_or_else(|| {
+        let parent_id = self.insert_block().parent_id().unwrap_or_else(|| {
             unreachable!("Positioned builder block always has a parent function")
         });
         let parent_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(
@@ -5774,6 +5813,7 @@ where
             });
         }
         let inst = self.append_ret(None);
+        let bb = self.into_insert_block();
         Ok((bb.retag_seal::<Sealed>(), inst))
     }
 }

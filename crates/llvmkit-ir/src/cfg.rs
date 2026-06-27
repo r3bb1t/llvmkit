@@ -4,40 +4,41 @@
 
 use std::collections::HashMap;
 
-use super::basic_block::BasicBlock;
+use super::basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
 use super::block_state::{BlockSealState, Unsealed};
 use super::function::FunctionValue;
-use super::instruction::{Instruction, InstructionKindData, state};
+use super::instruction::{InstructionKindData, InstructionView};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, ModuleBrand, ModuleRef};
 use super::value::{ValueId, ValueKindData};
 
 /// A directed edge in a function CFG. Mirrors LLVM's `BasicBlockEdge`
-/// without pointer identity: endpoints are ordinary basic-block handles.
+/// without pointer identity: endpoints are copyable block labels, not
+/// insertion-capability handles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BasicBlockEdge<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    start: BasicBlock<'ctx, Dyn, Unsealed, B>,
-    end: BasicBlock<'ctx, Dyn, Unsealed, B>,
+    start: BasicBlockLabel<'ctx, Dyn, B>,
+    end: BasicBlockLabel<'ctx, Dyn, B>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockEdge<'ctx, B> {
     #[inline]
     pub(super) fn new(
-        start: BasicBlock<'ctx, Dyn, Unsealed, B>,
-        end: BasicBlock<'ctx, Dyn, Unsealed, B>,
+        start: BasicBlockLabel<'ctx, Dyn, B>,
+        end: BasicBlockLabel<'ctx, Dyn, B>,
     ) -> Self {
         Self { start, end }
     }
 
-    /// Edge start block.
+    /// Edge start block label.
     #[inline]
-    pub fn start(self) -> BasicBlock<'ctx, Dyn, Unsealed, B> {
+    pub fn start(&self) -> BasicBlockLabel<'ctx, Dyn, B> {
         self.start
     }
 
-    /// Edge end block.
+    /// Edge end block label.
     #[inline]
-    pub fn end(self) -> BasicBlock<'ctx, Dyn, Unsealed, B> {
+    pub fn end(&self) -> BasicBlockLabel<'ctx, Dyn, B> {
         self.end
     }
 }
@@ -45,7 +46,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockEdge<'ctx, B> {
 /// Recomputed CFG view for one function. Successor/predecessor lists
 /// preserve duplicate edges, matching LLVM's CFG iterators.
 #[derive(Debug, Clone)]
-pub struct FunctionCfg<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct FunctionCfg<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
     function: FunctionValue<'ctx, Dyn, B>,
     successors: HashMap<ValueId, Vec<ValueId>>,
     predecessors: HashMap<ValueId, Vec<ValueId>>,
@@ -64,15 +65,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
 
         for block in function.basic_blocks() {
             let block = block.as_dyn();
-            let succ_ids = successor_ids(block);
+            let succ_ids = successor_ids(&block);
+            let block_id = block.as_value().id;
             for succ_id in &succ_ids {
-                predecessors.entry(*succ_id).or_default().push(block.id);
+                predecessors.entry(*succ_id).or_default().push(block_id);
                 edges.push(BasicBlockEdge::new(
-                    block,
-                    BasicBlock::from_parts(*succ_id, module_ref, label_ty),
+                    block.label(),
+                    BasicBlock::<Dyn, Unsealed, B>::from_parts(*succ_id, module_ref, label_ty)
+                        .label(),
                 ));
             }
-            successors.insert(block.id, succ_ids);
+            successors.insert(block_id, succ_ids);
         }
 
         Self {
@@ -90,65 +93,68 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
     }
 
     /// Successors of `block`, preserving duplicate edges.
-    pub fn successors<R, S>(
-        &self,
-        block: BasicBlock<'ctx, R, S, B>,
-    ) -> Vec<BasicBlock<'ctx, Dyn, Unsealed, B>>
+    pub fn successors<R, Block>(&self, block: Block) -> Vec<BasicBlockLabel<'ctx, Dyn, B>>
     where
         R: ReturnMarker,
-        S: BlockSealState,
+        Block: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        ids_to_blocks(block.module_ref(), self.successors.get(&block.as_dyn().id))
+        let block = block.into_basic_block_label();
+        ids_to_labels(
+            block.as_value().module,
+            self.successors.get(&block.as_value().id),
+        )
     }
 
     /// Predecessors of `block`, preserving duplicate incoming edges.
-    pub fn predecessors<R, S>(
-        &self,
-        block: BasicBlock<'ctx, R, S, B>,
-    ) -> Vec<BasicBlock<'ctx, Dyn, Unsealed, B>>
+    pub fn predecessors<R, Block>(&self, block: Block) -> Vec<BasicBlockLabel<'ctx, Dyn, B>>
     where
         R: ReturnMarker,
-        S: BlockSealState,
+        Block: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        ids_to_blocks(
-            block.module_ref(),
-            self.predecessors.get(&block.as_dyn().id),
+        let block = block.into_basic_block_label();
+        ids_to_labels(
+            block.as_value().module,
+            self.predecessors.get(&block.as_value().id),
         )
     }
 
     /// Directed edges in function block order and terminator successor order.
     pub fn edges(&self) -> impl ExactSizeIterator<Item = BasicBlockEdge<'ctx, B>> + '_ {
-        self.edges.iter().copied()
+        self.edges.iter().cloned()
     }
 }
 
 pub(super) fn block_successors<'ctx, R, S, B>(
-    block: BasicBlock<'ctx, R, S, B>,
-) -> Vec<BasicBlock<'ctx, Dyn, Unsealed, B>>
+    block: &BasicBlock<'ctx, R, S, B>,
+) -> Vec<BasicBlockLabel<'ctx, Dyn, B>>
 where
     R: ReturnMarker,
     S: BlockSealState,
     B: ModuleBrand + 'ctx,
 {
     let module = block.module_ref();
-    let ids = successor_ids(block.as_dyn());
-    ids_to_blocks(module, Some(&ids))
+    let dyn_block = block.as_dyn();
+    let ids = successor_ids(&dyn_block);
+    ids_to_labels(module, Some(&ids))
 }
 
-fn ids_to_blocks<'ctx, B: ModuleBrand + 'ctx>(
+fn ids_to_labels<'ctx, B: ModuleBrand + 'ctx>(
     module: ModuleRef<'ctx, B>,
     ids: Option<&Vec<ValueId>>,
-) -> Vec<BasicBlock<'ctx, Dyn, Unsealed, B>> {
+) -> Vec<BasicBlockLabel<'ctx, Dyn, B>> {
     let label_ty = module.module().label_type().as_type().id();
     ids.into_iter()
         .flat_map(|ids| ids.iter().copied())
-        .map(|id| BasicBlock::from_parts(id, module, label_ty))
+        .map(|id| BasicBlock::<Dyn, Unsealed, B>::from_parts(id, module, label_ty).label())
         .collect()
 }
 
-pub(super) fn successor_ids<'ctx, B: ModuleBrand + 'ctx>(
-    block: BasicBlock<'ctx, Dyn, Unsealed, B>,
-) -> Vec<ValueId> {
+pub(super) fn successor_ids<'ctx, R, S, B>(block: &BasicBlock<'ctx, R, S, B>) -> Vec<ValueId>
+where
+    R: ReturnMarker,
+    S: BlockSealState,
+    B: ModuleBrand + 'ctx,
+{
     let Some(term) = block.terminator() else {
         return Vec::new();
     };
@@ -156,7 +162,7 @@ pub(super) fn successor_ids<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 pub(super) fn instruction_successor_ids<'ctx, B: ModuleBrand + 'ctx>(
-    inst: &Instruction<'ctx, state::Attached, B>,
+    inst: &InstructionView<'ctx, B>,
 ) -> Vec<ValueId> {
     match &inst.as_value().data().kind {
         ValueKindData::Instruction(data) => kind_successor_ids(&data.kind),

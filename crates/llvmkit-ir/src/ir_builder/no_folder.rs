@@ -5,8 +5,8 @@
 
 use super::folder::IRBuilderFolder;
 use super::{
-    BinaryOpcode, CastOpcode, CmpPredicate, Constant, FastMathFlags, GepNoWrapFlags, Instruction,
-    IntrinsicId, IrResult, ModuleBrand, Type, UnaryOpcode, Value, state,
+    BinaryOpcode, CastOpcode, CmpPredicate, Constant, FastMathFlags, GepNoWrapFlags,
+    InstructionView, IntrinsicId, IrResult, ModuleBrand, Type, UnaryOpcode, Value,
 };
 
 /// Folder that never folds.
@@ -149,7 +149,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for NoFolder {
         _lhs: Value<'ctx, B>,
         _rhs: Value<'ctx, B>,
         _ty: Type<'ctx, B>,
-        _fmf_source: Option<&Instruction<'ctx, state::Attached, B>>,
+        _fmf_source: Option<&InstructionView<'ctx, B>>,
     ) -> IrResult<Option<Value<'ctx, B>>> {
         Ok(None)
     }

@@ -16,6 +16,12 @@ pipelines preserve `Module<Verified>`, while transform pipelines return
 use branded `Module` tokens and gate saved-handle mutators on
 `&Module<Unverified>`.
 
+Instruction lifecycle mutation uses linear `Instruction<Attached>` handles:
+erase, detach, move, and RAUW consume the handle. Copyable rediscovery paths
+return `InstructionView`, and cursor-driven mutation goes through
+`BlockCursor::next` on an unsealed block.
+
+
 Every `Module::with_new` session carries a fresh compile-time module brand.
 Normal users do not write that brand: builder, type, constant, global, and block
 APIs infer it from the `Module` or type receiver. Cross-module operands are

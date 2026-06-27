@@ -44,7 +44,7 @@ fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
         let lhs: IntValue<i32> = f.param(0)?.try_into()?;
         let rhs: IntValue<i32> = f.param(1)?.try_into()?;
         let sum = b.build_int_add(lhs, rhs, "sum")?;
-        b.build_ret(sum)?;
+        let (entry, _) = b.build_ret(sum)?;
 
         // ---- Assertions ----
 

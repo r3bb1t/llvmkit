@@ -7,7 +7,7 @@
 use llvmkit_ir::instr_types::CastOpcode;
 use llvmkit_ir::{
     BinaryOpcode, CmpPredicate, Constant, ConstantFloatValue, ConstantFolder, FastMathFlags,
-    GepNoWrapFlags, IRBuilder, IRBuilderFolder, Instruction, InstructionKind, IntDyn, IntValue,
+    GepNoWrapFlags, IRBuilder, IRBuilderFolder, InstructionKind, InstructionView, IntDyn, IntValue,
     IntrinsicId, IrError, IrResult, Linkage, Module, MulFlags, NoFolder, PointerValue, ShlFlags,
     Type, UDivFlags, UnaryOpcode, Value, constant_fold_binary_instruction,
 };
@@ -186,7 +186,7 @@ impl<'ctx> IRBuilderFolder<'ctx> for ReturningFolder<'ctx> {
         _lhs: Value<'ctx>,
         _rhs: Value<'ctx>,
         _ty: Type<'ctx>,
-        _fmf_source: Option<&Instruction<'ctx>>,
+        _fmf_source: Option<&InstructionView<'ctx>>,
     ) -> IrResult<Option<Value<'ctx>>> {
         self.fold()
     }
@@ -223,7 +223,7 @@ fn constant_folder_folds_fneg_constant_without_instruction() -> Result<(), IrErr
 
         let folded = ConstantFloatValue::<f32>::try_from(Constant::try_from(result.as_value())?)?;
         assert!(folded.ap_float().is_exactly_value_f64(-1.0));
-        assert_eq!(entry.instructions().len(), 0);
+        assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
     })
 }
@@ -246,7 +246,7 @@ fn constant_folder_folds_udiv_by_zero_to_poison_without_instruction() -> Result<
             Constant::try_from(result.as_value())?,
             i32_ty.as_type().get_poison().as_constant()
         );
-        assert_eq!(entry.instructions().len(), 0);
+        assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
     })
 }
@@ -273,7 +273,7 @@ fn constant_folder_exact_udiv_inexact_constants_fold_to_poison() -> Result<(), I
             Constant::try_from(result.as_value())?,
             i32_ty.as_type().get_poison().as_constant()
         );
-        assert_eq!(entry.instructions().len(), 0);
+        assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
     })
 }
@@ -370,7 +370,7 @@ fn custom_folder_no_wrap_hook_receives_mul() -> Result<(), IrError> {
         )?;
 
         assert_eq!(result.as_value(), folded);
-        assert_eq!(entry.instructions().len(), 0);
+        assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
     })
 }
@@ -407,7 +407,7 @@ fn custom_folder_no_wrap_hook_receives_shl() -> Result<(), IrError> {
         )?;
 
         assert_eq!(result.as_value(), folded);
-        assert_eq!(entry.instructions().len(), 0);
+        assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
     })
 }
@@ -431,8 +431,8 @@ fn no_folder_names_add_instruction_exactly() -> Result<(), IrError> {
 
         let name = add.as_value().name();
         assert_eq!(name.as_deref(), Some("add"));
-        assert!(Instruction::try_from(add.as_value()).is_ok());
-        assert_eq!(entry.instructions().len(), 1);
+        assert!(InstructionView::try_from(add.as_value()).is_ok());
+        assert_eq!(b.insert_block().instructions().len(), 1);
         Ok(())
     })
 }
@@ -451,7 +451,7 @@ fn no_folder_emits_udiv_instruction_for_constants() -> Result<(), IrError> {
         let rhs = i32_ty.const_zero();
 
         let result = b.build_int_udiv::<i32, _, _, _>(lhs, rhs, "q")?;
-        let instruction = Instruction::try_from(result.as_value())?;
+        let instruction = InstructionView::try_from(result.as_value())?;
         let Some(InstructionKind::UDiv(udiv)) = instruction.kind() else {
             panic!("expected udiv instruction");
         };
@@ -460,7 +460,7 @@ fn no_folder_emits_udiv_instruction_for_constants() -> Result<(), IrError> {
         assert_eq!(udiv.rhs(), rhs.as_value());
         assert!(!udiv.is_exact());
         assert_eq!(result.as_value().name().as_deref(), Some("q"));
-        assert_eq!(entry.instructions().len(), 1);
+        assert_eq!(b.insert_block().instructions().len(), 1);
         Ok(())
     })
 }
@@ -481,7 +481,7 @@ fn no_folder_emits_ptrtoaddr_instruction_with_address_type() -> Result<(), IrErr
         let ptr: PointerValue = f.param(0)?.try_into()?;
 
         let result = b.build_ptr_to_addr(ptr, "addr")?;
-        let instruction = Instruction::try_from(result.as_value())?;
+        let instruction = InstructionView::try_from(result.as_value())?;
         let Some(InstructionKind::Cast(cast)) = instruction.kind() else {
             panic!("expected ptrtoaddr cast instruction");
         };
@@ -491,7 +491,7 @@ fn no_folder_emits_ptrtoaddr_instruction_with_address_type() -> Result<(), IrErr
         let typed_result: IntValue<IntDyn> = result;
         assert_eq!(typed_result.ty().bit_width(), 32);
         assert_eq!(typed_result.as_value().name().as_deref(), Some("addr"));
-        assert_eq!(entry.instructions().len(), 1);
+        assert_eq!(b.insert_block().instructions().len(), 1);
         Ok(())
     })
 }
@@ -510,8 +510,8 @@ fn constant_folder_does_not_simplify_nonconstant_add_zero() -> Result<(), IrErro
 
         let result = b.build_int_add::<i32, _, _, _>(x, i32_ty.const_zero(), "sum")?;
 
-        assert!(Instruction::try_from(result.as_value()).is_ok());
-        assert_eq!(entry.instructions().len(), 1);
+        assert!(InstructionView::try_from(result.as_value()).is_ok());
+        assert_eq!(b.insert_block().instructions().len(), 1);
         Ok(())
     })
 }
@@ -540,7 +540,7 @@ fn custom_folder_wrong_type_is_rejected() -> Result<(), IrError> {
             .expect_err("wrong-type folded value is rejected");
 
         assert!(matches!(err, IrError::TypeMismatch { .. }));
-        assert_eq!(entry.instructions().len(), 0);
+        assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
     })
 }

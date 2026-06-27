@@ -1,0 +1,5 @@
+error[E0599]: no method named `erase_from_parent` found for struct `InstructionView<'ctx, B>` in the current scope
+  --> tests/compile_fail/block_terminator_view_cannot_erase.rs:18:14
+   |
+18 |         term.erase_from_parent(&m);
+   |              ^^^^^^^^^^^^^^^^^ method not found in `InstructionView<'_, Brand<'_>>`

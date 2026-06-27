@@ -1,0 +1,5 @@
+error[E0599]: no method named `as_instruction` found for struct `AddInst<'ctx, B>` in the current scope
+  --> tests/compile_fail/per_opcode_handle_cannot_mint_instruction.rs:21:29
+   |
+21 |             let _inst = add.as_instruction();
+   |                             ^^^^^^^^^^^^^^ method not found in `AddInst<'_, Brand<'_>>`

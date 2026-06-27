@@ -9,7 +9,7 @@
 //! coverage to the typed-marker API.
 
 use llvmkit_ir::{
-    Brand, ConstantFolder, FastMathFlags, FloatValue, IRBuilder, Instruction, InstructionKind,
+    Brand, ConstantFolder, FastMathFlags, FloatValue, IRBuilder, InstructionKind, InstructionView,
     IntValue, IrError, Linkage, Module, PointerValue, Positioned, Ptr,
 };
 
@@ -188,14 +188,14 @@ fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
         let p: FloatValue<f32> = f.param(0)?.try_into()?;
         let n0 = b.build_float_neg::<f32, _, _>(p, "n0")?;
-        let Some(InstructionKind::FNeg(n0_inst)) = Instruction::try_from(n0.as_value())?.kind()
+        let Some(InstructionKind::FNeg(n0_inst)) = InstructionView::try_from(n0.as_value())?.kind()
         else {
             panic!("expected n0 to be fneg");
         };
         assert!(n0_inst.fast_math_flags().is_empty());
         let fmf = FastMathFlags::NO_NANS | FastMathFlags::NO_SIGNED_ZEROS;
         let n1 = b.build_float_neg_with_flags::<f32, _, _>(n0, fmf, "n1")?;
-        let Some(InstructionKind::FNeg(n1_inst)) = Instruction::try_from(n1.as_value())?.kind()
+        let Some(InstructionKind::FNeg(n1_inst)) = InstructionView::try_from(n1.as_value())?.kind()
         else {
             panic!("expected n1 to be fneg");
         };
@@ -378,14 +378,15 @@ fn build_fp_phi_emits_phi_with_double_kind() -> Result<(), IrError> {
         let f = m.add_function::<f64, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let join = f.append_basic_block(&m, "join");
+        let entry_label = entry.label();
         let b = IRBuilder::new_for::<f64>(&m).position_at_end(entry);
         let p: FloatValue<f64> = f.param(0)?.try_into()?;
-        let (entry_sealed, _br) = b.build_br(join)?;
+        let (entry_sealed, _br) = b.build_br(&join)?;
         let _ = entry_sealed;
         let b2 = IRBuilder::new_for::<f64>(&m).position_at_end(join);
         let phi = b2
             .build_fp_phi::<f64, _>("merge")?
-            .add_incoming(p, entry)?
+            .add_incoming(p, entry_label)?
             .finish();
         b2.build_ret(phi.as_float_value())?;
         let text = format!("{m}");
@@ -410,14 +411,15 @@ fn build_pointer_phi_emits_phi_with_ptr() -> Result<(), IrError> {
         let f = m.add_function::<Ptr, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let join = f.append_basic_block(&m, "join");
+        let entry_label = entry.label();
         let b = IRBuilder::new_for::<Ptr>(&m).position_at_end(entry);
         let p: PointerValue = f.param(0)?.try_into()?;
-        let (entry_sealed, _br) = b.build_br(join)?;
+        let (entry_sealed, _br) = b.build_br(&join)?;
         let _ = entry_sealed;
         let b2 = IRBuilder::new_for::<Ptr>(&m).position_at_end(join);
         let phi = b2
             .build_pointer_phi("merge")?
-            .add_incoming(p, entry)?
+            .add_incoming(p, entry_label)?
             .finish();
         b2.build_ret(phi.as_pointer_value())?;
         let text = format!("{m}");

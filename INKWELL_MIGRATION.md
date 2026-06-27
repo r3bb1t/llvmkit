@@ -90,6 +90,7 @@ check at runtime:
 |"int predicate vs FP predicate"|inkwell uses two distinct enums (good)|`IntPredicate` + `FloatPredicate` are distinct types|
 |"integer width is valid"|panic on bad width|`Module::custom_width_int_type` returns `IrResult`|
 |"the builder has an insertion point"|runtime `BuilderError::NoInsertionPoint`|`IRBuilder<'_, 'ctx, B, F, S, R>` typestate: `S = Unpositioned` has no `build_*` methods at all; `position_at_end` consumes `self` and returns `IRBuilder<..., Positioned, R>`. Calling `build_int_add` on an unpositioned builder is a compile-time error.|
+|"an instruction lifecycle handle cannot be reminted from a copyable view"|raw `InstructionValue`/`LLVMValueRef` handles can be copied and reused for mutation|`Instruction<Attached>` is linear; copyable discovery returns `InstructionView`, while mutation uses builder results, `BlockCursor`, or detached reinsertion.|
 |"this value is an integer"|runtime `is_int_value()` / `as_int_value()`|`IntValue<'ctx>` per-kind handle. `build_int_add(lhs: IntValue, rhs: IntValue, name)` rejects non-int arguments at the type level. Same for `FloatValue`, `PointerValue`, etc.|
 |"add operands have the same width"|runtime `assert_eq!(lhs.ty(), rhs.ty())` inside LLVM|`build_int_add<W: IntWidth, ...>(IntValue<'ctx, W>, IntValue<'ctx, W>, name)` enforces equal widths at compile time via the `W` marker. Mixing `IntValue<i32>` with `IntValue<i64>` is a compile error — no runtime check.|
 |"`build_ret` value matches function return type"|runtime `BuilderError::TypeMismatch`|`FunctionValue<'ctx, R>` carries a `ReturnMarker`. The IRBuilder's `build_ret` is dispatched per `R`: integer Rust marker types require the matching `IntValue`, float Rust marker types require the matching `FloatValue`, `Ptr` requires a `PointerValue`, and `()` exposes only `build_ret_void()`. The runtime type-equality check survives only on `Dyn`-marked builders.|
@@ -130,8 +131,8 @@ shapes and is distinct from `IntDyn` / `FloatDyn`.
 ||`function.append_basic_block("l")`|`f.append_basic_block(&m, "l")`|requires the matching unverified module token|
 ||`Builder::build_int_add(a, b, name)`|`b.build_int_add::<W, _, _>(lhs: IntValue<'ctx, W>, rhs: IntValue<'ctx, W>, name)?` "" `W` is inferred at the call site, mismatched widths reject at compile time.|
 ||`Builder::build_int_sub` / `_mul`|`b.build_int_sub(...)` / `b.build_int_mul(...)`|same shape as `add`|
-||`Builder::build_return(Some(v))`|`b.build_ret(value)?`|`value: impl IsValue<'ctx>`; type must match the function's return type|
-||`Builder::build_return(None)`|`b.build_ret_void()?`|errors if return type isn't `void`|
+||`Builder::build_return(Some(v))`|`b.build_ret(value)?`|`value: impl IntoReturnValue<'ctx, R, B>`; type must match the function's return marker|
+||`Builder::build_return(None)`|`b.build_ret_void()` (`R = ()`) or `b.build_ret_void()?` (`Dyn`)|typed `void` builders are infallible; the `Dyn` path errors if the function does not return `void`|
 ||`Builder::position_at_end(bb)`|`IRBuilder::new(&m).position_at_end(bb)`|consumes `self` and transitions `Unpositioned` → `Positioned`; `build_*` methods are only reachable in `Positioned`|
 ||—|`IRBuilder::new_for::<R>(&m)`|new — produces a return-marker-tagged builder for compile-time-checked `build_ret`|
 ||—|`m.add_function::<R>(name, fn_ty, linkage)?`|new — typed-return form; errors with `IrError::ReturnTypeMismatch` if the signature's return type does not match `R`|
@@ -142,7 +143,7 @@ shapes and is distinct from `IntDyn` / `FloatDyn`.
 ||`Builder::build_int_s_extend(v, dst, name)`|`b.build_sext::<Src, Dst>(value, dst_ty, name)?`|widths checked at compile time via `Dst: WiderThan<Src>`|
 ||—|`b.build_zext_dyn` / `b.build_sext_dyn`|runtime-checked fallbacks for `IntValue<Dyn>` paths|
 ||`Builder::build_int_compare(p, l, r, name)`|`b.build_int_cmp::<W, _, _>(IntPredicate, lhs, rhs, name)?`|both operands share width `W`; result is `IntValue<'ctx, bool>`|
-||`Builder::build_unconditional_branch(bb)`|`b.build_br(target)?`|target's `R` matches the builder's; foreign module rejected with `IrError::ForeignValue`|
+||`Builder::build_unconditional_branch(bb)`|`b.build_br(target)?`|target's `R` and module brand match the builder; foreign modules are rejected by the type signature|
 ||`Builder::build_conditional_branch(c, t, e)`|`b.build_cond_br(cond, then_bb, else_bb)?`|`cond` accepts any `IntoIntValue<'ctx, bool>`|
 ||`Builder::build_unreachable()`|`b.build_unreachable()`|infallible (no operands)|
 ||`Builder::build_phi(ty, name)` + `phi.add_incoming(&[...])`|`b.build_int_phi::<W, _, _>(ty, incoming, name)?` + `phi.add_incoming(value, block)?`|empty initial list allowed; mirrors `PHINode::addIncoming` for the loop-edge flow|

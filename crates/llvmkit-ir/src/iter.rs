@@ -19,7 +19,7 @@
 //! (iteration safety is structural).
 
 use super::basic_block::BasicBlock;
-use super::block_state::Unsealed;
+use super::block_state::{BlockSealState, Unsealed};
 use super::instruction::{Instruction, state};
 use super::marker::ReturnMarker;
 use super::module::{Brand, ModuleBrand};
@@ -33,8 +33,13 @@ use super::value::ValueId;
 /// invalidate the cursor.
 ///
 /// Mirrors LLVM's `auto Next = std::next(I);` idiom.
-pub struct BlockCursor<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
-    block: BasicBlock<'ctx, R, Unsealed, B>,
+pub struct BlockCursor<
+    'ctx,
+    R: ReturnMarker,
+    S: BlockSealState = Unsealed,
+    B: ModuleBrand = Brand<'ctx>,
+> {
+    block: BasicBlock<'ctx, R, S, B>,
     /// Snapshot of the block's instruction list at cursor creation.
     /// We snapshot once and walk by index so subsequent mutations to
     /// the *underlying* list (insertions before us, splices, etc.) do
@@ -45,16 +50,33 @@ pub struct BlockCursor<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
     next_index: usize,
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> BlockCursor<'ctx, R, B> {
-    /// Create a cursor positioned at the start of `block`. Mirrors
-    /// `BB->begin()` in C++.
+impl<'ctx, R, B> BlockCursor<'ctx, R, Unsealed, B>
+where
+    R: ReturnMarker,
+    B: ModuleBrand + 'ctx,
+{
+    /// Create a lifecycle-producing cursor at the start of an unsealed block.
+    /// Mirrors `BB->begin()` in C++ while keeping sealed/read-only block
+    /// rediscovery from minting mutation capabilities.
     pub fn at_start(block: BasicBlock<'ctx, R, Unsealed, B>) -> Self {
-        let snapshot: Vec<ValueId> = block.instructions().map(|i| i.as_value().id).collect();
+        let snapshot = block.instruction_ids();
         Self {
             block,
             snapshot,
             next_index: 0,
         }
+    }
+}
+
+impl<'ctx, R, S, B> BlockCursor<'ctx, R, S, B>
+where
+    R: ReturnMarker,
+    S: BlockSealState,
+    B: ModuleBrand + 'ctx,
+{
+    /// Recover the block carried by this cursor.
+    pub fn into_block(self) -> BasicBlock<'ctx, R, S, B> {
+        self.block
     }
 
     /// Yield the instruction at the current position, returning `Some`
@@ -64,7 +86,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> BlockCursor<'ctx, R, B> {
         self,
     ) -> Option<(
         Instruction<'ctx, state::Attached, B>,
-        BlockCursor<'ctx, R, B>,
+        BlockCursor<'ctx, R, S, B>,
     )> {
         let id = *self.snapshot.get(self.next_index)?;
         let module = self.block.module_ref();

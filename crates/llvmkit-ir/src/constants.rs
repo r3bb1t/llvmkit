@@ -1051,7 +1051,7 @@ impl<'ctx> ModuleCore {
     pub fn block_address<B: ModuleBrand + 'ctx, R, S>(
         &'ctx self,
         function: FunctionValue<'ctx, R, B>,
-        block: BasicBlock<'ctx, R, S, B>,
+        block: &BasicBlock<'ctx, R, S, B>,
     ) -> IrResult<Constant<'ctx, B>>
     where
         R: ReturnMarker,

@@ -25,7 +25,7 @@ use super::derived_types::{FloatType, IntType};
 use super::float_kind::FloatDyn;
 use super::global_variable::GlobalVariable;
 use super::instr_types::{BinaryOpcode, CastOpcode, PhiData, UnaryOpcode};
-use super::instruction::{Instruction, InstructionKindData, state};
+use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::IntDyn;
 use super::intrinsics::IntrinsicId;
 use super::module::{Brand, ModuleBrand, ModuleRef, ModuleView};
@@ -306,13 +306,12 @@ pub fn constant_fold_integer_cast<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Fold an instruction using DataLayout-aware analysis rules.
-pub fn constant_fold_instruction<'ctx, S, B>(
-    instruction: &Instruction<'ctx, S, B>,
+pub fn constant_fold_instruction<'ctx, B>(
+    instruction: &InstructionView<'ctx, B>,
     dl: &DataLayout,
     tli: Option<&TargetLibraryInfo>,
 ) -> IrResult<Option<Constant<'ctx, B>>>
 where
-    S: state::InstructionState,
     B: ModuleBrand + 'ctx,
 {
     let value = instruction.as_value();
@@ -408,15 +407,14 @@ pub fn constant_fold_constant<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Fold an instruction with caller-provided constant operands.
-pub fn constant_fold_inst_operands<'ctx, S, B>(
-    instruction: &Instruction<'ctx, S, B>,
+pub fn constant_fold_inst_operands<'ctx, B>(
+    instruction: &InstructionView<'ctx, B>,
     operands: &[Constant<'ctx, B>],
     dl: &DataLayout,
     tli: Option<&TargetLibraryInfo>,
     allow_non_deterministic: FoldNonDeterminism,
 ) -> IrResult<Option<Constant<'ctx, B>>>
 where
-    S: state::InstructionState,
     B: ModuleBrand + 'ctx,
 {
     let value = instruction.as_value();

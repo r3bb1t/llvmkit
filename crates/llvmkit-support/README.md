@@ -6,8 +6,9 @@
 
 Shared support utilities for the `llvmkit` family.
 
-Currently exposes `Span`, `Spanned`, and `SourceMap`; future cross-crate helpers
-such as diagnostic rendering, APInt, and APFloat belong here.
+Currently exposes `Span`, `Spanned`, and `SourceMap`. Future cross-crate helpers
+belong here when multiple crates need them; IR-specific numeric cores such as
+`ApInt` / `ApFloat` live in `llvmkit-ir`.
 
 ## License
 

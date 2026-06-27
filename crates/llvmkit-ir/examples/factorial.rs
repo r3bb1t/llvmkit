@@ -58,13 +58,17 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let base = f.append_basic_block(m, "base");
     let loop_bb = f.append_basic_block(m, "loop");
     let exit = f.append_basic_block(m, "exit");
+    let entry_label = entry.label();
+    let base_label = base.label();
+    let loop_label = loop_bb.label();
+    let exit_label = exit.label();
 
     let n: IntValue<i32> = f.param(0)?.try_into()?;
 
     // entry: %is_zero = icmp eq i32 %n, 0; br i1 %is_zero, ...
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
     let is_zero = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
-    b.build_cond_br(is_zero, base, loop_bb)?;
+    b.build_cond_br(is_zero, base_label, loop_label)?;
 
     // base: ret i32 1
     let b = IRBuilder::new_for::<i32>(m).position_at_end(base);
@@ -79,15 +83,15 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let next_acc = b.build_int_mul(acc, i, "next_acc")?;
     let next_i = b.build_int_sub(i, 1_i32, "next_i")?;
     let done = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, next_i, 0_i32, "done")?;
-    b.build_cond_br(done, exit, loop_bb)?;
+    b.build_cond_br(done, exit_label, loop_label)?;
 
     acc_phi
-        .add_incoming(1_i32, entry)?
-        .add_incoming(next_acc, loop_bb)?
+        .add_incoming(1_i32, entry_label)?
+        .add_incoming(next_acc, loop_label)?
         .finish();
     i_phi
-        .add_incoming(n, entry)?
-        .add_incoming(next_i, loop_bb)?
+        .add_incoming(n, entry_label)?
+        .add_incoming(next_i, loop_label)?
         .finish();
 
     // exit: ret i32 %next_acc

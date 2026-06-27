@@ -1,0 +1,7 @@
+error[E0599]: no method named `add_catch_clause` found for struct `LandingPadInst<'_, llvmkit_ir::term_open_state::Closed, Brand<'_>>` in the current scope
+  --> tests/compile_fail/finished_landingpad_cannot_reopen_through_instruction_kind.rs:22:30
+   |
+22 |             let _ = reopened.add_catch_clause(null_ptr);
+   |                              ^^^^^^^^^^^^^^^^ method not found in `LandingPadInst<'_, llvmkit_ir::term_open_state::Closed, Brand<'_>>`
+   |
+   = note: the method was found for `LandingPadInst<'ctx, llvmkit_ir::term_open_state::Open, B>`

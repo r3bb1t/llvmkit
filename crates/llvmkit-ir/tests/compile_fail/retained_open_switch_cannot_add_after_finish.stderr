@@ -1,0 +1,16 @@
+error[E0382]: use of moved value: `switch`
+  --> tests/compile_fail/retained_open_switch_cannot_add_after_finish.rs:22:17
+   |
+19 |         let (_sealed, switch) = b.build_switch(cond, dest_label, "").unwrap();
+   |                       ------ move occurs because `switch` has type `SwitchInst<'_, llvmkit_ir::term_open_state::Open, Brand<'_>>`, which does not implement the `Copy` trait
+20 |
+21 |         let _closed = switch.finish();
+   |                              -------- `switch` moved due to this method call
+22 |         let _ = switch.add_case(i32_ty.const_int(1_i32), dest_label);
+   |                 ^^^^^^ value used here after move
+   |
+note: `SwitchInst::<'ctx, llvmkit_ir::term_open_state::Open, B>::finish` takes ownership of the receiver `self`, which moves `switch`
+  --> src/instructions.rs
+   |
+   |     pub fn finish(self) -> SwitchInst<'ctx, TermClosed, B> {
+   |                   ^^^^

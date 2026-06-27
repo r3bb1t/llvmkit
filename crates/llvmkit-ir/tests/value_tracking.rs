@@ -1,7 +1,7 @@
 use llvmkit_ir::{
     Align, ApInt, AttrIndex, AttrKind, Attribute, AttributeStorage, Brand, CFGAnalyses,
     CallAttributeData, ConstantExprOpcode, ConstantExprOptions, DominatorTreeAnalysis,
-    FunctionAnalysisManager, IRBuilder, Instruction, IntValue, IrError, KnownBits,
+    FunctionAnalysisManager, IRBuilder, InstructionView, IntValue, IrError, KnownBits,
     KnownBitsAnalysis, LShrFlags, Linkage, MetadataAttachmentKind, MetadataRef, Module, MulFlags,
     NoFolder, PointerValue, PreservedAnalyses, Ptr, Type, Value, ValueTrackingQuery, Width,
     compute_known_bits, is_known_non_zero, is_known_one, is_known_zero,
@@ -96,6 +96,9 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
         let entry = f.append_basic_block(&m, "entry");
         let other = f.append_basic_block(&m, "other");
         let join = f.append_basic_block(&m, "join");
+        let entry_label = entry.label();
+        let other_label = other.label();
+        let join_label = join.label();
 
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let cond: IntValue<bool> = f.param(0)?.try_into()?;
@@ -104,16 +107,16 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
         let c_aa_val: IntValue<i8> = c_aa.as_constant().try_into()?;
         let c_ae_val: IntValue<i8> = c_ae.as_constant().try_into()?;
         let select = b.build_select(cond, c_aa_val, c_ae_val, "sel")?;
-        b.build_br(join)?;
+        b.build_br(join_label)?;
 
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(other);
-        b.build_br(join)?;
+        b.build_br(join_label)?;
 
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(join);
         let phi = b
             .build_int_phi::<i8, _>("p")?
-            .add_incoming(i8_ty.const_int(0x03_u8), entry)?
-            .add_incoming(i8_ty.const_int(0x07_u8), other)?;
+            .add_incoming(i8_ty.const_int(0x03_u8), entry_label)?
+            .add_incoming(i8_ty.const_int(0x07_u8), other_label)?;
         let trunc_src: IntValue<i16> = i16_ty.const_int(0x00f0_u16).as_constant().try_into()?;
         let zext_src: IntValue<i8> = c_aa.as_constant().try_into()?;
         let sext_src: IntValue<i8> = c_aa.as_constant().try_into()?;
@@ -147,10 +150,7 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
             "1111111110101010"
         );
         assert_eq!(known(bitcast.as_value(), &query)?.to_string(), "01011010");
-        assert_eq!(
-            known(freeze.as_instruction().as_value(), &query)?.to_string(),
-            "10101010"
-        );
+        assert_eq!(known(freeze.as_value(), &query)?.to_string(), "10101010");
         assert_eq!(known(cmp.as_value(), &query)?.to_string(), "1");
         Ok(())
     })
@@ -250,7 +250,7 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         let lo0 = m.metadata_constant(i8_ty.const_int(-50_i8));
         let hi0 = m.metadata_constant(i8_ty.const_int(0_i8));
         let range0 = m.metadata_tuple([MetadataRef(lo0), MetadataRef(hi0)]);
-        let val0_inst: Instruction = val0.as_value().try_into()?;
+        let val0_inst = InstructionView::try_from(val0.as_value())?;
         val0_inst.set_metadata(MetadataAttachmentKind::Range, range0);
         let mask128 = i8_ty.const_ap_int(&ApInt::from_words(8, &[128]))?;
         let and0 = b0.build_int_and::<i8, _, _, _>(val0, mask128, "and")?;
@@ -265,7 +265,7 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         let lo1 = m.metadata_constant(i8_ty.const_int(64_i8));
         let hi1 = m.metadata_constant(i8_ty.const_ap_int(&ApInt::from_words(8, &[128]))?);
         let range1 = m.metadata_tuple([MetadataRef(lo1), MetadataRef(hi1)]);
-        let val1_inst: Instruction = val1.as_value().try_into()?;
+        let val1_inst = InstructionView::try_from(val1.as_value())?;
         val1_inst.set_metadata(MetadataAttachmentKind::Range, range1);
         let mask64 = i8_ty.const_int(64_i8);
         let and1 = b1.build_int_and::<i8, _, _, _>(val1, mask64, "and")?;
@@ -280,7 +280,7 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         let lo2 = m.metadata_constant(i8_ty.const_int(64_i8));
         let hi2 = m.metadata_constant(i8_ty.const_ap_int(&ApInt::from_words(8, &[129]))?);
         let range2 = m.metadata_tuple([MetadataRef(lo2), MetadataRef(hi2)]);
-        let val2_inst: Instruction = val2.as_value().try_into()?;
+        let val2_inst = InstructionView::try_from(val2.as_value())?;
         val2_inst.set_metadata(MetadataAttachmentKind::Range, range2);
         let and2 = b2.build_int_and::<i8, _, _, _>(val2, mask64, "and")?;
         let cmp2 = b2.build_icmp_eq::<i8, _, _, _>(and2, mask64, "is.eq")?;
@@ -367,6 +367,9 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
         let invoke_entry = caller.append_basic_block(&m, "invoke.entry");
         let invoke_normal = caller.append_basic_block(&m, "invoke.normal");
         let invoke_unwind = caller.append_basic_block(&m, "invoke.unwind");
+        let invoke_entry_label = invoke_entry.label();
+        let invoke_normal_label = invoke_normal.label();
+        let invoke_unwind_label = invoke_unwind.label();
 
         let call_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(call_entry);
         let call = call_b
@@ -376,18 +379,18 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
             .name("call")
             .build()?
             .return_int_value();
-        let (_, _) = call_b.build_br(invoke_entry)?;
+        let (_, _) = call_b.build_br(invoke_entry_label)?;
 
         let (_, invoke) = IRBuilder::with_folder(&m, NoFolder)
             .position_at_end(invoke_entry)
             .build_invoke_with_config(
                 callee,
                 [i8_ty.const_int(0x3c_u8)],
-                invoke_normal,
-                invoke_unwind,
+                invoke_normal_label,
+                invoke_unwind_label,
                 llvmkit_ir::CallSiteConfig::new("invoke").attrs(attrs),
             )?;
-        let invoke_value: IntValue<i8> = invoke.as_instruction().as_value().try_into()?;
+        let invoke_value: IntValue<i8> = invoke.as_value().try_into()?;
 
         IRBuilder::new_for::<()>(&m)
             .position_at_end(invoke_unwind)
@@ -538,7 +541,7 @@ fn query_carries_context_demanded_elements_and_instr_info_policy() -> Result<(),
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let p: PointerValue = f.param(0)?.try_into()?;
         let load = b.build_int_load::<i8, _, _>(p, "load")?;
-        let load_inst: Instruction = load.as_value().try_into()?;
+        let load_inst = InstructionView::try_from(load.as_value())?;
         let demanded = ApInt::from_words(1, &[1]);
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl)
@@ -647,7 +650,7 @@ fn shift_with_possible_invalid_amount_is_unknown_after_freeze() -> Result<(), Ir
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert!(known(frozen.as_instruction().as_value(), &query)?.is_unknown());
+        assert!(known(frozen.as_value(), &query)?.is_unknown());
         Ok(())
     })
 }
@@ -694,14 +697,10 @@ fn freeze_of_exact_shift_that_can_poison_is_unknown() -> Result<(), IrError> {
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert!(known(frozen.as_instruction().as_value(), &query)?.is_unknown());
+        assert!(known(frozen.as_value(), &query)?.is_unknown());
         let query_without_instr_info = ValueTrackingQuery::new(&dl).without_instruction_info();
         assert_eq!(
-            known(
-                frozen.as_instruction().as_value(),
-                &query_without_instr_info
-            )?
-            .to_string(),
+            known(frozen.as_value(), &query_without_instr_info)?.to_string(),
             "0000"
         );
         Ok(())

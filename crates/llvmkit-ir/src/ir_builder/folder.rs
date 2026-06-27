@@ -8,7 +8,7 @@
 
 use super::{
     BinaryOpcode, Brand, CastOpcode, CmpPredicate, Constant, FastMathFlags, GepNoWrapFlags,
-    Instruction, IntrinsicId, IrResult, ModuleBrand, Type, UnaryOpcode, Value, state,
+    InstructionView, IntrinsicId, IrResult, ModuleBrand, Type, UnaryOpcode, Value,
 };
 
 /// Strategy for folding values during builder calls.
@@ -120,7 +120,7 @@ pub trait IRBuilderFolder<'ctx, B: ModuleBrand = Brand<'ctx>> {
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
         ty: Type<'ctx, B>,
-        fmf_source: Option<&Instruction<'ctx, state::Attached, B>>,
+        fmf_source: Option<&InstructionView<'ctx, B>>,
     ) -> IrResult<Option<Value<'ctx, B>>>;
 
     fn create_pointer_cast(

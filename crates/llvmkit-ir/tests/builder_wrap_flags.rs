@@ -11,7 +11,7 @@
 //! / `lshr` / `ashr` follow the same shape against `isExact()`.
 
 use llvmkit_ir::{
-    AShrFlags, AddFlags, IRBuilder, Instruction, InstructionKind, IrError, LShrFlags, Linkage,
+    AShrFlags, AddFlags, IRBuilder, InstructionKind, InstructionView, IrError, LShrFlags, Linkage,
     Module, MulFlags, SDivFlags, ShlFlags, SubFlags, UDivFlags,
 };
 
@@ -32,7 +32,7 @@ fn add_nuw_nsw_flags_round_trip() -> Result<(), IrError> {
             AddFlags::new().nuw().nsw(),
             "r",
         )?;
-        let inst: Instruction = r.as_value().try_into()?;
+        let inst = InstructionView::try_from(r.as_value())?;
         let add = match inst.kind() {
             Some(InstructionKind::Add(a)) => a,
             _ => panic!("expected Add"),
@@ -65,7 +65,7 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
             SubFlags::new().nuw(),
             "r",
         )?;
-        let inst: Instruction = r.as_value().try_into()?;
+        let inst = InstructionView::try_from(r.as_value())?;
         if let Some(InstructionKind::Sub(s)) = inst.kind() {
             assert!(s.has_no_unsigned_wrap());
         } else {
@@ -82,7 +82,7 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
             MulFlags::new().nuw(),
             "r",
         )?;
-        let inst: Instruction = r.as_value().try_into()?;
+        let inst = InstructionView::try_from(r.as_value())?;
         if let Some(InstructionKind::Mul(s)) = inst.kind() {
             assert!(s.has_no_unsigned_wrap());
         } else {
@@ -99,7 +99,7 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
             ShlFlags::new().nuw(),
             "r",
         )?;
-        let inst: Instruction = r.as_value().try_into()?;
+        let inst = InstructionView::try_from(r.as_value())?;
         if let Some(InstructionKind::Shl(s)) = inst.kind() {
             assert!(s.has_no_unsigned_wrap());
         } else {
@@ -131,7 +131,7 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
             UDivFlags::new().exact(),
             "r",
         )?;
-        let inst: Instruction = r.as_value().try_into()?;
+        let inst = InstructionView::try_from(r.as_value())?;
         if let Some(InstructionKind::UDiv(s)) = inst.kind() {
             assert!(s.is_exact());
         } else {
@@ -148,7 +148,7 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
             SDivFlags::new().exact(),
             "r",
         )?;
-        let inst: Instruction = r.as_value().try_into()?;
+        let inst = InstructionView::try_from(r.as_value())?;
         if let Some(InstructionKind::SDiv(s)) = inst.kind() {
             assert!(s.is_exact());
         } else {
@@ -165,7 +165,7 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
             LShrFlags::new().exact(),
             "r",
         )?;
-        let inst: Instruction = r.as_value().try_into()?;
+        let inst = InstructionView::try_from(r.as_value())?;
         if let Some(InstructionKind::LShr(s)) = inst.kind() {
             assert!(s.is_exact());
         } else {
@@ -182,7 +182,7 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
             AShrFlags::new().exact(),
             "r",
         )?;
-        let inst: Instruction = r.as_value().try_into()?;
+        let inst = InstructionView::try_from(r.as_value())?;
         if let Some(InstructionKind::AShr(s)) = inst.kind() {
             assert!(s.is_exact());
         } else {

@@ -28,6 +28,8 @@ fn invoke_void_to_unwind() -> Result<(), IrError> {
         let entry = caller.append_basic_block(&m, "entry");
         let normal = caller.append_basic_block(&m, "defaultdest");
         let unwind = caller.append_basic_block(&m, "exc");
+        let normal_label = normal.label();
+        let unwind_label = unwind.label();
         {
             let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(normal);
             bb_b.build_ret_void();
@@ -40,8 +42,8 @@ fn invoke_void_to_unwind() -> Result<(), IrError> {
         let _ = b.build_invoke_with_config(
             callee,
             Vec::<llvmkit_ir::Value>::new(),
-            normal,
-            unwind,
+            normal_label,
+            unwind_label,
             CallSiteConfig::new("").calling_conv(CallingConv::FAST),
         )?;
         let text = format!("{m}");
@@ -74,6 +76,8 @@ fn callbr_void_with_one_indirect_dest() -> Result<(), IrError> {
         let entry = caller.append_basic_block(&m, "entry");
         let kill = caller.append_basic_block(&m, "kill");
         let cont = caller.append_basic_block(&m, "cont");
+        let kill_label = kill.label();
+        let cont_label = cont.label();
         {
             let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(kill);
             bb_b.build_unreachable();
@@ -84,7 +88,7 @@ fn callbr_void_with_one_indirect_dest() -> Result<(), IrError> {
         }
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let c: llvmkit_ir::IntValue<bool> = caller.param(0)?.try_into()?;
-        let _ = b.build_callbr(callee, [c.as_value()], cont, &[kill], "")?;
+        let _ = b.build_callbr(callee, [c.as_value()], cont_label, [kill_label], "")?;
         let text = format!("{m}");
         assert!(
             text.contains(
@@ -120,16 +124,18 @@ fn callbr_two_indirect_dests_print_form() -> Result<(), IrError> {
         let entry = caller.append_basic_block(&m, "entry");
         let bb1 = caller.append_basic_block(&m, "1");
         let bb2 = caller.append_basic_block(&m, "2");
+        let bb1_label = bb1.label();
+        let bb2_label = bb2.label();
         for bb in [bb1, bb2] {
             let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(bb);
             bb_b.build_ret_void();
         }
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        let _ = b.build_inline_asm_callbr::<(), _, _, _, _>(
+        let _ = b.build_inline_asm_callbr::<(), _, _, _, _, _, _>(
             asm,
             Vec::<llvmkit_ir::Value>::new(),
-            bb1,
-            &[bb2],
+            bb1_label,
+            [bb2_label],
             "",
         )?;
         let text = format!("{m}");

@@ -142,6 +142,15 @@ extension code may name `B: ModuleBrand` explicitly when it needs to accept any
 module brand; ordinary examples should stay inside the `with_new` closure and
 let the receiver drive inference.
 
+### Instruction lifecycle safety
+
+`Instruction<'ctx, state::Attached>` is the lifecycle authority for erase,
+detach, move, and RAUW operations. Those methods consume the handle, so a used
+lifecycle capability cannot be reused. Copyable discovery APIs return
+`InstructionView` instead: blocks, value use-lists, and per-opcode handles expose
+read-only inspection without minting a new mutation handle. Cursor-driven
+mutation uses `BlockCursor::next` on an unsealed block.
+
 Run the examples:
 
 ```bash
@@ -285,6 +294,9 @@ and the test and runtime paths do not depend on `orig_cpp`.
 
 Type safety is `llvmkit`'s main differentiator. Eleven rules govern the public
 surface; cite them by id (`D1`-`D11`) in reviews and commit messages.
+See [Type Safety: llvmkit vs. LLVM C++](docs/type-safety-vs-llvm.md) for worked
+examples that map common LLVM C++ failure modes to Doctrine IDs and compile-fail
+locks.
 
 - **D1. State machines are typestates.** If a value has more than one
   operational state, those states are distinct types.

@@ -103,7 +103,7 @@ pub use attribute_mask::AttributeMask;
 pub use attributes::{
     AttrIndex, AttrKind, Attribute, AttributeList, AttributeSet, AttributeStorage,
 };
-pub use basic_block::BasicBlock;
+pub use basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
 pub use block_state::{BlockSealState, Sealed, Unsealed};
 pub use calling_conv::CallingConv;
 pub use cfg::{BasicBlockEdge, FunctionCfg};
@@ -167,7 +167,7 @@ pub use instr_types::{
     MulFlags, OperandBundleData, OperandBundleTag, OrFlags, SDivFlags, ShlFlags, SubFlags,
     TailCallKind, TruncFlags, UDivFlags, UIToFpFlags, UnaryOpcode, ZExtFlags,
 };
-pub use instruction::{Instruction, InstructionKind, TerminatorKind};
+pub use instruction::{Instruction, InstructionKind, InstructionView, TerminatorKind};
 pub use instructions::{
     AShrInst, AddInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst, BranchInst,
     CallBrInst, CallInst, CastInst, CatchPadInst, CatchReturnInst, CatchSwitchInst, CleanupPadInst,

@@ -11,9 +11,9 @@ use llvmkit_ir::instr_types::CastOpcode;
 use llvmkit_ir::{
     ApFloat, ApFloatSemantics, ApInt, AttrIndex, Attribute, BinaryOpcode, CmpPredicate,
     ConstantExprOpcode, ConstantExprOptions, ConstantFloatValue, ConstantIntValue, DataLayout,
-    DenormalMode, DenormalModeKind, DenormalModeSide, FoldNonDeterminism, IRBuilder, Instruction,
-    IntDyn, IntPredicate, IntrinsicId, IrError, LibFunc, Linkage, Module, NoFolder,
-    PreservedCastFlags, RoundingMode, TargetLibraryInfo, Type, UnaryOpcode,
+    DenormalMode, DenormalModeKind, DenormalModeSide, FoldNonDeterminism, IRBuilder,
+    InstructionView, IntDyn, IntPredicate, IntrinsicId, IrError, LibFunc, Linkage, Module,
+    NoFolder, PreservedCastFlags, RoundingMode, TargetLibraryInfo, Type, UnaryOpcode,
     attributes::AttributeStorage, constant_fold_binary_intrinsic, constant_fold_binary_op_operands,
     constant_fold_compare_inst_operands, constant_fold_constant, constant_fold_fp_inst_operands,
     constant_fold_inst_operands, constant_fold_integer_cast, constant_fold_load_from_uniform_value,
@@ -152,12 +152,13 @@ fn phi_same_constant_folds() -> Result<(), IrError> {
         let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
+        let entry_label = entry.label();
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let phi = b
             .build_int_phi::<i32, _>("p")?
-            .add_incoming(7_i32, entry)?
-            .add_incoming(7_i32, entry)?;
-        let instruction = Instruction::try_from(phi.as_int_value().as_value())?;
+            .add_incoming(7_i32, entry_label)?
+            .add_incoming(7_i32, entry_label)?;
+        let instruction = InstructionView::try_from(phi.as_int_value().as_value())?;
 
         let folded =
             constant_fold_instruction(&instruction, &dl, None)?.expect("same-constant phi folds");
@@ -486,7 +487,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let add = b.build_int_add::<i32, _, _, _>(c2_i, c5_i, "sum")?;
-        let instruction = Instruction::try_from(add.as_value())?;
+        let instruction = InstructionView::try_from(add.as_value())?;
         assert_eq!(
             constant_fold_inst_operands(
                 &instruction,
@@ -536,9 +537,9 @@ fn freeze_folds_only_non_undef_non_poison_constants() -> Result<(), IrError> {
         let undef = b.build_freeze(i32_ty.as_type().get_undef(), "undef")?;
         let poison = b.build_freeze(i32_ty.as_type().get_poison(), "poison")?;
 
-        let concrete_inst = concrete.as_instruction();
-        let undef_inst = undef.as_instruction();
-        let poison_inst = poison.as_instruction();
+        let concrete_inst = concrete.as_view();
+        let undef_inst = undef.as_view();
+        let poison_inst = poison.as_view();
 
         assert_eq!(
             constant_fold_instruction(&concrete_inst, &dl, None)?,
@@ -656,7 +657,7 @@ fn function_denormal_f32_attribute_overrides_generic_mode() -> Result<(), IrErro
         let lhs = f32_ty.const_ap_float(&denormal)?;
         let rhs = f32_ty.const_ap_float(&denormal)?;
         let add = b.build_fp_add::<f32, _, _, _>(lhs, rhs, "sum")?;
-        let instruction = Instruction::try_from(add.as_value())?;
+        let instruction = InstructionView::try_from(add.as_value())?;
 
         let folded = constant_fold_instruction(&instruction, &dl, None)?
             .expect("f32 denormal inputs fold after f32 attribute flush");
@@ -698,7 +699,7 @@ fn function_denormal_attribute_group_overrides_generic_mode() -> Result<(), IrEr
         let lhs = f32_ty.const_ap_float(&denormal)?;
         let rhs = f32_ty.const_ap_float(&denormal)?;
         let add = b.build_fp_add::<f32, _, _, _>(lhs, rhs, "sum")?;
-        let instruction = Instruction::try_from(add.as_value())?;
+        let instruction = InstructionView::try_from(add.as_value())?;
 
         let folded = constant_fold_instruction(&instruction, &dl, None)?
             .expect("f32 denormal inputs fold after attribute-group f32 flush");

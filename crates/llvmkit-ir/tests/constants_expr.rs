@@ -78,10 +78,10 @@ fn blockaddress_constant_round_trips() -> Result<(), IrError> {
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
+        let addr = m.block_address(f, &entry)?;
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let terminator = b.build_ret_void().1;
         assert!(terminator.is_terminator());
-        let addr = m.block_address(f, entry)?;
         m.add_global("addr", m.ptr_type(0).as_type(), addr)?;
 
         let text = module_text(&m);
@@ -104,10 +104,10 @@ fn blockaddress_constant_uses_function_address_space() -> Result<(), IrError> {
             .address_space(2)
             .build()?;
         let entry = f.append_basic_block(&m, "entry");
+        let addr = m.block_address(f, &entry)?;
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let terminator = b.build_ret_void().1;
         assert!(terminator.is_terminator());
-        let addr = m.block_address(f, entry)?;
         m.add_global("addr", m.ptr_type(2).as_type(), addr)?;
 
         let text = module_text(&m);

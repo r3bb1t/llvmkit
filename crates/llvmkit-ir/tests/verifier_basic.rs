@@ -250,6 +250,9 @@ fn verify_memory_gep_select_control() -> Result<(), IrError> {
         let then_bb = f.append_basic_block(&m, "then");
         let else_bb = f.append_basic_block(&m, "else");
         let join = f.append_basic_block(&m, "join");
+        let then_label = then_bb.label();
+        let else_label = else_bb.label();
+        let join_label = join.label();
 
         let p: PointerValue = f.param(0)?.try_into()?;
         let v: IntValue<i32> = f.param(1)?.try_into()?;
@@ -262,7 +265,7 @@ fn verify_memory_gep_select_control() -> Result<(), IrError> {
         let arr_ty = m.array_type(i32_ty, 4);
         let v_dyn: IntValue<llvmkit_ir::IntDyn> = v.into();
         let _gep = b.build_inbounds_gep(arr_ty, p, [v_dyn], "ix")?;
-        b.build_cond_br(cmp, then_bb, else_bb)?;
+        b.build_cond_br(cmp, then_label, else_label)?;
 
         let bt = IRBuilder::new_for::<i32>(&m).position_at_end(then_bb);
         let one_const = i32_ty.const_int(1_i32);
@@ -272,16 +275,16 @@ fn verify_memory_gep_select_control() -> Result<(), IrError> {
         // `SelectArm` (constants narrow through value not int-value path).
         let _ = (one_const, two_const);
         let sel = bt.build_select(cmp, loaded, loaded, "sel")?;
-        bt.build_br(join)?;
+        bt.build_br(join_label)?;
 
         let be = IRBuilder::new_for::<i32>(&m).position_at_end(else_bb);
-        be.build_br(join)?;
+        be.build_br(join_label)?;
 
         let bj = IRBuilder::new_for::<i32>(&m).position_at_end(join);
         let phi = bj
             .build_int_phi::<i32, _>("p")?
-            .add_incoming(sel, then_bb)?
-            .add_incoming(loaded, else_bb)?;
+            .add_incoming(sel, then_label)?
+            .add_incoming(loaded, else_label)?;
         bj.build_ret(phi.as_int_value())?;
 
         m.verify_borrowed()?;
@@ -337,10 +340,12 @@ fn verify_void_return_and_unreachable() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let then_bb = f.append_basic_block(&m, "then");
         let else_bb = f.append_basic_block(&m, "else");
+        let then_label = then_bb.label();
+        let else_label = else_bb.label();
 
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let cond: IntValue<bool> = f.param(0)?.try_into()?;
-        b.build_cond_br(cond, then_bb, else_bb)?;
+        b.build_cond_br(cond, then_label, else_label)?;
 
         let bt = IRBuilder::new_for::<()>(&m).position_at_end(then_bb);
         bt.build_ret_void();
@@ -442,18 +447,22 @@ fn verify_phi_predecessors_through_switch_passes() -> Result<(), IrError> {
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let join = f.append_basic_block(&m, "join");
+        let entry_label = entry.label();
+        let join_label = join.label();
 
         let x: IntValue<i32> = f.param(0)?.try_into()?;
         let (_sealed, switch) = IRBuilder::new_for::<i32>(&m)
             .position_at_end(entry)
-            .build_switch(x, join, "")?;
-        let _closed = switch.add_case(i32_ty.const_int(0_i32), join)?.finish();
+            .build_switch(x, join_label, "")?;
+        let _closed = switch
+            .add_case(i32_ty.const_int(0_i32), join_label)?
+            .finish();
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
         let phi = b
             .build_int_phi::<i32, _>("p")?
-            .add_incoming(x, entry)?
-            .add_incoming(x, entry)?;
+            .add_incoming(x, entry_label)?
+            .add_incoming(x, entry_label)?;
         b.build_ret(phi.as_int_value())?;
 
         m.verify_borrowed()?;
@@ -471,15 +480,21 @@ fn verify_phi_predecessors_through_switch_rejects_missing_edge() -> Result<(), I
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let join = f.append_basic_block(&m, "join");
+        let entry_label = entry.label();
+        let join_label = join.label();
 
         let x: IntValue<i32> = f.param(0)?.try_into()?;
         let (_sealed, switch) = IRBuilder::new_for::<i32>(&m)
             .position_at_end(entry)
-            .build_switch(x, join, "")?;
-        let _closed = switch.add_case(i32_ty.const_int(0_i32), join)?.finish();
+            .build_switch(x, join_label, "")?;
+        let _closed = switch
+            .add_case(i32_ty.const_int(0_i32), join_label)?
+            .finish();
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
-        let phi = b.build_int_phi::<i32, _>("p")?.add_incoming(x, entry)?;
+        let phi = b
+            .build_int_phi::<i32, _>("p")?
+            .add_incoming(x, entry_label)?;
         b.build_ret(phi.as_int_value())?;
 
         let err = m
@@ -513,17 +528,28 @@ fn verify_phi_predecessors_through_invoke_passes() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let join = f.append_basic_block(&m, "join");
         let unwind = f.append_basic_block(&m, "unwind");
+        let entry_label = entry.label();
+        let join_label = join.label();
+        let unwind_label = unwind.label();
         let x: IntValue<i32> = f.param(0)?.try_into()?;
 
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(entry)
-            .build_invoke(callee, Vec::<llvmkit_ir::Value>::new(), join, unwind, "")?;
+            .build_invoke(
+                callee,
+                Vec::<llvmkit_ir::Value>::new(),
+                join_label,
+                unwind_label,
+                "",
+            )?;
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(unwind)
             .build_ret(x)?;
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
-        let phi = b.build_int_phi::<i32, _>("p")?.add_incoming(x, entry)?;
+        let phi = b
+            .build_int_phi::<i32, _>("p")?
+            .add_incoming(x, entry_label)?;
         b.build_ret(phi.as_int_value())?;
 
         m.verify_borrowed()?;
@@ -546,11 +572,20 @@ fn verify_phi_predecessors_through_invoke_rejects_wrong_block() -> Result<(), Ir
         let join = f.append_basic_block(&m, "join");
         let unwind = f.append_basic_block(&m, "unwind");
         let other = f.append_basic_block(&m, "other");
+        let join_label = join.label();
+        let unwind_label = unwind.label();
+        let other_label = other.label();
         let x: IntValue<i32> = f.param(0)?.try_into()?;
 
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(entry)
-            .build_invoke(callee, Vec::<llvmkit_ir::Value>::new(), join, unwind, "")?;
+            .build_invoke(
+                callee,
+                Vec::<llvmkit_ir::Value>::new(),
+                join_label,
+                unwind_label,
+                "",
+            )?;
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(unwind)
             .build_ret(x)?;
@@ -559,7 +594,9 @@ fn verify_phi_predecessors_through_invoke_rejects_wrong_block() -> Result<(), Ir
             .build_ret(x)?;
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
-        let phi = b.build_int_phi::<i32, _>("p")?.add_incoming(x, other)?;
+        let phi = b
+            .build_int_phi::<i32, _>("p")?
+            .add_incoming(x, other_label)?;
         b.build_ret(phi.as_int_value())?;
 
         let err = m
@@ -592,17 +629,25 @@ fn verify_phi_predecessors_through_callbr_passes() -> Result<(), IrError> {
         let f = m.add_function::<i32, _>("f", caller_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let join = f.append_basic_block(&m, "join");
+        let entry_label = entry.label();
+        let join_label = join.label();
         let x: IntValue<i32> = f.param(0)?.try_into()?;
 
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(entry)
-            .build_callbr(callee, Vec::<llvmkit_ir::Value>::new(), join, &[join], "")?;
+            .build_callbr(
+                callee,
+                Vec::<llvmkit_ir::Value>::new(),
+                join_label,
+                [join_label],
+                "",
+            )?;
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
         let phi = b
             .build_int_phi::<i32, _>("p")?
-            .add_incoming(x, entry)?
-            .add_incoming(x, entry)?;
+            .add_incoming(x, entry_label)?
+            .add_incoming(x, entry_label)?;
         b.build_ret(phi.as_int_value())?;
 
         m.verify_borrowed()?;
@@ -623,14 +668,24 @@ fn verify_phi_predecessors_through_callbr_rejects_missing_edge() -> Result<(), I
         let f = m.add_function::<i32, _>("f", caller_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let join = f.append_basic_block(&m, "join");
+        let entry_label = entry.label();
+        let join_label = join.label();
         let x: IntValue<i32> = f.param(0)?.try_into()?;
 
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(entry)
-            .build_callbr(callee, Vec::<llvmkit_ir::Value>::new(), join, &[join], "")?;
+            .build_callbr(
+                callee,
+                Vec::<llvmkit_ir::Value>::new(),
+                join_label,
+                [join_label],
+                "",
+            )?;
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
-        let phi = b.build_int_phi::<i32, _>("p")?.add_incoming(x, entry)?;
+        let phi = b
+            .build_int_phi::<i32, _>("p")?
+            .add_incoming(x, entry_label)?;
         b.build_ret(phi.as_int_value())?;
 
         let err = m
@@ -660,11 +715,12 @@ fn verify_cross_block_dominated_use_passes() -> Result<(), IrError> {
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let next = f.append_basic_block(&m, "next");
+        let next_label = next.label();
         let x: IntValue<i32> = f.param(0)?.try_into()?;
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let y = b.build_int_add(x, 1_i32, "y")?;
-        b.build_br(next)?;
+        b.build_br(next_label)?;
         let bn = IRBuilder::new_for::<i32>(&m).position_at_end(next);
         let z = bn.build_int_add(y, 1_i32, "z")?;
         bn.build_ret(z)?;
@@ -687,18 +743,21 @@ fn verify_cross_block_branch_value_used_after_join_fails() -> Result<(), IrError
         let then_bb = f.append_basic_block(&m, "then");
         let else_bb = f.append_basic_block(&m, "else");
         let join = f.append_basic_block(&m, "join");
+        let then_label = then_bb.label();
+        let else_label = else_bb.label();
+        let join_label = join.label();
         let x: IntValue<i32> = f.param(0)?.try_into()?;
         let cond: IntValue<bool> = f.param(1)?.try_into()?;
 
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(entry)
-            .build_cond_br(cond, then_bb, else_bb)?;
+            .build_cond_br(cond, then_label, else_label)?;
         let bt = IRBuilder::new_for::<i32>(&m).position_at_end(then_bb);
         let y = bt.build_int_add(x, 1_i32, "y")?;
-        bt.build_br(join)?;
+        bt.build_br(join_label)?;
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(else_bb)
-            .build_br(join)?;
+            .build_br(join_label)?;
         let bj = IRBuilder::new_for::<i32>(&m).position_at_end(join);
         let z = bj.build_int_add(y, 1_i32, "z")?;
         bj.build_ret(z)?;
@@ -734,23 +793,26 @@ fn verify_phi_incoming_edge_dominance_passes() -> Result<(), IrError> {
         let then_bb = f.append_basic_block(&m, "then");
         let else_bb = f.append_basic_block(&m, "else");
         let join = f.append_basic_block(&m, "join");
+        let then_label = then_bb.label();
+        let else_label = else_bb.label();
+        let join_label = join.label();
         let x: IntValue<i32> = f.param(0)?.try_into()?;
         let cond: IntValue<bool> = f.param(1)?.try_into()?;
 
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(entry)
-            .build_cond_br(cond, then_bb, else_bb)?;
+            .build_cond_br(cond, then_label, else_label)?;
         let bt = IRBuilder::new_for::<i32>(&m).position_at_end(then_bb);
         let y = bt.build_int_add(x, 1_i32, "y")?;
-        bt.build_br(join)?;
+        bt.build_br(join_label)?;
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(else_bb)
-            .build_br(join)?;
+            .build_br(join_label)?;
         let bj = IRBuilder::new_for::<i32>(&m).position_at_end(join);
         let phi = bj
             .build_int_phi::<i32, _>("p")?
-            .add_incoming(y, then_bb)?
-            .add_incoming(x, else_bb)?;
+            .add_incoming(y, then_label)?
+            .add_incoming(x, else_label)?;
         bj.build_ret(phi.as_int_value())?;
 
         m.verify_borrowed()?;
@@ -772,23 +834,26 @@ fn verify_phi_incoming_edge_dominance_fails() -> Result<(), IrError> {
         let then_bb = f.append_basic_block(&m, "then");
         let else_bb = f.append_basic_block(&m, "else");
         let join = f.append_basic_block(&m, "join");
+        let then_label = then_bb.label();
+        let else_label = else_bb.label();
+        let join_label = join.label();
         let x: IntValue<i32> = f.param(0)?.try_into()?;
         let cond: IntValue<bool> = f.param(1)?.try_into()?;
 
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(entry)
-            .build_cond_br(cond, then_bb, else_bb)?;
+            .build_cond_br(cond, then_label, else_label)?;
         let bt = IRBuilder::new_for::<i32>(&m).position_at_end(then_bb);
         let y = bt.build_int_add(x, 1_i32, "y")?;
-        bt.build_br(join)?;
+        bt.build_br(join_label)?;
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(else_bb)
-            .build_br(join)?;
+            .build_br(join_label)?;
         let bj = IRBuilder::new_for::<i32>(&m).position_at_end(join);
         let phi = bj
             .build_int_phi::<i32, _>("p")?
-            .add_incoming(x, then_bb)?
-            .add_incoming(y, else_bb)?;
+            .add_incoming(x, then_label)?
+            .add_incoming(y, else_label)?;
         bj.build_ret(phi.as_int_value())?;
 
         let err = m
@@ -822,6 +887,8 @@ fn verify_invoke_result_used_on_unwind_edge_fails() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let normal = f.append_basic_block(&m, "normal");
         let unwind = f.append_basic_block(&m, "unwind");
+        let normal_label = normal.label();
+        let unwind_label = unwind.label();
         let x: IntValue<i32> = f.param(0)?.try_into()?;
 
         let (_sealed, invoke) = IRBuilder::new_for::<i32>(&m)
@@ -829,11 +896,11 @@ fn verify_invoke_result_used_on_unwind_edge_fails() -> Result<(), IrError> {
             .build_invoke(
                 callee,
                 Vec::<llvmkit_ir::Value>::new(),
-                normal,
-                unwind,
+                normal_label,
+                unwind_label,
                 "iv",
             )?;
-        let invoke_value: IntValue<i32> = invoke.as_instruction().as_value().try_into()?;
+        let invoke_value: IntValue<i32> = invoke.as_value().try_into()?;
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(normal)
             .build_ret(invoke_value)?;

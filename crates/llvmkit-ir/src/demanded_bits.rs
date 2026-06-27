@@ -15,7 +15,6 @@ use super::instr_types::{BinaryOpData, CallInstData, CastOpData, CastOpcode, Inv
 use super::instruction::{Instruction, InstructionData, InstructionKindData, state};
 use super::int_width::IntDyn;
 use super::intrinsics::IntrinsicId;
-use super::iter::BlockCursor;
 use super::module::{ModuleBrand, ModuleRef};
 use super::pass_context::{FunctionPassContext, FunctionView};
 use super::pass_manager::FunctionPass;
@@ -921,9 +920,9 @@ fn simplify_demanded_bits_iteration<'ctx>(
     let mut dead_to_erase = Vec::new();
 
     for block in cx.function_mut().basic_blocks() {
-        let mut cursor = BlockCursor::at_start(block);
-        while let Some((inst, next)) = cursor.next() {
-            cursor = next;
+        let instruction_ids = block.instruction_ids();
+        for id in instruction_ids {
+            let inst = Instruction::<state::Attached>::from_parts(id, module_token.module_ref());
             let value = inst.as_value();
             if !is_simplify_candidate(value) {
                 continue;

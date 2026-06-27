@@ -5,11 +5,11 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use super::basic_block::BasicBlock;
+use super::basic_block::{BasicBlock, BasicBlockLabel};
 use super::block_state::BlockSealState;
 use super::cfg::{BasicBlockEdge, FunctionCfg};
 use super::function::FunctionValue;
-use super::instruction::{Instruction, InstructionKindData, state};
+use super::instruction::{InstructionKindData, InstructionView};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::ModuleBrand;
 use super::pass_context::BasicBlockView;
@@ -62,7 +62,63 @@ where
 {
     #[inline]
     fn dominator_block_id(self) -> ValueId {
-        self.as_dyn().as_value().id
+        self.as_value().id
+    }
+}
+
+impl<'a, 'ctx, R, S, B> dominator_block_sealed::Sealed for &'a BasicBlock<'ctx, R, S, B>
+where
+    R: ReturnMarker,
+    S: BlockSealState,
+    B: ModuleBrand + 'ctx,
+{
+}
+
+impl<'a, 'ctx, R, S, B> DominatorTreeBlock<'ctx> for &'a BasicBlock<'ctx, R, S, B>
+where
+    R: ReturnMarker,
+    S: BlockSealState,
+    B: ModuleBrand + 'ctx,
+{
+    #[inline]
+    fn dominator_block_id(self) -> ValueId {
+        self.as_value().id
+    }
+}
+
+impl<'ctx, R, B> dominator_block_sealed::Sealed for BasicBlockLabel<'ctx, R, B>
+where
+    R: ReturnMarker,
+    B: ModuleBrand + 'ctx,
+{
+}
+
+impl<'ctx, R, B> DominatorTreeBlock<'ctx> for BasicBlockLabel<'ctx, R, B>
+where
+    R: ReturnMarker,
+    B: ModuleBrand + 'ctx,
+{
+    #[inline]
+    fn dominator_block_id(self) -> ValueId {
+        self.as_value().id
+    }
+}
+
+impl<'a, 'ctx, R, B> dominator_block_sealed::Sealed for &'a BasicBlockLabel<'ctx, R, B>
+where
+    R: ReturnMarker,
+    B: ModuleBrand + 'ctx,
+{
+}
+
+impl<'a, 'ctx, R, B> DominatorTreeBlock<'ctx> for &'a BasicBlockLabel<'ctx, R, B>
+where
+    R: ReturnMarker,
+    B: ModuleBrand + 'ctx,
+{
+    #[inline]
+    fn dominator_block_id(self) -> ValueId {
+        self.as_value().id
     }
 }
 
@@ -135,42 +191,43 @@ impl DominatorTree {
     }
 
     /// Whether instruction `def` dominates all ordinary uses in `user`.
-    pub fn dominates_instruction<'ctx>(
+    pub fn dominates_instruction<'ctx, B: ModuleBrand + 'ctx>(
         &self,
-        def: &Instruction<'ctx, state::Attached>,
-        user: &Instruction<'ctx, state::Attached>,
+        def: &InstructionView<'ctx, B>,
+        user: &InstructionView<'ctx, B>,
     ) -> bool {
         let use_bb = user.parent();
         let def_bb = def.parent();
         let def_id = def.as_value().id;
         let user_id = user.as_value().id;
 
-        if !self.is_reachable_from_entry(use_bb) {
+        if !self.is_reachable_from_entry(&use_bb) {
             return true;
         }
-        if !self.is_reachable_from_entry(def_bb) {
+        if !self.is_reachable_from_entry(&def_bb) {
             return false;
         }
         if def_id == user_id {
             return false;
         }
         if is_invoke(def) || is_callbr(def) || is_phi(user) {
-            return self.dominates_instruction_block(def, use_bb);
+            return self.dominates_instruction_block(def, &use_bb);
         }
         if def_bb.as_value().id != use_bb.as_value().id {
-            return self.dominates_block(def_bb, use_bb);
+            return self.dominates_block(&def_bb, &use_bb);
         }
         self.instruction_comes_before(def_id, user_id)
     }
 
     /// Whether instruction `def` dominates every possible use in `block`.
-    pub fn dominates_instruction_block<'ctx, B>(
+    pub fn dominates_instruction_block<'ctx, B, Block>(
         &self,
-        def: &Instruction<'ctx, state::Attached>,
-        block: B,
+        def: &InstructionView<'ctx, B>,
+        block: Block,
     ) -> bool
     where
-        B: DominatorTreeBlock<'ctx>,
+        B: ModuleBrand + 'ctx,
+        Block: DominatorTreeBlock<'ctx>,
     {
         let use_bb_id = block.dominator_block_id();
         let def_bb = def.parent();
@@ -178,7 +235,7 @@ impl DominatorTree {
         if !self.reachable.contains(&use_bb_id) {
             return true;
         }
-        if !self.is_reachable_from_entry(def_bb) {
+        if !self.is_reachable_from_entry(&def_bb) {
             return false;
         }
         if def_bb.as_value().id == use_bb_id {
@@ -197,10 +254,10 @@ impl DominatorTree {
         def: Value<'ctx, B>,
         use_edge: Use<'ctx, B>,
     ) -> bool {
-        let Ok(def_inst) = Instruction::try_from(def) else {
+        let Ok(def_inst) = InstructionView::try_from(def) else {
             return true;
         };
-        let Ok(user_inst) = Instruction::try_from(use_edge.user()) else {
+        let Ok(user_inst) = InstructionView::try_from(use_edge.user()) else {
             return true;
         };
         let def_id = def_inst.as_value().id;
@@ -247,7 +304,7 @@ impl DominatorTree {
         edge: BasicBlockEdge<'ctx, EB>,
         use_edge: Use<'ctx, B>,
     ) -> bool {
-        let Ok(user_inst) = Instruction::try_from(use_edge.user()) else {
+        let Ok(user_inst) = InstructionView::try_from(use_edge.user()) else {
             return true;
         };
         self.dominates_edge_use_ids(
@@ -371,10 +428,10 @@ fn compute_reachable<'ctx, B: ModuleBrand + 'ctx>(
     cfg: &FunctionCfg<'ctx, B>,
 ) -> HashSet<ValueId> {
     let mut reachable = HashSet::new();
-    let Some(entry) = function.entry_block() else {
+    let Some(entry) = function.entry_block().map(|bb| bb.label()) else {
         return reachable;
     };
-    let mut worklist = VecDeque::from([entry.as_dyn()]);
+    let mut worklist = VecDeque::from([entry]);
     while let Some(block) = worklist.pop_front() {
         let block_id = block.as_value().id;
         if !reachable.insert(block_id) {
@@ -420,7 +477,7 @@ fn compute_dominators<'ctx, B: ModuleBrand + 'ctx>(
                 continue;
             }
             let mut pred_sets = cfg
-                .predecessors(block)
+                .predecessors(&block)
                 .into_iter()
                 .filter(|pred| reachable.contains(&pred.as_value().id))
                 .filter_map(|pred| doms.get(&pred.as_value().id).cloned());
@@ -490,21 +547,21 @@ fn compute_instruction_maps<'ctx, B: ModuleBrand + 'ctx>(
     (parent, order, normal_dest, phi_incoming_blocks)
 }
 
-fn is_phi(inst: &Instruction<'_, state::Attached>) -> bool {
+fn is_phi<B: ModuleBrand>(inst: &InstructionView<'_, B>) -> bool {
     matches!(
         &inst.as_value().data().kind,
         ValueKindData::Instruction(data) if matches!(data.kind, InstructionKindData::Phi(_))
     )
 }
 
-fn is_invoke(inst: &Instruction<'_, state::Attached>) -> bool {
+fn is_invoke<B: ModuleBrand>(inst: &InstructionView<'_, B>) -> bool {
     matches!(
         &inst.as_value().data().kind,
         ValueKindData::Instruction(data) if matches!(data.kind, InstructionKindData::Invoke(_))
     )
 }
 
-fn is_callbr(inst: &Instruction<'_, state::Attached>) -> bool {
+fn is_callbr<B: ModuleBrand>(inst: &InstructionView<'_, B>) -> bool {
     matches!(
         &inst.as_value().data().kind,
         ValueKindData::Instruction(data) if matches!(data.kind, InstructionKindData::CallBr(_))

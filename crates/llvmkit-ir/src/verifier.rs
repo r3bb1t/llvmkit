@@ -38,7 +38,7 @@ use crate::instr_types::{
     BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData, FCmpInstData,
     GepInstData, PhiData, ReturnOpData,
 };
-use crate::instruction::{Instruction, InstructionKindData};
+use crate::instruction::{InstructionKindData, InstructionView};
 use crate::marker::Dyn;
 use crate::metadata::{MetadataAttachmentKind, MetadataId, MetadataKind};
 use crate::module::{ModuleCore, ModuleView};
@@ -394,7 +394,8 @@ impl<'ctx> Verifier<'ctx> {
             dom_tree: &dom_tree,
         };
         for bb in f.basic_blocks() {
-            self.visit_block(f, bb, &cx)?;
+            let bb = bb.retag_seal::<crate::block_state::Unsealed>();
+            self.visit_block(f, &bb, &cx)?;
         }
         Ok(())
     }
@@ -423,10 +424,10 @@ impl<'ctx> Verifier<'ctx> {
     fn visit_block(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
+        bb: &BasicBlock<'ctx, Dyn>,
         cx: &FunctionContext<'_>,
     ) -> IrResult<()> {
-        let instructions: Vec<Instruction<'ctx>> = bb.instructions().collect();
+        let instructions: Vec<InstructionView<'ctx>> = bb.instructions().collect();
 
         // Empty block is malformed (LLVM accepts `unreachable` as the
         // sole instruction; an empty list has no terminator at all).
@@ -503,10 +504,10 @@ impl<'ctx> Verifier<'ctx> {
     fn visit_instruction(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         index_in_block: usize,
-        block_instructions: &[Instruction<'ctx>],
+        block_instructions: &[InstructionView<'ctx>],
         cx: &FunctionContext<'_>,
     ) -> IrResult<()> {
         // Universal invariants applied to every opcode (mirrors the
@@ -601,8 +602,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_instruction_metadata(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         kind: &InstructionKindData,
     ) -> IrResult<()> {
         let Some(range_id) = inst.metadata().get(&MetadataAttachmentKind::Range) else {
@@ -634,8 +635,8 @@ impl<'ctx> Verifier<'ctx> {
     fn verify_range_like_metadata_inst(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        _inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        _inst: &InstructionView<'ctx>,
         id: MetadataId,
         expected_scalar_ty: TypeId,
         kind: RangeLikeMetadataKind,
@@ -785,8 +786,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_int_binary(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         b: &BinaryOpData,
     ) -> IrResult<()> {
         let lhs_ty = self.value_type(b.lhs.get());
@@ -831,8 +832,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_float_binary(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         b: &BinaryOpData,
     ) -> IrResult<()> {
         let lhs_ty = self.value_type(b.lhs.get());
@@ -880,8 +881,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_fneg(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         u: &crate::instr_types::FNegInstData,
     ) -> IrResult<()> {
         let src_ty = self.value_type(u.src.get());
@@ -917,8 +918,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_freeze(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         u: &crate::instr_types::FreezeInstData,
     ) -> IrResult<()> {
         let src_ty = self.value_type(u.src.get());
@@ -942,8 +943,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_va_arg(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        _inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        _inst: &InstructionView<'ctx>,
         u: &crate::instr_types::VAArgInstData,
     ) -> IrResult<()> {
         let src_ty = self.value_type(u.src.get());
@@ -963,8 +964,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_extract_value(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         d: &crate::instr_types::ExtractValueInstData,
     ) -> IrResult<()> {
         let agg_ty = self.value_type(d.aggregate.get());
@@ -1002,8 +1003,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_insert_value(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         d: &crate::instr_types::InsertValueInstData,
     ) -> IrResult<()> {
         let agg_ty = self.value_type(d.aggregate.get());
@@ -1055,8 +1056,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_extract_element(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         d: &crate::instr_types::ExtractElementInstData,
     ) -> IrResult<()> {
         let vec_ty = self.value_type(d.vector.get());
@@ -1105,8 +1106,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_insert_element(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         d: &crate::instr_types::InsertElementInstData,
     ) -> IrResult<()> {
         let vec_ty = self.value_type(d.vector.get());
@@ -1169,8 +1170,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_shuffle_vector(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         d: &crate::instr_types::ShuffleVectorInstData,
     ) -> IrResult<()> {
         let l_ty = self.value_type(d.lhs.get());
@@ -1247,8 +1248,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_fence(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        _inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        _inst: &InstructionView<'ctx>,
         d: &crate::instr_types::FenceInstData,
     ) -> IrResult<()> {
         use crate::atomic_ordering::AtomicOrdering as AO;
@@ -1273,8 +1274,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_cmpxchg(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        _inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        _inst: &InstructionView<'ctx>,
         d: &crate::instr_types::AtomicCmpXchgInstData,
     ) -> IrResult<()> {
         use crate::atomic_ordering::AtomicOrdering as AO;
@@ -1343,8 +1344,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_atomicrmw(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         d: &crate::instr_types::AtomicRMWInstData,
     ) -> IrResult<()> {
         use crate::atomic_ordering::AtomicOrdering as AO;
@@ -1410,8 +1411,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_icmp(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         c: &CmpInstData,
     ) -> IrResult<()> {
         let lhs_ty = self.value_type(c.lhs.get());
@@ -1462,8 +1463,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_fcmp(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         c: &FCmpInstData,
     ) -> IrResult<()> {
         let lhs_ty = self.value_type(c.lhs.get());
@@ -1511,8 +1512,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_cast(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         c: &CastOpData,
     ) -> IrResult<()> {
         let src_ty = self.value_type(c.src.get());
@@ -1780,8 +1781,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_alloca(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         a: &crate::instr_types::AllocaInstData,
     ) -> IrResult<()> {
         let allocated = Type::new(a.allocated_ty, self.module);
@@ -1835,8 +1836,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_load(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         l: &crate::instr_types::LoadInstData,
     ) -> IrResult<()> {
         let ptr_ty = self.value_type(l.ptr.get());
@@ -1907,8 +1908,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_store(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        _inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        _inst: &InstructionView<'ctx>,
         s: &crate::instr_types::StoreInstData,
     ) -> IrResult<()> {
         let ptr_ty = self.value_type(s.ptr.get());
@@ -1965,7 +1966,7 @@ impl<'ctx> Verifier<'ctx> {
     fn check_atomic_access_type(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
+        bb: &BasicBlock<'ctx, Dyn>,
         ty: TypeId,
         kind: &str,
     ) -> IrResult<()> {
@@ -1989,7 +1990,7 @@ impl<'ctx> Verifier<'ctx> {
     fn check_atomic_access_size(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
+        bb: &BasicBlock<'ctx, Dyn>,
         ty: TypeId,
     ) -> IrResult<()> {
         let Some(bits) = type_bit_width(self.module, ty) else {
@@ -2016,8 +2017,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_gep(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        _inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        _inst: &InstructionView<'ctx>,
         g: &GepInstData,
     ) -> IrResult<()> {
         let base_ty = self.value_type(g.ptr.get());
@@ -2065,8 +2066,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_call(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        _inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        _inst: &InstructionView<'ctx>,
         c: &crate::instr_types::CallInstData,
     ) -> IrResult<()> {
         // Callee must be a function value, OR a pointer of address
@@ -2159,8 +2160,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_select(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         s: &crate::instr_types::SelectInstData,
     ) -> IrResult<()> {
         let cond_ty = self.value_type(s.cond.get());
@@ -2215,8 +2216,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_phi(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         p: &PhiData,
         predecessors: &HashMap<ValueId, Vec<ValueId>>,
     ) -> IrResult<()> {
@@ -2310,8 +2311,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_ret(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        _inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        _inst: &InstructionView<'ctx>,
         r: &ReturnOpData,
     ) -> IrResult<()> {
         let expected = f.return_type();
@@ -2358,8 +2359,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_switch(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        _inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        _inst: &InstructionView<'ctx>,
         d: &crate::instr_types::SwitchInstData,
         block_index: &HashMap<ValueId, usize>,
     ) -> IrResult<()> {
@@ -2420,8 +2421,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_indirectbr(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        _inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        _inst: &InstructionView<'ctx>,
         d: &crate::instr_types::IndirectBrInstData,
         block_index: &HashMap<ValueId, usize>,
     ) -> IrResult<()> {
@@ -2457,8 +2458,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_invoke(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        _inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        _inst: &InstructionView<'ctx>,
         d: &crate::instr_types::InvokeInstData,
         block_index: &HashMap<ValueId, usize>,
     ) -> IrResult<()> {
@@ -2480,8 +2481,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_callbr(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        _inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        _inst: &InstructionView<'ctx>,
         d: &crate::instr_types::CallBrInstData,
         block_index: &HashMap<ValueId, usize>,
     ) -> IrResult<()> {
@@ -2511,8 +2512,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_br(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        _inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        _inst: &InstructionView<'ctx>,
         b: &BranchInstData,
         block_index: &HashMap<ValueId, usize>,
     ) -> IrResult<()> {
@@ -2562,8 +2563,8 @@ impl<'ctx> Verifier<'ctx> {
     fn check_dominates_uses(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         dom_tree: &DominatorTree,
     ) -> IrResult<()> {
         let operands = inst.operand_ids();
@@ -2599,10 +2600,10 @@ impl<'ctx> Verifier<'ctx> {
     fn check_self_reference_and_in_block_dom(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
-        inst: &Instruction<'ctx>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        inst: &InstructionView<'ctx>,
         index_in_block: usize,
-        block_instructions: &[Instruction<'ctx>],
+        block_instructions: &[InstructionView<'ctx>],
     ) -> IrResult<()> {
         let is_phi = matches!(inst.kind(), Some(crate::InstructionKind::Phi(_)));
         if is_phi {
@@ -2654,7 +2655,7 @@ impl<'ctx> Verifier<'ctx> {
     fn fail(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
+        bb: &BasicBlock<'ctx, Dyn>,
         rule: VerifierRule,
         message: String,
     ) -> IrError {
@@ -2679,7 +2680,7 @@ impl<'ctx> Verifier<'ctx> {
     fn int_width_or_err(
         &self,
         f: FunctionValue<'ctx, Dyn>,
-        bb: BasicBlock<'ctx, Dyn>,
+        bb: &BasicBlock<'ctx, Dyn>,
         ty: TypeId,
         role: &str,
     ) -> IrResult<u32> {

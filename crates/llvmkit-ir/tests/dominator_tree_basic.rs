@@ -3,12 +3,12 @@
 //! Every test cites its upstream source per Doctrine D11.
 
 use llvmkit_ir::{
-    BasicBlockEdge, DominatorTree, FunctionCfg, IRBuilder, IntPredicate, IntValue, IrError,
-    Linkage, Module, User,
+    BasicBlockEdge, DominatorTree, FunctionCfg, IRBuilder, InstructionView, IntPredicate, IntValue,
+    IrError, Linkage, Module, User,
 };
 
-fn inst<'ctx>(v: llvmkit_ir::Value<'ctx>) -> Result<llvmkit_ir::Instruction<'ctx>, IrError> {
-    v.try_into()
+fn inst<'ctx>(v: llvmkit_ir::Value<'ctx>) -> Result<InstructionView<'ctx>, IrError> {
+    InstructionView::try_from(v)
 }
 
 /// Ports the block-reachability and block-dominance assertions from
@@ -24,17 +24,22 @@ fn reachable_and_unreachable_block_dominance() -> Result<(), IrError> {
         let else_bb = f.append_basic_block(&m, "else");
         let join = f.append_basic_block(&m, "join");
         let dead = f.append_basic_block(&m, "dead");
+        let entry_label = entry.label();
+        let then_label = then_bb.label();
+        let else_label = else_bb.label();
+        let join_label = join.label();
+        let dead_label = dead.label();
         let x: IntValue<i32> = f.param(0)?.try_into()?;
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let cond = b.build_int_cmp(IntPredicate::Eq, x, 0_i32, "cond")?;
-        b.build_cond_br(cond, then_bb, else_bb)?;
+        b.build_cond_br(cond, then_label, else_label)?;
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(then_bb)
-            .build_br(join)?;
+            .build_br(join_label)?;
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(else_bb)
-            .build_br(join)?;
+            .build_br(join_label)?;
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(join)
             .build_ret(x)?;
@@ -43,23 +48,23 @@ fn reachable_and_unreachable_block_dominance() -> Result<(), IrError> {
             .build_ret(x)?;
 
         let dt = DominatorTree::new(f.as_dyn());
-        assert!(dt.is_reachable_from_entry(entry));
-        assert!(dt.is_reachable_from_entry(then_bb));
-        assert!(dt.is_reachable_from_entry(else_bb));
-        assert!(dt.is_reachable_from_entry(join));
-        assert!(!dt.is_reachable_from_entry(dead));
+        assert!(dt.is_reachable_from_entry(entry_label));
+        assert!(dt.is_reachable_from_entry(then_label));
+        assert!(dt.is_reachable_from_entry(else_label));
+        assert!(dt.is_reachable_from_entry(join_label));
+        assert!(!dt.is_reachable_from_entry(dead_label));
 
-        assert!(dt.dominates_block(entry, entry));
-        assert!(dt.dominates_block(entry, then_bb));
-        assert!(dt.dominates_block(entry, else_bb));
-        assert!(dt.dominates_block(entry, join));
-        assert!(dt.dominates_block(entry, dead));
-        assert!(!dt.properly_dominates_block(entry, entry));
-        assert!(dt.properly_dominates_block(entry, join));
-        assert!(!dt.dominates_block(then_bb, join));
-        assert!(!dt.dominates_block(else_bb, join));
-        assert!(dt.dominates_block(dead, dead));
-        assert!(!dt.dominates_block(dead, entry));
+        assert!(dt.dominates_block(entry_label, entry_label));
+        assert!(dt.dominates_block(entry_label, then_label));
+        assert!(dt.dominates_block(entry_label, else_label));
+        assert!(dt.dominates_block(entry_label, join_label));
+        assert!(dt.dominates_block(entry_label, dead_label));
+        assert!(!dt.properly_dominates_block(entry_label, entry_label));
+        assert!(dt.properly_dominates_block(entry_label, join_label));
+        assert!(!dt.dominates_block(then_label, join_label));
+        assert!(!dt.dominates_block(else_label, join_label));
+        assert!(dt.dominates_block(dead_label, dead_label));
+        assert!(!dt.dominates_block(dead_label, entry_label));
         Ok(())
     })
 }
@@ -120,29 +125,32 @@ fn phi_operands_are_dominated_on_incoming_edges() -> Result<(), IrError> {
         let then_bb = f.append_basic_block(&m, "then");
         let else_bb = f.append_basic_block(&m, "else");
         let join = f.append_basic_block(&m, "join");
+        let then_label = then_bb.label();
+        let else_label = else_bb.label();
+        let join_label = join.label();
         let x: IntValue<i32> = f.param(0)?.try_into()?;
         let cond: IntValue<bool> = f.param(1)?.try_into()?;
 
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(entry)
-            .build_cond_br(cond, then_bb, else_bb)?;
+            .build_cond_br(cond, then_label, else_label)?;
         let bt = IRBuilder::new_for::<i32>(&m).position_at_end(then_bb);
         let y = bt.build_int_add(x, 1_i32, "y")?;
-        bt.build_br(join)?;
+        bt.build_br(join_label)?;
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(else_bb)
-            .build_br(join)?;
+            .build_br(join_label)?;
         let bj = IRBuilder::new_for::<i32>(&m).position_at_end(join);
         let phi = bj
             .build_int_phi::<i32, _>("p")?
-            .add_incoming(y, then_bb)?
-            .add_incoming(x, else_bb)?;
+            .add_incoming(y, then_label)?
+            .add_incoming(x, else_label)?;
         bj.build_ret(phi.as_int_value())?;
 
         let yi = inst(y.as_value())?;
-        let phii = phi.as_instruction();
+        let phii = phi.as_view();
         let y_use = phi
-            .as_instruction()
+            .as_view()
             .operand_use(0)
             .expect("phi has first incoming use");
         let dt = DominatorTree::new(f.as_dyn());
@@ -167,6 +175,8 @@ fn invoke_result_dominates_normal_destination_but_not_unwind() -> Result<(), IrE
         let entry = f.append_basic_block(&m, "entry");
         let normal = f.append_basic_block(&m, "normal");
         let unwind = f.append_basic_block(&m, "unwind");
+        let normal_label = normal.label();
+        let unwind_label = unwind.label();
         let x: IntValue<i32> = f.param(0)?.try_into()?;
 
         let (_sealed, invoke) = IRBuilder::new_for::<i32>(&m)
@@ -174,11 +184,11 @@ fn invoke_result_dominates_normal_destination_but_not_unwind() -> Result<(), IrE
             .build_invoke(
                 callee,
                 Vec::<llvmkit_ir::Value>::new(),
-                normal,
-                unwind,
+                normal_label,
+                unwind_label,
                 "iv",
             )?;
-        let invoke_value: IntValue<i32> = invoke.as_instruction().as_value().try_into()?;
+        let invoke_value: IntValue<i32> = invoke.as_value().try_into()?;
 
         let bn = IRBuilder::new_for::<i32>(&m).position_at_end(normal);
         let normal_use = bn.build_int_add(invoke_value, 1_i32, "normal_use")?;
@@ -187,7 +197,7 @@ fn invoke_result_dominates_normal_destination_but_not_unwind() -> Result<(), IrE
         let unwind_use = bu.build_int_add(invoke_value, 1_i32, "unwind_use")?;
         bu.build_ret(x)?;
 
-        let invoke_inst = invoke.as_instruction();
+        let invoke_inst = invoke.as_view();
         let normal_use_inst = inst(normal_use.as_value())?;
         let unwind_use_inst = inst(unwind_use.as_value())?;
         let dt = DominatorTree::new(f.as_dyn());
@@ -210,24 +220,26 @@ fn duplicate_edges_do_not_dominate_successor() -> Result<(), IrError> {
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let join = f.append_basic_block(&m, "join");
+        let entry_label = entry.label();
+        let join_label = join.label();
         let x: IntValue<i32> = f.param(0)?.try_into()?;
         let cond: IntValue<bool> = f.param(1)?.try_into()?;
 
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(entry)
-            .build_cond_br(cond, join, join)?;
+            .build_cond_br(cond, join_label, join_label)?;
         let bj = IRBuilder::new_for::<i32>(&m).position_at_end(join);
         let phi = bj
             .build_int_phi::<i32, _>("p")?
-            .add_incoming(x, entry)?
-            .add_incoming(x, entry)?;
+            .add_incoming(x, entry_label)?
+            .add_incoming(x, entry_label)?;
         bj.build_ret(phi.as_int_value())?;
 
         let cfg = FunctionCfg::new(f.as_dyn());
         let edge: BasicBlockEdge<'_> = cfg.edges().next().expect("conditional branch has an edge");
         let dt = DominatorTree::new(f.as_dyn());
 
-        assert!(!dt.dominates_edge(edge, join));
+        assert!(!dt.dominates_edge(edge, join_label));
         Ok(())
     })
 }

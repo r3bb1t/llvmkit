@@ -1,0 +1,16 @@
+error[E0382]: use of moved value: `cs`
+  --> tests/compile_fail/retained_open_catchswitch_cannot_add_after_finish.rs:20:17
+   |
+17 |         let (_sealed, cs) = b.build_catch_switch_within_none_to_caller("cs").unwrap();
+   |                       -- move occurs because `cs` has type `CatchSwitchInst<'_, llvmkit_ir::term_open_state::Open, Brand<'_>>`, which does not implement the `Copy` trait
+18 |
+19 |         let _closed = cs.finish();
+   |                          -------- `cs` moved due to this method call
+20 |         let _ = cs.add_handler(handler_label);
+   |                 ^^ value used here after move
+   |
+note: `CatchSwitchInst::<'ctx, llvmkit_ir::term_open_state::Open, B>::finish` takes ownership of the receiver `self`, which moves `cs`
+  --> src/instructions.rs
+   |
+   |     pub fn finish(self) -> CatchSwitchInst<'ctx, TermClosed, B> {
+   |                   ^^^^

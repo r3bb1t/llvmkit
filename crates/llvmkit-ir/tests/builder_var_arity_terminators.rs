@@ -24,6 +24,10 @@ fn switch_three_cases_print_form() -> Result<(), IrError> {
         let case0 = f.append_basic_block(&m, "defaultdest.0");
         let case1 = f.append_basic_block(&m, "defaultdest.1");
         let case2 = f.append_basic_block(&m, "defaultdest.2");
+        let default_label = default_bb.label();
+        let case0_label = case0.label();
+        let case1_label = case1.label();
+        let case2_label = case2.label();
         // Seal the case targets with `unreachable` so the verifier accepts them.
         for bb in [default_bb, case0, case1, case2] {
             let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(bb);
@@ -31,11 +35,11 @@ fn switch_three_cases_print_form() -> Result<(), IrError> {
         }
         let val: IntValue<i8> = f.param(0)?.try_into()?;
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        let (_sealed, switch) = b.build_switch(val, default_bb, "")?;
+        let (_sealed, switch) = b.build_switch(val, default_label, "")?;
         let _closed = switch
-            .add_case(i8_ty.const_int(0_i8), case0)?
-            .add_case(i8_ty.const_int(1_i8), case1)?
-            .add_case(i8_ty.const_int(2_i8), case2)?
+            .add_case(i8_ty.const_int(0_i8), case0_label)?
+            .add_case(i8_ty.const_int(1_i8), case1_label)?
+            .add_case(i8_ty.const_int(2_i8), case2_label)?
             .finish();
         let text = format!("{m}");
         // Mirrors the upstream multi-line form (CHECK lines 1303-1310).
@@ -74,13 +78,14 @@ fn switch_no_cases_only_default() -> Result<(), IrError> {
         let f = m.add_function::<(), _>("test", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let dest = f.append_basic_block(&m, "dest");
+        let dest_label = dest.label();
         {
             let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(dest);
             bb_b.build_ret_void();
         }
         let x: IntValue<i32> = f.param(0)?.try_into()?;
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        let (_sealed, switch) = b.build_switch(x, dest, "")?;
+        let (_sealed, switch) = b.build_switch(x, dest_label, "")?;
         let _closed = switch.finish();
         m.verify_borrowed()?;
         let text = format!("{m}");
@@ -113,6 +118,7 @@ fn indirectbr_single_destination() -> Result<(), IrError> {
         let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let dest = f.append_basic_block(&m, "dest");
+        let dest_label = dest.label();
         {
             let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(dest);
             bb_b.build_ret_void();
@@ -120,7 +126,7 @@ fn indirectbr_single_destination() -> Result<(), IrError> {
         let addr: PointerValue = f.param(0)?.try_into()?;
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let (_sealed, ibr) = b.build_indirectbr(addr, "")?;
-        let _closed = ibr.add_destination(dest)?.finish();
+        let _closed = ibr.add_destination(dest_label)?.finish();
         let text = format!("{m}");
         assert!(
             text.contains("indirectbr ptr %0, [label %dest]"),
@@ -144,6 +150,8 @@ fn indirectbr_multiple_destinations() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let bb1 = f.append_basic_block(&m, "bb1");
         let bb2 = f.append_basic_block(&m, "bb2");
+        let bb1_label = bb1.label();
+        let bb2_label = bb2.label();
         for bb in [bb1, bb2] {
             let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(bb);
             bb_b.build_ret_void();
@@ -151,7 +159,10 @@ fn indirectbr_multiple_destinations() -> Result<(), IrError> {
         let addr: PointerValue = f.param(0)?.try_into()?;
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let (_sealed, ibr) = b.build_indirectbr(addr, "")?;
-        let _closed = ibr.add_destination(bb1)?.add_destination(bb2)?.finish();
+        let _closed = ibr
+            .add_destination(bb1_label)?
+            .add_destination(bb2_label)?
+            .finish();
         let text = format!("{m}");
         assert!(
             text.contains("indirectbr ptr %0, [label %bb1, label %bb2]"),

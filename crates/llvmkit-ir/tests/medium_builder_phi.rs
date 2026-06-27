@@ -23,21 +23,24 @@ fn build_int_phi_two_predecessors_emits_phi() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let other = f.append_basic_block(&m, "other");
         let join = f.append_basic_block(&m, "join");
+        let entry_label = entry.label();
+        let other_label = other.label();
+        let join_label = join.label();
 
         // entry: br label %join
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        b.build_br(join)?;
+        b.build_br(join_label)?;
 
         // other: br label %join
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(other);
-        b.build_br(join)?;
+        b.build_br(join_label)?;
 
         // join: phi i32 [ 1, %entry ], [ 2, %other ]; ret i32 %p
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
         let phi = b
             .build_int_phi::<i32, _>("p")?
-            .add_incoming(1_i32, entry)?
-            .add_incoming(2_i32, other)?;
+            .add_incoming(1_i32, entry_label)?
+            .add_incoming(2_i32, other_label)?;
         b.build_ret(phi.as_int_value())?;
 
         let text = format!("{m}");
@@ -64,17 +67,20 @@ fn phi_with_post_creation_add_incoming() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let other = f.append_basic_block(&m, "other");
         let join = f.append_basic_block(&m, "join");
+        let entry_label = entry.label();
+        let other_label = other.label();
+        let join_label = join.label();
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        b.build_br(join)?;
+        b.build_br(join_label)?;
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(other);
-        b.build_br(join)?;
+        b.build_br(join_label)?;
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
         let phi = b.build_int_phi::<i32, _>("p")?;
         let phi = phi
-            .add_incoming(10_i32, entry)?
-            .add_incoming(20_i32, other)?;
+            .add_incoming(10_i32, entry_label)?
+            .add_incoming(20_i32, other_label)?;
         b.build_ret(phi.as_int_value())?;
 
         let text = format!("{m}");

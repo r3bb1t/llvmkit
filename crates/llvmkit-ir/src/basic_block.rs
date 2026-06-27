@@ -20,11 +20,11 @@
 
 use super::block_state::{BlockSealState, Unsealed};
 use super::function::FunctionValue;
-use super::instruction::{Instruction, state::Attached};
+use super::instruction::InstructionView;
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::TypeId;
-use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
+use super::value::{HasDebugLoc, HasName, Typed, Value, ValueId, ValueKindData, sealed};
 use super::{DebugLoc, IrError, IrResult, Type};
 use core::cell::RefCell;
 use core::marker::PhantomData;
@@ -70,13 +70,13 @@ impl BasicBlockData {
 ///
 /// The `Seal: BlockSealState` parameter (default [`Unsealed`])
 /// distinguishes blocks that still accept appended instructions from
-/// blocks whose terminator has been emitted. The compile-time
-/// guarantee is enforced at [`crate::IRBuilder::position_at_end`],
-/// which only accepts an [`Unsealed`] block; once a terminator-emitting
-/// `build_*` consumes the builder, the same block is returned with
-/// `Seal = Sealed`. Cross-block references (branch targets, phi
-/// predecessors) are generic over `Seal` so already-sealed blocks
-/// can still be named.
+/// blocks whose terminator has been emitted. The seal marker is enforced at
+/// [`crate::IRBuilder::position_at_end`], which only accepts an [`Unsealed`]
+/// block; once a terminator-emitting `build_*` consumes the builder, the
+/// returned handle names the same block with `Seal = Sealed`. `BasicBlock`
+/// is intentionally linear (`!Copy` / `!Clone`) so retaining an old unsealed
+/// insertion capability cannot reopen a sealed construction path. Use
+/// [`BasicBlockLabel`] for copyable branch targets and PHI predecessors.
 pub struct BasicBlock<
     'ctx,
     R: ReturnMarker,
@@ -90,18 +90,6 @@ pub struct BasicBlock<
     pub(super) _seal: PhantomData<Seal>,
 }
 
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand> Clone
-    for BasicBlock<'ctx, R, Seal, B>
-{
-    #[inline]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand> Copy
-    for BasicBlock<'ctx, R, Seal, B>
-{
-}
 impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand> PartialEq
     for BasicBlock<'ctx, R, Seal, B>
 {
@@ -134,6 +122,101 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand> core::fmt::Deb
     }
 }
 
+/// Copyable label reference to a basic block.
+///
+/// Unlike [`BasicBlock`], this is not an insertion capability: it can name a
+/// branch target or PHI predecessor, but it cannot be passed to
+/// [`IRBuilder::position_at_end`](crate::IRBuilder::position_at_end).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BasicBlockLabel<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) ty: TypeId,
+    pub(super) _r: PhantomData<R>,
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> BasicBlockLabel<'ctx, R, B> {
+    /// Widen this copyable label reference to the erased [`Value`] handle.
+    #[inline]
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        Value {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+        }
+    }
+}
+
+mod block_label_sealed {
+    pub trait Sealed {}
+}
+
+/// Values accepted where an instruction names a basic-block label.
+pub trait IntoBasicBlockLabel<'ctx, R: ReturnMarker, B: ModuleBrand>:
+    block_label_sealed::Sealed
+{
+    fn into_basic_block_label(self) -> BasicBlockLabel<'ctx, R, B>;
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand> block_label_sealed::Sealed
+    for BasicBlockLabel<'ctx, R, B>
+{
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoBasicBlockLabel<'ctx, R, B>
+    for BasicBlockLabel<'ctx, R, B>
+{
+    #[inline]
+    fn into_basic_block_label(self) -> BasicBlockLabel<'ctx, R, B> {
+        self
+    }
+}
+
+impl<'ctx, R, Seal, B> block_label_sealed::Sealed for BasicBlock<'ctx, R, Seal, B>
+where
+    R: ReturnMarker,
+    Seal: BlockSealState,
+    B: ModuleBrand + 'ctx,
+{
+}
+
+impl<'ctx, R, Seal, B> IntoBasicBlockLabel<'ctx, R, B> for BasicBlock<'ctx, R, Seal, B>
+where
+    R: ReturnMarker,
+    Seal: BlockSealState,
+    B: ModuleBrand + 'ctx,
+{
+    #[inline]
+    fn into_basic_block_label(self) -> BasicBlockLabel<'ctx, R, B> {
+        BasicBlockLabel {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+            _r: PhantomData,
+        }
+    }
+}
+
+impl<'a, 'ctx, R, Seal, B> block_label_sealed::Sealed for &'a BasicBlock<'ctx, R, Seal, B>
+where
+    R: ReturnMarker,
+    Seal: BlockSealState,
+    B: ModuleBrand + 'ctx,
+{
+}
+
+impl<'a, 'ctx, R, Seal, B> IntoBasicBlockLabel<'ctx, R, B> for &'a BasicBlock<'ctx, R, Seal, B>
+where
+    R: ReturnMarker,
+    Seal: BlockSealState,
+    B: ModuleBrand + 'ctx,
+{
+    #[inline]
+    fn into_basic_block_label(self) -> BasicBlockLabel<'ctx, R, B> {
+        self.label()
+    }
+}
+
 impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
     BasicBlock<'ctx, R, Seal, B>
 {
@@ -151,9 +234,31 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
         }
     }
 
+    #[inline]
+    pub(crate) fn copy_handle(&self) -> Self {
+        Self {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+            _r: PhantomData,
+            _seal: PhantomData,
+        }
+    }
+
+    /// Copyable label reference for branch targets and PHI predecessors.
+    #[inline]
+    pub fn label(&self) -> BasicBlockLabel<'ctx, R, B> {
+        BasicBlockLabel {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+            _r: PhantomData,
+        }
+    }
+
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn as_value(&self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -162,12 +267,11 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
     }
 
     /// Erase the return-shape marker, producing the runtime-checked
-    /// [`Dyn`] form. Useful for storage and printing helpers that
-    /// shouldn't have to be generic in `R`. Also collapses the seal
-    /// state to the default [`Unsealed`] view (the runtime form does
-    /// not track seal state).
+    /// [`Dyn`] form. Crate-internal only: this duplicates the handle for
+    /// storage and printing helpers, so public code should use [`label`](Self::label)
+    /// when it needs a copyable non-insertion reference.
     #[inline]
-    pub fn as_dyn(self) -> BasicBlock<'ctx, Dyn, Unsealed, B> {
+    pub(crate) fn as_dyn(&self) -> BasicBlock<'ctx, Dyn, Seal, B> {
         BasicBlock {
             id: self.id,
             module: self.module,
@@ -192,7 +296,7 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
     }
 
     /// Borrow the storage payload.
-    fn data(self) -> &'ctx BasicBlockData {
+    fn data(&self) -> &'ctx BasicBlockData {
         match &self.as_value().data().kind {
             ValueKindData::BasicBlock(b) => b,
             // The handle was produced by a constructor that pushed a
@@ -203,14 +307,14 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
 
     /// Optional textual name. Mirrors `BasicBlock::getName`.
     #[inline]
-    pub fn name(self) -> Option<String> {
+    pub fn name(&self) -> Option<String> {
         self.as_value().name()
     }
 
     /// Set or clear the textual name.
     /// Set the textual name.
     #[inline]
-    pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    pub fn set_name<Name>(&self, module_token: &Module<'ctx, B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
@@ -219,24 +323,24 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
 
     /// Clear the textual name.
     #[inline]
-    pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    pub fn clear_name(&self, module_token: &Module<'ctx, B, Unverified>) {
         self.as_value().clear_name(module_token);
     }
 
     /// Owning module reference.
     #[inline]
-    pub fn module(self) -> ModuleView<'ctx, B> {
+    pub fn module(&self) -> ModuleView<'ctx, B> {
         ModuleView::new(self.module.module())
     }
 
     /// Owning module reference with the compile-time brand.
     #[inline]
-    pub(super) fn module_ref(self) -> ModuleRef<'ctx, B> {
+    pub(super) fn module_ref(&self) -> ModuleRef<'ctx, B> {
         self.module
     }
 
     /// Owning function value-id, or `None` if the block is an orphan.
-    pub(super) fn parent_id(self) -> Option<ValueId> {
+    pub(super) fn parent_id(&self) -> Option<ValueId> {
         *self.data().parent.borrow()
     }
 
@@ -244,7 +348,7 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
     /// `None` if the block is an orphan (no parent attached). The
     /// caller can narrow back to its static `R` via
     /// [`crate::FunctionValue::as_dyn`] / `try_into` if needed.
-    pub fn parent_function(self) -> Option<FunctionValue<'ctx, Dyn, B>> {
+    pub fn parent_function(&self) -> Option<FunctionValue<'ctx, Dyn, B>> {
         let id = self.parent_id()?;
         Some(FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(
             id,
@@ -256,39 +360,39 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
     /// `ValueId`s rather than full instruction handles so the caller
     /// can decide which view (raw operand-traversal vs typed
     /// `Instruction<'ctx>` handle) it wants.
-    pub(super) fn instruction_ids(self) -> Vec<ValueId> {
+    pub(crate) fn instruction_ids(&self) -> Vec<ValueId> {
         self.data().instructions.borrow().clone()
     }
 
-    /// Iterate instruction handles in program order.
-    pub fn instructions(self) -> impl ExactSizeIterator<Item = Instruction<'ctx, Attached, B>> {
+    /// Iterate read-only instruction views in program order.
+    pub fn instructions(&self) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>> {
         let module = self.module;
         let ids = self.instruction_ids();
         ids.into_iter()
-            .map(move |id| Instruction::from_parts(id, module))
+            .map(move |id| InstructionView::from_parts(id, module))
     }
 
     /// `true` if the block currently has no instructions.
-    pub fn is_empty(self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.data().instructions.borrow().is_empty()
     }
 
-    /// Last instruction (the terminator if the block is well-formed),
+    /// Last instruction view (the terminator if the block is well-formed),
     /// or `None` for an empty block.
-    pub fn terminator(self) -> Option<Instruction<'ctx, Attached, B>> {
+    pub fn terminator(&self) -> Option<InstructionView<'ctx, B>> {
         let last = *self.data().instructions.borrow().last()?;
-        Some(Instruction::from_parts(last, self.module))
+        Some(InstructionView::from_parts(last, self.module))
     }
 
-    /// Successor blocks of this block's terminator, preserving duplicate CFG edges.
+    /// Successor block labels of this block's terminator, preserving duplicate CFG edges.
     /// Returns an empty list for unterminated blocks and terminators without successors.
-    pub fn successors(self) -> Vec<BasicBlock<'ctx, Dyn, Unsealed, B>> {
+    pub fn successors(&self) -> Vec<BasicBlockLabel<'ctx, Dyn, B>> {
         crate::cfg::block_successors(self)
     }
 
     /// Append an instruction value-id to the block. Crate-internal:
     /// only the IR builder calls this.
-    pub(super) fn append_instruction(self, instr: ValueId) {
+    pub(super) fn append_instruction(&self, instr: ValueId) {
         self.data().instructions.borrow_mut().push(instr);
     }
 
@@ -300,7 +404,7 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
     ///
     /// Mirrors LLVM's `BasicBlock::getInstList().remove(I)`
     /// (`lib/IR/BasicBlock.cpp`).
-    pub(super) fn remove_instruction(self, instr: ValueId) -> bool {
+    pub(super) fn remove_instruction(&self, instr: ValueId) -> bool {
         let mut list = self.data().instructions.borrow_mut();
         if let Some(pos) = list.iter().position(|id| *id == instr) {
             list.remove(pos);
@@ -317,7 +421,11 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
     ///
     /// Mirrors `BasicBlock::getInstList().insert(before, I)`
     /// (`lib/IR/BasicBlock.cpp`).
-    pub(super) fn insert_instruction_before(self, instr: ValueId, before: ValueId) -> IrResult<()> {
+    pub(super) fn insert_instruction_before(
+        &self,
+        instr: ValueId,
+        before: ValueId,
+    ) -> IrResult<()> {
         let mut list = self.data().instructions.borrow_mut();
         match list.iter().position(|id| *id == before) {
             Some(pos) => {
@@ -333,7 +441,7 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
     /// Insert `instr` immediately after `after` in this block's
     /// instruction list. Errors with [`IrError::InvalidOperation`] if
     /// `after` is not present in this block.
-    pub(super) fn insert_instruction_after(self, instr: ValueId, after: ValueId) -> IrResult<()> {
+    pub(super) fn insert_instruction_after(&self, instr: ValueId, after: ValueId) -> IrResult<()> {
         let mut list = self.data().instructions.borrow_mut();
         match list.iter().position(|id| *id == after) {
             Some(pos) => {
@@ -410,7 +518,7 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
     pub fn split_at<Name>(
         self,
         module_token: &Module<'ctx, B, Unverified>,
-        before: &Instruction<'ctx, Attached, B>,
+        before: &InstructionView<'ctx, B>,
         name: Name,
     ) -> IrResult<BasicBlock<'ctx, R, Unsealed, B>>
     where
@@ -455,14 +563,6 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx> sealed:
     for BasicBlock<'ctx, R, Seal, B>
 {
 }
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx> IsValue<'ctx, B>
-    for BasicBlock<'ctx, R, Seal, B>
-{
-    #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
-        BasicBlock::as_value(self)
-    }
-}
 impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx> Typed<'ctx, B>
     for BasicBlock<'ctx, R, Seal, B>
 {
@@ -476,18 +576,18 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx> HasName
 {
     #[inline]
     fn name(self) -> Option<String> {
-        BasicBlock::name(self)
+        BasicBlock::name(&self)
     }
     #[inline]
     fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
-        BasicBlock::set_name(self, module_token, name);
+        BasicBlock::set_name(&self, module_token, name);
     }
     #[inline]
     fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-        BasicBlock::clear_name(self, module_token);
+        BasicBlock::clear_name(&self, module_token);
     }
 }
 impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx> HasDebugLoc
@@ -508,8 +608,9 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for BasicBlock<'ctx, Dyn, Unsealed, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for BasicBlockLabel<'ctx, Dyn, B> {
     type Error = IrError;
+
     fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
         match v.data().kind {
             ValueKindData::BasicBlock(_) => Ok(Self {
@@ -517,7 +618,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for BasicBlock<'ctx, D
                 module: v.module,
                 ty: v.ty,
                 _r: PhantomData,
-                _seal: PhantomData,
             }),
             _ => Err(IrError::ValueCategoryMismatch {
                 expected: crate::error::ValueCategoryLabel::BasicBlock,

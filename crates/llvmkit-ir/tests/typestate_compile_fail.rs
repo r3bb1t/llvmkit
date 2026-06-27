@@ -8,6 +8,21 @@ fn typestate_compile_fail() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/compile_fail/position_at_end_sealed_block.rs");
     t.compile_fail("tests/compile_fail/add_incoming_after_finish.rs");
+    t.compile_fail("tests/compile_fail/retained_unsealed_block_cannot_reposition.rs");
+    t.compile_fail("tests/compile_fail/sealed_block_cannot_start_cursor.rs");
+    t.compile_fail("tests/compile_fail/retained_open_phi_cannot_add_after_finish.rs");
+    t.compile_fail("tests/compile_fail/finished_phi_cannot_reopen_through_instruction_kind.rs");
+    t.compile_fail("tests/compile_fail/retained_open_switch_cannot_add_after_finish.rs");
+    t.compile_fail("tests/compile_fail/retained_open_indirectbr_cannot_add_after_finish.rs");
+    t.compile_fail("tests/compile_fail/retained_open_landingpad_cannot_add_after_finish.rs");
+    t.compile_fail("tests/compile_fail/retained_open_catchswitch_cannot_add_after_finish.rs");
+    t.compile_fail("tests/compile_fail/finished_switch_cannot_reopen_through_terminator_kind.rs");
+    t.compile_fail(
+        "tests/compile_fail/finished_landingpad_cannot_reopen_through_instruction_kind.rs",
+    );
+    t.compile_fail("tests/compile_fail/per_opcode_handle_cannot_mint_instruction.rs");
+    t.compile_fail("tests/compile_fail/value_cannot_mint_instruction_lifecycle.rs");
+    t.compile_fail("tests/compile_fail/block_terminator_view_cannot_erase.rs");
     t.compile_fail("tests/compile_fail/call_void_no_return_accessor.rs");
     t.compile_fail("tests/compile_fail/set_struct_body_twice.rs");
     t.compile_fail("tests/compile_fail/module_pass_requires_verified.rs");

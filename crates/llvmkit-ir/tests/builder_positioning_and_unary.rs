@@ -28,7 +28,7 @@ fn position_before_inserts_between_prev_and_anchor() -> Result<(), IrError> {
         let a = b.build_int_add(n, 1_i32, "a")?;
         let (sealed_block, ret_inst) = b.build_ret(a)?;
         let _ = sealed_block;
-        let b2 = IRBuilder::new_for::<i32>(&m).position_before(ret_inst);
+        let b2 = IRBuilder::new_for::<i32>(&m).position_before(&ret_inst.as_view());
         let _ = b2.build_int_sub(a, 0_i32, "noop")?;
         let text = format!("{m}");
         let pos_a = text.find("%a = add").expect("%a present");
@@ -78,7 +78,29 @@ fn position_past_allocas_anchors_after_alloca_prefix() -> Result<(), IrError> {
 /// `Builder.saveIP()` / `Builder.restoreIP(...)` (lines 244 / 253) --
 /// the canonical upstream usage of the IRBuilder save/restore API.
 #[test]
-fn save_and_restore_insert_point_round_trip() -> Result<(), IrError> {
+fn save_and_restore_insert_point_before_terminator() -> Result<(), IrError> {
+    Module::with_new("a", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let saved = b.save_insert_point();
+        let n: IntValue<i32> = f.param(0)?.try_into()?;
+        let a = b.build_int_add(n, 1_i32, "a")?;
+        let b2 = IRBuilder::new_for::<i32>(&m).restore_insert_point(saved)?;
+        let extra = b2.build_int_add(n, 2_i32, "extra")?;
+        b2.build_ret(extra)?;
+        let _ = a;
+        Ok(())
+    })
+}
+
+/// Rust-side T2 regression for LLVM's `Verifier::visitBasicBlock`
+/// terminator invariant: a saved end-of-block insert point must not reopen
+/// a block after `IRBuilder::build_ret` sealed it.
+#[test]
+fn restore_insert_point_rejects_terminated_block() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
@@ -89,8 +111,11 @@ fn save_and_restore_insert_point_round_trip() -> Result<(), IrError> {
         let n: IntValue<i32> = f.param(0)?.try_into()?;
         let a = b.build_int_add(n, 1_i32, "a")?;
         let _ = b.build_ret(a)?;
-        let b2 = IRBuilder::new_for::<i32>(&m).restore_insert_point(saved);
-        let _ = b2.build_int_add(n, 2_i32, "extra");
+        let err = match IRBuilder::new_for::<i32>(&m).restore_insert_point(saved) {
+            Ok(_) => panic!("terminated block cannot be reopened from a saved insert point"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, IrError::InvalidOperation { .. }));
         Ok(())
     })
 }

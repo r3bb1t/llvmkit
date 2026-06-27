@@ -21,7 +21,7 @@
 //! pattern matching.
 
 use super::asm_writer::{SlotTracker, fmt_instruction};
-use super::basic_block::BasicBlock;
+use super::basic_block::{BasicBlock, BasicBlockLabel};
 use super::block_state::Unsealed;
 use super::function::FunctionValue;
 use super::instr_types::{
@@ -42,8 +42,8 @@ use super::int_width::IntDyn;
 use super::marker::{Dyn, ReturnMarker};
 use super::metadata::{DebugRecord, MetadataAttachmentKind, MetadataAttachmentSet, MetadataId};
 use super::module::{Brand, Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified};
-use super::phi_state::Open as PhiOpen;
-use super::term_open_state::Open as TermOpen;
+use super::phi_state::Closed as PhiClosed;
+use super::term_open_state::Closed as TermClosed;
 use super::r#type::TypeId;
 use super::r#use::Use;
 use super::user::User;
@@ -316,9 +316,9 @@ pub mod state {
 /// `Instruction` is intentionally **`!Copy` and `!Clone`** (Doctrine D2):
 /// methods that consume the lifecycle (`erase_from_parent`,
 /// `detach_from_parent`, `replace_all_uses_with`) take `self` by value,
-/// and the compiler then prevents use-after-erase. Per-opcode handles
-/// (`AddInst`, ...) remain `Copy`; reach for `as_instruction()` on a per-opcode handle
-/// when you need a single-use lifecycle handle from a per-opcode view.
+/// and the compiler then prevents use-after-erase. Per-opcode handles expose
+/// [`InstructionView`] for read-only inspection; lifecycle mutation requires
+/// a builder-produced [`Instruction`] or [`crate::iter::BlockCursor`].
 pub struct Instruction<
     'ctx,
     S: state::InstructionState = state::Attached,
@@ -328,6 +328,16 @@ pub struct Instruction<
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeId,
     pub(super) _state: core::marker::PhantomData<S>,
+}
+/// Copyable read-only instruction view. This is the rediscovery shape for
+/// copyable containers such as basic blocks and use-lists; it exposes
+/// inspection, metadata, naming, and operand access without lifecycle
+/// mutation capabilities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InstructionView<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) ty: TypeId,
 }
 
 // Hand-rolled trait impls so that consumers do not have to spell `S`
@@ -365,6 +375,113 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
     /// either lifecycle state.
     #[inline]
     pub fn as_value(&self) -> Value<'ctx, B> {
+        self.as_view().as_value()
+    }
+
+    /// Return the copyable read-only view for this instruction.
+    #[inline]
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        InstructionView {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+        }
+    }
+
+    /// Borrow the storage payload.
+    fn data(&self) -> &'ctx InstructionData {
+        self.as_view().data()
+    }
+
+    /// Owning module reference.
+    #[inline]
+    pub fn module(&self) -> ModuleView<'ctx, B> {
+        self.as_view().module()
+    }
+
+    /// Result type. `void` for terminators and stores.
+    #[inline]
+    pub fn ty(&self) -> Type<'ctx, B> {
+        self.as_view().ty()
+    }
+
+    /// Optional textual name. Mirrors `Value::getName`.
+    #[inline]
+    pub fn name(&self) -> Option<String> {
+        self.as_view().name()
+    }
+
+    /// Metadata attachments on this instruction.
+    pub fn metadata(&self) -> core::cell::Ref<'_, MetadataAttachmentSet> {
+        self.data().metadata.borrow()
+    }
+
+    /// Set or replace one metadata attachment.
+    pub fn set_metadata(&self, kind: MetadataAttachmentKind, id: MetadataId) {
+        self.as_view().set_metadata(kind, id);
+    }
+
+    pub fn debug_records(&self) -> core::cell::Ref<'_, [DebugRecord]> {
+        core::cell::Ref::map(self.data().debug_records.borrow(), Vec::as_slice)
+    }
+
+    pub fn push_debug_record(&self, record: DebugRecord) {
+        self.as_view().push_debug_record(record);
+    }
+
+    /// Set the textual name.
+    #[inline]
+    pub fn set_name<Name>(&self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
+        self.as_view().set_name(module_token, name);
+    }
+
+    /// Clear the textual name.
+    #[inline]
+    pub fn clear_name(&self, module_token: &Module<'ctx, B, Unverified>) {
+        self.as_view().clear_name(module_token);
+    }
+
+    /// Read-only opcode discriminator for non-terminator opcodes.
+    /// Returns `None` if the instruction is a terminator (use
+    /// [`Self::terminator_kind`] for those).
+    pub fn kind(&self) -> Option<InstructionKind<'ctx, B>> {
+        self.as_view().kind()
+    }
+
+    /// Read-only opcode discriminator for terminators.
+    pub fn terminator_kind(&self) -> Option<TerminatorKind<'ctx, B>> {
+        self.as_view().terminator_kind()
+    }
+
+    /// `true` if this instruction is a terminator (`ret`, `br`, ...).
+    #[inline]
+    pub fn is_terminator(&self) -> bool {
+        self.as_view().is_terminator()
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
+    /// Construct a read-only view from raw parts.
+    #[inline]
+    pub(super) fn from_parts<M>(id: ValueId, module: M) -> Self
+    where
+        M: Into<ModuleRef<'ctx, B>>,
+    {
+        let module = module.into();
+        let data = module.value_data(id);
+        Self {
+            id,
+            module,
+            ty: data.ty,
+        }
+    }
+
+    /// Widen to the erased [`Value`] handle.
+    #[inline]
+    pub fn as_value(&self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -376,7 +493,7 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
     fn data(&self) -> &'ctx InstructionData {
         match &self.as_value().data().kind {
             ValueKindData::Instruction(i) => i,
-            _ => unreachable!("Instruction handle invariant: kind is Instruction"),
+            _ => unreachable!("InstructionView invariant: kind is Instruction"),
         }
     }
 
@@ -418,6 +535,7 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
         register_debug_record_uses(self.id, record_index, &record, self.module.module());
         records.push(record);
     }
+
     /// Set the textual name.
     #[inline]
     pub fn set_name<Name>(&self, module_token: &Module<'ctx, B, Unverified>, name: Name)
@@ -431,6 +549,13 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
     #[inline]
     pub fn clear_name(&self, module_token: &Module<'ctx, B, Unverified>) {
         self.as_value().clear_name(module_token);
+    }
+
+    /// Containing basic block label.
+    pub fn parent(&self) -> BasicBlockLabel<'ctx, Dyn, B> {
+        let parent = self.data().parent.get();
+        let label_ty = self.module.module().label_type().as_type().id();
+        BasicBlock::<Dyn, Unsealed, B>::from_parts(parent, self.module, label_ty).label()
     }
 
     /// Read-only opcode discriminator for non-terminator opcodes.
@@ -656,11 +781,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         }
     }
 
-    /// Containing basic block, in its runtime-checked form.
-    pub fn parent(&self) -> BasicBlock<'ctx, Dyn, Unsealed, B> {
-        let parent = self.data().parent.get();
-        let label_ty = self.module.module().label_type().as_type().id();
-        BasicBlock::from_parts(parent, self.module, label_ty)
+    /// Containing basic block label.
+    pub fn parent(&self) -> BasicBlockLabel<'ctx, Dyn, B> {
+        self.as_view().parent()
     }
 
     // ---- Mutation API (Phase G / T1) ----
@@ -790,11 +913,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     pub fn move_before(
         self,
         module_token: &Module<'ctx, B, Unverified>,
-        other: &Instruction<'ctx, state::Attached, B>,
+        other: &InstructionView<'ctx, B>,
     ) -> IrResult<()> {
         let module = module_token.core_ref();
         let self_id = self.id;
         let other_id = other.id;
+        if self_id == other_id {
+            return Ok(());
+        }
         let old_parent_fn = self.as_value().local_parent_function_id();
         let new_parent_fn = other.as_value().local_parent_function_id();
         if old_parent_fn != new_parent_fn {
@@ -824,11 +950,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     pub fn move_after(
         self,
         module_token: &Module<'ctx, B, Unverified>,
-        other: &Instruction<'ctx, state::Attached, B>,
+        other: &InstructionView<'ctx, B>,
     ) -> IrResult<()> {
         let module = module_token.core_ref();
         let self_id = self.id;
         let other_id = other.id;
+        if self_id == other_id {
+            return Ok(());
+        }
         let old_parent_fn = self.as_value().local_parent_function_id();
         let new_parent_fn = other.as_value().local_parent_function_id();
         if old_parent_fn != new_parent_fn {
@@ -859,7 +988,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     pub fn insert_before(
         self,
         module_token: &Module<'ctx, B, Unverified>,
-        other: &Instruction<'ctx, state::Attached, B>,
+        other: &InstructionView<'ctx, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
         let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
@@ -879,7 +1008,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     pub fn insert_after(
         self,
         module_token: &Module<'ctx, B, Unverified>,
-        other: &Instruction<'ctx, state::Attached, B>,
+        other: &InstructionView<'ctx, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
         let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
@@ -1200,6 +1329,65 @@ fn update_instruction_parent(module: &ModuleCore, inst_id: ValueId, new_parent: 
 }
 
 impl<'ctx, S: state::InstructionState, B: ModuleBrand> sealed::Sealed for Instruction<'ctx, S, B> {}
+impl<'ctx, B: ModuleBrand> sealed::Sealed for InstructionView<'ctx, B> {}
+impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for InstructionView<'ctx, B> {
+    #[inline]
+    fn as_value(self) -> Value<'ctx, B> {
+        InstructionView::as_value(&self)
+    }
+}
+impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for InstructionView<'ctx, B> {
+    #[inline]
+    fn ty(self) -> Type<'ctx, B> {
+        InstructionView::ty(&self)
+    }
+}
+impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for InstructionView<'ctx, B> {
+    #[inline]
+    fn name(self) -> Option<String> {
+        InstructionView::name(&self)
+    }
+    #[inline]
+    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
+        InstructionView::set_name(&self, module_token, name);
+    }
+    #[inline]
+    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+        InstructionView::clear_name(&self, module_token);
+    }
+}
+impl<B: ModuleBrand> HasDebugLoc for InstructionView<'_, B> {
+    #[inline]
+    fn debug_loc(self) -> Option<DebugLoc> {
+        self.as_value().debug_loc()
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> User<'ctx, B> for InstructionView<'ctx, B> {
+    fn operand_count(self) -> u32 {
+        let count = InstructionView::operand_ids(&self).len();
+        u32::try_from(count)
+            .unwrap_or_else(|_| unreachable!("instruction has more than u32::MAX operands"))
+    }
+
+    fn operand(self, index: u32) -> Option<Value<'ctx, B>> {
+        let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
+        let id = *InstructionView::operand_ids(&self).get(slot)?;
+        let module = self.module.module();
+        let data = module.context().value_data(id);
+        Some(Value::from_parts(id, self.module, data.ty))
+    }
+
+    fn operand_use(self, index: u32) -> Option<Use<'ctx, B>> {
+        let user = InstructionView::as_value(&self);
+        let v = self.operand(index)?;
+        Some(Use::new(user, v, index))
+    }
+}
+
 // `IsValue` requires `Copy` (every other implementer is a thin Copy
 // handle). `Instruction<state::Attached>` is intentionally `!Copy`
 // (Doctrine D2: linear-typed handle for irreversible operations like
@@ -1237,23 +1425,32 @@ impl<B: ModuleBrand> HasDebugLoc for Instruction<'_, state::Attached, B> {
 
 impl<'ctx, B: ModuleBrand + 'ctx> User<'ctx, B> for Instruction<'ctx, state::Attached, B> {
     fn operand_count(self) -> u32 {
-        let count = Instruction::operand_ids(&self).len();
-        u32::try_from(count)
-            .unwrap_or_else(|_| unreachable!("instruction has more than u32::MAX operands"))
+        self.as_view().operand_count()
     }
 
     fn operand(self, index: u32) -> Option<Value<'ctx, B>> {
-        let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
-        let id = *Instruction::operand_ids(&self).get(slot)?;
-        let module = self.module.module();
-        let data = module.context().value_data(id);
-        Some(Value::from_parts(id, self.module, data.ty))
+        self.as_view().operand(index)
     }
 
     fn operand_use(self, index: u32) -> Option<Use<'ctx, B>> {
-        let user = Instruction::as_value(&self);
-        let v = self.operand(index)?;
-        Some(Use::new(user, v, index))
+        self.as_view().operand_use(index)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for InstructionView<'ctx, B> {
+    type Error = IrError;
+    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
+        match v.data().kind {
+            ValueKindData::Instruction(_) => Ok(Self {
+                id: v.id,
+                module: v.module,
+                ty: v.ty,
+            }),
+            _ => Err(IrError::ValueCategoryMismatch {
+                expected: crate::error::ValueCategoryLabel::Instruction,
+                got: v.category().into(),
+            }),
+        }
     }
 }
 
@@ -1264,33 +1461,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> From<Instruction<'ctx, state::Attached, B>> fo
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>>
-    for Instruction<'ctx, state::Attached, B>
-{
-    type Error = IrError;
-    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
-        match v.data().kind {
-            ValueKindData::Instruction(_) => Ok(Self {
-                id: v.id,
-                module: v.module,
-                ty: v.ty,
-                _state: core::marker::PhantomData,
-            }),
-            _ => Err(IrError::ValueCategoryMismatch {
-                expected: crate::error::ValueCategoryLabel::Instruction,
-                got: v.category().into(),
-            }),
-        }
-    }
-}
-
 // --------------------------------------------------------------------------
 // Analysis enums
 // --------------------------------------------------------------------------
 
 /// Read-only opcode discriminator for non-terminator opcodes. Variants
 /// are added incrementally per the foundation plan.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub enum InstructionKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
     Add(AddInst<'ctx, B>),
@@ -1330,26 +1507,26 @@ pub enum InstructionKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
     ShuffleVector(ShuffleVectorInst<'ctx, B>),
     Fence(FenceInst<'ctx, B>),
     AtomicCmpXchg(AtomicCmpXchgInst<'ctx, B>),
-    LandingPad(LandingPadInst<'ctx, TermOpen, B>),
+    LandingPad(LandingPadInst<'ctx, TermClosed, B>),
     CleanupPad(CleanupPadInst<'ctx, B>),
     CatchPad(CatchPadInst<'ctx, B>),
     AtomicRMW(AtomicRMWInst<'ctx, B>),
-    Phi(PhiInst<'ctx, IntDyn, PhiOpen, B>),
+    Phi(PhiInst<'ctx, IntDyn, PhiClosed, B>),
 }
 
 /// Read-only opcode discriminator for terminators.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub enum TerminatorKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
     Ret(RetInst<'ctx, B>),
     Br(BranchInst<'ctx, B>),
-    Switch(SwitchInst<'ctx, TermOpen, B>),
-    IndirectBr(IndirectBrInst<'ctx, TermOpen, B>),
+    Switch(SwitchInst<'ctx, TermClosed, B>),
+    IndirectBr(IndirectBrInst<'ctx, TermClosed, B>),
     Invoke(InvokeInst<'ctx, Dyn, B>),
     Resume(ResumeInst<'ctx, B>),
     CatchReturn(CatchReturnInst<'ctx, B>),
     CleanupReturn(CleanupReturnInst<'ctx, B>),
-    CatchSwitch(CatchSwitchInst<'ctx, TermOpen, B>),
+    CatchSwitch(CatchSwitchInst<'ctx, TermClosed, B>),
     CallBr(CallBrInst<'ctx, B>),
     Unreachable(UnreachableInst<'ctx, B>),
 }
@@ -1372,9 +1549,7 @@ pub(super) fn build_instruction_value(
     }
 }
 
-impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> core::fmt::Display
-    for Instruction<'ctx, S, B>
-{
+impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for InstructionView<'ctx, B> {
     /// Print a single instruction line. Mirrors LLVM's `Value::print`
     /// for instruction-category values.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -1391,8 +1566,16 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> core::fmt::Display
             }
             None => SlotTracker::empty(),
         };
-        let attached_view =
-            Instruction::<'ctx, state::Attached, B>::from_parts(self.id, self.module);
-        fmt_instruction(f, &attached_view, &slots)
+        fmt_instruction(f, self, &slots)
+    }
+}
+
+impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> core::fmt::Display
+    for Instruction<'ctx, S, B>
+{
+    /// Print a single instruction line. Mirrors LLVM's `Value::print`
+    /// for instruction-category values.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.as_view().fmt(f)
     }
 }

@@ -11,7 +11,7 @@ use super::IrResult;
 use super::analysis::{
     FunctionAnalysis, FunctionAnalysisManager, ModuleAnalysis, ModuleAnalysisManager,
 };
-use super::block_state::Unsealed;
+use super::block_state::Sealed;
 use super::function::FunctionValue;
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{
@@ -19,15 +19,25 @@ use super::module::{
 };
 
 /// Read-only view of a basic block under its owning module brand.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct BasicBlockView<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    block: BasicBlock<'ctx, Dyn, Unsealed, B>,
+    block: BasicBlock<'ctx, Dyn, Sealed, B>,
     _brand: Invariant<B>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> Clone for BasicBlockView<'ctx, B> {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self {
+            block: self.block.copy_handle(),
+            _brand: PhantomData,
+        }
+    }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
     #[inline]
-    pub(super) fn new(block: BasicBlock<'ctx, Dyn, Unsealed, B>) -> Self {
+    pub(super) fn new(block: BasicBlock<'ctx, Dyn, Sealed, B>) -> Self {
         Self {
             block,
             _brand: PhantomData,
@@ -36,19 +46,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
 
     /// Underlying basic-block handle.
     #[inline]
-    pub(super) fn as_basic_block(self) -> BasicBlock<'ctx, Dyn, Unsealed, B> {
-        self.block
+    pub(super) fn as_basic_block(&self) -> BasicBlock<'ctx, Dyn, Sealed, B> {
+        self.block.copy_handle()
     }
 
     /// Optional textual name.
     #[inline]
-    pub fn name(self) -> Option<String> {
+    pub fn name(&self) -> Option<String> {
         self.block.name()
     }
 
     /// Parent function if the block is attached.
     #[inline]
-    pub fn parent_function(self) -> Option<FunctionView<'ctx, B>> {
+    pub fn parent_function(&self) -> Option<FunctionView<'ctx, B>> {
         let id = self.block.parent_id()?;
         Some(FunctionView::new(FunctionValue::from_parts_unchecked(
             id,
@@ -58,13 +68,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
 
     /// Number of instructions in program order.
     #[inline]
-    pub fn instruction_count(self) -> usize {
+    pub fn instruction_count(&self) -> usize {
         self.block.instructions().len()
     }
 
     /// `true` if the block currently has no instructions.
     #[inline]
-    pub fn is_empty(self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.block.is_empty()
     }
 }
@@ -153,7 +163,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionBody<'ctx, B> {
 
     /// Entry block if the function is a definition.
     #[inline]
-    pub fn entry_block(self) -> Option<BasicBlock<'ctx, Dyn, Unsealed, B>> {
+    pub fn entry_block(self) -> Option<BasicBlock<'ctx, Dyn, Sealed, B>> {
         self.function.entry_block()
     }
 
@@ -161,7 +171,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionBody<'ctx, B> {
     #[inline]
     pub fn basic_blocks(
         self,
-    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, Dyn, Unsealed, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, Dyn, Sealed, B>> + 'ctx {
         self.function.basic_blocks()
     }
 }

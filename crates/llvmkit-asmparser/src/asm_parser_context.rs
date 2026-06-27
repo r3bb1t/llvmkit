@@ -26,8 +26,8 @@
 //!    are distinct Rust types but refer to the same IR object — the parser
 //!    inserts an unsealed block, downstream tooling may hold the sealed
 //!    form.
-//! 2. `Instruction<'ctx, state::Attached, B>` is intentionally `!Copy` (Doctrine D2); storing it
-//!    by value would break the linear lifecycle.
+//! 2. `InstructionView<'ctx, B>` is the copyable read-only instruction
+//!    identity; storing lifecycle handles would break Doctrine D2.
 //! 3. `FunctionValue<'ctx, R, B>` carries a return marker that the parser
 //!    cannot pin statically.
 //!
@@ -36,8 +36,8 @@
 use std::collections::HashMap;
 
 use llvmkit_ir::{
-    BasicBlock, BlockSealState, Brand, Dyn, FunctionValue, Instruction, ModuleBrand, ReturnMarker,
-    Value, instruction::state,
+    BasicBlock, BasicBlockLabel, BlockSealState, Brand, Dyn, FunctionValue, InstructionView,
+    ModuleBrand, ReturnMarker, Value,
 };
 
 use super::file_loc::{FileLoc, FileLocRange};
@@ -167,21 +167,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
     #[inline]
     pub fn block_location<R: ReturnMarker, S: BlockSealState>(
         &self,
-        b: BasicBlock<'ctx, R, S, B>,
+        b: &BasicBlock<'ctx, R, S, B>,
     ) -> Option<FileLocRange> {
         self.blocks.location_of(b.as_value())
     }
 
     /// Source range of a recorded instruction. Mirrors
     /// `getInstructionLocation(const Instruction *)`.
-    ///
-    /// Takes the instruction by reference so the linear-typed handle stays
-    /// owned by the caller (Doctrine D2: `Instruction` is `!Copy`).
     #[inline]
-    pub fn instruction_location(
-        &self,
-        i: &Instruction<'ctx, state::Attached, B>,
-    ) -> Option<FileLocRange> {
+    pub fn instruction_location(&self, i: &InstructionView<'ctx, B>) -> Option<FileLocRange> {
         self.instructions.location_of(i.as_value())
     }
 
@@ -205,27 +199,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
             .and_then(|v| FunctionValue::try_from(v).ok())
     }
 
-    /// Block containing `loc`. Mirrors `getBlockAtLocation(const FileLoc &)`.
-    /// Returned in the [`llvmkit_ir::Unsealed`] state because that is the
-    /// state the parser observes during construction; consumers that hold
-    /// the sealed form can pre-erase via `as_value()` and call
-    /// [`AsmParserContext::block_location`] for the forward query.
+    /// Block label containing `loc`. Mirrors `getBlockAtLocation(const FileLoc &)`.
+    /// The reverse lookup returns a copyable [`BasicBlockLabel`] instead of a
+    /// fresh insertion-capability handle; callers that need source locations for
+    /// a held block should use [`AsmParserContext::block_location`].
     #[inline]
-    pub fn block_at(&self, loc: FileLoc) -> Option<BasicBlock<'ctx, Dyn, llvmkit_ir::Unsealed, B>> {
+    pub fn block_at(&self, loc: FileLoc) -> Option<BasicBlockLabel<'ctx, Dyn, B>> {
         self.blocks
             .handle_at(loc)
-            .and_then(|v| BasicBlock::try_from(v).ok())
+            .and_then(|v| BasicBlockLabel::try_from(v).ok())
     }
 
-    /// Block whose recorded range matches `query`.
+    /// Block label whose recorded range matches `query`.
     #[inline]
-    pub fn block_at_range(
-        &self,
-        query: FileLocRange,
-    ) -> Option<BasicBlock<'ctx, Dyn, llvmkit_ir::Unsealed, B>> {
+    pub fn block_at_range(&self, query: FileLocRange) -> Option<BasicBlockLabel<'ctx, Dyn, B>> {
         self.blocks
             .handle_at_range(query)
-            .and_then(|v| BasicBlock::try_from(v).ok())
+            .and_then(|v| BasicBlockLabel::try_from(v).ok())
     }
 
     /// Instruction (erased identity) containing `loc`. Mirrors
@@ -260,18 +250,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
     #[inline]
     pub fn add_block_location<R: ReturnMarker, S: BlockSealState>(
         &mut self,
-        b: BasicBlock<'ctx, R, S, B>,
+        b: &BasicBlock<'ctx, R, S, B>,
         loc: FileLocRange,
     ) -> Result<(), LocationError> {
         self.blocks.add(b.as_value(), loc)
     }
 
-    /// Record `i`'s location. Mirrors `addInstructionLocation`. Takes the
-    /// instruction by reference so the caller retains the linear handle.
+    /// Record `i`'s location. Mirrors `addInstructionLocation`.
     #[inline]
     pub fn add_instruction_location(
         &mut self,
-        i: &Instruction<'ctx, state::Attached, B>,
+        i: &InstructionView<'ctx, B>,
         loc: FileLocRange,
     ) -> Result<(), LocationError> {
         self.instructions.add(i.as_value(), loc)

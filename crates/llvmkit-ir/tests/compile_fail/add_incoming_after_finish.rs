@@ -19,20 +19,23 @@ fn main() {
         let entry = f.append_basic_block(&m, "entry");
         let other = f.append_basic_block(&m, "other");
         let join = f.append_basic_block(&m, "join");
+        let entry_label = entry.label();
+        let other_label = other.label();
+        let join_label = join.label();
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        b.build_br(join).unwrap();
+        b.build_br(join_label).unwrap();
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(other);
-        b.build_br(join).unwrap();
+        b.build_br(join_label).unwrap();
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
         let phi = b.build_int_phi::<i32, _>("p").unwrap();
         let phi = phi
-            .add_incoming(1_i32, entry)
+            .add_incoming(1_i32, entry_label)
             .unwrap()
-            .add_incoming(2_i32, other)
+            .add_incoming(2_i32, other_label)
             .unwrap()
             .finish();
         // After `.finish()`, the phi is `Closed` -- `add_incoming` is gone.
-        let _ = phi.add_incoming(3_i32, entry);
+        let _ = phi.add_incoming(3_i32, entry_label);
         let _: IntValue<i32> = phi.as_int_value();
     });
 }

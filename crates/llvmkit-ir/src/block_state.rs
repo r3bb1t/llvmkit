@@ -4,18 +4,15 @@
 //! LLVM enforces "every well-formed basic block ends in exactly one
 //! terminator and contains nothing after that terminator" at runtime
 //! in `Verifier::visitBasicBlock` (`lib/IR/Verifier.cpp`). llvmkit
-//! moves the rule to compile time: an [`Unsealed`] block has no
-//! terminator and accepts further instructions; a [`Sealed`] block has
-//! a terminator and is closed. Once the IRBuilder consumes its
-//! insertion block via a terminator-emitting build, the block is
-//! returned in the `Sealed` state and can only be referenced (e.g. as
-//! a branch target or phi predecessor) -- never appended to.
+//! models the common builder path with a seal-state view: an [`Unsealed`] block
+//! handle can be positioned for appends, and terminator builders return a
+//! [`Sealed`] view of the insertion block. Code that follows that returned view
+//! cannot append via [`crate::IRBuilder::position_at_end`].
 //!
-//! The seal state is *informational*: [`crate::BasicBlock`] stays
-//! `Copy` so the same block id can be passed as a phi predecessor
-//! after it was sealed. The compile-time guarantee comes from
-//! [`crate::IRBuilder::position_at_end`] only accepting an
-//! [`Unsealed`] block.
+//! `BasicBlock` is a linear insertion-capability handle (`!Copy` / `!Clone`).
+//! Copyable cross-block references use [`crate::BasicBlockLabel`], so a retained
+//! label can still name a predecessor after sealing without being accepted by
+//! [`crate::IRBuilder::position_at_end`].
 
 use crate::value::sealed;
 

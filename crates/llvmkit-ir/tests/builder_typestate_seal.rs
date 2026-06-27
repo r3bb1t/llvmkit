@@ -31,7 +31,7 @@ fn cond_br_terminator_seals_block() -> Result<(), IrError> {
             0_i32,
             "cond",
         )?;
-        let (sealed_entry, term) = b.build_cond_br(cond, then_bb, else_bb)?;
+        let (sealed_entry, term) = b.build_cond_br(cond, &then_bb, &else_bb)?;
 
         // Mirrors `EXPECT_EQ(BI, TI)` -- the returned terminator handle
         // matches the block's terminator.
@@ -68,6 +68,7 @@ fn phi_range_iterates_three_phis() -> Result<(), IrError> {
         let fn_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function::<i32, _>("p", fn_ty, Linkage::External)?;
         let bb = f.append_basic_block(&m, "bb");
+        let bb_label = bb.label();
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(bb);
         let p1 = b.build_int_phi::<i32, _>("phi.1")?;
@@ -77,14 +78,17 @@ fn phi_range_iterates_three_phis() -> Result<(), IrError> {
         // (cycle). We add poisons referencing self -- the structural shape
         // matches the upstream phi count assertion regardless of operand
         // identities.
-        p1.add_incoming(0_i32, bb)?.finish();
-        p2.add_incoming(0_i32, bb)?.finish();
-        p3.add_incoming(0_i32, bb)?.finish();
-        let _sum = b.build_int_add(p1.as_int_value(), p2.as_int_value(), "sum")?;
-        b.build_ret(p3.as_int_value())?;
+        let p1_value = p1.as_int_value();
+        let p2_value = p2.as_int_value();
+        let p3_value = p3.as_int_value();
+        p1.add_incoming(0_i32, bb_label)?.finish();
+        p2.add_incoming(0_i32, bb_label)?.finish();
+        p3.add_incoming(0_i32, bb_label)?.finish();
+        let _sum = b.build_int_add(p1_value, p2_value, "sum")?;
+        let (sealed_bb, _) = b.build_ret(p3_value)?;
 
         // Upstream `EXPECT_EQ(std::distance(Phis.begin(), Phis.end()), 3)`.
-        let phi_count = bb
+        let phi_count = sealed_bb
             .instructions()
             .filter(|inst| matches!(inst.kind(), Some(llvmkit_ir::InstructionKind::Phi(_))))
             .count();
@@ -109,7 +113,7 @@ fn seal_typestate_does_not_change_asm_output() -> Result<(), IrError> {
         let exit = f.append_basic_block(&m, "exit");
 
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        b.build_br(exit)?;
+        b.build_br(&exit)?;
         let b = IRBuilder::new_for::<()>(&m).position_at_end(exit);
         b.build_ret_void();
 

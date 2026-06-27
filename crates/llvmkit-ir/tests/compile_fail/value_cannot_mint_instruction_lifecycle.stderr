@@ -1,0 +1,9 @@
+error[E0277]: the trait bound `llvmkit_ir::Instruction<'_, Attached, Brand<'_>>: TryFrom<llvmkit_ir::Value<'_, Brand<'_>>>` is not satisfied
+  --> tests/compile_fail/value_cannot_mint_instruction_lifecycle.rs:19:61
+   |
+19 |         let _inst: llvmkit_ir::Instruction = add.as_value().try_into().unwrap();
+   |                                                             ^^^^^^^^ the trait `From<llvmkit_ir::Value<'_, Brand<'_>>>` is not implemented for `llvmkit_ir::Instruction<'_, Attached, Brand<'_>>`
+   |
+   = note: required for `llvmkit_ir::Value<'_, Brand<'_>>` to implement `Into<llvmkit_ir::Instruction<'_, Attached, Brand<'_>>>`
+   = note: required for `llvmkit_ir::Instruction<'_, Attached, Brand<'_>>` to implement `TryFrom<llvmkit_ir::Value<'_, Brand<'_>>>`
+   = note: required for `llvmkit_ir::Value<'_, Brand<'_>>` to implement `TryInto<llvmkit_ir::Instruction<'_, Attached, Brand<'_>>>`

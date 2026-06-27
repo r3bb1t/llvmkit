@@ -16,9 +16,9 @@ use super::constant_fold::{
 use super::folder::IRBuilderFolder;
 use super::{
     BinaryOpcode, CastOpcode, CmpPredicate, Constant, ConstantExprFlags, ConstantExprOpcode,
-    ConstantExprOptions, FastMathFlags, GepNoWrapFlags, Instruction, IntType, IntrinsicId, IrError,
-    IrResult, ModuleBrand, ModuleRef, ModuleView, POISON_MASK_ELEM, Type, TypeData, UnaryOpcode,
-    Value, state,
+    ConstantExprOptions, FastMathFlags, GepNoWrapFlags, InstructionView, IntType, IntrinsicId,
+    IrError, IrResult, ModuleBrand, ModuleRef, ModuleView, POISON_MASK_ELEM, Type, TypeData,
+    UnaryOpcode, Value,
 };
 
 /// Default fold strategy: fold target-independent constant-on-constant
@@ -330,7 +330,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for ConstantFolder {
         _lhs: Value<'ctx, B>,
         _rhs: Value<'ctx, B>,
         _ty: Type<'ctx, B>,
-        _fmf_source: Option<&Instruction<'ctx, state::Attached, B>>,
+        _fmf_source: Option<&InstructionView<'ctx, B>>,
     ) -> IrResult<Option<Value<'ctx, B>>> {
         // Mirrors ConstantFolder.h: use TargetFolder or InstSimplifyFolder instead.
         Ok(None)

@@ -16,17 +16,19 @@ fn phi_finishes_after_all_incomings() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let other = f.append_basic_block(&m, "other");
         let join = f.append_basic_block(&m, "join");
+        let entry_label = entry.label();
+        let other_label = other.label();
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        b.build_br(join)?;
+        b.build_br(&join)?;
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(other);
-        b.build_br(join)?;
+        b.build_br(&join)?;
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
         let phi_open = b.build_int_phi::<i32, _>("p")?;
         let phi_closed = phi_open
-            .add_incoming(1_i32, entry)?
-            .add_incoming(2_i32, other)?
+            .add_incoming(1_i32, entry_label)?
+            .add_incoming(2_i32, other_label)?
             .finish();
 
         // Closed handles still expose read accessors. Mirrors upstream

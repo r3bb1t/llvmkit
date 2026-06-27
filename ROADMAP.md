@@ -62,34 +62,49 @@ llvmkit does not need to copy Mergen. The actionable takeaway is that a practica
 
 ---
 
-## Milestone 1: APInt/APFloat foundations and real constant folding
+## Milestone 1: Constant folding parity
 
 ### Goal
 
-Replace the minimal `ConstantFolder` with a trustworthy LLVM-style folding layer.
+Grow the shipped APInt/APFloat-backed folding layer into a trustworthy
+LLVM-style `ConstantFolder` for the modeled IR surface.
 
-### Work items
+### Shipped baseline
 
-1. **Arbitrary-width integer core**
-   - Add an `APInt`-equivalent representation for all LLVM integer widths, not just widths that fit in `u128`.
-   - Implement wrapping arithmetic, signed/unsigned comparisons, shifts, rotates, population/count helpers, masks, trunc/zext/sext, and bit slicing.
-   - Use it under constants, folder, KnownBits, integer range analysis, and DataLayout-sized calculations.
+- Wide `ApInt` arithmetic/comparison/shift/truncation/count helpers exist and
+  are already used by constants, constant folding, KnownBits, demanded bits, and
+  DataLayout-sized calculations.
+- `ApFloat` semantics and target-independent bit storage exist for the modeled
+  floating kinds; helper operations are still being ported incrementally.
+- The current folder ships selected LLVM-source-derived folds for represented
+  integer, cast, compare, select, GEP, aggregate, and libcall cases.
+- Unsupported folds conservatively leave IR unchanged.
 
-2. **Floating-point constant core**
-   - Add an `APFloat`-equivalent layer or a narrow internal model sufficient for `half`, `bfloat`, `float`, `double`, `fp128`, `x86_fp80`, and `ppc_fp128` folding.
-   - Respect LLVM semantics for NaNs, signed zero, infinities, rounding, and fast-math flags.
+### Remaining work
+
+1. **APInt/APFloat completeness follow-up**
+   - Close helper-operation gaps needed by remaining LLVM folding formulas,
+     especially floating-point edge cases around NaNs, signed zero, infinities,
+     rounding modes, and fast-math flags.
    - Keep conservative no-fold behavior where exact parity is not implemented.
 
-3. **ConstantFolder parity layer**
-   - Mirror LLVM `ConstantFolder`, `ConstantFoldInstruction`, and `ConstantFoldConstant` behavior for the modeled opcode set.
-   - Fold integer/float binops, unary ops, casts, comparisons, `select`, `freeze`, extract/insert value, extract/insert element, shufflevector where legal, GEP constant expressions, and simple aggregate constants.
-   - Fold identities with one constant operand where LLVM does: `x + 0`, `x * 1`, `x & -1`, `x | 0`, `xor x, 0`, shifts by zero, double negation, redundant casts.
-   - Make DataLayout-aware folds explicit: pointer-size casts, GEP offsets, alignment-derived facts, target extension types.
+2. **ConstantFolder parity layer**
+   - Mirror LLVM `ConstantFolder`, `ConstantFoldInstruction`, and
+     `ConstantFoldConstant` behavior for the modeled opcode set.
+   - Fold integer/float binops, unary ops, casts, comparisons, `select`,
+     `freeze`, extract/insert value, extract/insert element, shufflevector where
+     legal, GEP constant expressions, and simple aggregate constants.
+   - Fold identities with one constant operand where LLVM does: `x + 0`,
+     `x * 1`, `x & -1`, `x | 0`, `xor x, 0`, shifts by zero, double negation,
+     redundant casts.
+   - Make DataLayout-aware folds explicit: pointer-size casts, GEP offsets,
+     alignment-derived facts, target extension types.
 
-4. **Folder trait expansion**
-   - Expand `IRBuilderFolder` beyond `fold_int_add/sub/mul` into a broad trait matching builder families.
+3. **Folder trait expansion**
+   - Expand `IRBuilderFolder` hooks as new builder families need folding.
    - Keep `NoFolder` and allow custom folders.
-   - Add `TargetFolder` later if DataLayout-dependent folds should be separated from target-independent folds.
+   - Add `TargetFolder` later if DataLayout-dependent folds should be separated
+     from target-independent folds.
 
 ### Acceptance criteria
 
@@ -189,8 +204,9 @@ The current baseline already includes:
 7. **Structural value edges through metadata/debug records**
    - Reverse use-lists distinguish instruction operands, constant operands,
      typed metadata constants, and debug-record value operands.
-   - `Value::users()` stays instruction-only while `num_uses` / `has_uses`,
-     RAUW, and erase account for the non-instruction edges LLVM preserves.
+   - `Value::users()` stays instruction-view-only while `num_uses` /
+     `has_uses`, RAUW, and erase account for the non-instruction edges LLVM
+     preserves.
 
 8. **Analysis cache invalidation**
    - `KnownBitsAnalysisResult` reuses a per-result query cache and records a

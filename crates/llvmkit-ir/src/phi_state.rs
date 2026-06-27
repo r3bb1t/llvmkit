@@ -3,15 +3,15 @@
 //!
 //! LLVM's `Verifier::visitPHINode` (`lib/IR/Verifier.cpp`) checks at
 //! runtime that a phi has one incoming pair per predecessor edge and
-//! that no predecessor was missed. llvmkit moves the closing-time
-//! check to compile time: a freshly-built phi is [`Open`] and accepts
-//! [`crate::PhiInst::add_incoming`]; calling [`crate::PhiInst::finish`]
-//! consumes the open phi and produces a [`Closed`] view that no
-//! longer exposes `add_incoming`.
+//! that no predecessor was missed. llvmkit gives the common construction path an
+//! explicit view state: a freshly-built phi is [`Open`] and accepts
+//! [`crate::PhiInst::add_incoming`]; calling [`crate::PhiInst::finish`] returns a
+//! [`Closed`] view that no longer exposes `add_incoming`.
 //!
-//! The runtime-side coherence rule (incoming-block set matches
-//! predecessor set) is still enforced by [`crate::Module::verify`] for
-//! parsed modules, where the phi is born `Closed`.
+//! Open phi handles are linear (`!Copy` / `!Clone`): [`crate::PhiInst::finish`]
+//! consumes the only open capability, so retained copies cannot continue adding
+//! incoming edges. Runtime-side coherence rules, such as the incoming-block set
+//! matching the predecessor set, remain verifier responsibilities.
 
 use crate::value::sealed;
 
@@ -27,8 +27,8 @@ pub trait PhiState: sealed::Sealed + 'static {
 #[derive(Debug, Clone, Copy)]
 pub struct Open;
 
-/// Marker: the phi has been finalised. `add_incoming` is no longer
-/// reachable; only read accessors are.
+/// Marker: this phi view has been finalised. `add_incoming` is no longer
+/// reachable on the closed view; only read accessors are.
 #[derive(Debug, Clone, Copy)]
 pub struct Closed;
 

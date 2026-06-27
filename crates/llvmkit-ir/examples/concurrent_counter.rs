@@ -100,7 +100,7 @@ pub fn build_atomic_inc<'ctx>(m: &Module<'ctx>) -> Result<(), IrError> {
     let _ = b.build_fence(AtomicOrdering::Acquire, SyncScope::System, "")?;
 
     // ret i32 %old
-    let result: IntValue<i32> = old.as_instruction().as_value().try_into()?;
+    let result: IntValue<i32> = old.as_value().try_into()?;
     b.build_ret(result)?;
     Ok(())
 }
@@ -123,6 +123,10 @@ pub fn build_dispatch<'ctx>(m: &Module<'ctx>) -> Result<(), IrError> {
     let do_sub = f.append_basic_block(m, "do_sub");
     let do_mul = f.append_basic_block(m, "do_mul");
     let default_bb = f.append_basic_block(m, "default");
+    let do_add_label = do_add.label();
+    let do_sub_label = do_sub.label();
+    let do_mul_label = do_mul.label();
+    let default_label = default_bb.label();
 
     // Each case body computes a single arithmetic op and returns.
     let a: IntValue<i32> = f.param(1)?.try_into()?;
@@ -152,11 +156,11 @@ pub fn build_dispatch<'ctx>(m: &Module<'ctx>) -> Result<(), IrError> {
     // `Closed` view that no longer accepts new cases at the type level.
     let op: IntValue<i32> = f.param(0)?.try_into()?;
     let entry_b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
-    let (_sealed, sw) = entry_b.build_switch(op, default_bb, "")?;
+    let (_sealed, sw) = entry_b.build_switch(op, default_label, "")?;
     let _closed = sw
-        .add_case(i32_ty.const_int(0_i32), do_add)?
-        .add_case(i32_ty.const_int(1_i32), do_sub)?
-        .add_case(i32_ty.const_int(2_i32), do_mul)?
+        .add_case(i32_ty.const_int(0_i32), do_add_label)?
+        .add_case(i32_ty.const_int(1_i32), do_sub_label)?
+        .add_case(i32_ty.const_int(2_i32), do_mul_label)?
         .finish();
     Ok(())
 }

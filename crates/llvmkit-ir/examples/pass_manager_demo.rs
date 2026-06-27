@@ -78,6 +78,9 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let then_bb = f.append_basic_block(m, "then");
     let else_bb = f.append_basic_block(m, "else");
     let merge = f.append_basic_block(m, "merge");
+    let then_label = then_bb.label();
+    let else_label = else_bb.label();
+    let merge_label = merge.label();
 
     let cond: IntValue<bool> = f.param(0)?.try_into()?;
     let x: IntValue<i32> = f.param(1)?.try_into()?;
@@ -85,21 +88,21 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
 
     IRBuilder::new_for::<i32>(m)
         .position_at_end(entry)
-        .build_cond_br(cond, then_bb, else_bb)?;
+        .build_cond_br(cond, then_label, else_label)?;
 
     let bt = IRBuilder::new_for::<i32>(m).position_at_end(then_bb);
     let add_xy = bt.build_int_add(x, y, "add_xy")?;
-    bt.build_br(merge)?;
+    bt.build_br(merge_label)?;
 
     let be = IRBuilder::new_for::<i32>(m).position_at_end(else_bb);
     let sub_xy = be.build_int_sub(x, y, "sub_xy")?;
-    be.build_br(merge)?;
+    be.build_br(merge_label)?;
 
     let bm = IRBuilder::new_for::<i32>(m).position_at_end(merge);
     let phi = bm
         .build_int_phi::<i32, _>("result")?
-        .add_incoming(add_xy, then_bb)?
-        .add_incoming(sub_xy, else_bb)?;
+        .add_incoming(add_xy, then_label)?
+        .add_incoming(sub_xy, else_label)?;
     let is_zero = bm.build_int_cmp(IntPredicate::Eq, phi.as_int_value(), 0_i32, "is_zero")?;
     let selected = bm.build_select(is_zero, x, phi.as_int_value(), "selected")?;
     bm.build_ret(selected)?;

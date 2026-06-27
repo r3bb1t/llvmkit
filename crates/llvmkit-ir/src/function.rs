@@ -39,7 +39,7 @@ use super::ap_float::ApFloatSemantics;
 use super::argument::Argument;
 use super::attributes::{AttrKind, Attribute, AttributeStorage, AttributeStored};
 use super::basic_block::{BasicBlock, BasicBlockData};
-use super::block_state::{BlockSealState, Unsealed};
+use super::block_state::{BlockSealState, Sealed, Unsealed};
 use super::calling_conv::CallingConv;
 use super::comdat::ComdatRef;
 use super::constant::{Constant, IsConstant};
@@ -777,10 +777,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Ok(())
     }
 
-    /// Iterate the basic blocks in insertion order.
+    /// Iterate the basic blocks in insertion order as non-insertion labels/views.
     pub fn basic_blocks(
         self,
-    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, R, Unsealed, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, R, Sealed, B>> + 'ctx {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
         let ids: Vec<ValueId> = self.data().basic_blocks.borrow().clone();
@@ -799,7 +799,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         self.data().use_list_orders.borrow().clone()
     }
 
-    pub fn entry_block(self) -> Option<BasicBlock<'ctx, R, Unsealed, B>> {
+    pub fn entry_block(self) -> Option<BasicBlock<'ctx, R, Sealed, B>> {
         let id = *self.data().basic_blocks.borrow().first()?;
         let module = self.module.module();
         Some(BasicBlock::from_parts(
@@ -807,6 +807,36 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             self.module,
             module.label_type().as_type().id(),
         ))
+    }
+
+    /// Recreate an insertion-capability handle for an unterminated block in this
+    /// function. This is the controlled construction path used by parsers for
+    /// forward-declared blocks; ordinary block enumeration returns sealed
+    /// read-only handles.
+    pub fn basic_block_for_construction(
+        self,
+        module: &Module<'ctx, B, Unverified>,
+        value: Value<'ctx, B>,
+    ) -> IrResult<BasicBlock<'ctx, R, Unsealed, B>> {
+        let _ = module;
+        let ValueKindData::BasicBlock(data) = &value.data().kind else {
+            return Err(IrError::ValueCategoryMismatch {
+                expected: ValueCategoryLabel::BasicBlock,
+                got: value.category().into(),
+            });
+        };
+        if *data.parent.borrow() != Some(self.id) {
+            return Err(IrError::InvalidOperation {
+                message: "block does not belong to function",
+            });
+        }
+        let block = BasicBlock::from_parts(value.id, self.module, value.ty);
+        if block.terminator().is_some_and(|inst| inst.is_terminator()) {
+            return Err(IrError::InvalidOperation {
+                message: "cannot create insertion handle for terminated block",
+            });
+        }
+        Ok(block)
     }
     pub(super) fn set_local_value_name(
         self,

@@ -77,13 +77,14 @@ fn function_local_names_share_argument_block_and_instruction_namespace() -> Resu
             .param_name(0, "entry")
             .build()?;
         let entry = f.append_basic_block(&m, "entry");
+        let entry_name = entry.name();
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let arg: IntValue<i32> = f.param(0)?.try_into()?;
         let result = b.build_int_add::<i32, _, _, _>(arg, 1_i32, "entry")?;
         b.build_ret(result)?;
 
         assert_eq!(f.param(0)?.name().as_deref(), Some("entry"));
-        assert_eq!(entry.name().as_deref(), Some("entry1"));
+        assert_eq!(entry_name.as_deref(), Some("entry1"));
         assert_eq!(result.name().as_deref(), Some("entry2"));
 
         let expected = "; ModuleID = 'local_names'\n\

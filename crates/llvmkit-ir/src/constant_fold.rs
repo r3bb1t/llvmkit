@@ -10,8 +10,7 @@ use super::constants::{ConstantFloatValue, ConstantIntValue};
 use super::derived_types::{ArrayType, FloatType, IntType, StructType, VectorType};
 use super::float_kind::FloatDyn;
 use super::instr_types::{BinaryOpcode, CastOpcode, POISON_MASK_ELEM, UnaryOpcode};
-use super::instruction::state::InstructionState;
-use super::instruction::{Instruction, InstructionKindData};
+use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::IntDyn;
 use super::module::{ModuleBrand, ModuleView};
 use super::r#type::Type;
@@ -24,11 +23,10 @@ use super::{IrResult, RoundingMode};
 /// `llvm/Analysis/ConstantFolding.h::ConstantFoldInstruction`; callers get
 /// `Ok(None)` when any required operand is non-constant or the opcode has no
 /// target-independent fold.
-pub fn constant_fold_instruction<'ctx, S, B>(
-    instruction: &Instruction<'ctx, S, B>,
+pub fn constant_fold_instruction<'ctx, B>(
+    instruction: &InstructionView<'ctx, B>,
 ) -> IrResult<Option<Constant<'ctx, B>>>
 where
-    S: InstructionState,
     B: ModuleBrand + 'ctx,
 {
     let value = instruction.as_value();

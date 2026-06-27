@@ -34,8 +34,8 @@ use std::collections::HashMap;
 
 use llvmkit_ir::{
     Align, AnyTypeEnum, ApFloat, ApFloatSemantics, ApInt, ApIntSignedness, AtomicLoadConfig,
-    AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, Brand, CallingConv, Constant,
-    ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
+    AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, BasicBlockLabel, Brand, CallingConv,
+    Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
     DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType, FloatValue,
     GepNoWrapFlags, IRBuilder, IntDyn, IntValue, IrError, IrResult, Linkage, MaybeAlign, Module,
     ModuleBrand, NoFolder, PointerValue, Positioned, RoundingMode, SelectionKind, StructType,
@@ -1051,7 +1051,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 })?;
             let resolved = self
                 .module
-                .block_address(function, block)
+                .block_address(function, &block)
                 .map_err(|e| self.builder_err("blockaddress", e))?;
             item.placeholder
                 .replace_all_uses_with(resolved)
@@ -2302,10 +2302,12 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
 
     fn finish_trailing_metadata(
         &mut self,
-        bb: llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>,
+        state: &PerFunctionState<'ctx, B>,
+        bb_value: llvmkit_ir::Value<'ctx, B>,
         pending_debug_records: &mut Vec<llvmkit_ir::metadata::DebugRecord>,
     ) -> ParseResult<()> {
-        self.skip_trailing_metadata(bb)?;
+        let bb = state.value_as_block_view(bb_value, self.loc())?;
+        self.skip_trailing_metadata(&bb)?;
         if !pending_debug_records.is_empty() {
             let inst = bb
                 .instructions()
@@ -2322,9 +2324,9 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
     }
 
     /// Mirrors the metadata-attachment loop in `LLParser::parseInstructionMetadata`.
-    fn skip_trailing_metadata(
+    fn skip_trailing_metadata<S: llvmkit_ir::BlockSealState>(
         &mut self,
-        bb: llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>,
+        bb: &llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, S, B>,
     ) -> ParseResult<()> {
         if matches!(self.peek(), Token::MetadataVar(_)) {
             return Err(self.expected("',' before trailing metadata"));
@@ -4056,7 +4058,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     .find(|bb| bb.name().as_deref() == Some(label.as_str()))
                     .ok_or_else(|| self.expected("referenced value is not a basic block"))?;
                 self.module
-                    .block_address(function, block)
+                    .block_address(function, &block)
                     .map_err(|e| self.builder_err("blockaddress", e))
             }
             ParsedBlockAddressFunction::Forward { function, loc } => {
@@ -5402,6 +5404,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             }
             BlockHeader::Implicit => state.define_implicit_block(self.module, header_loc)?,
         };
+        let bb_value = bb.as_value();
         // Drive the typed builder for this block.
         let builder = IRBuilder::with_folder(self.module, NoFolder).position_at_end(bb);
         // Emit instructions until a terminator consumes `builder`.
@@ -5418,46 +5421,46 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 Token::Instruction(crate::ll_token::Opcode::Ret) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_ret(state, b)?;
-                    self.finish_trailing_metadata(bb, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
                 Token::Instruction(crate::ll_token::Opcode::Unreachable) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     let _ = b.build_unreachable();
-                    self.finish_trailing_metadata(bb, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
                 Token::Instruction(crate::ll_token::Opcode::Br) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_br(state, b)?;
-                    self.finish_trailing_metadata(bb, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
                 Token::Instruction(crate::ll_token::Opcode::Store) => {
                     let b_ref = borrow_live_builder(&builder, self.loc())?;
                     self.bump()?;
                     self.parse_store(state, b_ref)?;
-                    self.finish_trailing_metadata(bb, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     continue;
                 }
                 Token::Instruction(crate::ll_token::Opcode::Fence) => {
                     let b_ref = borrow_live_builder(&builder, self.loc())?;
                     self.bump()?;
                     self.parse_fence(b_ref)?;
-                    self.finish_trailing_metadata(bb, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     continue;
                 }
                 Token::Instruction(crate::ll_token::Opcode::Switch) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_switch(state, b)?;
-                    self.finish_trailing_metadata(bb, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
                 Token::Instruction(crate::ll_token::Opcode::IndirectBr) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_indirectbr(state, b)?;
-                    self.finish_trailing_metadata(bb, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
                 Token::Instruction(crate::ll_token::Opcode::Invoke) => {
@@ -5465,7 +5468,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     let result_loc = self.loc();
                     let result_name = self.parse_lhs_before_invoke()?;
                     let v = self.parse_invoke(state, b, &result_name)?;
-                    self.finish_trailing_metadata(bb, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     if let Some(val) = v {
                         state.bind_local(&result_name, val, result_loc)?;
                     }
@@ -5475,21 +5478,21 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     self.parse_resume(state, b)?;
-                    self.finish_trailing_metadata(bb, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
                 Token::Instruction(crate::ll_token::Opcode::CleanupRet) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     self.parse_cleanupret(state, b)?;
-                    self.finish_trailing_metadata(bb, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
                 Token::Instruction(crate::ll_token::Opcode::CatchRet) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     self.parse_catchret(state, b)?;
-                    self.finish_trailing_metadata(bb, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
                 Token::Instruction(crate::ll_token::Opcode::CatchSwitch) => {
@@ -5497,7 +5500,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     let result_loc = self.loc();
                     let result_name = self.parse_lhs_assignment()?;
                     let v = self.parse_catchswitch(state, b, &result_name)?;
-                    self.finish_trailing_metadata(bb, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     state.bind_local(&result_name, v, result_loc)?;
                     return Ok(());
                 }
@@ -5506,7 +5509,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     let result_loc = self.loc();
                     let result_name = self.parse_lhs_assignment()?;
                     let v = self.parse_callbr(state, b, &result_name)?;
-                    self.finish_trailing_metadata(bb, &mut pending_debug_records)?;
+                    self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     if let Some(v) = v {
                         state.bind_local(&result_name, v, result_loc)?;
                     }
@@ -5524,7 +5527,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             ) {
                 let b_ref = borrow_live_builder(&builder, self.loc())?;
                 let value = self.parse_call(state, b_ref, &result_name)?;
-                self.finish_trailing_metadata(bb, &mut pending_debug_records)?;
+                self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                 state.bind_local(&result_name, value, result_loc)?;
                 continue;
             }
@@ -5535,7 +5538,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 let b = take_live_builder(&mut builder, self.loc())?;
                 self.bump()?;
                 let value = self.parse_invoke(state, b, &result_name)?;
-                self.finish_trailing_metadata(bb, &mut pending_debug_records)?;
+                self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                 if let Some(value) = value {
                     state.bind_local(&result_name, value, result_loc)?;
                 }
@@ -5694,7 +5697,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     });
                 }
             };
-            self.finish_trailing_metadata(bb, &mut pending_debug_records)?;
+            self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
             state.bind_local(&result_name, value, result_loc)?;
         }
     }
@@ -6875,19 +6878,19 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 let phi = b
                     .build_int_phi_dyn(int_ty, name)
                     .map_err(|e| self.builder_err("phi", e))?;
-                phi.as_instruction().as_value()
+                phi.as_value()
             }
             AnyTypeEnum::Float(fp_ty) => {
                 let phi = b
                     .build_fp_phi_dyn(fp_ty, name)
                     .map_err(|e| self.builder_err("phi", e))?;
-                phi.as_instruction().as_value()
+                phi.as_value()
             }
             AnyTypeEnum::Pointer(ptr_ty) => {
                 let phi = b
                     .build_pointer_phi_in_addrspace(ptr_ty, name)
                     .map_err(|e| self.builder_err("phi", e))?;
-                phi.as_instruction().as_value()
+                phi.as_value()
             }
             _ => return Err(self.expected("phi result type must be int, float, or pointer")),
         };
@@ -7026,7 +7029,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 if !state.defined_blocks.contains(&n) {
                     state.block_refs.entry(n.clone()).or_insert(loc);
                 }
-                state.ensure_block(self.module, &n);
+                state.ensure_block(self.module, &n, loc)?;
                 Ok(BlockRef::Named(n))
             }
             Token::LocalVarId(id) => {
@@ -7127,7 +7130,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     .name(name)
                     .build()
                     .map_err(|e| self.builder_err("call", e))?
-                    .as_instruction()
                     .as_value()
             }
             ParsedCallee::InlineAsm(asm) => {
@@ -7136,13 +7138,11 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
                 b.build_inline_asm_call::<llvmkit_ir::Dyn, _, _, _>(asm, args, name)
                     .map_err(|e| self.builder_err("call", e))?
-                    .as_instruction()
                     .as_value()
             }
             ParsedCallee::Indirect(callee) => b
                 .build_indirect_call::<llvmkit_ir::Dyn, _, _, _>(parsed_fn_ty, callee, args, name)
                 .map_err(|e| self.builder_err("indirect call", e))?
-                .as_instruction()
                 .as_value(),
         };
         Ok(v)
@@ -7373,7 +7373,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_va_arg(list_ptr, result_ty, result_name.as_str())
             .map_err(|e| self.builder_err("va_arg", e))?;
-        Ok(v.as_instruction().as_value())
+        Ok(v.as_value())
     }
 
     /// `freeze <ty> <val>`. Mirrors `LLParser::parseFreeze`.
@@ -7390,7 +7390,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let r = b
             .build_freeze(v, result_name.as_str())
             .map_err(|e| self.builder_err("freeze", e))?;
-        Ok(r.as_instruction().as_value())
+        Ok(r.as_value())
     }
 
     /// `switch <ty> <val>, label %default [ <ty> N, label %case ... ]`.
@@ -7537,7 +7537,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_atomic_cmpxchg(ptr, cmp_v, new_v, config, result_name.as_str())
             .map_err(|e| self.builder_err("cmpxchg", e))?;
-        Ok(v.as_instruction().as_value())
+        Ok(v.as_value())
     }
 
     /// `atomicrmw [volatile] <op> ptr <ptr>, <ty> <val>
@@ -7585,7 +7585,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     loc,
                 });
         }
-        Ok(v.as_instruction().as_value())
+        Ok(v.as_value())
     }
 
     /// Parse an `atomicrmw` operation keyword.
@@ -7658,7 +7658,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 _ => break,
             }
         }
-        Ok(lp.finish().as_instruction().as_value())
+        Ok(lp.finish().as_value())
     }
 
     /// `cleanuppad within <token-or-none> [<args>]`. Non-terminator.
@@ -7679,7 +7679,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             None => b.build_cleanup_pad_within_none(args, result_name.as_str()),
         }
         .map_err(|e| self.builder_err("cleanuppad", e))?;
-        Ok(v.as_instruction().as_value())
+        Ok(v.as_value())
     }
 
     /// `catchpad within <catchswitch> [<args>]`. Non-terminator.
@@ -7699,7 +7699,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_catch_pad(parent_v, args, result_name.as_str())
             .map_err(|e| self.builder_err("catchpad", e))?;
-        Ok(v.as_instruction().as_value())
+        Ok(v.as_value())
     }
 
     /// `resume <ty> <val>`. Terminator.
@@ -7793,9 +7793,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let parent_pad = self.parse_optional_pad_token(state)?;
         // `[handler1, handler2, ...]`
         self.expect_punct(PunctKind::LSquare, "'[' in catchswitch handlers")?;
-        let mut handlers: Vec<
-            llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>,
-        > = Vec::new();
+        let mut handlers: Vec<BasicBlockLabel<'ctx, llvmkit_ir::Dyn, B>> = Vec::new();
         loop {
             if matches!(self.peek(), Token::RSquare) {
                 self.bump()?;
@@ -7834,7 +7832,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 .add_handler(h)
                 .map_err(|e| self.builder_err("catchswitch.add_handler", e))?;
         }
-        Ok(cs.finish().as_instruction().as_value())
+        Ok(cs.finish().as_value())
     }
 
     /// `invoke [cc] [ret-attrs] <ret-ty> @func(<args>) to label %normal
@@ -7939,7 +7937,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         if ret_is_void {
             Ok(None)
         } else {
-            Ok(Some(inst.as_instruction().as_value()))
+            Ok(Some(inst.as_value()))
         }
     }
 
@@ -7999,9 +7997,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         )?;
         let fallthrough = self.parse_block_ref(state)?;
         // Optional `[ label %ind1, ... ]`
-        let mut indirect: Vec<
-            llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>,
-        > = Vec::new();
+        let mut indirect: Vec<BasicBlockLabel<'ctx, llvmkit_ir::Dyn, B>> = Vec::new();
         if matches!(self.peek(), Token::Comma) || matches!(self.peek(), Token::LSquare) {
             if matches!(self.peek(), Token::Comma) {
                 self.bump()?;
@@ -8030,7 +8026,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     callee,
                     args,
                     fallthrough,
-                    &indirect,
+                    indirect,
                     llvmkit_ir::CallSiteConfig::new(name)
                         .calling_conv(calling_conv)
                         .attrs(call_attrs),
@@ -8042,11 +8038,11 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                         "inline asm callbr label constraint count matches indirect labels",
                     ));
                 }
-                b.build_inline_asm_callbr_with_config::<llvmkit_ir::Dyn, _, _, _>(
+                b.build_inline_asm_callbr_with_config::<llvmkit_ir::Dyn, _, _, _, _, _>(
                     asm,
                     args,
                     fallthrough,
-                    &indirect,
+                    indirect,
                     llvmkit_ir::CallSiteConfig::new(name)
                         .calling_conv(calling_conv)
                         .attrs(call_attrs),
@@ -8061,7 +8057,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         if ret_is_void {
             Ok(None)
         } else {
-            Ok(Some(inst.as_instruction().as_value()))
+            Ok(Some(inst.as_value()))
         }
     }
 
@@ -8108,13 +8104,13 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         }
     }
 
-    /// Resolve a `label %name` / `label %N` reference, ensuring the
-    /// target block exists (creating an empty unsealed block if it's a
-    /// forward reference).
+    /// Parse a `label %name` / `label %N` operand. Forward references create
+    /// an empty block, but existing references return label identity only so
+    /// branches may target already-terminated blocks.
     fn parse_block_ref(
         &mut self,
         state: &mut PerFunctionState<'ctx, B>,
-    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>> {
+    ) -> ParseResult<BasicBlockLabel<'ctx, llvmkit_ir::Dyn, B>> {
         let loc = self.loc();
         match self.peek() {
             Token::LocalVar(_) => {
@@ -8125,12 +8121,12 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 if !state.defined_blocks.contains(&name) {
                     state.block_refs.entry(name.clone()).or_insert(loc);
                 }
-                Ok(state.ensure_block(self.module, &name))
+                state.ensure_block_label(self.module, &name, loc)
             }
             Token::LocalVarId(id) => {
                 let id = *id;
                 self.bump()?;
-                state.get_or_create_numbered_block(self.module, id, loc)
+                state.get_or_create_numbered_block_label(self.module, id, loc)
             }
             _ => Err(self.expected("block label after 'label'")),
         }
@@ -8290,20 +8286,15 @@ struct PerFunctionState<'ctx, B: ModuleBrand = Brand<'ctx>> {
     local_numbered: std::collections::HashMap<u32, llvmkit_ir::Value<'ctx, B>>,
     /// Slot id of the next anonymous function-local value.
     next_unnamed_value_id: u32,
-    /// `label` to the (Unsealed) named basic-block handle. Created on first
-    /// reference to support `br label %later` forward references.
-    blocks: std::collections::HashMap<
-        String,
-        llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>,
-    >,
+    /// `label` to the named basic-block identity. Created on first reference
+    /// to support `br label %later` forward references; re-materialize a
+    /// linear insertion handle only at the construction use site.
+    blocks: std::collections::HashMap<String, llvmkit_ir::Value<'ctx, B>>,
     block_refs: std::collections::HashMap<String, Span>,
     defined_blocks: std::collections::HashSet<String>,
-    /// `%N` block placeholders and definitions, keyed by the shared local
-    /// numbered-value slot.
-    numbered_blocks: std::collections::HashMap<
-        u32,
-        llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>,
-    >,
+    /// `%N` block placeholder identities and definitions, keyed by the shared
+    /// local numbered-value slot.
+    numbered_blocks: std::collections::HashMap<u32, llvmkit_ir::Value<'ctx, B>>,
     numbered_block_refs: std::collections::HashMap<u32, Span>,
     defined_numbered_blocks: std::collections::HashSet<u32>,
     /// Deferred phi incoming edges for forward references. Resolved by
@@ -8318,7 +8309,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         let mut blocks = std::collections::HashMap::new();
         for bb in func.basic_blocks() {
             let name = bb.name().unwrap_or_default();
-            blocks.insert(name, bb);
+            blocks.insert(name, bb.as_value());
         }
         Self {
             func,
@@ -8353,13 +8344,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         &mut self,
         module: &Module<'ctx, B, Unverified>,
         name: &str,
-    ) -> llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B> {
-        if let Some(bb) = self.blocks.get(name) {
-            return *bb;
+        loc: Span,
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>> {
+        if let Some(value) = self.blocks.get(name).copied() {
+            return self.value_as_block(module, value, loc);
         }
         let bb = self.func.append_basic_block(module, name);
-        self.blocks.insert(name.to_owned(), bb);
-        bb
+        self.blocks.insert(name.to_owned(), bb.as_value());
+        Ok(bb)
+    }
+
+    fn ensure_block_label(
+        &mut self,
+        module: &Module<'ctx, B, Unverified>,
+        name: &str,
+        loc: Span,
+    ) -> ParseResult<BasicBlockLabel<'ctx, llvmkit_ir::Dyn, B>> {
+        if let Some(value) = self.blocks.get(name).copied() {
+            return self.value_as_block_label(value, loc);
+        }
+        let bb = self.func.append_basic_block(module, name);
+        self.blocks.insert(name.to_owned(), bb.as_value());
+        Ok(bb.label())
     }
 
     /// Define a textual basic block label.
@@ -8367,10 +8373,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         &mut self,
         module: &Module<'ctx, B, Unverified>,
         name: String,
-        _loc: Span,
+        loc: Span,
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>> {
         self.defined_blocks.insert(name.clone());
-        Ok(self.ensure_block(module, &name))
+        self.ensure_block(module, &name, loc)
     }
 
     /// Define an unlabeled block at `NumberedVals.getNext()`, matching
@@ -8419,36 +8425,61 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         if self.local_numbered.contains_key(&id) {
             return Err(self.invalid_numbered_slot(id, loc));
         }
-        let bb = if let Some(bb) = self.numbered_blocks.get(&id) {
-            *bb
+        let bb = if let Some(value) = self.numbered_blocks.get(&id).copied() {
+            self.value_as_block(module, value, loc)?
         } else {
             let bb = self.func.append_basic_block(module, "");
-            self.numbered_blocks.insert(id, bb);
+            self.numbered_blocks.insert(id, bb.as_value());
             bb
         };
+        let bb_value = bb.as_value();
         self.func
             .move_basic_block_to_end(module, bb)
             .map_err(|e| ParseError::Expected {
                 expected: format!("numbered basic block definition: {e}"),
                 loc: DiagLoc::span(loc),
             })?;
-        self.local_numbered.insert(id, bb.as_value());
+        self.local_numbered.insert(id, bb_value);
         self.defined_numbered_blocks.insert(id);
         self.numbered_block_refs.remove(&id);
         self.next_unnamed_value_id = self.next_unnamed_value_id.max(id.saturating_add(1));
-        Ok(bb)
+        self.value_as_block(module, bb_value, loc)
     }
 
     fn value_as_block(
+        &self,
+        module: &Module<'ctx, B, Unverified>,
         value: llvmkit_ir::Value<'ctx, B>,
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>> {
-        let bb: llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B> =
-            value.try_into().map_err(|_| ParseError::Expected {
+        self.func
+            .basic_block_for_construction(module, value)
+            .map_err(|_| ParseError::Expected {
+                expected: "referenced value is not an unterminated basic block".into(),
+                loc: DiagLoc::span(loc),
+            })
+    }
+
+    fn value_as_block_view(
+        &self,
+        value: llvmkit_ir::Value<'ctx, B>,
+        loc: Span,
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Sealed, B>> {
+        self.func
+            .basic_blocks()
+            .find(|bb| bb.as_value() == value)
+            .ok_or_else(|| ParseError::Expected {
                 expected: "referenced value is not a basic block".into(),
                 loc: DiagLoc::span(loc),
-            })?;
-        Ok(bb)
+            })
+    }
+
+    fn value_as_block_label(
+        &self,
+        value: llvmkit_ir::Value<'ctx, B>,
+        loc: Span,
+    ) -> ParseResult<BasicBlockLabel<'ctx, llvmkit_ir::Dyn, B>> {
+        Ok(self.value_as_block_view(value, loc)?.label())
     }
 
     fn get_or_create_numbered_block(
@@ -8458,20 +8489,43 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>> {
         if let Some(value) = self.local_numbered.get(&id).copied() {
-            return Self::value_as_block(value, loc);
+            return self.value_as_block(module, value, loc);
         }
         if id < self.next_unnamed_value_id {
             return Err(self.invalid_numbered_slot(id, loc));
         }
-        let bb = if let Some(bb) = self.numbered_blocks.get(&id) {
-            *bb
+        let bb = if let Some(value) = self.numbered_blocks.get(&id).copied() {
+            self.value_as_block(module, value, loc)?
         } else {
             let bb = self.func.append_basic_block(module, "");
-            self.numbered_blocks.insert(id, bb);
+            self.numbered_blocks.insert(id, bb.as_value());
             bb
         };
         self.numbered_block_refs.entry(id).or_insert(loc);
         Ok(bb)
+    }
+
+    fn get_or_create_numbered_block_label(
+        &mut self,
+        module: &Module<'ctx, B, Unverified>,
+        id: u32,
+        loc: Span,
+    ) -> ParseResult<BasicBlockLabel<'ctx, llvmkit_ir::Dyn, B>> {
+        if let Some(value) = self.local_numbered.get(&id).copied() {
+            return self.value_as_block_label(value, loc);
+        }
+        if id < self.next_unnamed_value_id {
+            return Err(self.invalid_numbered_slot(id, loc));
+        }
+        let label = if let Some(value) = self.numbered_blocks.get(&id).copied() {
+            self.value_as_block_label(value, loc)?
+        } else {
+            let bb = self.func.append_basic_block(module, "");
+            self.numbered_blocks.insert(id, bb.as_value());
+            bb.label()
+        };
+        self.numbered_block_refs.entry(id).or_insert(loc);
+        Ok(label)
     }
 
     fn resolve_block_ref(
@@ -8481,7 +8535,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>> {
         match block_ref {
-            BlockRef::Named(name) => Ok(self.ensure_block(module, name)),
+            BlockRef::Named(name) => self.ensure_block(module, name, loc),
             BlockRef::Numbered(id) => self.get_or_create_numbered_block(module, *id, loc),
         }
     }

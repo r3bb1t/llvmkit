@@ -37,7 +37,7 @@ use super::derived_types::{
 };
 use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
 use super::function::FunctionData;
-use super::instruction::{Instruction, InstructionData, state::Attached};
+use super::instruction::{Instruction, InstructionData, InstructionView, state::Attached};
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::struct_body_state::StructBodyDyn;
 use super::r#type::{Type, TypeData, TypeId};
@@ -374,16 +374,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
         }
     }
 
-    /// Snapshot the instruction users for this value. Metadata and debug-record
-    /// uses are tracked structurally and counted by [`Self::num_uses`], but are
-    /// intentionally omitted here because callers of `users()` expect concrete
-    /// instruction handles.
+    /// Snapshot the read-only instruction views that use this value. Metadata
+    /// and debug-record uses are tracked structurally and counted by
+    /// [`Self::num_uses`], but are intentionally omitted here because callers of
+    /// `users()` expect concrete instruction views.
     ///
     /// The list is a snapshot, not a live view: callers may mutate the IR
     /// (erase, RAUW) without invalidating the iterator. Order is
     /// registration-order; user ids may appear more than once if the same
     /// instruction references this value in multiple slots.
-    pub fn users(self) -> impl ExactSizeIterator<Item = Instruction<'ctx, Attached, B>> + 'ctx {
+    pub fn users(self) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>> + 'ctx {
         let module = self.module;
         let snapshot: Vec<ValueId> = self
             .data()
@@ -399,7 +399,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
             .collect();
         snapshot
             .into_iter()
-            .map(move |id| Instruction::from_parts(id, module))
+            .map(move |id| InstructionView::from_parts(id, module))
     }
 
     /// `true` when at least one structural user references this value.

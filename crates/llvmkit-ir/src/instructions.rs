@@ -1,20 +1,20 @@
 //! Per-opcode instruction handles. Mirrors a slice of
 //! `llvm/include/llvm/IR/Instructions.h`.
 //!
-//! Each handle is a thin `Copy` view onto an attached instruction in
-//! some basic block. Internally it stores the `(ValueId, ModuleRef,
-//! TypeId)` triple --- the same shape `Value` uses --- so it does not
-//! depend on [`Instruction`]'s `!Copy` lifecycle handle. To get a
-//! single-use lifecycle handle, call `as_instruction()` on the per-opcode handle;
-//! the resulting [`Instruction<'ctx, state::Attached>`] is `!Copy` and
-//! can drive `erase_from_parent` / `detach_from_parent` / RAUW.
+//! Each handle is a thin view onto an attached instruction in some basic
+//! block. Internally it stores the `(ValueId, ModuleRef, TypeId)` triple ---
+//! the same shape `Value` uses --- so it does not depend on
+//! [`Instruction`]'s `!Copy` lifecycle handle. Copyable handles expose
+//! [`InstructionView`](crate::InstructionView) for read-only rediscovery;
+//! lifecycle mutation requires a builder-produced instruction or
+//! [`BlockCursor`](crate::iter::BlockCursor).
 
 use super::IrResult;
 use super::align::Align;
 use super::atomic_ordering::AtomicOrdering;
 use super::atomicrmw_binop::AtomicRMWBinOp;
-use super::basic_block::BasicBlock;
-use super::block_state::{BlockSealState, Unsealed};
+use super::basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
+use super::block_state::Unsealed;
 use super::calling_conv::CallingConv;
 use super::cmp_predicate::{FloatPredicate, IntPredicate};
 use super::derived_types::FunctionType;
@@ -26,7 +26,7 @@ use super::instr_types::{
     BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
     LandingPadClauseKind, PhiData, ReturnOpData,
 };
-use super::instruction::{Instruction, InstructionKindData, state};
+use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::{IntDyn, IntWidth, IntoIntValue};
 use super::marker::{Dyn, Ptr, ReturnMarker};
 use super::module::{Brand, ModuleBrand, ModuleRef};
@@ -77,14 +77,16 @@ macro_rules! decl_binop_handle {
                 }
             }
 
-            /// Materialise a single-use lifecycle handle for this
-            /// instruction. The returned `Instruction<Attached>` is
-            /// `!Copy`; the caller may call `erase_from_parent`,
-            /// `detach_from_parent`, or `replace_all_uses_with` exactly
-            /// once on the binding.
+            /// Read-only erased instruction view for this opcode handle.
             #[inline]
-            pub fn as_instruction(self) -> Instruction<'ctx, state::Attached, B> {
-                Instruction::from_parts(self.id, self.module)
+            pub fn as_view(&self) -> InstructionView<'ctx, B> {
+                InstructionView::from_parts(self.id, self.module)
+            }
+
+            /// Widen to the erased [`Value`] handle.
+            #[inline]
+            pub fn as_value(&self) -> Value<'ctx, B> {
+                Value::from_parts(self.id, self.module, self.ty)
             }
 
             /// Left-hand side operand. Mirrors `getOperand(0)`.
@@ -114,11 +116,6 @@ macro_rules! decl_binop_handle {
             /// `exact` flag.
             #[inline]
             pub fn is_exact(self) -> bool { self.payload().is_exact }
-        }
-
-        impl<'ctx, B: ModuleBrand + 'ctx> ::core::convert::From<$name<'ctx, B>> for Instruction<'ctx, state::Attached, B> {
-            #[inline]
-            fn from(h: $name<'ctx, B>) -> Self { h.as_instruction() }
         }
     };
 }
@@ -212,20 +209,16 @@ macro_rules! decl_handle_scaffold {
                 }
             }
 
-            /// Materialise a single-use lifecycle handle. See
-            /// [`AddInst::as_instruction`] for semantics.
+            /// Read-only erased instruction view for this opcode handle.
             #[inline]
-            pub fn as_instruction(self) -> Instruction<'ctx, state::Attached, B> {
-                Instruction::from_parts(self.id, self.module)
+            pub fn as_view(&self) -> InstructionView<'ctx, B> {
+                InstructionView::from_parts(self.id, self.module)
             }
-        }
 
-        impl<'ctx, B: ModuleBrand + 'ctx> ::core::convert::From<$name<'ctx, B>>
-            for Instruction<'ctx, state::Attached, B>
-        {
+            /// Widen to the erased [`Value`] handle.
             #[inline]
-            fn from(h: $name<'ctx, B>) -> Self {
-                h.as_instruction()
+            pub fn as_value(&self) -> Value<'ctx, B> {
+                Value::from_parts(self.id, self.module, self.ty)
             }
         }
     };
@@ -475,10 +468,16 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
         }
     }
 
-    /// Materialise a single-use lifecycle handle.
+    /// Read-only erased instruction view for this call.
     #[inline]
-    pub fn as_instruction(self) -> Instruction<'ctx, state::Attached, B> {
-        Instruction::from_parts(self.id, self.module)
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        InstructionView::from_parts(self.id, self.module)
+    }
+
+    /// Widen to the erased [`Value`] handle.
+    #[inline]
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        Value::from_parts(self.id, self.module, self.ty)
     }
 
     /// Re-tag the return marker. Crate-internal: only [`build_call`]
@@ -600,15 +599,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallInst<'ctx, Ptr, B> {
             self.module,
             self.ty,
         ))
-    }
-}
-
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> From<CallInst<'ctx, R, B>>
-    for Instruction<'ctx, state::Attached, B>
-{
-    #[inline]
-    fn from(h: CallInst<'ctx, R, B>) -> Self {
-        h.as_instruction()
     }
 }
 
@@ -853,15 +843,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> BranchInst<'ctx, B> {
             } => vec![*then_bb, *else_bb],
         }
     }
-    /// Successors as runtime-checked basic-block handles.
-    pub fn successors(
-        self,
-    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, Dyn, Unsealed, B>> + 'ctx {
+    /// Successors as copyable block labels.
+    pub fn successors(self) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>> + 'ctx {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
-        self.successor_ids()
-            .into_iter()
-            .map(move |id| BasicBlock::from_parts(id, self.module, label_ty))
+        self.successor_ids().into_iter().map(move |id| {
+            BasicBlock::<Dyn, Unsealed, B>::from_parts(id, self.module, label_ty).label()
+        })
     }
 }
 
@@ -886,9 +874,9 @@ decl_handle_scaffold!(UnreachableInst);
 /// later in the same block.
 ///
 /// The `P: PhiState` parameter (default [`Open`]) tracks whether the
-/// phi is still accepting `add_incoming` calls. Calling
-/// [`PhiInst::finish`] consumes the open phi and returns a [`Closed`]
-/// view; the closed view exposes only read accessors.
+/// phi handle accepts `add_incoming` calls. Calling [`PhiInst::finish`] consumes
+/// the open handle and returns a [`Closed`] handle; the closed handle exposes
+/// only read accessors.
 #[derive(Debug)]
 pub struct PhiInst<'ctx, W: IntWidth, P: PhiState = Open, B: ModuleBrand = Brand<'ctx>> {
     pub(super) id: ValueId,
@@ -897,14 +885,6 @@ pub struct PhiInst<'ctx, W: IntWidth, P: PhiState = Open, B: ModuleBrand = Brand
     _w: core::marker::PhantomData<fn() -> W>,
     _p: core::marker::PhantomData<P>,
 }
-
-impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand> Clone for PhiInst<'ctx, W, P, B> {
-    #[inline]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand> Copy for PhiInst<'ctx, W, P, B> {}
 
 impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, B> {
     #[inline]
@@ -934,7 +914,7 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
         }
     }
 
-    fn payload(self) -> &'ctx PhiData {
+    fn payload(&self) -> &'ctx PhiData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -946,28 +926,33 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
     }
 
     #[inline]
-    pub fn as_instruction(self) -> Instruction<'ctx, state::Attached, B> {
-        Instruction::from_parts(self.id, self.module)
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        InstructionView::from_parts(self.id, self.module)
+    }
+
+    #[inline]
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        Value::from_parts(self.id, self.module, self.ty)
     }
 
     /// Result handle for the phi node, narrowed to the static width
     /// `W`.
     #[inline]
-    pub fn as_int_value(self) -> IntValue<'ctx, W, B> {
+    pub fn as_int_value(&self) -> IntValue<'ctx, W, B> {
         let v = Value::from_parts(self.id, self.module, self.ty);
         IntValue::<W, B>::from_value_unchecked(v)
     }
 
-    pub fn incoming_count(self) -> u32 {
+    pub fn incoming_count(&self) -> u32 {
         let len = self.payload().incoming.borrow().len();
         u32::try_from(len).unwrap_or_else(|_| unreachable!("phi has more than u32::MAX incoming"))
     }
 
-    /// Read the `(value, block)` pair at `index`.
+    /// Read the `(value, block label)` pair at `index`.
     pub fn incoming(
-        self,
+        &self,
         index: u32,
-    ) -> IrResult<(Value<'ctx, B>, BasicBlock<'ctx, Dyn, Unsealed, B>)> {
+    ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
         let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
         let module = self.module.module();
         let pair = self
@@ -984,7 +969,7 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
         let v_data = module.context().value_data(vid);
         let value = Value::from_parts(vid, self.module, v_data.ty);
         let label_ty = module.label_type().as_type().id();
-        let block = BasicBlock::from_parts(bid, self.module, label_ty);
+        let block = BasicBlock::<Dyn, Unsealed, B>::from_parts(bid, self.module, label_ty).label();
         Ok((value, block))
     }
 }
@@ -992,19 +977,21 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, Open, B> {
     /// Append `(value, block)` to the incoming list. Mirrors
     /// `PHINode::addIncoming`. Returns `Self` so calls chain.
-    /// Errors if `value`'s type does not match the phi's result type
-    /// or `block` belongs to a different module.
-    pub fn add_incoming<V, R, S>(self, value: V, block: BasicBlock<'ctx, R, S>) -> IrResult<Self>
+    /// Errors if `value`'s type does not match the phi's result type.
+    /// The block's module provenance is carried by its branded handle in
+    /// ordinary construction paths; CFG predecessor completeness is verified by
+    /// [`Module::verify`](crate::Module::verify).
+    pub fn add_incoming<V, R, Block>(self, value: V, block: Block) -> IrResult<Self>
     where
         V: IntoIntValue<'ctx, W, B>,
         R: ReturnMarker,
-        S: BlockSealState,
+        Block: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let module = self.module.module();
         let value = value.into_int_value(self.module)?;
         if value.as_value().ty == self.ty {
             let value_id = value.as_value().id;
-            let block_id = block.as_value().id;
+            let block_id = block.into_basic_block_label().as_value().id;
             self.payload()
                 .incoming
                 .borrow_mut()
@@ -1050,15 +1037,6 @@ impl<'ctx, W: IntWidth, P: PhiState> core::hash::Hash for PhiInst<'ctx, W, P> {
     }
 }
 
-impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> From<PhiInst<'ctx, W, P, B>>
-    for Instruction<'ctx, state::Attached, B>
-{
-    #[inline]
-    fn from(h: PhiInst<'ctx, W, P, B>) -> Self {
-        h.as_instruction()
-    }
-}
-
 // --------------------------------------------------------------------------
 // FpPhiInst<'ctx, K, P> -- floating-point phi handle
 // --------------------------------------------------------------------------
@@ -1076,14 +1054,6 @@ pub struct FpPhiInst<'ctx, K: FloatKind, P: PhiState = Open, B: ModuleBrand = Br
     _k: core::marker::PhantomData<fn() -> K>,
     _p: core::marker::PhantomData<P>,
 }
-
-impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand> Clone for FpPhiInst<'ctx, K, P, B> {
-    #[inline]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand> Copy for FpPhiInst<'ctx, K, P, B> {}
 
 impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, P, B> {
     #[inline]
@@ -1111,7 +1081,7 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
         }
     }
 
-    fn payload(self) -> &'ctx PhiData {
+    fn payload(&self) -> &'ctx PhiData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -1123,18 +1093,23 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
     }
 
     #[inline]
-    pub fn as_instruction(self) -> Instruction<'ctx, state::Attached, B> {
-        Instruction::from_parts(self.id, self.module)
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        InstructionView::from_parts(self.id, self.module)
+    }
+
+    #[inline]
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        Value::from_parts(self.id, self.module, self.ty)
     }
 
     /// Result handle for the phi, narrowed to the static kind `K`.
     #[inline]
-    pub fn as_float_value(self) -> FloatValue<'ctx, K, B> {
+    pub fn as_float_value(&self) -> FloatValue<'ctx, K, B> {
         let v = Value::from_parts(self.id, self.module, self.ty);
         FloatValue::<K, B>::from_value_unchecked(v)
     }
 
-    pub fn incoming_count(self) -> u32 {
+    pub fn incoming_count(&self) -> u32 {
         let len = self.payload().incoming.borrow().len();
         u32::try_from(len).unwrap_or_else(|_| unreachable!("phi has more than u32::MAX incoming"))
     }
@@ -1143,18 +1118,20 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
     /// Append `(value, block)` to the incoming list. Mirrors
     /// `PHINode::addIncoming`. Errors if `value`'s type does not match
-    /// the phi's result type or `block` belongs to a different module.
-    pub fn add_incoming<V, R, S>(self, value: V, block: BasicBlock<'ctx, R, S>) -> IrResult<Self>
+    /// the phi's result type. The block's module provenance is carried by its
+    /// branded handle in ordinary construction paths; CFG predecessor
+    /// completeness is verified by [`Module::verify`](crate::Module::verify).
+    pub fn add_incoming<V, R, Block>(self, value: V, block: Block) -> IrResult<Self>
     where
         V: IntoFloatValue<'ctx, K, B>,
         R: ReturnMarker,
-        S: BlockSealState,
+        Block: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let module = self.module.module();
         let value = value.into_float_value(self.module)?;
         if value.as_value().ty == self.ty {
             let value_id = value.as_value().id;
-            let block_id = block.as_value().id;
+            let block_id = block.into_basic_block_label().as_value().id;
             self.payload()
                 .incoming
                 .borrow_mut()
@@ -1197,15 +1174,6 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand> core::hash::Hash
     }
 }
 
-impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> From<FpPhiInst<'ctx, K, P, B>>
-    for Instruction<'ctx, state::Attached, B>
-{
-    #[inline]
-    fn from(h: FpPhiInst<'ctx, K, P, B>) -> Self {
-        h.as_instruction()
-    }
-}
-
 // --------------------------------------------------------------------------
 // PointerPhiInst<'ctx, P> -- pointer phi handle
 // --------------------------------------------------------------------------
@@ -1220,14 +1188,6 @@ pub struct PointerPhiInst<'ctx, P: PhiState = Open, B: ModuleBrand = Brand<'ctx>
     pub(super) ty: TypeId,
     _p: core::marker::PhantomData<P>,
 }
-
-impl<'ctx, P: PhiState, B: ModuleBrand> Clone for PointerPhiInst<'ctx, P, B> {
-    #[inline]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<'ctx, P: PhiState, B: ModuleBrand> Copy for PointerPhiInst<'ctx, P, B> {}
 
 impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
     #[inline]
@@ -1253,7 +1213,7 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
         }
     }
 
-    fn payload(self) -> &'ctx PhiData {
+    fn payload(&self) -> &'ctx PhiData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -1265,18 +1225,23 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
     }
 
     #[inline]
-    pub fn as_instruction(self) -> Instruction<'ctx, state::Attached, B> {
-        Instruction::from_parts(self.id, self.module)
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        InstructionView::from_parts(self.id, self.module)
+    }
+
+    #[inline]
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        Value::from_parts(self.id, self.module, self.ty)
     }
 
     /// Result handle for the phi, narrowed to a [`PointerValue`].
     #[inline]
-    pub fn as_pointer_value(self) -> PointerValue<'ctx, B> {
+    pub fn as_pointer_value(&self) -> PointerValue<'ctx, B> {
         let v = Value::from_parts(self.id, self.module, self.ty);
         crate::value::PointerValue::from_value_unchecked(v)
     }
 
-    pub fn incoming_count(self) -> u32 {
+    pub fn incoming_count(&self) -> u32 {
         let len = self.payload().incoming.borrow().len();
         u32::try_from(len).unwrap_or_else(|_| unreachable!("phi has more than u32::MAX incoming"))
     }
@@ -1284,17 +1249,17 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
 
 impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, Open, B> {
     /// Append `(value, block)` to the incoming list.
-    pub fn add_incoming<V, R, S>(self, value: V, block: BasicBlock<'ctx, R, S>) -> IrResult<Self>
+    pub fn add_incoming<V, R, Block>(self, value: V, block: Block) -> IrResult<Self>
     where
         V: IntoPointerValue<'ctx, B>,
         R: ReturnMarker,
-        S: BlockSealState,
+        Block: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let module = self.module.module();
         let value = value.into_pointer_value(self.module)?;
         if value.as_value().ty == self.ty {
             let value_id = value.as_value().id;
-            let block_id = block.as_value().id;
+            let block_id = block.into_basic_block_label().as_value().id;
             self.payload()
                 .incoming
                 .borrow_mut()
@@ -1332,15 +1297,6 @@ impl<'ctx, P: PhiState> core::hash::Hash for PointerPhiInst<'ctx, P> {
         self.id.hash(h);
         self.module.hash(h);
         self.ty.hash(h);
-    }
-}
-
-impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> From<PointerPhiInst<'ctx, P, B>>
-    for Instruction<'ctx, state::Attached, B>
-{
-    #[inline]
-    fn from(h: PointerPhiInst<'ctx, P, B>) -> Self {
-        h.as_instruction()
     }
 }
 
@@ -1840,9 +1796,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
 /// `switch` terminator. Mirrors `SwitchInst` (`Instructions.h`).
 ///
 /// The `P: TermOpenState` parameter (default
-/// [`Open`](TermOpen)) tracks whether the case
-/// list is still editable. `add_case` is gated to `P = Open`;
-/// `finish` consumes the open handle and returns `Closed`.
+/// [`Open`](TermOpen)) tracks whether this handle view can edit the case list.
+/// `add_case` is gated to `P = Open`; `finish` moves the open handle and
+/// returns a `Closed` view. Rediscovery through opcode discriminators is closed.
 #[derive(Debug)]
 pub struct SwitchInst<'ctx, P: TermOpenState = TermOpen, B: ModuleBrand = Brand<'ctx>> {
     pub(super) id: ValueId,
@@ -1851,13 +1807,6 @@ pub struct SwitchInst<'ctx, P: TermOpenState = TermOpen, B: ModuleBrand = Brand<
     _p: core::marker::PhantomData<P>,
 }
 
-impl<'ctx, P: TermOpenState, B: ModuleBrand> Clone for SwitchInst<'ctx, P, B> {
-    #[inline]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<'ctx, P: TermOpenState, B: ModuleBrand> Copy for SwitchInst<'ctx, P, B> {}
 impl<'ctx, P: TermOpenState, B: ModuleBrand> PartialEq for SwitchInst<'ctx, P, B> {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
@@ -1895,10 +1844,15 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> SwitchInst<'ctx, P, B> {
         }
     }
     #[inline]
-    pub fn as_instruction(self) -> Instruction<'ctx, state::Attached, B> {
-        Instruction::from_parts(self.id, self.module)
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        InstructionView::from_parts(self.id, self.module)
     }
-    fn payload(self) -> &'ctx crate::instr_types::SwitchInstData {
+
+    #[inline]
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        Value::from_parts(self.id, self.module, self.ty)
+    }
+    fn payload(&self) -> &'ctx crate::instr_types::SwitchInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -1908,18 +1862,23 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> SwitchInst<'ctx, P, B> {
             _ => unreachable!("SwitchInst invariant: kind is Instruction"),
         }
     }
-    pub fn condition(self) -> Value<'ctx, B> {
+    pub fn condition(&self) -> Value<'ctx, B> {
         let id = self.payload().cond.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
         Value::from_parts(id, self.module, data.ty)
     }
-    pub fn default_destination(self) -> BasicBlock<'ctx, Dyn, Unsealed, B> {
+    pub fn default_destination(&self) -> BasicBlockLabel<'ctx, Dyn, B> {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
-        BasicBlock::from_parts(self.payload().default_bb.get(), self.module, label_ty)
+        BasicBlock::<Dyn, Unsealed, B>::from_parts(
+            self.payload().default_bb.get(),
+            self.module,
+            label_ty,
+        )
+        .label()
     }
-    pub fn case_count(self) -> u32 {
+    pub fn case_count(&self) -> u32 {
         let len = self.payload().cases.borrow().len();
         u32::try_from(len).unwrap_or_else(|_| unreachable!("switch has more than u32::MAX cases"))
     }
@@ -1928,15 +1887,11 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> SwitchInst<'ctx, P, B> {
 impl<'ctx, B: ModuleBrand + 'ctx> SwitchInst<'ctx, TermOpen, B> {
     /// Append a `(case_value, target)` entry to the switch. Mirrors
     /// `SwitchInst::addCase`. Returns `Self` so calls chain.
-    pub fn add_case<V, R, S>(
-        self,
-        case_value: V,
-        target: BasicBlock<'ctx, R, S, B>,
-    ) -> IrResult<Self>
+    pub fn add_case<V, R, Target>(self, case_value: V, target: Target) -> IrResult<Self>
     where
         V: IsValue<'ctx, B>,
         R: ReturnMarker,
-        S: BlockSealState,
+        Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let module = self.module.module();
         let v = case_value.as_value();
@@ -1949,7 +1904,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> SwitchInst<'ctx, TermOpen, B> {
             });
         }
         let v_id = v.id;
-        let bb_id = target.as_value().id;
+        let bb_id = target.into_basic_block_label().as_value().id;
         self.payload()
             .cases
             .borrow_mut()
@@ -1972,15 +1927,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> SwitchInst<'ctx, TermOpen, B> {
     }
 }
 
-impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> From<SwitchInst<'ctx, P, B>>
-    for Instruction<'ctx, state::Attached, B>
-{
-    #[inline]
-    fn from(h: SwitchInst<'ctx, P, B>) -> Self {
-        h.as_instruction()
-    }
-}
-
 /// `indirectbr` terminator. Mirrors `IndirectBrInst`
 /// (`Instructions.h`). The address operand selects one of the
 /// declared destination blocks at runtime.
@@ -1992,13 +1938,6 @@ pub struct IndirectBrInst<'ctx, P: TermOpenState = TermOpen, B: ModuleBrand = Br
     _p: core::marker::PhantomData<P>,
 }
 
-impl<'ctx, P: TermOpenState, B: ModuleBrand> Clone for IndirectBrInst<'ctx, P, B> {
-    #[inline]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<'ctx, P: TermOpenState, B: ModuleBrand> Copy for IndirectBrInst<'ctx, P, B> {}
 impl<'ctx, P: TermOpenState, B: ModuleBrand> PartialEq for IndirectBrInst<'ctx, P, B> {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
@@ -2036,10 +1975,15 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
         }
     }
     #[inline]
-    pub fn as_instruction(self) -> Instruction<'ctx, state::Attached, B> {
-        Instruction::from_parts(self.id, self.module)
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        InstructionView::from_parts(self.id, self.module)
     }
-    fn payload(self) -> &'ctx crate::instr_types::IndirectBrInstData {
+
+    #[inline]
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        Value::from_parts(self.id, self.module, self.ty)
+    }
+    fn payload(&self) -> &'ctx crate::instr_types::IndirectBrInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2049,13 +1993,13 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
             _ => unreachable!("IndirectBrInst invariant: kind is Instruction"),
         }
     }
-    pub fn address(self) -> Value<'ctx, B> {
+    pub fn address(&self) -> Value<'ctx, B> {
         let id = self.payload().addr.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
         Value::from_parts(id, self.module, data.ty)
     }
-    pub fn destination_count(self) -> u32 {
+    pub fn destination_count(&self) -> u32 {
         let len = self.payload().destinations.borrow().len();
         u32::try_from(len)
             .unwrap_or_else(|_| unreachable!("indirectbr has more than u32::MAX destinations"))
@@ -2064,30 +2008,21 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
 
 impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
     /// Append a destination block. Mirrors `IndirectBrInst::addDestination`.
-    pub fn add_destination<R, S>(self, target: BasicBlock<'ctx, R, S, B>) -> IrResult<Self>
+    pub fn add_destination<R, Target>(self, target: Target) -> IrResult<Self>
     where
         R: ReturnMarker,
-        S: BlockSealState,
+        Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
         self.payload()
             .destinations
             .borrow_mut()
-            .push(target.as_value().id);
+            .push(target.into_basic_block_label().as_value().id);
         Ok(self)
     }
     /// Consume the open `indirectbr` and return its [`Closed`] view.
     #[inline]
     pub fn finish(self) -> IndirectBrInst<'ctx, TermClosed, B> {
         self.retag()
-    }
-}
-
-impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> From<IndirectBrInst<'ctx, P, B>>
-    for Instruction<'ctx, state::Attached, B>
-{
-    #[inline]
-    fn from(h: IndirectBrInst<'ctx, P, B>) -> Self {
-        h.as_instruction()
     }
 }
 
@@ -2142,8 +2077,13 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
         }
     }
     #[inline]
-    pub fn as_instruction(self) -> Instruction<'ctx, state::Attached, B> {
-        Instruction::from_parts(self.id, self.module)
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        InstructionView::from_parts(self.id, self.module)
+    }
+
+    #[inline]
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        Value::from_parts(self.id, self.module, self.ty)
     }
     /// Re-tag the return marker. Crate-internal: only [`build_invoke`]
     /// flows the typed marker.
@@ -2191,24 +2131,25 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     pub fn calling_conv(self) -> CallingConv {
         self.payload().calling_conv
     }
-    pub fn normal_destination(self) -> BasicBlock<'ctx, Dyn, Unsealed, B> {
+    pub fn normal_destination(self) -> BasicBlockLabel<'ctx, Dyn, B> {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
-        BasicBlock::from_parts(self.payload().normal_dest.get(), self.module, label_ty)
+        BasicBlock::<Dyn, Unsealed, B>::from_parts(
+            self.payload().normal_dest.get(),
+            self.module,
+            label_ty,
+        )
+        .label()
     }
-    pub fn unwind_destination(self) -> BasicBlock<'ctx, Dyn, Unsealed, B> {
+    pub fn unwind_destination(self) -> BasicBlockLabel<'ctx, Dyn, B> {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
-        BasicBlock::from_parts(self.payload().unwind_dest.get(), self.module, label_ty)
-    }
-}
-
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> From<InvokeInst<'ctx, R, B>>
-    for Instruction<'ctx, state::Attached, B>
-{
-    #[inline]
-    fn from(h: InvokeInst<'ctx, R, B>) -> Self {
-        h.as_instruction()
+        BasicBlock::<Dyn, Unsealed, B>::from_parts(
+            self.payload().unwind_dest.get(),
+            self.module,
+            label_ty,
+        )
+        .label()
     }
 }
 
@@ -2255,14 +2196,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
     pub fn calling_conv(self) -> CallingConv {
         self.payload().calling_conv
     }
-    pub fn default_destination(self) -> BasicBlock<'ctx, Dyn, Unsealed, B> {
+    pub fn default_destination(self) -> BasicBlockLabel<'ctx, Dyn, B> {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
-        BasicBlock::from_parts(self.payload().default_dest.get(), self.module, label_ty)
+        BasicBlock::<Dyn, Unsealed, B>::from_parts(
+            self.payload().default_dest.get(),
+            self.module,
+            label_ty,
+        )
+        .label()
     }
     pub fn indirect_destinations(
         self,
-    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, Dyn, Unsealed, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>> + 'ctx {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
         let ids: Vec<ValueId> = self
@@ -2271,8 +2217,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
             .iter()
             .map(|c| c.get())
             .collect();
-        ids.into_iter()
-            .map(move |id| BasicBlock::from_parts(id, self.module, label_ty))
+        ids.into_iter().map(move |id| {
+            BasicBlock::<Dyn, Unsealed, B>::from_parts(id, self.module, label_ty).label()
+        })
     }
 }
 
@@ -2283,8 +2230,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
 /// `landingpad` instruction. Mirrors `LandingPadInst` (`Instructions.h`).
 ///
 /// The `P: TermOpenState` parameter (default
-/// [`Open`](TermOpen)) tracks whether the clause
-/// list is still editable. `add_clause` is gated to `P = Open`.
+/// [`Open`](TermOpen)) tracks whether the clause list is still editable.
+/// Open mutators are gated to `P = Open`; `finish` moves the open handle.
 #[derive(Debug)]
 pub struct LandingPadInst<'ctx, P: TermOpenState = TermOpen, B: ModuleBrand = Brand<'ctx>> {
     pub(super) id: ValueId,
@@ -2293,13 +2240,6 @@ pub struct LandingPadInst<'ctx, P: TermOpenState = TermOpen, B: ModuleBrand = Br
     _p: core::marker::PhantomData<P>,
 }
 
-impl<'ctx, P: TermOpenState, B: ModuleBrand> Clone for LandingPadInst<'ctx, P, B> {
-    #[inline]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<'ctx, P: TermOpenState, B: ModuleBrand> Copy for LandingPadInst<'ctx, P, B> {}
 impl<'ctx, P: TermOpenState, B: ModuleBrand> PartialEq for LandingPadInst<'ctx, P, B> {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
@@ -2337,10 +2277,15 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, P, B> {
         }
     }
     #[inline]
-    pub fn as_instruction(self) -> Instruction<'ctx, state::Attached, B> {
-        Instruction::from_parts(self.id, self.module)
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        InstructionView::from_parts(self.id, self.module)
     }
-    fn payload(self) -> &'ctx crate::instr_types::LandingPadInstData {
+
+    #[inline]
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        Value::from_parts(self.id, self.module, self.ty)
+    }
+    fn payload(&self) -> &'ctx crate::instr_types::LandingPadInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2350,10 +2295,10 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, P, B> {
             _ => unreachable!("LandingPadInst invariant: kind is Instruction"),
         }
     }
-    pub fn is_cleanup(self) -> bool {
+    pub fn is_cleanup(&self) -> bool {
         self.payload().cleanup.get()
     }
-    pub fn clause_count(self) -> u32 {
+    pub fn clause_count(&self) -> u32 {
         let len = self.payload().clauses.borrow().len();
         u32::try_from(len)
             .unwrap_or_else(|_| unreachable!("landingpad has more than u32::MAX clauses"))
@@ -2403,15 +2348,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
     #[inline]
     pub fn finish(self) -> LandingPadInst<'ctx, TermClosed, B> {
         self.retag()
-    }
-}
-
-impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> From<LandingPadInst<'ctx, P, B>>
-    for Instruction<'ctx, state::Attached, B>
-{
-    #[inline]
-    fn from(h: LandingPadInst<'ctx, P, B>) -> Self {
-        h.as_instruction()
     }
 }
 
@@ -2555,10 +2491,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchReturnInst<'ctx, B> {
         let data = module.context().value_data(id);
         Value::from_parts(id, self.module, data.ty)
     }
-    pub fn target(self) -> BasicBlock<'ctx, Dyn, Unsealed, B> {
+    pub fn target(self) -> BasicBlockLabel<'ctx, Dyn, B> {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
-        BasicBlock::from_parts(self.payload().target_bb, self.module, label_ty)
+        BasicBlock::<Dyn, Unsealed, B>::from_parts(self.payload().target_bb, self.module, label_ty)
+            .label()
     }
 }
 
@@ -2590,11 +2527,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> CleanupReturnInst<'ctx, B> {
         Value::from_parts(id, self.module, data.ty)
     }
     /// `None` represents `unwind to caller`.
-    pub fn unwind_dest(self) -> Option<BasicBlock<'ctx, Dyn, Unsealed, B>> {
+    pub fn unwind_dest(self) -> Option<BasicBlockLabel<'ctx, Dyn, B>> {
         let id = self.payload().unwind_dest?;
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
-        Some(BasicBlock::from_parts(id, self.module, label_ty))
+        Some(BasicBlock::<Dyn, Unsealed, B>::from_parts(id, self.module, label_ty).label())
     }
 }
 
@@ -2608,13 +2545,6 @@ pub struct CatchSwitchInst<'ctx, P: TermOpenState = TermOpen, B: ModuleBrand = B
     _p: core::marker::PhantomData<P>,
 }
 
-impl<'ctx, P: TermOpenState, B: ModuleBrand> Clone for CatchSwitchInst<'ctx, P, B> {
-    #[inline]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<'ctx, P: TermOpenState, B: ModuleBrand> Copy for CatchSwitchInst<'ctx, P, B> {}
 impl<'ctx, P: TermOpenState, B: ModuleBrand> PartialEq for CatchSwitchInst<'ctx, P, B> {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
@@ -2652,10 +2582,15 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
         }
     }
     #[inline]
-    pub fn as_instruction(self) -> Instruction<'ctx, state::Attached, B> {
-        Instruction::from_parts(self.id, self.module)
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        InstructionView::from_parts(self.id, self.module)
     }
-    fn payload(self) -> &'ctx crate::instr_types::CatchSwitchInstData {
+
+    #[inline]
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        Value::from_parts(self.id, self.module, self.ty)
+    }
+    fn payload(&self) -> &'ctx crate::instr_types::CatchSwitchInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2665,20 +2600,20 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
             _ => unreachable!("CatchSwitchInst invariant: kind is Instruction"),
         }
     }
-    pub fn parent_pad(self) -> Option<Value<'ctx, B>> {
+    pub fn parent_pad(&self) -> Option<Value<'ctx, B>> {
         let id = self.payload().parent_pad.get()?;
         let module = self.module.module();
         let data = module.context().value_data(id);
         Some(Value::from_parts(id, self.module, data.ty))
     }
     /// `None` = `unwind to caller`.
-    pub fn unwind_dest(self) -> Option<BasicBlock<'ctx, Dyn, Unsealed, B>> {
+    pub fn unwind_dest(&self) -> Option<BasicBlockLabel<'ctx, Dyn, B>> {
         let id = self.payload().unwind_dest.get()?;
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
-        Some(BasicBlock::from_parts(id, self.module, label_ty))
+        Some(BasicBlock::<Dyn, Unsealed, B>::from_parts(id, self.module, label_ty).label())
     }
-    pub fn handler_count(self) -> u32 {
+    pub fn handler_count(&self) -> u32 {
         let len = self.payload().handlers.borrow().len();
         u32::try_from(len)
             .unwrap_or_else(|_| unreachable!("catchswitch has more than u32::MAX handlers"))
@@ -2686,28 +2621,19 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, TermOpen, B> {
-    pub fn add_handler<R, S>(self, handler: BasicBlock<'ctx, R, S, B>) -> IrResult<Self>
+    pub fn add_handler<R, Handler>(self, handler: Handler) -> IrResult<Self>
     where
         R: ReturnMarker,
-        S: BlockSealState,
+        Handler: IntoBasicBlockLabel<'ctx, R, B>,
     {
         self.payload()
             .handlers
             .borrow_mut()
-            .push(handler.as_value().id);
+            .push(handler.into_basic_block_label().as_value().id);
         Ok(self)
     }
     #[inline]
     pub fn finish(self) -> CatchSwitchInst<'ctx, TermClosed, B> {
         self.retag()
-    }
-}
-
-impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> From<CatchSwitchInst<'ctx, P, B>>
-    for Instruction<'ctx, state::Attached, B>
-{
-    #[inline]
-    fn from(h: CatchSwitchInst<'ctx, P, B>) -> Self {
-        h.as_instruction()
     }
 }

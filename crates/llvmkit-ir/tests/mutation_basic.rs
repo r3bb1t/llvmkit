@@ -12,7 +12,7 @@
 use llvmkit_ir::metadata::{
     DebugMetadataOperand, DebugRecord, DebugVariableRecord, DebugVariableRecordKind, MetadataRef,
 };
-use llvmkit_ir::{IRBuilder, Instruction, IntValue, IrError, Linkage, Module, NoFolder};
+use llvmkit_ir::{IRBuilder, IntValue, IrError, Linkage, Module, NoFolder, iter::BlockCursor};
 
 /// Port of `unittests/IR/UseTest.cpp::TEST(UseTest, sort)` setup body.
 /// Upstream:
@@ -95,19 +95,23 @@ fn erase_no_invalidation() -> Result<(), IrError> {
         let i1 = b.build_int_add(x, 0_i32, "i1")?;
         let i2 = b.build_int_add(x, 0_i32, "i2")?;
         let i3 = b.build_int_add(x, 0_i32, "i3")?;
-        let (_sealed, ret) = b.build_ret_void();
+        let bb = b.into_insert_block();
 
-        // Pre-erase order: I1, I2, I3, Ret.
+        // Pre-erase order before the terminator is emitted: I1, I2, I3.
         let pre: Vec<_> = bb.instructions().map(|i| i.as_value()).collect();
-        assert_eq!(pre.len(), 4);
+        assert_eq!(pre.len(), 3);
         assert_eq!(pre[0], i1.as_value());
         assert_eq!(pre[1], i2.as_value());
         assert_eq!(pre[2], i3.as_value());
-        assert_eq!(pre[3], ret.as_value());
 
         // Erase I2. Upstream: `I2->eraseFromParent(); I2 = nullptr;`
-        let i2_inst = Instruction::try_from(i2.as_value())?;
+        let cursor = BlockCursor::at_start(bb);
+        let (_, cursor) = cursor.next().expect("i1 instruction");
+        let (i2_inst, cursor) = cursor.next().expect("i2 instruction");
+        let bb = cursor.into_block();
         i2_inst.erase_from_parent(&m);
+        let b = IRBuilder::new_for::<()>(&m).position_at_end(bb);
+        let (bb, ret) = b.build_ret_void();
 
         // Post-erase: I1, I3, Ret. Upstream asserts via comesBefore +
         // iterator-equality; we assert the iteration order directly.
@@ -135,8 +139,14 @@ fn erase_releases_local_name_for_reuse() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let arg: IntValue<i32> = f.param(0)?.try_into()?;
 
-        let dead = b.build_int_add::<i32, _, _, _>(arg, 1_i32, "tmp")?;
-        Instruction::try_from(dead.as_value())?.erase_from_parent(&m);
+        let _dead = b.build_int_add::<i32, _, _, _>(arg, 1_i32, "tmp")?;
+        let block = b.into_insert_block();
+        let (dead_inst, cursor) = BlockCursor::at_start(block)
+            .next()
+            .expect("dead instruction");
+        dead_inst.erase_from_parent(&m);
+        let block = cursor.into_block();
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(block);
         let live = b.build_int_add::<i32, _, _, _>(arg, 2_i32, "tmp")?;
         b.build_ret(live)?;
 
@@ -159,12 +169,18 @@ fn detached_append_reinserts_and_uniques_against_destination() -> Result<(), IrE
         let from = m.add_function::<i32, _>("from", fn_ty, Linkage::External)?;
         let from_entry = from.append_basic_block(&m, "entry");
         let from_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(from_entry);
-        let moved_value = from_b.build_int_add::<i32, _, _, _>(
+        let _moved_value = from_b.build_int_add::<i32, _, _, _>(
             i32_ty.const_int(1_i32),
             i32_ty.const_int(2_i32),
             "tmp",
         )?;
-        let moved = Instruction::try_from(moved_value.as_value())?.detach_from_parent(&m);
+        let from_block = from_b.into_insert_block();
+        let (moved_inst, cursor) = BlockCursor::at_start(from_block)
+            .next()
+            .expect("moved instruction");
+        let from_block = cursor.into_block();
+        let moved = moved_inst.detach_from_parent(&m);
+        let from_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(from_block);
         from_b.build_ret(i32_ty.const_zero())?;
 
         let to = m.add_function::<i32, _>("to", fn_ty, Linkage::External)?;
@@ -175,7 +191,7 @@ fn detached_append_reinserts_and_uniques_against_destination() -> Result<(), IrE
             i32_ty.const_int(4_i32),
             "tmp",
         )?;
-        let appended = moved.append_to(&m, &to_entry)?;
+        let appended = moved.append_to(&m, to_b.insert_block())?;
         let appended_value: IntValue<i32> = appended.try_into()?;
         to_b.build_ret(appended_value)?;
 
@@ -206,20 +222,25 @@ fn detached_set_name_updates_carried_name_without_old_parent_binding() -> Result
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
-        let original = b.build_int_add::<i32, _, _, _>(
+        let _original = b.build_int_add::<i32, _, _, _>(
             i32_ty.const_int(1_i32),
             i32_ty.const_int(2_i32),
             "tmp",
         )?;
-        let detached = Instruction::try_from(original.as_value())?.detach_from_parent(&m);
+        let block = b.into_insert_block();
+        let (detached_inst, cursor) = BlockCursor::at_start(block)
+            .next()
+            .expect("original instruction");
+        let detached = detached_inst.detach_from_parent(&m);
+        let block = cursor.into_block();
         detached.as_value().set_name(&m, "renamed");
-
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(block);
         let live = b.build_int_add::<i32, _, _, _>(
             i32_ty.const_int(3_i32),
             i32_ty.const_int(4_i32),
             "tmp",
         )?;
-        let inserted = detached.append_to(&m, &entry)?;
+        let inserted = detached.append_to(&m, b.insert_block())?;
         let inserted_value: IntValue<i32> = inserted.try_into()?;
         let sum = b.build_int_add::<i32, _, _, _>(live, inserted_value, "sum")?;
         b.build_ret(sum)?;
@@ -254,13 +275,18 @@ fn erase_deregisters_from_operand_use_lists() -> Result<(), IrError> {
         let i1 = b.build_int_add(x, 0_i32, "i1")?;
         let i2 = b.build_int_add(x, 0_i32, "i2")?;
         let i3 = b.build_int_add(x, 0_i32, "i3")?;
-        let _ret = b.build_ret_void();
+        let bb = b.into_insert_block();
 
         // Pre-erase: x has 3 users (one per add).
         assert_eq!(x.as_value().num_uses(), 3);
 
-        let i2_inst = Instruction::try_from(i2.as_value())?;
+        let cursor = BlockCursor::at_start(bb);
+        let (_, cursor) = cursor.next().expect("i1 instruction");
+        let (i2_inst, cursor) = cursor.next().expect("i2 instruction");
+        let bb = cursor.into_block();
         i2_inst.erase_from_parent(&m);
+        let b = IRBuilder::new_for::<()>(&m).position_at_end(bb);
+        let _ = b.build_ret_void();
 
         // Post-erase: x has 2 users (only the surviving adds).
         assert_eq!(x.as_value().num_uses(), 2);
@@ -294,6 +320,44 @@ fn metadata_constant_operand_counts_as_structural_value_use() -> Result<(), IrEr
     })
 }
 
+/// Mirrors `lib/IR/Instruction.cpp::Instruction::moveBefore` and
+/// `Instruction::moveAfter`: moving an instruction relative to itself is a
+/// no-op and must not detach it from its parent block.
+#[test]
+fn self_anchored_instruction_moves_are_no_ops() -> Result<(), IrError> {
+    Module::with_new("self-move", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let builder = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let a = builder.build_int_add::<i32, _, _, _>(
+            i32_ty.const_int(1_i32),
+            i32_ty.const_int(2_i32),
+            "a",
+        )?;
+        let b = builder.build_int_add::<i32, _, _, _>(a, i32_ty.const_int(3_i32), "b")?;
+
+        let block = builder.into_insert_block();
+        let cursor = BlockCursor::at_start(block);
+        let (a_inst, cursor) = cursor.next().expect("a instruction");
+        let a_anchor = a_inst.as_view();
+        a_inst.move_before(&m, &a_anchor)?;
+        let (b_inst, cursor) = cursor.next().expect("b instruction");
+        let b_anchor = b_inst.as_view();
+        b_inst.move_after(&m, &b_anchor)?;
+
+        let block = cursor.into_block();
+        let builder = IRBuilder::with_folder(&m, NoFolder).position_at_end(block);
+        builder.build_ret(b)?;
+        let text = format!("{m}");
+        assert!(text.contains("%a = add i32 1, 2"), "{text}");
+        assert!(text.contains("%b = add i32 %a, 3"), "{text}");
+        assert!(text.contains("ret i32 %b"), "{text}");
+        Ok(())
+    })
+}
+
 /// Mirrors `llvm/test/Assembler/metadata-use-uselistorder.ll` lines 10-13:
 /// debug records live outside the instruction operand hierarchy, but value
 /// operands inside them still contribute structural uses and must be removed
@@ -309,12 +373,15 @@ fn debug_record_value_operand_counts_as_structural_use_and_erases() -> Result<()
         let x: IntValue<i32> = f.param(0)?.try_into()?;
         assert_eq!(x.as_value().num_uses(), 0);
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let add = b.build_int_add::<i32, _, _, _>(
+        let _add = b.build_int_add::<i32, _, _, _>(
             i32_ty.const_int(1_i32),
             i32_ty.const_int(2_i32),
             "sum",
         )?;
-        let inst = Instruction::try_from(add.as_value())?;
+        let block = b.into_insert_block();
+        let (inst, cursor) = BlockCursor::at_start(block)
+            .next()
+            .expect("sum instruction");
         let md = m.metadata_tuple(Vec::<MetadataRef>::new());
         inst.push_debug_record(DebugRecord::Variable(DebugVariableRecord::new(
             DebugVariableRecordKind::Value,
@@ -326,6 +393,8 @@ fn debug_record_value_operand_counts_as_structural_use_and_erases() -> Result<()
 
         assert_eq!(x.as_value().num_uses(), 1);
         assert_eq!(x.as_value().users().len(), 0);
+        let block = cursor.into_block();
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(block);
         let _ = b.build_ret_void();
 
         inst.erase_from_parent(&m);
@@ -349,12 +418,15 @@ fn debug_record_value_operand_is_rewritten_by_rauw() -> Result<(), IrError> {
         let x: IntValue<i32> = f.param(0)?.try_into()?;
 
         let source = b.build_int_add::<i32, _, _, _>(x, i32_ty.const_int(1_i32), "source")?;
-        let anchor = b.build_int_add::<i32, _, _, _>(
+        let _anchor = b.build_int_add::<i32, _, _, _>(
             i32_ty.const_int(2_i32),
             i32_ty.const_int(3_i32),
             "anchor",
         )?;
-        let anchor_inst = Instruction::try_from(anchor.as_value())?;
+        let block = b.into_insert_block();
+        let cursor = BlockCursor::at_start(block);
+        let (source_inst, cursor) = cursor.next().expect("source instruction");
+        let (anchor_inst, cursor) = cursor.next().expect("anchor instruction");
         let md = m.metadata_tuple(Vec::<MetadataRef>::new());
         anchor_inst.push_debug_record(DebugRecord::Variable(DebugVariableRecord::new(
             DebugVariableRecordKind::Value,
@@ -368,7 +440,6 @@ fn debug_record_value_operand_is_rewritten_by_rauw() -> Result<(), IrError> {
         assert_eq!(source.as_value().num_uses(), 1);
         assert_eq!(replacement.as_value().num_uses(), 0);
 
-        let source_inst = Instruction::try_from(source.as_value())?;
         source_inst.replace_all_uses_with(&m, replacement)?;
 
         assert_eq!(source.as_value().num_uses(), 0);
@@ -381,6 +452,8 @@ fn debug_record_value_operand_is_rewritten_by_rauw() -> Result<(), IrError> {
             record.location(),
             DebugMetadataOperand::Value(replacement.as_value().id())
         );
+        let block = cursor.into_block();
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(block);
         let _ = b.build_ret_void();
         Ok(())
     })

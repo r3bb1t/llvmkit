@@ -181,7 +181,7 @@ fn record_parser_context<'ctx>(
                 None => start,
             };
             context
-                .add_block_location(block, FileLocRange::new(block_start, end))
+                .add_block_location(&block, FileLocRange::new(block_start, end))
                 .map_err(location_error)?;
             for instruction in block.instructions() {
                 let Some(inst_start) = instruction_lines.first().copied() else {

@@ -1,0 +1,16 @@
+error[E0382]: use of moved value: `lp`
+  --> tests/compile_fail/retained_open_landingpad_cannot_add_after_finish.rs:21:17
+   |
+18 |         let lp = b.build_landingpad(i32_ty.as_type(), true, "lp").unwrap();
+   |             -- move occurs because `lp` has type `LandingPadInst<'_, llvmkit_ir::term_open_state::Open, Brand<'_>>`, which does not implement the `Copy` trait
+19 |
+20 |         let _closed = lp.finish();
+   |                          -------- `lp` moved due to this method call
+21 |         let _ = lp.add_catch_clause(null_ptr);
+   |                 ^^ value used here after move
+   |
+note: `LandingPadInst::<'ctx, llvmkit_ir::term_open_state::Open, B>::finish` takes ownership of the receiver `self`, which moves `lp`
+  --> src/instructions.rs
+   |
+   |     pub fn finish(self) -> LandingPadInst<'ctx, TermClosed, B> {
+   |                   ^^^^
