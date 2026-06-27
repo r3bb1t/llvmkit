@@ -49,7 +49,7 @@ use token::ValidatedFunctionParams;
 
 /// Lifetime-free schema token for a function return type.
 pub trait FunctionReturn: Sized + 'static {
-    /// Return-marker typestate used by [`FunctionValue`] and [`IRBuilder`](crate::IRBuilder).
+    /// Return-marker typestate used by [`FunctionValue`] and [`IRBuilder`].
     type Marker: ReturnMarker;
 
     /// Construct this schema's LLVM IR return type in `module`.

@@ -77,8 +77,9 @@ impl ReturnMarker for () {
 }
 
 /// Opaque-pointer return (any address space).
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Ptr;
+pub struct Ptr(*mut core::ffi::c_void);
 impl sealed::Sealed for Ptr {}
 impl ReturnMarker for Ptr {
     #[inline]

@@ -137,9 +137,9 @@ existing raw function with a mismatched signature. For ordinary Rust function
 pointer aliases, `m.add_typed_function_of::<fn(i32) -> i32, _>(...)` builds the
 LLVM signature directly from the alias.
 
-Derived struct schemas use a PyO3-like mental model: derive the schema on a
-plain Rust struct, use the generated `<Struct>Value<'ctx, B>` wrapper in IR, and
-call field accessors/builders instead of indexing aggregates manually:
+Derived struct schemas let you derive the schema on a plain Rust struct, use the
+generated `<Struct>Value<'ctx, B>` wrapper in IR, and call field
+accessors/builders instead of indexing aggregates manually:
 
 ```rust
 use llvmkit_ir::{IRBuilder, IrStruct, Linkage, Module};

@@ -1,6 +1,6 @@
 use llvmkit_ir::{
-    FloatValue, FunctionSignature, IRBuilder, IntValue, IrError, Linkage, Module, ModuleBrand,
-    PointerValue, Ptr, TypeKindLabel, TypedFunctionValue, Width,
+    FloatValue, IRBuilder, IntValue, IrError, Linkage, Module, ModuleBrand, PointerValue, Ptr,
+    TypeKindLabel, TypedFunctionValue, Width,
 };
 
 /// Closest upstream coverage:
