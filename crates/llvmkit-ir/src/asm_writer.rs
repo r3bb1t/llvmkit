@@ -2,7 +2,7 @@
 //!
 //! Public surface is just the [`Display`](core::fmt::Display) impls on the IR
 //! handles ([`Module`](crate::Module), [`FunctionValue`], [`BasicBlock`],
-//! [`Instruction`], [`Value`]). The slot-tracking and per-construct printers
+//! [`Instruction`](crate::Instruction), [`InstructionView`], [`Value`]). The slot-tracking and per-construct printers
 //! stay `pub(super)` because consumers should reach for `format!("{module}")`
 //! (or [`std::io::Write`] via `write!`) rather than poking at the internals.
 //!

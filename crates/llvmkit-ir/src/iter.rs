@@ -50,6 +50,12 @@ pub struct BlockCursor<
     next_index: usize,
 }
 
+/// Result item yielded by [`BlockCursor::next`].
+pub type BlockCursorStep<'ctx, R, S, B = Brand<'ctx>> = (
+    Instruction<'ctx, state::Attached, B>,
+    BlockCursor<'ctx, R, S, B>,
+);
+
 impl<'ctx, R, B> BlockCursor<'ctx, R, Unsealed, B>
 where
     R: ReturnMarker,
@@ -82,12 +88,7 @@ where
     /// Yield the instruction at the current position, returning `Some`
     /// of it together with a fresh cursor advanced past it. Returns
     /// `None` when the snapshot is exhausted.
-    pub fn next(
-        self,
-    ) -> Option<(
-        Instruction<'ctx, state::Attached, B>,
-        BlockCursor<'ctx, R, S, B>,
-    )> {
+    pub fn next(self) -> Option<BlockCursorStep<'ctx, R, S, B>> {
         let id = *self.snapshot.get(self.next_index)?;
         let module = self.block.module_ref();
         let inst = Instruction::from_parts(id, module);

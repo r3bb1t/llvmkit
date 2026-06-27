@@ -197,7 +197,7 @@ where
     }
 }
 
-impl<'a, 'ctx, R, Seal, B> block_label_sealed::Sealed for &'a BasicBlock<'ctx, R, Seal, B>
+impl<'ctx, R, Seal, B> block_label_sealed::Sealed for &BasicBlock<'ctx, R, Seal, B>
 where
     R: ReturnMarker,
     Seal: BlockSealState,
@@ -205,7 +205,7 @@ where
 {
 }
 
-impl<'a, 'ctx, R, Seal, B> IntoBasicBlockLabel<'ctx, R, B> for &'a BasicBlock<'ctx, R, Seal, B>
+impl<'ctx, R, Seal, B> IntoBasicBlockLabel<'ctx, R, B> for &BasicBlock<'ctx, R, Seal, B>
 where
     R: ReturnMarker,
     Seal: BlockSealState,

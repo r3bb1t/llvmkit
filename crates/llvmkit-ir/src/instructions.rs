@@ -4,8 +4,8 @@
 //! Each handle is a thin view onto an attached instruction in some basic
 //! block. Internally it stores the `(ValueId, ModuleRef, TypeId)` triple ---
 //! the same shape `Value` uses --- so it does not depend on
-//! [`Instruction`]'s `!Copy` lifecycle handle. Copyable handles expose
-//! [`InstructionView`](crate::InstructionView) for read-only rediscovery;
+//! [`Instruction`](crate::Instruction)'s `!Copy` lifecycle handle. Copyable handles expose
+//! [`InstructionView`] for read-only rediscovery;
 //! lifecycle mutation requires a builder-produced instruction or
 //! [`BlockCursor`](crate::iter::BlockCursor).
 

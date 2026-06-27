@@ -66,7 +66,7 @@ where
     }
 }
 
-impl<'a, 'ctx, R, S, B> dominator_block_sealed::Sealed for &'a BasicBlock<'ctx, R, S, B>
+impl<'ctx, R, S, B> dominator_block_sealed::Sealed for &BasicBlock<'ctx, R, S, B>
 where
     R: ReturnMarker,
     S: BlockSealState,
@@ -74,7 +74,7 @@ where
 {
 }
 
-impl<'a, 'ctx, R, S, B> DominatorTreeBlock<'ctx> for &'a BasicBlock<'ctx, R, S, B>
+impl<'ctx, R, S, B> DominatorTreeBlock<'ctx> for &BasicBlock<'ctx, R, S, B>
 where
     R: ReturnMarker,
     S: BlockSealState,
@@ -104,14 +104,14 @@ where
     }
 }
 
-impl<'a, 'ctx, R, B> dominator_block_sealed::Sealed for &'a BasicBlockLabel<'ctx, R, B>
+impl<'ctx, R, B> dominator_block_sealed::Sealed for &BasicBlockLabel<'ctx, R, B>
 where
     R: ReturnMarker,
     B: ModuleBrand + 'ctx,
 {
 }
 
-impl<'a, 'ctx, R, B> DominatorTreeBlock<'ctx> for &'a BasicBlockLabel<'ctx, R, B>
+impl<'ctx, R, B> DominatorTreeBlock<'ctx> for &BasicBlockLabel<'ctx, R, B>
 where
     R: ReturnMarker,
     B: ModuleBrand + 'ctx,
@@ -201,20 +201,20 @@ impl DominatorTree {
         let def_id = def.as_value().id;
         let user_id = user.as_value().id;
 
-        if !self.is_reachable_from_entry(&use_bb) {
+        if !self.is_reachable_from_entry(use_bb) {
             return true;
         }
-        if !self.is_reachable_from_entry(&def_bb) {
+        if !self.is_reachable_from_entry(def_bb) {
             return false;
         }
         if def_id == user_id {
             return false;
         }
         if is_invoke(def) || is_callbr(def) || is_phi(user) {
-            return self.dominates_instruction_block(def, &use_bb);
+            return self.dominates_instruction_block(def, use_bb);
         }
         if def_bb.as_value().id != use_bb.as_value().id {
-            return self.dominates_block(&def_bb, &use_bb);
+            return self.dominates_block(def_bb, use_bb);
         }
         self.instruction_comes_before(def_id, user_id)
     }
@@ -235,7 +235,7 @@ impl DominatorTree {
         if !self.reachable.contains(&use_bb_id) {
             return true;
         }
-        if !self.is_reachable_from_entry(&def_bb) {
+        if !self.is_reachable_from_entry(def_bb) {
             return false;
         }
         if def_bb.as_value().id == use_bb_id {
