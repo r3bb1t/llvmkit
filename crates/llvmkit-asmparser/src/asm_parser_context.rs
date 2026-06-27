@@ -26,9 +26,9 @@
 //!    are distinct Rust types but refer to the same IR object — the parser
 //!    inserts an unsealed block, downstream tooling may hold the sealed
 //!    form.
-//! 2. `Instruction<'ctx>` is intentionally `!Copy` (Doctrine D2); storing it
+//! 2. `Instruction<'ctx, state::Attached, B>` is intentionally `!Copy` (Doctrine D2); storing it
 //!    by value would break the linear lifecycle.
-//! 3. `FunctionValue<'ctx, R>` carries a return marker that the parser
+//! 3. `FunctionValue<'ctx, R, B>` carries a return marker that the parser
 //!    cannot pin statically.
 //!
 //! Each typed accessor lifts to the erased identity through `as_value()`.
@@ -36,10 +36,11 @@
 use std::collections::HashMap;
 
 use llvmkit_ir::{
-    BasicBlock, BlockSealState, Dyn, FunctionValue, Instruction, ReturnMarker, Value,
+    BasicBlock, BlockSealState, Brand, Dyn, FunctionValue, Instruction, ModuleBrand, ReturnMarker,
+    Value, instruction::state,
 };
 
-use crate::file_loc::{FileLoc, FileLocRange};
+use super::file_loc::{FileLoc, FileLocRange};
 
 /// Errors that surface from the location registry. Mirrors the boolean
 /// return of upstream's `add*Location` methods (`true` = inserted, `false`
@@ -55,15 +56,24 @@ pub enum LocationError {
 
 /// Forward / reverse location maps for one IR-handle category, keyed on
 /// the erased [`Value`] identity.
-#[derive(Debug, Default)]
-struct LocMap<'ctx> {
-    forward: HashMap<Value<'ctx>, FileLocRange>,
+#[derive(Debug)]
+struct LocMap<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    forward: HashMap<Value<'ctx, B>, FileLocRange>,
     /// Reverse map kept sorted by `range.start` for binary-search queries.
-    reverse: Vec<(FileLocRange, Value<'ctx>)>,
+    reverse: Vec<(FileLocRange, Value<'ctx, B>)>,
 }
 
-impl<'ctx> LocMap<'ctx> {
-    fn add(&mut self, value: Value<'ctx>, loc: FileLocRange) -> Result<(), LocationError> {
+impl<'ctx, B: ModuleBrand + 'ctx> Default for LocMap<'ctx, B> {
+    fn default() -> Self {
+        Self {
+            forward: HashMap::new(),
+            reverse: Vec::new(),
+        }
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> LocMap<'ctx, B> {
+    fn add(&mut self, value: Value<'ctx, B>, loc: FileLocRange) -> Result<(), LocationError> {
         if self.forward.contains_key(&value) {
             return Err(LocationError::DuplicateHandle);
         }
@@ -76,11 +86,11 @@ impl<'ctx> LocMap<'ctx> {
         Ok(())
     }
 
-    fn location_of(&self, value: Value<'ctx>) -> Option<FileLocRange> {
+    fn location_of(&self, value: Value<'ctx, B>) -> Option<FileLocRange> {
         self.forward.get(&value).copied()
     }
 
-    fn handle_at(&self, loc: FileLoc) -> Option<Value<'ctx>> {
+    fn handle_at(&self, loc: FileLoc) -> Option<Value<'ctx, B>> {
         let pos = self
             .reverse
             .partition_point(|(range, _)| range.start <= loc);
@@ -95,7 +105,7 @@ impl<'ctx> LocMap<'ctx> {
         }
     }
 
-    fn handle_at_range(&self, query: FileLocRange) -> Option<Value<'ctx>> {
+    fn handle_at_range(&self, query: FileLocRange) -> Option<Value<'ctx, B>> {
         let pos = self
             .reverse
             .partition_point(|(range, _)| range.start <= query.start);
@@ -116,14 +126,24 @@ impl<'ctx> LocMap<'ctx> {
 /// Mirrors the three tables of upstream `AsmParserContext` (functions,
 /// blocks, instructions). Lifetime brand `'ctx` ties every entry to a
 /// single [`llvmkit_ir::Module`] (Doctrine D7).
-#[derive(Debug, Default)]
-pub struct AsmParserContext<'ctx> {
-    functions: LocMap<'ctx>,
-    blocks: LocMap<'ctx>,
-    instructions: LocMap<'ctx>,
+#[derive(Debug)]
+pub struct AsmParserContext<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    functions: LocMap<'ctx, B>,
+    blocks: LocMap<'ctx, B>,
+    instructions: LocMap<'ctx, B>,
 }
 
-impl<'ctx> AsmParserContext<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> Default for AsmParserContext<'ctx, B> {
+    fn default() -> Self {
+        Self {
+            functions: LocMap::default(),
+            blocks: LocMap::default(),
+            instructions: LocMap::default(),
+        }
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
     /// Empty registry.
     #[inline]
     pub fn new() -> Self {
@@ -137,7 +157,7 @@ impl<'ctx> AsmParserContext<'ctx> {
     #[inline]
     pub fn function_location<R: ReturnMarker>(
         &self,
-        f: FunctionValue<'ctx, R>,
+        f: FunctionValue<'ctx, R, B>,
     ) -> Option<FileLocRange> {
         self.functions.location_of(f.as_value())
     }
@@ -147,7 +167,7 @@ impl<'ctx> AsmParserContext<'ctx> {
     #[inline]
     pub fn block_location<R: ReturnMarker, S: BlockSealState>(
         &self,
-        b: BasicBlock<'ctx, R, S>,
+        b: BasicBlock<'ctx, R, S, B>,
     ) -> Option<FileLocRange> {
         self.blocks.location_of(b.as_value())
     }
@@ -158,7 +178,10 @@ impl<'ctx> AsmParserContext<'ctx> {
     /// Takes the instruction by reference so the linear-typed handle stays
     /// owned by the caller (Doctrine D2: `Instruction` is `!Copy`).
     #[inline]
-    pub fn instruction_location(&self, i: &Instruction<'ctx>) -> Option<FileLocRange> {
+    pub fn instruction_location(
+        &self,
+        i: &Instruction<'ctx, state::Attached, B>,
+    ) -> Option<FileLocRange> {
         self.instructions.location_of(i.as_value())
     }
 
@@ -167,7 +190,7 @@ impl<'ctx> AsmParserContext<'ctx> {
     /// Function (erased identity) containing `loc`. Mirrors
     /// `getFunctionAtLocation(const FileLoc &)`.
     #[inline]
-    pub fn function_at(&self, loc: FileLoc) -> Option<FunctionValue<'ctx, Dyn>> {
+    pub fn function_at(&self, loc: FileLoc) -> Option<FunctionValue<'ctx, Dyn, B>> {
         self.functions
             .handle_at(loc)
             .and_then(|v| FunctionValue::try_from(v).ok())
@@ -176,7 +199,7 @@ impl<'ctx> AsmParserContext<'ctx> {
     /// Function whose recorded range matches `query`. Mirrors
     /// `getFunctionAtLocation(const FileLocRange &)`.
     #[inline]
-    pub fn function_at_range(&self, query: FileLocRange) -> Option<FunctionValue<'ctx, Dyn>> {
+    pub fn function_at_range(&self, query: FileLocRange) -> Option<FunctionValue<'ctx, Dyn, B>> {
         self.functions
             .handle_at_range(query)
             .and_then(|v| FunctionValue::try_from(v).ok())
@@ -188,7 +211,7 @@ impl<'ctx> AsmParserContext<'ctx> {
     /// the sealed form can pre-erase via `as_value()` and call
     /// [`AsmParserContext::block_location`] for the forward query.
     #[inline]
-    pub fn block_at(&self, loc: FileLoc) -> Option<BasicBlock<'ctx, Dyn, llvmkit_ir::Unsealed>> {
+    pub fn block_at(&self, loc: FileLoc) -> Option<BasicBlock<'ctx, Dyn, llvmkit_ir::Unsealed, B>> {
         self.blocks
             .handle_at(loc)
             .and_then(|v| BasicBlock::try_from(v).ok())
@@ -199,7 +222,7 @@ impl<'ctx> AsmParserContext<'ctx> {
     pub fn block_at_range(
         &self,
         query: FileLocRange,
-    ) -> Option<BasicBlock<'ctx, Dyn, llvmkit_ir::Unsealed>> {
+    ) -> Option<BasicBlock<'ctx, Dyn, llvmkit_ir::Unsealed, B>> {
         self.blocks
             .handle_at_range(query)
             .and_then(|v| BasicBlock::try_from(v).ok())
@@ -208,16 +231,16 @@ impl<'ctx> AsmParserContext<'ctx> {
     /// Instruction (erased identity) containing `loc`. Mirrors
     /// `getInstructionAtLocation(const FileLoc &)`. Returns the erased
     /// [`Value`] so callers can re-narrow via the typed handle they
-    /// already hold; reconstructing a fresh `Instruction<'ctx>` here would
+    /// already hold; reconstructing a fresh `Instruction<'ctx, state::Attached, B>` here would
     /// violate Doctrine D2 (linear-typed mutation handle).
     #[inline]
-    pub fn instruction_at(&self, loc: FileLoc) -> Option<Value<'ctx>> {
+    pub fn instruction_at(&self, loc: FileLoc) -> Option<Value<'ctx, B>> {
         self.instructions.handle_at(loc)
     }
 
     /// Instruction whose recorded range matches `query`.
     #[inline]
-    pub fn instruction_at_range(&self, query: FileLocRange) -> Option<Value<'ctx>> {
+    pub fn instruction_at_range(&self, query: FileLocRange) -> Option<Value<'ctx, B>> {
         self.instructions.handle_at_range(query)
     }
 
@@ -227,7 +250,7 @@ impl<'ctx> AsmParserContext<'ctx> {
     #[inline]
     pub fn add_function_location<R: ReturnMarker>(
         &mut self,
-        f: FunctionValue<'ctx, R>,
+        f: FunctionValue<'ctx, R, B>,
         loc: FileLocRange,
     ) -> Result<(), LocationError> {
         self.functions.add(f.as_value(), loc)
@@ -237,7 +260,7 @@ impl<'ctx> AsmParserContext<'ctx> {
     #[inline]
     pub fn add_block_location<R: ReturnMarker, S: BlockSealState>(
         &mut self,
-        b: BasicBlock<'ctx, R, S>,
+        b: BasicBlock<'ctx, R, S, B>,
         loc: FileLocRange,
     ) -> Result<(), LocationError> {
         self.blocks.add(b.as_value(), loc)
@@ -248,7 +271,7 @@ impl<'ctx> AsmParserContext<'ctx> {
     #[inline]
     pub fn add_instruction_location(
         &mut self,
-        i: &Instruction<'ctx>,
+        i: &Instruction<'ctx, state::Attached, B>,
         loc: FileLocRange,
     ) -> Result<(), LocationError> {
         self.instructions.add(i.as_value(), loc)

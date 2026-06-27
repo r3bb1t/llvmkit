@@ -20,22 +20,38 @@
 //! is exhaustive — `#[non_exhaustive]` only constrains *external*
 //! pattern matching.
 
-use crate::basic_block::BasicBlock;
-use crate::instr_types::{
+use super::asm_writer::{SlotTracker, fmt_instruction};
+use super::basic_block::BasicBlock;
+use super::block_state::Unsealed;
+use super::function::FunctionValue;
+use super::instr_types::{
     BinaryOpData, BranchInstData, BranchKind, CastOpData, CmpInstData, FCmpInstData, PhiData,
     ReturnOpData, UnreachableInstData,
 };
-use crate::marker::{Dyn, ReturnMarker};
-use crate::metadata::{DebugRecord, MetadataAttachmentKind, MetadataAttachmentSet, MetadataId};
-use crate::module::{Brand, Module, ModuleCore, ModuleRef, ModuleView, Unverified};
-use crate::r#type::TypeId;
-use crate::r#use::Use;
-use crate::user::User;
-use crate::value::{
+use super::instructions::{
+    AShrInst, AddInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst, BranchInst,
+    CallBrInst, CallInst, CastInst, CatchPadInst, CatchReturnInst, CatchSwitchInst, CleanupPadInst,
+    CleanupReturnInst, ExtractElementInst, ExtractValueInst, FAddInst, FCmpInst, FDivInst,
+    FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FreezeInst, GepInst, ICmpInst,
+    IndirectBrInst, InsertElementInst, InsertValueInst, InvokeInst, LShrInst, LandingPadInst,
+    LoadInst, MulInst, OrInst, PhiInst, ResumeInst, RetInst, SDivInst, SRemInst, SelectInst,
+    ShlInst, ShuffleVectorInst, StoreInst, SubInst, SwitchInst, UDivInst, URemInst,
+    UnreachableInst, VAArgInst, XorInst,
+};
+use super::int_width::IntDyn;
+use super::marker::{Dyn, ReturnMarker};
+use super::metadata::{DebugRecord, MetadataAttachmentKind, MetadataAttachmentSet, MetadataId};
+use super::module::{Brand, Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified};
+use super::phi_state::Open as PhiOpen;
+use super::term_open_state::Open as TermOpen;
+use super::r#type::TypeId;
+use super::r#use::Use;
+use super::user::User;
+use super::value::{
     HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueId, ValueKindData, ValueUse,
     sealed,
 };
-use crate::{DebugLoc, IrError, IrResult, Type};
+use super::{DebugLoc, IrError, IrResult, Type};
 
 // --------------------------------------------------------------------------
 // Storage payload
@@ -44,15 +60,15 @@ use crate::{DebugLoc, IrError, IrResult, Type};
 /// Lifetime-free payload stored under
 /// [`ValueKindData::Instruction`](crate::value::ValueKindData::Instruction).
 #[derive(Debug)]
-pub(crate) struct InstructionData {
-    pub(crate) parent: core::cell::Cell<ValueId>,
-    pub(crate) kind: InstructionKindData,
-    pub(crate) metadata: core::cell::RefCell<MetadataAttachmentSet>,
-    pub(crate) debug_records: core::cell::RefCell<Vec<DebugRecord>>,
+pub(super) struct InstructionData {
+    pub(super) parent: core::cell::Cell<ValueId>,
+    pub(super) kind: InstructionKindData,
+    pub(super) metadata: core::cell::RefCell<MetadataAttachmentSet>,
+    pub(super) debug_records: core::cell::RefCell<Vec<DebugRecord>>,
 }
 
 impl InstructionData {
-    pub(crate) fn new(parent: ValueId, kind: InstructionKindData) -> Self {
+    pub(super) fn new(parent: ValueId, kind: InstructionKindData) -> Self {
         Self {
             parent: core::cell::Cell::new(parent),
             kind,
@@ -67,7 +83,7 @@ impl InstructionData {
 /// added incrementally; non-terminator and terminator opcodes share
 /// the enum so the storage type stays uniform across kinds.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum InstructionKindData {
+pub(super) enum InstructionKindData {
     Add(BinaryOpData),
     Sub(BinaryOpData),
     Mul(BinaryOpData),
@@ -129,7 +145,7 @@ impl InstructionKindData {
     /// phi incoming pairs are NOT SSA operands at this layer; they
     /// live in the per-variant payload and are surfaced via
     /// per-opcode handles.
-    pub(crate) fn operand_ids(&self) -> Vec<ValueId> {
+    pub(super) fn operand_ids(&self) -> Vec<ValueId> {
         match self {
             Self::Add(b)
             | Self::Sub(b)
@@ -226,7 +242,7 @@ impl InstructionKindData {
             Self::Unreachable(_) => Vec::new(),
         }
     }
-    pub(crate) fn is_terminator(&self) -> bool {
+    pub(super) fn is_terminator(&self) -> bool {
         matches!(
             self,
             Self::Ret(_)
@@ -265,7 +281,7 @@ impl InstructionKindData {
 /// use-after-erase and double-erase are *compile* errors rather than
 /// runtime no-ops.
 pub mod state {
-    pub(crate) mod sealed {
+    pub(super) mod sealed {
         pub trait Sealed {}
     }
     /// Sealed marker trait for instruction lifecycle states.
@@ -306,18 +322,18 @@ pub mod state {
 pub struct Instruction<
     'ctx,
     S: state::InstructionState = state::Attached,
-    B: crate::module::ModuleBrand = crate::module::Brand<'ctx>,
+    B: ModuleBrand = Brand<'ctx>,
 > {
-    pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx, B>,
-    pub(crate) ty: TypeId,
-    pub(crate) _state: core::marker::PhantomData<S>,
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) ty: TypeId,
+    pub(super) _state: core::marker::PhantomData<S>,
 }
 
 // Hand-rolled trait impls so that consumers do not have to spell `S`
 // bounds at every match position, and so that `Instruction` is
 // definitively neither `Clone` nor `Copy`.
-impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand> core::fmt::Debug
+impl<'ctx, S: state::InstructionState, B: ModuleBrand> core::fmt::Debug
     for Instruction<'ctx, S, B>
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -327,19 +343,14 @@ impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand> core::fmt:
             .finish()
     }
 }
-impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand> PartialEq
-    for Instruction<'ctx, S, B>
-{
+impl<'ctx, S: state::InstructionState, B: ModuleBrand> PartialEq for Instruction<'ctx, S, B> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
     }
 }
-impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand> Eq
-    for Instruction<'ctx, S, B>
-{
-}
-impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand> core::hash::Hash
+impl<'ctx, S: state::InstructionState, B: ModuleBrand> Eq for Instruction<'ctx, S, B> {}
+impl<'ctx, S: state::InstructionState, B: ModuleBrand> core::hash::Hash
     for Instruction<'ctx, S, B>
 {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
@@ -349,9 +360,7 @@ impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand> core::hash
     }
 }
 
-impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand + 'ctx>
-    Instruction<'ctx, S, B>
-{
+impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, S, B> {
     /// Widen to the erased [`Value`] handle. Read-only access; safe in
     /// either lifecycle state.
     #[inline]
@@ -427,136 +436,136 @@ impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand + 'ctx>
     /// Read-only opcode discriminator for non-terminator opcodes.
     /// Returns `None` if the instruction is a terminator (use
     /// [`Self::terminator_kind`] for those).
-    pub fn kind(&self) -> Option<InstructionKind<'ctx>> {
-        let module = self.module.module();
+    pub fn kind(&self) -> Option<InstructionKind<'ctx, B>> {
+        let module = self.module;
         let id = self.id;
         let ty = self.ty;
         match &self.data().kind {
-            InstructionKindData::Add(_) => Some(InstructionKind::Add(
-                crate::instructions::AddInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::Sub(_) => Some(InstructionKind::Sub(
-                crate::instructions::SubInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::Mul(_) => Some(InstructionKind::Mul(
-                crate::instructions::MulInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::UDiv(_) => Some(InstructionKind::UDiv(
-                crate::instructions::UDivInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::SDiv(_) => Some(InstructionKind::SDiv(
-                crate::instructions::SDivInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::URem(_) => Some(InstructionKind::URem(
-                crate::instructions::URemInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::SRem(_) => Some(InstructionKind::SRem(
-                crate::instructions::SRemInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::Shl(_) => Some(InstructionKind::Shl(
-                crate::instructions::ShlInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::LShr(_) => Some(InstructionKind::LShr(
-                crate::instructions::LShrInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::AShr(_) => Some(InstructionKind::AShr(
-                crate::instructions::AShrInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::And(_) => Some(InstructionKind::And(
-                crate::instructions::AndInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::Or(_) => Some(InstructionKind::Or(
-                crate::instructions::OrInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::Xor(_) => Some(InstructionKind::Xor(
-                crate::instructions::XorInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::FAdd(_) => Some(InstructionKind::FAdd(
-                crate::instructions::FAddInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::FSub(_) => Some(InstructionKind::FSub(
-                crate::instructions::FSubInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::FMul(_) => Some(InstructionKind::FMul(
-                crate::instructions::FMulInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::FDiv(_) => Some(InstructionKind::FDiv(
-                crate::instructions::FDivInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::FRem(_) => Some(InstructionKind::FRem(
-                crate::instructions::FRemInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::FCmp(_) => Some(InstructionKind::FCmp(
-                crate::instructions::FCmpInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::Alloca(_) => Some(InstructionKind::Alloca(
-                crate::instructions::AllocaInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::Load(_) => Some(InstructionKind::Load(
-                crate::instructions::LoadInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::Call(_) => Some(InstructionKind::Call(
-                crate::instructions::CallInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::Select(_) => Some(InstructionKind::Select(
-                crate::instructions::SelectInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::Store(_) => Some(InstructionKind::Store(
-                crate::instructions::StoreInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::Gep(_) => Some(InstructionKind::Gep(
-                crate::instructions::GepInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::Cast(_) => Some(InstructionKind::Cast(
-                crate::instructions::CastInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::ICmp(_) => Some(InstructionKind::ICmp(
-                crate::instructions::ICmpInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::Phi(_) => Some(InstructionKind::Phi(
-                crate::instructions::PhiInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::FNeg(_) => Some(InstructionKind::FNeg(
-                crate::instructions::FNegInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::Freeze(_) => Some(InstructionKind::Freeze(
-                crate::instructions::FreezeInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::VAArg(_) => Some(InstructionKind::VAArg(
-                crate::instructions::VAArgInst::from_raw(id, module, ty),
-            )),
+            InstructionKindData::Add(_) => {
+                Some(InstructionKind::Add(AddInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::Sub(_) => {
+                Some(InstructionKind::Sub(SubInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::Mul(_) => {
+                Some(InstructionKind::Mul(MulInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::UDiv(_) => {
+                Some(InstructionKind::UDiv(UDivInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::SDiv(_) => {
+                Some(InstructionKind::SDiv(SDivInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::URem(_) => {
+                Some(InstructionKind::URem(URemInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::SRem(_) => {
+                Some(InstructionKind::SRem(SRemInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::Shl(_) => {
+                Some(InstructionKind::Shl(ShlInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::LShr(_) => {
+                Some(InstructionKind::LShr(LShrInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::AShr(_) => {
+                Some(InstructionKind::AShr(AShrInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::And(_) => {
+                Some(InstructionKind::And(AndInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::Or(_) => {
+                Some(InstructionKind::Or(OrInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::Xor(_) => {
+                Some(InstructionKind::Xor(XorInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::FAdd(_) => {
+                Some(InstructionKind::FAdd(FAddInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::FSub(_) => {
+                Some(InstructionKind::FSub(FSubInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::FMul(_) => {
+                Some(InstructionKind::FMul(FMulInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::FDiv(_) => {
+                Some(InstructionKind::FDiv(FDivInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::FRem(_) => {
+                Some(InstructionKind::FRem(FRemInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::FCmp(_) => {
+                Some(InstructionKind::FCmp(FCmpInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::Alloca(_) => Some(InstructionKind::Alloca(AllocaInst::from_raw(
+                id, module, ty,
+            ))),
+            InstructionKindData::Load(_) => {
+                Some(InstructionKind::Load(LoadInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::Call(_) => {
+                Some(InstructionKind::Call(CallInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::Select(_) => Some(InstructionKind::Select(SelectInst::from_raw(
+                id, module, ty,
+            ))),
+            InstructionKindData::Store(_) => {
+                Some(InstructionKind::Store(StoreInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::Gep(_) => {
+                Some(InstructionKind::Gep(GepInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::Cast(_) => {
+                Some(InstructionKind::Cast(CastInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::ICmp(_) => {
+                Some(InstructionKind::ICmp(ICmpInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::Phi(_) => {
+                Some(InstructionKind::Phi(PhiInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::FNeg(_) => {
+                Some(InstructionKind::FNeg(FNegInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::Freeze(_) => Some(InstructionKind::Freeze(FreezeInst::from_raw(
+                id, module, ty,
+            ))),
+            InstructionKindData::VAArg(_) => {
+                Some(InstructionKind::VAArg(VAArgInst::from_raw(id, module, ty)))
+            }
             InstructionKindData::ExtractValue(_) => Some(InstructionKind::ExtractValue(
-                crate::instructions::ExtractValueInst::from_raw(id, module, ty),
+                ExtractValueInst::from_raw(id, module, ty),
             )),
             InstructionKindData::InsertValue(_) => Some(InstructionKind::InsertValue(
-                crate::instructions::InsertValueInst::from_raw(id, module, ty),
+                InsertValueInst::from_raw(id, module, ty),
             )),
             InstructionKindData::ExtractElement(_) => Some(InstructionKind::ExtractElement(
-                crate::instructions::ExtractElementInst::from_raw(id, module, ty),
+                ExtractElementInst::from_raw(id, module, ty),
             )),
             InstructionKindData::InsertElement(_) => Some(InstructionKind::InsertElement(
-                crate::instructions::InsertElementInst::from_raw(id, module, ty),
+                InsertElementInst::from_raw(id, module, ty),
             )),
             InstructionKindData::ShuffleVector(_) => Some(InstructionKind::ShuffleVector(
-                crate::instructions::ShuffleVectorInst::from_raw(id, module, ty),
+                ShuffleVectorInst::from_raw(id, module, ty),
             )),
-            InstructionKindData::Fence(_) => Some(InstructionKind::Fence(
-                crate::instructions::FenceInst::from_raw(id, module, ty),
-            )),
+            InstructionKindData::Fence(_) => {
+                Some(InstructionKind::Fence(FenceInst::from_raw(id, module, ty)))
+            }
             InstructionKindData::AtomicCmpXchg(_) => Some(InstructionKind::AtomicCmpXchg(
-                crate::instructions::AtomicCmpXchgInst::from_raw(id, module, ty),
+                AtomicCmpXchgInst::from_raw(id, module, ty),
             )),
             InstructionKindData::AtomicRMW(_) => Some(InstructionKind::AtomicRMW(
-                crate::instructions::AtomicRMWInst::from_raw(id, module, ty),
+                AtomicRMWInst::from_raw(id, module, ty),
             )),
             InstructionKindData::LandingPad(_) => Some(InstructionKind::LandingPad(
-                crate::instructions::LandingPadInst::from_raw(id, module, ty),
+                LandingPadInst::from_raw(id, module, ty),
             )),
             InstructionKindData::CleanupPad(_) => Some(InstructionKind::CleanupPad(
-                crate::instructions::CleanupPadInst::from_raw(id, module, ty),
+                CleanupPadInst::from_raw(id, module, ty),
             )),
             InstructionKindData::CatchPad(_) => Some(InstructionKind::CatchPad(
-                crate::instructions::CatchPadInst::from_raw(id, module, ty),
+                CatchPadInst::from_raw(id, module, ty),
             )),
             InstructionKindData::Ret(_)
             | InstructionKindData::Br(_)
@@ -573,43 +582,43 @@ impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand + 'ctx>
     }
 
     /// Read-only opcode discriminator for terminators.
-    pub fn terminator_kind(&self) -> Option<TerminatorKind<'ctx>> {
-        let module = self.module.module();
+    pub fn terminator_kind(&self) -> Option<TerminatorKind<'ctx, B>> {
+        let module = self.module;
         let id = self.id;
         let ty = self.ty;
         match &self.data().kind {
-            InstructionKindData::Ret(_) => Some(TerminatorKind::Ret(
-                crate::instructions::RetInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::Br(_) => Some(TerminatorKind::Br(
-                crate::instructions::BranchInst::from_raw(id, module, ty),
-            )),
+            InstructionKindData::Ret(_) => {
+                Some(TerminatorKind::Ret(RetInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::Br(_) => {
+                Some(TerminatorKind::Br(BranchInst::from_raw(id, module, ty)))
+            }
             InstructionKindData::Unreachable(_) => Some(TerminatorKind::Unreachable(
-                crate::instructions::UnreachableInst::from_raw(id, module, ty),
+                UnreachableInst::from_raw(id, module, ty),
             )),
-            InstructionKindData::Switch(_) => Some(TerminatorKind::Switch(
-                crate::instructions::SwitchInst::from_raw(id, module, ty),
-            )),
+            InstructionKindData::Switch(_) => {
+                Some(TerminatorKind::Switch(SwitchInst::from_raw(id, module, ty)))
+            }
             InstructionKindData::IndirectBr(_) => Some(TerminatorKind::IndirectBr(
-                crate::instructions::IndirectBrInst::from_raw(id, module, ty),
+                IndirectBrInst::from_raw(id, module, ty),
             )),
-            InstructionKindData::Invoke(_) => Some(TerminatorKind::Invoke(
-                crate::instructions::InvokeInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::CallBr(_) => Some(TerminatorKind::CallBr(
-                crate::instructions::CallBrInst::from_raw(id, module, ty),
-            )),
-            InstructionKindData::Resume(_) => Some(TerminatorKind::Resume(
-                crate::instructions::ResumeInst::from_raw(id, module, ty),
-            )),
+            InstructionKindData::Invoke(_) => {
+                Some(TerminatorKind::Invoke(InvokeInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::CallBr(_) => {
+                Some(TerminatorKind::CallBr(CallBrInst::from_raw(id, module, ty)))
+            }
+            InstructionKindData::Resume(_) => {
+                Some(TerminatorKind::Resume(ResumeInst::from_raw(id, module, ty)))
+            }
             InstructionKindData::CatchReturn(_) => Some(TerminatorKind::CatchReturn(
-                crate::instructions::CatchReturnInst::from_raw(id, module, ty),
+                CatchReturnInst::from_raw(id, module, ty),
             )),
             InstructionKindData::CleanupReturn(_) => Some(TerminatorKind::CleanupReturn(
-                crate::instructions::CleanupReturnInst::from_raw(id, module, ty),
+                CleanupReturnInst::from_raw(id, module, ty),
             )),
             InstructionKindData::CatchSwitch(_) => Some(TerminatorKind::CatchSwitch(
-                crate::instructions::CatchSwitchInst::from_raw(id, module, ty),
+                CatchSwitchInst::from_raw(id, module, ty),
             )),
             _ => None,
         }
@@ -623,17 +632,17 @@ impl<'ctx, S: state::InstructionState, B: crate::module::ModuleBrand + 'ctx>
 
     /// Operand value-ids in declaration order. Crate-internal helper
     /// used by the use-list machinery.
-    pub(crate) fn operand_ids(&self) -> Vec<ValueId> {
+    pub(super) fn operand_ids(&self) -> Vec<ValueId> {
         self.data().kind.operand_ids()
     }
 }
 
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// Construct an attached handle from raw parts. Crate-internal:
     /// only the IR builder hands these out, and only after the value-id
     /// has been pushed onto the parent block's instruction list.
     #[inline]
-    pub(crate) fn from_parts<M>(id: ValueId, module: M) -> Self
+    pub(super) fn from_parts<M>(id: ValueId, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -648,11 +657,10 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attach
     }
 
     /// Containing basic block, in its runtime-checked form.
-    pub fn parent(&self) -> BasicBlock<'ctx, Dyn> {
+    pub fn parent(&self) -> BasicBlock<'ctx, Dyn, Unsealed, B> {
         let parent = self.data().parent.get();
-        let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        crate::basic_block::BasicBlock::from_parts(parent, module, label_ty)
+        let label_ty = self.module.module().label_type().as_type().id();
+        BasicBlock::from_parts(parent, self.module, label_ty)
     }
 
     // ---- Mutation API (Phase G / T1) ----
@@ -673,13 +681,7 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attach
         module_token: &Module<'ctx, B, Unverified>,
         replacement: V,
     ) -> IrResult<()> {
-        if module_token.id() != self.module.id() {
-            return Err(IrError::ForeignValue);
-        }
         let new_value = replacement.as_value();
-        if new_value.module().id() != self.module.id() {
-            return Err(IrError::ForeignValue);
-        }
         if new_value.id == self.id {
             // `self.replaceAllUsesWith(self)` is a no-op upstream; mirror.
             return Ok(());
@@ -740,15 +742,12 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attach
     ///
     /// Consumes `self`: use-after-erase is a *compile* error.
     pub fn erase_from_parent(self, module_token: &Module<'ctx, B, Unverified>) {
-        if module_token.id() != self.module.id() {
-            return;
-        }
         let self_id = self.id;
         let module = module_token.core_ref();
         remove_local_name_from_parent(self.as_value());
         deregister_operand_uses(self_id, &self.data().kind, module);
         let parent_block_id = self.data().parent.get();
-        let bb = crate::basic_block::BasicBlock::<crate::marker::Dyn>::from_parts(
+        let bb = BasicBlock::<Dyn>::from_parts(
             parent_block_id,
             module,
             module.label_type().as_type().id(),
@@ -765,19 +764,11 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attach
         self,
         module_token: &Module<'ctx, B, Unverified>,
     ) -> Instruction<'ctx, state::Detached, B> {
-        if module_token.id() != self.module.id() {
-            return Instruction {
-                id: self.id,
-                module: self.module,
-                ty: self.ty,
-                _state: core::marker::PhantomData,
-            };
-        }
         let module = module_token.core_ref();
         let self_id = self.id;
         remove_local_name_from_parent(self.as_value());
         let parent_block_id = self.data().parent.get();
-        let bb = crate::basic_block::BasicBlock::<crate::marker::Dyn>::from_parts(
+        let bb = BasicBlock::<Dyn>::from_parts(
             parent_block_id,
             module,
             module.label_type().as_type().id(),
@@ -801,9 +792,6 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attach
         module_token: &Module<'ctx, B, Unverified>,
         other: &Instruction<'ctx, state::Attached, B>,
     ) -> IrResult<()> {
-        if module_token.id() != self.module.id() || self.module.id() != other.module.id() {
-            return Err(IrError::ForeignValue);
-        }
         let module = module_token.core_ref();
         let self_id = self.id;
         let other_id = other.id;
@@ -814,19 +802,13 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attach
         }
         // Remove from current parent.
         let cur_parent = self.data().parent.get();
-        let cur_bb = crate::basic_block::BasicBlock::<crate::marker::Dyn>::from_parts(
-            cur_parent,
-            module,
-            module.label_type().as_type().id(),
-        );
+        let cur_bb =
+            BasicBlock::<Dyn>::from_parts(cur_parent, module, module.label_type().as_type().id());
         cur_bb.remove_instruction(self_id);
         // Insert before other in other's parent.
         let new_parent = other.data().parent.get();
-        let new_bb = crate::basic_block::BasicBlock::<crate::marker::Dyn>::from_parts(
-            new_parent,
-            module,
-            module.label_type().as_type().id(),
-        );
+        let new_bb =
+            BasicBlock::<Dyn>::from_parts(new_parent, module, module.label_type().as_type().id());
         new_bb.insert_instruction_before(self_id, other_id)?;
         update_instruction_parent(module, self_id, new_parent);
         if old_parent_fn != new_parent_fn
@@ -844,9 +826,6 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attach
         module_token: &Module<'ctx, B, Unverified>,
         other: &Instruction<'ctx, state::Attached, B>,
     ) -> IrResult<()> {
-        if module_token.id() != self.module.id() || self.module.id() != other.module.id() {
-            return Err(IrError::ForeignValue);
-        }
         let module = module_token.core_ref();
         let self_id = self.id;
         let other_id = other.id;
@@ -856,18 +835,12 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attach
             remove_local_name_from_parent(self.as_value());
         }
         let cur_parent = self.data().parent.get();
-        let cur_bb = crate::basic_block::BasicBlock::<crate::marker::Dyn>::from_parts(
-            cur_parent,
-            module,
-            module.label_type().as_type().id(),
-        );
+        let cur_bb =
+            BasicBlock::<Dyn>::from_parts(cur_parent, module, module.label_type().as_type().id());
         cur_bb.remove_instruction(self_id);
         let new_parent = other.data().parent.get();
-        let new_bb = crate::basic_block::BasicBlock::<crate::marker::Dyn>::from_parts(
-            new_parent,
-            module,
-            module.label_type().as_type().id(),
-        );
+        let new_bb =
+            BasicBlock::<Dyn>::from_parts(new_parent, module, module.label_type().as_type().id());
         new_bb.insert_instruction_after(self_id, other_id)?;
         update_instruction_parent(module, self_id, new_parent);
         if old_parent_fn != new_parent_fn
@@ -879,7 +852,7 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Attach
     }
 }
 
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// Insert this detached instruction immediately before `other` in
     /// `other`'s parent block. Mirrors `Instruction::insertBefore` in
     /// `lib/IR/Instruction.cpp`.
@@ -888,17 +861,11 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Detach
         module_token: &Module<'ctx, B, Unverified>,
         other: &Instruction<'ctx, state::Attached, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
-        if module_token.id() != self.module.id() || self.module.id() != other.module.id() {
-            return Err(IrError::ForeignValue);
-        }
         let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
         let parent_fn_id = other.as_value().local_parent_function_id();
-        let bb = crate::basic_block::BasicBlock::<crate::marker::Dyn>::from_parts(
-            parent_id,
-            module,
-            module.label_type().as_type().id(),
-        );
+        let bb =
+            BasicBlock::<Dyn>::from_parts(parent_id, module, module.label_type().as_type().id());
         bb.insert_instruction_before(self.id, other.id)?;
         update_instruction_parent(module, self.id, parent_id);
         if let Some(parent_fn_id) = parent_fn_id {
@@ -914,17 +881,11 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Detach
         module_token: &Module<'ctx, B, Unverified>,
         other: &Instruction<'ctx, state::Attached, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
-        if module_token.id() != self.module.id() || self.module.id() != other.module.id() {
-            return Err(IrError::ForeignValue);
-        }
         let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
         let parent_fn_id = other.as_value().local_parent_function_id();
-        let bb = crate::basic_block::BasicBlock::<crate::marker::Dyn>::from_parts(
-            parent_id,
-            module,
-            module.label_type().as_type().id(),
-        );
+        let bb =
+            BasicBlock::<Dyn>::from_parts(parent_id, module, module.label_type().as_type().id());
         bb.insert_instruction_after(self.id, other.id)?;
         update_instruction_parent(module, self.id, parent_id);
         if let Some(parent_fn_id) = parent_fn_id {
@@ -938,13 +899,8 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Detach
     pub fn append_to<R: ReturnMarker>(
         self,
         module_token: &Module<'ctx, B, Unverified>,
-        block: &crate::basic_block::BasicBlock<'ctx, R>,
+        block: &BasicBlock<'ctx, R, Unsealed, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
-        if module_token.id() != self.module.id()
-            || self.module.id() != block.as_value().module().id()
-        {
-            return Err(IrError::ForeignValue);
-        }
         let module = module_token.core_ref();
         let parent_id = block.as_value().id;
         let parent_fn_id = block.as_value().local_parent_function_id();
@@ -975,8 +931,8 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Instruction<'ctx, state::Detach
 /// For each operand `Cell<ValueId>` in `kind` whose current value is
 /// `from`, replace it with `to`. The match arms are exhaustive so
 /// future opcodes will fail to compile until they are added here.
-pub(crate) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueId, to: ValueId) {
-    use crate::instr_types::BranchKind;
+pub(super) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueId, to: ValueId) {
+    use super::instr_types::BranchKind;
     let swap = |c: &core::cell::Cell<ValueId>| {
         if c.get() == from {
             c.set(to);
@@ -1201,7 +1157,7 @@ fn deregister_debug_record_uses(inst_id: ValueId, module: &ModuleCore) {
     }
 }
 
-pub(crate) fn rewrite_debug_record_value(
+pub(super) fn rewrite_debug_record_value(
     module: &ModuleCore,
     inst_id: ValueId,
     record_index: usize,
@@ -1217,29 +1173,18 @@ pub(crate) fn rewrite_debug_record_value(
     }
 }
 
-fn remove_local_name_from_parent<'ctx, B: crate::module::ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) {
+fn remove_local_name_from_parent<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) {
     if let Some(parent_fn_id) = value.local_parent_function_id() {
-        let parent_fn = crate::function::FunctionValue::<Dyn, B>::from_parts_unchecked(
-            parent_fn_id,
-            value.module,
-        );
+        let parent_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(parent_fn_id, value.module);
         parent_fn.remove_local_value_name(value.id);
     }
 }
 
-fn reinsert_local_name<'ctx, B: crate::module::ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-    parent_fn_id: ValueId,
-) {
+fn reinsert_local_name<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>, parent_fn_id: ValueId) {
     let current_name = value.name();
     if let Some(name) = current_name.as_deref() {
         value.set_name_internal(None);
-        let parent_fn = crate::function::FunctionValue::<Dyn, B>::from_parts_unchecked(
-            parent_fn_id,
-            value.module,
-        );
+        let parent_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(parent_fn_id, value.module);
         parent_fn.set_local_value_name(value.id, Some(name));
     }
 }
@@ -1254,74 +1199,76 @@ fn update_instruction_parent(module: &ModuleCore, inst_id: ValueId, new_parent: 
     }
 }
 
-impl<'ctx, S: state::InstructionState> sealed::Sealed for Instruction<'ctx, S> {}
+impl<'ctx, S: state::InstructionState, B: ModuleBrand> sealed::Sealed for Instruction<'ctx, S, B> {}
 // `IsValue` requires `Copy` (every other implementer is a thin Copy
 // handle). `Instruction<state::Attached>` is intentionally `!Copy`
 // (Doctrine D2: linear-typed handle for irreversible operations like
 // `erase_from_parent`). Use [`Instruction::as_value`] (inherent,
 // `&self`) when an erased view is needed.
-impl<'ctx> Typed<'ctx> for Instruction<'ctx, state::Attached> {
+impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for Instruction<'ctx, state::Attached, B> {
     #[inline]
-    fn ty(self) -> Type<'ctx> {
+    fn ty(self) -> Type<'ctx, B> {
         Instruction::ty(&self)
     }
 }
-impl<'ctx> HasName<'ctx> for Instruction<'ctx, state::Attached> {
+impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Instruction<'ctx, state::Attached, B> {
     #[inline]
     fn name(self) -> Option<String> {
         Instruction::name(&self)
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         Instruction::set_name(&self, module_token, name);
     }
     #[inline]
-    fn clear_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>) {
+    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
         Instruction::clear_name(&self, module_token);
     }
 }
-impl HasDebugLoc for Instruction<'_, state::Attached> {
+impl<B: ModuleBrand> HasDebugLoc for Instruction<'_, state::Attached, B> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
         self.as_value().debug_loc()
     }
 }
 
-impl<'ctx> User<'ctx> for Instruction<'ctx, state::Attached> {
+impl<'ctx, B: ModuleBrand + 'ctx> User<'ctx, B> for Instruction<'ctx, state::Attached, B> {
     fn operand_count(self) -> u32 {
         let count = Instruction::operand_ids(&self).len();
         u32::try_from(count)
             .unwrap_or_else(|_| unreachable!("instruction has more than u32::MAX operands"))
     }
 
-    fn operand(self, index: u32) -> Option<Value<'ctx>> {
+    fn operand(self, index: u32) -> Option<Value<'ctx, B>> {
         let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
         let id = *Instruction::operand_ids(&self).get(slot)?;
         let module = self.module.module();
         let data = module.context().value_data(id);
-        Some(Value::from_parts(id, module, data.ty))
+        Some(Value::from_parts(id, self.module, data.ty))
     }
 
-    fn operand_use(self, index: u32) -> Option<Use<'ctx>> {
+    fn operand_use(self, index: u32) -> Option<Use<'ctx, B>> {
         let user = Instruction::as_value(&self);
         let v = self.operand(index)?;
         Some(Use::new(user, v, index))
     }
 }
 
-impl<'ctx> From<Instruction<'ctx, state::Attached>> for Value<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> From<Instruction<'ctx, state::Attached, B>> for Value<'ctx, B> {
     #[inline]
-    fn from(i: Instruction<'ctx, state::Attached>) -> Self {
+    fn from(i: Instruction<'ctx, state::Attached, B>) -> Self {
         Instruction::as_value(&i)
     }
 }
 
-impl<'ctx> TryFrom<Value<'ctx>> for Instruction<'ctx, state::Attached> {
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>>
+    for Instruction<'ctx, state::Attached, B>
+{
     type Error = IrError;
-    fn try_from(v: Value<'ctx>) -> IrResult<Self> {
+    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
         match v.data().kind {
             ValueKindData::Instruction(_) => Ok(Self {
                 id: v.id,
@@ -1345,71 +1292,71 @@ impl<'ctx> TryFrom<Value<'ctx>> for Instruction<'ctx, state::Attached> {
 /// are added incrementally per the foundation plan.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
-pub enum InstructionKind<'ctx> {
-    Add(crate::instructions::AddInst<'ctx>),
-    Sub(crate::instructions::SubInst<'ctx>),
-    Mul(crate::instructions::MulInst<'ctx>),
-    UDiv(crate::instructions::UDivInst<'ctx>),
-    SDiv(crate::instructions::SDivInst<'ctx>),
-    URem(crate::instructions::URemInst<'ctx>),
-    SRem(crate::instructions::SRemInst<'ctx>),
-    Shl(crate::instructions::ShlInst<'ctx>),
-    LShr(crate::instructions::LShrInst<'ctx>),
-    AShr(crate::instructions::AShrInst<'ctx>),
-    And(crate::instructions::AndInst<'ctx>),
-    Or(crate::instructions::OrInst<'ctx>),
-    Xor(crate::instructions::XorInst<'ctx>),
-    FAdd(crate::instructions::FAddInst<'ctx>),
-    FSub(crate::instructions::FSubInst<'ctx>),
-    FMul(crate::instructions::FMulInst<'ctx>),
-    FDiv(crate::instructions::FDivInst<'ctx>),
-    FRem(crate::instructions::FRemInst<'ctx>),
-    FCmp(crate::instructions::FCmpInst<'ctx>),
-    Alloca(crate::instructions::AllocaInst<'ctx>),
-    Load(crate::instructions::LoadInst<'ctx>),
-    Store(crate::instructions::StoreInst<'ctx>),
-    Gep(crate::instructions::GepInst<'ctx>),
-    Call(crate::instructions::CallInst<'ctx>),
-    Select(crate::instructions::SelectInst<'ctx>),
-    Cast(crate::instructions::CastInst<'ctx>),
-    ICmp(crate::instructions::ICmpInst<'ctx>),
-    FNeg(crate::instructions::FNegInst<'ctx>),
-    Freeze(crate::instructions::FreezeInst<'ctx>),
-    VAArg(crate::instructions::VAArgInst<'ctx>),
-    ExtractValue(crate::instructions::ExtractValueInst<'ctx>),
-    InsertValue(crate::instructions::InsertValueInst<'ctx>),
-    ExtractElement(crate::instructions::ExtractElementInst<'ctx>),
-    InsertElement(crate::instructions::InsertElementInst<'ctx>),
-    ShuffleVector(crate::instructions::ShuffleVectorInst<'ctx>),
-    Fence(crate::instructions::FenceInst<'ctx>),
-    AtomicCmpXchg(crate::instructions::AtomicCmpXchgInst<'ctx>),
-    LandingPad(crate::instructions::LandingPadInst<'ctx, crate::term_open_state::Open>),
-    CleanupPad(crate::instructions::CleanupPadInst<'ctx>),
-    CatchPad(crate::instructions::CatchPadInst<'ctx>),
-    AtomicRMW(crate::instructions::AtomicRMWInst<'ctx>),
-    Phi(crate::instructions::PhiInst<'ctx, crate::int_width::IntDyn>),
+pub enum InstructionKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    Add(AddInst<'ctx, B>),
+    Sub(SubInst<'ctx, B>),
+    Mul(MulInst<'ctx, B>),
+    UDiv(UDivInst<'ctx, B>),
+    SDiv(SDivInst<'ctx, B>),
+    URem(URemInst<'ctx, B>),
+    SRem(SRemInst<'ctx, B>),
+    Shl(ShlInst<'ctx, B>),
+    LShr(LShrInst<'ctx, B>),
+    AShr(AShrInst<'ctx, B>),
+    And(AndInst<'ctx, B>),
+    Or(OrInst<'ctx, B>),
+    Xor(XorInst<'ctx, B>),
+    FAdd(FAddInst<'ctx, B>),
+    FSub(FSubInst<'ctx, B>),
+    FMul(FMulInst<'ctx, B>),
+    FDiv(FDivInst<'ctx, B>),
+    FRem(FRemInst<'ctx, B>),
+    FCmp(FCmpInst<'ctx, B>),
+    Alloca(AllocaInst<'ctx, B>),
+    Load(LoadInst<'ctx, B>),
+    Store(StoreInst<'ctx, B>),
+    Gep(GepInst<'ctx, B>),
+    Call(CallInst<'ctx, Dyn, B>),
+    Select(SelectInst<'ctx, B>),
+    Cast(CastInst<'ctx, B>),
+    ICmp(ICmpInst<'ctx, B>),
+    FNeg(FNegInst<'ctx, B>),
+    Freeze(FreezeInst<'ctx, B>),
+    VAArg(VAArgInst<'ctx, B>),
+    ExtractValue(ExtractValueInst<'ctx, B>),
+    InsertValue(InsertValueInst<'ctx, B>),
+    ExtractElement(ExtractElementInst<'ctx, B>),
+    InsertElement(InsertElementInst<'ctx, B>),
+    ShuffleVector(ShuffleVectorInst<'ctx, B>),
+    Fence(FenceInst<'ctx, B>),
+    AtomicCmpXchg(AtomicCmpXchgInst<'ctx, B>),
+    LandingPad(LandingPadInst<'ctx, TermOpen, B>),
+    CleanupPad(CleanupPadInst<'ctx, B>),
+    CatchPad(CatchPadInst<'ctx, B>),
+    AtomicRMW(AtomicRMWInst<'ctx, B>),
+    Phi(PhiInst<'ctx, IntDyn, PhiOpen, B>),
 }
 
 /// Read-only opcode discriminator for terminators.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
-pub enum TerminatorKind<'ctx> {
-    Ret(crate::instructions::RetInst<'ctx>),
-    Br(crate::instructions::BranchInst<'ctx>),
-    Switch(crate::instructions::SwitchInst<'ctx, crate::term_open_state::Open>),
-    IndirectBr(crate::instructions::IndirectBrInst<'ctx, crate::term_open_state::Open>),
-    Invoke(crate::instructions::InvokeInst<'ctx>),
-    Resume(crate::instructions::ResumeInst<'ctx>),
-    CatchReturn(crate::instructions::CatchReturnInst<'ctx>),
-    CleanupReturn(crate::instructions::CleanupReturnInst<'ctx>),
-    CatchSwitch(crate::instructions::CatchSwitchInst<'ctx, crate::term_open_state::Open>),
-    CallBr(crate::instructions::CallBrInst<'ctx>),
-    Unreachable(crate::instructions::UnreachableInst<'ctx>),
+pub enum TerminatorKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    Ret(RetInst<'ctx, B>),
+    Br(BranchInst<'ctx, B>),
+    Switch(SwitchInst<'ctx, TermOpen, B>),
+    IndirectBr(IndirectBrInst<'ctx, TermOpen, B>),
+    Invoke(InvokeInst<'ctx, Dyn, B>),
+    Resume(ResumeInst<'ctx, B>),
+    CatchReturn(CatchReturnInst<'ctx, B>),
+    CleanupReturn(CleanupReturnInst<'ctx, B>),
+    CatchSwitch(CatchSwitchInst<'ctx, TermOpen, B>),
+    CallBr(CallBrInst<'ctx, B>),
+    Unreachable(UnreachableInst<'ctx, B>),
 }
 
 /// Crate-internal helper: create a `ValueData` for an instruction with
 /// the given parent block and kind payload.
-pub(crate) fn build_instruction_value(
+pub(super) fn build_instruction_value(
     ty: TypeId,
     parent_bb: ValueId,
     kind: InstructionKindData,
@@ -1425,28 +1372,27 @@ pub(crate) fn build_instruction_value(
     }
 }
 
-impl<'ctx, S: state::InstructionState> core::fmt::Display for Instruction<'ctx, S> {
+impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> core::fmt::Display
+    for Instruction<'ctx, S, B>
+{
     /// Print a single instruction line. Mirrors LLVM's `Value::print`
     /// for instruction-category values.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let module = self.module.module();
         let parent_id = self.data().parent.get();
         let label_ty = module.label_type().as_type().id();
-        let parent = crate::basic_block::BasicBlock::<'ctx, crate::marker::Dyn>::from_parts(
-            parent_id, module, label_ty,
-        );
+        let parent =
+            BasicBlock::<'ctx, Dyn, Unsealed, B>::from_parts(parent_id, self.module, label_ty);
         let slots = match parent.parent_id() {
             Some(parent_fn_id) => {
                 let parent_fn =
-                    crate::function::FunctionValue::<'_, crate::marker::Dyn>::from_parts_unchecked(
-                        parent_fn_id,
-                        module,
-                    );
-                crate::asm_writer::SlotTracker::for_function(parent_fn)
+                    FunctionValue::<'_, Dyn, B>::from_parts_unchecked(parent_fn_id, self.module);
+                SlotTracker::for_function(parent_fn)
             }
-            None => crate::asm_writer::SlotTracker::empty(),
+            None => SlotTracker::empty(),
         };
-        let attached_view = Instruction::<'ctx, state::Attached>::from_parts(self.id, module);
-        crate::asm_writer::fmt_instruction(f, &attached_view, &slots)
+        let attached_view =
+            Instruction::<'ctx, state::Attached, B>::from_parts(self.id, self.module);
+        fmt_instruction(f, &attached_view, &slots)
     }
 }

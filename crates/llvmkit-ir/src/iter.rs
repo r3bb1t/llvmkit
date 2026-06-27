@@ -18,10 +18,12 @@
 //! state that has been invalidated by a mutation. This is Doctrine D9
 //! (iteration safety is structural).
 
-use crate::basic_block::BasicBlock;
-use crate::instruction::{Instruction, state};
-use crate::marker::ReturnMarker;
-use crate::value::ValueId;
+use super::basic_block::BasicBlock;
+use super::block_state::Unsealed;
+use super::instruction::{Instruction, state};
+use super::marker::ReturnMarker;
+use super::module::{Brand, ModuleBrand};
+use super::value::ValueId;
 
 /// Single-pass cursor over an instruction list. Each [`Self::next`]
 /// call yields the instruction at the current position together with a
@@ -31,8 +33,8 @@ use crate::value::ValueId;
 /// invalidate the cursor.
 ///
 /// Mirrors LLVM's `auto Next = std::next(I);` idiom.
-pub struct BlockCursor<'ctx, R: ReturnMarker> {
-    block: BasicBlock<'ctx, R>,
+pub struct BlockCursor<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
+    block: BasicBlock<'ctx, R, Unsealed, B>,
     /// Snapshot of the block's instruction list at cursor creation.
     /// We snapshot once and walk by index so subsequent mutations to
     /// the *underlying* list (insertions before us, splices, etc.) do
@@ -43,10 +45,10 @@ pub struct BlockCursor<'ctx, R: ReturnMarker> {
     next_index: usize,
 }
 
-impl<'ctx, R: ReturnMarker> BlockCursor<'ctx, R> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> BlockCursor<'ctx, R, B> {
     /// Create a cursor positioned at the start of `block`. Mirrors
     /// `BB->begin()` in C++.
-    pub fn at_start(block: BasicBlock<'ctx, R>) -> Self {
+    pub fn at_start(block: BasicBlock<'ctx, R, Unsealed, B>) -> Self {
         let snapshot: Vec<ValueId> = block.instructions().map(|i| i.as_value().id).collect();
         Self {
             block,
@@ -58,9 +60,14 @@ impl<'ctx, R: ReturnMarker> BlockCursor<'ctx, R> {
     /// Yield the instruction at the current position, returning `Some`
     /// of it together with a fresh cursor advanced past it. Returns
     /// `None` when the snapshot is exhausted.
-    pub fn next(self) -> Option<(Instruction<'ctx, state::Attached>, BlockCursor<'ctx, R>)> {
+    pub fn next(
+        self,
+    ) -> Option<(
+        Instruction<'ctx, state::Attached, B>,
+        BlockCursor<'ctx, R, B>,
+    )> {
         let id = *self.snapshot.get(self.next_index)?;
-        let module = self.block.as_value().module();
+        let module = self.block.module_ref();
         let inst = Instruction::from_parts(id, module);
         let next = BlockCursor {
             block: self.block,

@@ -40,28 +40,79 @@ use core::marker::PhantomData;
 use super::align::{Align, MaybeAlign};
 use super::atomic_ordering::AtomicOrdering;
 use super::basic_block::BasicBlock;
-use super::block_state::{BlockSealState, Sealed};
+use super::block_state::{BlockSealState, Sealed, Unsealed};
 use super::calling_conv::CallingConv;
-use super::constant::Constant;
-use super::derived_types::IntType;
+use super::cmp_predicate::CmpPredicate;
+use super::constant::{Constant, ConstantExprFlags, ConstantExprOpcode};
+use super::constant_fold;
+use super::constants::ConstantExprOptions;
+use super::derived_types::{FloatType, FunctionType, IntType, PointerType, StructType};
 use super::error::{IrError, IrResult, TypeKindLabel};
+use super::float_kind::{FloatDyn, FloatKind, FloatWiderThan, IntoFloatValue};
 use super::fmf::FastMathFlags;
 use super::function::FunctionValue;
+use super::gep_no_wrap_flags::GepNoWrapFlags;
+use super::inline_asm::InlineAsm;
+use super::instr_types::FNegInstData;
 use super::instr_types::{
     BinaryOpData, BinaryOpcode, CallAttributeData, CastOpData, CastOpcode, LoadInstData,
-    ReturnOpData, StoreInstData, UnaryOpcode,
+    POISON_MASK_ELEM, ReturnOpData, StoreInstData, UnaryOpcode,
 };
-use super::instruction::{Instruction, InstructionKindData, build_instruction_value};
-use super::instructions::{CallInst, CatchSwitchInst, CleanupPadInst};
-use super::int_width::{IntDyn, IntWidth};
+use super::instruction::{
+    Instruction, InstructionKind, InstructionKindData, build_instruction_value, state,
+    state::Attached,
+};
+use super::instructions::{
+    AtomicCmpXchgInst, AtomicRMWInst, CallBrInst, CallInst, CatchPadInst, CatchSwitchInst,
+    CleanupPadInst, FpPhiInst, FreezeInst, IndirectBrInst, InvokeInst, LandingPadInst, PhiInst,
+    PointerPhiInst, StoreInst, SwitchInst, VAArgInst,
+};
+use super::int_width::{IntDyn, IntWidth, IntoIntValue};
+use super::intrinsics::IntrinsicId;
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::folder::IRBuilderFolder;
 use super::marker::{Dyn, Ptr, ReturnMarker};
-use super::module::{Module, ModuleBrand, ModuleCore, ModuleRef, Unverified};
+use super::module::{Brand, Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified};
+use super::phi_state::Open as PhiOpen;
+use super::struct_body_state::StructBodyDyn;
 use super::sync_scope::SyncScope;
 use super::term_open_state::Open;
-use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeId};
-use super::value::{IntValue, IsValue, PointerValue, Value, ValueId, ValueKindData, ValueUse};
+use super::r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeId};
+use super::value::{
+    FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Value, ValueId, ValueKindData,
+    ValueUse, VectorValue,
+};
+
+/// Pair returned by terminator builders: the sealed insertion block and the
+/// emitted terminator instruction.
+pub type SealedBlockInst<'ctx, R, B = Brand<'ctx>> = (
+    BasicBlock<'ctx, R, Sealed, B>,
+    Instruction<'ctx, Attached, B>,
+);
+
+/// Pair returned by `switch` builders before the case list is closed.
+pub type SealedBlockSwitch<'ctx, R, B = Brand<'ctx>> =
+    (BasicBlock<'ctx, R, Sealed, B>, SwitchInst<'ctx, Open, B>);
+
+/// Pair returned by `indirectbr` builders before destination insertion closes.
+pub type SealedBlockIndirectBr<'ctx, R, B = Brand<'ctx>> = (
+    BasicBlock<'ctx, R, Sealed, B>,
+    IndirectBrInst<'ctx, Open, B>,
+);
+
+/// Pair returned by `invoke` builders.
+pub type SealedBlockInvoke<'ctx, R, Ret, B = Brand<'ctx>> =
+    (BasicBlock<'ctx, R, Sealed, B>, InvokeInst<'ctx, Ret, B>);
+
+/// Pair returned by `catchswitch` builders before handler insertion closes.
+pub type SealedBlockCatchSwitch<'ctx, R, B = Brand<'ctx>> = (
+    BasicBlock<'ctx, R, Sealed, B>,
+    CatchSwitchInst<'ctx, Open, B>,
+);
+
+/// Pair returned by `ret void` when the builder's return marker is statically
+/// void.
+pub type VoidReturnInst<'ctx, B = Brand<'ctx>> = SealedBlockInst<'ctx, (), B>;
 
 /// Type-state marker: the builder has no insertion point. None of the
 /// `build_*` methods are reachable in this state.
@@ -86,9 +137,9 @@ mod state_sealed {
 /// when the builder was unpositioned at save time; `before` is `None`
 /// when the saved location was end-of-block.
 #[derive(Debug, Clone, Copy)]
-pub struct InsertPoint<'ctx, R: ReturnMarker> {
-    pub(crate) block: Option<BasicBlock<'ctx, R>>,
-    pub(crate) before: Option<ValueId>,
+pub struct InsertPoint<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
+    pub(super) block: Option<BasicBlock<'ctx, R, Unsealed, B>>,
+    pub(super) before: Option<ValueId>,
 }
 
 #[derive(Debug, Clone)]
@@ -132,7 +183,7 @@ impl CallSiteConfig {
         &self.attrs
     }
 
-    pub(crate) fn into_parts(self) -> (String, CallingConv, CallAttributeData) {
+    pub(super) fn into_parts(self) -> (String, CallingConv, CallAttributeData) {
         (self.name, self.calling_conv, self.attrs)
     }
 }
@@ -147,13 +198,13 @@ impl CallSiteConfig {
 pub struct IRBuilder<'m, 'ctx, B, F, S, R>
 where
     B: ModuleBrand,
-    F: IRBuilderFolder<'ctx>,
+    F: IRBuilderFolder<'ctx, B>,
     S: state_sealed::Sealed,
     R: ReturnMarker,
 {
     module: &'ctx ModuleCore,
     _module: PhantomData<&'m Module<'ctx, B, Unverified>>,
-    insert_block: Option<BasicBlock<'ctx, R>>,
+    insert_block: Option<BasicBlock<'ctx, R, Unsealed, B>>,
     /// Optional insertion anchor: when `Some(id)`, new instructions are
     /// inserted *before* the instruction with this id (mirrors upstream
     /// `IRBuilder::SetInsertPoint(Instruction*)`). When `None`, new
@@ -218,7 +269,7 @@ where
 impl<'m, 'ctx, B, F, R> IRBuilder<'m, 'ctx, B, F, Unpositioned, R>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx>,
+    F: IRBuilderFolder<'ctx, B>,
     R: ReturnMarker,
 {
     /// Construct an unpositioned builder using a caller-supplied
@@ -240,7 +291,7 @@ where
     /// [`ReturnMarker`] must match the builder's.
     pub fn position_at_end(
         self,
-        bb: BasicBlock<'ctx, R>,
+        bb: BasicBlock<'ctx, R, Unsealed, B>,
     ) -> IRBuilder<'m, 'ctx, B, F, Positioned, R> {
         IRBuilder {
             module: self.module,
@@ -261,7 +312,7 @@ where
 impl<'m, 'ctx, B, F, S, R> IRBuilder<'m, 'ctx, B, F, S, R>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx>,
+    F: IRBuilderFolder<'ctx, B>,
     S: state_sealed::Sealed,
     R: ReturnMarker,
 {
@@ -271,12 +322,16 @@ where
     /// which sets `BB = I->getParent(); InsertPt = I->getIterator();`.
     pub fn position_before(
         self,
-        anchor: super::instruction::Instruction<'ctx, super::instruction::state::Attached>,
+        anchor: Instruction<'ctx, Attached, B>,
     ) -> IRBuilder<'m, 'ctx, B, F, Positioned, R> {
         let anchor_id = anchor.as_value().id;
         let parent_block_id = anchor.parent().as_value().id;
         let label_ty = self.module.label_type().as_type().id();
-        let bb = BasicBlock::<R>::from_parts(parent_block_id, self.module, label_ty);
+        let bb = BasicBlock::<R, Unsealed, B>::from_parts(
+            parent_block_id,
+            ModuleRef::<B>::new(self.module),
+            label_ty,
+        );
         IRBuilder {
             module: self.module,
             _module: PhantomData,
@@ -293,7 +348,7 @@ where
     /// which sets `BB = &F->getEntryBlock(); InsertPt = BB->getFirstNonPHIOrDbgOrAlloca();`.
     pub fn position_past_allocas(
         self,
-        f: FunctionValue<'ctx, R>,
+        f: FunctionValue<'ctx, R, B>,
     ) -> IRBuilder<'m, 'ctx, B, F, Positioned, R> {
         let entry = f.entry_block().unwrap_or_else(|| {
             unreachable!("position_past_allocas requires a function with at least one block")
@@ -304,7 +359,7 @@ where
         let mut anchor: Option<ValueId> = None;
         for inst in entry.instructions() {
             match inst.kind() {
-                Some(super::instruction::InstructionKind::Alloca(_)) => continue,
+                Some(InstructionKind::Alloca(_)) => continue,
                 _ => {
                     anchor = Some(inst.as_value().id);
                     break;
@@ -324,7 +379,7 @@ where
 
     /// Snapshot the current insertion location. Mirrors
     /// `IRBuilder::saveIP` (returns `InsertPoint(BB, InsertPt)`).
-    pub fn save_insert_point(&self) -> InsertPoint<'ctx, R> {
+    pub fn save_insert_point(&self) -> InsertPoint<'ctx, R, B> {
         InsertPoint {
             block: self.insert_block,
             before: self.insert_before,
@@ -340,7 +395,7 @@ where
     /// upstream `restoreIP` which calls `ClearInsertionPoint` in that case.
     pub fn restore_insert_point(
         self,
-        ip: InsertPoint<'ctx, R>,
+        ip: InsertPoint<'ctx, R, B>,
     ) -> IRBuilder<'m, 'ctx, B, F, Positioned, R> {
         IRBuilder {
             module: self.module,
@@ -354,8 +409,8 @@ where
     }
 
     /// Add an incoming `(value, block)` pair to a phi instruction identified
-    /// by its erased [`crate::value::Value`] handle. This is the dynamic
-    /// counterpart to [`crate::instructions::PhiInst::add_incoming`] for
+    /// by its erased [`Value`] handle. This is the dynamic
+    /// counterpart to [`PhiInst::add_incoming`] for
     /// use by parsers and passes where compile-time type markers are
     /// unavailable.
     ///
@@ -363,23 +418,14 @@ where
     /// `val`/`block` belong to different modules.
     pub fn phi_add_incoming_from_value<RBb, SBb>(
         &self,
-        phi_val: crate::value::Value<'ctx>,
-        val: crate::value::Value<'ctx>,
-        block: crate::basic_block::BasicBlock<'ctx, RBb, SBb>,
+        phi_val: Value<'ctx, B>,
+        val: Value<'ctx, B>,
+        block: BasicBlock<'ctx, RBb, SBb, B>,
     ) -> IrResult<()>
     where
         RBb: crate::marker::ReturnMarker,
         SBb: crate::block_state::BlockSealState,
     {
-        if phi_val.module().id() != self.module.id() {
-            return Err(IrError::ForeignValue);
-        }
-        if val.module().id() != self.module.id() {
-            return Err(IrError::ForeignValue);
-        }
-        if block.as_value().module().id() != self.module.id() {
-            return Err(IrError::ForeignValue);
-        }
         // Access the phi payload via the module's instruction data.
         let inst_data = self.module.context().value_data(phi_val.id);
         let inst_kind_data = match &inst_data.kind {
@@ -416,11 +462,11 @@ where
 impl<'m, 'ctx, B, F, R> IRBuilder<'m, 'ctx, B, F, Positioned, R>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx>,
+    F: IRBuilderFolder<'ctx, B>,
     R: ReturnMarker,
 {
     /// Re-position the builder at the end of `bb`.
-    pub fn position_at_end(self, bb: BasicBlock<'ctx, R>) -> Self {
+    pub fn position_at_end(self, bb: BasicBlock<'ctx, R, Unsealed, B>) -> Self {
         Self {
             module: self.module,
             _module: PhantomData,
@@ -449,7 +495,7 @@ where
     /// Current insertion block. Always populated in the positioned
     /// state.
     #[inline]
-    pub fn insert_block(&self) -> BasicBlock<'ctx, R> {
+    pub fn insert_block(&self) -> BasicBlock<'ctx, R, Unsealed, B> {
         match self.insert_block {
             Some(bb) => bb,
             None => unreachable!("Positioned builder always has an insertion point"),
@@ -486,7 +532,7 @@ where
     /// Produce `add lhs, rhs`. Mirrors `IRBuilder::CreateAdd`.
     ///
     /// Operands share width `W` -- enforced at compile time by the
-    /// type system. Either side accepts any [`crate::IntoIntValue<'ctx, W>`]:
+    /// type system. Either side accepts any [`crate::IntoIntValue<'ctx, W, B>`]:
     /// already-typed [`IntValue`]s, [`crate::ConstantIntValue`]s, and
     /// Rust scalar literals (`5_i32`, `true`, ...) all work.
     pub fn build_int_add<W, Lhs, Rhs, Name>(
@@ -494,23 +540,21 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
-        self.require_same_module(lhs.as_value())?;
-        self.require_same_module(rhs.as_value())?;
         if let Some(folded) =
             self.folder
                 .fold_bin_op(BinaryOpcode::Add, lhs.as_value(), rhs.as_value())?
         {
             let folded = self.checked_folded_value(folded, lhs.ty().as_type().id())?;
-            return Ok(IntValue::<W>::from_value_unchecked(folded));
+            return Ok(IntValue::<W, B>::from_value_unchecked(folded));
         }
         let payload = BinaryOpData::new(lhs.as_value().id, rhs.as_value().id);
         let inst = self.append_instruction(
@@ -518,7 +562,7 @@ where
             InstructionKindData::Add(payload),
             name,
         );
-        Ok(IntValue::<W>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Produce `sub lhs, rhs`. Mirrors `IRBuilder::CreateSub`.
@@ -527,23 +571,21 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
-        self.require_same_module(lhs.as_value())?;
-        self.require_same_module(rhs.as_value())?;
         if let Some(folded) =
             self.folder
                 .fold_bin_op(BinaryOpcode::Sub, lhs.as_value(), rhs.as_value())?
         {
             let folded = self.checked_folded_value(folded, lhs.ty().as_type().id())?;
-            return Ok(IntValue::<W>::from_value_unchecked(folded));
+            return Ok(IntValue::<W, B>::from_value_unchecked(folded));
         }
         let payload = BinaryOpData::new(lhs.as_value().id, rhs.as_value().id);
         let inst = self.append_instruction(
@@ -551,7 +593,7 @@ where
             InstructionKindData::Sub(payload),
             name,
         );
-        Ok(IntValue::<W>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Produce `mul lhs, rhs`. Mirrors `IRBuilder::CreateMul`.
@@ -560,12 +602,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop_flagged(
             BinaryOpcode::Mul,
@@ -583,12 +625,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop(
             BinaryOpcode::UDiv,
@@ -605,12 +647,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop(
             BinaryOpcode::SDiv,
@@ -627,12 +669,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop(
             BinaryOpcode::URem,
@@ -649,12 +691,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop(
             BinaryOpcode::SRem,
@@ -671,12 +713,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop_flagged(
             BinaryOpcode::Shl,
@@ -694,12 +736,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop(
             BinaryOpcode::LShr,
@@ -716,12 +758,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop(
             BinaryOpcode::AShr,
@@ -738,12 +780,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop(BinaryOpcode::And, lhs, rhs, name, InstructionKindData::And)
     }
@@ -754,12 +796,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop(BinaryOpcode::Or, lhs, rhs, name, InstructionKindData::Or)
     }
@@ -773,12 +815,12 @@ where
         rhs: Rhs,
         flags: crate::instr_types::OrFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop_flagged(
             BinaryOpcode::Or,
@@ -796,12 +838,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop(BinaryOpcode::Xor, lhs, rhs, name, InstructionKindData::Xor)
     }
@@ -816,12 +858,12 @@ where
         rhs: Rhs,
         flags: crate::instr_types::AddFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop_flagged(
             BinaryOpcode::Add,
@@ -840,12 +882,12 @@ where
         rhs: Rhs,
         flags: crate::instr_types::SubFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop_flagged(
             BinaryOpcode::Sub,
@@ -864,12 +906,12 @@ where
         rhs: Rhs,
         flags: crate::instr_types::MulFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop_flagged(
             BinaryOpcode::Mul,
@@ -888,12 +930,12 @@ where
         rhs: Rhs,
         flags: crate::instr_types::ShlFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop_flagged(
             BinaryOpcode::Shl,
@@ -912,12 +954,12 @@ where
         rhs: Rhs,
         flags: crate::instr_types::UDivFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop_flagged(
             BinaryOpcode::UDiv,
@@ -936,12 +978,12 @@ where
         rhs: Rhs,
         flags: crate::instr_types::SDivFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop_flagged(
             BinaryOpcode::SDiv,
@@ -960,12 +1002,12 @@ where
         rhs: Rhs,
         flags: crate::instr_types::LShrFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop_flagged(
             BinaryOpcode::LShr,
@@ -984,12 +1026,12 @@ where
         rhs: Rhs,
         flags: crate::instr_types::AShrFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop_flagged(
             BinaryOpcode::AShr,
@@ -1003,40 +1045,44 @@ where
 
     /// Integer negation: `sub 0, V`. Mirrors `IRBuilder::CreateNeg(V, Name)`,
     /// which expands to `CreateSub(Constant::getNullValue(V->getType()), V, Name)`.
-    pub fn build_int_neg<W, V, Name>(&self, value: V, name: Name) -> IrResult<IntValue<'ctx, W>>
+    pub fn build_int_neg<W, V, Name>(&self, value: V, name: Name) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: super::int_width::StaticIntWidth,
-        V: super::int_width::IntoIntValue<'ctx, W>,
+        V: IntoIntValue<'ctx, W, B>,
     {
         let v = value.into_int_value(ModuleRef::new(self.module))?;
-        let zero = W::ir_type(ModuleRef::new(self.module)).const_zero();
+        let zero = W::ir_type(ModuleRef::<B>::new(self.module)).const_zero();
         self.build_int_sub(zero, v, name)
     }
 
     /// Integer NSW negation. Mirrors `IRBuilder::CreateNSWNeg(V, Name)` ->
     /// `CreateNeg(V, Name, /*HasNSW=*/true)` -> `CreateSub` with `nsw`.
-    pub fn build_int_neg_nsw<W, V, Name>(&self, value: V, name: Name) -> IrResult<IntValue<'ctx, W>>
+    pub fn build_int_neg_nsw<W, V, Name>(
+        &self,
+        value: V,
+        name: Name,
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: super::int_width::StaticIntWidth,
-        V: super::int_width::IntoIntValue<'ctx, W>,
+        V: IntoIntValue<'ctx, W, B>,
     {
         let v = value.into_int_value(ModuleRef::new(self.module))?;
-        let zero = W::ir_type(ModuleRef::new(self.module)).const_zero();
+        let zero = W::ir_type(ModuleRef::<B>::new(self.module)).const_zero();
         self.build_int_sub_with_flags(zero, v, super::instr_types::SubFlags::new().nsw(), name)
     }
 
     /// Bitwise complement: `xor V, -1`. Mirrors `IRBuilder::CreateNot(V, Name)`,
     /// which expands to `CreateXor(V, Constant::getAllOnesValue(V->getType()))`.
-    pub fn build_int_not<W, V, Name>(&self, value: V, name: Name) -> IrResult<IntValue<'ctx, W>>
+    pub fn build_int_not<W, V, Name>(&self, value: V, name: Name) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: super::int_width::StaticIntWidth,
-        V: super::int_width::IntoIntValue<'ctx, W>,
+        V: IntoIntValue<'ctx, W, B>,
     {
         let v = value.into_int_value(ModuleRef::new(self.module))?;
-        let all_ones = W::ir_type(ModuleRef::new(self.module)).const_all_ones();
+        let all_ones = W::ir_type(ModuleRef::<B>::new(self.module)).const_all_ones();
         self.build_int_xor(v, all_ones, name)
     }
 
@@ -1052,18 +1098,16 @@ where
         name: impl AsRef<str>,
         flags: Flags,
         kind_ctor: Kind,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
         Flags: crate::instr_types::WriteBinopFlags,
         Kind: FnOnce(BinaryOpData) -> InstructionKindData,
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
-        self.require_same_module(lhs.as_value())?;
-        self.require_same_module(rhs.as_value())?;
         let mut payload = BinaryOpData::new(lhs.as_value().id, rhs.as_value().id);
         flags.apply(&mut payload);
         let folded = if payload.is_exact {
@@ -1086,10 +1130,10 @@ where
         };
         if let Some(folded) = folded {
             let folded = self.checked_folded_value(folded, lhs.ty().as_type().id())?;
-            return Ok(IntValue::<W>::from_value_unchecked(folded));
+            return Ok(IntValue::<W, B>::from_value_unchecked(folded));
         }
         let inst = self.append_instruction(lhs.ty().as_type().id(), kind_ctor(payload), name);
-        Ok(IntValue::<W>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Crate-internal helper: emit a binary op given a callback that
@@ -1103,27 +1147,25 @@ where
         rhs: Rhs,
         name: impl AsRef<str>,
         kind_ctor: F2,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
         F2: FnOnce(BinaryOpData) -> InstructionKindData,
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
-        self.require_same_module(lhs.as_value())?;
-        self.require_same_module(rhs.as_value())?;
         if let Some(folded) = self
             .folder
             .fold_bin_op(opcode, lhs.as_value(), rhs.as_value())?
         {
             let folded = self.checked_folded_value(folded, lhs.ty().as_type().id())?;
-            return Ok(IntValue::<W>::from_value_unchecked(folded));
+            return Ok(IntValue::<W, B>::from_value_unchecked(folded));
         }
         let payload = BinaryOpData::new(lhs.as_value().id, rhs.as_value().id);
         let inst = self.append_instruction(lhs.ty().as_type().id(), kind_ctor(payload), name);
-        Ok(IntValue::<W>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
     }
 
     // ---- Type-erased integer binops (scalar OR integer-vector operands) ----
@@ -1146,16 +1188,14 @@ where
     fn build_int_binop_dyn<F2>(
         &self,
         opcode: BinaryOpcode,
-        lhs: crate::value::Value<'ctx>,
-        rhs: crate::value::Value<'ctx>,
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
         name: impl AsRef<str>,
         kind_ctor: F2,
-    ) -> IrResult<crate::value::Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         F2: FnOnce(BinaryOpData) -> InstructionKindData,
     {
-        self.require_same_module(lhs)?;
-        self.require_same_module(rhs)?;
         if let Some(folded) = self.folder.fold_bin_op(opcode, lhs, rhs)? {
             return self.checked_folded_value(folded, lhs.ty);
         }
@@ -1168,10 +1208,10 @@ where
     /// Uses the shared erased integer-binop validation path.
     pub fn build_int_add_dyn<Name>(
         &self,
-        lhs: crate::value::Value<'ctx>,
-        rhs: crate::value::Value<'ctx>,
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<crate::value::Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
     {
@@ -1182,10 +1222,10 @@ where
     /// Uses the shared erased integer-binop validation path.
     pub fn build_int_sub_dyn<Name>(
         &self,
-        lhs: crate::value::Value<'ctx>,
-        rhs: crate::value::Value<'ctx>,
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<crate::value::Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
     {
@@ -1196,10 +1236,10 @@ where
     /// Uses the shared erased integer-binop validation path.
     pub fn build_int_mul_dyn<Name>(
         &self,
-        lhs: crate::value::Value<'ctx>,
-        rhs: crate::value::Value<'ctx>,
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<crate::value::Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
     {
@@ -1210,10 +1250,10 @@ where
     /// Uses the shared erased integer-binop validation path.
     pub fn build_int_xor_dyn<Name>(
         &self,
-        lhs: crate::value::Value<'ctx>,
-        rhs: crate::value::Value<'ctx>,
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<crate::value::Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
     {
@@ -1224,10 +1264,10 @@ where
     /// Uses the shared erased integer-binop validation path.
     pub fn build_int_and_dyn<Name>(
         &self,
-        lhs: crate::value::Value<'ctx>,
-        rhs: crate::value::Value<'ctx>,
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<crate::value::Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
     {
@@ -1238,10 +1278,10 @@ where
     /// Uses the shared erased integer-binop validation path.
     pub fn build_int_or_dyn<Name>(
         &self,
-        lhs: crate::value::Value<'ctx>,
-        rhs: crate::value::Value<'ctx>,
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<crate::value::Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
     {
@@ -1252,10 +1292,10 @@ where
     /// Uses the shared erased integer-binop validation path.
     pub fn build_int_shl_dyn<Name>(
         &self,
-        lhs: crate::value::Value<'ctx>,
-        rhs: crate::value::Value<'ctx>,
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<crate::value::Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
     {
@@ -1266,10 +1306,10 @@ where
     /// Uses the shared erased integer-binop validation path.
     pub fn build_int_lshr_dyn<Name>(
         &self,
-        lhs: crate::value::Value<'ctx>,
-        rhs: crate::value::Value<'ctx>,
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<crate::value::Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
     {
@@ -1286,10 +1326,10 @@ where
     /// Uses the shared erased integer-binop validation path.
     pub fn build_int_ashr_dyn<Name>(
         &self,
-        lhs: crate::value::Value<'ctx>,
-        rhs: crate::value::Value<'ctx>,
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<crate::value::Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
     {
@@ -1310,12 +1350,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    ) -> IrResult<FloatValue<'ctx, K, B>>
     where
         Name: AsRef<str>,
-        K: crate::float_kind::FloatKind,
-        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        K: FloatKind,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_binop(
             BinaryOpcode::FAdd,
@@ -1332,12 +1372,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    ) -> IrResult<FloatValue<'ctx, K, B>>
     where
         Name: AsRef<str>,
-        K: crate::float_kind::FloatKind,
-        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        K: FloatKind,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_binop(
             BinaryOpcode::FSub,
@@ -1354,12 +1394,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    ) -> IrResult<FloatValue<'ctx, K, B>>
     where
         Name: AsRef<str>,
-        K: crate::float_kind::FloatKind,
-        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        K: FloatKind,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_binop(
             BinaryOpcode::FMul,
@@ -1376,12 +1416,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    ) -> IrResult<FloatValue<'ctx, K, B>>
     where
         Name: AsRef<str>,
-        K: crate::float_kind::FloatKind,
-        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        K: FloatKind,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_binop(
             BinaryOpcode::FDiv,
@@ -1398,12 +1438,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    ) -> IrResult<FloatValue<'ctx, K, B>>
     where
         Name: AsRef<str>,
-        K: crate::float_kind::FloatKind,
-        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        K: FloatKind,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_binop(
             BinaryOpcode::FRem,
@@ -1423,39 +1463,32 @@ where
         rhs: Rhs,
         name: impl AsRef<str>,
         kind_ctor: F2,
-    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    ) -> IrResult<FloatValue<'ctx, K, B>>
     where
-        K: crate::float_kind::FloatKind,
-        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        K: FloatKind,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
         F2: FnOnce(BinaryOpData) -> InstructionKindData,
     {
         let lhs = lhs.into_float_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
-        self.require_same_module(crate::value::IsValue::as_value(lhs))?;
-        self.require_same_module(crate::value::IsValue::as_value(rhs))?;
         if let Some(folded) = self.folder.fold_bin_op_fmf(
             opcode,
-            crate::value::IsValue::as_value(lhs),
-            crate::value::IsValue::as_value(rhs),
+            IsValue::as_value(lhs),
+            IsValue::as_value(rhs),
             self.fmf,
         )? {
             let folded = self.checked_folded_value(folded, crate::value::Typed::ty(lhs).id())?;
-            return Ok(crate::value::FloatValue::<K>::from_value_unchecked(folded));
+            return Ok(FloatValue::<K, B>::from_value_unchecked(folded));
         }
-        let mut payload = BinaryOpData::new(
-            crate::value::IsValue::as_value(lhs).id,
-            crate::value::IsValue::as_value(rhs).id,
-        );
+        let mut payload = BinaryOpData::new(IsValue::as_value(lhs).id, IsValue::as_value(rhs).id);
         // Apply the builder-context FMF (parallel to upstream
         // `IRBuilderBase::setFPAttrs` in `IRBuilder.h`, which calls
         // `I->setFastMathFlags(FMF)` on every FP-math instruction).
         payload.fmf = self.fmf;
         let inst =
             self.append_instruction(crate::value::Typed::ty(lhs).id(), kind_ctor(payload), name);
-        Ok(crate::value::FloatValue::<K>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Crate-internal helper for float binops with an explicit
@@ -1469,36 +1502,29 @@ where
         fmf: crate::fmf::FastMathFlags,
         name: impl AsRef<str>,
         kind_ctor: F2,
-    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    ) -> IrResult<FloatValue<'ctx, K, B>>
     where
-        K: crate::float_kind::FloatKind,
-        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        K: FloatKind,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
         F2: FnOnce(BinaryOpData) -> InstructionKindData,
     {
         let lhs = lhs.into_float_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
-        self.require_same_module(crate::value::IsValue::as_value(lhs))?;
-        self.require_same_module(crate::value::IsValue::as_value(rhs))?;
         if let Some(folded) = self.folder.fold_bin_op_fmf(
             opcode,
-            crate::value::IsValue::as_value(lhs),
-            crate::value::IsValue::as_value(rhs),
+            IsValue::as_value(lhs),
+            IsValue::as_value(rhs),
             fmf,
         )? {
             let folded = self.checked_folded_value(folded, crate::value::Typed::ty(lhs).id())?;
-            return Ok(crate::value::FloatValue::<K>::from_value_unchecked(folded));
+            return Ok(FloatValue::<K, B>::from_value_unchecked(folded));
         }
-        let mut payload = BinaryOpData::new(
-            crate::value::IsValue::as_value(lhs).id,
-            crate::value::IsValue::as_value(rhs).id,
-        );
+        let mut payload = BinaryOpData::new(IsValue::as_value(lhs).id, IsValue::as_value(rhs).id);
         payload.fmf = fmf;
         let inst =
             self.append_instruction(crate::value::Typed::ty(lhs).id(), kind_ctor(payload), name);
-        Ok(crate::value::FloatValue::<K>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// `fadd` with an explicit [`crate::fmf::FastMathFlags`] parameter.
@@ -1509,12 +1535,12 @@ where
         rhs: Rhs,
         fmf: crate::fmf::FastMathFlags,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    ) -> IrResult<FloatValue<'ctx, K, B>>
     where
         Name: AsRef<str>,
-        K: crate::float_kind::FloatKind,
-        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        K: FloatKind,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_binop_with_fmf(
             BinaryOpcode::FAdd,
@@ -1533,12 +1559,12 @@ where
         rhs: Rhs,
         fmf: crate::fmf::FastMathFlags,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    ) -> IrResult<FloatValue<'ctx, K, B>>
     where
         Name: AsRef<str>,
-        K: crate::float_kind::FloatKind,
-        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        K: FloatKind,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_binop_with_fmf(
             BinaryOpcode::FSub,
@@ -1557,12 +1583,12 @@ where
         rhs: Rhs,
         fmf: crate::fmf::FastMathFlags,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    ) -> IrResult<FloatValue<'ctx, K, B>>
     where
         Name: AsRef<str>,
-        K: crate::float_kind::FloatKind,
-        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        K: FloatKind,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_binop_with_fmf(
             BinaryOpcode::FMul,
@@ -1581,12 +1607,12 @@ where
         rhs: Rhs,
         fmf: crate::fmf::FastMathFlags,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    ) -> IrResult<FloatValue<'ctx, K, B>>
     where
         Name: AsRef<str>,
-        K: crate::float_kind::FloatKind,
-        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        K: FloatKind,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_binop_with_fmf(
             BinaryOpcode::FDiv,
@@ -1605,12 +1631,12 @@ where
         rhs: Rhs,
         fmf: crate::fmf::FastMathFlags,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    ) -> IrResult<FloatValue<'ctx, K, B>>
     where
         Name: AsRef<str>,
-        K: crate::float_kind::FloatKind,
-        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        K: FloatKind,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_binop_with_fmf(
             BinaryOpcode::FRem,
@@ -1631,34 +1657,32 @@ where
         rhs: Rhs,
         fmf: crate::fmf::FastMathFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
-        K: crate::float_kind::FloatKind,
-        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        K: FloatKind,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         let lhs = lhs.into_float_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
-        self.require_same_module(crate::value::IsValue::as_value(lhs))?;
-        self.require_same_module(crate::value::IsValue::as_value(rhs))?;
-        let i1_ty = self.module.bool_type().as_type().id();
+        let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
         if let Some(folded) = self.folder.fold_cmp(
             crate::cmp_predicate::CmpPredicate::Float(pred),
-            crate::value::IsValue::as_value(lhs),
-            crate::value::IsValue::as_value(rhs),
+            IsValue::as_value(lhs),
+            IsValue::as_value(rhs),
         )? {
             let folded = self.checked_folded_value(folded, i1_ty)?;
-            return Ok(IntValue::<bool>::from_value_unchecked(folded));
+            return Ok(IntValue::<bool, B>::from_value_unchecked(folded));
         }
         let mut payload = crate::instr_types::FCmpInstData::new(
             pred,
-            crate::value::IsValue::as_value(lhs).id,
-            crate::value::IsValue::as_value(rhs).id,
+            IsValue::as_value(lhs).id,
+            IsValue::as_value(rhs).id,
         );
         payload.fmf = fmf;
         let inst = self.append_instruction(i1_ty, InstructionKindData::FCmp(payload), name);
-        Ok(IntValue::<bool>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<bool, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Produce `fcmp <pred> lhs, rhs`. Mirrors
@@ -1669,35 +1693,33 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
-        K: crate::float_kind::FloatKind,
-        Lhs: crate::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: crate::float_kind::IntoFloatValue<'ctx, K>,
+        K: FloatKind,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         let lhs = lhs.into_float_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
-        self.require_same_module(crate::value::IsValue::as_value(lhs))?;
-        self.require_same_module(crate::value::IsValue::as_value(rhs))?;
-        let i1_ty = self.module.bool_type().as_type().id();
+        let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
         if let Some(folded) = self.folder.fold_cmp(
             crate::cmp_predicate::CmpPredicate::Float(pred),
-            crate::value::IsValue::as_value(lhs),
-            crate::value::IsValue::as_value(rhs),
+            IsValue::as_value(lhs),
+            IsValue::as_value(rhs),
         )? {
             let folded = self.checked_folded_value(folded, i1_ty)?;
-            return Ok(IntValue::<bool>::from_value_unchecked(folded));
+            return Ok(IntValue::<bool, B>::from_value_unchecked(folded));
         }
         let mut payload = crate::instr_types::FCmpInstData::new(
             pred,
-            crate::value::IsValue::as_value(lhs).id,
-            crate::value::IsValue::as_value(rhs).id,
+            IsValue::as_value(lhs).id,
+            IsValue::as_value(rhs).id,
         );
         // Apply builder-context FMF (`fcmp` is an `FPMathOperator` upstream).
         payload.fmf = self.fmf;
         let inst = self.append_instruction(i1_ty, InstructionKindData::FCmp(payload), name);
-        Ok(IntValue::<bool>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<bool, B>::from_value_unchecked(inst.as_value()))
     }
 
     // ---- Per-predicate fcmp wrappers ----
@@ -1712,12 +1734,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
-        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_cmp::<K, Lhs, Rhs, _>(
             super::cmp_predicate::FloatPredicate::Oeq,
@@ -1733,12 +1755,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
-        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_cmp::<K, Lhs, Rhs, _>(
             super::cmp_predicate::FloatPredicate::Ogt,
@@ -1754,12 +1776,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
-        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_cmp::<K, Lhs, Rhs, _>(
             super::cmp_predicate::FloatPredicate::Oge,
@@ -1775,12 +1797,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
-        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_cmp::<K, Lhs, Rhs, _>(
             super::cmp_predicate::FloatPredicate::Olt,
@@ -1796,12 +1818,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
-        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_cmp::<K, Lhs, Rhs, _>(
             super::cmp_predicate::FloatPredicate::Ole,
@@ -1817,12 +1839,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
-        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_cmp::<K, Lhs, Rhs, _>(
             super::cmp_predicate::FloatPredicate::One,
@@ -1838,12 +1860,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
-        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_cmp::<K, Lhs, Rhs, _>(
             super::cmp_predicate::FloatPredicate::Ord,
@@ -1859,12 +1881,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
-        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_cmp::<K, Lhs, Rhs, _>(
             super::cmp_predicate::FloatPredicate::Uno,
@@ -1880,12 +1902,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
-        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_cmp::<K, Lhs, Rhs, _>(
             super::cmp_predicate::FloatPredicate::Ueq,
@@ -1901,12 +1923,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
-        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_cmp::<K, Lhs, Rhs, _>(
             super::cmp_predicate::FloatPredicate::Ugt,
@@ -1922,12 +1944,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
-        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_cmp::<K, Lhs, Rhs, _>(
             super::cmp_predicate::FloatPredicate::Uge,
@@ -1943,12 +1965,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
-        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_cmp::<K, Lhs, Rhs, _>(
             super::cmp_predicate::FloatPredicate::Ult,
@@ -1964,12 +1986,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
-        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_cmp::<K, Lhs, Rhs, _>(
             super::cmp_predicate::FloatPredicate::Ule,
@@ -1985,12 +2007,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
-        Lhs: super::float_kind::IntoFloatValue<'ctx, K>,
-        Rhs: super::float_kind::IntoFloatValue<'ctx, K>,
+        Lhs: IntoFloatValue<'ctx, K, B>,
+        Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.build_fp_cmp::<K, Lhs, Rhs, _>(
             super::cmp_predicate::FloatPredicate::Une,
@@ -2009,11 +2031,11 @@ where
         &self,
         value: V,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    ) -> IrResult<FloatValue<'ctx, K, B>>
     where
         Name: AsRef<str>,
-        K: crate::float_kind::FloatKind,
-        V: crate::float_kind::IntoFloatValue<'ctx, K>,
+        K: FloatKind,
+        V: IntoFloatValue<'ctx, K, B>,
     {
         self.build_float_neg_with_flags::<K, V, _>(value, self.fmf, name)
     }
@@ -2026,50 +2048,40 @@ where
         value: V,
         fmf: crate::fmf::FastMathFlags,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    ) -> IrResult<FloatValue<'ctx, K, B>>
     where
         Name: AsRef<str>,
-        K: crate::float_kind::FloatKind,
-        V: crate::float_kind::IntoFloatValue<'ctx, K>,
+        K: FloatKind,
+        V: IntoFloatValue<'ctx, K, B>,
     {
         let v = value.into_float_value(ModuleRef::new(self.module))?;
-        self.require_same_module(crate::value::IsValue::as_value(v))?;
         let ty = crate::value::Typed::ty(v).id();
-        if let Some(folded) = self.folder.fold_un_op_fmf(
-            UnaryOpcode::FNeg,
-            crate::value::IsValue::as_value(v),
-            fmf,
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_un_op_fmf(UnaryOpcode::FNeg, IsValue::as_value(v), fmf)?
+        {
             let folded = self.checked_folded_value(folded, ty)?;
-            return Ok(crate::value::FloatValue::<K>::from_value_unchecked(folded));
+            return Ok(FloatValue::<K, B>::from_value_unchecked(folded));
         }
-        let payload =
-            crate::instr_types::FNegInstData::new(crate::value::IsValue::as_value(v).id, fmf);
+        let payload = FNegInstData::new(IsValue::as_value(v).id, fmf);
         let inst = self.append_instruction(ty, InstructionKindData::FNeg(payload), name);
-        Ok(crate::value::FloatValue::<K>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Produce `freeze <value>`. Mirrors `IRBuilder::CreateFreeze`.
-    /// Accepts any [`crate::value::IsValue`] operand; the result type
+    /// Accepts any [`IsValue`] operand; the result type
     /// matches the operand type.
-    pub fn build_freeze<V, Name>(
-        &self,
-        value: V,
-        name: Name,
-    ) -> IrResult<crate::instructions::FreezeInst<'ctx>>
+    pub fn build_freeze<V, Name>(&self, value: V, name: Name) -> IrResult<FreezeInst<'ctx, B>>
     where
         Name: AsRef<str>,
-        V: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
     {
         let v = value.as_value();
-        self.require_same_module(v)?;
         let payload = crate::instr_types::FreezeInstData::new(v.id);
         let inst = self.append_instruction(v.ty, InstructionKindData::Freeze(payload), name);
-        Ok(crate::instructions::FreezeInst::from_raw(
+        Ok(FreezeInst::<B>::from_raw(
             inst.as_value().id,
-            self.module,
+            ModuleRef::<B>::new(self.module),
             v.ty,
         ))
     }
@@ -2079,20 +2091,19 @@ where
     /// must be a `va_list` pointer.
     pub fn build_va_arg<Name>(
         &self,
-        list_ptr: crate::value::PointerValue<'ctx>,
-        result_ty: crate::r#type::Type<'ctx>,
+        list_ptr: PointerValue<'ctx, B>,
+        result_ty: Type<'ctx, B>,
         name: Name,
-    ) -> IrResult<crate::instructions::VAArgInst<'ctx>>
+    ) -> IrResult<VAArgInst<'ctx, B>>
     where
         Name: AsRef<str>,
     {
-        let v = crate::value::IsValue::as_value(list_ptr);
-        self.require_same_module(v)?;
+        let v = IsValue::as_value(list_ptr);
         let payload = crate::instr_types::VAArgInstData::new(v.id);
         let inst = self.append_instruction(result_ty.id, InstructionKindData::VAArg(payload), name);
-        Ok(crate::instructions::VAArgInst::from_raw(
+        Ok(VAArgInst::<B>::from_raw(
             inst.as_value().id,
-            self.module,
+            ModuleRef::<B>::new(self.module),
             result_ty.id,
         ))
     }
@@ -2106,14 +2117,13 @@ where
         aggregate: V,
         indices: I,
         name: Name,
-    ) -> IrResult<Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
-        V: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
         I: IntoIterator<Item = u32>,
     {
         let agg = aggregate.as_value();
-        self.require_same_module(agg)?;
         let indices: Vec<u32> = indices.into_iter().collect();
         let leaf_ty = walk_aggregate_for_builder(self.module, agg.ty, &indices)?;
         if let Some(folded) = self.folder.fold_extract_value(agg, &indices)? {
@@ -2133,22 +2143,20 @@ where
         value: V,
         indices: I,
         name: Name,
-    ) -> IrResult<Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
-        A: crate::value::IsValue<'ctx>,
-        V: crate::value::IsValue<'ctx>,
+        A: IsValue<'ctx, B>,
+        V: IsValue<'ctx, B>,
         I: IntoIterator<Item = u32>,
     {
         let agg = aggregate.as_value();
         let val = value.as_value();
-        self.require_same_module(agg)?;
-        self.require_same_module(val)?;
         let indices: Vec<u32> = indices.into_iter().collect();
         let leaf_ty = walk_aggregate_for_builder(self.module, agg.ty, &indices)?;
         if val.ty != leaf_ty {
             return Err(IrError::TypeMismatch {
-                expected: crate::r#type::Type::new(leaf_ty, self.module).kind_label(),
+                expected: Type::new(leaf_ty, self.module).kind_label(),
                 got: val.ty().kind_label(),
             });
         }
@@ -2169,18 +2177,16 @@ where
         vector: V,
         index: I,
         name: Name,
-    ) -> IrResult<Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
-        V: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
         W: crate::int_width::IntWidth,
-        I: crate::int_width::IntoIntValue<'ctx, W>,
+        I: IntoIntValue<'ctx, W, B>,
     {
         let vec = vector.as_value();
-        self.require_same_module(vec)?;
         let idx_v = index.into_int_value(ModuleRef::new(self.module))?;
-        let idx = crate::value::IsValue::as_value(idx_v);
-        self.require_same_module(idx)?;
+        let idx = IsValue::as_value(idx_v);
         let elem_ty = match self.module.context().type_data(vec.ty).as_vector() {
             Some((e, _, _)) => e,
             None => {
@@ -2207,21 +2213,18 @@ where
         elt: E,
         index: I,
         name: Name,
-    ) -> IrResult<Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
-        V: crate::value::IsValue<'ctx>,
-        E: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
+        E: IsValue<'ctx, B>,
         W: crate::int_width::IntWidth,
-        I: crate::int_width::IntoIntValue<'ctx, W>,
+        I: IntoIntValue<'ctx, W, B>,
     {
         let vec = vector.as_value();
         let val = elt.as_value();
-        self.require_same_module(vec)?;
-        self.require_same_module(val)?;
         let idx_v = index.into_int_value(ModuleRef::new(self.module))?;
-        let idx = crate::value::IsValue::as_value(idx_v);
-        self.require_same_module(idx)?;
+        let idx = IsValue::as_value(idx_v);
         if let Some(folded) = self.folder.fold_insert_element(vec, val, idx)? {
             return self.checked_folded_value(folded, vec.ty);
         }
@@ -2241,16 +2244,14 @@ where
         rhs: Rhs2,
         mask: &[i32],
         name: Name,
-    ) -> IrResult<Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
-        L: crate::value::IsValue<'ctx>,
-        Rhs2: crate::value::IsValue<'ctx>,
+        L: IsValue<'ctx, B>,
+        Rhs2: IsValue<'ctx, B>,
     {
         let l = lhs.as_value();
         let r = rhs.as_value();
-        self.require_same_module(l)?;
-        self.require_same_module(r)?;
         if l.ty != r.ty {
             return Err(IrError::TypeMismatch {
                 expected: l.ty().kind_label(),
@@ -2326,35 +2327,31 @@ where
         new_val: N,
         config: crate::instr_types::AtomicCmpXchgConfig,
         name: Name,
-    ) -> IrResult<crate::instructions::AtomicCmpXchgInst<'ctx>>
+    ) -> IrResult<AtomicCmpXchgInst<'ctx, B>>
     where
         Name: AsRef<str>,
-        P: crate::value::IsValue<'ctx>,
-        C: crate::value::IsValue<'ctx>,
-        N: crate::value::IsValue<'ctx>,
+        P: IsValue<'ctx, B>,
+        C: IsValue<'ctx, B>,
+        N: IsValue<'ctx, B>,
     {
         let p = ptr.as_value();
         let c = cmp.as_value();
         let n = new_val.as_value();
-        self.require_same_module(p)?;
-        self.require_same_module(c)?;
-        self.require_same_module(n)?;
         if c.ty != n.ty {
             return Err(IrError::TypeMismatch {
                 expected: c.ty().kind_label(),
                 got: n.ty().kind_label(),
             });
         }
-        let result_ty = self
-            .module
-            .struct_type([c.ty(), self.module.bool_type().as_type()], false);
+        let module_view = ModuleView::<B>::new(self.module);
+        let result_ty = module_view.struct_type([c.ty(), module_view.bool_type().as_type()], false);
         let payload = crate::instr_types::AtomicCmpXchgInstData::new(p.id, c.id, n.id, config);
         let result_id = result_ty.as_type().id();
         let inst =
             self.append_instruction(result_id, InstructionKindData::AtomicCmpXchg(payload), name);
-        Ok(crate::instructions::AtomicCmpXchgInst::from_raw(
+        Ok(AtomicCmpXchgInst::<B>::from_raw(
             inst.as_value().id,
-            self.module,
+            ModuleRef::<B>::new(self.module),
             result_id,
         ))
     }
@@ -2371,21 +2368,19 @@ where
         value: V,
         config: crate::instr_types::AtomicRMWConfig,
         name: Name,
-    ) -> IrResult<crate::instructions::AtomicRMWInst<'ctx>>
+    ) -> IrResult<AtomicRMWInst<'ctx, B>>
     where
         Name: AsRef<str>,
-        P: crate::value::IsValue<'ctx>,
-        V: crate::value::IsValue<'ctx>,
+        P: IsValue<'ctx, B>,
+        V: IsValue<'ctx, B>,
     {
         let p = ptr.as_value();
         let v = value.as_value();
-        self.require_same_module(p)?;
-        self.require_same_module(v)?;
         let payload = crate::instr_types::AtomicRMWInstData::new(op, p.id, v.id, config);
         let inst = self.append_instruction(v.ty, InstructionKindData::AtomicRMW(payload), name);
-        Ok(crate::instructions::AtomicRMWInst::from_raw(
+        Ok(AtomicRMWInst::<B>::from_raw(
             inst.as_value().id,
-            self.module,
+            ModuleRef::<B>::new(self.module),
             v.ty,
         ))
     }
@@ -2402,27 +2397,24 @@ where
     /// [`IrError::OperandWidthMismatch`]. Use
     /// [`Self::build_trunc_dyn`] when both widths are erased.
     ///
-    /// The remaining `IrResult` failure mode is
-    /// [`IrError::ForeignValue`] (cross-module operand).
     pub fn build_trunc<Src, Dst, Name>(
         &self,
-        value: IntValue<'ctx, Src>,
-        dst_ty: IntType<'ctx, Dst>,
+        value: IntValue<'ctx, Src, B>,
+        dst_ty: IntType<'ctx, Dst, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, Dst>>
+    ) -> IrResult<IntValue<'ctx, Dst, B>>
     where
         Name: AsRef<str>,
         Src: crate::int_width::WiderThan<Dst>,
         Dst: IntWidth,
     {
-        self.require_same_module(value.as_value())?;
         if let Some(folded) = self.folder.fold_cast(
             crate::instr_types::CastOpcode::Trunc,
             value.as_value(),
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(IntValue::<Dst>::from_value_unchecked(folded));
+            return Ok(IntValue::<Dst, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.as_value().id);
         let inst = self.append_instruction(
@@ -2430,7 +2422,7 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(IntValue::<Dst>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<Dst, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Produce `zext <value> to <dst_ty>`. Mirrors
@@ -2441,23 +2433,22 @@ where
     /// [`Self::build_zext_dyn`] when both widths are erased.
     pub fn build_zext<Src, Dst, Name>(
         &self,
-        value: IntValue<'ctx, Src>,
-        dst_ty: IntType<'ctx, Dst>,
+        value: IntValue<'ctx, Src, B>,
+        dst_ty: IntType<'ctx, Dst, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, Dst>>
+    ) -> IrResult<IntValue<'ctx, Dst, B>>
     where
         Name: AsRef<str>,
         Src: IntWidth,
         Dst: crate::int_width::WiderThan<Src>,
     {
-        self.require_same_module(value.as_value())?;
         if let Some(folded) = self.folder.fold_cast(
             crate::instr_types::CastOpcode::ZExt,
             value.as_value(),
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(IntValue::<Dst>::from_value_unchecked(folded));
+            return Ok(IntValue::<Dst, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, value.as_value().id);
         let inst = self.append_instruction(
@@ -2465,7 +2456,7 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(IntValue::<Dst>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<Dst, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Produce `sext <value> to <dst_ty>`. Mirrors
@@ -2476,23 +2467,22 @@ where
     /// [`Self::build_sext_dyn`] when both widths are erased.
     pub fn build_sext<Src, Dst, Name>(
         &self,
-        value: IntValue<'ctx, Src>,
-        dst_ty: IntType<'ctx, Dst>,
+        value: IntValue<'ctx, Src, B>,
+        dst_ty: IntType<'ctx, Dst, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, Dst>>
+    ) -> IrResult<IntValue<'ctx, Dst, B>>
     where
         Name: AsRef<str>,
         Src: IntWidth,
         Dst: crate::int_width::WiderThan<Src>,
     {
-        self.require_same_module(value.as_value())?;
         if let Some(folded) = self.folder.fold_cast(
             crate::instr_types::CastOpcode::SExt,
             value.as_value(),
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(IntValue::<Dst>::from_value_unchecked(folded));
+            return Ok(IntValue::<Dst, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::SExt, value.as_value().id);
         let inst = self.append_instruction(
@@ -2500,7 +2490,7 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(IntValue::<Dst>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<Dst, B>::from_value_unchecked(inst.as_value()))
     }
 
     // ---- Dyn fallbacks (runtime-checked) ----
@@ -2510,14 +2500,13 @@ where
     /// not strictly narrower than `value`'s runtime width.
     pub fn build_trunc_dyn<Name>(
         &self,
-        value: IntValue<'ctx, crate::int_width::IntDyn>,
-        dst_ty: IntType<'ctx, crate::int_width::IntDyn>,
+        value: IntValue<'ctx, IntDyn, B>,
+        dst_ty: IntType<'ctx, IntDyn, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>>
+    ) -> IrResult<IntValue<'ctx, IntDyn, B>>
     where
         Name: AsRef<str>,
     {
-        self.require_same_module(value.as_value())?;
         let src_w = value.ty().bit_width();
         let dst_w = dst_ty.bit_width();
         if dst_w >= src_w {
@@ -2532,9 +2521,7 @@ where
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(IntValue::<crate::int_width::IntDyn>::from_value_unchecked(
-                folded,
-            ));
+            return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.as_value().id);
         let inst = self.append_instruction(
@@ -2542,9 +2529,7 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(IntValue::<crate::int_width::IntDyn>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(IntValue::<IntDyn, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// `trunc nuw/nsw` with explicit [`crate::TruncFlags`]. Runtime-checked
@@ -2552,15 +2537,14 @@ where
     /// cast payload.
     pub fn build_trunc_with_flags_dyn<Name>(
         &self,
-        value: IntValue<'ctx, crate::int_width::IntDyn>,
-        dst_ty: IntType<'ctx, crate::int_width::IntDyn>,
+        value: IntValue<'ctx, IntDyn, B>,
+        dst_ty: IntType<'ctx, IntDyn, B>,
         flags: crate::instr_types::TruncFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>>
+    ) -> IrResult<IntValue<'ctx, IntDyn, B>>
     where
         Name: AsRef<str>,
     {
-        self.require_same_module(value.as_value())?;
         let src_w = value.ty().bit_width();
         let dst_w = dst_ty.bit_width();
         if dst_w >= src_w {
@@ -2575,9 +2559,7 @@ where
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(IntValue::<crate::int_width::IntDyn>::from_value_unchecked(
-                folded,
-            ));
+            return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.as_value().id);
         payload.nuw.set(flags.nuw);
@@ -2587,9 +2569,7 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(IntValue::<crate::int_width::IntDyn>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(IntValue::<IntDyn, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Runtime-checked `zext` for `IntValue<Dyn>` operands.
@@ -2597,10 +2577,10 @@ where
     /// not strictly wider than `value`'s runtime width.
     pub fn build_zext_dyn<Name>(
         &self,
-        value: IntValue<'ctx, crate::int_width::IntDyn>,
-        dst_ty: IntType<'ctx, crate::int_width::IntDyn>,
+        value: IntValue<'ctx, IntDyn, B>,
+        dst_ty: IntType<'ctx, IntDyn, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>>
+    ) -> IrResult<IntValue<'ctx, IntDyn, B>>
     where
         Name: AsRef<str>,
     {
@@ -2612,15 +2592,14 @@ where
     /// payload.
     pub fn build_zext_with_flags_dyn<Name>(
         &self,
-        src: IntValue<'ctx, crate::int_width::IntDyn>,
-        dst: crate::derived_types::IntType<'ctx, crate::int_width::IntDyn>,
+        src: IntValue<'ctx, IntDyn, B>,
+        dst: IntType<'ctx, IntDyn, B>,
         flags: crate::instr_types::ZExtFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>>
+    ) -> IrResult<IntValue<'ctx, IntDyn, B>>
     where
         Name: AsRef<str>,
     {
-        self.require_same_module(src.as_value())?;
         let src_w = src.ty().bit_width();
         let dst_w = dst.bit_width();
         if dst_w <= src_w {
@@ -2635,17 +2614,13 @@ where
             dst.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst.as_type().id())?;
-            return Ok(IntValue::<crate::int_width::IntDyn>::from_value_unchecked(
-                folded,
-            ));
+            return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, src.as_value().id);
         payload.nneg.set(flags.nneg);
         let inst =
             self.append_instruction(dst.as_type().id(), InstructionKindData::Cast(payload), name);
-        Ok(IntValue::<crate::int_width::IntDyn>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(IntValue::<IntDyn, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Runtime-checked `sext` for `IntValue<Dyn>` operands.
@@ -2653,10 +2628,10 @@ where
     /// not strictly wider than `value`'s runtime width.
     pub fn build_sext_dyn<Name>(
         &self,
-        value: IntValue<'ctx, crate::int_width::IntDyn>,
-        dst_ty: IntType<'ctx, crate::int_width::IntDyn>,
+        value: IntValue<'ctx, IntDyn, B>,
+        dst_ty: IntType<'ctx, IntDyn, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>>
+    ) -> IrResult<IntValue<'ctx, IntDyn, B>>
     where
         Name: AsRef<str>,
     {
@@ -2666,12 +2641,11 @@ where
     /// Crate-internal helper for `build_zext_dyn` / `build_sext_dyn`.
     fn build_int_extend_dyn(
         &self,
-        value: IntValue<'ctx, crate::int_width::IntDyn>,
-        dst_ty: IntType<'ctx, crate::int_width::IntDyn>,
+        value: IntValue<'ctx, IntDyn, B>,
+        dst_ty: IntType<'ctx, IntDyn, B>,
         name: impl AsRef<str>,
         opcode: crate::instr_types::CastOpcode,
-    ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>> {
-        self.require_same_module(value.as_value())?;
+    ) -> IrResult<IntValue<'ctx, IntDyn, B>> {
         let src_w = value.ty().bit_width();
         let dst_w = dst_ty.bit_width();
         if dst_w <= src_w {
@@ -2685,9 +2659,7 @@ where
             .fold_cast(opcode, value.as_value(), dst_ty.as_type())?
         {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(IntValue::<crate::int_width::IntDyn>::from_value_unchecked(
-                folded,
-            ));
+            return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(opcode, value.as_value().id);
         let inst = self.append_instruction(
@@ -2695,23 +2667,17 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(IntValue::<crate::int_width::IntDyn>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(IntValue::<IntDyn, B>::from_value_unchecked(inst.as_value()))
     }
 
     // ---- Memory: alloca / load / store ----
 
     /// Produce `alloca <ty>`. Mirrors `IRBuilder::CreateAlloca`.
     /// The result is a `ptr` in the default address space.
-    pub fn build_alloca<T, Name>(
-        &self,
-        ty: T,
-        name: Name,
-    ) -> IrResult<crate::value::PointerValue<'ctx>>
+    pub fn build_alloca<T, Name>(&self, ty: T, name: Name) -> IrResult<PointerValue<'ctx, B>>
     where
         Name: AsRef<str>,
-        T: crate::r#type::IrType<'ctx>,
+        T: IrType<'ctx, B>,
     {
         self.build_alloca_inner(ty.as_type().id(), None, MaybeAlign::NONE, 0, name)
     }
@@ -2723,11 +2689,11 @@ where
         ty: T,
         num_elements: N,
         name: Name,
-    ) -> IrResult<crate::value::PointerValue<'ctx>>
+    ) -> IrResult<PointerValue<'ctx, B>>
     where
         Name: AsRef<str>,
-        T: crate::r#type::IrType<'ctx>,
-        N: crate::int_width::IntoIntValue<'ctx, crate::int_width::IntDyn>,
+        T: IrType<'ctx, B>,
+        N: IntoIntValue<'ctx, IntDyn, B>,
     {
         let n = num_elements.into_int_value(ModuleRef::new(self.module))?;
         self.build_alloca_inner(
@@ -2746,10 +2712,10 @@ where
         ty: T,
         align: Align,
         name: Name,
-    ) -> IrResult<crate::value::PointerValue<'ctx>>
+    ) -> IrResult<PointerValue<'ctx, B>>
     where
         Name: AsRef<str>,
-        T: crate::r#type::IrType<'ctx>,
+        T: IrType<'ctx, B>,
     {
         self.build_alloca_inner(ty.as_type().id(), None, MaybeAlign::new(align), 0, name)
     }
@@ -2757,41 +2723,33 @@ where
     fn build_alloca_inner(
         &self,
         allocated_ty: TypeId,
-        num_elements: Option<crate::value::ValueId>,
+        num_elements: Option<ValueId>,
         align: MaybeAlign,
         addr_space: u32,
         name: impl AsRef<str>,
-    ) -> IrResult<crate::value::PointerValue<'ctx>> {
-        if let Some(id) = num_elements {
-            let v = crate::value::Value::from_parts(id, self.module, {
-                self.module.context().value_data(id).ty
-            });
-            self.require_same_module(v)?;
-        }
+    ) -> IrResult<PointerValue<'ctx, B>> {
         let payload =
             crate::instr_types::AllocaInstData::new(allocated_ty, num_elements, align, addr_space);
         let ptr_ty = self.module.ptr_type(addr_space).as_type().id();
         let inst = self.append_instruction(ptr_ty, InstructionKindData::Alloca(payload), name);
-        Ok(crate::value::PointerValue::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(PointerValue::from_value_unchecked(inst.as_value()))
     }
 
     /// Erased load: `load <ty>, ptr <ptr>`. Result type is whatever
     /// `ty` decodes to at runtime; returned as a [`Value`] handle the
     /// caller narrows via `try_into()`. Mirrors
     /// `IRBuilder::CreateLoad`.
-    pub fn build_load<T, P, Name>(&self, ty: T, ptr: P, name: Name) -> IrResult<Value<'ctx>>
+    pub fn build_load<T, P, Name>(&self, ty: T, ptr: P, name: Name) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
-        T: crate::r#type::IrType<'ctx>,
-        P: crate::value::IntoPointerValue<'ctx>,
+        T: IrType<'ctx, B>,
+        P: IntoPointerValue<'ctx, B>,
     {
         let ty_id = ty.as_type().id();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty_id,
-            super::value::IsValue::as_value(p).id,
+            IsValue::as_value(p).id,
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
@@ -2809,17 +2767,17 @@ where
         ptr: P,
         align: Align,
         name: Name,
-    ) -> IrResult<Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
-        T: crate::r#type::IrType<'ctx>,
-        P: crate::value::IntoPointerValue<'ctx>,
+        T: IrType<'ctx, B>,
+        P: IntoPointerValue<'ctx, B>,
     {
         let ty_id = ty.as_type().id();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty_id,
-            super::value::IsValue::as_value(p).id,
+            IsValue::as_value(p).id,
             MaybeAlign::new(align),
             false,
             AtomicOrdering::NotAtomic,
@@ -2832,136 +2790,120 @@ where
     /// Typed integer load: `load iN, ptr <ptr>`. Marker-only form:
     /// the result type comes from `W` via [`crate::StaticIntWidth`].
     /// Mirrors `IRBuilder::CreateLoad` with a fixed integer width.
-    pub fn build_int_load<W, P, Name>(&self, ptr: P, name: Name) -> IrResult<IntValue<'ctx, W>>
+    pub fn build_int_load<W, P, Name>(&self, ptr: P, name: Name) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: crate::int_width::StaticIntWidth,
-        P: crate::value::IntoPointerValue<'ctx>,
+        P: IntoPointerValue<'ctx, B>,
     {
-        let ty = W::ir_type(ModuleRef::new(self.module));
+        let ty = W::ir_type(ModuleRef::<B>::new(self.module));
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            super::value::IsValue::as_value(p).id,
+            IsValue::as_value(p).id,
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
         let inst = self.build_load_inner(p, payload, name)?;
-        Ok(IntValue::<W>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Runtime-width integer load. Takes the type explicitly because
     /// the [`crate::IntDyn`] marker carries no static width.
     pub fn build_int_load_dyn<P, Name>(
         &self,
-        ty: IntType<'ctx, crate::int_width::IntDyn>,
+        ty: IntType<'ctx, IntDyn, B>,
         ptr: P,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, crate::int_width::IntDyn>>
+    ) -> IrResult<IntValue<'ctx, IntDyn, B>>
     where
         Name: AsRef<str>,
-        P: crate::value::IntoPointerValue<'ctx>,
+        P: IntoPointerValue<'ctx, B>,
     {
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            super::value::IsValue::as_value(p).id,
+            IsValue::as_value(p).id,
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
         let inst = self.build_load_inner(p, payload, name)?;
-        Ok(IntValue::<crate::int_width::IntDyn>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(IntValue::<IntDyn, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Typed float load: `load <fpty>, ptr <ptr>`. Marker-only.
-    pub fn build_fp_load<K, P, Name>(
-        &self,
-        ptr: P,
-        name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    pub fn build_fp_load<K, P, Name>(&self, ptr: P, name: Name) -> IrResult<FloatValue<'ctx, K, B>>
     where
         Name: AsRef<str>,
         K: crate::float_kind::StaticFloatKind,
-        P: crate::value::IntoPointerValue<'ctx>,
+        P: IntoPointerValue<'ctx, B>,
     {
-        let ty = K::ir_type(ModuleRef::new(self.module));
+        let ty = K::ir_type(ModuleRef::<B>::new(self.module));
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            super::value::IsValue::as_value(p).id,
+            IsValue::as_value(p).id,
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
         let inst = self.build_load_inner(p, payload, name)?;
-        Ok(crate::value::FloatValue::<K>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Runtime-kind float load. Takes the type explicitly because
     /// [`crate::FloatDyn`] carries no static kind.
     pub fn build_fp_load_dyn<P, Name>(
         &self,
-        ty: crate::derived_types::FloatType<'ctx, crate::float_kind::FloatDyn>,
+        ty: FloatType<'ctx, FloatDyn, B>,
         ptr: P,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>>
+    ) -> IrResult<FloatValue<'ctx, FloatDyn, B>>
     where
         Name: AsRef<str>,
-        P: crate::value::IntoPointerValue<'ctx>,
+        P: IntoPointerValue<'ctx, B>,
     {
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            super::value::IsValue::as_value(p).id,
+            IsValue::as_value(p).id,
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
         let inst = self.build_load_inner(p, payload, name)?;
-        Ok(
-            crate::value::FloatValue::<crate::float_kind::FloatDyn>::from_value_unchecked(
-                inst.as_value(),
-            ),
-        )
+        Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(
+            inst.as_value(),
+        ))
     }
 
     /// Pointer-typed load: `load ptr, ptr <ptr>`. Pointer types are
     /// uniform (only address space varies); the loaded ptr is in the
     /// default address space. Use [`Self::build_load`] erased form for
     /// other address spaces.
-    pub fn build_pointer_load<P, Name>(
-        &self,
-        ptr: P,
-        name: Name,
-    ) -> IrResult<crate::value::PointerValue<'ctx>>
+    pub fn build_pointer_load<P, Name>(&self, ptr: P, name: Name) -> IrResult<PointerValue<'ctx, B>>
     where
         Name: AsRef<str>,
-        P: crate::value::IntoPointerValue<'ctx>,
+        P: IntoPointerValue<'ctx, B>,
     {
         let ty = self.module.ptr_type(0);
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            super::value::IsValue::as_value(p).id,
+            IsValue::as_value(p).id,
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
         let inst = self.build_load_inner(p, payload, name)?;
-        Ok(crate::value::PointerValue::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(PointerValue::from_value_unchecked(inst.as_value()))
     }
 
     /// Same as [`Self::build_int_load`] plus an explicit alignment.
@@ -2970,33 +2912,32 @@ where
         ptr: P,
         align: Align,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: crate::int_width::StaticIntWidth,
-        P: crate::value::IntoPointerValue<'ctx>,
+        P: IntoPointerValue<'ctx, B>,
     {
-        let ty = W::ir_type(ModuleRef::new(self.module));
+        let ty = W::ir_type(ModuleRef::<B>::new(self.module));
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            super::value::IsValue::as_value(p).id,
+            IsValue::as_value(p).id,
             MaybeAlign::new(align),
             false,
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
         let inst = self.build_load_inner(p, payload, name)?;
-        Ok(IntValue::<W>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
     }
 
     fn build_load_inner(
         &self,
-        ptr: super::value::PointerValue<'ctx>,
+        _ptr: PointerValue<'ctx, B>,
         payload: LoadInstData,
         name: impl AsRef<str>,
-    ) -> IrResult<Instruction<'ctx>> {
-        self.require_same_module(super::value::IsValue::as_value(ptr))?;
+    ) -> IrResult<Instruction<'ctx, Attached, B>> {
         let pointee_ty = payload.pointee_ty;
         Ok(self.append_instruction(pointee_ty, InstructionKindData::Load(payload), name))
     }
@@ -3008,17 +2949,17 @@ where
         ty: T,
         ptr: P,
         name: Name,
-    ) -> IrResult<crate::value::Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
-        T: crate::r#type::IrType<'ctx>,
-        P: crate::value::IntoPointerValue<'ctx>,
+        T: IrType<'ctx, B>,
+        P: IntoPointerValue<'ctx, B>,
     {
         let ty_id = ty.as_type().id();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty_id,
-            super::value::IsValue::as_value(p).id,
+            IsValue::as_value(p).id,
             MaybeAlign::NONE,
             true,
             AtomicOrdering::NotAtomic,
@@ -3036,17 +2977,17 @@ where
         ptr: P,
         align: Align,
         name: Name,
-    ) -> IrResult<crate::value::Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
-        T: crate::r#type::IrType<'ctx>,
-        P: crate::value::IntoPointerValue<'ctx>,
+        T: IrType<'ctx, B>,
+        P: IntoPointerValue<'ctx, B>,
     {
         let ty_id = ty.as_type().id();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty_id,
-            super::value::IsValue::as_value(p).id,
+            IsValue::as_value(p).id,
             MaybeAlign::new(align),
             true,
             AtomicOrdering::NotAtomic,
@@ -3058,14 +2999,10 @@ where
 
     /// Produce `store <value>, ptr <ptr>`. Mirrors
     /// `IRBuilder::CreateStore`.
-    pub fn build_store<V, P>(
-        &self,
-        value: V,
-        ptr: P,
-    ) -> IrResult<crate::instructions::StoreInst<'ctx>>
+    pub fn build_store<V, P>(&self, value: V, ptr: P) -> IrResult<StoreInst<'ctx, B>>
     where
-        V: crate::value::IsValue<'ctx>,
-        P: crate::value::IntoPointerValue<'ctx>,
+        V: IsValue<'ctx, B>,
+        P: IntoPointerValue<'ctx, B>,
     {
         let payload = self.store_payload(
             value,
@@ -3084,10 +3021,10 @@ where
         value: V,
         ptr: P,
         align: Align,
-    ) -> IrResult<crate::instructions::StoreInst<'ctx>>
+    ) -> IrResult<StoreInst<'ctx, B>>
     where
-        V: crate::value::IsValue<'ctx>,
-        P: crate::value::IntoPointerValue<'ctx>,
+        V: IsValue<'ctx, B>,
+        P: IntoPointerValue<'ctx, B>,
     {
         let payload = self.store_payload(
             value,
@@ -3102,14 +3039,10 @@ where
 
     /// `store volatile <value>, ptr <ptr>`. Non-atomic volatile store.
     /// Mirrors `IRBuilder::CreateStore(V, P, /*isVolatile=*/true)`.
-    pub fn build_store_volatile<V, P>(
-        &self,
-        value: V,
-        ptr: P,
-    ) -> IrResult<crate::instructions::StoreInst<'ctx>>
+    pub fn build_store_volatile<V, P>(&self, value: V, ptr: P) -> IrResult<StoreInst<'ctx, B>>
     where
-        V: crate::value::IsValue<'ctx>,
-        P: crate::value::IntoPointerValue<'ctx>,
+        V: IsValue<'ctx, B>,
+        P: IntoPointerValue<'ctx, B>,
     {
         let payload = self.store_payload(
             value,
@@ -3129,10 +3062,10 @@ where
         value: V,
         ptr: P,
         align: Align,
-    ) -> IrResult<crate::instructions::StoreInst<'ctx>>
+    ) -> IrResult<StoreInst<'ctx, B>>
     where
-        V: crate::value::IsValue<'ctx>,
-        P: crate::value::IntoPointerValue<'ctx>,
+        V: IsValue<'ctx, B>,
+        P: IntoPointerValue<'ctx, B>,
     {
         let payload = self.store_payload(
             value,
@@ -3148,15 +3081,12 @@ where
     /// Inner store: caller has already computed the payload and validated
     /// the pointer/value modules. Single-arg helper used by the four
     /// public store builders.
-    fn build_store_inner(
-        &self,
-        payload: StoreInstData,
-    ) -> IrResult<super::instructions::StoreInst<'ctx>> {
+    fn build_store_inner(&self, payload: StoreInstData) -> IrResult<StoreInst<'ctx, B>> {
         let void_ty = self.module.void_type().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Store(payload), "");
-        Ok(super::instructions::StoreInst::from_raw(
+        Ok(StoreInst::from_raw(
             inst.as_value().id,
-            inst.module().core_ref(),
+            ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
     }
@@ -3171,16 +3101,14 @@ where
         sync_scope: SyncScope,
     ) -> IrResult<StoreInstData>
     where
-        V: super::value::IsValue<'ctx>,
-        P: super::value::IntoPointerValue<'ctx>,
+        V: IsValue<'ctx, B>,
+        P: IntoPointerValue<'ctx, B>,
     {
         let v = value.as_value();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
-        self.require_same_module(v)?;
-        self.require_same_module(super::value::IsValue::as_value(p))?;
         Ok(StoreInstData::new(
             v.id,
-            super::value::IsValue::as_value(p).id,
+            IsValue::as_value(p).id,
             align,
             volatile,
             ordering,
@@ -3203,24 +3131,24 @@ where
         ptr: P,
         config: super::instr_types::AtomicLoadConfig,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: super::int_width::StaticIntWidth,
-        P: super::value::IntoPointerValue<'ctx>,
+        P: IntoPointerValue<'ctx, B>,
     {
-        let ty = W::ir_type(ModuleRef::new(self.module));
+        let ty = W::ir_type(ModuleRef::<B>::new(self.module));
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            super::value::IsValue::as_value(p).id,
+            IsValue::as_value(p).id,
             MaybeAlign::new(config.align_value()),
             config.is_volatile(),
             config.ordering_value(),
             config.sync_scope_value().clone(),
         );
         let inst = self.build_load_inner(p, payload, name)?;
-        Ok(IntValue::<W>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Erased atomic load. Same upstream constructor as
@@ -3232,17 +3160,17 @@ where
         ptr: P,
         config: super::instr_types::AtomicLoadConfig,
         name: Name,
-    ) -> IrResult<Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
-        T: super::r#type::IrType<'ctx>,
-        P: super::value::IntoPointerValue<'ctx>,
+        T: IrType<'ctx, B>,
+        P: IntoPointerValue<'ctx, B>,
     {
         let ty_id = ty.as_type().id();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty_id,
-            super::value::IsValue::as_value(p).id,
+            IsValue::as_value(p).id,
             MaybeAlign::new(config.align_value()),
             config.is_volatile(),
             config.ordering_value(),
@@ -3263,10 +3191,10 @@ where
         value: V,
         ptr: P,
         config: super::instr_types::AtomicStoreConfig,
-    ) -> IrResult<super::instructions::StoreInst<'ctx>>
+    ) -> IrResult<StoreInst<'ctx, B>>
     where
-        V: super::value::IsValue<'ctx>,
-        P: super::value::IntoPointerValue<'ctx>,
+        V: IsValue<'ctx, B>,
+        P: IntoPointerValue<'ctx, B>,
     {
         let payload = self.store_payload(
             value,
@@ -3282,20 +3210,20 @@ where
     // ---- Call ----
 
     /// Flat call form: pass a [`FunctionValue`] callee, an iterable of
-    /// pre-widened arguments (each one already a [`Value<'ctx>`]), and
+    /// pre-widened arguments (each one already a [`Value<'ctx, B>`]), and
     /// a name. Mirrors the simple shape of `IRBuilder::CreateCall`.
     /// Use [`Self::call_builder`] for mixed-arg-type construction.
     pub fn build_call<R2, I, V, Name>(
         &self,
-        callee: FunctionValue<'ctx, R2>,
+        callee: FunctionValue<'ctx, R2, B>,
         args: I,
         name: Name,
-    ) -> IrResult<crate::instructions::CallInst<'ctx, R2>>
+    ) -> IrResult<CallInst<'ctx, R2, B>>
     where
         Name: AsRef<str>,
         R2: crate::marker::ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
     {
         let mut builder = self.call_builder(callee).name(name);
         for arg in args {
@@ -3311,7 +3239,7 @@ where
     /// can vary across calls.
     pub fn call_builder<R2: ReturnMarker>(
         &self,
-        callee: FunctionValue<'ctx, R2>,
+        callee: FunctionValue<'ctx, R2, B>,
     ) -> CallBuilder<'_, 'm, 'ctx, B, F, R, R2> {
         CallBuilder {
             parent: self,
@@ -3339,18 +3267,18 @@ where
     /// caller picks the return marker `R2` to match `fn_ty`'s return type.
     pub fn build_indirect_call<R2, I, V, Name>(
         &self,
-        fn_ty: crate::derived_types::FunctionType<'ctx>,
-        callee: crate::value::PointerValue<'ctx>,
+        fn_ty: FunctionType<'ctx, B>,
+        callee: PointerValue<'ctx, B>,
         args: I,
         name: Name,
-    ) -> IrResult<crate::instructions::CallInst<'ctx, R2>>
+    ) -> IrResult<CallInst<'ctx, R2, B>>
     where
         Name: AsRef<str>,
         R2: crate::marker::ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
     {
-        let callee_v = crate::value::IsValue::as_value(callee);
+        let callee_v = IsValue::as_value(callee);
         let ret_data = self.module.context().type_data(fn_ty.return_type().id());
         if !crate::function::signature_matches_marker::<R2>(ret_data) {
             return Err(IrError::ReturnTypeMismatch {
@@ -3358,11 +3286,9 @@ where
                 got: fn_ty.return_type().kind_label(),
             });
         }
-        self.require_same_module(callee_v)?;
-        let mut arg_ids: Vec<crate::value::ValueId> = Vec::new();
+        let mut arg_ids: Vec<ValueId> = Vec::new();
         for arg in args {
             let v = arg.as_value();
-            self.require_same_module(v)?;
             arg_ids.push(v.id);
         }
         let payload = crate::instr_types::CallInstData::new(
@@ -3377,9 +3303,9 @@ where
             InstructionKindData::Call(payload),
             name,
         );
-        Ok(crate::instructions::CallInst::<R2>::from_raw(
+        Ok(CallInst::<R2, B>::from_raw(
             inst.as_value().id,
-            inst.module().core_ref(),
+            ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
     }
@@ -3387,7 +3313,7 @@ where
     /// Produce a `call` whose callee is an inline-assembly value. Mirrors
     /// `IRBuilder::CreateCall(InlineAsm*, args)` — the asm carries its own
     /// function type, so the call's return / argument shape comes from
-    /// [`InlineAsm::function_type`](crate::inline_asm::InlineAsm). The
+    /// [`InlineAsm::function_type`](InlineAsm). The
     /// result prints as the `asm` form, e.g.
     /// `call i64 asm sideeffect "...", "=r,r,r"(i64 %a, i64 %b)`, instead
     /// of an `@name` operand.
@@ -3398,18 +3324,17 @@ where
     /// matching what LLVM emits for an inline-asm call.
     pub fn build_inline_asm_call<R2, I, V, Name>(
         &self,
-        asm: crate::inline_asm::InlineAsm<'ctx>,
+        asm: InlineAsm<'ctx, B>,
         args: I,
         name: Name,
-    ) -> IrResult<crate::instructions::CallInst<'ctx, R2>>
+    ) -> IrResult<CallInst<'ctx, R2, B>>
     where
         Name: AsRef<str>,
         R2: crate::marker::ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
     {
         let asm_v = asm.as_value();
-        self.require_same_module(asm_v)?;
         let fn_ty = asm.function_type();
         // Reject a return-marker / signature mismatch up front, mirroring
         // `Module::add_function`'s `signature_matches_marker` gate.
@@ -3420,10 +3345,9 @@ where
                 got: fn_ty.return_type().kind_label(),
             });
         }
-        let mut arg_ids: Vec<crate::value::ValueId> = Vec::new();
+        let mut arg_ids: Vec<ValueId> = Vec::new();
         for arg in args {
             let v = arg.as_value();
-            self.require_same_module(v)?;
             arg_ids.push(v.id);
         }
         let payload = crate::instr_types::CallInstData::new_with_attrs(
@@ -3439,9 +3363,9 @@ where
             InstructionKindData::Call(payload),
             name,
         );
-        Ok(crate::instructions::CallInst::<R2>::from_raw(
+        Ok(CallInst::<R2, B>::from_raw(
             inst.as_value().id,
-            inst.module().core_ref(),
+            ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
     }
@@ -3456,13 +3380,13 @@ where
         ptr: P,
         indices: I,
         name: Name,
-    ) -> IrResult<crate::value::PointerValue<'ctx>>
+    ) -> IrResult<PointerValue<'ctx, B>>
     where
         Name: AsRef<str>,
-        T: crate::r#type::IrType<'ctx>,
-        P: crate::value::IntoPointerValue<'ctx>,
+        T: IrType<'ctx, B>,
+        P: IntoPointerValue<'ctx, B>,
         I: IntoIterator<Item = V>,
-        V: crate::int_width::IntoIntValue<'ctx, crate::int_width::IntDyn>,
+        V: IntoIntValue<'ctx, IntDyn, B>,
     {
         self.build_gep_inner(
             source_ty,
@@ -3481,13 +3405,13 @@ where
         ptr: P,
         indices: I,
         name: Name,
-    ) -> IrResult<crate::value::PointerValue<'ctx>>
+    ) -> IrResult<PointerValue<'ctx, B>>
     where
         Name: AsRef<str>,
-        T: crate::r#type::IrType<'ctx>,
-        P: crate::value::IntoPointerValue<'ctx>,
+        T: IrType<'ctx, B>,
+        P: IntoPointerValue<'ctx, B>,
         I: IntoIterator<Item = V>,
-        V: crate::int_width::IntoIntValue<'ctx, crate::int_width::IntDyn>,
+        V: IntoIntValue<'ctx, IntDyn, B>,
     {
         self.build_gep_inner(
             source_ty,
@@ -3502,16 +3426,16 @@ where
     /// i32 0, i32 <field-idx>`. Mirrors `IRBuilder::CreateStructGEP`.
     pub fn build_struct_gep<P, Name>(
         &self,
-        struct_ty: crate::derived_types::StructType<'ctx>,
+        struct_ty: StructType<'ctx, StructBodyDyn, B>,
         ptr: P,
         idx: u32,
         name: Name,
-    ) -> IrResult<crate::value::PointerValue<'ctx>>
+    ) -> IrResult<PointerValue<'ctx, B>>
     where
         Name: AsRef<str>,
-        P: crate::value::IntoPointerValue<'ctx>,
+        P: IntoPointerValue<'ctx, B>,
     {
-        let i32_ty = self.module.i32_type();
+        let i32_ty = ModuleView::<B>::new(self.module).i32_type();
         let zero = i32_ty.const_zero().as_dyn();
         let idx_val = i32_ty
             .const_int(i32::try_from(idx).map_err(|_| IrError::InvalidOperation {
@@ -3537,13 +3461,13 @@ where
         indices: I,
         flags: crate::gep_no_wrap_flags::GepNoWrapFlags,
         name: Name,
-    ) -> IrResult<crate::value::PointerValue<'ctx>>
+    ) -> IrResult<PointerValue<'ctx, B>>
     where
         Name: AsRef<str>,
-        T: crate::r#type::IrType<'ctx>,
-        P: crate::value::IntoPointerValue<'ctx>,
+        T: IrType<'ctx, B>,
+        P: IntoPointerValue<'ctx, B>,
         I: IntoIterator<Item = V>,
-        V: crate::int_width::IntoIntValue<'ctx, crate::int_width::IntDyn>,
+        V: IntoIntValue<'ctx, IntDyn, B>,
     {
         self.build_gep_inner(source_ty, ptr, indices, flags, name)
     }
@@ -3555,23 +3479,21 @@ where
         indices: I,
         flags: crate::gep_no_wrap_flags::GepNoWrapFlags,
         name: impl AsRef<str>,
-    ) -> IrResult<crate::value::PointerValue<'ctx>>
+    ) -> IrResult<PointerValue<'ctx, B>>
     where
-        T: crate::r#type::IrType<'ctx>,
-        P: crate::value::IntoPointerValue<'ctx>,
+        T: IrType<'ctx, B>,
+        P: IntoPointerValue<'ctx, B>,
         I: IntoIterator<Item = V>,
-        V: crate::int_width::IntoIntValue<'ctx, crate::int_width::IntDyn>,
+        V: IntoIntValue<'ctx, IntDyn, B>,
     {
         let source_ty = source_ty.as_type();
         let source_ty_id = source_ty.id();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
-        let ptr_value = crate::value::IsValue::as_value(p);
-        self.require_same_module(ptr_value)?;
+        let ptr_value = IsValue::as_value(p);
         let mut idx_ids = Vec::new();
         let mut idx_values = Vec::new();
         for index in indices {
             let iv = index.into_int_value(ModuleRef::new(self.module))?;
-            self.require_same_module(iv.as_value())?;
             idx_values.push(iv.as_value());
             idx_ids.push(iv.as_value().id);
         }
@@ -3581,7 +3503,7 @@ where
             .fold_gep(source_ty, ptr_value, &idx_values, flags)?
         {
             let folded = self.checked_folded_value(folded, result_ty)?;
-            return Ok(crate::value::PointerValue::from_value_unchecked(folded));
+            return Ok(PointerValue::from_value_unchecked(folded));
         }
         let payload = crate::instr_types::GepInstData::new(
             source_ty_id,
@@ -3590,9 +3512,7 @@ where
             flags,
         );
         let inst = self.append_instruction(result_ty, InstructionKindData::Gep(payload), name);
-        Ok(crate::value::PointerValue::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(PointerValue::from_value_unchecked(inst.as_value()))
     }
 
     // ---- Floating-point casts ----
@@ -3601,14 +3521,14 @@ where
     /// `Dst: FloatWiderThan<Src>`. Mirrors `IRBuilder::CreateFPExt`.
     pub fn build_fp_ext<Src, Dst, Name>(
         &self,
-        value: crate::value::FloatValue<'ctx, Src>,
-        dst_ty: crate::derived_types::FloatType<'ctx, Dst>,
+        value: FloatValue<'ctx, Src, B>,
+        dst_ty: FloatType<'ctx, Dst, B>,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, Dst>>
+    ) -> IrResult<FloatValue<'ctx, Dst, B>>
     where
         Name: AsRef<str>,
-        Src: crate::float_kind::FloatKind,
-        Dst: crate::float_kind::FloatKind + crate::float_kind::FloatWiderThan<Src>,
+        Src: FloatKind,
+        Dst: FloatKind + FloatWiderThan<Src>,
     {
         self.build_fp_cast(value, dst_ty, name, crate::instr_types::CastOpcode::FpExt)
     }
@@ -3617,14 +3537,14 @@ where
     /// `Src: FloatWiderThan<Dst>`. Mirrors `IRBuilder::CreateFPTrunc`.
     pub fn build_fp_trunc<Src, Dst, Name>(
         &self,
-        value: crate::value::FloatValue<'ctx, Src>,
-        dst_ty: crate::derived_types::FloatType<'ctx, Dst>,
+        value: FloatValue<'ctx, Src, B>,
+        dst_ty: FloatType<'ctx, Dst, B>,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, Dst>>
+    ) -> IrResult<FloatValue<'ctx, Dst, B>>
     where
         Name: AsRef<str>,
-        Src: crate::float_kind::FloatKind + crate::float_kind::FloatWiderThan<Dst>,
-        Dst: crate::float_kind::FloatKind,
+        Src: FloatKind + FloatWiderThan<Dst>,
+        Dst: FloatKind,
     {
         self.build_fp_cast(value, dst_ty, name, crate::instr_types::CastOpcode::FpTrunc)
     }
@@ -3638,25 +3558,20 @@ where
     /// than `dst`.
     pub fn build_fp_trunc_dyn<Name>(
         &self,
-        value: crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>,
-        dst_ty: crate::derived_types::FloatType<'ctx, crate::float_kind::FloatDyn>,
+        value: FloatValue<'ctx, FloatDyn, B>,
+        dst_ty: FloatType<'ctx, FloatDyn, B>,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>>
+    ) -> IrResult<FloatValue<'ctx, FloatDyn, B>>
     where
         Name: AsRef<str>,
     {
-        let v = crate::value::IsValue::as_value(value);
-        self.require_same_module(v)?;
+        let v = IsValue::as_value(value);
         if let Some(folded) =
             self.folder
                 .fold_cast(crate::instr_types::CastOpcode::FpTrunc, v, dst_ty.as_type())?
         {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(
-                crate::value::FloatValue::<crate::float_kind::FloatDyn>::from_value_unchecked(
-                    folded,
-                ),
-            );
+            return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::FpTrunc, v.id);
         let inst = self.append_instruction(
@@ -3664,11 +3579,9 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(
-            crate::value::FloatValue::<crate::float_kind::FloatDyn>::from_value_unchecked(
-                inst.as_value(),
-            ),
-        )
+        Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(
+            inst.as_value(),
+        ))
     }
 
     /// Runtime-kind `fpext`. Mirrors [`Self::build_fp_ext`] but accepts
@@ -3680,25 +3593,20 @@ where
     /// than `src`.
     pub fn build_fp_ext_dyn<Name>(
         &self,
-        value: crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>,
-        dst_ty: crate::derived_types::FloatType<'ctx, crate::float_kind::FloatDyn>,
+        value: FloatValue<'ctx, FloatDyn, B>,
+        dst_ty: FloatType<'ctx, FloatDyn, B>,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>>
+    ) -> IrResult<FloatValue<'ctx, FloatDyn, B>>
     where
         Name: AsRef<str>,
     {
-        let v = crate::value::IsValue::as_value(value);
-        self.require_same_module(v)?;
+        let v = IsValue::as_value(value);
         if let Some(folded) =
             self.folder
                 .fold_cast(crate::instr_types::CastOpcode::FpExt, v, dst_ty.as_type())?
         {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(
-                crate::value::FloatValue::<crate::float_kind::FloatDyn>::from_value_unchecked(
-                    folded,
-                ),
-            );
+            return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::FpExt, v.id);
         let inst = self.append_instruction(
@@ -3706,32 +3614,27 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(
-            crate::value::FloatValue::<crate::float_kind::FloatDyn>::from_value_unchecked(
-                inst.as_value(),
-            ),
-        )
+        Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(
+            inst.as_value(),
+        ))
     }
 
     /// Crate-internal helper for `build_fp_ext` / `build_fp_trunc`.
     fn build_fp_cast<Src, Dst>(
         &self,
-        value: crate::value::FloatValue<'ctx, Src>,
-        dst_ty: crate::derived_types::FloatType<'ctx, Dst>,
+        value: FloatValue<'ctx, Src, B>,
+        dst_ty: FloatType<'ctx, Dst, B>,
         name: impl AsRef<str>,
         opcode: crate::instr_types::CastOpcode,
-    ) -> IrResult<crate::value::FloatValue<'ctx, Dst>>
+    ) -> IrResult<FloatValue<'ctx, Dst, B>>
     where
-        Src: crate::float_kind::FloatKind,
-        Dst: crate::float_kind::FloatKind,
+        Src: FloatKind,
+        Dst: FloatKind,
     {
-        let v = crate::value::IsValue::as_value(value);
-        self.require_same_module(v)?;
+        let v = IsValue::as_value(value);
         if let Some(folded) = self.folder.fold_cast(opcode, v, dst_ty.as_type())? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(crate::value::FloatValue::<Dst>::from_value_unchecked(
-                folded,
-            ));
+            return Ok(FloatValue::<Dst, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(opcode, v.id);
         let inst = self.append_instruction(
@@ -3739,22 +3642,20 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(crate::value::FloatValue::<Dst>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(FloatValue::<Dst, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Produce `fptoui <value> to <dst>`. Mirrors
     /// `IRBuilder::CreateFPToUI`.
     pub fn build_fp_to_ui<K, W, Name>(
         &self,
-        value: crate::value::FloatValue<'ctx, K>,
-        dst_ty: IntType<'ctx, W>,
+        value: FloatValue<'ctx, K, B>,
+        dst_ty: IntType<'ctx, W, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
-        K: crate::float_kind::FloatKind,
+        K: FloatKind,
         W: IntWidth,
     {
         self.build_fp_to_int(value, dst_ty, name, crate::instr_types::CastOpcode::FpToUI)
@@ -3764,13 +3665,13 @@ where
     /// `IRBuilder::CreateFPToSI`.
     pub fn build_fp_to_si<K, W, Name>(
         &self,
-        value: crate::value::FloatValue<'ctx, K>,
-        dst_ty: IntType<'ctx, W>,
+        value: FloatValue<'ctx, K, B>,
+        dst_ty: IntType<'ctx, W, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
-        K: crate::float_kind::FloatKind,
+        K: FloatKind,
         W: IntWidth,
     {
         self.build_fp_to_int(value, dst_ty, name, crate::instr_types::CastOpcode::FpToSI)
@@ -3778,20 +3679,19 @@ where
 
     fn build_fp_to_int<K, W>(
         &self,
-        value: crate::value::FloatValue<'ctx, K>,
-        dst_ty: IntType<'ctx, W>,
+        value: FloatValue<'ctx, K, B>,
+        dst_ty: IntType<'ctx, W, B>,
         name: impl AsRef<str>,
         opcode: crate::instr_types::CastOpcode,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
-        K: crate::float_kind::FloatKind,
+        K: FloatKind,
         W: IntWidth,
     {
-        let v = crate::value::IsValue::as_value(value);
-        self.require_same_module(v)?;
+        let v = IsValue::as_value(value);
         if let Some(folded) = self.folder.fold_cast(opcode, v, dst_ty.as_type())? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(IntValue::<W>::from_value_unchecked(folded));
+            return Ok(IntValue::<W, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(opcode, v.id);
         let inst = self.append_instruction(
@@ -3799,21 +3699,21 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(IntValue::<W>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Produce `uitofp <value> to <dst>`. Mirrors
     /// `IRBuilder::CreateUIToFP`.
     pub fn build_ui_to_fp<W, K, Name>(
         &self,
-        value: IntValue<'ctx, W>,
-        dst_ty: crate::derived_types::FloatType<'ctx, K>,
+        value: IntValue<'ctx, W, B>,
+        dst_ty: FloatType<'ctx, K, B>,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    ) -> IrResult<FloatValue<'ctx, K, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        K: crate::float_kind::FloatKind,
+        K: FloatKind,
     {
         self.build_int_to_fp(value, dst_ty, name, crate::instr_types::CastOpcode::UIToFp)
     }
@@ -3822,14 +3722,14 @@ where
     /// `IRBuilder::CreateSIToFP`.
     pub fn build_si_to_fp<W, K, Name>(
         &self,
-        value: IntValue<'ctx, W>,
-        dst_ty: crate::derived_types::FloatType<'ctx, K>,
+        value: IntValue<'ctx, W, B>,
+        dst_ty: FloatType<'ctx, K, B>,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    ) -> IrResult<FloatValue<'ctx, K, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        K: crate::float_kind::FloatKind,
+        K: FloatKind,
     {
         self.build_int_to_fp(value, dst_ty, name, crate::instr_types::CastOpcode::SIToFp)
     }
@@ -3839,54 +3739,46 @@ where
     /// types are erased (dyn variants).
     pub fn build_ui_to_fp_with_flags_dyn<Name>(
         &self,
-        src: IntValue<'ctx, crate::int_width::IntDyn>,
-        dst: crate::derived_types::FloatType<'ctx, crate::float_kind::FloatDyn>,
+        src: IntValue<'ctx, IntDyn, B>,
+        dst: FloatType<'ctx, FloatDyn, B>,
         flags: crate::instr_types::UIToFpFlags,
         name: Name,
-    ) -> IrResult<crate::value::FloatValue<'ctx, crate::float_kind::FloatDyn>>
+    ) -> IrResult<FloatValue<'ctx, FloatDyn, B>>
     where
         Name: AsRef<str>,
     {
-        self.require_same_module(src.as_value())?;
         if let Some(folded) = self.folder.fold_cast(
             crate::instr_types::CastOpcode::UIToFp,
             src.as_value(),
             dst.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst.as_type().id())?;
-            return Ok(
-                crate::value::FloatValue::<crate::float_kind::FloatDyn>::from_value_unchecked(
-                    folded,
-                ),
-            );
+            return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::UIToFp, src.as_value().id);
         payload.nneg.set(flags.nneg);
         let inst =
             self.append_instruction(dst.as_type().id(), InstructionKindData::Cast(payload), name);
-        Ok(
-            crate::value::FloatValue::<crate::float_kind::FloatDyn>::from_value_unchecked(
-                inst.as_value(),
-            ),
-        )
+        Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(
+            inst.as_value(),
+        ))
     }
 
     fn build_int_to_fp<W, K>(
         &self,
-        value: IntValue<'ctx, W>,
-        dst_ty: crate::derived_types::FloatType<'ctx, K>,
+        value: IntValue<'ctx, W, B>,
+        dst_ty: FloatType<'ctx, K, B>,
         name: impl AsRef<str>,
         opcode: crate::instr_types::CastOpcode,
-    ) -> IrResult<crate::value::FloatValue<'ctx, K>>
+    ) -> IrResult<FloatValue<'ctx, K, B>>
     where
         W: IntWidth,
-        K: crate::float_kind::FloatKind,
+        K: FloatKind,
     {
         let v = value.as_value();
-        self.require_same_module(v)?;
         if let Some(folded) = self.folder.fold_cast(opcode, v, dst_ty.as_type())? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(crate::value::FloatValue::<K>::from_value_unchecked(folded));
+            return Ok(FloatValue::<K, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(opcode, v.id);
         let inst = self.append_instruction(
@@ -3894,9 +3786,7 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(crate::value::FloatValue::<K>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
     }
 
     // ---- Pointer casts ----
@@ -3907,17 +3797,16 @@ where
     /// operand's address space.
     pub fn build_ptr_to_addr<Name>(
         &self,
-        value: PointerValue<'ctx>,
+        value: PointerValue<'ctx, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, IntDyn>>
+    ) -> IrResult<IntValue<'ctx, IntDyn, B>>
     where
         Name: AsRef<str>,
     {
         let value = value.as_value();
-        self.require_same_module(value)?;
         let dst_ty = self.ptr_to_addr_result_type(value.ty())?;
         let result = self.build_ptr_to_addr_dyn(value, dst_ty, name)?;
-        Ok(IntValue::<IntDyn>::from_value_unchecked(result))
+        Ok(IntValue::<IntDyn, B>::from_value_unchecked(result))
     }
 
     /// Runtime-typed `ptrtoaddr`. Accepts either a scalar pointer or a
@@ -3926,14 +3815,13 @@ where
     /// Mirrors `DataLayout::getAddressType(V->getType())`.
     pub fn build_ptr_to_addr_dyn<Name>(
         &self,
-        value: Value<'ctx>,
-        dst_ty: Type<'ctx>,
+        value: Value<'ctx, B>,
+        dst_ty: Type<'ctx, B>,
         name: Name,
-    ) -> IrResult<Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
     {
-        self.require_same_module(value)?;
         let expected_ty = self.ptr_to_addr_result_type(value.ty())?;
         if expected_ty.id() != dst_ty.id() {
             return Err(IrError::InvalidOperation {
@@ -3955,23 +3843,22 @@ where
     /// `IRBuilder::CreatePtrToInt`.
     pub fn build_ptr_to_int<W, Name>(
         &self,
-        value: crate::value::PointerValue<'ctx>,
-        dst_ty: IntType<'ctx, W>,
+        value: PointerValue<'ctx, B>,
+        dst_ty: IntType<'ctx, W, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
     {
-        let v = crate::value::IsValue::as_value(value);
-        self.require_same_module(v)?;
+        let v = IsValue::as_value(value);
         if let Some(folded) = self.folder.fold_cast(
             crate::instr_types::CastOpcode::PtrToInt,
             v,
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(IntValue::<W>::from_value_unchecked(folded));
+            return Ok(IntValue::<W, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::PtrToInt, v.id);
         let inst = self.append_instruction(
@@ -3979,30 +3866,29 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(IntValue::<W>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Produce `inttoptr <value> to <dst>`. Mirrors
     /// `IRBuilder::CreateIntToPtr`.
     pub fn build_int_to_ptr<W, Name>(
         &self,
-        value: IntValue<'ctx, W>,
-        dst_ty: crate::derived_types::PointerType<'ctx>,
+        value: IntValue<'ctx, W, B>,
+        dst_ty: PointerType<'ctx, B>,
         name: Name,
-    ) -> IrResult<crate::value::PointerValue<'ctx>>
+    ) -> IrResult<PointerValue<'ctx, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
     {
         let v = value.as_value();
-        self.require_same_module(v)?;
         if let Some(folded) = self.folder.fold_cast(
             crate::instr_types::CastOpcode::IntToPtr,
             v,
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(crate::value::PointerValue::from_value_unchecked(folded));
+            return Ok(PointerValue::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::IntToPtr, v.id);
         let inst = self.append_instruction(
@@ -4010,9 +3896,7 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(crate::value::PointerValue::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(PointerValue::from_value_unchecked(inst.as_value()))
     }
 
     /// Generic bitcast on values of equal bit width. Mirrors
@@ -4026,14 +3910,14 @@ where
     pub fn build_bitcast_int_to_int<Src, Dst, V, Name>(
         &self,
         value: V,
-        dst_ty: IntType<'ctx, Dst>,
+        dst_ty: IntType<'ctx, Dst, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, Dst>>
+    ) -> IrResult<IntValue<'ctx, Dst, B>>
     where
         Name: AsRef<str>,
         Src: super::int_width::StaticIntWidth,
         Dst: super::int_width::StaticIntWidth,
-        V: super::int_width::IntoIntValue<'ctx, Src>,
+        V: IntoIntValue<'ctx, Src, B>,
     {
         const {
             assert!(
@@ -4043,15 +3927,14 @@ where
             );
         }
         let v = value.into_int_value(ModuleRef::new(self.module))?;
-        let v_value = super::value::IsValue::as_value(v);
-        self.require_same_module(v_value)?;
+        let v_value = IsValue::as_value(v);
         if let Some(folded) = self.folder.fold_cast(
             super::instr_types::CastOpcode::BitCast,
             v_value,
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(IntValue::<Dst>::from_value_unchecked(folded));
+            return Ok(IntValue::<Dst, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
         let inst = self.append_instruction(
@@ -4059,7 +3942,7 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(IntValue::<Dst>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<Dst, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Bitcast an integer value to a same-bit-width float. Mirrors the
@@ -4069,14 +3952,14 @@ where
     pub fn build_bitcast_int_to_fp<W, K, V, Name>(
         &self,
         value: V,
-        dst_ty: super::derived_types::FloatType<'ctx, K>,
+        dst_ty: FloatType<'ctx, K, B>,
         name: Name,
-    ) -> IrResult<super::value::FloatValue<'ctx, K>>
+    ) -> IrResult<FloatValue<'ctx, K, B>>
     where
         Name: AsRef<str>,
         W: super::int_width::StaticIntWidth,
         K: super::float_kind::StaticFloatKind,
-        V: super::int_width::IntoIntValue<'ctx, W>,
+        V: IntoIntValue<'ctx, W, B>,
     {
         const {
             assert!(
@@ -4086,15 +3969,14 @@ where
             );
         }
         let v = value.into_int_value(ModuleRef::new(self.module))?;
-        let v_value = super::value::IsValue::as_value(v);
-        self.require_same_module(v_value)?;
+        let v_value = IsValue::as_value(v);
         if let Some(folded) = self.folder.fold_cast(
             super::instr_types::CastOpcode::BitCast,
             v_value,
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(super::value::FloatValue::<K>::from_value_unchecked(folded));
+            return Ok(FloatValue::<K, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
         let inst = self.append_instruction(
@@ -4102,9 +3984,7 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(super::value::FloatValue::<K>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Bitcast a float to a same-bit-width integer. Mirrors the
@@ -4114,14 +3994,14 @@ where
     pub fn build_bitcast_fp_to_int<K, W, V, Name>(
         &self,
         value: V,
-        dst_ty: IntType<'ctx, W>,
+        dst_ty: IntType<'ctx, W, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W>>
+    ) -> IrResult<IntValue<'ctx, W, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::StaticFloatKind,
         W: super::int_width::StaticIntWidth,
-        V: super::float_kind::IntoFloatValue<'ctx, K>,
+        V: IntoFloatValue<'ctx, K, B>,
     {
         const {
             assert!(
@@ -4131,15 +4011,14 @@ where
             );
         }
         let v = value.into_float_value(ModuleRef::new(self.module))?;
-        let v_value = super::value::IsValue::as_value(v);
-        self.require_same_module(v_value)?;
+        let v_value = IsValue::as_value(v);
         if let Some(folded) = self.folder.fold_cast(
             super::instr_types::CastOpcode::BitCast,
             v_value,
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(IntValue::<W>::from_value_unchecked(folded));
+            return Ok(IntValue::<W, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
         let inst = self.append_instruction(
@@ -4147,7 +4026,7 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(IntValue::<W>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Bitcast a float to a same-bit-width float. Used for
@@ -4157,14 +4036,14 @@ where
     pub fn build_bitcast_fp_to_fp<Src, Dst, V, Name>(
         &self,
         value: V,
-        dst_ty: super::derived_types::FloatType<'ctx, Dst>,
+        dst_ty: FloatType<'ctx, Dst, B>,
         name: Name,
-    ) -> IrResult<super::value::FloatValue<'ctx, Dst>>
+    ) -> IrResult<FloatValue<'ctx, Dst, B>>
     where
         Name: AsRef<str>,
         Src: super::float_kind::StaticFloatKind,
         Dst: super::float_kind::StaticFloatKind,
-        V: super::float_kind::IntoFloatValue<'ctx, Src>,
+        V: IntoFloatValue<'ctx, Src, B>,
     {
         const {
             assert!(
@@ -4174,17 +4053,14 @@ where
             );
         }
         let v = value.into_float_value(ModuleRef::new(self.module))?;
-        let v_value = super::value::IsValue::as_value(v);
-        self.require_same_module(v_value)?;
+        let v_value = IsValue::as_value(v);
         if let Some(folded) = self.folder.fold_cast(
             super::instr_types::CastOpcode::BitCast,
             v_value,
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(super::value::FloatValue::<Dst>::from_value_unchecked(
-                folded,
-            ));
+            return Ok(FloatValue::<Dst, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
         let inst = self.append_instruction(
@@ -4192,9 +4068,7 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(super::value::FloatValue::<Dst>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(FloatValue::<Dst, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Runtime-typed bitcast: produce `bitcast <src> to <dst>` with both
@@ -4205,14 +4079,13 @@ where
     /// Used by the parser where compile-time static markers are unavailable.
     pub fn build_bitcast_dyn<Name>(
         &self,
-        value: crate::value::Value<'ctx>,
-        dst_ty: crate::r#type::Type<'ctx>,
+        value: Value<'ctx, B>,
+        dst_ty: Type<'ctx, B>,
         name: Name,
-    ) -> IrResult<crate::value::Value<'ctx>>
+    ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
     {
-        self.require_same_module(value)?;
         if let Some(folded) =
             self.folder
                 .fold_cast(super::instr_types::CastOpcode::BitCast, value, dst_ty)?
@@ -4228,22 +4101,21 @@ where
     /// `IRBuilder::CreateAddrSpaceCast`.
     pub fn build_addrspace_cast<Name>(
         &self,
-        value: crate::value::PointerValue<'ctx>,
-        dst_ty: crate::derived_types::PointerType<'ctx>,
+        value: PointerValue<'ctx, B>,
+        dst_ty: PointerType<'ctx, B>,
         name: Name,
-    ) -> IrResult<crate::value::PointerValue<'ctx>>
+    ) -> IrResult<PointerValue<'ctx, B>>
     where
         Name: AsRef<str>,
     {
-        let v = crate::value::IsValue::as_value(value);
-        self.require_same_module(v)?;
+        let v = IsValue::as_value(value);
         if let Some(folded) = self.folder.fold_cast(
             crate::instr_types::CastOpcode::AddrSpaceCast,
             v,
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(crate::value::PointerValue::from_value_unchecked(folded));
+            return Ok(PointerValue::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::AddrSpaceCast, v.id);
         let inst = self.append_instruction(
@@ -4251,9 +4123,7 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(crate::value::PointerValue::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(PointerValue::from_value_unchecked(inst.as_value()))
     }
 
     /// Pointer cast: pick `bitcast` for same-addrspace pointer-to-pointer
@@ -4263,15 +4133,14 @@ where
     /// (`IRBuilder.h`), which dispatches the same way.
     pub fn build_pointer_cast<Name>(
         &self,
-        value: super::value::PointerValue<'ctx>,
-        dst_ty: super::derived_types::PointerType<'ctx>,
+        value: PointerValue<'ctx, B>,
+        dst_ty: PointerType<'ctx, B>,
         name: Name,
-    ) -> IrResult<super::value::PointerValue<'ctx>>
+    ) -> IrResult<PointerValue<'ctx, B>>
     where
         Name: AsRef<str>,
     {
-        let v = super::value::IsValue::as_value(value);
-        self.require_same_module(v)?;
+        let v = IsValue::as_value(value);
         let opcode = if value.ty().address_space() == dst_ty.address_space() {
             super::instr_types::CastOpcode::BitCast
         } else {
@@ -4283,11 +4152,11 @@ where
                 .create_pointer_bitcast_or_addrspace_cast(constant, dst_ty.as_type())?
         {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(super::value::PointerValue::from_value_unchecked(folded));
+            return Ok(PointerValue::from_value_unchecked(folded));
         }
         if let Some(folded) = self.folder.fold_cast(opcode, v, dst_ty.as_type())? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(super::value::PointerValue::from_value_unchecked(folded));
+            return Ok(PointerValue::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(opcode, v.id);
         let inst = self.append_instruction(
@@ -4295,9 +4164,7 @@ where
             InstructionKindData::Cast(payload),
             name,
         );
-        Ok(super::value::PointerValue::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(PointerValue::from_value_unchecked(inst.as_value()))
     }
 
     /// `icmp eq <ptr>, null` -- pointer-null test. Mirrors
@@ -4305,9 +4172,9 @@ where
     /// `CreateICmpEQ(Arg, Constant::getNullValue(Arg->getType()))`.
     pub fn build_is_null<Name>(
         &self,
-        ptr: super::value::PointerValue<'ctx>,
+        ptr: PointerValue<'ctx, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
     {
@@ -4324,9 +4191,9 @@ where
     /// `CreateICmpNE(Arg, Constant::getNullValue(Arg->getType()))`.
     pub fn build_is_not_null<Name>(
         &self,
-        ptr: super::value::PointerValue<'ctx>,
+        ptr: PointerValue<'ctx, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
     {
@@ -4349,24 +4216,22 @@ where
         lhs: L,
         rhs: R2,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
-        L: super::value::IntoPointerValue<'ctx>,
-        R2: super::value::IntoPointerValue<'ctx>,
+        L: IntoPointerValue<'ctx, B>,
+        R2: IntoPointerValue<'ctx, B>,
     {
         let lhs = lhs.into_pointer_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_pointer_value(ModuleRef::new(self.module))?;
-        self.require_same_module(super::value::IsValue::as_value(lhs))?;
-        self.require_same_module(super::value::IsValue::as_value(rhs))?;
         let payload = super::instr_types::CmpInstData::new(
             pred,
-            super::value::IsValue::as_value(lhs).id,
-            super::value::IsValue::as_value(rhs).id,
+            IsValue::as_value(lhs).id,
+            IsValue::as_value(rhs).id,
         );
-        let i1_ty = self.module.bool_type().as_type().id();
+        let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
         let inst = self.append_instruction(i1_ty, InstructionKindData::ICmp(payload), name);
-        Ok(IntValue::<bool>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<bool, B>::from_value_unchecked(inst.as_value()))
     }
 
     // ---- Vector splat / ptr arithmetic / aggregate ret convenience ----
@@ -4383,10 +4248,10 @@ where
         count: u32,
         scalar: V,
         name: Name,
-    ) -> IrResult<super::value::VectorValue<'ctx>>
+    ) -> IrResult<VectorValue<'ctx, B>>
     where
         Name: AsRef<str>,
-        V: super::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
     {
         if count == 0 {
             return Err(IrError::InvalidOperation {
@@ -4394,11 +4259,10 @@ where
             });
         }
         let scalar_value = scalar.as_value();
-        self.require_same_module(scalar_value)?;
         let elem_ty = scalar_value.ty();
-        let vec_ty = self.module.vector_type(elem_ty, count, false);
+        let vec_ty = ModuleView::<B>::new(self.module).vector_type(elem_ty, count, false);
         let poison = vec_ty.as_type().get_poison();
-        let i64_ty = self.module.i64_type();
+        let i64_ty = ModuleView::<B>::new(self.module).i64_type();
         let zero_idx = i64_ty.const_int(0_u32);
         let name_ref = name.as_ref();
         let insert_name = if name_ref.is_empty() {
@@ -4415,7 +4279,7 @@ where
             format!("{name_ref}.splat")
         };
         let shuf = self.build_shuffle_vector(inserted, poison, &mask, splat_name)?;
-        Ok(super::value::VectorValue::from_value_unchecked(shuf))
+        Ok(VectorValue::from_value_unchecked(shuf))
     }
 
     // ---- ptr_add / inbounds_ptr_add ----
@@ -4428,17 +4292,17 @@ where
         ptr: P,
         offset: O,
         name: Name,
-    ) -> IrResult<super::value::PointerValue<'ctx>>
+    ) -> IrResult<PointerValue<'ctx, B>>
     where
         Name: AsRef<str>,
-        P: super::value::IntoPointerValue<'ctx>,
+        P: IntoPointerValue<'ctx, B>,
         W: super::int_width::IntWidth,
-        O: super::int_width::IntoIntValue<'ctx, W>,
+        O: IntoIntValue<'ctx, W, B>,
     {
-        let i8_ty = self.module.i8_type();
+        let i8_ty = ModuleView::<B>::new(self.module).i8_type();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let offset_v = offset.into_int_value(ModuleRef::new(self.module))?;
-        let offset_value = super::value::IsValue::as_value(offset_v);
+        let offset_value = IsValue::as_value(offset_v);
         self.build_gep(i8_ty, p, core::iter::once(offset_value), name)
     }
 
@@ -4450,17 +4314,17 @@ where
         ptr: P,
         offset: O,
         name: Name,
-    ) -> IrResult<super::value::PointerValue<'ctx>>
+    ) -> IrResult<PointerValue<'ctx, B>>
     where
         Name: AsRef<str>,
-        P: super::value::IntoPointerValue<'ctx>,
+        P: IntoPointerValue<'ctx, B>,
         W: super::int_width::IntWidth,
-        O: super::int_width::IntoIntValue<'ctx, W>,
+        O: IntoIntValue<'ctx, W, B>,
     {
-        let i8_ty = self.module.i8_type();
+        let i8_ty = ModuleView::<B>::new(self.module).i8_type();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let offset_v = offset.into_int_value(ModuleRef::new(self.module))?;
-        let offset_value = super::value::IsValue::as_value(offset_v);
+        let offset_value = IsValue::as_value(offset_v);
         self.build_inbounds_gep(i8_ty, p, core::iter::once(offset_value), name)
     }
 
@@ -4470,37 +4334,35 @@ where
     /// `IRBuilder::CreateICmp`.
     ///
     /// Both operands share width `W` at the type level. The result
-    /// type is always `i1` (`IntValue<'ctx, bool>`).
+    /// type is always `i1` (`IntValue<'ctx, bool, B>`).
     pub fn build_int_cmp<W, Lhs, Rhs, Name>(
         &self,
         pred: crate::cmp_predicate::IntPredicate,
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
-        self.require_same_module(lhs.as_value())?;
-        self.require_same_module(rhs.as_value())?;
-        let i1_ty = self.module.bool_type().as_type().id();
+        let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
         if let Some(folded) = self.folder.fold_cmp(
             crate::cmp_predicate::CmpPredicate::Int(pred),
             lhs.as_value(),
             rhs.as_value(),
         )? {
             let folded = self.checked_folded_value(folded, i1_ty)?;
-            return Ok(IntValue::<bool>::from_value_unchecked(folded));
+            return Ok(IntValue::<bool, B>::from_value_unchecked(folded));
         }
         let payload =
             crate::instr_types::CmpInstData::new(pred, lhs.as_value().id, rhs.as_value().id);
         let inst = self.append_instruction(i1_ty, InstructionKindData::ICmp(payload), name);
-        Ok(IntValue::<bool>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<bool, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// `icmp samesign` with explicit [`crate::ICmpFlags`]. Both operands
@@ -4510,29 +4372,27 @@ where
         &self,
         flags: crate::instr_types::ICmpFlags,
         pred: crate::cmp_predicate::IntPredicate,
-        lhs: IntValue<'ctx, crate::int_width::IntDyn>,
-        rhs: IntValue<'ctx, crate::int_width::IntDyn>,
+        lhs: IntValue<'ctx, IntDyn, B>,
+        rhs: IntValue<'ctx, IntDyn, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
     {
-        self.require_same_module(lhs.as_value())?;
-        self.require_same_module(rhs.as_value())?;
-        let i1_ty = self.module.bool_type().as_type().id();
+        let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
         if let Some(folded) = self.folder.fold_cmp(
             crate::cmp_predicate::CmpPredicate::Int(pred),
             lhs.as_value(),
             rhs.as_value(),
         )? {
             let folded = self.checked_folded_value(folded, i1_ty)?;
-            return Ok(IntValue::<bool>::from_value_unchecked(folded));
+            return Ok(IntValue::<bool, B>::from_value_unchecked(folded));
         }
         let mut payload =
             crate::instr_types::CmpInstData::new(pred, lhs.as_value().id, rhs.as_value().id);
         payload.samesign = flags.samesign;
         let inst = self.append_instruction(i1_ty, InstructionKindData::ICmp(payload), name);
-        Ok(IntValue::<bool>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<bool, B>::from_value_unchecked(inst.as_value()))
     }
 
     // Per-predicate convenience wrappers. Mirror the LLVM C++
@@ -4552,12 +4412,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_cmp::<W, Lhs, Rhs, _>(crate::cmp_predicate::IntPredicate::Eq, lhs, rhs, name)
     }
@@ -4570,12 +4430,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_cmp::<W, Lhs, Rhs, _>(crate::cmp_predicate::IntPredicate::Ne, lhs, rhs, name)
     }
@@ -4588,12 +4448,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_cmp::<W, Lhs, Rhs, _>(
             crate::cmp_predicate::IntPredicate::Ult,
@@ -4611,12 +4471,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_cmp::<W, Lhs, Rhs, _>(
             crate::cmp_predicate::IntPredicate::Ule,
@@ -4634,12 +4494,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_cmp::<W, Lhs, Rhs, _>(
             crate::cmp_predicate::IntPredicate::Ugt,
@@ -4657,12 +4517,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_cmp::<W, Lhs, Rhs, _>(
             crate::cmp_predicate::IntPredicate::Uge,
@@ -4680,12 +4540,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_cmp::<W, Lhs, Rhs, _>(
             crate::cmp_predicate::IntPredicate::Slt,
@@ -4703,12 +4563,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_cmp::<W, Lhs, Rhs, _>(
             crate::cmp_predicate::IntPredicate::Sle,
@@ -4726,12 +4586,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_cmp::<W, Lhs, Rhs, _>(
             crate::cmp_predicate::IntPredicate::Sgt,
@@ -4749,12 +4609,12 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool>>
+    ) -> IrResult<IntValue<'ctx, bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
-        Lhs: crate::int_width::IntoIntValue<'ctx, W>,
-        Rhs: crate::int_width::IntoIntValue<'ctx, W>,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_cmp::<W, Lhs, Rhs, _>(
             crate::cmp_predicate::IntPredicate::Sge,
@@ -4774,23 +4634,20 @@ where
     /// followed by zero `PHINode::addIncoming` calls. Subsequent
     /// edges are added through [`crate::PhiInst::add_incoming`],
     /// which returns `Self` so calls chain.
-    pub fn build_int_phi<W, Name>(
-        &self,
-        name: Name,
-    ) -> IrResult<crate::instructions::PhiInst<'ctx, W>>
+    pub fn build_int_phi<W, Name>(&self, name: Name) -> IrResult<PhiInst<'ctx, W, PhiOpen, B>>
     where
         Name: AsRef<str>,
         W: crate::int_width::StaticIntWidth,
     {
-        let ty = W::ir_type(ModuleRef::new(self.module));
+        let ty = W::ir_type(ModuleRef::<B>::new(self.module));
         let payload = crate::instr_types::PhiData::new();
         let inst =
             self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok({
             let _i = inst;
-            crate::instructions::PhiInst::<W>::from_raw(
+            PhiInst::<W, PhiOpen, B>::from_raw(
                 _i.as_value().id,
-                _i.module().core_ref(),
+                ModuleRef::<B>::new(self.module),
                 _i.ty().id(),
             )
         })
@@ -4800,9 +4657,9 @@ where
     /// type explicitly because the marker carries no static width.
     pub fn build_int_phi_dyn<Name>(
         &self,
-        ty: IntType<'ctx, crate::int_width::IntDyn>,
+        ty: IntType<'ctx, IntDyn, B>,
         name: Name,
-    ) -> IrResult<crate::instructions::PhiInst<'ctx, crate::int_width::IntDyn>>
+    ) -> IrResult<PhiInst<'ctx, IntDyn, PhiOpen, B>>
     where
         Name: AsRef<str>,
     {
@@ -4811,9 +4668,9 @@ where
             self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok({
             let _i = inst;
-            crate::instructions::PhiInst::<crate::int_width::IntDyn>::from_raw(
+            PhiInst::<IntDyn, PhiOpen, B>::from_raw(
                 _i.as_value().id,
-                _i.module().core_ref(),
+                ModuleRef::<B>::new(self.module),
                 _i.ty().id(),
             )
         })
@@ -4822,21 +4679,18 @@ where
     /// Float-typed phi: `phi <fpty>`. Marker-only form keyed on
     /// `K: StaticFloatKind`. Mirrors `IRBuilder::CreatePHI(Type*, ...)`
     /// applied to a floating-point type.
-    pub fn build_fp_phi<K, Name>(
-        &self,
-        name: Name,
-    ) -> IrResult<super::instructions::FpPhiInst<'ctx, K>>
+    pub fn build_fp_phi<K, Name>(&self, name: Name) -> IrResult<FpPhiInst<'ctx, K, PhiOpen, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::StaticFloatKind,
     {
-        let ty = K::ir_type(ModuleRef::new(self.module));
+        let ty = K::ir_type(ModuleRef::<B>::new(self.module));
         let payload = super::instr_types::PhiData::new();
         let inst =
             self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
-        Ok(super::instructions::FpPhiInst::<K>::from_raw(
+        Ok(FpPhiInst::<K, PhiOpen, B>::from_raw(
             inst.as_value().id,
-            inst.module().core_ref(),
+            ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
     }
@@ -4845,30 +4699,25 @@ where
     /// [`crate::FloatDyn`] carries no static kind.
     pub fn build_fp_phi_dyn<Name>(
         &self,
-        ty: super::derived_types::FloatType<'ctx, super::float_kind::FloatDyn>,
+        ty: FloatType<'ctx, FloatDyn, B>,
         name: Name,
-    ) -> IrResult<super::instructions::FpPhiInst<'ctx, super::float_kind::FloatDyn>>
+    ) -> IrResult<FpPhiInst<'ctx, FloatDyn, PhiOpen, B>>
     where
         Name: AsRef<str>,
     {
         let payload = super::instr_types::PhiData::new();
         let inst =
             self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
-        Ok(
-            super::instructions::FpPhiInst::<super::float_kind::FloatDyn>::from_raw(
-                inst.as_value().id,
-                inst.module().core_ref(),
-                inst.ty().id(),
-            ),
-        )
+        Ok(FpPhiInst::<FloatDyn, PhiOpen, B>::from_raw(
+            inst.as_value().id,
+            ModuleRef::<B>::new(self.module),
+            inst.ty().id(),
+        ))
     }
 
     /// Pointer-typed phi in the default address space (addrspace 0).
     /// Mirrors `IRBuilder::CreatePHI(PointerType::getUnqual(...), ...)`.
-    pub fn build_pointer_phi<Name>(
-        &self,
-        name: Name,
-    ) -> IrResult<super::instructions::PointerPhiInst<'ctx>>
+    pub fn build_pointer_phi<Name>(&self, name: Name) -> IrResult<PointerPhiInst<'ctx, PhiOpen, B>>
     where
         Name: AsRef<str>,
     {
@@ -4876,9 +4725,9 @@ where
         let payload = super::instr_types::PhiData::new();
         let inst =
             self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
-        Ok(super::instructions::PointerPhiInst::from_raw(
+        Ok(PointerPhiInst::<PhiOpen, B>::from_raw(
             inst.as_value().id,
-            inst.module().core_ref(),
+            ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
     }
@@ -4887,18 +4736,18 @@ where
     /// `IRBuilder::CreatePHI(PointerType::get(Ctx, AS), ...)`.
     pub fn build_pointer_phi_in_addrspace<Name>(
         &self,
-        ty: super::derived_types::PointerType<'ctx>,
+        ty: PointerType<'ctx, B>,
         name: Name,
-    ) -> IrResult<super::instructions::PointerPhiInst<'ctx>>
+    ) -> IrResult<PointerPhiInst<'ctx, PhiOpen, B>>
     where
         Name: AsRef<str>,
     {
         let payload = super::instr_types::PhiData::new();
         let inst =
             self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
-        Ok(super::instructions::PointerPhiInst::from_raw(
+        Ok(PointerPhiInst::<PhiOpen, B>::from_raw(
             inst.as_value().id,
-            inst.module().core_ref(),
+            ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
     }
@@ -4913,11 +4762,8 @@ where
     /// back-edges) target already-sealed blocks.
     pub fn build_br<S2: BlockSealState>(
         self,
-        target: BasicBlock<'ctx, R, S2>,
-    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>)> {
-        if target.as_value().module().id() != self.module.id() {
-            return Err(IrError::ForeignValue);
-        }
+        target: BasicBlock<'ctx, R, S2, B>,
+    ) -> IrResult<SealedBlockInst<'ctx, R, B>> {
         let payload = crate::instr_types::BranchInstData {
             kind: crate::instr_types::BranchKind::Unconditional(target.as_value().id),
         };
@@ -4934,21 +4780,15 @@ where
     pub fn build_cond_br<C, ST, SE>(
         self,
         cond: C,
-        then_bb: BasicBlock<'ctx, R, ST>,
-        else_bb: BasicBlock<'ctx, R, SE>,
-    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>)>
+        then_bb: BasicBlock<'ctx, R, ST, B>,
+        else_bb: BasicBlock<'ctx, R, SE, B>,
+    ) -> IrResult<SealedBlockInst<'ctx, R, B>>
     where
-        C: crate::int_width::IntoIntValue<'ctx, bool>,
+        C: IntoIntValue<'ctx, bool, B>,
         ST: BlockSealState,
         SE: BlockSealState,
     {
         let cond = cond.into_int_value(ModuleRef::new(self.module))?;
-        self.require_same_module(cond.as_value())?;
-        if then_bb.as_value().module().id() != self.module.id()
-            || else_bb.as_value().module().id() != self.module.id()
-        {
-            return Err(IrError::ForeignValue);
-        }
         let payload = crate::instr_types::BranchInstData {
             kind: crate::instr_types::BranchKind::Conditional {
                 cond: core::cell::Cell::new(cond.as_value().id),
@@ -4966,29 +4806,22 @@ where
     /// `IRBuilder::CreateSwitch`.
     ///
     /// Returns the sealed parent block plus an [`Open`]-typestate
-    /// [`SwitchInst`](crate::instructions::SwitchInst). The caller adds
-    /// cases via [`SwitchInst::add_case`](crate::instructions::SwitchInst::add_case)
+    /// [`SwitchInst`]. The caller adds
+    /// cases via [`SwitchInst::add_case`](SwitchInst::add_case)
     /// (chainable) and seals the case list with
-    /// [`SwitchInst::finish`](crate::instructions::SwitchInst::finish).
+    /// [`SwitchInst::finish`](SwitchInst::finish).
     pub fn build_switch<C, S2, Name>(
         self,
         cond: C,
-        default_target: BasicBlock<'ctx, R, S2>,
+        default_target: BasicBlock<'ctx, R, S2, B>,
         name: Name,
-    ) -> IrResult<(
-        BasicBlock<'ctx, R, Sealed>,
-        crate::instructions::SwitchInst<'ctx, crate::term_open_state::Open>,
-    )>
+    ) -> IrResult<SealedBlockSwitch<'ctx, R, B>>
     where
         Name: AsRef<str>,
-        C: crate::value::IsValue<'ctx>,
+        C: IsValue<'ctx, B>,
         S2: BlockSealState,
     {
         let cond_v = cond.as_value();
-        self.require_same_module(cond_v)?;
-        if default_target.as_value().module().id() != self.module.id() {
-            return Err(IrError::ForeignValue);
-        }
         let bb = self.insert_block();
         let void_ty = self.module.void_type().as_type().id();
         let payload =
@@ -4996,7 +4829,11 @@ where
         let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
         Ok((
             bb.retag_seal::<Sealed>(),
-            crate::instructions::SwitchInst::from_raw(inst.as_value().id, self.module, void_ty),
+            SwitchInst::<Open, B>::from_raw(
+                inst.as_value().id,
+                ModuleRef::<B>::new(self.module),
+                void_ty,
+            ),
         ))
     }
 
@@ -5004,30 +4841,30 @@ where
     /// `IRBuilder::CreateIndirectBr`.
     ///
     /// Returns the sealed parent block plus an [`Open`]-typestate
-    /// [`IndirectBrInst`](crate::instructions::IndirectBrInst). The
+    /// [`IndirectBrInst`]. The
     /// caller adds destinations via
-    /// [`IndirectBrInst::add_destination`](crate::instructions::IndirectBrInst::add_destination)
+    /// [`IndirectBrInst::add_destination`](IndirectBrInst::add_destination)
     pub fn build_indirectbr<A, Name>(
         self,
         address: A,
         name: Name,
-    ) -> IrResult<(
-        BasicBlock<'ctx, R, Sealed>,
-        crate::instructions::IndirectBrInst<'ctx, crate::term_open_state::Open>,
-    )>
+    ) -> IrResult<SealedBlockIndirectBr<'ctx, R, B>>
     where
         Name: AsRef<str>,
-        A: crate::value::IsValue<'ctx>,
+        A: IsValue<'ctx, B>,
     {
         let addr_v = address.as_value();
-        self.require_same_module(addr_v)?;
         let bb = self.insert_block();
         let void_ty = self.module.void_type().as_type().id();
         let payload = crate::instr_types::IndirectBrInstData::new(addr_v.id);
         let inst = self.append_instruction(void_ty, InstructionKindData::IndirectBr(payload), name);
         Ok((
             bb.retag_seal::<Sealed>(),
-            crate::instructions::IndirectBrInst::from_raw(inst.as_value().id, self.module, void_ty),
+            IndirectBrInst::<Open, B>::from_raw(
+                inst.as_value().id,
+                ModuleRef::<B>::new(self.module),
+                void_ty,
+            ),
         ))
     }
 
@@ -5035,20 +4872,17 @@ where
     /// unwind label %unwind`. Mirrors `IRBuilder::CreateInvoke`.
     pub fn build_invoke<R2, I, V, S2, SU, Name>(
         self,
-        callee: FunctionValue<'ctx, R2>,
+        callee: FunctionValue<'ctx, R2, B>,
         args: I,
-        normal_dest: BasicBlock<'ctx, R, S2>,
-        unwind_dest: BasicBlock<'ctx, R, SU>,
+        normal_dest: BasicBlock<'ctx, R, S2, B>,
+        unwind_dest: BasicBlock<'ctx, R, SU, B>,
         name: Name,
-    ) -> IrResult<(
-        BasicBlock<'ctx, R, Sealed>,
-        crate::instructions::InvokeInst<'ctx, R2>,
-    )>
+    ) -> IrResult<SealedBlockInvoke<'ctx, R, R2, B>>
     where
         Name: AsRef<str>,
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
         S2: BlockSealState,
         SU: BlockSealState,
     {
@@ -5064,29 +4898,20 @@ where
     /// Produce `invoke` with explicit call-site configuration.
     pub fn build_invoke_with_config<R2, I, V, S2, SU>(
         self,
-        callee: FunctionValue<'ctx, R2>,
+        callee: FunctionValue<'ctx, R2, B>,
         args: I,
-        normal_dest: BasicBlock<'ctx, R, S2>,
-        unwind_dest: BasicBlock<'ctx, R, SU>,
+        normal_dest: BasicBlock<'ctx, R, S2, B>,
+        unwind_dest: BasicBlock<'ctx, R, SU, B>,
         config: CallSiteConfig,
-    ) -> IrResult<(
-        BasicBlock<'ctx, R, Sealed>,
-        crate::instructions::InvokeInst<'ctx, R2>,
-    )>
+    ) -> IrResult<SealedBlockInvoke<'ctx, R, R2, B>>
     where
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
         S2: BlockSealState,
         SU: BlockSealState,
     {
-        if normal_dest.as_value().module().id() != self.module.id()
-            || unwind_dest.as_value().module().id() != self.module.id()
-        {
-            return Err(IrError::ForeignValue);
-        }
         let callee_v = callee.as_value();
-        self.require_same_module(callee_v)?;
         let fn_ty = callee.signature().as_type().id();
         let ret_ty = self
             .module
@@ -5097,8 +4922,7 @@ where
             .unwrap_or(fn_ty);
         let (name, calling_conv, attrs) = config.into_parts();
         let bb = self.insert_block();
-        let arg_ids: Vec<crate::value::ValueId> =
-            args.into_iter().map(|a| a.as_value().id).collect();
+        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.as_value().id).collect();
         let payload = crate::instr_types::InvokeInstData::new_with_attrs(
             callee_v.id,
             fn_ty,
@@ -5111,9 +4935,9 @@ where
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
         Ok((
             bb.retag_seal::<Sealed>(),
-            crate::instructions::InvokeInst::<crate::marker::Dyn>::from_raw(
+            InvokeInst::<Dyn, B>::from_raw(
                 inst.as_value().id,
-                self.module,
+                ModuleRef::<B>::new(self.module),
                 ret_ty,
             )
             .retag::<R2>(),
@@ -5123,20 +4947,17 @@ where
     /// Produce an `invoke` whose callee is an inline-assembly value.
     pub fn build_inline_asm_invoke<R2, I, V, S2, SU, Name>(
         self,
-        asm: crate::inline_asm::InlineAsm<'ctx>,
+        asm: InlineAsm<'ctx, B>,
         args: I,
-        normal_dest: BasicBlock<'ctx, R, S2>,
-        unwind_dest: BasicBlock<'ctx, R, SU>,
+        normal_dest: BasicBlock<'ctx, R, S2, B>,
+        unwind_dest: BasicBlock<'ctx, R, SU, B>,
         name: Name,
-    ) -> IrResult<(
-        BasicBlock<'ctx, R, Sealed>,
-        crate::instructions::InvokeInst<'ctx, R2>,
-    )>
+    ) -> IrResult<SealedBlockInvoke<'ctx, R, R2, B>>
     where
         Name: AsRef<str>,
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
         S2: BlockSealState,
         SU: BlockSealState,
     {
@@ -5152,29 +4973,20 @@ where
     /// Produce an inline-assembly `invoke` with explicit call-site configuration.
     pub fn build_inline_asm_invoke_with_config<R2, I, V, S2, SU>(
         self,
-        asm: crate::inline_asm::InlineAsm<'ctx>,
+        asm: InlineAsm<'ctx, B>,
         args: I,
-        normal_dest: BasicBlock<'ctx, R, S2>,
-        unwind_dest: BasicBlock<'ctx, R, SU>,
+        normal_dest: BasicBlock<'ctx, R, S2, B>,
+        unwind_dest: BasicBlock<'ctx, R, SU, B>,
         config: CallSiteConfig,
-    ) -> IrResult<(
-        BasicBlock<'ctx, R, Sealed>,
-        crate::instructions::InvokeInst<'ctx, R2>,
-    )>
+    ) -> IrResult<SealedBlockInvoke<'ctx, R, R2, B>>
     where
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
         S2: BlockSealState,
         SU: BlockSealState,
     {
-        if normal_dest.as_value().module().id() != self.module.id()
-            || unwind_dest.as_value().module().id() != self.module.id()
-        {
-            return Err(IrError::ForeignValue);
-        }
         let asm_v = asm.as_value();
-        self.require_same_module(asm_v)?;
         let fn_ty = asm.function_type();
         let ret_ty = fn_ty.return_type().id();
         let ret_data = self.module.context().type_data(ret_ty);
@@ -5184,10 +4996,9 @@ where
                 got: fn_ty.return_type().kind_label(),
             });
         }
-        let mut arg_ids: Vec<crate::value::ValueId> = Vec::new();
+        let mut arg_ids: Vec<ValueId> = Vec::new();
         for arg in args {
             let v = arg.as_value();
-            self.require_same_module(v)?;
             arg_ids.push(v.id);
         }
         let (name, calling_conv, attrs) = config.into_parts();
@@ -5204,9 +5015,9 @@ where
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
         Ok((
             bb.retag_seal::<Sealed>(),
-            crate::instructions::InvokeInst::<crate::marker::Dyn>::from_raw(
+            InvokeInst::<Dyn, B>::from_raw(
                 inst.as_value().id,
-                self.module,
+                ModuleRef::<B>::new(self.module),
                 ret_ty,
             )
             .retag::<R2>(),
@@ -5217,20 +5028,17 @@ where
     /// [label %indirect1, ...]`. Mirrors `IRBuilder::CreateCallBr`.
     pub fn build_callbr<R2, I, V, S2, Name>(
         self,
-        callee: FunctionValue<'ctx, R2>,
+        callee: FunctionValue<'ctx, R2, B>,
         args: I,
-        default_dest: BasicBlock<'ctx, R, S2>,
-        indirect_dests: &[BasicBlock<'ctx, R, S2>],
+        default_dest: BasicBlock<'ctx, R, S2, B>,
+        indirect_dests: &[BasicBlock<'ctx, R, S2, B>],
         name: Name,
-    ) -> IrResult<(
-        BasicBlock<'ctx, R, Sealed>,
-        crate::instructions::CallBrInst<'ctx>,
-    )>
+    ) -> IrResult<(BasicBlock<'ctx, R, Sealed, B>, CallBrInst<'ctx, B>)>
     where
         Name: AsRef<str>,
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
         S2: BlockSealState,
     {
         self.build_callbr_with_config(
@@ -5245,31 +5053,19 @@ where
     /// Produce `callbr` with explicit call-site configuration.
     pub fn build_callbr_with_config<R2, I, V, S2>(
         self,
-        callee: FunctionValue<'ctx, R2>,
+        callee: FunctionValue<'ctx, R2, B>,
         args: I,
-        default_dest: BasicBlock<'ctx, R, S2>,
-        indirect_dests: &[BasicBlock<'ctx, R, S2>],
+        default_dest: BasicBlock<'ctx, R, S2, B>,
+        indirect_dests: &[BasicBlock<'ctx, R, S2, B>],
         config: CallSiteConfig,
-    ) -> IrResult<(
-        BasicBlock<'ctx, R, Sealed>,
-        crate::instructions::CallBrInst<'ctx>,
-    )>
+    ) -> IrResult<(BasicBlock<'ctx, R, Sealed, B>, CallBrInst<'ctx, B>)>
     where
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
         S2: BlockSealState,
     {
-        if default_dest.as_value().module().id() != self.module.id() {
-            return Err(IrError::ForeignValue);
-        }
-        for d in indirect_dests {
-            if d.as_value().module().id() != self.module.id() {
-                return Err(IrError::ForeignValue);
-            }
-        }
         let callee_v = callee.as_value();
-        self.require_same_module(callee_v)?;
         let fn_ty = callee.signature().as_type().id();
         let ret_ty = self
             .module
@@ -5280,10 +5076,8 @@ where
             .unwrap_or(fn_ty);
         let (name, calling_conv, attrs) = config.into_parts();
         let bb = self.insert_block();
-        let arg_ids: Vec<crate::value::ValueId> =
-            args.into_iter().map(|a| a.as_value().id).collect();
-        let indirect_ids: Vec<crate::value::ValueId> =
-            indirect_dests.iter().map(|d| d.as_value().id).collect();
+        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.as_value().id).collect();
+        let indirect_ids: Vec<ValueId> = indirect_dests.iter().map(|d| d.as_value().id).collect();
         let payload = crate::instr_types::CallBrInstData::new_with_attrs(
             callee_v.id,
             fn_ty,
@@ -5296,27 +5090,24 @@ where
         let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name);
         Ok((
             bb.retag_seal::<Sealed>(),
-            crate::instructions::CallBrInst::from_raw(inst.as_value().id, self.module, ret_ty),
+            CallBrInst::<B>::from_raw(inst.as_value().id, ModuleRef::<B>::new(self.module), ret_ty),
         ))
     }
 
     /// Produce a `callbr` whose callee is an inline-assembly value.
     pub fn build_inline_asm_callbr<R2, I, V, S2, Name>(
         self,
-        asm: crate::inline_asm::InlineAsm<'ctx>,
+        asm: InlineAsm<'ctx, B>,
         args: I,
-        default_dest: BasicBlock<'ctx, R, S2>,
-        indirect_dests: &[BasicBlock<'ctx, R, S2>],
+        default_dest: BasicBlock<'ctx, R, S2, B>,
+        indirect_dests: &[BasicBlock<'ctx, R, S2, B>],
         name: Name,
-    ) -> IrResult<(
-        BasicBlock<'ctx, R, Sealed>,
-        crate::instructions::CallBrInst<'ctx>,
-    )>
+    ) -> IrResult<(BasicBlock<'ctx, R, Sealed, B>, CallBrInst<'ctx, B>)>
     where
         Name: AsRef<str>,
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
         S2: BlockSealState,
     {
         self.build_inline_asm_callbr_with_config::<R2, _, _, _>(
@@ -5331,31 +5122,19 @@ where
     /// Produce an inline-assembly `callbr` with explicit call-site configuration.
     pub fn build_inline_asm_callbr_with_config<R2, I, V, S2>(
         self,
-        asm: crate::inline_asm::InlineAsm<'ctx>,
+        asm: InlineAsm<'ctx, B>,
         args: I,
-        default_dest: BasicBlock<'ctx, R, S2>,
-        indirect_dests: &[BasicBlock<'ctx, R, S2>],
+        default_dest: BasicBlock<'ctx, R, S2, B>,
+        indirect_dests: &[BasicBlock<'ctx, R, S2, B>],
         config: CallSiteConfig,
-    ) -> IrResult<(
-        BasicBlock<'ctx, R, Sealed>,
-        crate::instructions::CallBrInst<'ctx>,
-    )>
+    ) -> IrResult<(BasicBlock<'ctx, R, Sealed, B>, CallBrInst<'ctx, B>)>
     where
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
         S2: BlockSealState,
     {
-        if default_dest.as_value().module().id() != self.module.id() {
-            return Err(IrError::ForeignValue);
-        }
-        for d in indirect_dests {
-            if d.as_value().module().id() != self.module.id() {
-                return Err(IrError::ForeignValue);
-            }
-        }
         let asm_v = asm.as_value();
-        self.require_same_module(asm_v)?;
         let fn_ty = asm.function_type();
         let ret_ty = fn_ty.return_type().id();
         let ret_data = self.module.context().type_data(ret_ty);
@@ -5365,14 +5144,12 @@ where
                 got: fn_ty.return_type().kind_label(),
             });
         }
-        let mut arg_ids: Vec<crate::value::ValueId> = Vec::new();
+        let mut arg_ids: Vec<ValueId> = Vec::new();
         for arg in args {
             let v = arg.as_value();
-            self.require_same_module(v)?;
             arg_ids.push(v.id);
         }
-        let indirect_ids: Vec<crate::value::ValueId> =
-            indirect_dests.iter().map(|d| d.as_value().id).collect();
+        let indirect_ids: Vec<ValueId> = indirect_dests.iter().map(|d| d.as_value().id).collect();
         let (name, calling_conv, attrs) = config.into_parts();
         let bb = self.insert_block();
         let payload = crate::instr_types::CallBrInstData::new_with_attrs(
@@ -5387,7 +5164,7 @@ where
         let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name);
         Ok((
             bb.retag_seal::<Sealed>(),
-            crate::instructions::CallBrInst::from_raw(inst.as_value().id, self.module, ret_ty),
+            CallBrInst::<B>::from_raw(inst.as_value().id, ModuleRef::<B>::new(self.module), ret_ty),
         ))
     }
 
@@ -5400,19 +5177,19 @@ where
     /// `add_filter_clause` and seals the list with `finish`.
     pub fn build_landingpad<Name>(
         &self,
-        result_ty: crate::r#type::Type<'ctx>,
+        result_ty: Type<'ctx, B>,
         cleanup: bool,
         name: Name,
-    ) -> IrResult<crate::instructions::LandingPadInst<'ctx, crate::term_open_state::Open>>
+    ) -> IrResult<LandingPadInst<'ctx, Open, B>>
     where
         Name: AsRef<str>,
     {
         let payload = crate::instr_types::LandingPadInstData::new(cleanup);
         let inst =
             self.append_instruction(result_ty.id, InstructionKindData::LandingPad(payload), name);
-        Ok(crate::instructions::LandingPadInst::from_raw(
+        Ok(LandingPadInst::<Open, B>::from_raw(
             inst.as_value().id,
-            self.module,
+            ModuleRef::<B>::new(self.module),
             result_ty.id,
         ))
     }
@@ -5423,13 +5200,12 @@ where
         self,
         value: V,
         name: Name,
-    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>)>
+    ) -> IrResult<SealedBlockInst<'ctx, R, B>>
     where
         Name: AsRef<str>,
-        V: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
     {
         let v = value.as_value();
-        self.require_same_module(v)?;
         let bb = self.insert_block();
         let void_ty = self.module.void_type().as_type().id();
         let payload = crate::instr_types::ResumeInstData::new(v.id);
@@ -5441,16 +5217,15 @@ where
     /// `IRBuilder::CreateCleanupPad`.
     pub fn build_cleanup_pad<I, V, Name>(
         &self,
-        parent_pad: Value<'ctx>,
+        parent_pad: Value<'ctx, B>,
         args: I,
         name: Name,
-    ) -> IrResult<CleanupPadInst<'ctx>>
+    ) -> IrResult<CleanupPadInst<'ctx, B>>
     where
         I: IntoIterator<Item = V>,
-        V: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
         Name: AsRef<str>,
     {
-        self.require_same_module(parent_pad)?;
         self.build_cleanup_pad_raw(Some(parent_pad.id), args, name)
     }
 
@@ -5460,10 +5235,10 @@ where
         &self,
         args: I,
         name: Name,
-    ) -> IrResult<CleanupPadInst<'ctx>>
+    ) -> IrResult<CleanupPadInst<'ctx, B>>
     where
         I: IntoIterator<Item = V>,
-        V: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
         Name: AsRef<str>,
     {
         self.build_cleanup_pad_raw(None, args, name)
@@ -5471,24 +5246,23 @@ where
 
     fn build_cleanup_pad_raw<I, V, Name>(
         &self,
-        parent_id: Option<crate::value::ValueId>,
+        parent_id: Option<ValueId>,
         args: I,
         name: Name,
-    ) -> IrResult<CleanupPadInst<'ctx>>
+    ) -> IrResult<CleanupPadInst<'ctx, B>>
     where
         I: IntoIterator<Item = V>,
-        V: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
         Name: AsRef<str>,
     {
-        let arg_ids: Vec<crate::value::ValueId> =
-            args.into_iter().map(|a| a.as_value().id).collect();
+        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.as_value().id).collect();
         let payload = crate::instr_types::CleanupPadInstData::new(parent_id, arg_ids);
         let token_ty = self.module.token_type().as_type().id();
         let inst =
             self.append_instruction(token_ty, InstructionKindData::CleanupPad(payload), name);
-        Ok(CleanupPadInst::from_raw(
+        Ok(CleanupPadInst::<B>::from_raw(
             inst.as_value().id,
-            self.module,
+            ModuleRef::<B>::new(self.module),
             token_ty,
         ))
     }
@@ -5497,24 +5271,22 @@ where
     /// `IRBuilder::CreateCatchPad`.
     pub fn build_catch_pad<I, V, Name>(
         &self,
-        catch_switch: Value<'ctx>,
+        catch_switch: Value<'ctx, B>,
         args: I,
         name: Name,
-    ) -> IrResult<crate::instructions::CatchPadInst<'ctx>>
+    ) -> IrResult<CatchPadInst<'ctx, B>>
     where
         Name: AsRef<str>,
         I: IntoIterator<Item = V>,
-        V: crate::value::IsValue<'ctx>,
+        V: IsValue<'ctx, B>,
     {
-        self.require_same_module(catch_switch)?;
-        let arg_ids: Vec<crate::value::ValueId> =
-            args.into_iter().map(|a| a.as_value().id).collect();
+        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.as_value().id).collect();
         let payload = crate::instr_types::CatchPadInstData::new(Some(catch_switch.id), arg_ids);
         let token_ty = self.module.token_type().as_type().id();
         let inst = self.append_instruction(token_ty, InstructionKindData::CatchPad(payload), name);
-        Ok(crate::instructions::CatchPadInst::from_raw(
+        Ok(CatchPadInst::<B>::from_raw(
             inst.as_value().id,
-            self.module,
+            ModuleRef::<B>::new(self.module),
             token_ty,
         ))
     }
@@ -5523,18 +5295,14 @@ where
     /// `IRBuilder::CreateCatchRet`.
     pub fn build_catch_ret<S2, Name>(
         self,
-        catch_pad: Value<'ctx>,
-        target: BasicBlock<'ctx, R, S2>,
+        catch_pad: Value<'ctx, B>,
+        target: BasicBlock<'ctx, R, S2, B>,
         name: Name,
-    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>)>
+    ) -> IrResult<SealedBlockInst<'ctx, R, B>>
     where
         Name: AsRef<str>,
         S2: BlockSealState,
     {
-        self.require_same_module(catch_pad)?;
-        if target.as_value().module().id() != self.module.id() {
-            return Err(IrError::ForeignValue);
-        }
         let bb = self.insert_block();
         let void_ty = self.module.void_type().as_type().id();
         let payload =
@@ -5548,19 +5316,15 @@ where
     /// Mirrors `IRBuilder::CreateCleanupRet`.
     pub fn build_cleanup_ret<S2, Name>(
         self,
-        cleanup_pad: Value<'ctx>,
-        unwind_dest: BasicBlock<'ctx, R, S2>,
+        cleanup_pad: Value<'ctx, B>,
+        unwind_dest: BasicBlock<'ctx, R, S2, B>,
         name: Name,
-    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>)>
+    ) -> IrResult<SealedBlockInst<'ctx, R, B>>
     where
         S2: BlockSealState,
         Name: AsRef<str>,
     {
-        self.require_same_module(cleanup_pad)?;
         let unwind_value = unwind_dest.as_value();
-        if unwind_value.module().id() != self.module.id() {
-            return Err(IrError::ForeignValue);
-        }
         self.build_cleanup_ret_raw(cleanup_pad.id, Some(unwind_value.id), name)
     }
 
@@ -5568,22 +5332,21 @@ where
     /// Mirrors `IRBuilder::CreateCleanupRet`.
     pub fn build_cleanup_ret_to_caller<Name>(
         self,
-        cleanup_pad: Value<'ctx>,
+        cleanup_pad: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>)>
+    ) -> IrResult<SealedBlockInst<'ctx, R, B>>
     where
         Name: AsRef<str>,
     {
-        self.require_same_module(cleanup_pad)?;
         self.build_cleanup_ret_raw(cleanup_pad.id, None, name)
     }
 
     fn build_cleanup_ret_raw<Name>(
         self,
-        cleanup_pad_id: crate::value::ValueId,
-        unwind_id: Option<crate::value::ValueId>,
+        cleanup_pad_id: ValueId,
+        unwind_id: Option<ValueId>,
         name: Name,
-    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>)>
+    ) -> IrResult<SealedBlockInst<'ctx, R, B>>
     where
         Name: AsRef<str>,
     {
@@ -5599,19 +5362,15 @@ where
     /// Mirrors `IRBuilder::CreateCatchSwitch`.
     pub fn build_catch_switch<S2, Name>(
         self,
-        parent_pad: Value<'ctx>,
-        unwind_dest: BasicBlock<'ctx, R, S2>,
+        parent_pad: Value<'ctx, B>,
+        unwind_dest: BasicBlock<'ctx, R, S2, B>,
         name: Name,
-    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, CatchSwitchInst<'ctx, Open>)>
+    ) -> IrResult<SealedBlockCatchSwitch<'ctx, R, B>>
     where
         S2: BlockSealState,
         Name: AsRef<str>,
     {
-        self.require_same_module(parent_pad)?;
         let unwind_value = unwind_dest.as_value();
-        if unwind_value.module().id() != self.module.id() {
-            return Err(IrError::ForeignValue);
-        }
         self.build_catch_switch_raw(Some(parent_pad.id), Some(unwind_value.id), name)
     }
 
@@ -5619,13 +5378,12 @@ where
     /// Mirrors `IRBuilder::CreateCatchSwitch`.
     pub fn build_catch_switch_to_caller<Name>(
         self,
-        parent_pad: Value<'ctx>,
+        parent_pad: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, CatchSwitchInst<'ctx, Open>)>
+    ) -> IrResult<SealedBlockCatchSwitch<'ctx, R, B>>
     where
         Name: AsRef<str>,
     {
-        self.require_same_module(parent_pad)?;
         self.build_catch_switch_raw(Some(parent_pad.id), None, name)
     }
 
@@ -5633,17 +5391,14 @@ where
     /// Mirrors `IRBuilder::CreateCatchSwitch`.
     pub fn build_catch_switch_within_none<S2, Name>(
         self,
-        unwind_dest: BasicBlock<'ctx, R, S2>,
+        unwind_dest: BasicBlock<'ctx, R, S2, B>,
         name: Name,
-    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, CatchSwitchInst<'ctx, Open>)>
+    ) -> IrResult<SealedBlockCatchSwitch<'ctx, R, B>>
     where
         S2: BlockSealState,
         Name: AsRef<str>,
     {
         let unwind_value = unwind_dest.as_value();
-        if unwind_value.module().id() != self.module.id() {
-            return Err(IrError::ForeignValue);
-        }
         self.build_catch_switch_raw(None, Some(unwind_value.id), name)
     }
 
@@ -5652,7 +5407,7 @@ where
     pub fn build_catch_switch_within_none_to_caller<Name>(
         self,
         name: Name,
-    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, CatchSwitchInst<'ctx, Open>)>
+    ) -> IrResult<SealedBlockCatchSwitch<'ctx, R, B>>
     where
         Name: AsRef<str>,
     {
@@ -5661,10 +5416,10 @@ where
 
     fn build_catch_switch_raw<Name>(
         self,
-        parent_id: Option<crate::value::ValueId>,
-        unwind_id: Option<crate::value::ValueId>,
+        parent_id: Option<ValueId>,
+        unwind_id: Option<ValueId>,
         name: Name,
-    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, CatchSwitchInst<'ctx, Open>)>
+    ) -> IrResult<SealedBlockCatchSwitch<'ctx, R, B>>
     where
         Name: AsRef<str>,
     {
@@ -5675,11 +5430,20 @@ where
             self.append_instruction(token_ty, InstructionKindData::CatchSwitch(payload), name);
         Ok((
             bb.retag_seal::<Sealed>(),
-            CatchSwitchInst::from_raw(inst.as_value().id, self.module, token_ty),
+            CatchSwitchInst::<Open, B>::from_raw(
+                inst.as_value().id,
+                ModuleRef::<B>::new(self.module),
+                token_ty,
+            ),
         ))
     }
 
-    pub fn build_unreachable(self) -> (BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>) {
+    pub fn build_unreachable(
+        self,
+    ) -> (
+        BasicBlock<'ctx, R, Sealed, B>,
+        Instruction<'ctx, Attached, B>,
+    ) {
         let payload = crate::instr_types::UnreachableInstData;
         let void_ty = self.module.void_type().as_type().id();
         let bb = self.insert_block();
@@ -5697,7 +5461,7 @@ where
         ty: TypeId,
         kind: InstructionKindData,
         name: N,
-    ) -> Instruction<'ctx> {
+    ) -> Instruction<'ctx, Attached, B> {
         let name = name.as_ref();
         let bb = self.insert_block();
         let bb_id = bb.as_value().id;
@@ -5738,34 +5502,26 @@ where
             && !Type::new(ty, self.module).is_void()
             && let Some(parent_fn_id) = bb.parent_id()
         {
-            let parent_fn = FunctionValue::<Dyn>::from_parts_unchecked(parent_fn_id, self.module);
+            let parent_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(
+                parent_fn_id,
+                ModuleRef::<B>::new(self.module),
+            );
             parent_fn.set_local_value_name(id, Some(name));
         }
-        Instruction::from_parts(id, self.module)
+        Instruction::from_parts(id, ModuleRef::<B>::new(self.module))
     }
 
-    /// Crate-internal: refuse values that belong to a different module.
-    /// The lifetime brand catches most cross-module mixing at compile
-    /// time, but constants pulled from `'static` callers (or a future
-    /// shared `TypePool`) need an explicit runtime check.
-    fn require_same_module(&self, v: Value<'ctx>) -> IrResult<()> {
-        if v.module().id() != self.module.id() {
-            return Err(IrError::ForeignValue);
-        }
-        Ok(())
-    }
-
-    fn int_type_for_bits(&self, bits: u32) -> IrResult<IntType<'ctx, IntDyn>> {
+    fn int_type_for_bits(&self, bits: u32) -> IrResult<IntType<'ctx, IntDyn, B>> {
         if !(MIN_INT_BITS..=MAX_INT_BITS).contains(&bits) {
             return Err(IrError::InvalidIntegerWidth { bits });
         }
         Ok(IntType::new(
             self.module.context().int_type(bits),
-            self.module,
+            ModuleRef::<B>::new(self.module),
         ))
     }
 
-    fn ptr_to_addr_result_type(&self, src_ty: Type<'ctx>) -> IrResult<Type<'ctx>> {
+    fn ptr_to_addr_result_type(&self, src_ty: Type<'ctx, B>) -> IrResult<Type<'ctx, B>> {
         let (addr_space, vector_shape) = self.ptr_to_addr_source_shape(src_ty)?;
         let address_bits = self.module.data_layout().index_size_in_bits(addr_space);
         let int_ty = self.int_type_for_bits(address_bits)?.as_type();
@@ -5779,10 +5535,13 @@ where
         } else {
             self.module.context().fixed_vector_type(int_ty.id(), lanes)
         };
-        Ok(Type::new(vector_id, self.module))
+        Ok(Type::new(vector_id, ModuleRef::<B>::new(self.module)))
     }
 
-    fn ptr_to_addr_source_shape(&self, src_ty: Type<'ctx>) -> IrResult<(u32, Option<(u32, bool)>)> {
+    fn ptr_to_addr_source_shape(
+        &self,
+        src_ty: Type<'ctx, B>,
+    ) -> IrResult<(u32, Option<(u32, bool)>)> {
         match src_ty.data() {
             TypeData::Pointer { addr_space } => Ok((*addr_space, None)),
             TypeData::FixedVector { elem, n } => match self.module.context().type_data(*elem) {
@@ -5809,10 +5568,9 @@ where
     /// to a typed handle or returns it as the instruction result.
     fn checked_folded_value(
         &self,
-        folded: Value<'ctx>,
+        folded: Value<'ctx, B>,
         expected_ty: TypeId,
-    ) -> IrResult<Value<'ctx>> {
-        self.require_same_module(folded)?;
+    ) -> IrResult<Value<'ctx, B>> {
         if folded.ty != expected_ty {
             return Err(IrError::TypeMismatch {
                 expected: Type::new(expected_ty, self.module).kind_label(),
@@ -5824,9 +5582,8 @@ where
 
     /// Build the `ret` payload and append. Crate-internal: the typed
     /// `build_ret` methods funnel here after their per-marker
-    /// validation. Cannot fail by construction (same-module check is
-    /// enforced upstream).
-    fn append_ret(&self, value: Option<Value<'ctx>>) -> Instruction<'ctx> {
+    /// validation. Cannot fail by construction.
+    fn append_ret(&self, value: Option<Value<'ctx, B>>) -> Instruction<'ctx, Attached, B> {
         let payload = ReturnOpData::new(value.map(|v| v.id));
         let void_ty = self.module.void_type().as_type().id();
         self.append_instruction(void_ty, InstructionKindData::Ret(payload), "")
@@ -5848,52 +5605,50 @@ where
 /// per `(value-shape, R)` pair so a typed builder accepts every Rust
 /// scalar / typed handle that lifts to the correct IR type, while a
 /// runtime-checked [`Dyn`] builder accepts anything that implements
-/// [`crate::value::IsValue`].
-pub trait IntoReturnValue<
-    'ctx,
-    R: ReturnMarker,
-    B: crate::module::ModuleBrand = crate::module::Brand<'ctx>,
->: Sized
-{
+/// [`IsValue`].
+pub trait IntoReturnValue<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>>: Sized {
     #[doc(hidden)]
-    fn into_return_value(self, module: ModuleRef<'ctx>) -> IrResult<Value<'ctx, B>>;
+    fn into_return_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>>;
 }
 
-// Int-marker impls: every `IntoIntValue<'ctx, W>` is also a
+// Int-marker impls: every `IntoIntValue<'ctx, W, B>` is also a
 // `IntoReturnValue<'ctx, W>`. Expanded per concrete `W` so coherence
 // stays sane (a single blanket would conflict with the float side).
 macro_rules! impl_into_return_value_int {
     ($($w:ty),+ $(,)?) => { $(
-        impl<'ctx, V> IntoReturnValue<'ctx, $w> for V
+        impl<'ctx, B: ModuleBrand + 'ctx, V> IntoReturnValue<'ctx, $w, B> for V
         where
-            V: crate::int_width::IntoIntValue<'ctx, $w>,
+            V: IntoIntValue<'ctx, $w, B>,
         {
             #[inline]
             fn into_return_value(
                 self,
-                module: ModuleRef<'ctx>,
-            ) -> IrResult<Value<'ctx>> {
-                Ok(crate::value::IsValue::as_value(self.into_int_value(module)?))
+                module: ModuleRef<'ctx, B>,
+            ) -> IrResult<Value<'ctx, B>> {
+                Ok(IsValue::as_value(self.into_int_value(module)?))
             }
         }
     )+ };
 }
-impl_into_return_value_int!(bool, i8, i16, i32, i64, i128, crate::int_width::IntDyn);
+impl_into_return_value_int!(bool, i8, i16, i32, i64, i128, IntDyn);
 
-// Float-marker impls. Phase 2 introduces `IntoFloatValue<'ctx, K>`; for
-// now the typed `FloatValue<'ctx, K>` itself is the only direct
+// Float-marker impls. Phase 2 introduces `IntoFloatValue<'ctx, K, B>`; for
+// now the typed `FloatValue<'ctx, K, B>` itself is the only direct
 // `IntoReturnValue<'ctx, K>` source. Phase 2 will replace these with
 // macro-expanded blanket-on-IntoFloatValue impls (matching the int
 // side).
 macro_rules! impl_into_return_value_float {
     ($($k:ty),+ $(,)?) => { $(
-        impl<'ctx> IntoReturnValue<'ctx, $k> for crate::value::FloatValue<'ctx, $k> {
+        impl<'ctx, B: ModuleBrand + 'ctx, V> IntoReturnValue<'ctx, $k, B> for V
+        where
+            V: IntoFloatValue<'ctx, $k, B>,
+        {
             #[inline]
             fn into_return_value(
                 self,
-                _module: ModuleRef<'ctx>,
-            ) -> IrResult<Value<'ctx>> {
-                Ok(crate::value::IsValue::as_value(self))
+                module: ModuleRef<'ctx, B>,
+            ) -> IrResult<Value<'ctx, B>> {
+                Ok(IsValue::as_value(self.into_float_value(module)?))
             }
         }
     )+ };
@@ -5906,27 +5661,27 @@ impl_into_return_value_float!(
     crate::float_kind::Fp128,
     crate::float_kind::X86Fp80,
     crate::float_kind::PpcFp128,
-    crate::float_kind::FloatDyn,
+    FloatDyn,
 );
 
-// Pointer-marker impl: `Ptr` accepts a `PointerValue`. Phase 4 will
-// extend with `IntoPointerValue<'ctx>` lifts (constants / arguments).
-impl<'ctx> IntoReturnValue<'ctx, Ptr> for crate::value::PointerValue<'ctx> {
+// Pointer-marker impl: `Ptr` accepts any pointer-valued operand source.
+impl<'ctx, B: ModuleBrand + 'ctx, V> IntoReturnValue<'ctx, Ptr, B> for V
+where
+    V: IntoPointerValue<'ctx, B>,
+{
     #[inline]
-    fn into_return_value(self, _module: ModuleRef<'ctx>) -> IrResult<Value<'ctx>> {
-        Ok(crate::value::IsValue::as_value(self))
+    fn into_return_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+        Ok(IsValue::as_value(self.into_pointer_value(module)?))
     }
 }
 
-// Top-level erased `Dyn` accepts anything implementing `IsValue`. Run
-// the runtime check from inside `build_ret` itself for this marker
-// (the type system pins R = Dyn so the typed paths above don't fire).
-impl<'ctx, V> IntoReturnValue<'ctx, Dyn> for V
+// Top-level erased `Dyn` accepts anything implementing `IsValue`.
+impl<'ctx, B: ModuleBrand + 'ctx, V> IntoReturnValue<'ctx, Dyn, B> for V
 where
-    V: crate::value::IsValue<'ctx>,
+    V: IsValue<'ctx, B>,
 {
     #[inline]
-    fn into_return_value(self, _module: ModuleRef<'ctx>) -> IrResult<Value<'ctx>> {
+    fn into_return_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
         Ok(self.as_value())
     }
 }
@@ -5934,28 +5689,22 @@ where
 impl<'m, 'ctx, B, F, R> IRBuilder<'m, 'ctx, B, F, Positioned, R>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx>,
+    F: IRBuilderFolder<'ctx, B>,
     R: ReturnMarker,
 {
     /// Produce `ret <value>` against the function's declared return
     /// type. The accepted operand types are pinned by `R` through the
     /// [`IntoReturnValue`] trait - a builder for `i32`-returning
-    /// function takes any `IntoIntValue<'ctx, i32>`, the float / ptr
+    /// function takes any `IntoIntValue<'ctx, i32, B>`, the float / ptr
     /// builders take their corresponding handles, and a [`Dyn`]
     /// builder accepts anything implementing
-    /// [`crate::value::IsValue`] but runs an extra runtime
+    /// [`IsValue`] but runs an extra runtime
     /// type-equality check.
-    ///
-    /// Cross-module mixing errors with [`IrError::ForeignValue`].
-    pub fn build_ret<V>(
-        self,
-        value: V,
-    ) -> IrResult<(BasicBlock<'ctx, R, Sealed>, Instruction<'ctx>)>
+    pub fn build_ret<V>(self, value: V) -> IrResult<SealedBlockInst<'ctx, R, B>>
     where
-        V: IntoReturnValue<'ctx, R>,
+        V: IntoReturnValue<'ctx, R, B>,
     {
         let v = value.into_return_value(ModuleRef::new(self.module))?;
-        self.require_same_module(v)?;
         // Runtime-check for the fully-erased `Dyn` marker.
         if R::expected_kind() == crate::marker::ExpectedRetKind::Dyn {
             let parent_fn = self.parent_function_dyn();
@@ -5975,25 +5724,25 @@ where
     /// Owning function of the current insertion block, in its
     /// runtime-checked form. Used by the `Dyn`-marker fall-back inside
     /// [`Self::build_ret`].
-    fn parent_function_dyn(&self) -> FunctionValue<'ctx, Dyn> {
+    fn parent_function_dyn(&self) -> FunctionValue<'ctx, Dyn, B> {
         let bb = self.insert_block();
         let parent_id = bb.parent_id().unwrap_or_else(|| {
             unreachable!("Positioned builder block always has a parent function")
         });
-        FunctionValue::<Dyn>::from_parts_unchecked(parent_id, self.module)
+        FunctionValue::<Dyn, B>::from_parts_unchecked(parent_id, ModuleRef::<B>::new(self.module))
     }
 }
 
 impl<'m, 'ctx, B, F> IRBuilder<'m, 'ctx, B, F, Positioned, ()>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx>,
+    F: IRBuilderFolder<'ctx, B>,
 {
     /// Produce `ret void`. Mirrors `IRBuilder::CreateRetVoid`. The
     /// `()` builder does not expose `build_ret(value)` at all (no
     /// `IntoReturnValue<'ctx, ()>` impls exist), so `build_ret_void`
     /// is the only return option.
-    pub fn build_ret_void(self) -> (BasicBlock<'ctx, (), Sealed>, Instruction<'ctx>) {
+    pub fn build_ret_void(self) -> VoidReturnInst<'ctx, B> {
         let bb = self.insert_block();
         let inst = self.append_ret(None);
         (bb.retag_seal::<Sealed>(), inst)
@@ -6003,17 +5752,20 @@ where
 impl<'m, 'ctx, B, F> IRBuilder<'m, 'ctx, B, F, Positioned, Dyn>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx>,
+    F: IRBuilderFolder<'ctx, B>,
 {
     /// Produce `ret void`. Errors with
     /// [`IrError::ReturnTypeMismatch`] if the parent function does
     /// not actually return `void`.
-    pub fn build_ret_void(self) -> IrResult<(BasicBlock<'ctx, Dyn, Sealed>, Instruction<'ctx>)> {
+    pub fn build_ret_void(self) -> IrResult<SealedBlockInst<'ctx, Dyn, B>> {
         let bb = self.insert_block();
         let parent_id = bb.parent_id().unwrap_or_else(|| {
             unreachable!("Positioned builder block always has a parent function")
         });
-        let parent_fn = FunctionValue::<Dyn>::from_parts_unchecked(parent_id, self.module);
+        let parent_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(
+            parent_id,
+            ModuleRef::<B>::new(self.module),
+        );
         let expected = parent_fn.return_type();
         if !expected.is_void() {
             return Err(IrError::ReturnTypeMismatch {
@@ -6033,20 +5785,20 @@ where
 /// Builder for [`crate::IRBuilder::call_builder`]. Accumulates
 /// per-arg / flag state via chainable methods, then emits the call
 /// instruction on `.build()`. Each `.arg(...)` call is statically
-/// dispatched against `V: IsValue<'ctx>`; arg types can vary
+/// dispatched against `V: IsValue<'ctx, B>`; arg types can vary
 /// across calls without trait objects.
 pub struct CallBuilder<'a, 'm, 'ctx, B, F, RP, RC>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx>,
+    F: IRBuilderFolder<'ctx, B>,
     RP: ReturnMarker,
     RC: ReturnMarker,
 {
     parent: &'a IRBuilder<'m, 'ctx, B, F, Positioned, RP>,
-    callee_id: crate::value::ValueId,
+    callee_id: ValueId,
     fn_ty: TypeId,
     return_ty: TypeId,
-    args: Vec<crate::value::ValueId>,
+    args: Vec<ValueId>,
     calling_conv: crate::CallingConv,
     tail_kind: crate::instr_types::TailCallKind,
     attrs: crate::instr_types::CallAttributeData,
@@ -6058,16 +5810,14 @@ where
 impl<'a, 'm, 'ctx, B, F, RP, RC> CallBuilder<'a, 'm, 'ctx, B, F, RP, RC>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx>,
+    F: IRBuilderFolder<'ctx, B>,
     RP: ReturnMarker,
     RC: ReturnMarker,
 {
     /// Add an argument. Statically dispatched per `V: IsValue` so
     /// mixed-type argument lists work without homogeneity.
-    pub fn arg<V: IsValue<'ctx>>(mut self, value: V) -> Self {
+    pub fn arg<V: IsValue<'ctx, B>>(mut self, value: V) -> Self {
         let v = value.as_value();
-        // Same-module check is deferred to `.build()`; this lets
-        // the caller chain without an early `IrResult` plumbing.
         self.args.push(v.id);
         self
     }
@@ -6105,16 +5855,7 @@ where
     }
 
     /// Emit the call instruction.
-    pub fn build(self) -> IrResult<CallInst<'ctx, RC>> {
-        // Cross-module check on every operand id.
-        let module = self.parent.module;
-        for &id in &self.args {
-            let data = module.context().value_data(id);
-            let v = crate::value::Value::from_parts(id, module, data.ty);
-            if v.module().id() != module.id() {
-                return Err(IrError::ForeignValue);
-            }
-        }
+    pub fn build(self) -> IrResult<CallInst<'ctx, RC, B>> {
         let payload = crate::instr_types::CallInstData::new_with_attrs(
             self.callee_id,
             self.fn_ty,
@@ -6128,9 +5869,9 @@ where
             InstructionKindData::Call(payload),
             self.name,
         );
-        Ok(crate::instructions::CallInst::<RC>::from_raw(
+        Ok(CallInst::<RC, B>::from_raw(
             inst.as_value().id,
-            inst.module().core_ref(),
+            ModuleRef::<B>::new(self.parent.module),
             inst.ty().id(),
         ))
     }
@@ -6147,61 +5888,64 @@ where
 /// shape so `b.build_select(cond, a, b)` returns the same handle
 /// type the user passed in. Mirrors LangRef's invariant that the
 /// two arms must have identical IR types.
-pub trait SelectArm<'ctx>: Sized + select_arm_sealed::Sealed {
+pub trait SelectArm<'ctx, B: ModuleBrand = Brand<'ctx>>: Sized + select_arm_sealed::Sealed {
     type Output;
     #[doc(hidden)]
-    fn from_select_value(v: crate::value::Value<'ctx>) -> Self::Output;
+    fn from_select_value(v: Value<'ctx, B>) -> Self::Output;
     #[doc(hidden)]
-    fn arm_value(self) -> crate::value::Value<'ctx>;
+    fn arm_value(self) -> Value<'ctx, B>;
 }
 
 mod select_arm_sealed {
+    use super::{FloatKind, FloatValue, IntValue, IntWidth, ModuleBrand, PointerValue};
+
     pub trait Sealed {}
-    impl<'ctx, W: crate::int_width::IntWidth> Sealed for crate::value::IntValue<'ctx, W> {}
-    impl<'ctx, K: crate::float_kind::FloatKind> Sealed for crate::value::FloatValue<'ctx, K> {}
-    impl<'ctx> Sealed for crate::value::PointerValue<'ctx> {}
+
+    impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> Sealed for IntValue<'ctx, W, B> {}
+    impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> Sealed for FloatValue<'ctx, K, B> {}
+    impl<'ctx, B: ModuleBrand + 'ctx> Sealed for PointerValue<'ctx, B> {}
 }
 
-impl<'ctx, W: crate::int_width::IntWidth> SelectArm<'ctx> for crate::value::IntValue<'ctx, W> {
-    type Output = crate::value::IntValue<'ctx, W>;
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for IntValue<'ctx, W, B> {
+    type Output = IntValue<'ctx, W, B>;
     #[inline]
-    fn from_select_value(v: crate::value::Value<'ctx>) -> Self::Output {
-        crate::value::IntValue::<W>::from_value_unchecked(v)
+    fn from_select_value(v: Value<'ctx, B>) -> Self::Output {
+        IntValue::<W, B>::from_value_unchecked(v)
     }
     #[inline]
-    fn arm_value(self) -> crate::value::Value<'ctx> {
-        crate::value::IsValue::as_value(self)
-    }
-}
-
-impl<'ctx, K: crate::float_kind::FloatKind> SelectArm<'ctx> for crate::value::FloatValue<'ctx, K> {
-    type Output = crate::value::FloatValue<'ctx, K>;
-    #[inline]
-    fn from_select_value(v: crate::value::Value<'ctx>) -> Self::Output {
-        crate::value::FloatValue::<K>::from_value_unchecked(v)
-    }
-    #[inline]
-    fn arm_value(self) -> crate::value::Value<'ctx> {
-        crate::value::IsValue::as_value(self)
+    fn arm_value(self) -> Value<'ctx, B> {
+        IsValue::as_value(self)
     }
 }
 
-impl<'ctx> SelectArm<'ctx> for crate::value::PointerValue<'ctx> {
-    type Output = crate::value::PointerValue<'ctx>;
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for FloatValue<'ctx, K, B> {
+    type Output = FloatValue<'ctx, K, B>;
     #[inline]
-    fn from_select_value(v: crate::value::Value<'ctx>) -> Self::Output {
-        crate::value::PointerValue::from_value_unchecked(v)
+    fn from_select_value(v: Value<'ctx, B>) -> Self::Output {
+        FloatValue::<K, B>::from_value_unchecked(v)
     }
     #[inline]
-    fn arm_value(self) -> crate::value::Value<'ctx> {
-        crate::value::IsValue::as_value(self)
+    fn arm_value(self) -> Value<'ctx, B> {
+        IsValue::as_value(self)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for PointerValue<'ctx, B> {
+    type Output = PointerValue<'ctx, B>;
+    #[inline]
+    fn from_select_value(v: Value<'ctx, B>) -> Self::Output {
+        PointerValue::from_value_unchecked(v)
+    }
+    #[inline]
+    fn arm_value(self) -> Value<'ctx, B> {
+        IsValue::as_value(self)
     }
 }
 
 impl<'m, 'ctx, B, F, R> IRBuilder<'m, 'ctx, B, F, Positioned, R>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx>,
+    F: IRBuilderFolder<'ctx, B>,
     R: ReturnMarker,
 {
     /// Produce `select i1 <cond>, <ty> <true>, <ty> <false>`.
@@ -6219,17 +5963,14 @@ where
     ) -> IrResult<A::Output>
     where
         Name: AsRef<str>,
-        C: crate::int_width::IntoIntValue<'ctx, bool>,
-        A: SelectArm<'ctx> + Copy,
+        C: IntoIntValue<'ctx, bool, B>,
+        A: SelectArm<'ctx, B> + Copy,
     {
         let c = cond.into_int_value(ModuleRef::new(self.module))?;
         let true_v = true_arm.arm_value();
         let true_ty = true_arm.arm_value().ty().id();
         let false_v = false_arm.arm_value();
         let false_ty = false_arm.arm_value().ty().id();
-        self.require_same_module(c.as_value())?;
-        self.require_same_module(true_v)?;
-        self.require_same_module(false_v)?;
         if true_ty != false_ty {
             return Err(IrError::TypeMismatch {
                 expected: true_v.ty().kind_label(),
@@ -6258,7 +5999,7 @@ fn walk_aggregate_for_builder(m: &ModuleCore, root: TypeId, indices: &[u32]) -> 
     for &idx in indices {
         let d = m.context().type_data(cur);
         match d {
-            crate::r#type::TypeData::Array { elem, n } => {
+            TypeData::Array { elem, n } => {
                 let n_u32 = u32::try_from(*n).unwrap_or(u32::MAX);
                 if idx >= n_u32 {
                     return Err(IrError::ArgumentIndexOutOfRange {
@@ -6268,7 +6009,7 @@ fn walk_aggregate_for_builder(m: &ModuleCore, root: TypeId, indices: &[u32]) -> 
                 }
                 cur = *elem;
             }
-            crate::r#type::TypeData::Struct(s) => {
+            TypeData::Struct(s) => {
                 let body = s.body.borrow();
                 match body.as_ref() {
                     Some(b) => {
@@ -6281,7 +6022,7 @@ fn walk_aggregate_for_builder(m: &ModuleCore, root: TypeId, indices: &[u32]) -> 
                     None => {
                         return Err(IrError::TypeMismatch {
                             expected: crate::error::TypeKindLabel::Struct,
-                            got: crate::r#type::Type::new(cur, m).kind_label(),
+                            got: Type::new(cur, m).kind_label(),
                         });
                     }
                 }
@@ -6289,43 +6030,10 @@ fn walk_aggregate_for_builder(m: &ModuleCore, root: TypeId, indices: &[u32]) -> 
             _ => {
                 return Err(IrError::TypeMismatch {
                     expected: crate::error::TypeKindLabel::Struct,
-                    got: crate::r#type::Type::new(cur, m).kind_label(),
+                    got: Type::new(cur, m).kind_label(),
                 });
             }
         }
     }
     Ok(cur)
-}
-
-#[cfg(test)]
-mod folder_validation_tests {
-    use super::*;
-    use crate::Linkage;
-    use crate::value::ValueId;
-
-    /// llvmkit-specific regression for custom `IRBuilderFolder.h`-style hooks
-    /// returning a `Value*` from a different module: the shared builder-side
-    /// folded-result validator reports `ForeignValue` before any typed narrowing.
-    #[test]
-    fn custom_folder_foreign_value_is_rejected() {
-        let foreign_core = ModuleCore::new("foreign-folder-result");
-        let result = Module::with_new("folder-validation", |m| -> IrResult<()> {
-            let i32_ty = m.i32_type().as_type();
-            let void_ty = m.void_type().as_type();
-            let fn_ty = m.fn_type(void_ty, Vec::<Type>::new(), false);
-            let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
-            let builder = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-            let foreign = Value {
-                id: ValueId::from_index(0),
-                module: ModuleRef::new(&foreign_core),
-                ty: i32_ty.id,
-            };
-            let result = builder.checked_folded_value(foreign, i32_ty.id);
-            assert!(matches!(result, Err(IrError::ForeignValue)));
-            assert_eq!(entry.instructions().len(), 0);
-            Ok(())
-        });
-        assert!(result.is_ok());
-    }
 }

@@ -2,38 +2,38 @@
 
 use core::cell::{Cell, RefCell};
 
-use crate::DebugLoc;
-use crate::constant::{Constant, IsConstant};
-use crate::derived_types::PointerType;
-use crate::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
-use crate::global_value::{Linkage, Visibility};
-use crate::metadata::MetadataAttachmentSet;
-use crate::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
-use crate::r#type::{Type, TypeId, TypeKind};
-use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
+use super::DebugLoc;
+use super::constant::{Constant, IsConstant};
+use super::derived_types::PointerType;
+use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
+use super::global_value::{Linkage, Visibility};
+use super::metadata::MetadataAttachmentSet;
+use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::r#type::{Type, TypeId, TypeKind};
+use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
 
 #[derive(Debug)]
-pub(crate) struct GlobalIFuncData {
-    pub(crate) name: String,
-    pub(crate) value_type: TypeId,
-    pub(crate) address_space: u32,
-    pub(crate) resolver: Cell<ValueId>,
-    pub(crate) linkage: Cell<Linkage>,
-    pub(crate) visibility: Cell<Visibility>,
-    pub(crate) partition: RefCell<Option<String>>,
-    pub(crate) metadata: RefCell<crate::metadata::MetadataAttachmentSet>,
+pub(super) struct GlobalIFuncData {
+    pub(super) name: String,
+    pub(super) value_type: TypeId,
+    pub(super) address_space: u32,
+    pub(super) resolver: Cell<ValueId>,
+    pub(super) linkage: Cell<Linkage>,
+    pub(super) visibility: Cell<Visibility>,
+    pub(super) partition: RefCell<Option<String>>,
+    pub(super) metadata: RefCell<MetadataAttachmentSet>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct GlobalIFunc<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
-    pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx, B>,
-    pub(crate) ty: TypeId,
+pub struct GlobalIFunc<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) ty: TypeId,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
     #[inline]
-    pub(crate) fn from_parts_unchecked<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_parts_unchecked<M>(id: ValueId, module: M, ty: TypeId) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -115,9 +115,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
         resolver: C,
     ) -> IrResult<()> {
         let constant = resolver.as_constant();
-        if constant.module != self.module {
-            return Err(IrError::ForeignValue);
-        }
         let Some(addr_space) = pointer_address_space(constant.ty()) else {
             return Err(IrError::TypeMismatch {
                 expected: TypeKindLabel::Pointer,
@@ -250,7 +247,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalIFunc<'ctx, 
     }
 }
 
-pub struct GlobalIFuncBuilder<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+pub struct GlobalIFuncBuilder<'ctx, B: ModuleBrand = Brand<'ctx>> {
     module: ModuleRef<'ctx, B>,
     name: String,
     value_type: TypeId,
@@ -263,7 +260,7 @@ pub struct GlobalIFuncBuilder<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>>
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
-    pub(crate) fn new<M, C>(
+    pub(super) fn new<M, C>(
         module: M,
         name: impl Into<String>,
         value_type: Type<'ctx, B>,
@@ -330,7 +327,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
         self.module.module().install_global_ifunc::<B>(self)
     }
 
-    pub(crate) fn into_data(self) -> (String, GlobalIFuncData, u32) {
+    pub(super) fn into_data(self) -> (String, GlobalIFuncData, u32) {
         let GlobalIFuncBuilder {
             module: _,
             name,
@@ -350,7 +347,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
             linkage: Cell::new(linkage),
             visibility: Cell::new(visibility),
             partition: RefCell::new(partition),
-            metadata: RefCell::new(crate::metadata::MetadataAttachmentSet::new()),
+            metadata: RefCell::new(MetadataAttachmentSet::new()),
         };
         (name, data, address_space)
     }

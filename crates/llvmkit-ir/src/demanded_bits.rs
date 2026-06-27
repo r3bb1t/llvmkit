@@ -4,25 +4,25 @@
 //! `llvm/lib/Analysis/DemandedBits.cpp` for the integer instruction subset
 //! currently modelled by llvmkit.
 
-use crate::analysis::{
+use super::analysis::{
     AllAnalysesOnFunction, CFGAnalyses, FunctionAnalysis, FunctionAnalysisInvalidator,
     FunctionAnalysisManager, FunctionAnalysisResult, PreservedAnalyses,
 };
-use crate::constant::ConstantData;
-use crate::constants::ConstantIntValue;
-use crate::data_layout::DataLayout;
-use crate::instr_types::{BinaryOpData, CallInstData, CastOpData, CastOpcode, InvokeInstData};
-use crate::instruction::{Instruction, InstructionData, InstructionKindData, state};
-use crate::int_width::IntDyn;
-use crate::intrinsics::IntrinsicId;
-use crate::iter::BlockCursor;
-use crate::module::{ModuleBrand, ModuleRef};
-use crate::pass_context::{FunctionPassContext, FunctionView};
-use crate::pass_manager::FunctionPass;
-use crate::r#type::{Type, TypeKind};
-use crate::value::{Value, ValueId, ValueKindData, ValueUse};
-use crate::value_tracking::{ValueTrackingQuery, compute_known_bits};
-use crate::{ApInt, IrError, IrResult, KnownBits};
+use super::constant::ConstantData;
+use super::constants::ConstantIntValue;
+use super::data_layout::DataLayout;
+use super::instr_types::{BinaryOpData, CallInstData, CastOpData, CastOpcode, InvokeInstData};
+use super::instruction::{Instruction, InstructionData, InstructionKindData, state};
+use super::int_width::IntDyn;
+use super::intrinsics::IntrinsicId;
+use super::iter::BlockCursor;
+use super::module::{ModuleBrand, ModuleRef};
+use super::pass_context::{FunctionPassContext, FunctionView};
+use super::pass_manager::FunctionPass;
+use super::r#type::{Type, TypeKind};
+use super::value::{Value, ValueId, ValueKindData, ValueUse};
+use super::value_tracking::{ValueTrackingQuery, compute_known_bits};
+use super::{ApInt, IrError, IrResult, KnownBits};
 use core::ops::Not;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -1194,9 +1194,6 @@ fn replace_instruction_operand<'ctx, B: ModuleBrand + 'ctx>(
     operand: &core::cell::Cell<ValueId>,
     replacement: Value<'ctx, B>,
 ) -> IrResult<bool> {
-    if replacement.module().id() != user.module().id() {
-        return Err(IrError::ForeignValue);
-    }
     let old_id = operand.get();
     let new_id = replacement.id();
     if old_id == new_id {

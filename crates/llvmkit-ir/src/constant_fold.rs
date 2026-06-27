@@ -2,21 +2,21 @@
 //!
 //! Mirrors the pure-constant portions of `llvm/lib/IR/ConstantFold.cpp`.
 
-use crate::ap_float::{ApFloatCmpResult, ApFloatSemantics, ApFloatSign, NanPayload};
-use crate::ap_int::{ApInt, ApIntDivRem, ApIntSignedness};
-use crate::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
-use crate::constant::{Constant, ConstantData};
-use crate::constants::{ConstantFloatValue, ConstantIntValue};
-use crate::derived_types::{ArrayType, FloatType, IntType, StructType, VectorType};
-use crate::float_kind::FloatDyn;
-use crate::instr_types::{BinaryOpcode, CastOpcode, POISON_MASK_ELEM, UnaryOpcode};
-use crate::instruction::state::InstructionState;
-use crate::instruction::{Instruction, InstructionKindData};
-use crate::int_width::IntDyn;
-use crate::module::{ModuleBrand, ModuleView};
-use crate::r#type::Type;
-use crate::value::{Value, ValueId, ValueKindData};
-use crate::{IrError, IrResult, RoundingMode};
+use super::ap_float::{ApFloatCmpResult, ApFloatSemantics, ApFloatSign, NanPayload};
+use super::ap_int::{ApInt, ApIntDivRem, ApIntSignedness};
+use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
+use super::constant::{Constant, ConstantData};
+use super::constants::{ConstantFloatValue, ConstantIntValue};
+use super::derived_types::{ArrayType, FloatType, IntType, StructType, VectorType};
+use super::float_kind::FloatDyn;
+use super::instr_types::{BinaryOpcode, CastOpcode, POISON_MASK_ELEM, UnaryOpcode};
+use super::instruction::state::InstructionState;
+use super::instruction::{Instruction, InstructionKindData};
+use super::int_width::IntDyn;
+use super::module::{ModuleBrand, ModuleView};
+use super::r#type::Type;
+use super::value::{Value, ValueId, ValueKindData};
+use super::{IrResult, RoundingMode};
 
 /// Fold an instruction whose operands are constants.
 ///
@@ -309,7 +309,6 @@ pub fn constant_fold_binary_instruction<'ctx, B: ModuleBrand + 'ctx>(
     lhs: Constant<'ctx, B>,
     rhs: Constant<'ctx, B>,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    ensure_same_module(lhs, rhs)?;
     if lhs.ty() != rhs.ty() {
         return Ok(None);
     }
@@ -352,7 +351,7 @@ pub fn constant_fold_binary_instruction<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Fold an exact-capable binary instruction with constant operands.
-pub(crate) fn constant_fold_exact_binary_instruction<'ctx, B: ModuleBrand + 'ctx>(
+pub(super) fn constant_fold_exact_binary_instruction<'ctx, B: ModuleBrand + 'ctx>(
     opcode: BinaryOpcode,
     lhs: Constant<'ctx, B>,
     rhs: Constant<'ctx, B>,
@@ -362,7 +361,6 @@ pub(crate) fn constant_fold_exact_binary_instruction<'ctx, B: ModuleBrand + 'ctx
         return constant_fold_binary_instruction(opcode, lhs, rhs);
     }
 
-    ensure_same_module(lhs, rhs)?;
     if lhs.ty() != rhs.ty() {
         return Ok(None);
     }
@@ -382,9 +380,6 @@ pub fn constant_fold_cast_instruction<'ctx, B: ModuleBrand + 'ctx>(
     operand: Constant<'ctx, B>,
     dest_ty: Type<'ctx, B>,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    if operand.as_value().module().id() != dest_ty.module().id() {
-        return Err(IrError::ForeignValue);
-    }
     if is_poison(operand) {
         return Ok(Some(poison_for(dest_ty)));
     }
@@ -493,7 +488,6 @@ pub fn constant_fold_compare_instruction<'ctx, B: ModuleBrand + 'ctx>(
     lhs: Constant<'ctx, B>,
     rhs: Constant<'ctx, B>,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    ensure_same_module(lhs, rhs)?;
     if lhs.ty() != rhs.ty() {
         return Ok(None);
     }
@@ -570,8 +564,6 @@ pub fn constant_fold_select_instruction<'ctx, B: ModuleBrand + 'ctx>(
     true_value: Constant<'ctx, B>,
     false_value: Constant<'ctx, B>,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    ensure_same_module(condition, true_value)?;
-    ensure_same_module(condition, false_value)?;
     if true_value.ty() != false_value.ty() {
         return Ok(None);
     }
@@ -673,7 +665,6 @@ pub fn constant_fold_extract_element_instruction<'ctx, B: ModuleBrand + 'ctx>(
     vector: Constant<'ctx, B>,
     index: Constant<'ctx, B>,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    ensure_same_module(vector, index)?;
     let Some((element_ty, lanes, scalable)) = vector.ty().data().as_vector() else {
         return Ok(None);
     };
@@ -719,8 +710,6 @@ pub fn constant_fold_insert_element_instruction<'ctx, B: ModuleBrand + 'ctx>(
     value: Constant<'ctx, B>,
     index: Constant<'ctx, B>,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    ensure_same_module(vector, value)?;
-    ensure_same_module(vector, index)?;
     let Some((element_ty, lanes, scalable)) = vector.ty().data().as_vector() else {
         return Ok(None);
     };
@@ -760,7 +749,6 @@ pub fn constant_fold_shuffle_vector_instruction<'ctx, B: ModuleBrand + 'ctx>(
     rhs: Constant<'ctx, B>,
     mask: &[i32],
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    ensure_same_module(lhs, rhs)?;
     let Some((element_ty, lanes, scalable)) = lhs.ty().data().as_vector() else {
         return Ok(None);
     };
@@ -821,7 +809,7 @@ pub fn constant_fold_shuffle_vector_instruction<'ctx, B: ModuleBrand + 'ctx>(
 /// Mirrors `ConstantFoldShuffleVectorInstruction`: `undef` mask elements become
 /// poison mask lanes, while integer elements select from the concatenated
 /// `lhs` / `rhs` lane space.
-pub(crate) fn shufflevector_mask_from_constant<'ctx, B: ModuleBrand + 'ctx>(
+pub(super) fn shufflevector_mask_from_constant<'ctx, B: ModuleBrand + 'ctx>(
     mask: Constant<'ctx, B>,
 ) -> Option<Vec<i32>> {
     let (_, lanes, scalable) = mask.ty().data().as_vector()?;
@@ -879,7 +867,6 @@ pub fn constant_fold_insert_value_instruction<'ctx, B: ModuleBrand + 'ctx>(
     if indices.is_empty() {
         return Ok(Some(value));
     }
-    ensure_same_module(aggregate, value)?;
     let Some(elements) = aggregate_elements_for_rebuild(aggregate)? else {
         return Ok(None);
     };
@@ -1589,15 +1576,4 @@ fn is_zero_int_constant<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>
 
 fn poison_for<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Constant<'ctx, B> {
     ty.get_poison().as_constant()
-}
-
-fn ensure_same_module<'ctx, B: ModuleBrand + 'ctx>(
-    lhs: Constant<'ctx, B>,
-    rhs: Constant<'ctx, B>,
-) -> IrResult<()> {
-    if lhs.as_value().module().id() == rhs.as_value().module().id() {
-        Ok(())
-    } else {
-        Err(IrError::ForeignValue)
-    }
 }

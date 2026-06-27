@@ -12,6 +12,10 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/set_struct_body_twice.rs");
     t.compile_fail("tests/compile_fail/module_pass_requires_verified.rs");
     t.compile_fail("tests/compile_fail/cross_module_value_brand.rs");
+    t.compile_fail("tests/compile_fail/cross_module_global_initializer_brand.rs");
+    t.compile_fail("tests/compile_fail/cross_module_branch_target.rs");
+    t.compile_fail("tests/compile_fail/cross_module_select_arm.rs");
+    t.compile_fail("tests/compile_fail/custom_folder_wrong_brand.rs");
     t.compile_fail("tests/compile_fail/function_analysis_wrong_brand.rs");
     t.compile_fail("tests/compile_fail/unverified_output_requires_verify.rs");
     t.compile_fail("tests/compile_fail/function_pass_no_mutable_module_manager.rs");

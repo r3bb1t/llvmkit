@@ -17,8 +17,5 @@ help: there is a method `incoming` with a similar name, but with different argum
    | /     pub fn incoming(
    | |         self,
    | |         index: u32,
-   | |     ) -> crate::IrResult<(
-   | |         Value<'ctx>,
-   | |         crate::basic_block::BasicBlock<'ctx, crate::marker::Dyn>,
-   | |     )> {
-   | |______^
+   | |     ) -> IrResult<(Value<'ctx, B>, BasicBlock<'ctx, Dyn, Unsealed, B>)> {
+   | |_______________________________________________________________________^

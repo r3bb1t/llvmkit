@@ -1,0 +1,25 @@
+error[E0308]: mismatched types
+  --> tests/compile_fail/custom_folder_wrong_brand.rs:14:13
+   |
+11 | fn return_foreign_folder_value<'ctx, B: ModuleBrand>(
+   |                                      - expected this type parameter
+...
+14 |     Ok(Some(foreign))
+   |        ---- ^^^^^^^ expected `Value<'_, B>`, found `Value<'_>`
+   |        |
+   |        arguments to this enum variant are incorrect
+   |
+   = note: expected struct `llvmkit_ir::Value<'_, B>`
+              found struct `llvmkit_ir::Value<'ctx, Brand<'ctx>>`
+help: the type constructed contains `llvmkit_ir::Value<'ctx>` due to the type of the argument passed
+  --> tests/compile_fail/custom_folder_wrong_brand.rs:14:8
+   |
+14 |     Ok(Some(foreign))
+   |        ^^^^^-------^
+   |             |
+   |             this argument influences the type of `Some`
+note: tuple variant defined here
+  --> $RUST/core/src/option.rs
+   |
+   |     Some(#[stable(feature = "rust1", since = "1.0.0")] T),
+   |     ^^^^

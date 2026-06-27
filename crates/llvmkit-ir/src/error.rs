@@ -485,13 +485,6 @@ pub enum IrError {
     #[error("a function named {name:?} already exists in this module")]
     DuplicateFunctionName { name: String },
 
-    /// `IRBuilder::build_*` was asked to use a value that does not belong
-    /// to the builder's module. The lifetime brand catches this for short-
-    /// lived borrows; this variant covers the rare cases where a runtime
-    /// check is needed (e.g. mixing `'static` constants).
-    #[error("value does not belong to this module")]
-    ForeignValue,
-
     /// `IRBuilder::build_ret` was given a value whose type does not
     /// match the function's declared return type.
     #[error("return type mismatch: function returns {expected}, got {got}")]

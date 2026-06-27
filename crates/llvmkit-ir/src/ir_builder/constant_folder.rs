@@ -5,9 +5,7 @@
 //! independent arithmetic to [`crate::constant_fold`] and uses the supported
 //! `ConstantExpr` constructors for LLVM's desirable constant-expression groups.
 
-use crate::cmp_predicate::CmpPredicate;
-use crate::constant::{Constant, ConstantExprFlags, ConstantExprOpcode};
-use crate::constant_fold::{
+use super::constant_fold::{
     constant_fold_binary_instruction, constant_fold_cast_instruction,
     constant_fold_compare_instruction, constant_fold_exact_binary_instruction,
     constant_fold_extract_element_instruction, constant_fold_extract_value_instruction,
@@ -15,50 +13,47 @@ use crate::constant_fold::{
     constant_fold_insert_value_instruction, constant_fold_select_instruction,
     constant_fold_shuffle_vector_instruction, constant_fold_unary_instruction,
 };
-use crate::constants::ConstantExprOptions;
-use crate::fmf::FastMathFlags;
-use crate::gep_no_wrap_flags::GepNoWrapFlags;
-use crate::instr_types::{BinaryOpcode, CastOpcode, POISON_MASK_ELEM, UnaryOpcode};
-use crate::instruction::Instruction;
-use crate::intrinsics::IntrinsicId;
-use crate::ir_builder::folder::IRBuilderFolder;
-use crate::r#type::{Type, TypeData};
-use crate::value::Value;
-use crate::{IrError, IrResult};
+use super::folder::IRBuilderFolder;
+use super::{
+    BinaryOpcode, CastOpcode, CmpPredicate, Constant, ConstantExprFlags, ConstantExprOpcode,
+    ConstantExprOptions, FastMathFlags, GepNoWrapFlags, Instruction, IntType, IntrinsicId, IrError,
+    IrResult, ModuleBrand, ModuleRef, ModuleView, POISON_MASK_ELEM, Type, TypeData, UnaryOpcode,
+    Value, state,
+};
 
 /// Default fold strategy: fold target-independent constant-on-constant
 /// operations and decline non-constant inputs.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ConstantFolder;
 
-impl<'ctx> IRBuilderFolder<'ctx> for ConstantFolder {
+impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for ConstantFolder {
     fn fold_bin_op(
         &self,
         opcode: BinaryOpcode,
-        lhs: Value<'ctx>,
-        rhs: Value<'ctx>,
-    ) -> IrResult<Option<Value<'ctx>>> {
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         fold_binary(opcode, lhs, rhs, ConstantExprFlags::none())
     }
 
     fn fold_exact_bin_op(
         &self,
         opcode: BinaryOpcode,
-        lhs: Value<'ctx>,
-        rhs: Value<'ctx>,
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
         is_exact: bool,
-    ) -> IrResult<Option<Value<'ctx>>> {
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         fold_exact_binary(opcode, lhs, rhs, is_exact)
     }
 
     fn fold_no_wrap_bin_op(
         &self,
         opcode: BinaryOpcode,
-        lhs: Value<'ctx>,
-        rhs: Value<'ctx>,
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
         has_nuw: bool,
         has_nsw: bool,
-    ) -> IrResult<Option<Value<'ctx>>> {
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         if !matches!(
             opcode,
             BinaryOpcode::Add | BinaryOpcode::Sub | BinaryOpcode::Mul | BinaryOpcode::Shl
@@ -76,19 +71,19 @@ impl<'ctx> IRBuilderFolder<'ctx> for ConstantFolder {
     fn fold_bin_op_fmf(
         &self,
         opcode: BinaryOpcode,
-        lhs: Value<'ctx>,
-        rhs: Value<'ctx>,
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
         _fmf: FastMathFlags,
-    ) -> IrResult<Option<Value<'ctx>>> {
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         self.fold_bin_op(opcode, lhs, rhs)
     }
 
     fn fold_un_op_fmf(
         &self,
         opcode: UnaryOpcode,
-        value: Value<'ctx>,
+        value: Value<'ctx, B>,
         _fmf: FastMathFlags,
-    ) -> IrResult<Option<Value<'ctx>>> {
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         let value = match Constant::try_from(value) {
             Ok(value) => value,
             Err(_) => return Ok(None),
@@ -99,9 +94,9 @@ impl<'ctx> IRBuilderFolder<'ctx> for ConstantFolder {
     fn fold_cmp(
         &self,
         predicate: CmpPredicate,
-        lhs: Value<'ctx>,
-        rhs: Value<'ctx>,
-    ) -> IrResult<Option<Value<'ctx>>> {
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         let (lhs, rhs) = match constants2(lhs, rhs) {
             Some(values) => values,
             None => return Ok(None),
@@ -112,11 +107,11 @@ impl<'ctx> IRBuilderFolder<'ctx> for ConstantFolder {
 
     fn fold_gep(
         &self,
-        source_ty: Type<'ctx>,
-        ptr: Value<'ctx>,
-        indices: &[Value<'ctx>],
+        source_ty: Type<'ctx, B>,
+        ptr: Value<'ctx, B>,
+        indices: &[Value<'ctx, B>],
         no_wrap: GepNoWrapFlags,
-    ) -> IrResult<Option<Value<'ctx>>> {
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         if type_contains_scalable_vector(source_ty) {
             return Ok(None);
         }
@@ -155,10 +150,10 @@ impl<'ctx> IRBuilderFolder<'ctx> for ConstantFolder {
 
     fn fold_select(
         &self,
-        cond: Value<'ctx>,
-        true_value: Value<'ctx>,
-        false_value: Value<'ctx>,
-    ) -> IrResult<Option<Value<'ctx>>> {
+        cond: Value<'ctx, B>,
+        true_value: Value<'ctx, B>,
+        false_value: Value<'ctx, B>,
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         let cond = match Constant::try_from(cond) {
             Ok(cond) => cond,
             Err(_) => return Ok(None),
@@ -173,9 +168,9 @@ impl<'ctx> IRBuilderFolder<'ctx> for ConstantFolder {
 
     fn fold_extract_value(
         &self,
-        aggregate: Value<'ctx>,
+        aggregate: Value<'ctx, B>,
         indices: &[u32],
-    ) -> IrResult<Option<Value<'ctx>>> {
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         let aggregate = match Constant::try_from(aggregate) {
             Ok(aggregate) => aggregate,
             Err(_) => return Ok(None),
@@ -186,10 +181,10 @@ impl<'ctx> IRBuilderFolder<'ctx> for ConstantFolder {
 
     fn fold_insert_value(
         &self,
-        aggregate: Value<'ctx>,
-        value: Value<'ctx>,
+        aggregate: Value<'ctx, B>,
+        value: Value<'ctx, B>,
         indices: &[u32],
-    ) -> IrResult<Option<Value<'ctx>>> {
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         let (aggregate, value) = match constants2(aggregate, value) {
             Some(values) => values,
             None => return Ok(None),
@@ -200,9 +195,9 @@ impl<'ctx> IRBuilderFolder<'ctx> for ConstantFolder {
 
     fn fold_extract_element(
         &self,
-        vector: Value<'ctx>,
-        index: Value<'ctx>,
-    ) -> IrResult<Option<Value<'ctx>>> {
+        vector: Value<'ctx, B>,
+        index: Value<'ctx, B>,
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         let (vector, index) = match constants2(vector, index) {
             Some(values) => values,
             None => return Ok(None),
@@ -230,10 +225,10 @@ impl<'ctx> IRBuilderFolder<'ctx> for ConstantFolder {
 
     fn fold_insert_element(
         &self,
-        vector: Value<'ctx>,
-        new_element: Value<'ctx>,
-        index: Value<'ctx>,
-    ) -> IrResult<Option<Value<'ctx>>> {
+        vector: Value<'ctx, B>,
+        new_element: Value<'ctx, B>,
+        index: Value<'ctx, B>,
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         let vector = match Constant::try_from(vector) {
             Ok(vector) => vector,
             Err(_) => return Ok(None),
@@ -267,10 +262,10 @@ impl<'ctx> IRBuilderFolder<'ctx> for ConstantFolder {
 
     fn fold_shuffle_vector(
         &self,
-        lhs: Value<'ctx>,
-        rhs: Value<'ctx>,
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
         mask: &[i32],
-    ) -> IrResult<Option<Value<'ctx>>> {
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         let (lhs, rhs) = match constants2(lhs, rhs) {
             Some(values) => values,
             None => return Ok(None),
@@ -278,12 +273,13 @@ impl<'ctx> IRBuilderFolder<'ctx> for ConstantFolder {
         if let Some(folded) = constant_fold_shuffle_vector_instruction(lhs, rhs, mask)? {
             return Ok(Some(folded.as_value()));
         }
-        let module = lhs.as_value().module().core_ref();
+        let module: ModuleRef<'ctx, B> = lhs.as_value().module().into();
         let Some(result_ty) = shuffle_result_type(lhs.ty(), mask)? else {
             return Ok(None);
         };
         let mask_constant = shuffle_mask_constant(module, mask)?;
         module
+            .module()
             .constant_expr(
                 result_ty,
                 ConstantExprOpcode::ShuffleVector,
@@ -298,9 +294,9 @@ impl<'ctx> IRBuilderFolder<'ctx> for ConstantFolder {
     fn fold_cast(
         &self,
         opcode: CastOpcode,
-        value: Value<'ctx>,
-        dest_ty: Type<'ctx>,
-    ) -> IrResult<Option<Value<'ctx>>> {
+        value: Value<'ctx, B>,
+        dest_ty: Type<'ctx, B>,
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         let value = match Constant::try_from(value) {
             Ok(value) => value,
             Err(_) => return Ok(None),
@@ -331,40 +327,40 @@ impl<'ctx> IRBuilderFolder<'ctx> for ConstantFolder {
     fn fold_binary_intrinsic(
         &self,
         _id: IntrinsicId,
-        _lhs: Value<'ctx>,
-        _rhs: Value<'ctx>,
-        _ty: Type<'ctx>,
-        _fmf_source: Option<&Instruction<'ctx>>,
-    ) -> IrResult<Option<Value<'ctx>>> {
+        _lhs: Value<'ctx, B>,
+        _rhs: Value<'ctx, B>,
+        _ty: Type<'ctx, B>,
+        _fmf_source: Option<&Instruction<'ctx, state::Attached, B>>,
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         // Mirrors ConstantFolder.h: use TargetFolder or InstSimplifyFolder instead.
         Ok(None)
     }
 
     fn create_pointer_cast(
         &self,
-        value: Constant<'ctx>,
-        dest_ty: Type<'ctx>,
-    ) -> IrResult<Option<Value<'ctx>>> {
+        value: Constant<'ctx, B>,
+        dest_ty: Type<'ctx, B>,
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         let opcode = pointer_cast_opcode(value.ty(), dest_ty);
         self.fold_cast(opcode, value.as_value(), dest_ty)
     }
 
     fn create_pointer_bitcast_or_addrspace_cast(
         &self,
-        value: Constant<'ctx>,
-        dest_ty: Type<'ctx>,
-    ) -> IrResult<Option<Value<'ctx>>> {
+        value: Constant<'ctx, B>,
+        dest_ty: Type<'ctx, B>,
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         let opcode = pointer_bitcast_or_addrspace_cast_opcode(value.ty(), dest_ty);
         self.fold_cast(opcode, value.as_value(), dest_ty)
     }
 }
 
-fn fold_binary<'ctx>(
+fn fold_binary<'ctx, B: ModuleBrand + 'ctx>(
     opcode: BinaryOpcode,
-    lhs: Value<'ctx>,
-    rhs: Value<'ctx>,
+    lhs: Value<'ctx, B>,
+    rhs: Value<'ctx, B>,
     flags: ConstantExprFlags,
-) -> IrResult<Option<Value<'ctx>>> {
+) -> IrResult<Option<Value<'ctx, B>>> {
     let (lhs, rhs) = match constants2(lhs, rhs) {
         Some(values) => values,
         None => return Ok(None),
@@ -390,12 +386,12 @@ fn fold_binary<'ctx>(
     constant_fold_binary_instruction(opcode, lhs, rhs).map(|folded| folded.map(Constant::as_value))
 }
 
-fn fold_exact_binary<'ctx>(
+fn fold_exact_binary<'ctx, B: ModuleBrand + 'ctx>(
     opcode: BinaryOpcode,
-    lhs: Value<'ctx>,
-    rhs: Value<'ctx>,
+    lhs: Value<'ctx, B>,
+    rhs: Value<'ctx, B>,
     is_exact: bool,
-) -> IrResult<Option<Value<'ctx>>> {
+) -> IrResult<Option<Value<'ctx, B>>> {
     if !is_exact {
         return fold_binary(opcode, lhs, rhs, ConstantExprFlags::none());
     }
@@ -407,10 +403,10 @@ fn fold_exact_binary<'ctx>(
         .map(|folded| folded.map(Constant::as_value))
 }
 
-fn constants2<'ctx>(
-    lhs: Value<'ctx>,
-    rhs: Value<'ctx>,
-) -> Option<(Constant<'ctx>, Constant<'ctx>)> {
+fn constants2<'ctx, B: ModuleBrand + 'ctx>(
+    lhs: Value<'ctx, B>,
+    rhs: Value<'ctx, B>,
+) -> Option<(Constant<'ctx, B>, Constant<'ctx, B>)> {
     Some((Constant::try_from(lhs).ok()?, Constant::try_from(rhs).ok()?))
 }
 
@@ -435,7 +431,7 @@ fn cast_constant_expr_opcode(opcode: CastOpcode) -> Option<ConstantExprOpcode> {
     }
 }
 
-fn pointer_cast_opcode(source_ty: Type<'_>, dest_ty: Type<'_>) -> CastOpcode {
+fn pointer_cast_opcode<B: ModuleBrand>(source_ty: Type<'_, B>, dest_ty: Type<'_, B>) -> CastOpcode {
     match (
         pointer_address_space(source_ty),
         pointer_address_space(dest_ty),
@@ -448,7 +444,10 @@ fn pointer_cast_opcode(source_ty: Type<'_>, dest_ty: Type<'_>) -> CastOpcode {
     }
 }
 
-fn pointer_bitcast_or_addrspace_cast_opcode(source_ty: Type<'_>, dest_ty: Type<'_>) -> CastOpcode {
+fn pointer_bitcast_or_addrspace_cast_opcode<B: ModuleBrand>(
+    source_ty: Type<'_, B>,
+    dest_ty: Type<'_, B>,
+) -> CastOpcode {
     match (
         pointer_address_space(source_ty),
         pointer_address_space(dest_ty),
@@ -458,7 +457,7 @@ fn pointer_bitcast_or_addrspace_cast_opcode(source_ty: Type<'_>, dest_ty: Type<'
     }
 }
 
-fn pointer_address_space(ty: Type<'_>) -> Option<u32> {
+fn pointer_address_space<B: ModuleBrand>(ty: Type<'_, B>) -> Option<u32> {
     match ty.data() {
         TypeData::Pointer { addr_space } | TypeData::TypedPointer { addr_space, .. } => {
             Some(*addr_space)
@@ -467,12 +466,15 @@ fn pointer_address_space(ty: Type<'_>) -> Option<u32> {
     }
 }
 
-fn vector_element_type<'ctx>(ty: Type<'ctx>) -> Option<Type<'ctx>> {
+fn vector_element_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<Type<'ctx, B>> {
     let (elem, _, _) = ty.data().as_vector()?;
     Some(Type::new(elem, ty.module()))
 }
 
-fn shuffle_result_type<'ctx>(lhs_ty: Type<'ctx>, mask: &[i32]) -> IrResult<Option<Type<'ctx>>> {
+fn shuffle_result_type<'ctx, B: ModuleBrand + 'ctx>(
+    lhs_ty: Type<'ctx, B>,
+    mask: &[i32],
+) -> IrResult<Option<Type<'ctx, B>>> {
     let Some((elem, _, scalable)) = lhs_ty.data().as_vector() else {
         return Ok(None);
     };
@@ -483,17 +485,16 @@ fn shuffle_result_type<'ctx>(lhs_ty: Type<'ctx>, mask: &[i32]) -> IrResult<Optio
     Ok(Some(
         lhs_ty
             .module()
-            .core_ref()
             .vector_type(elem_ty, lanes, scalable)
             .as_type(),
     ))
 }
 
-fn shuffle_mask_constant<'ctx>(
-    module: &'ctx crate::module::ModuleCore,
+fn shuffle_mask_constant<'ctx, B: ModuleBrand + 'ctx>(
+    module: ModuleRef<'ctx, B>,
     mask: &[i32],
-) -> IrResult<Constant<'ctx>> {
-    let i32_ty = module.i32_type();
+) -> IrResult<Constant<'ctx, B>> {
+    let i32_ty = IntType::<i32, B>::new(module.module().i32_type().as_type().id(), module);
     let mut elements = Vec::with_capacity(mask.len());
     for element in mask {
         if *element == POISON_MASK_ELEM {
@@ -505,13 +506,13 @@ fn shuffle_mask_constant<'ctx>(
     let lanes = u32::try_from(mask.len()).map_err(|_| IrError::InvalidOperation {
         message: "shufflevector mask too large",
     })?;
-    module
+    ModuleView::<B>::new(module.module())
         .vector_type(i32_ty.as_type(), lanes, false)
         .const_vector(elements)
         .map(|constant| constant.as_constant())
 }
 
-fn type_contains_scalable_vector(ty: Type<'_>) -> bool {
+fn type_contains_scalable_vector<B: ModuleBrand>(ty: Type<'_, B>) -> bool {
     match ty.data() {
         TypeData::ScalableVector { .. } => true,
         TypeData::Array { elem, .. } | TypeData::FixedVector { elem, .. } => {

@@ -18,14 +18,14 @@
 //!
 //! [`IRBuilder`]: crate::ir_builder::IRBuilder
 
-use crate::block_state::{BlockSealState, Unsealed};
-use crate::function::FunctionValue;
-use crate::instruction::Instruction;
-use crate::marker::{Dyn, ReturnMarker};
-use crate::module::{Brand, Module, ModuleRef, ModuleView, Unverified};
-use crate::r#type::TypeId;
-use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
-use crate::{DebugLoc, IrError, IrResult, Type};
+use super::block_state::{BlockSealState, Unsealed};
+use super::function::FunctionValue;
+use super::instruction::{Instruction, state::Attached};
+use super::marker::{Dyn, ReturnMarker};
+use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::r#type::TypeId;
+use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
+use super::{DebugLoc, IrError, IrResult, Type};
 use core::cell::RefCell;
 use core::marker::PhantomData;
 
@@ -36,18 +36,18 @@ use core::marker::PhantomData;
 /// Lifetime-free payload stored under
 /// [`ValueKindData::BasicBlock`](crate::value::ValueKindData::BasicBlock).
 #[derive(Debug)]
-pub(crate) struct BasicBlockData {
+pub(super) struct BasicBlockData {
     /// Owning function. `None` for an orphan block (no function yet
     /// attached). Mirrors LLVM's `BasicBlock::Parent`.
-    pub(crate) parent: RefCell<Option<ValueId>>,
+    pub(super) parent: RefCell<Option<ValueId>>,
     /// Linear list of instruction value ids in program order.
-    pub(crate) instructions: RefCell<Vec<ValueId>>,
+    pub(super) instructions: RefCell<Vec<ValueId>>,
 }
 
 impl BasicBlockData {
     /// Construct an empty block, optionally already attached to a
     /// parent function.
-    pub(crate) fn new(parent: Option<ValueId>) -> Self {
+    pub(super) fn new(parent: Option<ValueId>) -> Self {
         Self {
             parent: RefCell::new(parent),
             instructions: RefCell::new(Vec::new()),
@@ -77,36 +77,55 @@ impl BasicBlockData {
 /// `Seal = Sealed`. Cross-block references (branch targets, phi
 /// predecessors) are generic over `Seal` so already-sealed blocks
 /// can still be named.
-pub struct BasicBlock<'ctx, R: ReturnMarker, Seal: BlockSealState = Unsealed> {
-    pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx>,
-    pub(crate) ty: TypeId,
-    pub(crate) _r: PhantomData<R>,
-    pub(crate) _seal: PhantomData<Seal>,
+pub struct BasicBlock<
+    'ctx,
+    R: ReturnMarker,
+    Seal: BlockSealState = Unsealed,
+    B: ModuleBrand = Brand<'ctx>,
+> {
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) ty: TypeId,
+    pub(super) _r: PhantomData<R>,
+    pub(super) _seal: PhantomData<Seal>,
 }
 
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState> Clone for BasicBlock<'ctx, R, Seal> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand> Clone
+    for BasicBlock<'ctx, R, Seal, B>
+{
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState> Copy for BasicBlock<'ctx, R, Seal> {}
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState> PartialEq for BasicBlock<'ctx, R, Seal> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand> Copy
+    for BasicBlock<'ctx, R, Seal, B>
+{
+}
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand> PartialEq
+    for BasicBlock<'ctx, R, Seal, B>
+{
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
     }
 }
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState> Eq for BasicBlock<'ctx, R, Seal> {}
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState> core::hash::Hash for BasicBlock<'ctx, R, Seal> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand> Eq
+    for BasicBlock<'ctx, R, Seal, B>
+{
+}
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand> core::hash::Hash
+    for BasicBlock<'ctx, R, Seal, B>
+{
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
         self.ty.hash(h);
     }
 }
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState> core::fmt::Debug for BasicBlock<'ctx, R, Seal> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand> core::fmt::Debug
+    for BasicBlock<'ctx, R, Seal, B>
+{
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("BasicBlock")
             .field("id", &self.id)
@@ -115,16 +134,17 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> core::fmt::Debug for BasicBloc
     }
 }
 
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
+    BasicBlock<'ctx, R, Seal, B>
+{
     #[inline]
-    pub(crate) fn from_parts(
-        id: ValueId,
-        module: &'ctx crate::module::ModuleCore,
-        ty: TypeId,
-    ) -> Self {
+    pub(super) fn from_parts<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    where
+        M: Into<ModuleRef<'ctx, B>>,
+    {
         Self {
             id,
-            module: ModuleRef::new(module),
+            module: module.into(),
             ty,
             _r: PhantomData,
             _seal: PhantomData,
@@ -133,7 +153,7 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx> {
+    pub fn as_value(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -147,7 +167,7 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
     /// state to the default [`Unsealed`] view (the runtime form does
     /// not track seal state).
     #[inline]
-    pub fn as_dyn(self) -> BasicBlock<'ctx, Dyn, Unsealed> {
+    pub fn as_dyn(self) -> BasicBlock<'ctx, Dyn, Unsealed, B> {
         BasicBlock {
             id: self.id,
             module: self.module,
@@ -161,7 +181,7 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
     /// terminator-emitting build path produces a sealed view from an
     /// unsealed builder block.
     #[inline]
-    pub(crate) fn retag_seal<S2: BlockSealState>(self) -> BasicBlock<'ctx, R, S2> {
+    pub(super) fn retag_seal<S2: BlockSealState>(self) -> BasicBlock<'ctx, R, S2, B> {
         BasicBlock {
             id: self.id,
             module: self.module,
@@ -190,7 +210,7 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
     /// Set or clear the textual name.
     /// Set the textual name.
     #[inline]
-    pub fn set_name<Name>(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: Name)
+    pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
@@ -199,51 +219,53 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
 
     /// Clear the textual name.
     #[inline]
-    pub fn clear_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>) {
+    pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
         self.as_value().clear_name(module_token);
     }
 
     /// Owning module reference.
     #[inline]
-    pub fn module(self) -> ModuleView<'ctx, Brand<'ctx>> {
+    pub fn module(self) -> ModuleView<'ctx, B> {
         ModuleView::new(self.module.module())
     }
 
+    /// Owning module reference with the compile-time brand.
+    #[inline]
+    pub(super) fn module_ref(self) -> ModuleRef<'ctx, B> {
+        self.module
+    }
+
     /// Owning function value-id, or `None` if the block is an orphan.
-    pub(crate) fn parent_id(self) -> Option<ValueId> {
+    pub(super) fn parent_id(self) -> Option<ValueId> {
         *self.data().parent.borrow()
     }
 
-    /// Parent function as a runtime-checked [`FunctionValue<Dyn>`](crate::function::FunctionValue).
+    /// Parent function as a runtime-checked [`FunctionValue<Dyn>`](FunctionValue).
     /// `None` if the block is an orphan (no parent attached). The
     /// caller can narrow back to its static `R` via
     /// [`crate::FunctionValue::as_dyn`] / `try_into` if needed.
-    pub fn parent_function(self) -> Option<FunctionValue<'ctx, Dyn>> {
+    pub fn parent_function(self) -> Option<FunctionValue<'ctx, Dyn, B>> {
         let id = self.parent_id()?;
-        Some(
-            crate::function::FunctionValue::<'ctx, Dyn>::from_parts_unchecked(
-                id,
-                self.module.module(),
-            ),
-        )
+        Some(FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(
+            id,
+            self.module,
+        ))
     }
 
     /// Iterate the instruction value-ids in program order. Returns
     /// `ValueId`s rather than full instruction handles so the caller
     /// can decide which view (raw operand-traversal vs typed
     /// `Instruction<'ctx>` handle) it wants.
-    pub(crate) fn instruction_ids(self) -> Vec<ValueId> {
+    pub(super) fn instruction_ids(self) -> Vec<ValueId> {
         self.data().instructions.borrow().clone()
     }
 
     /// Iterate instruction handles in program order.
-    pub fn instructions(
-        self,
-    ) -> impl ExactSizeIterator<Item = crate::instruction::Instruction<'ctx>> {
-        let module = self.module.module();
+    pub fn instructions(self) -> impl ExactSizeIterator<Item = Instruction<'ctx, Attached, B>> {
+        let module = self.module;
         let ids = self.instruction_ids();
         ids.into_iter()
-            .map(move |id| crate::instruction::Instruction::from_parts(id, module))
+            .map(move |id| Instruction::from_parts(id, module))
     }
 
     /// `true` if the block currently has no instructions.
@@ -253,23 +275,20 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
 
     /// Last instruction (the terminator if the block is well-formed),
     /// or `None` for an empty block.
-    pub fn terminator(self) -> Option<Instruction<'ctx>> {
+    pub fn terminator(self) -> Option<Instruction<'ctx, Attached, B>> {
         let last = *self.data().instructions.borrow().last()?;
-        Some(crate::instruction::Instruction::from_parts(
-            last,
-            self.module.module(),
-        ))
+        Some(Instruction::from_parts(last, self.module))
     }
 
     /// Successor blocks of this block's terminator, preserving duplicate CFG edges.
     /// Returns an empty list for unterminated blocks and terminators without successors.
-    pub fn successors(self) -> Vec<BasicBlock<'ctx, Dyn>> {
+    pub fn successors(self) -> Vec<BasicBlock<'ctx, Dyn, Unsealed, B>> {
         crate::cfg::block_successors(self)
     }
 
     /// Append an instruction value-id to the block. Crate-internal:
     /// only the IR builder calls this.
-    pub(crate) fn append_instruction(self, instr: ValueId) {
+    pub(super) fn append_instruction(self, instr: ValueId) {
         self.data().instructions.borrow_mut().push(instr);
     }
 
@@ -281,7 +300,7 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
     ///
     /// Mirrors LLVM's `BasicBlock::getInstList().remove(I)`
     /// (`lib/IR/BasicBlock.cpp`).
-    pub(crate) fn remove_instruction(self, instr: ValueId) -> bool {
+    pub(super) fn remove_instruction(self, instr: ValueId) -> bool {
         let mut list = self.data().instructions.borrow_mut();
         if let Some(pos) = list.iter().position(|id| *id == instr) {
             list.remove(pos);
@@ -292,34 +311,38 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
     }
 
     /// Insert `instr` immediately before `before` in this block's
-    /// instruction list. Errors with [`IrError::ForeignValue`] if
+    /// instruction list. Errors with [`IrError::InvalidOperation`] if
     /// `before` is not present in this block. Crate-internal: lifecycle
     /// primitives in [`crate::instruction`] reach for this.
     ///
     /// Mirrors `BasicBlock::getInstList().insert(before, I)`
     /// (`lib/IR/BasicBlock.cpp`).
-    pub(crate) fn insert_instruction_before(self, instr: ValueId, before: ValueId) -> IrResult<()> {
+    pub(super) fn insert_instruction_before(self, instr: ValueId, before: ValueId) -> IrResult<()> {
         let mut list = self.data().instructions.borrow_mut();
         match list.iter().position(|id| *id == before) {
             Some(pos) => {
                 list.insert(pos, instr);
                 Ok(())
             }
-            None => Err(IrError::ForeignValue),
+            None => Err(IrError::InvalidOperation {
+                message: "instruction anchor is not in this block",
+            }),
         }
     }
 
     /// Insert `instr` immediately after `after` in this block's
-    /// instruction list. Errors with [`IrError::ForeignValue`] if
+    /// instruction list. Errors with [`IrError::InvalidOperation`] if
     /// `after` is not present in this block.
-    pub(crate) fn insert_instruction_after(self, instr: ValueId, after: ValueId) -> IrResult<()> {
+    pub(super) fn insert_instruction_after(self, instr: ValueId, after: ValueId) -> IrResult<()> {
         let mut list = self.data().instructions.borrow_mut();
         match list.iter().position(|id| *id == after) {
             Some(pos) => {
                 list.insert(pos + 1, instr);
                 Ok(())
             }
-            None => Err(IrError::ForeignValue),
+            None => Err(IrError::InvalidOperation {
+                message: "instruction anchor is not in this block",
+            }),
         }
     }
 }
@@ -328,25 +351,19 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
 // Splice helpers (T1)
 // --------------------------------------------------------------------------
 
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
+    BasicBlock<'ctx, R, Seal, B>
+{
     /// Move every instruction from `self` into `dest`, appending at the
     /// end. After the call, `self` is empty and every moved instruction's
     /// `parent` field has been re-pointed at `dest`. Mirrors
     /// `BasicBlock::splice` in `lib/IR/BasicBlock.cpp`.
-    ///
-    /// Both blocks must belong to the same module; cross-module splicing
-    /// errors with [`IrError::ForeignValue`].
     pub fn splice_into<R2: ReturnMarker, S2: BlockSealState>(
         self,
-        module_token: &Module<'ctx, Brand<'ctx>, Unverified>,
-        dest: BasicBlock<'ctx, R2, S2>,
+        module_token: &Module<'ctx, B, Unverified>,
+        dest: BasicBlock<'ctx, R2, S2, B>,
     ) -> IrResult<()> {
-        if module_token.id() != self.module.id() {
-            return Err(IrError::ForeignValue);
-        }
-        if self.module.module().id() != dest.module.module().id() {
-            return Err(IrError::ForeignValue);
-        }
+        let _ = module_token;
         let module = self.module.module();
         let source_fn_id = self.parent_id();
         let dest_fn_id = dest.parent_id();
@@ -357,7 +374,8 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
             core::mem::take(&mut *src)
         };
         if rehome_names && let Some(source_fn_id) = source_fn_id {
-            let source_fn = FunctionValue::<Dyn>::from_parts_unchecked(source_fn_id, self.module);
+            let source_fn =
+                FunctionValue::<Dyn, B>::from_parts_unchecked(source_fn_id, self.module);
             for id in &drained {
                 source_fn.remove_local_value_name(*id);
             }
@@ -370,10 +388,10 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
             module.context().set_instruction_parent(*id, dest_id);
         }
         if rehome_names && let Some(dest_fn_id) = dest_fn_id {
-            let dest_fn = FunctionValue::<Dyn>::from_parts_unchecked(dest_fn_id, self.module);
+            let dest_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(dest_fn_id, self.module);
             for id in &drained {
                 let ty = module.context().value_data(*id).ty;
-                let value = Value::from_parts(*id, module, ty);
+                let value = Value::from_parts(*id, self.module, ty);
                 let current_name = value.name();
                 if let Some(name) = current_name.as_deref() {
                     value.set_name_internal(None);
@@ -391,33 +409,34 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
     /// block. Mirrors `BasicBlock::splitBasicBlock` in `lib/IR/BasicBlock.cpp`.
     pub fn split_at<Name>(
         self,
-        module_token: &Module<'ctx, Brand<'ctx>, Unverified>,
-        before: &crate::instruction::Instruction<'ctx, crate::instruction::state::Attached>,
+        module_token: &Module<'ctx, B, Unverified>,
+        before: &Instruction<'ctx, Attached, B>,
         name: Name,
-    ) -> IrResult<BasicBlock<'ctx, R, Unsealed>>
+    ) -> IrResult<BasicBlock<'ctx, R, Unsealed, B>>
     where
         Name: Into<String>,
     {
-        if module_token.id() != self.module.id() {
-            return Err(IrError::ForeignValue);
-        }
         let module = module_token.core_ref();
         let parent_fn_id = match self.parent_id() {
             Some(id) => id,
-            None => return Err(IrError::ForeignValue),
+            None => {
+                return Err(IrError::InvalidOperation {
+                    message: "cannot split an orphan basic block",
+                });
+            }
         };
-        let parent_fn = crate::function::FunctionValue::<'ctx, R>::from_parts_unchecked(
-            parent_fn_id,
-            self.module,
-        );
+        let parent_fn =
+            FunctionValue::<'ctx, R, B>::from_parts_unchecked(parent_fn_id, self.module);
         let new_block = parent_fn.append_basic_block(module_token, name);
         let split_id = before.as_value().id;
         let suffix: Vec<ValueId> = {
             let mut src = self.data().instructions.borrow_mut();
-            let pos = src
-                .iter()
-                .position(|id| *id == split_id)
-                .ok_or(IrError::ForeignValue)?;
+            let pos =
+                src.iter()
+                    .position(|id| *id == split_id)
+                    .ok_or(IrError::InvalidOperation {
+                        message: "split instruction is not in this block",
+                    })?;
             src.split_off(pos)
         };
         let new_id = new_block.as_value().id;
@@ -432,53 +451,66 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState> BasicBlock<'ctx, R, Seal> {
     }
 }
 
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState> sealed::Sealed for BasicBlock<'ctx, R, Seal> {}
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState> IsValue<'ctx> for BasicBlock<'ctx, R, Seal> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx> sealed::Sealed
+    for BasicBlock<'ctx, R, Seal, B>
+{
+}
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx> IsValue<'ctx, B>
+    for BasicBlock<'ctx, R, Seal, B>
+{
     #[inline]
-    fn as_value(self) -> Value<'ctx> {
+    fn as_value(self) -> Value<'ctx, B> {
         BasicBlock::as_value(self)
     }
 }
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState> Typed<'ctx> for BasicBlock<'ctx, R, Seal> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx> Typed<'ctx, B>
+    for BasicBlock<'ctx, R, Seal, B>
+{
     #[inline]
-    fn ty(self) -> Type<'ctx> {
+    fn ty(self) -> Type<'ctx, B> {
         self.as_value().ty()
     }
 }
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState> HasName<'ctx> for BasicBlock<'ctx, R, Seal> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx> HasName<'ctx, B>
+    for BasicBlock<'ctx, R, Seal, B>
+{
     #[inline]
     fn name(self) -> Option<String> {
         BasicBlock::name(self)
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         BasicBlock::set_name(self, module_token, name);
     }
     #[inline]
-    fn clear_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>) {
+    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
         BasicBlock::clear_name(self, module_token);
     }
 }
-impl<R: ReturnMarker, Seal: BlockSealState> HasDebugLoc for BasicBlock<'_, R, Seal> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx> HasDebugLoc
+    for BasicBlock<'ctx, R, Seal, B>
+{
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
         self.as_value().debug_loc()
     }
 }
 
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState> From<BasicBlock<'ctx, R, Seal>> for Value<'ctx> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
+    From<BasicBlock<'ctx, R, Seal, B>> for Value<'ctx, B>
+{
     #[inline]
-    fn from(b: BasicBlock<'ctx, R, Seal>) -> Self {
+    fn from(b: BasicBlock<'ctx, R, Seal, B>) -> Self {
         b.as_value()
     }
 }
 
-impl<'ctx> TryFrom<Value<'ctx>> for BasicBlock<'ctx, Dyn, Unsealed> {
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for BasicBlock<'ctx, Dyn, Unsealed, B> {
     type Error = IrError;
-    fn try_from(v: Value<'ctx>) -> IrResult<Self> {
+    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
         match v.data().kind {
             ValueKindData::BasicBlock(_) => Ok(Self {
                 id: v.id,
@@ -495,17 +527,16 @@ impl<'ctx> TryFrom<Value<'ctx>> for BasicBlock<'ctx, Dyn, Unsealed> {
     }
 }
 
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState> core::fmt::Display for BasicBlock<'ctx, R, Seal> {
+impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx> core::fmt::Display
+    for BasicBlock<'ctx, R, Seal, B>
+{
     /// Print the basic block including its label and instructions.
     /// Mirrors LLVM's `BasicBlock::print`.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // Without an enclosing function, build a one-block slot tracker
         // ad hoc.
         if let Some(parent_id) = self.parent_id() {
-            let parent = crate::function::FunctionValue::<'_, Dyn>::from_parts_unchecked(
-                parent_id,
-                self.module.module(),
-            );
+            let parent = FunctionValue::<'_, Dyn, B>::from_parts_unchecked(parent_id, self.module);
             let slots = crate::asm_writer::SlotTracker::for_function(parent);
             crate::asm_writer::fmt_basic_block(f, self.as_dyn(), &slots, true)
         } else {

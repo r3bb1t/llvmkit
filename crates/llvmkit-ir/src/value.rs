@@ -14,7 +14,7 @@
 //! - **Storage:** an internal record — one variant per LLVM value
 //!   category (`Constant`, `Argument`, `BasicBlock`, `Function`,
 //!   `Instruction`).
-//! - **Public handle:** [`Value<'ctx>`] is `(ValueId, ModuleRef<'ctx>,
+//! - **Public handle:** [`Value<'ctx, B>`] is `(ValueId, ModuleRef<'ctx, B>,
 //!   ty: TypeId)`. `ty` is cached so `value.ty()` is a thin wrapper
 //!   instead of an arena round-trip — the type of a value is an
 //!   immutable property by construction.
@@ -27,23 +27,26 @@
 use core::cell::RefCell;
 use core::num::NonZeroUsize;
 
-use crate::basic_block::BasicBlockData;
-use crate::constant::ConstantData;
-use crate::debug_loc::DebugLoc;
-use crate::derived_types::{
+use super::argument::Argument;
+use super::basic_block::BasicBlockData;
+use super::constant::{Constant, ConstantData};
+use super::constants::ConstantPointerNull;
+use super::debug_loc::DebugLoc;
+use super::derived_types::{
     ArrayType, FloatType, FunctionType, IntType, PointerType, StructType, VectorType,
 };
-use crate::error::{IrError, IrResult, TypeKindLabel};
-use crate::function::FunctionData;
-use crate::instruction::InstructionData;
-use crate::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
-use crate::r#type::{Type, TypeData, TypeId};
+use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
+use super::function::FunctionData;
+use super::instruction::{Instruction, InstructionData, state::Attached};
+use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::struct_body_state::StructBodyDyn;
+use super::r#type::{Type, TypeData, TypeId};
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
-use crate::float_kind::{BFloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
-use crate::int_width::{IntDyn, IntWidth};
+use super::float_kind::{BFloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
+use super::int_width::{IntDyn, IntWidth, Width};
 
 // --------------------------------------------------------------------------
 // ValueId
@@ -57,7 +60,7 @@ pub struct ValueId(NonZeroUsize);
 impl ValueId {
     /// Build from a 0-based arena index.
     #[inline]
-    pub(crate) fn from_index(index: usize) -> Self {
+    pub(super) fn from_index(index: usize) -> Self {
         // `index + 1 == 0` requires `index == usize::MAX`, which would
         // mean we've allocated `usize::MAX` values — physically
         // impossible on any addressable target.
@@ -72,7 +75,7 @@ impl ValueId {
 
     /// Recover the 0-based arena index.
     #[inline]
-    pub(crate) fn arena_index(self) -> usize {
+    pub(super) fn arena_index(self) -> usize {
         // `self.0` was always produced from `index + 1`, so the
         // subtraction never wraps for ids built via `from_index`.
         self.0.get() - 1
@@ -89,11 +92,11 @@ impl ValueId {
 /// is an enum rather than a packed tag so each variant carries the data its
 /// kind needs without hung-off operands.
 #[derive(Debug)]
-pub(crate) struct ValueData {
-    pub(crate) ty: TypeId,
-    pub(crate) name: RefCell<Option<String>>,
-    pub(crate) debug_loc: Option<DebugLoc>,
-    pub(crate) kind: ValueKindData,
+pub(super) struct ValueData {
+    pub(super) ty: TypeId,
+    pub(super) name: RefCell<Option<String>>,
+    pub(super) debug_loc: Option<DebugLoc>,
+    pub(super) kind: ValueKindData,
     /// Reverse-direction use-list: every structural user that references this
     /// value. Mirrors LLVM's `Value::use_list_` (`Value.h`) while keeping
     /// non-`User` edges explicit: metadata and debug records are not ordinary
@@ -103,14 +106,14 @@ pub(crate) struct ValueData {
     /// Entries may appear more than once if the same user references this value
     /// in multiple slots (e.g. `add %x, %x`). Order is registration-order for
     /// determinism.
-    pub(crate) use_list: RefCell<Vec<ValueUse>>,
+    pub(super) use_list: RefCell<Vec<ValueUse>>,
 }
 
 /// One reverse use-list edge for a value. Instruction operands, constants,
 /// metadata nodes, and debug records have different mutation paths, so the
 /// edge kind is part of the stored fact rather than inferred from a `ValueId`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum ValueUse {
+pub(super) enum ValueUse {
     Instruction(ValueId),
     Constant(ValueId),
     Metadata(crate::metadata::MetadataId),
@@ -124,7 +127,7 @@ pub(crate) enum ValueUse {
 /// to know it has covered every category. New categories require
 /// thinking through every handler.
 #[derive(Debug)]
-pub(crate) enum ValueKindData {
+pub(super) enum ValueKindData {
     Constant(ConstantData),
     Argument {
         parent_fn: ValueId,
@@ -167,10 +170,10 @@ pub(crate) enum ValueKindData {
 ///
 /// Equality and hashing compare the branded module reference by `ModuleId`,
 /// so the handle remains cheap to copy and store in maps.
-pub struct Value<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
-    pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx, B>,
-    pub(crate) ty: TypeId,
+pub struct Value<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) ty: TypeId,
 }
 
 impl<B: ModuleBrand> Clone for Value<'_, B> {
@@ -213,7 +216,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     /// Construct from raw parts. Crate-internal: only the value-arena
     /// constructors hand these out.
     #[inline]
-    pub(crate) fn from_parts<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_parts<M>(id: ValueId, module: M, ty: TypeId) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -226,7 +229,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
 
     /// Borrow the underlying payload via the module's value arena.
     #[inline]
-    pub(crate) fn data(self) -> &'ctx ValueData {
+    pub(super) fn data(self) -> &'ctx ValueData {
         self.module.value_data(self.id)
     }
 
@@ -308,11 +311,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     /// Raw assignment for already-uniqued names and parentless fabrication.
     /// Do not use this for attached local values until their owning
     /// `ValueSymbolTable` has returned the final unique name.
-    pub(crate) fn set_name_internal(self, name: Option<String>) {
+    pub(super) fn set_name_internal(self, name: Option<String>) {
         *self.data().name.borrow_mut() = name;
     }
 
-    pub(crate) fn local_parent_function_id(self) -> Option<ValueId> {
+    pub(super) fn local_parent_function_id(self) -> Option<ValueId> {
         match &self.data().kind {
             ValueKindData::Argument { parent_fn, .. } => Some(*parent_fn),
             ValueKindData::BasicBlock(data) => *data.parent.borrow(),
@@ -380,11 +383,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     /// (erase, RAUW) without invalidating the iterator. Order is
     /// registration-order; user ids may appear more than once if the same
     /// instruction references this value in multiple slots.
-    pub fn users(
-        self,
-    ) -> impl ExactSizeIterator<
-        Item = crate::instruction::Instruction<'ctx, crate::instruction::state::Attached, B>,
-    > + 'ctx {
+    pub fn users(self) -> impl ExactSizeIterator<Item = Instruction<'ctx, Attached, B>> + 'ctx {
         let module = self.module;
         let snapshot: Vec<ValueId> = self
             .data()
@@ -400,7 +399,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
             .collect();
         snapshot
             .into_iter()
-            .map(move |id| crate::instruction::Instruction::from_parts(id, module))
+            .map(move |id| Instruction::from_parts(id, module))
     }
 
     /// `true` when at least one structural user references this value.
@@ -448,18 +447,18 @@ impl From<ValueCategory> for crate::error::ValueCategoryLabel {
     }
 }
 
-pub(crate) fn category_label_for_kind(kind: &ValueKindData) -> crate::error::ValueCategoryLabel {
+pub(super) fn category_label_for_kind(kind: &ValueKindData) -> ValueCategoryLabel {
     match kind {
-        ValueKindData::Constant(_) => crate::error::ValueCategoryLabel::Constant,
-        ValueKindData::Argument { .. } => crate::error::ValueCategoryLabel::Argument,
-        ValueKindData::BasicBlock(_) => crate::error::ValueCategoryLabel::BasicBlock,
-        ValueKindData::Function(_) => crate::error::ValueCategoryLabel::Function,
-        ValueKindData::Instruction(_) => crate::error::ValueCategoryLabel::Instruction,
-        ValueKindData::GlobalVariable(_) => crate::error::ValueCategoryLabel::GlobalVariable,
-        ValueKindData::GlobalAlias(_) => crate::error::ValueCategoryLabel::GlobalAlias,
-        ValueKindData::GlobalIFunc(_) => crate::error::ValueCategoryLabel::GlobalIFunc,
-        ValueKindData::MetadataAsValue(_) => crate::error::ValueCategoryLabel::MetadataAsValue,
-        ValueKindData::InlineAsm(_) => crate::error::ValueCategoryLabel::InlineAsm,
+        ValueKindData::Constant(_) => ValueCategoryLabel::Constant,
+        ValueKindData::Argument { .. } => ValueCategoryLabel::Argument,
+        ValueKindData::BasicBlock(_) => ValueCategoryLabel::BasicBlock,
+        ValueKindData::Function(_) => ValueCategoryLabel::Function,
+        ValueKindData::Instruction(_) => ValueCategoryLabel::Instruction,
+        ValueKindData::GlobalVariable(_) => ValueCategoryLabel::GlobalVariable,
+        ValueKindData::GlobalAlias(_) => ValueCategoryLabel::GlobalAlias,
+        ValueKindData::GlobalIFunc(_) => ValueCategoryLabel::GlobalIFunc,
+        ValueKindData::MetadataAsValue(_) => ValueCategoryLabel::MetadataAsValue,
+        ValueKindData::InlineAsm(_) => ValueCategoryLabel::InlineAsm,
     }
 }
 
@@ -467,7 +466,7 @@ pub(crate) fn category_label_for_kind(kind: &ValueKindData) -> crate::error::Val
 // Sealed marker traits
 // --------------------------------------------------------------------------
 
-pub(crate) mod sealed {
+pub(super) mod sealed {
     pub trait Sealed {}
 }
 
@@ -476,7 +475,7 @@ pub(crate) mod sealed {
 ///
 /// Sealed: the closed set of LLVM value categories is part of the IR
 /// spec, not an extension point.
-pub trait IsValue<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>>:
+pub trait IsValue<'ctx, B: ModuleBrand = Brand<'ctx>>:
     sealed::Sealed + Copy + Sized + core::fmt::Debug
 {
     /// Widen to the erased [`Value`] handle.
@@ -485,13 +484,13 @@ pub trait IsValue<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>>:
 
 /// Sealed accessor trait: anything that has an IR type. Implemented by
 /// every value handle and every type handle.
-pub trait Typed<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>>: sealed::Sealed {
+pub trait Typed<'ctx, B: ModuleBrand = Brand<'ctx>>: sealed::Sealed {
     fn ty(self) -> Type<'ctx, B>;
 }
 
 /// Sealed accessor trait: anything that exposes an optional textual
 /// name. Implemented by every value handle.
-pub trait HasName<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>>: sealed::Sealed {
+pub trait HasName<'ctx, B: ModuleBrand = Brand<'ctx>>: sealed::Sealed {
     fn name(self) -> Option<String>;
     fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
     where
@@ -559,29 +558,29 @@ macro_rules! decl_value_handle {
     ) => {
         $(#[$attr])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub struct $name<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
-            pub(crate) id: ValueId,
-            pub(crate) module: ModuleRef<'ctx, B>,
-            pub(crate) ty: TypeId,
+        pub struct $name<'ctx, B: ModuleBrand = Brand<'ctx>> {
+            pub(super) id: ValueId,
+            pub(super) module: ModuleRef<'ctx, B>,
+            pub(super) ty: TypeId,
         }
 
-        impl<'ctx> $name<'ctx> {
+        impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
             /// Widen to the erased [`Value`] handle.
             #[inline]
-            pub fn as_value(self) -> Value<'ctx> {
+            pub fn as_value(self) -> Value<'ctx, B> {
                 Value { id: self.id, module: self.module, ty: self.ty }
             }
 
             /// Owning module reference.
             #[inline]
-            pub fn module(self) -> ModuleView<'ctx, Brand<'ctx>> {
+            pub fn module(self) -> ModuleView<'ctx, B> {
                 ModuleView::new(self.module.module())
             }
 
             /// Refined IR-type handle for this value.
             #[inline]
-            pub fn ty(self) -> $type_handle<'ctx> {
-                $type_handle::new(self.ty, self.module.module())
+            pub fn ty(self) -> $type_handle<'ctx, B> {
+                $type_handle::new(self.ty, self.module)
             }
 
             /// Optional textual name.
@@ -590,7 +589,7 @@ macro_rules! decl_value_handle {
             }
 
             /// Set the textual name.
-            pub fn set_name<Name>(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>, name: Name)
+            pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
             where
                 Name: Into<String>,
             {
@@ -598,7 +597,7 @@ macro_rules! decl_value_handle {
             }
 
             /// Clear the textual name.
-            pub fn clear_name(self, module_token: &Module<'ctx, Brand<'ctx>, Unverified>) {
+            pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
                 self.as_value().clear_name(module_token);
             }
 
@@ -609,38 +608,45 @@ macro_rules! decl_value_handle {
             }
         }
 
-        impl<'ctx> sealed::Sealed for $name<'ctx> {}
-        impl<'ctx> IsValue<'ctx> for $name<'ctx> {
+        impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for $name<'ctx, B> {}
+        impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for $name<'ctx, B> {
             #[inline]
-            fn as_value(self) -> Value<'ctx> { Self::as_value(self) }
+            fn as_value(self) -> Value<'ctx, B> { Self::as_value(self) }
         }
-        impl<'ctx> Typed<'ctx> for $name<'ctx> {
+        impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for $name<'ctx, B> {
             #[inline]
-            fn ty(self) -> Type<'ctx> {
-                Type::new(self.ty, self.module.module())
+            fn ty(self) -> Type<'ctx, B> {
+                self.ty().as_type()
             }
         }
-        impl<'ctx> HasName<'ctx> for $name<'ctx> {
+        impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for $name<'ctx, B> {
             #[inline]
             fn name(self) -> Option<String> { Self::name(self) }
             #[inline]
-            fn set_name<Name>(self, module_token: &crate::module::Module<'ctx, crate::module::Brand<'ctx>, crate::module::Unverified>, name: Name) where Name: Into<String> { Self::set_name(self, module_token, name) }
+            fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+            where
+                Name: Into<String>,
+            {
+                Self::set_name(self, module_token, name)
+            }
             #[inline]
-            fn clear_name(self, module_token: &crate::module::Module<'ctx, crate::module::Brand<'ctx>, crate::module::Unverified>) { Self::clear_name(self, module_token) }
+            fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+                Self::clear_name(self, module_token)
+            }
         }
-        impl<'ctx> HasDebugLoc for $name<'ctx> {
+        impl<'ctx, B: ModuleBrand + 'ctx> HasDebugLoc for $name<'ctx, B> {
             #[inline]
             fn debug_loc(self) -> Option<DebugLoc> { Self::debug_loc(self) }
         }
 
-        impl<'ctx> From<$name<'ctx>> for Value<'ctx> {
+        impl<'ctx, B: ModuleBrand + 'ctx> From<$name<'ctx, B>> for Value<'ctx, B> {
             #[inline]
-            fn from(v: $name<'ctx>) -> Self { v.as_value() }
+            fn from(v: $name<'ctx, B>) -> Self { v.as_value() }
         }
 
-        impl<'ctx> TryFrom<Value<'ctx>> for $name<'ctx> {
+        impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for $name<'ctx, B> {
             type Error = IrError;
-            fn try_from(v: Value<'ctx>) -> IrResult<Self> {
+            fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
                 let pred: fn(&TypeData) -> bool = $pred;
                 let ty = v.ty();
                 if pred(ty.data()) {
@@ -654,30 +660,40 @@ macro_rules! decl_value_handle {
             }
         }
 
-        impl<'ctx> TryFrom<crate::argument::Argument<'ctx>> for $name<'ctx> {
+        impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>>
+            for $name<'ctx, B>
+        {
             type Error = IrError;
             #[inline]
-            fn try_from(a: crate::argument::Argument<'ctx>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx>>>::try_from(a.as_value())
+            fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
             }
         }
 
-        impl<'ctx> TryFrom<crate::constant::Constant<'ctx>> for $name<'ctx> {
+        impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
+            for $name<'ctx, B>
+        {
             type Error = IrError;
             #[inline]
-            fn try_from(c: crate::constant::Constant<'ctx>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx>>>::try_from(c.as_value())
+            fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
             }
         }
 
-        impl<'ctx> TryFrom<crate::instruction::Instruction<'ctx>> for $name<'ctx> {
+        impl<'ctx, B: ModuleBrand + 'ctx>
+            TryFrom<Instruction<'ctx, Attached, B>>
+            for $name<'ctx, B>
+        {
             type Error = IrError;
             #[inline]
-            fn try_from(i: crate::instruction::Instruction<'ctx>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx>>>::try_from(crate::instruction::Instruction::as_value(&i))
-    }
+            fn try_from(
+                i: Instruction<'ctx, Attached, B>,
+            ) -> IrResult<Self> {
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(
+                    Instruction::as_value(&i),
+                )
+            }
         }
-
     };
 }
 
@@ -688,12 +704,12 @@ decl_value_handle!(
     PointerValue, Pointer, PointerType,
     type_predicate |d| matches!(d, TypeData::Pointer { .. })
 );
-impl<'ctx> PointerValue<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> PointerValue<'ctx, B> {
     /// Crate-internal: wrap a [`Value`] known to have a pointer type.
     /// The IR builder uses this when it just produced a pointer-result
     /// instruction (cast / GEP / alloca / load).
     #[inline]
-    pub(crate) fn from_value_unchecked(v: Value<'ctx>) -> Self {
+    pub(super) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
         Self {
             id: v.id,
             module: v.module,
@@ -707,11 +723,150 @@ decl_value_handle!(
     ArrayValue, Array, ArrayType,
     type_predicate |d| matches!(d, TypeData::Array { .. })
 );
-decl_value_handle!(
-    /// Value whose type is a struct.
-    StructValue, Struct, StructType,
-    type_predicate |d| matches!(d, TypeData::Struct(_))
-);
+
+/// Value whose type is a struct.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct StructValue<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) ty: TypeId,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> StructValue<'ctx, B> {
+    /// Widen to the erased [`Value`] handle.
+    #[inline]
+    pub fn as_value(self) -> Value<'ctx, B> {
+        Value {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+        }
+    }
+
+    /// Owning module reference.
+    #[inline]
+    pub fn module(self) -> ModuleView<'ctx, B> {
+        ModuleView::new(self.module.module())
+    }
+
+    /// Refined IR-type handle for this value.
+    #[inline]
+    pub fn ty(self) -> StructType<'ctx, StructBodyDyn, B> {
+        StructType::new(self.ty, self.module)
+    }
+
+    /// Optional textual name.
+    pub fn name(self) -> Option<String> {
+        self.as_value().name()
+    }
+
+    /// Set the textual name.
+    pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
+        self.as_value().set_name(module_token, name);
+    }
+
+    /// Clear the textual name.
+    pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+        self.as_value().clear_name(module_token);
+    }
+
+    /// Optional debug-location.
+    #[inline]
+    pub fn debug_loc(self) -> Option<DebugLoc> {
+        self.as_value().debug_loc()
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for StructValue<'ctx, B> {}
+impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for StructValue<'ctx, B> {
+    #[inline]
+    fn as_value(self) -> Value<'ctx, B> {
+        Self::as_value(self)
+    }
+}
+impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for StructValue<'ctx, B> {
+    #[inline]
+    fn ty(self) -> Type<'ctx, B> {
+        self.ty().as_type()
+    }
+}
+impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for StructValue<'ctx, B> {
+    #[inline]
+    fn name(self) -> Option<String> {
+        Self::name(self)
+    }
+    #[inline]
+    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
+        Self::set_name(self, module_token, name)
+    }
+    #[inline]
+    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+        Self::clear_name(self, module_token)
+    }
+}
+impl<'ctx, B: ModuleBrand + 'ctx> HasDebugLoc for StructValue<'ctx, B> {
+    #[inline]
+    fn debug_loc(self) -> Option<DebugLoc> {
+        Self::debug_loc(self)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> From<StructValue<'ctx, B>> for Value<'ctx, B> {
+    #[inline]
+    fn from(v: StructValue<'ctx, B>) -> Self {
+        v.as_value()
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for StructValue<'ctx, B> {
+    type Error = IrError;
+    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
+        let ty = v.ty();
+        if matches!(ty.data(), TypeData::Struct(_)) {
+            Ok(Self {
+                id: v.id,
+                module: v.module,
+                ty: v.ty,
+            })
+        } else {
+            Err(IrError::TypeMismatch {
+                expected: TypeKindLabel::Struct,
+                got: ty.kind_label(),
+            })
+        }
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>> for StructValue<'ctx, B> {
+    type Error = IrError;
+    #[inline]
+    fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>> for StructValue<'ctx, B> {
+    type Error = IrError;
+    #[inline]
+    fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>> for StructValue<'ctx, B> {
+    type Error = IrError;
+    #[inline]
+    fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
+    }
+}
+
 decl_value_handle!(
     /// Value whose type is a fixed or scalable vector.
     VectorValue, FixedVector, VectorType,
@@ -720,12 +875,12 @@ decl_value_handle!(
         TypeData::FixedVector { .. } | TypeData::ScalableVector { .. }
     )
 );
-impl<'ctx> VectorValue<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> VectorValue<'ctx, B> {
     /// Crate-internal: wrap a [`Value`] known to have a vector type.
     /// The IR builder uses this when it just produced a vector-result
     /// instruction (insertelement / shufflevector / splat).
     #[inline]
-    pub(crate) fn from_value_unchecked(v: Value<'ctx>) -> Self {
+    pub(super) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
         Self {
             id: v.id,
             module: v.module,
@@ -751,35 +906,35 @@ decl_value_handle!(
 /// Value whose IR type is `iN`. The `W: IntWidth` marker pins the
 /// bit-width at the type level, so the IRBuilder can reject mismatched
 /// widths at compile time.
-pub struct IntValue<'ctx, W: IntWidth, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
-    pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx, B>,
-    pub(crate) ty: TypeId,
-    pub(crate) _w: PhantomData<W>,
+pub struct IntValue<'ctx, W: IntWidth, B: ModuleBrand = Brand<'ctx>> {
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) ty: TypeId,
+    pub(super) _w: PhantomData<W>,
 }
 
-impl<'ctx, W: IntWidth> Clone for IntValue<'ctx, W> {
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> Clone for IntValue<'ctx, W, B> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'ctx, W: IntWidth> Copy for IntValue<'ctx, W> {}
-impl<'ctx, W: IntWidth> PartialEq for IntValue<'ctx, W> {
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> Copy for IntValue<'ctx, W, B> {}
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PartialEq for IntValue<'ctx, W, B> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
     }
 }
-impl<'ctx, W: IntWidth> Eq for IntValue<'ctx, W> {}
-impl<'ctx, W: IntWidth> Hash for IntValue<'ctx, W> {
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> Eq for IntValue<'ctx, W, B> {}
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> Hash for IntValue<'ctx, W, B> {
     fn hash<H: Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
         self.ty.hash(h);
     }
 }
-impl<'ctx, W: IntWidth> fmt::Debug for IntValue<'ctx, W> {
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> fmt::Debug for IntValue<'ctx, W, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("IntValue")
             .field("id", &self.id)
@@ -788,12 +943,12 @@ impl<'ctx, W: IntWidth> fmt::Debug for IntValue<'ctx, W> {
     }
 }
 
-impl<'ctx, W: IntWidth> IntValue<'ctx, W> {
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
     /// Crate-internal: wrap a [`Value`] known to have type `iN` with width `W`.
     /// The IRBuilder uses this when it just produced an instruction whose
     /// type matches the operand widths it validated.
     #[inline]
-    pub(crate) fn from_value_unchecked(v: Value<'ctx>) -> Self {
+    pub(super) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
         Self {
             id: v.id,
             module: v.module,
@@ -804,7 +959,7 @@ impl<'ctx, W: IntWidth> IntValue<'ctx, W> {
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx> {
+    pub fn as_value(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -813,41 +968,27 @@ impl<'ctx, W: IntWidth> IntValue<'ctx, W> {
     }
     /// Owning module reference.
     #[inline]
-    pub fn module(self) -> ModuleView<'ctx, Brand<'ctx>> {
+    pub fn module(self) -> ModuleView<'ctx, B> {
         ModuleView::new(self.module.module())
     }
     /// Refined IR-type handle for this value.
     #[inline]
-    pub fn ty(self) -> IntType<'ctx, W> {
-        IntType::new(self.ty, self.module.module())
+    pub fn ty(self) -> IntType<'ctx, W, B> {
+        IntType::new(self.ty, self.module)
     }
     /// Optional textual name.
     pub fn name(self) -> Option<String> {
         self.as_value().name()
     }
     /// Set the textual name.
-    pub fn set_name<Name>(
-        self,
-        module_token: &crate::module::Module<
-            'ctx,
-            crate::module::Brand<'ctx>,
-            crate::module::Unverified,
-        >,
-        name: Name,
-    ) where
+    pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    where
         Name: Into<String>,
     {
         self.as_value().set_name(module_token, name);
     }
     /// Clear the textual name.
-    pub fn clear_name(
-        self,
-        module_token: &crate::module::Module<
-            'ctx,
-            crate::module::Brand<'ctx>,
-            crate::module::Unverified,
-        >,
-    ) {
+    pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
         self.as_value().clear_name(module_token);
     }
     /// Optional debug-location.
@@ -857,7 +998,7 @@ impl<'ctx, W: IntWidth> IntValue<'ctx, W> {
     }
     /// Erase the width marker; preserves the runtime width.
     #[inline]
-    pub fn as_dyn(self) -> IntValue<'ctx, IntDyn> {
+    pub fn as_dyn(self) -> IntValue<'ctx, IntDyn, B> {
         IntValue {
             id: self.id,
             module: self.module,
@@ -867,66 +1008,52 @@ impl<'ctx, W: IntWidth> IntValue<'ctx, W> {
     }
 }
 
-impl<'ctx, W: IntWidth> sealed::Sealed for IntValue<'ctx, W> {}
-impl<'ctx, W: IntWidth> IsValue<'ctx> for IntValue<'ctx, W> {
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> sealed::Sealed for IntValue<'ctx, W, B> {}
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for IntValue<'ctx, W, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx> {
+    fn as_value(self) -> Value<'ctx, B> {
         Self::as_value(self)
     }
 }
-impl<'ctx, W: IntWidth> Typed<'ctx> for IntValue<'ctx, W> {
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> Typed<'ctx, B> for IntValue<'ctx, W, B> {
     #[inline]
-    fn ty(self) -> Type<'ctx> {
-        Type::new(self.ty, self.module.module())
+    fn ty(self) -> Type<'ctx, B> {
+        self.ty().as_type()
     }
 }
-impl<'ctx, W: IntWidth> HasName<'ctx> for IntValue<'ctx, W> {
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> HasName<'ctx, B> for IntValue<'ctx, W, B> {
     #[inline]
     fn name(self) -> Option<String> {
         Self::name(self)
     }
     #[inline]
-    fn set_name<Name>(
-        self,
-        module_token: &crate::module::Module<
-            'ctx,
-            crate::module::Brand<'ctx>,
-            crate::module::Unverified,
-        >,
-        name: Name,
-    ) where
+    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    where
         Name: Into<String>,
     {
         Self::set_name(self, module_token, name)
     }
     #[inline]
-    fn clear_name(
-        self,
-        module_token: &crate::module::Module<
-            'ctx,
-            crate::module::Brand<'ctx>,
-            crate::module::Unverified,
-        >,
-    ) {
+    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
         Self::clear_name(self, module_token)
     }
 }
-impl<'ctx, W: IntWidth> HasDebugLoc for IntValue<'ctx, W> {
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> HasDebugLoc for IntValue<'ctx, W, B> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
         Self::debug_loc(self)
     }
 }
-impl<'ctx, W: IntWidth> From<IntValue<'ctx, W>> for Value<'ctx> {
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> From<IntValue<'ctx, W, B>> for Value<'ctx, B> {
     #[inline]
-    fn from(v: IntValue<'ctx, W>) -> Self {
+    fn from(v: IntValue<'ctx, W, B>) -> Self {
         v.as_value()
     }
 }
 
-impl<'ctx> TryFrom<Value<'ctx>> for IntValue<'ctx, IntDyn> {
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for IntValue<'ctx, IntDyn, B> {
     type Error = IrError;
-    fn try_from(v: Value<'ctx>) -> IrResult<Self> {
+    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
         let ty = v.ty();
         if matches!(ty.data(), TypeData::Integer { .. }) {
             Ok(Self {
@@ -943,34 +1070,36 @@ impl<'ctx> TryFrom<Value<'ctx>> for IntValue<'ctx, IntDyn> {
         }
     }
 }
-impl<'ctx> TryFrom<crate::argument::Argument<'ctx>> for IntValue<'ctx, IntDyn> {
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>> for IntValue<'ctx, IntDyn, B> {
     type Error = IrError;
     #[inline]
-    fn try_from(a: crate::argument::Argument<'ctx>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx>>>::try_from(a.as_value())
+    fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
     }
 }
-impl<'ctx> TryFrom<crate::constant::Constant<'ctx>> for IntValue<'ctx, IntDyn> {
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>> for IntValue<'ctx, IntDyn, B> {
     type Error = IrError;
     #[inline]
-    fn try_from(c: crate::constant::Constant<'ctx>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx>>>::try_from(c.as_value())
+    fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
     }
 }
-impl<'ctx> TryFrom<crate::instruction::Instruction<'ctx>> for IntValue<'ctx, IntDyn> {
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
+    for IntValue<'ctx, IntDyn, B>
+{
     type Error = IrError;
     #[inline]
-    fn try_from(i: crate::instruction::Instruction<'ctx>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx>>>::try_from(crate::instruction::Instruction::as_value(&i))
+    fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
     }
 }
 
 /// Per-static-width narrowing.
 macro_rules! impl_int_value_static_try_from {
     ($marker:ident, $bits:expr) => {
-        impl<'ctx> TryFrom<Value<'ctx>> for IntValue<'ctx, $marker> {
+        impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for IntValue<'ctx, $marker, B> {
             type Error = IrError;
-            fn try_from(v: Value<'ctx>) -> IrResult<Self> {
+            fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
                 let ty = v.ty();
                 match ty.data() {
                     TypeData::Integer { bits } if *bits == $bits => Ok(Self {
@@ -990,38 +1119,46 @@ macro_rules! impl_int_value_static_try_from {
                 }
             }
         }
-        impl<'ctx> TryFrom<crate::argument::Argument<'ctx>> for IntValue<'ctx, $marker> {
+        impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>>
+            for IntValue<'ctx, $marker, B>
+        {
             type Error = IrError;
             #[inline]
-            fn try_from(a: crate::argument::Argument<'ctx>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx>>>::try_from(a.as_value())
+            fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
             }
         }
-        impl<'ctx> TryFrom<crate::constant::Constant<'ctx>> for IntValue<'ctx, $marker> {
+        impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
+            for IntValue<'ctx, $marker, B>
+        {
             type Error = IrError;
             #[inline]
-            fn try_from(c: crate::constant::Constant<'ctx>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx>>>::try_from(c.as_value())
+            fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
             }
         }
-        impl<'ctx> TryFrom<crate::instruction::Instruction<'ctx>> for IntValue<'ctx, $marker> {
+        impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
+            for IntValue<'ctx, $marker, B>
+        {
             type Error = IrError;
             #[inline]
-            fn try_from(i: crate::instruction::Instruction<'ctx>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx>>>::try_from(crate::instruction::Instruction::as_value(
-                    &i,
-                ))
+            fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
             }
         }
-        impl<'ctx> TryFrom<IntValue<'ctx, IntDyn>> for IntValue<'ctx, $marker> {
+        impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<IntValue<'ctx, IntDyn, B>>
+            for IntValue<'ctx, $marker, B>
+        {
             type Error = IrError;
-            fn try_from(v: IntValue<'ctx, IntDyn>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx>>>::try_from(v.as_value())
+            fn try_from(v: IntValue<'ctx, IntDyn, B>) -> IrResult<Self> {
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(v.as_value())
             }
         }
-        impl<'ctx> From<IntValue<'ctx, $marker>> for IntValue<'ctx, IntDyn> {
+        impl<'ctx, B: ModuleBrand + 'ctx> From<IntValue<'ctx, $marker, B>>
+            for IntValue<'ctx, IntDyn, B>
+        {
             #[inline]
-            fn from(v: IntValue<'ctx, $marker>) -> Self {
+            fn from(v: IntValue<'ctx, $marker, B>) -> Self {
                 v.as_dyn()
             }
         }
@@ -1038,9 +1175,11 @@ impl_int_value_static_try_from!(i128, 128);
 // Width<N>>`. Pattern matches `impl_int_value_static_try_from!` but
 // the bit-count comes from the const generic `N` instead of a
 // macro literal.
-impl<'ctx, const N: u32> TryFrom<Value<'ctx>> for IntValue<'ctx, crate::int_width::Width<N>> {
+impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<Value<'ctx, B>>
+    for IntValue<'ctx, Width<N>, B>
+{
     type Error = IrError;
-    fn try_from(v: Value<'ctx>) -> IrResult<Self> {
+    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
         let ty = v.ty();
         match ty.data() {
             TypeData::Integer { bits } if *bits == N => Ok(Self {
@@ -1057,47 +1196,47 @@ impl<'ctx, const N: u32> TryFrom<Value<'ctx>> for IntValue<'ctx, crate::int_widt
         }
     }
 }
-impl<'ctx, const N: u32> TryFrom<crate::argument::Argument<'ctx>>
-    for IntValue<'ctx, crate::int_width::Width<N>>
+impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<Argument<'ctx, B>>
+    for IntValue<'ctx, Width<N>, B>
 {
     type Error = IrError;
     #[inline]
-    fn try_from(a: crate::argument::Argument<'ctx>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx>>>::try_from(a.as_value())
+    fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
     }
 }
-impl<'ctx, const N: u32> TryFrom<crate::constant::Constant<'ctx>>
-    for IntValue<'ctx, crate::int_width::Width<N>>
+impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<Constant<'ctx, B>>
+    for IntValue<'ctx, Width<N>, B>
 {
     type Error = IrError;
     #[inline]
-    fn try_from(c: crate::constant::Constant<'ctx>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx>>>::try_from(c.as_value())
+    fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
     }
 }
-impl<'ctx, const N: u32> TryFrom<crate::instruction::Instruction<'ctx>>
-    for IntValue<'ctx, crate::int_width::Width<N>>
+impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<Instruction<'ctx, Attached, B>>
+    for IntValue<'ctx, Width<N>, B>
 {
     type Error = IrError;
     #[inline]
-    fn try_from(i: crate::instruction::Instruction<'ctx>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx>>>::try_from(crate::instruction::Instruction::as_value(&i))
+    fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
     }
 }
-impl<'ctx, const N: u32> TryFrom<IntValue<'ctx, IntDyn>>
-    for IntValue<'ctx, crate::int_width::Width<N>>
+impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<IntValue<'ctx, IntDyn, B>>
+    for IntValue<'ctx, Width<N>, B>
 {
     type Error = IrError;
     #[inline]
-    fn try_from(v: IntValue<'ctx, IntDyn>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx>>>::try_from(v.as_value())
+    fn try_from(v: IntValue<'ctx, IntDyn, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(v.as_value())
     }
 }
-impl<'ctx, const N: u32> From<IntValue<'ctx, crate::int_width::Width<N>>>
-    for IntValue<'ctx, IntDyn>
+impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> From<IntValue<'ctx, Width<N>, B>>
+    for IntValue<'ctx, IntDyn, B>
 {
     #[inline]
-    fn from(v: IntValue<'ctx, crate::int_width::Width<N>>) -> Self {
+    fn from(v: IntValue<'ctx, Width<N>, B>) -> Self {
         v.as_dyn()
     }
 }
@@ -1107,39 +1246,35 @@ impl<'ctx, const N: u32> From<IntValue<'ctx, crate::int_width::Width<N>>>
 // --------------------------------------------------------------------------
 
 /// Value whose IR type is an IEEE / non-IEEE float.
-pub struct FloatValue<
-    'ctx,
-    K: FloatKind,
-    B: crate::module::ModuleBrand = crate::module::Brand<'ctx>,
-> {
-    pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx, B>,
-    pub(crate) ty: TypeId,
-    pub(crate) _k: PhantomData<K>,
+pub struct FloatValue<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>> {
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) ty: TypeId,
+    pub(super) _k: PhantomData<K>,
 }
 
-impl<'ctx, K: FloatKind> Clone for FloatValue<'ctx, K> {
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> Clone for FloatValue<'ctx, K, B> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'ctx, K: FloatKind> Copy for FloatValue<'ctx, K> {}
-impl<'ctx, K: FloatKind> PartialEq for FloatValue<'ctx, K> {
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> Copy for FloatValue<'ctx, K, B> {}
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> PartialEq for FloatValue<'ctx, K, B> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
     }
 }
-impl<'ctx, K: FloatKind> Eq for FloatValue<'ctx, K> {}
-impl<'ctx, K: FloatKind> Hash for FloatValue<'ctx, K> {
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> Eq for FloatValue<'ctx, K, B> {}
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> Hash for FloatValue<'ctx, K, B> {
     fn hash<H: Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
         self.ty.hash(h);
     }
 }
-impl<'ctx, K: FloatKind> fmt::Debug for FloatValue<'ctx, K> {
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> fmt::Debug for FloatValue<'ctx, K, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FloatValue")
             .field("id", &self.id)
@@ -1148,10 +1283,10 @@ impl<'ctx, K: FloatKind> fmt::Debug for FloatValue<'ctx, K> {
     }
 }
 
-impl<'ctx, K: FloatKind> FloatValue<'ctx, K> {
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
     /// Crate-internal: wrap a [`Value`] known to have a float type of kind `K`.
     #[inline]
-    pub(crate) fn from_value_unchecked(v: Value<'ctx>) -> Self {
+    pub(super) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
         Self {
             id: v.id,
             module: v.module,
@@ -1161,7 +1296,7 @@ impl<'ctx, K: FloatKind> FloatValue<'ctx, K> {
     }
 
     #[inline]
-    pub fn as_value(self) -> Value<'ctx> {
+    pub fn as_value(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -1169,37 +1304,23 @@ impl<'ctx, K: FloatKind> FloatValue<'ctx, K> {
         }
     }
     #[inline]
-    pub fn module(self) -> ModuleView<'ctx, Brand<'ctx>> {
+    pub fn module(self) -> ModuleView<'ctx, B> {
         ModuleView::new(self.module.module())
     }
     #[inline]
-    pub fn ty(self) -> FloatType<'ctx, K> {
-        FloatType::new(self.ty, self.module.module())
+    pub fn ty(self) -> FloatType<'ctx, K, B> {
+        FloatType::new(self.ty, self.module)
     }
     pub fn name(self) -> Option<String> {
         self.as_value().name()
     }
-    pub fn set_name<Name>(
-        self,
-        module_token: &crate::module::Module<
-            'ctx,
-            crate::module::Brand<'ctx>,
-            crate::module::Unverified,
-        >,
-        name: Name,
-    ) where
+    pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    where
         Name: Into<String>,
     {
         self.as_value().set_name(module_token, name);
     }
-    pub fn clear_name(
-        self,
-        module_token: &crate::module::Module<
-            'ctx,
-            crate::module::Brand<'ctx>,
-            crate::module::Unverified,
-        >,
-    ) {
+    pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
         self.as_value().clear_name(module_token);
     }
     #[inline]
@@ -1207,7 +1328,7 @@ impl<'ctx, K: FloatKind> FloatValue<'ctx, K> {
         self.as_value().debug_loc()
     }
     #[inline]
-    pub fn as_dyn(self) -> FloatValue<'ctx, FloatDyn> {
+    pub fn as_dyn(self) -> FloatValue<'ctx, FloatDyn, B> {
         FloatValue {
             id: self.id,
             module: self.module,
@@ -1217,62 +1338,48 @@ impl<'ctx, K: FloatKind> FloatValue<'ctx, K> {
     }
 }
 
-impl<'ctx, K: FloatKind> sealed::Sealed for FloatValue<'ctx, K> {}
-impl<'ctx, K: FloatKind> IsValue<'ctx> for FloatValue<'ctx, K> {
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> sealed::Sealed for FloatValue<'ctx, K, B> {}
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for FloatValue<'ctx, K, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx> {
+    fn as_value(self) -> Value<'ctx, B> {
         Self::as_value(self)
     }
 }
-impl<'ctx, K: FloatKind> Typed<'ctx> for FloatValue<'ctx, K> {
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> Typed<'ctx, B> for FloatValue<'ctx, K, B> {
     #[inline]
-    fn ty(self) -> Type<'ctx> {
-        Type::new(self.ty, self.module.module())
+    fn ty(self) -> Type<'ctx, B> {
+        self.ty().as_type()
     }
 }
-impl<'ctx, K: FloatKind> HasName<'ctx> for FloatValue<'ctx, K> {
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> HasName<'ctx, B> for FloatValue<'ctx, K, B> {
     fn name(self) -> Option<String> {
         Self::name(self)
     }
-    fn set_name<Name>(
-        self,
-        module_token: &crate::module::Module<
-            'ctx,
-            crate::module::Brand<'ctx>,
-            crate::module::Unverified,
-        >,
-        name: Name,
-    ) where
+    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    where
         Name: Into<String>,
     {
         Self::set_name(self, module_token, name)
     }
-    fn clear_name(
-        self,
-        module_token: &crate::module::Module<
-            'ctx,
-            crate::module::Brand<'ctx>,
-            crate::module::Unverified,
-        >,
-    ) {
+    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
         Self::clear_name(self, module_token)
     }
 }
-impl<'ctx, K: FloatKind> HasDebugLoc for FloatValue<'ctx, K> {
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> HasDebugLoc for FloatValue<'ctx, K, B> {
     fn debug_loc(self) -> Option<DebugLoc> {
         Self::debug_loc(self)
     }
 }
-impl<'ctx, K: FloatKind> From<FloatValue<'ctx, K>> for Value<'ctx> {
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> From<FloatValue<'ctx, K, B>> for Value<'ctx, B> {
     #[inline]
-    fn from(v: FloatValue<'ctx, K>) -> Self {
+    fn from(v: FloatValue<'ctx, K, B>) -> Self {
         v.as_value()
     }
 }
 
-impl<'ctx> TryFrom<Value<'ctx>> for FloatValue<'ctx, FloatDyn> {
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for FloatValue<'ctx, FloatDyn, B> {
     type Error = IrError;
-    fn try_from(v: Value<'ctx>) -> IrResult<Self> {
+    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
         let ty = v.ty();
         if matches!(
             ty.data(),
@@ -1298,30 +1405,32 @@ impl<'ctx> TryFrom<Value<'ctx>> for FloatValue<'ctx, FloatDyn> {
         }
     }
 }
-impl<'ctx> TryFrom<crate::argument::Argument<'ctx>> for FloatValue<'ctx, FloatDyn> {
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>> for FloatValue<'ctx, FloatDyn, B> {
     type Error = IrError;
-    fn try_from(a: crate::argument::Argument<'ctx>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx>>>::try_from(a.as_value())
+    fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
     }
 }
-impl<'ctx> TryFrom<crate::constant::Constant<'ctx>> for FloatValue<'ctx, FloatDyn> {
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>> for FloatValue<'ctx, FloatDyn, B> {
     type Error = IrError;
-    fn try_from(c: crate::constant::Constant<'ctx>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx>>>::try_from(c.as_value())
+    fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
     }
 }
-impl<'ctx> TryFrom<crate::instruction::Instruction<'ctx>> for FloatValue<'ctx, FloatDyn> {
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
+    for FloatValue<'ctx, FloatDyn, B>
+{
     type Error = IrError;
-    fn try_from(i: crate::instruction::Instruction<'ctx>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx>>>::try_from(crate::instruction::Instruction::as_value(&i))
+    fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
     }
 }
 
 macro_rules! impl_float_value_static_try_from {
     ($marker:ident, $variant:ident, $label:ident) => {
-        impl<'ctx> TryFrom<Value<'ctx>> for FloatValue<'ctx, $marker> {
+        impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for FloatValue<'ctx, $marker, B> {
             type Error = IrError;
-            fn try_from(v: Value<'ctx>) -> IrResult<Self> {
+            fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
                 let ty = v.ty();
                 match ty.data() {
                     TypeData::$variant => Ok(Self {
@@ -1337,35 +1446,43 @@ macro_rules! impl_float_value_static_try_from {
                 }
             }
         }
-        impl<'ctx> TryFrom<crate::argument::Argument<'ctx>> for FloatValue<'ctx, $marker> {
+        impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>>
+            for FloatValue<'ctx, $marker, B>
+        {
             type Error = IrError;
-            fn try_from(a: crate::argument::Argument<'ctx>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx>>>::try_from(a.as_value())
+            fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
             }
         }
-        impl<'ctx> TryFrom<crate::constant::Constant<'ctx>> for FloatValue<'ctx, $marker> {
+        impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
+            for FloatValue<'ctx, $marker, B>
+        {
             type Error = IrError;
-            fn try_from(c: crate::constant::Constant<'ctx>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx>>>::try_from(c.as_value())
+            fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
             }
         }
-        impl<'ctx> TryFrom<crate::instruction::Instruction<'ctx>> for FloatValue<'ctx, $marker> {
+        impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
+            for FloatValue<'ctx, $marker, B>
+        {
             type Error = IrError;
-            fn try_from(i: crate::instruction::Instruction<'ctx>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx>>>::try_from(crate::instruction::Instruction::as_value(
-                    &i,
-                ))
+            fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
             }
         }
-        impl<'ctx> TryFrom<FloatValue<'ctx, FloatDyn>> for FloatValue<'ctx, $marker> {
+        impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<FloatValue<'ctx, FloatDyn, B>>
+            for FloatValue<'ctx, $marker, B>
+        {
             type Error = IrError;
-            fn try_from(v: FloatValue<'ctx, FloatDyn>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx>>>::try_from(v.as_value())
+            fn try_from(v: FloatValue<'ctx, FloatDyn, B>) -> IrResult<Self> {
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(v.as_value())
             }
         }
-        impl<'ctx> From<FloatValue<'ctx, $marker>> for FloatValue<'ctx, FloatDyn> {
+        impl<'ctx, B: ModuleBrand + 'ctx> From<FloatValue<'ctx, $marker, B>>
+            for FloatValue<'ctx, FloatDyn, B>
+        {
             #[inline]
-            fn from(v: FloatValue<'ctx, $marker>) -> Self {
+            fn from(v: FloatValue<'ctx, $marker, B>) -> Self {
                 v.as_dyn()
             }
         }
@@ -1379,7 +1496,7 @@ impl_float_value_static_try_from!(Fp128, Fp128, Fp128);
 impl_float_value_static_try_from!(X86Fp80, X86Fp80, X86Fp80);
 impl_float_value_static_try_from!(PpcFp128, PpcFp128, PpcFp128);
 
-impl<'ctx> fmt::Display for Value<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Value<'ctx, B> {
     /// Print as `<type> <ref>`. Mirrors LLVM's `Value::print`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         crate::asm_writer::fmt_operand(f, *self, None)
@@ -1390,73 +1507,53 @@ impl<'ctx> fmt::Display for Value<'ctx> {
 // IntoPointerValue: ergonomic operand input for the IRBuilder
 // --------------------------------------------------------------------------
 
-/// Inputs that can be lifted into a [`PointerValue<'ctx>`] operand
+/// Inputs that can be lifted into a [`PointerValue<'ctx, B>`] operand
 /// for the IR builder. Mirrors the int-side
 /// [`crate::IntoIntValue`] for the pointer family.
 ///
 /// Implemented by:
-/// - [`PointerValue<'ctx>`] (identity).
-/// - [`crate::ConstantPointerNull<'ctx>`] (lift via `null`).
-/// - [`crate::argument::Argument<'ctx>`] (runtime-checked narrow).
-/// - [`Value<'ctx>`] (runtime-checked narrow).
-/// - [`crate::instruction::Instruction<'ctx>`] (runtime-checked narrow).
-pub trait IntoPointerValue<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>>:
-    Sized
-{
-    fn into_pointer_value(
-        self,
-        module: crate::module::ModuleRef<'ctx>,
-    ) -> crate::IrResult<PointerValue<'ctx, B>>;
+/// - [`PointerValue<'ctx, B>`] (identity).
+/// - [`crate::ConstantPointerNull<'ctx, B>`] (lift via `null`).
+/// - [`Argument<'ctx, B>`] (runtime-checked narrow).
+/// - [`Value<'ctx, B>`] (runtime-checked narrow).
+/// - [`Instruction`] (runtime-checked narrow when attached).
+pub trait IntoPointerValue<'ctx, B: ModuleBrand = Brand<'ctx>>: Sized {
+    fn into_pointer_value(self, module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>>;
 }
 
-impl<'ctx> IntoPointerValue<'ctx> for PointerValue<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for PointerValue<'ctx, B> {
     #[inline]
-    fn into_pointer_value(
-        self,
-        _module: crate::module::ModuleRef<'ctx>,
-    ) -> crate::IrResult<PointerValue<'ctx>> {
+    fn into_pointer_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
         Ok(self)
     }
 }
 
-impl<'ctx> IntoPointerValue<'ctx> for crate::constants::ConstantPointerNull<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for ConstantPointerNull<'ctx, B> {
     #[inline]
-    fn into_pointer_value(
-        self,
-        _module: crate::module::ModuleRef<'ctx>,
-    ) -> crate::IrResult<PointerValue<'ctx>> {
+    fn into_pointer_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
         Ok(PointerValue::from_value_unchecked(
             crate::value::IsValue::as_value(self),
         ))
     }
 }
 
-impl<'ctx> IntoPointerValue<'ctx> for crate::argument::Argument<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for Argument<'ctx, B> {
     #[inline]
-    fn into_pointer_value(
-        self,
-        _module: crate::module::ModuleRef<'ctx>,
-    ) -> crate::IrResult<PointerValue<'ctx>> {
+    fn into_pointer_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
         PointerValue::try_from(self.as_value())
     }
 }
 
-impl<'ctx> IntoPointerValue<'ctx> for Value<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for Value<'ctx, B> {
     #[inline]
-    fn into_pointer_value(
-        self,
-        _module: crate::module::ModuleRef<'ctx>,
-    ) -> crate::IrResult<PointerValue<'ctx>> {
+    fn into_pointer_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
         PointerValue::try_from(self)
     }
 }
 
-impl<'ctx> IntoPointerValue<'ctx> for crate::instruction::Instruction<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for Instruction<'ctx, Attached, B> {
     #[inline]
-    fn into_pointer_value(
-        self,
-        _module: crate::module::ModuleRef<'ctx>,
-    ) -> crate::IrResult<PointerValue<'ctx>> {
+    fn into_pointer_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
         PointerValue::try_from(self.as_value())
     }
 }

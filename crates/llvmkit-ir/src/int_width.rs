@@ -33,7 +33,12 @@
 
 use core::fmt;
 
-use crate::r#type::sealed;
+use super::argument::Argument;
+use super::constants::ConstantIntValue;
+use super::instruction::{Instruction, state::Attached};
+use super::module::{Brand, ModuleBrand, ModuleRef};
+use super::r#type::sealed;
+use super::value::{IntValue, IsValue, Value};
 
 /// Sealed marker trait implemented by every integer width tag.
 pub trait IntWidth: sealed::Sealed + Copy + 'static + fmt::Debug {
@@ -123,11 +128,9 @@ impl<const N: u32> IntWidth for Width<N> {
 // IntoConstantInt: type-driven dispatch for IntType::const_int
 // --------------------------------------------------------------------------
 
-use crate::IrError;
-use crate::IrResult;
-use crate::constants::ConstantIntValue;
-use crate::derived_types::IntType;
-use crate::module::{Brand, ModuleBrand};
+use super::IrError;
+use super::IrResult;
+use super::derived_types::IntType;
 use core::convert::Infallible;
 
 /// Trait implemented by Rust scalar types that can be lifted to a
@@ -548,9 +551,6 @@ decl_wider_than!(i128: bool, i8, i16, i32, i64);
 // IntoIntValue: ergonomic operand input for the IRBuilder
 // --------------------------------------------------------------------------
 
-use crate::module::ModuleRef;
-use crate::value::IntValue;
-
 /// Inputs that can be lifted into an [`IntValue<'ctx, W>`] operand
 /// for the IR builder.
 ///
@@ -565,30 +565,27 @@ use crate::value::IntValue;
 /// accepted. The `module` argument exists so Rust-scalar inputs can
 /// route through the right [`IntType<'ctx, W>`] constructor; impls
 /// for value handles ignore it.
-pub trait IntoIntValue<
-    'ctx,
-    W: IntWidth,
-    B: crate::module::ModuleBrand = crate::module::Brand<'ctx>,
->: Sized
-{
-    fn into_int_value(self, module: ModuleRef<'ctx>) -> IrResult<IntValue<'ctx, W, B>>;
+pub trait IntoIntValue<'ctx, W: IntWidth, B: ModuleBrand = Brand<'ctx>>: Sized {
+    fn into_int_value(self, module: ModuleRef<'ctx, B>) -> IrResult<IntValue<'ctx, W, B>>;
 }
 
 // ---- Identity ---------------------------------------------------------
-impl<'ctx, W: IntWidth> IntoIntValue<'ctx, W> for IntValue<'ctx, W> {
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B> for IntValue<'ctx, W, B> {
     #[inline]
-    fn into_int_value(self, _module: ModuleRef<'ctx>) -> IrResult<IntValue<'ctx, W>> {
+    fn into_int_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<IntValue<'ctx, W, B>> {
         Ok(self)
     }
 }
 
 // ---- ConstantIntValue lift -------------------------------------------
-impl<'ctx, W: IntWidth> IntoIntValue<'ctx, W> for ConstantIntValue<'ctx, W> {
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B>
+    for ConstantIntValue<'ctx, W, B>
+{
     #[inline]
-    fn into_int_value(self, _module: ModuleRef<'ctx>) -> IrResult<IntValue<'ctx, W>> {
-        Ok(IntValue::<W>::from_value_unchecked(
-            crate::value::IsValue::as_value(self),
-        ))
+    fn into_int_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<IntValue<'ctx, W, B>> {
+        Ok(IntValue::<W, B>::from_value_unchecked(IsValue::as_value(
+            self,
+        )))
     }
 }
 
@@ -603,39 +600,21 @@ impl<'ctx, W: IntWidth> IntoIntValue<'ctx, W> for ConstantIntValue<'ctx, W> {
 // concrete impl below fixes a distinct `Self` type, so no overlap.
 macro_rules! impl_into_int_value_via_try_from {
     ($source:ty, $($w:ty),+ $(,)?) => { $(
-        impl<'ctx> IntoIntValue<'ctx, $w> for $source {
+        impl<'ctx, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, $w, B> for $source {
             #[inline]
             fn into_int_value(
                 self,
-                _module: ModuleRef<'ctx>,
-            ) -> IrResult<IntValue<'ctx, $w>> {
-                IntValue::<'ctx, $w>::try_from(self)
+                _module: ModuleRef<'ctx, B>,
+            ) -> IrResult<IntValue<'ctx, $w, B>> {
+                IntValue::<'ctx, $w, B>::try_from(self)
             }
         }
     )+ };
 }
+impl_into_int_value_via_try_from!(Argument<'ctx, B>, bool, i8, i16, i32, i64, i128, IntDyn);
+impl_into_int_value_via_try_from!(Value<'ctx, B>, bool, i8, i16, i32, i64, i128, IntDyn);
 impl_into_int_value_via_try_from!(
-    crate::argument::Argument<'ctx>,
-    bool,
-    i8,
-    i16,
-    i32,
-    i64,
-    i128,
-    IntDyn
-);
-impl_into_int_value_via_try_from!(
-    crate::value::Value<'ctx>,
-    bool,
-    i8,
-    i16,
-    i32,
-    i64,
-    i128,
-    IntDyn
-);
-impl_into_int_value_via_try_from!(
-    crate::instruction::Instruction<'ctx>,
+    Instruction<'ctx, Attached, B>,
     bool,
     i8,
     i16,
@@ -654,12 +633,16 @@ impl_into_int_value_via_try_from!(
 // surface the underlying width-fit check via `IrResult`.
 macro_rules! impl_into_int_value_static {
     ($rust_ty:ty, $marker:ty, $ty_method:ident) => {
-        impl<'ctx> IntoIntValue<'ctx, $marker> for $rust_ty {
-            fn into_int_value(self, module: ModuleRef<'ctx>) -> IrResult<IntValue<'ctx, $marker>> {
-                let ty = module.module().$ty_method();
+        impl<'ctx, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, $marker, B> for $rust_ty {
+            fn into_int_value(
+                self,
+                module: ModuleRef<'ctx, B>,
+            ) -> IrResult<IntValue<'ctx, $marker, B>> {
+                let ty =
+                    IntType::<$marker, B>::new(module.module().$ty_method().as_type().id(), module);
                 match self.into_constant_int(ty) {
-                    Ok(c) => Ok(IntValue::<$marker>::from_value_unchecked(
-                        crate::value::IsValue::as_value(c),
+                    Ok(c) => Ok(IntValue::<$marker, B>::from_value_unchecked(
+                        IsValue::as_value(c),
                     )),
                     Err(_) => unreachable!(
                         "IntoConstantInt for static target is infallible per the trait impls"
@@ -727,7 +710,7 @@ pub trait StaticIntWidth: IntWidth {
     const STATIC_BITS: u32;
     /// Project the marker into the matching [`IntType`] from the
     /// caller's module.
-    fn ir_type<'ctx>(module: ModuleRef<'ctx>) -> IntType<'ctx, Self>
+    fn ir_type<'ctx, B: ModuleBrand + 'ctx>(module: ModuleRef<'ctx, B>) -> IntType<'ctx, Self, B>
     where
         Self: Sized;
 }
@@ -737,8 +720,10 @@ macro_rules! impl_static_int_width {
         impl StaticIntWidth for $ty {
             const STATIC_BITS: u32 = $bits;
             #[inline]
-            fn ir_type<'ctx>(module: ModuleRef<'ctx>) -> IntType<'ctx, Self> {
-                module.module().$method()
+            fn ir_type<'ctx, B: ModuleBrand + 'ctx>(
+                module: ModuleRef<'ctx, B>,
+            ) -> IntType<'ctx, Self, B> {
+                IntType::<Self, B>::new(module.module().$method().as_type().id(), module)
             }
         }
     };
@@ -756,8 +741,8 @@ impl_static_int_width!(i128, i128_type, 128);
 impl<const N: u32> StaticIntWidth for Width<N> {
     const STATIC_BITS: u32 = N;
     #[inline]
-    fn ir_type<'ctx>(module: ModuleRef<'ctx>) -> IntType<'ctx, Self> {
-        module.module().int_type_n::<N>()
+    fn ir_type<'ctx, B: ModuleBrand + 'ctx>(module: ModuleRef<'ctx, B>) -> IntType<'ctx, Self, B> {
+        IntType::<Self, B>::new(module.module().int_type_n::<N>().as_type().id(), module)
     }
 }
 
@@ -766,8 +751,13 @@ impl<const N: u32> StaticIntWidth for Width<N> {
 // is a compile error at the call site.
 macro_rules! impl_into_int_value_width {
     ($rust_ty:ty, $min_bits:literal) => {
-        impl<'ctx, const N: u32> IntoIntValue<'ctx, Width<N>> for $rust_ty {
-            fn into_int_value(self, module: ModuleRef<'ctx>) -> IrResult<IntValue<'ctx, Width<N>>> {
+        impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoIntValue<'ctx, Width<N>, B>
+            for $rust_ty
+        {
+            fn into_int_value(
+                self,
+                module: ModuleRef<'ctx, B>,
+            ) -> IrResult<IntValue<'ctx, Width<N>, B>> {
                 const {
                     assert!(
                         N >= $min_bits,
@@ -778,10 +768,13 @@ macro_rules! impl_into_int_value_width {
                         ),
                     );
                 }
-                let ty: IntType<'ctx, Width<N>> = module.module().int_type_n::<N>();
+                let ty: IntType<'ctx, Width<N>, B> = IntType::<Width<N>, B>::new(
+                    module.module().int_type_n::<N>().as_type().id(),
+                    module,
+                );
                 match self.into_constant_int(ty) {
-                    Ok(c) => Ok(IntValue::<Width<N>>::from_value_unchecked(
-                        crate::value::IsValue::as_value(c),
+                    Ok(c) => Ok(IntValue::<Width<N>, B>::from_value_unchecked(
+                        IsValue::as_value(c),
                     )),
                     Err(_) => unreachable!(
                         "IntoConstantInt for Width<N> with N >= min_bits is infallible"

@@ -9,23 +9,24 @@
 //! as the value type.
 //!
 //! Materialise a global through
-//! [`Module::add_global`](crate::Module::add_global) /
-//! [`Module::add_global_constant`](crate::Module::add_global_constant) /
-//! [`Module::global_builder`](crate::Module::global_builder).
+//! [`Module::add_global`](Module::add_global) /
+//! [`Module::add_global_constant`](Module::add_global_constant) /
+//! [`Module::global_builder`](Module::global_builder).
 
-use crate::DebugLoc;
-use crate::align::MaybeAlign;
-use crate::comdat::ComdatRef;
-use crate::constant::{Constant, IsConstant};
-use crate::derived_types::PointerType;
-use crate::error::{IrError, IrResult, ValueCategoryLabel};
-use crate::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
-use crate::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
-use crate::r#type::{Type, TypeId};
-use crate::unnamed_addr::UnnamedAddr;
-use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
+use super::DebugLoc;
+use super::align::MaybeAlign;
+use super::comdat::ComdatRef;
+use super::constant::{Constant, IsConstant};
+use super::derived_types::PointerType;
+use super::error::{IrError, IrResult, ValueCategoryLabel};
+use super::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
+use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::r#type::{Type, TypeId};
+use super::unnamed_addr::UnnamedAddr;
+use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
 
-use crate::metadata::MetadataAttachmentSet;
+use super::constants::ConstantIntValue;
+use super::metadata::MetadataAttachmentSet;
 use core::cell::{Cell, RefCell};
 
 // --------------------------------------------------------------------------
@@ -36,28 +37,28 @@ use core::cell::{Cell, RefCell};
 /// arena under `ValueKindData::GlobalVariable`. Mirrors the data
 /// portion of `class GlobalVariable` in `IR/GlobalVariable.h`.
 #[derive(Debug)]
-pub(crate) struct GlobalVariableData {
-    pub(crate) name: String,
+pub(super) struct GlobalVariableData {
+    pub(super) name: String,
     /// Type of the data the global holds (the *pointee* type). The
     /// outer [`crate::value::ValueData::ty`] is the *pointer* type
     /// (`ptr addrspace(N)`).
-    pub(crate) value_type: TypeId,
-    pub(crate) address_space: u32,
-    pub(crate) is_constant: bool,
-    pub(crate) externally_initialized: Cell<bool>,
-    pub(crate) initializer: Cell<Option<ValueId>>,
-    pub(crate) linkage: Cell<Linkage>,
-    pub(crate) visibility: Cell<Visibility>,
-    pub(crate) dll_storage_class: Cell<DllStorageClass>,
-    pub(crate) thread_local_mode: Cell<ThreadLocalMode>,
-    pub(crate) unnamed_addr: Cell<UnnamedAddr>,
-    pub(crate) align: Cell<MaybeAlign>,
-    pub(crate) section: RefCell<Option<String>>,
-    pub(crate) partition: RefCell<Option<String>>,
+    pub(super) value_type: TypeId,
+    pub(super) address_space: u32,
+    pub(super) is_constant: bool,
+    pub(super) externally_initialized: Cell<bool>,
+    pub(super) initializer: Cell<Option<ValueId>>,
+    pub(super) linkage: Cell<Linkage>,
+    pub(super) visibility: Cell<Visibility>,
+    pub(super) dll_storage_class: Cell<DllStorageClass>,
+    pub(super) thread_local_mode: Cell<ThreadLocalMode>,
+    pub(super) unnamed_addr: Cell<UnnamedAddr>,
+    pub(super) align: Cell<MaybeAlign>,
+    pub(super) section: RefCell<Option<String>>,
+    pub(super) partition: RefCell<Option<String>>,
     /// Comdat name (no leading `$`). The actual `ComdatData` lives in
     /// the owning module's comdat storage.
-    pub(crate) comdat: RefCell<Option<String>>,
-    pub(crate) metadata: RefCell<crate::metadata::MetadataAttachmentSet>,
+    pub(super) comdat: RefCell<Option<String>>,
+    pub(super) metadata: RefCell<MetadataAttachmentSet>,
 }
 
 // Construction goes through `GlobalBuilder::into_data`.
@@ -74,16 +75,16 @@ pub(crate) struct GlobalVariableData {
 /// of the stored data, and [`Self::initializer`] to read the
 /// initializer when one is present.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct GlobalVariable<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
-    pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx, B>,
+pub struct GlobalVariable<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
     /// Cached pointer type id (`ptr addrspace(N)`).
-    pub(crate) ty: TypeId,
+    pub(super) ty: TypeId,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     #[inline]
-    pub(crate) fn from_parts_unchecked<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_parts_unchecked<M>(id: ValueId, module: M, ty: TypeId) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -186,22 +187,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     pub fn try_delta_from(
         self,
         other: GlobalVariable<'ctx, B>,
-    ) -> IrResult<crate::ConstantIntValue<'ctx, i64, B>> {
-        if self.module != other.module {
-            return Err(IrError::ForeignValue);
-        }
+    ) -> IrResult<ConstantIntValue<'ctx, i64, B>> {
         let module = self.module.module();
         let i64_ty = module.i64_type().as_type().id();
         let id = module
             .context()
             .intern_constant_symbol_delta(i64_ty, self.id, other.id);
-        Ok(crate::ConstantIntValue::<i64, B>::from_parts_typed(
-            Constant {
-                id,
-                module: self.module,
-                ty: i64_ty,
-            },
-        ))
+        Ok(ConstantIntValue::<i64, B>::from_parts_typed(Constant {
+            id,
+            module: self.module,
+            ty: i64_ty,
+        }))
     }
 
     /// An `i64` constant equal to `(self_addr - other_addr) + addend`, printed
@@ -211,22 +207,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         self,
         other: GlobalVariable<'ctx, B>,
         addend: i64,
-    ) -> IrResult<crate::ConstantIntValue<'ctx, i64, B>> {
-        if self.module != other.module {
-            return Err(IrError::ForeignValue);
-        }
+    ) -> IrResult<ConstantIntValue<'ctx, i64, B>> {
         let module = self.module.module();
         let i64_ty = module.i64_type().as_type().id();
         let id = module
             .context()
             .intern_constant_symbol_delta_plus(i64_ty, self.id, other.id, addend);
-        Ok(crate::ConstantIntValue::<i64, B>::from_parts_typed(
-            Constant {
-                id,
-                module: self.module,
-                ty: i64_ty,
-            },
-        ))
+        Ok(ConstantIntValue::<i64, B>::from_parts_typed(Constant {
+            id,
+            module: self.module,
+            ty: i64_ty,
+        }))
     }
 
     fn data(self) -> &'ctx GlobalVariableData {
@@ -305,16 +296,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// Set the initializer. Mirrors
     /// `GlobalVariable::setInitializer`. Errors with
     /// [`IrError::TypeMismatch`] when the initializer's type does not
-    /// match the global's value type, with [`IrError::ForeignValue`]
-    /// when the constant belongs to a different module.
+    /// match the global's value type. Module provenance is enforced by `B`.
     pub fn set_initializer<C>(self, _module: &Module<'ctx, B, Unverified>, init: C) -> IrResult<()>
     where
         C: IsConstant<'ctx, B>,
     {
         let constant = init.as_constant();
-        if constant.module != self.module {
-            return Err(IrError::ForeignValue);
-        }
         if constant.ty != self.data().value_type {
             let value_ty = self.value_type();
             return Err(IrError::TypeMismatch {
@@ -472,22 +459,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         self.module.module().get_comdat::<B>(&name)
     }
 
-    /// Attach a comdat. The comdat must already exist in
-    /// the owning module (use
-    /// [`Module::get_or_insert_comdat`](crate::Module::get_or_insert_comdat)
-    /// to materialise one). Errors with
-    /// [`IrError::InvalidOperation`] if the comdat does not belong
-    /// to this module.
+    /// Attach a comdat. The comdat must already exist in the owning module
+    /// (use [`Module::get_or_insert_comdat`](crate::Module::get_or_insert_comdat)
+    /// to materialise one). The branded [`ComdatRef`] parameter statically
+    /// ties the comdat to the same module as this global.
     pub fn set_comdat(
         self,
         _module: &Module<'ctx, B, Unverified>,
         comdat: ComdatRef<'ctx, B>,
     ) -> IrResult<()> {
-        if comdat.module != self.module {
-            return Err(IrError::InvalidOperation {
-                message: "comdat does not belong to this module",
-            });
-        }
         *self.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
         Ok(())
     }
@@ -592,8 +572,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalVariable<'ct
 /// in `lib/IR/Globals.cpp`. Materialise via [`Self::build`].
 ///
 /// Constructed by
-/// [`Module::global_builder`](crate::Module::global_builder).
-pub struct GlobalBuilder<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+/// [`Module::global_builder`](Module::global_builder).
+pub struct GlobalBuilder<'ctx, B: ModuleBrand = Brand<'ctx>> {
     module: ModuleRef<'ctx, B>,
     name: String,
     value_type: TypeId,
@@ -614,7 +594,7 @@ pub struct GlobalBuilder<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
-    pub(crate) fn new<M>(module: M, name: impl Into<String>, value_type: Type<'ctx, B>) -> Self
+    pub(super) fn new<M>(module: M, name: impl Into<String>, value_type: Type<'ctx, B>) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -709,11 +689,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
         self
     }
 
-    /// Attach a comdat. Errors at build time if the comdat does not
-    /// belong to this module.
+    /// Attach a comdat. The branded [`ComdatRef`] parameter statically ties the
+    /// comdat to the builder's module.
     pub fn comdat(mut self, comdat: ComdatRef<'ctx, B>) -> Self {
-        // Defer the cross-module check to `build` so the builder
-        // remains infallible per call.
         self.comdat = Some(comdat.name().to_owned());
         self
     }
@@ -748,17 +726,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
                 got,
             });
         }
-        if let Some(name) = &self.comdat
-            && self.module.module().get_comdat::<B>(name).is_none()
-        {
-            return Err(IrError::InvalidOperation {
-                message: "comdat does not belong to this module",
-            });
-        }
         self.module.module().install_global_variable::<B>(self)
     }
 
-    pub(crate) fn into_data(self) -> (String, GlobalVariableData, Option<ValueId>, u32, TypeId) {
+    pub(super) fn into_data(self) -> (String, GlobalVariableData, Option<ValueId>, u32, TypeId) {
         let GlobalBuilder {
             module: _,
             name,
@@ -794,7 +765,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
             section: RefCell::new(section),
             partition: RefCell::new(partition),
             comdat: RefCell::new(comdat),
-            metadata: RefCell::new(crate::metadata::MetadataAttachmentSet::new()),
+            metadata: RefCell::new(MetadataAttachmentSet::new()),
         };
         (name, data, initializer, address_space, value_type)
     }

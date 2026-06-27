@@ -5,16 +5,16 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::basic_block::BasicBlock;
-use crate::block_state::BlockSealState;
-use crate::cfg::{BasicBlockEdge, FunctionCfg};
-use crate::function::FunctionValue;
-use crate::instruction::{Instruction, InstructionKindData, state};
-use crate::marker::{Dyn, ReturnMarker};
-use crate::module::ModuleBrand;
-use crate::pass_context::BasicBlockView;
-use crate::r#use::Use;
-use crate::value::{Value, ValueId, ValueKindData};
+use super::basic_block::BasicBlock;
+use super::block_state::BlockSealState;
+use super::cfg::{BasicBlockEdge, FunctionCfg};
+use super::function::FunctionValue;
+use super::instruction::{Instruction, InstructionKindData, state};
+use super::marker::{Dyn, ReturnMarker};
+use super::module::ModuleBrand;
+use super::pass_context::BasicBlockView;
+use super::r#use::Use;
+use super::value::{Value, ValueId, ValueKindData};
 
 /// Analysis marker for caching a [`DominatorTree`] in the new-pass-manager
 /// substrate. Its invalidation rule is wired in `analysis.rs`: preserved by
@@ -46,17 +46,19 @@ pub trait DominatorTreeBlock<'ctx>: dominator_block_sealed::Sealed {
     fn dominator_block_id(self) -> ValueId;
 }
 
-impl<'ctx, R, S> dominator_block_sealed::Sealed for BasicBlock<'ctx, R, S>
+impl<'ctx, R, S, B> dominator_block_sealed::Sealed for BasicBlock<'ctx, R, S, B>
 where
     R: ReturnMarker,
     S: BlockSealState,
+    B: ModuleBrand + 'ctx,
 {
 }
 
-impl<'ctx, R, S> DominatorTreeBlock<'ctx> for BasicBlock<'ctx, R, S>
+impl<'ctx, R, S, B> DominatorTreeBlock<'ctx> for BasicBlock<'ctx, R, S, B>
 where
     R: ReturnMarker,
     S: BlockSealState,
+    B: ModuleBrand + 'ctx,
 {
     #[inline]
     fn dominator_block_id(self) -> ValueId {
@@ -75,12 +77,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> DominatorTreeBlock<'ctx> for BasicBlockView<'c
 
 impl DominatorTree {
     /// Recompute dominance for `function`.
-    pub fn new<'ctx>(function: FunctionValue<'ctx, Dyn>) -> Self {
+    pub fn new<'ctx, B: ModuleBrand + 'ctx>(function: FunctionValue<'ctx, Dyn, B>) -> Self {
         compute(function)
     }
 
     /// Recalculate this tree for a function. Mirrors LLVM's `recalculate`.
-    pub fn recalculate<'ctx>(&mut self, function: FunctionValue<'ctx, Dyn>) {
+    pub fn recalculate<'ctx, B: ModuleBrand + 'ctx>(
+        &mut self,
+        function: FunctionValue<'ctx, Dyn, B>,
+    ) {
         *self = compute(function);
     }
 
@@ -187,7 +192,11 @@ impl DominatorTree {
 
     /// Whether `def` dominates this specific operand use. Non-instruction
     /// values (arguments, constants, globals, functions) dominate all uses.
-    pub fn dominates_use<'ctx>(&self, def: Value<'ctx>, use_edge: Use<'ctx>) -> bool {
+    pub fn dominates_use<'ctx, B: ModuleBrand + 'ctx>(
+        &self,
+        def: Value<'ctx, B>,
+        use_edge: Use<'ctx, B>,
+    ) -> bool {
         let Ok(def_inst) = Instruction::try_from(def) else {
             return true;
         };
@@ -220,8 +229,9 @@ impl DominatorTree {
     }
 
     /// Whether edge `edge` dominates all uses in `block`.
-    pub fn dominates_edge<'ctx, B>(&self, edge: BasicBlockEdge<'ctx>, block: B) -> bool
+    pub fn dominates_edge<'ctx, EB, B>(&self, edge: BasicBlockEdge<'ctx, EB>, block: B) -> bool
     where
+        EB: ModuleBrand + 'ctx,
         B: DominatorTreeBlock<'ctx>,
     {
         self.dominates_edge_ids(
@@ -232,10 +242,10 @@ impl DominatorTree {
     }
 
     /// Whether edge `edge` dominates this specific use.
-    pub fn dominates_edge_use<'ctx>(
+    pub fn dominates_edge_use<'ctx, EB: ModuleBrand + 'ctx, B: ModuleBrand + 'ctx>(
         &self,
-        edge: BasicBlockEdge<'ctx>,
-        use_edge: Use<'ctx>,
+        edge: BasicBlockEdge<'ctx, EB>,
+        use_edge: Use<'ctx, B>,
     ) -> bool {
         let Ok(user_inst) = Instruction::try_from(use_edge.user()) else {
             return true;
@@ -338,7 +348,7 @@ impl DominatorTree {
     }
 }
 
-fn compute<'ctx>(function: FunctionValue<'ctx, Dyn>) -> DominatorTree {
+fn compute<'ctx, B: ModuleBrand + 'ctx>(function: FunctionValue<'ctx, Dyn, B>) -> DominatorTree {
     let cfg = FunctionCfg::new(function);
     let reachable = compute_reachable(function, &cfg);
     let dominators = compute_dominators(function, &cfg, &reachable);
@@ -356,9 +366,9 @@ fn compute<'ctx>(function: FunctionValue<'ctx, Dyn>) -> DominatorTree {
     }
 }
 
-fn compute_reachable<'ctx>(
-    function: FunctionValue<'ctx, Dyn>,
-    cfg: &FunctionCfg<'ctx>,
+fn compute_reachable<'ctx, B: ModuleBrand + 'ctx>(
+    function: FunctionValue<'ctx, Dyn, B>,
+    cfg: &FunctionCfg<'ctx, B>,
 ) -> HashSet<ValueId> {
     let mut reachable = HashSet::new();
     let Some(entry) = function.entry_block() else {
@@ -379,9 +389,9 @@ fn compute_reachable<'ctx>(
     reachable
 }
 
-fn compute_dominators<'ctx>(
-    function: FunctionValue<'ctx, Dyn>,
-    cfg: &FunctionCfg<'ctx>,
+fn compute_dominators<'ctx, B: ModuleBrand + 'ctx>(
+    function: FunctionValue<'ctx, Dyn, B>,
+    cfg: &FunctionCfg<'ctx, B>,
     reachable: &HashSet<ValueId>,
 ) -> HashMap<ValueId, HashSet<ValueId>> {
     let Some(entry) = function.entry_block().map(|bb| bb.as_dyn()) else {
@@ -428,7 +438,9 @@ fn compute_dominators<'ctx>(
     doms
 }
 
-fn compute_predecessors<'ctx>(cfg: &FunctionCfg<'ctx>) -> HashMap<ValueId, Vec<ValueId>> {
+fn compute_predecessors<'ctx, B: ModuleBrand + 'ctx>(
+    cfg: &FunctionCfg<'ctx, B>,
+) -> HashMap<ValueId, Vec<ValueId>> {
     let mut predecessors: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
     for edge in cfg.edges() {
         predecessors
@@ -446,7 +458,9 @@ type InstructionMaps = (
     HashMap<ValueId, Vec<ValueId>>,
 );
 
-fn compute_instruction_maps<'ctx>(function: FunctionValue<'ctx, Dyn>) -> InstructionMaps {
+fn compute_instruction_maps<'ctx, B: ModuleBrand + 'ctx>(
+    function: FunctionValue<'ctx, Dyn, B>,
+) -> InstructionMaps {
     let mut parent = HashMap::new();
     let mut order = HashMap::new();
     let mut normal_dest = HashMap::new();

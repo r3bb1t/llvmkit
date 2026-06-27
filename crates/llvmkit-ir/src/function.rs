@@ -13,7 +13,7 @@
 //!
 //! - The function value lives at one value-arena entry.
 //! - Each parameter is its own value-arena entry (one argument-category
-//!   record per slot), so an `Argument<'ctx>` can be `Copy` and
+//!   record per slot), so an `Argument<'ctx, B>` can be `Copy` and
 //!   round-trip through the user/use machinery exactly like any other
 //!   value.
 //! - Basic blocks live in a `RefCell<Vec<ValueId>>` so the IRBuilder
@@ -32,37 +32,37 @@
 use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
 
-use crate::AttrIndex;
-use crate::DebugLoc;
-use crate::align::MaybeAlign;
-use crate::ap_float::ApFloatSemantics;
-use crate::argument::Argument;
-use crate::attributes::{AttrKind, Attribute, AttributeStorage, AttributeStored};
-use crate::basic_block::{BasicBlock, BasicBlockData};
-use crate::block_state::BlockSealState;
-use crate::calling_conv::CallingConv;
-use crate::comdat::ComdatRef;
-use crate::constant::{Constant, IsConstant};
-use crate::denormal_mode::DenormalMode;
-use crate::derived_types::FunctionType;
-use crate::derived_types::{FloatType, IntType};
-use crate::error::{IrError, IrResult};
-use crate::float_kind::FloatKind;
-use crate::global_value::{DllStorageClass, DsoLocality, Linkage, Visibility};
-use crate::int_width::IntWidth;
-use crate::marker::{Dyn, ReturnMarker};
-use crate::metadata::MetadataAttachmentSet;
-use crate::module::{
-    Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified, UseListOrderRecord,
+use super::AttrIndex;
+use super::DebugLoc;
+use super::align::MaybeAlign;
+use super::ap_float::ApFloatSemantics;
+use super::argument::Argument;
+use super::attributes::{AttrKind, Attribute, AttributeStorage, AttributeStored};
+use super::basic_block::{BasicBlock, BasicBlockData};
+use super::block_state::{BlockSealState, Unsealed};
+use super::calling_conv::CallingConv;
+use super::comdat::ComdatRef;
+use super::constant::{Constant, IsConstant};
+use super::denormal_mode::DenormalMode;
+use super::derived_types::FunctionType;
+use super::derived_types::{FloatType, IntType};
+use super::error::{IrError, IrResult, ValueCategoryLabel};
+use super::float_kind::FloatKind;
+use super::global_value::{DllStorageClass, DsoLocality, Linkage, Visibility};
+use super::int_width::IntWidth;
+use super::marker::{Dyn, ReturnMarker};
+use super::metadata::MetadataAttachmentSet;
+use super::module::{
+    Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified, UseListOrderRecord,
     validate_use_list_order_indexes,
 };
-use crate::pass_context::FunctionView;
-use crate::r#type::{Type, TypeData, TypeId};
-use crate::unnamed_addr::UnnamedAddr;
-use crate::value::{
+use super::pass_context::FunctionView;
+use super::r#type::{Type, TypeData, TypeId};
+use super::unnamed_addr::UnnamedAddr;
+use super::value::{
     HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueId, ValueKindData, sealed,
 };
-use crate::value_symbol_table::ValueSymbolTable;
+use super::value_symbol_table::ValueSymbolTable;
 
 // --------------------------------------------------------------------------
 // Storage payload
@@ -71,39 +71,39 @@ use crate::value_symbol_table::ValueSymbolTable;
 /// Lifetime-free payload stored under
 /// [`ValueKindData::Function`](crate::value::ValueKindData::Function).
 #[derive(Debug)]
-pub(crate) struct FunctionData {
-    pub(crate) name: String,
-    pub(crate) signature: TypeId,
-    pub(crate) linkage: RefCell<Linkage>,
-    pub(crate) visibility: RefCell<Visibility>,
-    pub(crate) dll_storage_class: RefCell<DllStorageClass>,
-    pub(crate) dso_locality: RefCell<DsoLocality>,
-    pub(crate) calling_conv: RefCell<CallingConv>,
-    pub(crate) unnamed_addr: RefCell<UnnamedAddr>,
-    pub(crate) address_space: RefCell<u32>,
-    pub(crate) section: RefCell<Option<String>>,
-    pub(crate) partition: RefCell<Option<String>>,
-    pub(crate) align: RefCell<MaybeAlign>,
-    pub(crate) gc: RefCell<Option<String>>,
-    pub(crate) prefix_data: Cell<Option<ValueId>>,
-    pub(crate) prologue_data: Cell<Option<ValueId>>,
-    pub(crate) personality_fn: Cell<Option<ValueId>>,
-    pub(crate) comdat: RefCell<Option<String>>,
+pub(super) struct FunctionData {
+    pub(super) name: String,
+    pub(super) signature: TypeId,
+    pub(super) linkage: RefCell<Linkage>,
+    pub(super) visibility: RefCell<Visibility>,
+    pub(super) dll_storage_class: RefCell<DllStorageClass>,
+    pub(super) dso_locality: RefCell<DsoLocality>,
+    pub(super) calling_conv: RefCell<CallingConv>,
+    pub(super) unnamed_addr: RefCell<UnnamedAddr>,
+    pub(super) address_space: RefCell<u32>,
+    pub(super) section: RefCell<Option<String>>,
+    pub(super) partition: RefCell<Option<String>>,
+    pub(super) align: RefCell<MaybeAlign>,
+    pub(super) gc: RefCell<Option<String>>,
+    pub(super) prefix_data: Cell<Option<ValueId>>,
+    pub(super) prologue_data: Cell<Option<ValueId>>,
+    pub(super) personality_fn: Cell<Option<ValueId>>,
+    pub(super) comdat: RefCell<Option<String>>,
     /// One value-id per parameter, in declaration order. Set once at
     /// function-creation time after every argument value-id is known;
     /// LLVM does not allow adding parameters in place afterwards, so
     /// this stays effectively immutable past the constructor.
-    pub(crate) args: RefCell<Box<[ValueId]>>,
-    pub(crate) basic_blocks: RefCell<Vec<ValueId>>,
-    pub(crate) attributes: RefCell<AttributeStorage>,
-    pub(crate) function_attr_groups: RefCell<Vec<u32>>,
-    pub(crate) use_list_orders: RefCell<Vec<UseListOrderRecord>>,
-    pub(crate) metadata: RefCell<crate::metadata::MetadataAttachmentSet>,
-    pub(crate) symbol_table: ValueSymbolTable,
+    pub(super) args: RefCell<Box<[ValueId]>>,
+    pub(super) basic_blocks: RefCell<Vec<ValueId>>,
+    pub(super) attributes: RefCell<AttributeStorage>,
+    pub(super) function_attr_groups: RefCell<Vec<u32>>,
+    pub(super) use_list_orders: RefCell<Vec<UseListOrderRecord>>,
+    pub(super) metadata: RefCell<MetadataAttachmentSet>,
+    pub(super) symbol_table: ValueSymbolTable,
 }
 
 impl FunctionData {
-    pub(crate) fn new(
+    pub(super) fn new(
         name: String,
         signature: TypeId,
         linkage: Linkage,
@@ -132,7 +132,7 @@ impl FunctionData {
             attributes: RefCell::new(AttributeStorage::new()),
             function_attr_groups: RefCell::new(Vec::new()),
             use_list_orders: RefCell::new(Vec::new()),
-            metadata: RefCell::new(crate::metadata::MetadataAttachmentSet::new()),
+            metadata: RefCell::new(MetadataAttachmentSet::new()),
             symbol_table: ValueSymbolTable::new(),
         }
     }
@@ -147,18 +147,14 @@ impl FunctionData {
 /// The `R: ReturnMarker` parameter encodes the return type at compile
 /// time (see [`crate::marker`]). Use [`FunctionValue::as_dyn`]
 /// to widen to the runtime-checked [`Dyn`] form.
-pub struct FunctionValue<
-    'ctx,
-    R: ReturnMarker,
-    B: crate::module::ModuleBrand = crate::module::Brand<'ctx>,
-> {
-    pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx, B>,
+pub struct FunctionValue<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
     /// Cached signature type id. The value's value-arena type is the
     /// pointer-to-function on real LLVM; here we cache the function-
     /// type id directly so `signature()` is a thin lookup.
-    pub(crate) signature: TypeId,
-    pub(crate) _r: PhantomData<R>,
+    pub(super) signature: TypeId,
+    pub(super) _r: PhantomData<R>,
 }
 
 // Manual derives — `derive` would propagate `R: Trait` bounds that
@@ -199,7 +195,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// function-creation paths hand these out, after they've
     /// validated that the signature's return type matches `R`.
     #[inline]
-    pub(crate) fn from_parts_unchecked<M>(id: ValueId, module: M) -> Self
+    pub(super) fn from_parts_unchecked<M>(id: ValueId, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -250,7 +246,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     /// Borrow the storage payload.
-    pub(crate) fn data(self) -> &'ctx FunctionData {
+    pub(super) fn data(self) -> &'ctx FunctionData {
         match &self.as_value().data().kind {
             ValueKindData::Function(f) => f,
             _ => unreachable!("FunctionValue handle invariant: kind is Function"),
@@ -501,9 +497,6 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         C: IsConstant<'ctx, B>,
     {
         let constant = data.as_constant();
-        if constant.module != self.module {
-            return Err(IrError::ForeignValue);
-        }
         Ok(constant.as_value().id)
     }
 
@@ -517,11 +510,6 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         _module: &Module<'ctx, B, Unverified>,
         comdat: ComdatRef<'ctx, B>,
     ) -> IrResult<()> {
-        if comdat.module != self.module {
-            return Err(IrError::InvalidOperation {
-                message: "comdat does not belong to this module",
-            });
-        }
         *self.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
         Ok(())
     }
@@ -574,7 +562,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         *self.data().attributes.borrow_mut() = attributes;
     }
 
-    pub(crate) fn function_attr_groups(self) -> Vec<u32> {
+    pub(super) fn function_attr_groups(self) -> Vec<u32> {
         self.data().function_attr_groups.borrow().clone()
     }
 
@@ -592,7 +580,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Key: Into<String>,
         ValueText: Into<String>,
     {
-        self.add_attribute(module, index, crate::Attribute::string(key, value));
+        self.add_attribute(
+            module,
+            index,
+            crate::Attribute::string_for_brand(key, value),
+        );
     }
 
     fn string_attribute_in_storage(storage: &AttributeStorage, key: &str) -> Option<String> {
@@ -673,7 +665,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     /// Parameter at slot `index`. Mirrors `Function::getArg`.
-    pub fn param(self, index: u32) -> IrResult<Argument<'ctx>> {
+    pub fn param(self, index: u32) -> IrResult<Argument<'ctx, B>> {
         let count = self.arg_count();
         let slot = usize::try_from(index)
             .unwrap_or_else(|_| unreachable!("u32 fits in usize on supported targets"));
@@ -692,7 +684,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             .id();
         Ok(Argument::from_parts(
             id,
-            self.module.module(),
+            self.module,
             arg_ty,
             self.id,
             index,
@@ -700,8 +692,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     /// Iterate the function parameters in declaration order.
-    pub fn params(self) -> impl ExactSizeIterator<Item = Argument<'ctx>> + 'ctx {
-        let module = self.module.module();
+    pub fn params(self) -> impl ExactSizeIterator<Item = Argument<'ctx, B>> + 'ctx {
+        let module = self.module;
         let parent = self.id;
         let signature = self.signature;
         let args: Box<[ValueId]> = self.data().args.borrow().clone();
@@ -730,7 +722,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         self,
         _module: &Module<'ctx, B, Unverified>,
         name: Name,
-    ) -> BasicBlock<'ctx, R>
+    ) -> BasicBlock<'ctx, R, Unsealed, B>
     where
         Name: Into<String>,
     {
@@ -747,7 +739,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         if !name.is_empty() {
             self.set_local_value_name(bb_id, Some(&name));
         }
-        BasicBlock::from_parts(bb_id, self.module.module(), label_ty)
+        BasicBlock::from_parts(bb_id, self.module, label_ty)
     }
 
     /// Move an already-attached basic block to the end of this function's
@@ -756,25 +748,29 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     pub fn move_basic_block_to_end<R2, S2>(
         self,
         module: &Module<'ctx, B, Unverified>,
-        block: BasicBlock<'ctx, R2, S2>,
+        block: BasicBlock<'ctx, R2, S2, B>,
     ) -> IrResult<()>
     where
         R2: ReturnMarker,
         S2: BlockSealState,
     {
-        if module.id() != self.module.module().id() || block.as_value().module().id() != module.id()
-        {
-            return Err(IrError::ForeignValue);
-        }
+        let _ = module;
         let ValueKindData::BasicBlock(data) = &block.as_value().data().kind else {
-            return Err(IrError::ForeignValue);
+            return Err(IrError::ValueCategoryMismatch {
+                expected: ValueCategoryLabel::BasicBlock,
+                got: block.as_value().category().into(),
+            });
         };
         if *data.parent.borrow() != Some(self.id) {
-            return Err(IrError::ForeignValue);
+            return Err(IrError::InvalidOperation {
+                message: "block does not belong to function",
+            });
         }
         let mut blocks = self.data().basic_blocks.borrow_mut();
         let Some(pos) = blocks.iter().position(|id| *id == block.as_value().id) else {
-            return Err(IrError::ForeignValue);
+            return Err(IrError::InvalidOperation {
+                message: "block does not belong to function",
+            });
         };
         let id = blocks.remove(pos);
         blocks.push(id);
@@ -782,12 +778,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     /// Iterate the basic blocks in insertion order.
-    pub fn basic_blocks(self) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, R>> + 'ctx {
+    pub fn basic_blocks(
+        self,
+    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, R, Unsealed, B>> + 'ctx {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
         let ids: Vec<ValueId> = self.data().basic_blocks.borrow().clone();
         ids.into_iter()
-            .map(move |id| BasicBlock::from_parts(id, module, label_ty))
+            .map(move |id| BasicBlock::from_parts(id, self.module, label_ty))
     }
 
     /// Append a function-local `uselistorder` record.
@@ -797,20 +795,20 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Ok(())
     }
 
-    pub(crate) fn use_list_orders(self) -> Vec<UseListOrderRecord> {
+    pub(super) fn use_list_orders(self) -> Vec<UseListOrderRecord> {
         self.data().use_list_orders.borrow().clone()
     }
 
-    pub fn entry_block(self) -> Option<BasicBlock<'ctx, R>> {
+    pub fn entry_block(self) -> Option<BasicBlock<'ctx, R, Unsealed, B>> {
         let id = *self.data().basic_blocks.borrow().first()?;
         let module = self.module.module();
         Some(BasicBlock::from_parts(
             id,
-            module,
+            self.module,
             module.label_type().as_type().id(),
         ))
     }
-    pub(crate) fn set_local_value_name(
+    pub(super) fn set_local_value_name(
         self,
         id: ValueId,
         requested: Option<&str>,
@@ -825,7 +823,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         final_name
     }
 
-    pub(crate) fn remove_local_value_name(self, id: ValueId) {
+    pub(super) fn remove_local_value_name(self, id: ValueId) {
         let value = self.module.module().context().value_data(id);
         if let Some(name) = value.name.borrow().as_deref() {
             self.data().symbol_table.remove_value_name(name, id);
@@ -889,8 +887,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 /// (the `RetTy` template parameter on the C++ IRBuilder enforces this
 /// at the type level; we do the same here for static markers, with
 /// a runtime fallback for [`Dyn`] / aggregate return types).
-pub(crate) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool {
-    use crate::marker::ExpectedRetKind;
+pub(super) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool {
+    use super::marker::ExpectedRetKind;
     match R::expected_kind() {
         ExpectedRetKind::Dyn => true,
         ExpectedRetKind::Void => matches!(ret, TypeData::Void),
@@ -977,7 +975,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for FunctionValue<'ctx
                 _r: PhantomData,
             }),
             _ => Err(IrError::ValueCategoryMismatch {
-                expected: crate::error::ValueCategoryLabel::Function,
+                expected: ValueCategoryLabel::Function,
                 got: v.category().into(),
             }),
         }
@@ -1007,10 +1005,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for FunctionValue<'ctx
 ///     .return_attribute(AttrKind::NoUndef)
 ///     .build()?;
 /// ```
-pub struct FunctionBuilder<'ctx, R: ReturnMarker> {
-    module: &'ctx ModuleCore,
+pub struct FunctionBuilder<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
+    module: ModuleRef<'ctx, B>,
     name: String,
-    signature: FunctionType<'ctx>,
+    signature: FunctionType<'ctx, B>,
     linkage: Linkage,
     visibility: Visibility,
     dll_storage_class: DllStorageClass,
@@ -1022,10 +1020,10 @@ pub struct FunctionBuilder<'ctx, R: ReturnMarker> {
     partition: Option<String>,
     align: MaybeAlign,
     gc: Option<String>,
-    prefix_data: Option<Constant<'ctx>>,
-    prologue_data: Option<Constant<'ctx>>,
-    personality_fn: Option<Constant<'ctx>>,
-    comdat: Option<ComdatRef<'ctx>>,
+    prefix_data: Option<Constant<'ctx, B>>,
+    prologue_data: Option<Constant<'ctx, B>>,
+    personality_fn: Option<Constant<'ctx, B>>,
+    comdat: Option<ComdatRef<'ctx, B>>,
     attributes: AttributeStorage,
     function_attr_groups: Vec<u32>,
     /// Pending `(slot, name)` pairs to apply after the function value
@@ -1034,13 +1032,13 @@ pub struct FunctionBuilder<'ctx, R: ReturnMarker> {
     _r: PhantomData<R>,
 }
 
-impl<'ctx, R: ReturnMarker> FunctionBuilder<'ctx, R> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     /// Crate-internal constructor; users start through
     /// [`Module::function_builder`].
-    pub(crate) fn new(
-        module: &'ctx ModuleCore,
+    pub(super) fn new(
+        module: ModuleRef<'ctx, B>,
         name: impl Into<String>,
-        signature: FunctionType<'ctx>,
+        signature: FunctionType<'ctx, B>,
     ) -> Self {
         Self {
             module,
@@ -1136,7 +1134,7 @@ impl<'ctx, R: ReturnMarker> FunctionBuilder<'ctx, R> {
     }
     pub fn prefix_data<C>(mut self, data: C) -> Self
     where
-        C: IsConstant<'ctx>,
+        C: IsConstant<'ctx, B>,
     {
         self.prefix_data = Some(data.as_constant());
         self
@@ -1144,7 +1142,7 @@ impl<'ctx, R: ReturnMarker> FunctionBuilder<'ctx, R> {
 
     pub fn prologue_data<C>(mut self, data: C) -> Self
     where
-        C: IsConstant<'ctx>,
+        C: IsConstant<'ctx, B>,
     {
         self.prologue_data = Some(data.as_constant());
         self
@@ -1152,18 +1150,18 @@ impl<'ctx, R: ReturnMarker> FunctionBuilder<'ctx, R> {
 
     pub fn personality_fn<C>(mut self, data: C) -> Self
     where
-        C: IsConstant<'ctx>,
+        C: IsConstant<'ctx, B>,
     {
         self.personality_fn = Some(data.as_constant());
         self
     }
 
-    pub fn comdat(mut self, comdat: ComdatRef<'ctx>) -> Self {
+    pub fn comdat(mut self, comdat: ComdatRef<'ctx, B>) -> Self {
         self.comdat = Some(comdat);
         self
     }
 
-    pub fn attribute(mut self, index: AttrIndex, attr: Attribute<'ctx>) -> Self {
+    pub fn attribute(mut self, index: AttrIndex, attr: Attribute<'ctx, B>) -> Self {
         self.attributes.add(index, attr);
         self
     }
@@ -1183,7 +1181,7 @@ impl<'ctx, R: ReturnMarker> FunctionBuilder<'ctx, R> {
     /// Convenience: add an enum-flavored attribute on the function's
     /// return slot. Mirrors `Function::addRetAttr(AttrKind)`.
     pub fn return_attribute(self, kind: AttrKind) -> Self {
-        let attr = crate::Attribute::enum_attr(kind)
+        let attr = crate::Attribute::enum_attr_for_brand(kind)
             .unwrap_or_else(|| unreachable!("return_attribute called with non-enum kind"));
         self.attribute(AttrIndex::Return, attr)
     }
@@ -1191,7 +1189,7 @@ impl<'ctx, R: ReturnMarker> FunctionBuilder<'ctx, R> {
     /// Convenience: add an enum-flavored attribute on parameter
     /// `slot`. Mirrors `Function::addParamAttr(slot, AttrKind)`.
     pub fn param_attribute(self, slot: u32, kind: AttrKind) -> Self {
-        let attr = crate::Attribute::enum_attr(kind)
+        let attr = crate::Attribute::enum_attr_for_brand(kind)
             .unwrap_or_else(|| unreachable!("param_attribute called with non-enum kind"));
         self.attribute(AttrIndex::Param(slot), attr)
     }
@@ -1211,10 +1209,12 @@ impl<'ctx, R: ReturnMarker> FunctionBuilder<'ctx, R> {
     ///
     /// Returns [`IrError::ReturnTypeMismatch`] if the signature's
     /// return type does not match the chosen [`ReturnMarker`].
-    pub fn build(self) -> IrResult<FunctionValue<'ctx, R>> {
-        let f = self
-            .module
-            .add_function::<R, _>(&self.name, self.signature, self.linkage)?;
+    pub fn build(self) -> IrResult<FunctionValue<'ctx, R, B>> {
+        let f = self.module.module().add_function::<B, R, _>(
+            &self.name,
+            self.signature,
+            self.linkage,
+        )?;
         *f.data().visibility.borrow_mut() = self.visibility;
         *f.data().dll_storage_class.borrow_mut() = self.dll_storage_class;
         *f.data().dso_locality.borrow_mut() = self.dso_locality;
@@ -1232,33 +1232,19 @@ impl<'ctx, R: ReturnMarker> FunctionBuilder<'ctx, R> {
             *f.data().gc.borrow_mut() = Some(gc);
         }
         if let Some(prefix_data) = self.prefix_data {
-            if prefix_data.module != f.module {
-                return Err(IrError::ForeignValue);
-            }
             f.data().prefix_data.set(Some(prefix_data.as_value().id));
         }
         if let Some(prologue_data) = self.prologue_data {
-            if prologue_data.module != f.module {
-                return Err(IrError::ForeignValue);
-            }
             f.data()
                 .prologue_data
                 .set(Some(prologue_data.as_value().id));
         }
         if let Some(personality_fn) = self.personality_fn {
-            if personality_fn.module != f.module {
-                return Err(IrError::ForeignValue);
-            }
             f.data()
                 .personality_fn
                 .set(Some(personality_fn.as_value().id));
         }
         if let Some(comdat) = self.comdat {
-            if comdat.module != f.module {
-                return Err(IrError::InvalidOperation {
-                    message: "comdat does not belong to this module",
-                });
-            }
             *f.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
         }
         *f.data().attributes.borrow_mut() = self.attributes;
@@ -1305,7 +1291,9 @@ impl<'ctx, K: FloatKind + ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ct
     }
 }
 
-impl<'ctx, R: ReturnMarker> core::fmt::Display for FunctionValue<'ctx, R> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> core::fmt::Display
+    for FunctionValue<'ctx, R, B>
+{
     /// Print the function definition as textual `.ll`.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         crate::asm_writer::fmt_function(f, self.as_dyn())

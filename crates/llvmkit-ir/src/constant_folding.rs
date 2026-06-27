@@ -5,12 +5,12 @@
 //! adds the folds that need `DataLayout`, denormal handling, or target-library
 //! availability.
 
-use crate::ap_float::{ApFloat, ApFloatSemantics, ApFloatSign};
-use crate::cmp_predicate::CmpPredicate;
-use crate::constant::{
+use super::ap_float::{ApFloat, ApFloatSemantics, ApFloatSign};
+use super::cmp_predicate::CmpPredicate;
+use super::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
 };
-use crate::constant_fold::{
+use super::constant_fold::{
     constant_fold_binary_instruction, constant_fold_cast_instruction,
     constant_fold_compare_instruction, constant_fold_extract_element_instruction,
     constant_fold_extract_value_instruction, constant_fold_get_element_ptr,
@@ -18,21 +18,21 @@ use crate::constant_fold::{
     constant_fold_select_instruction, constant_fold_shuffle_vector_instruction,
     constant_fold_unary_instruction, shufflevector_mask_from_constant,
 };
-use crate::constants::{ConstantFloatValue, ConstantIntValue};
-use crate::data_layout::DataLayout;
-use crate::denormal_mode::{DenormalMode, DenormalModeKind, DenormalModeSide};
-use crate::derived_types::{FloatType, IntType};
-use crate::float_kind::FloatDyn;
-use crate::global_variable::GlobalVariable;
-use crate::instr_types::{BinaryOpcode, CastOpcode, PhiData, UnaryOpcode};
-use crate::instruction::{Instruction, InstructionKindData, state};
-use crate::int_width::IntDyn;
-use crate::intrinsics::IntrinsicId;
-use crate::module::{Brand, ModuleBrand, ModuleRef, ModuleView};
-use crate::target_library_info::{LibFunc, TargetLibraryInfo};
-use crate::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData};
-use crate::value::{Value, ValueId, ValueKindData};
-use crate::{ApInt, Dyn, FunctionValue, IrError, IrResult};
+use super::constants::{ConstantFloatValue, ConstantIntValue};
+use super::data_layout::DataLayout;
+use super::denormal_mode::{DenormalMode, DenormalModeKind, DenormalModeSide};
+use super::derived_types::{FloatType, IntType};
+use super::float_kind::FloatDyn;
+use super::global_variable::GlobalVariable;
+use super::instr_types::{BinaryOpcode, CastOpcode, PhiData, UnaryOpcode};
+use super::instruction::{Instruction, InstructionKindData, state};
+use super::int_width::IntDyn;
+use super::intrinsics::IntrinsicId;
+use super::module::{Brand, ModuleBrand, ModuleRef, ModuleView};
+use super::target_library_info::{LibFunc, TargetLibraryInfo};
+use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData};
+use super::value::{Value, ValueId, ValueKindData};
+use super::{ApInt, Dyn, FunctionValue, IrError, IrResult};
 
 /// Whether folds that depend on host/libm floating-point determinism are allowed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -102,7 +102,7 @@ pub struct ConstantOffsetFromGlobal<'ctx, B: ModuleBrand = Brand<'ctx>> {
 
 impl<'ctx, B: ModuleBrand + 'ctx> ConstantOffsetFromGlobal<'ctx, B> {
     #[inline]
-    pub(crate) fn new(global: GlobalVariable<'ctx, B>, offset: ApInt) -> Self {
+    pub(super) fn new(global: GlobalVariable<'ctx, B>, offset: ApInt) -> Self {
         Self { global, offset }
     }
 
@@ -174,7 +174,6 @@ pub fn constant_fold_load_from_const_ptr<'ctx, B: ModuleBrand + 'ctx>(
     offset: ApInt,
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    ensure_type_same_module(pointer, ty)?;
     let Some(resolved) = constant_offset_from_global_with_offset(pointer, offset, dl) else {
         return Ok(None);
     };
@@ -195,7 +194,6 @@ pub fn constant_fold_load_from_const<'ctx, B: ModuleBrand + 'ctx>(
     offset: ApInt,
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    ensure_type_same_module(constant, ty)?;
     if offset.is_negative() {
         return Ok(None);
     }
@@ -240,7 +238,6 @@ pub fn constant_fold_load_from_uniform_value<'ctx, B: ModuleBrand + 'ctx>(
     ty: Type<'ctx, B>,
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    ensure_type_same_module(constant, ty)?;
     fold_uniform_constant_load(constant, ty, dl)
 }
 
@@ -252,8 +249,6 @@ pub fn constant_fold_cast_operand<'ctx, B: ModuleBrand + 'ctx>(
     dest_ty: Type<'ctx, B>,
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    ensure_type_same_module(operand, dest_ty)?;
-
     if let Some(folded) = constant_fold_cast_instruction(opcode, operand, dest_ty)? {
         return Ok(Some(folded));
     }
@@ -740,9 +735,7 @@ pub fn constant_fold_binary_intrinsic<'ctx, B: ModuleBrand + 'ctx>(
     ty: Type<'ctx, B>,
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    ensure_type_same_module(lhs, ty)?;
-    ensure_type_same_module(rhs, ty)?;
-    let _ = (intrinsic, dl);
+    let _ = (intrinsic, lhs, rhs, ty, dl);
     Ok(None)
 }
 
@@ -752,7 +745,6 @@ pub fn constant_fold_load_through_bitcast<'ctx, B: ModuleBrand + 'ctx>(
     dest_ty: Type<'ctx, B>,
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    ensure_type_same_module(constant, dest_ty)?;
     let mut current = Some(constant);
     while let Some(value) = current {
         if value.ty() == dest_ty {
@@ -790,7 +782,6 @@ pub fn lossless_inv_cast<'ctx, B: ModuleBrand + 'ctx>(
     cast_op: CastOpcode,
     dl: &DataLayout,
 ) -> IrResult<Option<(Constant<'ctx, B>, PreservedCastFlags)>> {
-    ensure_type_same_module(constant, inv_cast_to)?;
     match cast_op {
         CastOpcode::BitCast => {
             let Some(folded) =
@@ -1971,17 +1962,6 @@ fn constant_id_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>
     is_guaranteed_not_to_be_undef_or_poison(Constant::from_parts(Value::from_parts(
         id, module, data.ty,
     )))
-}
-
-fn ensure_type_same_module<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
-    ty: Type<'ctx, B>,
-) -> IrResult<()> {
-    if constant.as_value().module().id() == ty.module().id() {
-        Ok(())
-    } else {
-        Err(IrError::ForeignValue)
-    }
 }
 
 fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx> {

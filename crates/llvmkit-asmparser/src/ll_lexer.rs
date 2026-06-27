@@ -12,7 +12,7 @@
 use llvmkit_support::{Span, Spanned};
 
 use super::ll_token::{
-    FpLit, HexFpKind, IntLit, Keyword, NumBase, PrimitiveTy, QuotedNameKind, Sign, Token,
+    FpLit, HexFpKind, IntLit, Keyword, NumBase, Opcode, PrimitiveTy, QuotedNameKind, Sign, Token,
 };
 
 // ─── Implementation-detail submodules ─────────────────────────────────────────

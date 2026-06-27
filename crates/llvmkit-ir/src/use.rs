@@ -19,7 +19,8 @@
 //! intrusive list for compile-time, we can layer it back on without
 //! changing the public [`Use`] surface.
 
-use crate::value::Value;
+use super::module::{Brand, ModuleBrand};
+use super::value::Value;
 
 /// A read-only view of one operand-edge: "user `U` references value
 /// `V` at operand index `i`".
@@ -28,16 +29,16 @@ use crate::value::Value;
 /// The view is `Copy`; mutating the use-graph goes through `User`'s
 /// own (yet-to-land) editing methods.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Use<'ctx> {
-    user: Value<'ctx>,
-    operand: Value<'ctx>,
+pub struct Use<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    user: Value<'ctx, B>,
+    operand: Value<'ctx, B>,
     index: u32,
 }
 
-impl<'ctx> Use<'ctx> {
+impl<'ctx, B: ModuleBrand> Use<'ctx, B> {
     /// Crate-internal constructor.
     #[inline]
-    pub(crate) fn new(user: Value<'ctx>, operand: Value<'ctx>, index: u32) -> Self {
+    pub(super) fn new(user: Value<'ctx, B>, operand: Value<'ctx, B>, index: u32) -> Self {
         Self {
             user,
             operand,
@@ -47,13 +48,13 @@ impl<'ctx> Use<'ctx> {
 
     /// The using-side of the edge.
     #[inline]
-    pub fn user(self) -> Value<'ctx> {
+    pub fn user(self) -> Value<'ctx, B> {
         self.user
     }
 
     /// The operand value.
     #[inline]
-    pub fn operand(self) -> Value<'ctx> {
+    pub fn operand(self) -> Value<'ctx, B> {
         self.operand
     }
 

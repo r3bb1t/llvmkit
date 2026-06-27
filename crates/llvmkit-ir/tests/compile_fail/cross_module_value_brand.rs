@@ -1,3 +1,11 @@
+//! llvmkit-specific compile-fail (Doctrine D7), not a 1:1 LLVM test port.
+//!
+//! Closest upstream behaviour: `Verifier::visitGlobalValue` in
+//! `lib/IR/Verifier.cpp` rejects a global value referenced from a different
+//! module at runtime. llvmkit pushes the same cross-module provenance invariant
+//! into the Rust type system: values carrying one [`Module`] brand cannot be
+//! used as operands by an `IRBuilder` positioned in another branded module.
+
 use llvmkit_ir::{IRBuilder, Linkage, Module, Type};
 
 fn main() {

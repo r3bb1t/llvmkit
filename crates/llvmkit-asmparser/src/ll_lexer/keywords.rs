@@ -23,7 +23,7 @@
 //! `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/include/llvm/IR/Attributes.td`
 //! (LLVM 22.1.4). Replace with a build-time tablegen port in a future session.
 
-use super::super::ll_token::{Keyword, Opcode, PrimitiveTy, Token};
+use super::{Keyword, Opcode, PrimitiveTy, Token};
 
 /// Classify a non-numeric, non-DWARF, non-`iN` identifier as either a fixed
 /// keyword token or `None` (caller falls through to error or label handling).

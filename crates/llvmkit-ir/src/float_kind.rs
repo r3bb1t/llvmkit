@@ -21,7 +21,7 @@
 
 use core::fmt;
 
-use crate::r#type::sealed;
+use super::r#type::sealed;
 
 /// Sealed marker trait implemented by every IEEE-like float kind tag.
 pub trait FloatKind: sealed::Sealed + Copy + 'static + fmt::Debug {
@@ -133,10 +133,10 @@ decl_float_wider_than!(Fp128: Half, BFloat, f32, f64);
 // IntoConstantFloat: type-driven dispatch for FloatType::const_* lifts
 // --------------------------------------------------------------------------
 
-use crate::IrError;
-use crate::IrResult;
-use crate::constants::ConstantFloatValue;
-use crate::derived_types::FloatType;
+use super::IrError;
+use super::IrResult;
+use super::constants::ConstantFloatValue;
+use super::derived_types::FloatType;
 use core::convert::Infallible;
 
 /// Trait implemented by Rust scalar types that can be lifted to a
@@ -146,65 +146,65 @@ use core::convert::Infallible;
 /// `Error = Infallible` for the lossless cases (so `f32 -> f32` and
 /// `f32 -> f64` widening are infallible). `Error = IrError` for the
 /// kind-erased target.
-pub trait IntoConstantFloat<'ctx, K: FloatKind> {
+pub trait IntoConstantFloat<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>> {
     type Error;
     fn into_constant_float(
         self,
-        ty: FloatType<'ctx, K>,
-    ) -> Result<ConstantFloatValue<'ctx, K>, Self::Error>;
+        ty: FloatType<'ctx, K, B>,
+    ) -> Result<ConstantFloatValue<'ctx, K, B>, Self::Error>;
 }
 
 // f32 -> f32 (exact)
-impl<'ctx> IntoConstantFloat<'ctx, f32> for f32 {
+impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, f32, B> for f32 {
     type Error = Infallible;
     fn into_constant_float(
         self,
-        ty: FloatType<'ctx, f32>,
-    ) -> Result<ConstantFloatValue<'ctx, f32>, Infallible> {
+        ty: FloatType<'ctx, f32, B>,
+    ) -> Result<ConstantFloatValue<'ctx, f32, B>, Infallible> {
         Ok(ty.const_float(self))
     }
 }
 
 // f64 -> f64 (exact)
-impl<'ctx> IntoConstantFloat<'ctx, f64> for f64 {
+impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, f64, B> for f64 {
     type Error = Infallible;
     fn into_constant_float(
         self,
-        ty: FloatType<'ctx, f64>,
-    ) -> Result<ConstantFloatValue<'ctx, f64>, Infallible> {
+        ty: FloatType<'ctx, f64, B>,
+    ) -> Result<ConstantFloatValue<'ctx, f64, B>, Infallible> {
         Ok(ty.const_double(self))
     }
 }
 
 // f32 -> f64 (widen)
-impl<'ctx> IntoConstantFloat<'ctx, f64> for f32 {
+impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, f64, B> for f32 {
     type Error = Infallible;
     fn into_constant_float(
         self,
-        ty: FloatType<'ctx, f64>,
-    ) -> Result<ConstantFloatValue<'ctx, f64>, Infallible> {
+        ty: FloatType<'ctx, f64, B>,
+    ) -> Result<ConstantFloatValue<'ctx, f64, B>, Infallible> {
         Ok(ty.const_double(f64::from(self)))
     }
 }
 
 // f32 -> FloatDyn (kind-erased)
-impl<'ctx> IntoConstantFloat<'ctx, FloatDyn> for f32 {
+impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, FloatDyn, B> for f32 {
     type Error = IrError;
     fn into_constant_float(
         self,
-        ty: FloatType<'ctx, FloatDyn>,
-    ) -> IrResult<ConstantFloatValue<'ctx, FloatDyn>> {
+        ty: FloatType<'ctx, FloatDyn, B>,
+    ) -> IrResult<ConstantFloatValue<'ctx, FloatDyn, B>> {
         Ok(ty.const_from_bits(u128::from(self.to_bits())))
     }
 }
 
 // f64 -> FloatDyn (kind-erased)
-impl<'ctx> IntoConstantFloat<'ctx, FloatDyn> for f64 {
+impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, FloatDyn, B> for f64 {
     type Error = IrError;
     fn into_constant_float(
         self,
-        ty: FloatType<'ctx, FloatDyn>,
-    ) -> IrResult<ConstantFloatValue<'ctx, FloatDyn>> {
+        ty: FloatType<'ctx, FloatDyn, B>,
+    ) -> IrResult<ConstantFloatValue<'ctx, FloatDyn, B>> {
         Ok(ty.const_from_bits(u128::from(self.to_bits())))
     }
 }
@@ -213,34 +213,35 @@ impl<'ctx> IntoConstantFloat<'ctx, FloatDyn> for f64 {
 // IntoFloatValue: ergonomic operand input for the float IRBuilder
 // --------------------------------------------------------------------------
 
-use crate::module::ModuleRef;
-use crate::value::FloatValue;
+use super::argument::Argument;
+use super::instruction::{Instruction, state::Attached};
+use super::module::{Brand, ModuleBrand, ModuleRef};
+use super::value::{FloatValue, Value};
 
 /// Inputs that can be lifted into a [`FloatValue<'ctx, K>`] operand
 /// for the IR builder. Mirrors the int-side [`crate::IntoIntValue`]
 /// for the float family.
-pub trait IntoFloatValue<
-    'ctx,
-    K: FloatKind,
-    B: crate::module::ModuleBrand = crate::module::Brand<'ctx>,
->: Sized
-{
-    fn into_float_value(self, module: ModuleRef<'ctx>) -> IrResult<FloatValue<'ctx, K, B>>;
+pub trait IntoFloatValue<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>>: Sized {
+    fn into_float_value(self, module: ModuleRef<'ctx, B>) -> IrResult<FloatValue<'ctx, K, B>>;
 }
 
 // Identity
-impl<'ctx, K: FloatKind> IntoFloatValue<'ctx, K> for FloatValue<'ctx, K> {
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IntoFloatValue<'ctx, K, B>
+    for FloatValue<'ctx, K, B>
+{
     #[inline]
-    fn into_float_value(self, _module: ModuleRef<'ctx>) -> IrResult<FloatValue<'ctx, K>> {
+    fn into_float_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<FloatValue<'ctx, K, B>> {
         Ok(self)
     }
 }
 
 // ConstantFloatValue<K> -> FloatValue<K>
-impl<'ctx, K: FloatKind> IntoFloatValue<'ctx, K> for ConstantFloatValue<'ctx, K> {
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IntoFloatValue<'ctx, K, B>
+    for ConstantFloatValue<'ctx, K, B>
+{
     #[inline]
-    fn into_float_value(self, _module: ModuleRef<'ctx>) -> IrResult<FloatValue<'ctx, K>> {
-        Ok(FloatValue::<K>::from_value_unchecked(
+    fn into_float_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<FloatValue<'ctx, K, B>> {
+        Ok(FloatValue::<K, B>::from_value_unchecked(
             crate::value::IsValue::as_value(self),
         ))
     }
@@ -249,14 +250,17 @@ impl<'ctx, K: FloatKind> IntoFloatValue<'ctx, K> for ConstantFloatValue<'ctx, K>
 // Rust scalar -> FloatValue<K>
 macro_rules! impl_into_float_value_static {
     ($rust_ty:ty, $marker:ty, $ty_method:ident) => {
-        impl<'ctx> IntoFloatValue<'ctx, $marker> for $rust_ty {
+        impl<'ctx, B: ModuleBrand + 'ctx> IntoFloatValue<'ctx, $marker, B> for $rust_ty {
             fn into_float_value(
                 self,
-                module: ModuleRef<'ctx>,
-            ) -> IrResult<FloatValue<'ctx, $marker>> {
-                let ty = module.module().$ty_method();
+                module: ModuleRef<'ctx, B>,
+            ) -> IrResult<FloatValue<'ctx, $marker, B>> {
+                let ty = FloatType::<$marker, B>::new(
+                    module.module().$ty_method().as_type().id(),
+                    module,
+                );
                 match self.into_constant_float(ty) {
-                    Ok(c) => Ok(FloatValue::<$marker>::from_value_unchecked(
+                    Ok(c) => Ok(FloatValue::<$marker, B>::from_value_unchecked(
                         crate::value::IsValue::as_value(c),
                     )),
                     Err(_) => unreachable!(
@@ -274,19 +278,19 @@ impl_into_float_value_static!(f32, f64, f64_type);
 // Erased / heterogeneous handles narrow via TryFrom.
 macro_rules! impl_into_float_value_via_try_from {
     ($source:ty, $($k:ty),+ $(,)?) => { $(
-        impl<'ctx> IntoFloatValue<'ctx, $k> for $source {
+        impl<'ctx, B: ModuleBrand + 'ctx> IntoFloatValue<'ctx, $k, B> for $source {
             #[inline]
             fn into_float_value(
                 self,
-                _module: ModuleRef<'ctx>,
-            ) -> IrResult<FloatValue<'ctx, $k>> {
-                FloatValue::<'ctx, $k>::try_from(self)
+                _module: ModuleRef<'ctx, B>,
+            ) -> IrResult<FloatValue<'ctx, $k, B>> {
+                FloatValue::<'ctx, $k, B>::try_from(self)
             }
         }
     )+ };
 }
 impl_into_float_value_via_try_from!(
-    crate::argument::Argument<'ctx>,
+    Argument<'ctx, B>,
     f32,
     f64,
     Half,
@@ -297,7 +301,7 @@ impl_into_float_value_via_try_from!(
     FloatDyn,
 );
 impl_into_float_value_via_try_from!(
-    crate::value::Value<'ctx>,
+    Value<'ctx, B>,
     f32,
     f64,
     Half,
@@ -308,7 +312,7 @@ impl_into_float_value_via_try_from!(
     FloatDyn,
 );
 impl_into_float_value_via_try_from!(
-    crate::instruction::Instruction<'ctx>,
+    Instruction<'ctx, Attached, B>,
     f32,
     f64,
     Half,
@@ -339,7 +343,7 @@ pub trait StaticFloatKind: FloatKind {
     /// Usable as `K::STATIC_BITS` in `const { ... }` assertions.
     const STATIC_BITS: u32;
 
-    fn ir_type<'ctx>(module: ModuleRef<'ctx>) -> FloatType<'ctx, Self>
+    fn ir_type<'ctx, B: ModuleBrand + 'ctx>(module: ModuleRef<'ctx, B>) -> FloatType<'ctx, Self, B>
     where
         Self: Sized;
 }
@@ -349,8 +353,10 @@ macro_rules! impl_static_float_kind {
         impl StaticFloatKind for $ty {
             const STATIC_BITS: u32 = $bits;
             #[inline]
-            fn ir_type<'ctx>(module: ModuleRef<'ctx>) -> FloatType<'ctx, Self> {
-                module.module().$method()
+            fn ir_type<'ctx, B: ModuleBrand + 'ctx>(
+                module: ModuleRef<'ctx, B>,
+            ) -> FloatType<'ctx, Self, B> {
+                FloatType::<Self, B>::new(module.module().$method().as_type().id(), module)
             }
         }
     };

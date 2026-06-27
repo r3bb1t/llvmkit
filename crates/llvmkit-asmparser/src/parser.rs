@@ -9,15 +9,15 @@ use std::fs::read as read_file;
 use std::path::Path;
 use std::str::from_utf8;
 
-use llvmkit_ir::{Brand, Constant, Module, Type, Unverified};
+use llvmkit_ir::{Brand, Constant, Module, ModuleBrand, Type, Unverified};
 
-use crate::file_loc::{FileLoc, FileLocRange};
+use super::file_loc::{FileLoc, FileLocRange};
 
-use crate::asm_parser_context::AsmParserContext;
-use crate::ll_parser::{ParsedModule, Parser};
-use crate::module_summary::{self, ModuleSummaryIndex};
-use crate::parse_error::{ParseError, ParseResult};
-use crate::slot_mapping::SlotMapping;
+use super::asm_parser_context::AsmParserContext;
+use super::ll_parser::{ParsedModule, Parser};
+use super::module_summary::{self, ModuleSummaryIndex};
+use super::parse_error::{ParseError, ParseResult};
+use super::slot_mapping::SlotMapping;
 
 /// Parse a complete textual IR module from bytes under a fresh module brand.
 pub fn parse_assembly<R, S, F>(src: S, f: F) -> ParseResult<R>
@@ -108,11 +108,11 @@ where
 }
 
 /// Parse a single LLVM type and require end-of-input.
-pub fn parse_type<'ctx>(
+pub fn parse_type<'ctx, B: ModuleBrand + 'ctx>(
     src: &[u8],
-    module: &Module<'ctx, Brand<'ctx>, Unverified>,
-    slots: Option<&SlotMapping<'ctx>>,
-) -> ParseResult<Type<'ctx>> {
+    module: &Module<'ctx, B, Unverified>,
+    slots: Option<&SlotMapping<'ctx, B>>,
+) -> ParseResult<Type<'ctx, B>> {
     let parser = match slots {
         Some(slots) => Parser::with_slot_mapping(src, module, slots)?,
         None => Parser::new(src, module)?,
@@ -127,11 +127,11 @@ pub fn parse_type<'ctx>(
 }
 
 /// Parse one LLVM type prefix and report the number of consumed bytes.
-pub fn parse_type_at_beginning<'ctx>(
+pub fn parse_type_at_beginning<'ctx, B: ModuleBrand + 'ctx>(
     src: &[u8],
-    module: &Module<'ctx, Brand<'ctx>, Unverified>,
-    slots: Option<&SlotMapping<'ctx>>,
-) -> ParseResult<(Type<'ctx>, usize)> {
+    module: &Module<'ctx, B, Unverified>,
+    slots: Option<&SlotMapping<'ctx, B>>,
+) -> ParseResult<(Type<'ctx, B>, usize)> {
     let parser = match slots {
         Some(slots) => Parser::with_slot_mapping(src, module, slots)?,
         None => Parser::new(src, module)?,
@@ -140,12 +140,12 @@ pub fn parse_type_at_beginning<'ctx>(
 }
 
 /// Parse one constant value of the supplied LLVM type and require EOF.
-pub fn parse_constant_value<'ctx>(
+pub fn parse_constant_value<'ctx, B: ModuleBrand + 'ctx>(
     src: &[u8],
-    module: &Module<'ctx, Brand<'ctx>, Unverified>,
-    ty: Type<'ctx>,
-    slots: Option<&SlotMapping<'ctx>>,
-) -> ParseResult<Constant<'ctx>> {
+    module: &Module<'ctx, B, Unverified>,
+    ty: Type<'ctx, B>,
+    slots: Option<&SlotMapping<'ctx, B>>,
+) -> ParseResult<Constant<'ctx, B>> {
     let parser = match slots {
         Some(slots) => Parser::with_slot_mapping(src, module, slots)?,
         None => Parser::new(src, module)?,

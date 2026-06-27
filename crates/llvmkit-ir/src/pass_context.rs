@@ -6,25 +6,28 @@
 
 use core::marker::PhantomData;
 
-use crate::BasicBlock;
-use crate::IrResult;
-use crate::analysis::{
+use super::BasicBlock;
+use super::IrResult;
+use super::analysis::{
     FunctionAnalysis, FunctionAnalysisManager, ModuleAnalysis, ModuleAnalysisManager,
 };
-use crate::function::FunctionValue;
-use crate::marker::{Dyn, ReturnMarker};
-use crate::module::{Invariant, Module, ModuleBrand, ModuleRef, ModuleView, Unverified, Verified};
+use super::block_state::Unsealed;
+use super::function::FunctionValue;
+use super::marker::{Dyn, ReturnMarker};
+use super::module::{
+    Brand, Invariant, Module, ModuleBrand, ModuleRef, ModuleView, Unverified, Verified,
+};
 
 /// Read-only view of a basic block under its owning module brand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct BasicBlockView<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
-    block: BasicBlock<'ctx, Dyn>,
+pub struct BasicBlockView<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    block: BasicBlock<'ctx, Dyn, Unsealed, B>,
     _brand: Invariant<B>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
     #[inline]
-    pub(crate) fn new(block: BasicBlock<'ctx, Dyn>) -> Self {
+    pub(super) fn new(block: BasicBlock<'ctx, Dyn, Unsealed, B>) -> Self {
         Self {
             block,
             _brand: PhantomData,
@@ -33,7 +36,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
 
     /// Underlying basic-block handle.
     #[inline]
-    pub(crate) fn as_basic_block(self) -> BasicBlock<'ctx, Dyn> {
+    pub(super) fn as_basic_block(self) -> BasicBlock<'ctx, Dyn, Unsealed, B> {
         self.block
     }
 
@@ -68,19 +71,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
 
 /// Read-only view of a function under its owning module brand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct FunctionView<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+pub struct FunctionView<'ctx, B: ModuleBrand = Brand<'ctx>> {
     function: FunctionValue<'ctx, Dyn, B>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionView<'ctx, B> {
     #[inline]
-    pub(crate) fn new(function: FunctionValue<'ctx, Dyn, B>) -> Self {
+    pub(super) fn new(function: FunctionValue<'ctx, Dyn, B>) -> Self {
         Self { function }
     }
 
     /// Underlying typed function handle in erased-return form.
     #[inline]
-    pub(crate) fn as_function(self) -> FunctionValue<'ctx, Dyn, B> {
+    pub(super) fn as_function(self) -> FunctionValue<'ctx, Dyn, B> {
         self.function
     }
 
@@ -120,13 +123,13 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> From<FunctionValue<'ctx, R, B
 
 /// Mutation-capable view of one function body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct FunctionBody<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+pub struct FunctionBody<'ctx, B: ModuleBrand = Brand<'ctx>> {
     function: FunctionValue<'ctx, Dyn, B>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionBody<'ctx, B> {
     #[inline]
-    pub(crate) fn new(function: FunctionValue<'ctx, Dyn, B>) -> Self {
+    pub(super) fn new(function: FunctionValue<'ctx, Dyn, B>) -> Self {
         Self { function }
     }
 
@@ -150,25 +153,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionBody<'ctx, B> {
 
     /// Entry block if the function is a definition.
     #[inline]
-    pub fn entry_block(self) -> Option<BasicBlock<'ctx, Dyn>> {
+    pub fn entry_block(self) -> Option<BasicBlock<'ctx, Dyn, Unsealed, B>> {
         self.function.entry_block()
     }
 
     /// Basic blocks in insertion order.
     #[inline]
-    pub fn basic_blocks(self) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, Dyn>> + 'ctx {
+    pub fn basic_blocks(
+        self,
+    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, Dyn, Unsealed, B>> + 'ctx {
         self.function.basic_blocks()
     }
 }
 
 /// Iterator over read-only function views in module order.
-pub struct ModuleFunctionViews<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+pub struct ModuleFunctionViews<'ctx, B: ModuleBrand = Brand<'ctx>> {
     inner: Box<dyn ExactSizeIterator<Item = FunctionView<'ctx, B>> + 'ctx>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> ModuleFunctionViews<'ctx, B> {
     #[inline]
-    pub(crate) fn new(module: ModuleView<'ctx, B>) -> Self {
+    pub(super) fn new(module: ModuleView<'ctx, B>) -> Self {
         Self {
             inner: Box::new(module.iter_functions()),
         }
@@ -196,7 +201,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ExactSizeIterator for ModuleFunctionViews<'ctx
 }
 
 /// Context passed to a read-only function pass.
-pub struct ReadOnlyFunctionPassContext<'pm, 'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+pub struct ReadOnlyFunctionPassContext<'pm, 'ctx, B: ModuleBrand = Brand<'ctx>> {
     function: FunctionView<'ctx, B>,
     mam: Option<&'pm ModuleAnalysisManager<'ctx, B>>,
     fam: &'pm mut FunctionAnalysisManager<'ctx, B>,
@@ -204,7 +209,7 @@ pub struct ReadOnlyFunctionPassContext<'pm, 'ctx, B: ModuleBrand = crate::module
 
 impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ReadOnlyFunctionPassContext<'pm, 'ctx, B> {
     #[inline]
-    pub(crate) fn new(
+    pub(super) fn new(
         function: FunctionView<'ctx, B>,
         mam: Option<&'pm ModuleAnalysisManager<'ctx, B>>,
         fam: &'pm mut FunctionAnalysisManager<'ctx, B>,
@@ -252,7 +257,7 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ReadOnlyFunctionPassContext<'pm, 'ctx, B>
     }
 
     #[inline]
-    pub(crate) fn function_analysis_manager_mut(
+    pub(super) fn function_analysis_manager_mut(
         &mut self,
     ) -> &mut FunctionAnalysisManager<'ctx, B> {
         self.fam
@@ -260,7 +265,7 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ReadOnlyFunctionPassContext<'pm, 'ctx, B>
 }
 
 /// Context passed to a transform-capable function pass.
-pub struct FunctionPassContext<'pm, 'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+pub struct FunctionPassContext<'pm, 'ctx, B: ModuleBrand = Brand<'ctx>> {
     module: &'pm Module<'ctx, B, Unverified>,
     function: FunctionView<'ctx, B>,
     mam: Option<&'pm ModuleAnalysisManager<'ctx, B>>,
@@ -269,7 +274,7 @@ pub struct FunctionPassContext<'pm, 'ctx, B: ModuleBrand = crate::module::Brand<
 
 impl<'pm, 'ctx, B: ModuleBrand + 'ctx> FunctionPassContext<'pm, 'ctx, B> {
     #[inline]
-    pub(crate) fn new(
+    pub(super) fn new(
         module: &'pm Module<'ctx, B, Unverified>,
         function: FunctionView<'ctx, B>,
         mam: Option<&'pm ModuleAnalysisManager<'ctx, B>>,
@@ -342,7 +347,7 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> FunctionPassContext<'pm, 'ctx, B> {
 }
 
 /// Context passed to a read-only module pass.
-pub struct ReadOnlyModulePassContext<'pm, 'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+pub struct ReadOnlyModulePassContext<'pm, 'ctx, B: ModuleBrand = Brand<'ctx>> {
     module: &'pm Module<'ctx, B, Verified>,
     mam: &'pm mut ModuleAnalysisManager<'ctx, B>,
     fam: &'pm mut FunctionAnalysisManager<'ctx, B>,
@@ -350,7 +355,7 @@ pub struct ReadOnlyModulePassContext<'pm, 'ctx, B: ModuleBrand = crate::module::
 
 impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ReadOnlyModulePassContext<'pm, 'ctx, B> {
     #[inline]
-    pub(crate) fn new(
+    pub(super) fn new(
         module: &'pm Module<'ctx, B, Verified>,
         mam: &'pm mut ModuleAnalysisManager<'ctx, B>,
         fam: &'pm mut FunctionAnalysisManager<'ctx, B>,
@@ -401,19 +406,19 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ReadOnlyModulePassContext<'pm, 'ctx, B> {
     }
 
     #[inline]
-    pub(crate) fn module_analysis_manager_mut(&mut self) -> &mut ModuleAnalysisManager<'ctx, B> {
+    pub(super) fn module_analysis_manager_mut(&mut self) -> &mut ModuleAnalysisManager<'ctx, B> {
         self.mam
     }
 
     #[inline]
-    pub(crate) fn function_analysis_manager_mut(
+    pub(super) fn function_analysis_manager_mut(
         &mut self,
     ) -> &mut FunctionAnalysisManager<'ctx, B> {
         self.fam
     }
 
     #[inline]
-    pub(crate) fn analysis_managers_for_function_passes(
+    pub(super) fn analysis_managers_for_function_passes(
         &mut self,
     ) -> (
         &ModuleAnalysisManager<'ctx, B>,
@@ -424,7 +429,7 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ReadOnlyModulePassContext<'pm, 'ctx, B> {
 }
 
 /// Context passed to a transform-capable module pass.
-pub struct ModulePassContext<'pm, 'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+pub struct ModulePassContext<'pm, 'ctx, B: ModuleBrand = Brand<'ctx>> {
     module: Module<'ctx, B, Unverified>,
     mam: &'pm mut ModuleAnalysisManager<'ctx, B>,
     fam: &'pm mut FunctionAnalysisManager<'ctx, B>,
@@ -432,7 +437,7 @@ pub struct ModulePassContext<'pm, 'ctx, B: ModuleBrand = crate::module::Brand<'c
 
 impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ModulePassContext<'pm, 'ctx, B> {
     #[inline]
-    pub(crate) fn new(
+    pub(super) fn new(
         module: Module<'ctx, B, Unverified>,
         mam: &'pm mut ModuleAnalysisManager<'ctx, B>,
         fam: &'pm mut FunctionAnalysisManager<'ctx, B>,
@@ -480,19 +485,19 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ModulePassContext<'pm, 'ctx, B> {
     }
 
     #[inline]
-    pub(crate) fn module_analysis_manager_mut(&mut self) -> &mut ModuleAnalysisManager<'ctx, B> {
+    pub(super) fn module_analysis_manager_mut(&mut self) -> &mut ModuleAnalysisManager<'ctx, B> {
         self.mam
     }
 
     #[inline]
-    pub(crate) fn function_analysis_manager_mut(
+    pub(super) fn function_analysis_manager_mut(
         &mut self,
     ) -> &mut FunctionAnalysisManager<'ctx, B> {
         self.fam
     }
 
     #[inline]
-    pub(crate) fn module_and_analysis_managers_for_function_passes(
+    pub(super) fn module_and_analysis_managers_for_function_passes(
         &mut self,
     ) -> (
         &Module<'ctx, B, Unverified>,
@@ -503,7 +508,7 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ModulePassContext<'pm, 'ctx, B> {
     }
 
     #[inline]
-    pub(crate) fn finish(self) -> Module<'ctx, B, Unverified> {
+    pub(super) fn finish(self) -> Module<'ctx, B, Unverified> {
         self.module
     }
 }

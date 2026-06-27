@@ -21,7 +21,6 @@ enum FolderReturn<'ctx> {
         has_nsw: bool,
         value: Value<'ctx>,
     },
-    ForeignError,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -34,7 +33,6 @@ impl<'ctx> ReturningFolder<'ctx> {
         match self.result {
             FolderReturn::Value(value) => Ok(Some(value)),
             FolderReturn::NoWrapCall { .. } => Ok(None),
-            FolderReturn::ForeignError => Err(IrError::ForeignValue),
         }
     }
 }
@@ -542,33 +540,6 @@ fn custom_folder_wrong_type_is_rejected() -> Result<(), IrError> {
             .expect_err("wrong-type folded value is rejected");
 
         assert!(matches!(err, IrError::TypeMismatch { .. }));
-        assert_eq!(entry.instructions().len(), 0);
-        Ok(())
-    })
-}
-
-/// `llvmkit-specific subset` of `IRBuilderFolder.h`: custom folder foreign-value
-/// failures must propagate to the caller without materializing an instruction.
-#[test]
-fn custom_folder_foreign_value_is_rejected() -> Result<(), IrError> {
-    Module::with_new("folder-foreign-value", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(
-            &m,
-            ReturningFolder {
-                result: FolderReturn::ForeignError,
-            },
-        )
-        .position_at_end(entry);
-
-        let err = b
-            .build_int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "sum")
-            .expect_err("foreign folded value is rejected");
-
-        assert_eq!(err, IrError::ForeignValue);
         assert_eq!(entry.instructions().len(), 0);
         Ok(())
     })

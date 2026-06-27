@@ -45,8 +45,8 @@
 //! ```
 
 use llvmkit_ir::{
-    AtomicOrdering, AtomicRMWBinOp, AtomicRMWConfig, Brand, IRBuilder, IntValue, IrError, Linkage,
-    Module, PointerValue, SyncScope, Unverified,
+    AtomicOrdering, AtomicRMWBinOp, AtomicRMWConfig, IRBuilder, IntValue, IrError, Linkage, Module,
+    PointerValue, SyncScope,
 };
 
 pub fn main() -> Result<(), IrError> {
@@ -74,7 +74,7 @@ pub fn main() -> Result<(), IrError> {
 ///    returns the old value.
 /// 3. `fence acquire` --- ensures subsequent reads observe other
 ///    threads' releases.
-pub fn build_atomic_inc<'ctx>(m: &Module<'ctx, Brand<'ctx>, Unverified>) -> Result<(), IrError> {
+pub fn build_atomic_inc<'ctx>(m: &Module<'ctx>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
     let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
@@ -110,7 +110,7 @@ pub fn build_atomic_inc<'ctx>(m: &Module<'ctx, Brand<'ctx>, Unverified>) -> Resu
 /// `Open` / `Closed` typestate on `SwitchInst`: cases are added
 /// through the chainable `add_case` API and the case list is sealed
 /// with `finish()`.
-pub fn build_dispatch<'ctx>(m: &Module<'ctx, Brand<'ctx>, Unverified>) -> Result<(), IrError> {
+pub fn build_dispatch<'ctx>(m: &Module<'ctx>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(
         i32_ty,

@@ -5,8 +5,9 @@
 use std::collections::HashMap;
 
 use llvmkit_ir::{
-    FunctionAnalysisManager, FunctionPass, FunctionPassContext, FunctionPassManager, IRBuilder,
-    IntValue, IrResult, Linkage, Module, ModuleAnalysisManager, ModulePass, ModulePassContext,
+    AttrIndex, AttrKind, Attribute, AttributeStorage, FunctionAnalysisManager, FunctionPass,
+    FunctionPassContext, FunctionPassManager, FunctionValue, IRBuilder, IntValue, IrResult,
+    Linkage, Module, ModuleAnalysisManager, ModuleBrand, ModulePass, ModulePassContext,
     ModulePassManager, ModuleToFunctionPassAdaptor, MutatesIr, PreservedAnalyses,
     PreservesVerification, ReadOnlyModulePass, ReadOnlyModulePassContext, Type, Unverified, Value,
     Verified,
@@ -133,4 +134,43 @@ fn transform_function_adaptor_returns_unverified() -> IrResult<()> {
         assert!(format!("{reverified}").contains("define internal void @f()"));
         Ok(())
     })
+}
+
+fn format_generic_function<'ctx, B: ModuleBrand + 'ctx>(
+    function: FunctionValue<'ctx, (), B>,
+) -> String {
+    format!("{function}")
+}
+
+/// `llvmkit-specific D7`: formatting a function handle preserves a caller's
+/// module brand instead of requiring the default `Brand<'ctx>`.
+#[test]
+fn generic_function_display_preserves_brand() -> IrResult<()> {
+    Module::with_new::<_, _, _>("function-display-brand", |module| {
+        let void_ty = module.void_type();
+        let fn_ty = module.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
+        let function = module.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let entry = function.append_basic_block(&module, "entry");
+        IRBuilder::new_for::<()>(&module)
+            .position_at_end(entry)
+            .build_ret_void();
+        assert!(format_generic_function(function).contains("define void @f()"));
+        Ok(())
+    })
+}
+
+/// `llvmkit-specific D7`: brandless attribute constructors stay ergonomic for
+/// ordinary default-branded module code.
+#[test]
+fn brandless_attribute_constructors_infer_default_brand() {
+    let mut storage = AttributeStorage::new();
+    storage.add(
+        AttrIndex::Function,
+        Attribute::enum_attr(AttrKind::NoReturn).expect("enum attr"),
+    );
+    storage.add(
+        AttrIndex::Function,
+        Attribute::string("target-features", "+sse2"),
+    );
+    assert!(!storage.is_empty());
 }

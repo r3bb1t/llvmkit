@@ -131,6 +131,17 @@ fn build() -> Result<(), IrError> {
 }
 ```
 
+### Same-module safety
+
+`Module::with_new` gives every module construction session a fresh compile-time
+brand. Normal code does not name that brand: values, constants, basic blocks,
+globals, and builders infer it from the `Module` or type receiver used to
+create them. Builder and mutation APIs therefore reject cross-module operands at
+compile time instead of returning a runtime "foreign value" error. Generic
+extension code may name `B: ModuleBrand` explicitly when it needs to accept any
+module brand; ordinary examples should stay inside the `with_new` closure and
+let the receiver drive inference.
+
 Run the examples:
 
 ```bash
@@ -287,9 +298,10 @@ surface; cite them by id (`D1`-`D11`) in reviews and commit messages.
   updates live in one exhaustive place per construction / mutation primitive.
 - **D6. Aggregate types preserve element shape.** Aggregate typing is modeled
   directly rather than flattened into weak runtime predicates.
-- **D7. Cross-module mixing is rejected.** Handles carry a generative module
-  brand plus the owning `ModuleRef`, so values from one `Module::with_new`
-  closure cannot be used with another module's builders.
+- **D7. Cross-module mixing is rejected.** Public construction and mutation
+  APIs carry a generative module brand, so values from one `Module::with_new`
+  closure cannot be passed to another module's builders or mutators. This is a
+  type error, not a runtime same-module check.
 - **D8. Verified guarantees are explicit.** Verification consumes an
   unverified token and produces `Module<'ctx, B, Verified>`. Read-only pass
   managers preserve that verified state at the type level; transform managers

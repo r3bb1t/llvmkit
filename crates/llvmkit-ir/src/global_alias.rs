@@ -2,42 +2,42 @@
 
 use core::cell::{Cell, RefCell};
 
-use crate::DebugLoc;
-use crate::constant::{Constant, IsConstant};
-use crate::derived_types::PointerType;
-use crate::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
-use crate::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
-use crate::metadata::MetadataAttachmentSet;
-use crate::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
-use crate::r#type::{Type, TypeId, TypeKind};
-use crate::unnamed_addr::UnnamedAddr;
-use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
+use super::DebugLoc;
+use super::constant::{Constant, IsConstant};
+use super::derived_types::PointerType;
+use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
+use super::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
+use super::metadata::MetadataAttachmentSet;
+use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::r#type::{Type, TypeId, TypeKind};
+use super::unnamed_addr::UnnamedAddr;
+use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
 
 #[derive(Debug)]
-pub(crate) struct GlobalAliasData {
-    pub(crate) name: String,
-    pub(crate) value_type: TypeId,
-    pub(crate) address_space: u32,
-    pub(crate) aliasee: Cell<ValueId>,
-    pub(crate) linkage: Cell<Linkage>,
-    pub(crate) visibility: Cell<Visibility>,
-    pub(crate) dll_storage_class: Cell<DllStorageClass>,
-    pub(crate) thread_local_mode: Cell<ThreadLocalMode>,
-    pub(crate) unnamed_addr: Cell<UnnamedAddr>,
-    pub(crate) partition: RefCell<Option<String>>,
-    pub(crate) metadata: RefCell<crate::metadata::MetadataAttachmentSet>,
+pub(super) struct GlobalAliasData {
+    pub(super) name: String,
+    pub(super) value_type: TypeId,
+    pub(super) address_space: u32,
+    pub(super) aliasee: Cell<ValueId>,
+    pub(super) linkage: Cell<Linkage>,
+    pub(super) visibility: Cell<Visibility>,
+    pub(super) dll_storage_class: Cell<DllStorageClass>,
+    pub(super) thread_local_mode: Cell<ThreadLocalMode>,
+    pub(super) unnamed_addr: Cell<UnnamedAddr>,
+    pub(super) partition: RefCell<Option<String>>,
+    pub(super) metadata: RefCell<MetadataAttachmentSet>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct GlobalAlias<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
-    pub(crate) id: ValueId,
-    pub(crate) module: ModuleRef<'ctx, B>,
-    pub(crate) ty: TypeId,
+pub struct GlobalAlias<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) ty: TypeId,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     #[inline]
-    pub(crate) fn from_parts_unchecked<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_parts_unchecked<M>(id: ValueId, module: M, ty: TypeId) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -119,9 +119,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
         aliasee: C,
     ) -> IrResult<()> {
         let constant = aliasee.as_constant();
-        if constant.module != self.module {
-            return Err(IrError::ForeignValue);
-        }
         let Some(addr_space) = pointer_address_space(constant.ty()) else {
             return Err(IrError::TypeMismatch {
                 expected: TypeKindLabel::Pointer,
@@ -292,7 +289,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalAlias<'ctx, 
     }
 }
 
-pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand = Brand<'ctx>> {
     module: ModuleRef<'ctx, B>,
     name: String,
     value_type: TypeId,
@@ -308,7 +305,7 @@ pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>>
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
-    pub(crate) fn new<M, C>(
+    pub(super) fn new<M, C>(
         module: M,
         name: impl Into<String>,
         value_type: Type<'ctx, B>,
@@ -393,7 +390,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
         self.module.module().install_global_alias::<B>(self)
     }
 
-    pub(crate) fn into_data(self) -> (String, GlobalAliasData, u32) {
+    pub(super) fn into_data(self) -> (String, GlobalAliasData, u32) {
         let GlobalAliasBuilder {
             module: _,
             name,
@@ -419,7 +416,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
             thread_local_mode: Cell::new(thread_local_mode),
             unnamed_addr: Cell::new(unnamed_addr),
             partition: RefCell::new(partition),
-            metadata: RefCell::new(crate::metadata::MetadataAttachmentSet::new()),
+            metadata: RefCell::new(MetadataAttachmentSet::new()),
         };
         (name, data, address_space)
     }

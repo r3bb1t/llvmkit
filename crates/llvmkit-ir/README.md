@@ -16,6 +16,14 @@ pipelines preserve `Module<Verified>`, while transform pipelines return
 use branded `Module` tokens and gate saved-handle mutators on
 `&Module<Unverified>`.
 
+Every `Module::with_new` session carries a fresh compile-time module brand.
+Normal users do not write that brand: builder, type, constant, global, and block
+APIs infer it from the `Module` or type receiver. Cross-module operands are
+therefore rejected by Rust's type checker instead of by a runtime "foreign
+value" error. Advanced extension APIs, such as generic pass or folder helpers,
+may name `B: ModuleBrand` when they intentionally abstract over any module
+brand.
+
 Use the umbrella `llvmkit` crate when you want one dependency that also exposes
 the textual IR parser and shared support utilities.
 

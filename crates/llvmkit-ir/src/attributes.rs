@@ -21,8 +21,9 @@
 
 use std::fmt;
 
-use crate::ApInt;
-use crate::r#type::{Type, TypeId, TypeKind};
+use super::ApInt;
+use super::module::{Brand, ModuleBrand};
+use super::r#type::{Type, TypeId, TypeKind};
 
 // --------------------------------------------------------------------------
 // AttrKind
@@ -277,16 +278,16 @@ impl fmt::Display for AttrKind {
 /// kinds at runtime; in practice consumers should use the convenience
 /// builders instead of constructing variants directly.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Attribute<'ctx> {
+pub enum Attribute<'ctx, B: ModuleBrand = Brand<'ctx>> {
     /// Flag-only attribute (`AlwaysInline`, `NoReturn`, ...).
     Enum(AttrKind),
     /// Integer-valued attribute (`align(8)`, `dereferenceable(N)`, ...).
     Int(AttrKind, u64),
     /// Type-valued attribute (`byval(T)`, `sret(T)`, ...).
-    Type(AttrKind, Type<'ctx>),
+    Type(AttrKind, Type<'ctx, B>),
     /// Integer constant-range attribute (`range(i32 0, 8)`).
     Range {
-        ty: Type<'ctx>,
+        ty: Type<'ctx, B>,
         lower: ApInt,
         upper: ApInt,
     },
@@ -296,9 +297,33 @@ pub enum Attribute<'ctx> {
 }
 
 impl<'ctx> Attribute<'ctx> {
-    /// Construct an enum-flavored attribute. Returns `None` if `kind`
-    /// expects a payload.
+    /// Construct an enum-flavored attribute with the default module brand.
+    /// Returns `None` if `kind` expects a payload.
     pub fn enum_attr(kind: AttrKind) -> Option<Self> {
+        Self::enum_attr_for_brand(kind)
+    }
+
+    /// Construct an integer-valued attribute with the default module brand.
+    /// Returns `None` if `kind` is not an integer-flavored kind.
+    pub fn int(kind: AttrKind, value: u64) -> Option<Self> {
+        Self::int_for_brand(kind, value)
+    }
+
+    /// Construct a string key=value attribute with the default module brand.
+    /// Always valid.
+    pub fn string<Key, ValueText>(key: Key, value: ValueText) -> Self
+    where
+        Key: Into<String>,
+        ValueText: Into<String>,
+    {
+        Self::string_for_brand(key, value)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
+    /// Construct an enum-flavored attribute for an explicitly branded module.
+    /// Returns `None` if `kind` expects a payload.
+    pub fn enum_attr_for_brand(kind: AttrKind) -> Option<Self> {
         if kind.is_enum_kind() {
             Some(Self::Enum(kind))
         } else {
@@ -306,9 +331,9 @@ impl<'ctx> Attribute<'ctx> {
         }
     }
 
-    /// Construct an integer-valued attribute. Returns `None` if `kind`
-    /// is not an integer-flavored kind.
-    pub fn int(kind: AttrKind, value: u64) -> Option<Self> {
+    /// Construct an integer-valued attribute for an explicitly branded module.
+    /// Returns `None` if `kind` is not an integer-flavored kind.
+    pub fn int_for_brand(kind: AttrKind, value: u64) -> Option<Self> {
         if kind.is_int_kind() {
             Some(Self::Int(kind, value))
         } else {
@@ -318,7 +343,7 @@ impl<'ctx> Attribute<'ctx> {
 
     /// Construct a type-valued attribute. Returns `None` if `kind` is
     /// not a type-flavored kind.
-    pub fn type_attr(kind: AttrKind, ty: Type<'ctx>) -> Option<Self> {
+    pub fn type_attr(kind: AttrKind, ty: Type<'ctx, B>) -> Option<Self> {
         if kind.is_type_kind() {
             Some(Self::Type(kind, ty))
         } else {
@@ -330,7 +355,7 @@ impl<'ctx> Attribute<'ctx> {
     /// integer type, when the bounds have the wrong bit width, or when the
     /// range spells an empty set other than LLVM's canonical full-set form
     /// `range(T 0, 0)`.
-    pub fn range(ty: Type<'ctx>, lower: ApInt, upper: ApInt) -> Option<Self> {
+    pub fn range(ty: Type<'ctx, B>, lower: ApInt, upper: ApInt) -> Option<Self> {
         let TypeKind::Integer { bits } = ty.kind() else {
             return None;
         };
@@ -343,8 +368,9 @@ impl<'ctx> Attribute<'ctx> {
         Some(Self::Range { ty, lower, upper })
     }
 
-    /// Construct a string key=value attribute. Always valid.
-    pub fn string<Key, ValueText>(key: Key, value: ValueText) -> Self
+    /// Construct a string key=value attribute for an explicitly branded module.
+    /// Always valid.
+    pub fn string_for_brand<Key, ValueText>(key: Key, value: ValueText) -> Self
     where
         Key: Into<String>,
         ValueText: Into<String>,
@@ -371,7 +397,7 @@ impl<'ctx> Attribute<'ctx> {
     }
 }
 
-impl<'ctx> fmt::Display for Attribute<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Attribute<'ctx, B> {
     /// Render in `.ll` syntax (`alwaysinline`, `align(8)`, `byval(i32)`,
     /// `"key"="value"`).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -420,11 +446,11 @@ impl AttrIndex {
 /// `Vec` rather than the upstream `FoldingSet`-uniqued node, which is
 /// fine for the foundation.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
-pub struct AttributeSet<'ctx> {
-    attrs: Vec<Attribute<'ctx>>,
+pub struct AttributeSet<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    attrs: Vec<Attribute<'ctx, B>>,
 }
 
-impl<'ctx> AttributeSet<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> AttributeSet<'ctx, B> {
     pub fn new() -> Self {
         Self { attrs: Vec::new() }
     }
@@ -437,12 +463,12 @@ impl<'ctx> AttributeSet<'ctx> {
         self.attrs.len()
     }
 
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = &Attribute<'ctx>> {
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &Attribute<'ctx, B>> {
         self.attrs.iter()
     }
 
     /// Add `attr` if not already present (by `==`). No-op otherwise.
-    pub fn add(&mut self, attr: Attribute<'ctx>) {
+    pub fn add(&mut self, attr: Attribute<'ctx, B>) {
         if !self.attrs.contains(&attr) {
             self.attrs.push(attr);
         }
@@ -476,8 +502,8 @@ impl<'ctx> AttributeSet<'ctx> {
     }
 }
 
-impl<'ctx> FromIterator<Attribute<'ctx>> for AttributeSet<'ctx> {
-    fn from_iter<I: IntoIterator<Item = Attribute<'ctx>>>(iter: I) -> Self {
+impl<'ctx, B: ModuleBrand + 'ctx> FromIterator<Attribute<'ctx, B>> for AttributeSet<'ctx, B> {
+    fn from_iter<I: IntoIterator<Item = Attribute<'ctx, B>>>(iter: I) -> Self {
         Self {
             attrs: iter.into_iter().collect(),
         }
@@ -491,24 +517,32 @@ impl<'ctx> FromIterator<Attribute<'ctx>> for AttributeSet<'ctx> {
 /// Per-index attribute table. Mirrors `AttributeList` (`Attributes.h`)
 /// in shape; storage is flat (a small `Vec<(AttrIndex, AttributeSet)>`)
 /// instead of the upstream FoldingSet, which is fine for the foundation.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct AttributeList<'ctx> {
-    entries: Vec<(AttrIndex, AttributeSet<'ctx>)>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttributeList<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    entries: Vec<(AttrIndex, AttributeSet<'ctx, B>)>,
 }
 
-impl<'ctx> AttributeList<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> Default for AttributeList<'ctx, B> {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> AttributeList<'ctx, B> {
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Read-only iterator over `(index, set)` pairs.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = (AttrIndex, &AttributeSet<'ctx>)> {
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (AttrIndex, &AttributeSet<'ctx, B>)> {
         self.entries.iter().map(|(i, s)| (*i, s))
     }
 
     /// Borrow the attribute set at `index`, or `None` if no entry is
     /// present.
-    pub fn get(&self, index: AttrIndex) -> Option<&AttributeSet<'ctx>> {
+    pub fn get(&self, index: AttrIndex) -> Option<&AttributeSet<'ctx, B>> {
         self.entries
             .iter()
             .find_map(|(i, s)| (*i == index).then_some(s))
@@ -516,7 +550,7 @@ impl<'ctx> AttributeList<'ctx> {
 
     /// Mutably borrow the set at `index`, creating an empty entry if
     /// none exists.
-    pub fn get_mut_or_default(&mut self, index: AttrIndex) -> &mut AttributeSet<'ctx> {
+    pub fn get_mut_or_default(&mut self, index: AttrIndex) -> &mut AttributeSet<'ctx, B> {
         if let Some(pos) = self.entries.iter().position(|(i, _)| *i == index) {
             return &mut self.entries[pos].1;
         }
@@ -529,7 +563,7 @@ impl<'ctx> AttributeList<'ctx> {
 
     /// Add `attr` at `index`. Convenience wrapper around
     /// [`get_mut_or_default`](Self::get_mut_or_default).
-    pub fn add(&mut self, index: AttrIndex, attr: Attribute<'ctx>) {
+    pub fn add(&mut self, index: AttrIndex, attr: Attribute<'ctx, B>) {
         self.get_mut_or_default(index).add(attr);
     }
 
@@ -550,7 +584,7 @@ impl<'ctx> AttributeList<'ctx> {
 /// Conversions are total in both directions when paired with a
 /// `Module<'ctx>`: `Attribute<'ctx> <-> AttributeStored`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum AttributeStored {
+pub(super) enum AttributeStored {
     Enum(AttrKind),
     Int(AttrKind, u64),
     Type(AttrKind, TypeId),
@@ -567,7 +601,7 @@ pub(crate) enum AttributeStored {
 
 impl AttributeStored {
     /// Build storage form from a public [`Attribute`].
-    pub(crate) fn from_attribute(attr: Attribute<'_>) -> Self {
+    pub(super) fn from_attribute<B: ModuleBrand>(attr: Attribute<'_, B>) -> Self {
         match attr {
             Attribute::Enum(k) => Self::Enum(k),
             Attribute::Int(k, v) => Self::Int(k, v),
@@ -609,11 +643,11 @@ impl AttributeStorage {
 
     /// Insert `attr` at `index`. De-duplicates by structural
     /// equality.
-    pub fn add(&mut self, index: AttrIndex, attr: Attribute<'_>) {
+    pub fn add<B: ModuleBrand>(&mut self, index: AttrIndex, attr: Attribute<'_, B>) {
         self.add_stored(index, AttributeStored::from_attribute(attr));
     }
 
-    pub(crate) fn add_stored(&mut self, index: AttrIndex, stored: AttributeStored) {
+    pub(super) fn add_stored(&mut self, index: AttrIndex, stored: AttributeStored) {
         if let Some(pos) = self.entries.iter().position(|(i, _)| *i == index) {
             let set = &mut self.entries[pos].1;
             if !set.contains(&stored) {
@@ -631,7 +665,7 @@ impl AttributeStorage {
     /// Borrow the slice of stored attributes at `index`, or `None`
     /// when no entry exists. Used by the AsmWriter for parameter /
     /// return / function attribute printing.
-    pub(crate) fn get(&self, index: AttrIndex) -> Option<&[AttributeStored]> {
+    pub(super) fn get(&self, index: AttrIndex) -> Option<&[AttributeStored]> {
         self.entries
             .iter()
             .find_map(|(i, set)| (*i == index).then_some(set.as_slice()))
@@ -646,6 +680,9 @@ impl AttributeStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    type TestAttribute<'ctx> = Attribute<'ctx, Brand<'ctx>>;
+    type TestAttributeSet<'ctx> = AttributeSet<'ctx, Brand<'ctx>>;
+    type TestAttributeList<'ctx> = AttributeList<'ctx, Brand<'ctx>>;
 
     /// Mirrors `Attribute::get(LLVMContext &, AttrKind)` /
     /// `Attribute::get(LLVMContext &, AttrKind, uint64_t)` validation in
@@ -653,14 +690,14 @@ mod tests {
     /// `unittests/IR/AttributesTest.cpp::TEST(Attributes, AttributeRoundTrip)`.
     #[test]
     fn enum_kind_constructors_validate() {
-        assert!(Attribute::<'_>::enum_attr(AttrKind::AlwaysInline).is_some());
+        assert!(TestAttribute::<'_>::enum_attr(AttrKind::AlwaysInline).is_some());
         // Integer kind rejected by enum_attr:
-        assert!(Attribute::<'_>::enum_attr(AttrKind::Alignment).is_none());
+        assert!(TestAttribute::<'_>::enum_attr(AttrKind::Alignment).is_none());
         // Enum kind rejected by int constructor:
-        assert!(Attribute::<'_>::int(AttrKind::AlwaysInline, 8).is_none());
+        assert!(TestAttribute::<'_>::int(AttrKind::AlwaysInline, 8).is_none());
         // Integer kind accepted:
         assert!(matches!(
-            Attribute::<'_>::int(AttrKind::Alignment, 8),
+            TestAttribute::<'_>::int(AttrKind::Alignment, 8),
             Some(Attribute::Int(AttrKind::Alignment, 8))
         ));
     }
@@ -698,16 +735,16 @@ mod tests {
     #[test]
     fn display_renders_attribute_text() {
         assert_eq!(
-            format!("{}", Attribute::<'_>::Enum(AttrKind::NoReturn)),
+            format!("{}", TestAttribute::<'_>::Enum(AttrKind::NoReturn)),
             "noreturn"
         );
         assert_eq!(
-            format!("{}", Attribute::<'_>::Int(AttrKind::Alignment, 8)),
+            format!("{}", TestAttribute::<'_>::Int(AttrKind::Alignment, 8)),
             "align(8)"
         );
-        let s = Attribute::<'_>::string("target-features", "+sse2");
+        let s = TestAttribute::<'_>::string("target-features", "+sse2");
         assert_eq!(format!("{s}"), "\"target-features\"=\"+sse2\"");
-        let bare = Attribute::<'_>::string("nobuiltin", "");
+        let bare = TestAttribute::<'_>::string("nobuiltin", "");
         assert_eq!(format!("{bare}"), "\"nobuiltin\"");
     }
 
@@ -715,10 +752,10 @@ mod tests {
     /// `lib/IR/Attributes.cpp` (and `unittests/IR/AttributesTest.cpp`).
     #[test]
     fn attribute_set_dedupes_and_iterates() {
-        let mut s = AttributeSet::<'_>::new();
-        s.add(Attribute::Enum(AttrKind::NoReturn));
-        s.add(Attribute::Enum(AttrKind::NoReturn)); // duplicate ignored
-        s.add(Attribute::Int(AttrKind::Alignment, 8));
+        let mut s = TestAttributeSet::<'_>::new();
+        s.add(TestAttribute::Enum(AttrKind::NoReturn));
+        s.add(TestAttribute::Enum(AttrKind::NoReturn)); // duplicate ignored
+        s.add(TestAttribute::Int(AttrKind::Alignment, 8));
         assert_eq!(s.len(), 2);
         assert!(s.has_kind(AttrKind::NoReturn));
         assert_eq!(s.int_value(AttrKind::Alignment), Some(8));
@@ -728,9 +765,12 @@ mod tests {
     /// `getAttributes(AttrIndex)` in `lib/IR/Attributes.cpp`.
     #[test]
     fn attribute_list_indexed_storage() {
-        let mut l = AttributeList::<'_>::new();
-        l.add(AttrIndex::Function, Attribute::Enum(AttrKind::NoReturn));
-        l.add(AttrIndex::Param(0), Attribute::Enum(AttrKind::NoCapture));
+        let mut l = TestAttributeList::<'_>::new();
+        l.add(AttrIndex::Function, TestAttribute::Enum(AttrKind::NoReturn));
+        l.add(
+            AttrIndex::Param(0),
+            TestAttribute::Enum(AttrKind::NoCapture),
+        );
         assert!(
             l.get(AttrIndex::Function)
                 .unwrap()

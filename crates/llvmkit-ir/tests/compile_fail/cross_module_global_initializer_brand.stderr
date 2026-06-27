@@ -1,0 +1,29 @@
+error[E0521]: borrowed data escapes outside of closure
+  --> tests/compile_fail/cross_module_global_initializer_brand.rs:18:21
+   |
+15 |         let left_init = left.i32_type().const_int(1_i32);
+   |             --------- `left_init` declared here, outside of the closure body
+16 |         Module::with_new::<_, _, _>("right", |right| {
+   |                                               ----- `right` is a reference that is only valid in the closure body
+17 |             let i32_ty = right.i32_type();
+18 |             let _ = right.add_global("g", i32_ty.as_type(), left_init);
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `right` escapes the closure body here
+   |
+   = note: requirement occurs because of the type `ConstantIntValue<'_, i32, Brand<'_>>`, which makes the generic argument `Brand<'_>` invariant
+   = note: the struct `ConstantIntValue<'ctx, W, B>` is invariant over the parameter `B`
+   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+
+error[E0521]: borrowed data escapes outside of closure
+  --> tests/compile_fail/cross_module_global_initializer_brand.rs:18:21
+   |
+14 |     Module::with_new::<_, _, _>("left", |left| {
+   |                                          ----
+   |                                          |
+   |                                          `left` is a reference that is only valid in the closure body
+   |                                          has type `Module<'1>`
+...
+18 |             let _ = right.add_global("g", i32_ty.as_type(), left_init);
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |                     |
+   |                     `left` escapes the closure body here
+   |                     argument requires that `'1` must outlive `'static`
