@@ -6,12 +6,10 @@
 //! llvmkit makes custom folder hooks return `Value<'ctx, B>`, so a folder result
 //! from a different branded [`Module`] cannot satisfy the hook return type.
 
-use llvmkit_ir::{IrResult, ModuleBrand, Value};
+use llvmkit_ir::{ModuleBrand, Value};
 
-fn return_foreign_folder_value<'ctx, B: ModuleBrand>(
-    foreign: Value<'ctx>,
-) -> IrResult<Option<Value<'ctx, B>>> {
-    Ok(Some(foreign))
+fn return_foreign_folder_value<'ctx, B: ModuleBrand>(foreign: Value<'ctx>) -> Value<'ctx, B> {
+    foreign
 }
 
 fn main() {}
