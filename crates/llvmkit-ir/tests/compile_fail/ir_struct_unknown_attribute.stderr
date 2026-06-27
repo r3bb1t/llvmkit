@@ -1,0 +1,5 @@
+error: field-level llvmkit attributes are not supported
+  --> tests/compile_fail/ir_struct_unknown_attribute.rs:10:5
+   |
+10 |     #[llvmkit(rename = "xx")]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^

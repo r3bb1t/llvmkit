@@ -1,0 +1,5 @@
+error: IrStruct supports only structs with named fields
+ --> tests/compile_fail/ir_struct_tuple_shape.rs:9:18
+  |
+9 | struct TuplePoint(i32, i32);
+  |                  ^^^^^^^^^^

@@ -71,6 +71,7 @@ pub mod pass_manager;
 pub mod phi_state;
 pub mod sized_element;
 pub mod struct_body_state;
+pub mod struct_schema;
 pub mod sync_scope;
 pub mod target_library_info;
 pub mod term_open_state;
@@ -157,7 +158,7 @@ pub use error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel, VerifierRu
 pub use fmf::FastMathFlags;
 pub use function::{FunctionBuilder, FunctionValue};
 pub use function_signature::{
-    FunctionParam, FunctionParamList, FunctionReturn, TypedFunctionValue,
+    FunctionParam, FunctionParamList, FunctionReturn, FunctionSignature, TypedFunctionValue,
 };
 pub use gep_no_wrap_flags::GepNoWrapFlags;
 pub use global_alias::{GlobalAlias, GlobalAliasBuilder};
@@ -214,6 +215,9 @@ pub use pass_manager::{
 pub use phi_state::{Closed, Open, PhiState};
 pub use sized_element::{ArrayDyn, SizedElement};
 pub use struct_body_state::{BodySet, Opaque, StructBodyDyn, StructBodyState};
+pub use struct_schema::{
+    IntoIrField, IrField, StructSchema, StructSchemaValue, ValidatedStructValue,
+};
 pub use sync_scope::SyncScope;
 pub use target_library_info::{LibFunc, TargetLibraryInfo};
 pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeId, TypeKind};
@@ -242,3 +246,6 @@ pub use value_tracking::{
     compute_known_bits, is_known_non_zero, is_known_one, is_known_zero, known_bits_from_operator,
 };
 // `bool`/`i8`/`i16`/`i32`/`i64`/`i128` are std types — no re-export.
+
+#[cfg(feature = "macros")]
+pub use llvmkit_macros::IrStruct;

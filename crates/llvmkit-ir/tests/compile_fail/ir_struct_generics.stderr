@@ -1,0 +1,5 @@
+error: IrStruct supports only non-generic structs
+ --> tests/compile_fail/ir_struct_generics.rs:9:13
+  |
+9 | struct Boxed<T> {
+  |             ^^^

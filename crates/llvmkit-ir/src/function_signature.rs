@@ -3,9 +3,9 @@
 //! The traits in this module describe logical LLVM IR signatures using
 //! lifetime-free Rust schema tokens. Concrete values produced from those
 //! schemas remain branded by the originating module through `'ctx` and `B`.
-//! Future derive macros can therefore map a Rust schema such as `CpuContext`
-//! to a branded `CpuContextValue<'ctx, B>` wrapper without erasing module
-//! identity.
+//! Derived struct schemas can therefore map a Rust type such as
+//! `WindowPlacement` to a branded `WindowPlacementValue<'ctx, B>` wrapper
+//! without erasing module identity.
 
 use core::fmt;
 use core::hash::{Hash, Hasher};
@@ -18,6 +18,7 @@ use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::float_kind::{BFloat, Fp128, Half, PpcFp128, X86Fp80};
 use crate::function::FunctionValue;
 use crate::int_width::Width;
+use crate::ir_builder::{IRBuilder, Unpositioned, constant_folder::ConstantFolder};
 use crate::marker::{Ptr, ReturnMarker};
 use crate::module::{Brand, Module, ModuleBrand, Unverified};
 use crate::r#type::{Type, TypeKind};
@@ -129,6 +130,12 @@ pub trait FunctionParamList: Sized + 'static {
     where
         R: ReturnMarker,
         B: ModuleBrand + 'ctx;
+}
+
+/// Rust function-pointer schema facade.
+pub trait FunctionSignature: Sized + 'static {
+    type Ret: FunctionReturn;
+    type Params: FunctionParamList;
 }
 
 /// Function handle whose return and parameter schema are both known at compile time.
@@ -261,6 +268,15 @@ where
         Name: Into<String>,
     {
         self.function.append_basic_block(module, name)
+    }
+
+    /// Construct a builder whose return typestate matches this function.
+    #[inline]
+    pub fn builder<'m>(
+        self,
+        module: &'m Module<'ctx, B, Unverified>,
+    ) -> IRBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, Ret::Marker> {
+        IRBuilder::new_for::<Ret::Marker>(module)
     }
 }
 
@@ -687,3 +703,91 @@ impl_param_list_tuple!(5; A0: 0, A1: 1, A2: 2, A3: 3, A4: 4);
 impl_param_list_tuple!(6; A0: 0, A1: 1, A2: 2, A3: 3, A4: 4, A5: 5);
 impl_param_list_tuple!(7; A0: 0, A1: 1, A2: 2, A3: 3, A4: 4, A5: 5, A6: 6);
 impl_param_list_tuple!(8; A0: 0, A1: 1, A2: 2, A3: 3, A4: 4, A5: 5, A6: 6, A7: 7);
+impl_param_list_tuple!(9; A0: 0, A1: 1, A2: 2, A3: 3, A4: 4, A5: 5, A6: 6, A7: 7, A8: 8);
+impl_param_list_tuple!(10; A0: 0, A1: 1, A2: 2, A3: 3, A4: 4, A5: 5, A6: 6, A7: 7, A8: 8, A9: 9);
+impl_param_list_tuple!(11; A0: 0, A1: 1, A2: 2, A3: 3, A4: 4, A5: 5, A6: 6, A7: 7, A8: 8, A9: 9, A10: 10);
+impl_param_list_tuple!(12; A0: 0, A1: 1, A2: 2, A3: 3, A4: 4, A5: 5, A6: 6, A7: 7, A8: 8, A9: 9, A10: 10, A11: 11);
+impl_param_list_tuple!(13; A0: 0, A1: 1, A2: 2, A3: 3, A4: 4, A5: 5, A6: 6, A7: 7, A8: 8, A9: 9, A10: 10, A11: 11, A12: 12);
+impl_param_list_tuple!(14; A0: 0, A1: 1, A2: 2, A3: 3, A4: 4, A5: 5, A6: 6, A7: 7, A8: 8, A9: 9, A10: 10, A11: 11, A12: 12, A13: 13);
+impl_param_list_tuple!(15; A0: 0, A1: 1, A2: 2, A3: 3, A4: 4, A5: 5, A6: 6, A7: 7, A8: 8, A9: 9, A10: 10, A11: 11, A12: 12, A13: 13, A14: 14);
+impl_param_list_tuple!(16; A0: 0, A1: 1, A2: 2, A3: 3, A4: 4, A5: 5, A6: 6, A7: 7, A8: 8, A9: 9, A10: 10, A11: 11, A12: 12, A13: 13, A14: 14, A15: 15);
+
+macro_rules! impl_function_signature {
+    ($($param:ident),* $(,)?) => {
+        impl<Ret, $($param,)*> FunctionSignature for fn($($param),*) -> Ret
+        where
+            Ret: FunctionReturn,
+            ($($param,)*): FunctionParamList,
+        {
+            type Ret = Ret;
+            type Params = ($($param,)*);
+        }
+
+        impl<Ret, $($param,)*> FunctionSignature for unsafe fn($($param),*) -> Ret
+        where
+            Ret: FunctionReturn,
+            ($($param,)*): FunctionParamList,
+        {
+            type Ret = Ret;
+            type Params = ($($param,)*);
+        }
+
+        impl<Ret, $($param,)*> FunctionSignature for extern "C" fn($($param),*) -> Ret
+        where
+            Ret: FunctionReturn,
+            ($($param,)*): FunctionParamList,
+        {
+            type Ret = Ret;
+            type Params = ($($param,)*);
+        }
+
+        impl<Ret, $($param,)*> FunctionSignature for unsafe extern "C" fn($($param),*) -> Ret
+        where
+            Ret: FunctionReturn,
+            ($($param,)*): FunctionParamList,
+        {
+            type Ret = Ret;
+            type Params = ($($param,)*);
+        }
+
+        impl<Ret, $($param,)*> FunctionSignature for extern "system" fn($($param),*) -> Ret
+        where
+            Ret: FunctionReturn,
+            ($($param,)*): FunctionParamList,
+        {
+            type Ret = Ret;
+            type Params = ($($param,)*);
+        }
+
+        impl<Ret, $($param,)*> FunctionSignature for unsafe extern "system" fn($($param),*) -> Ret
+        where
+            Ret: FunctionReturn,
+            ($($param,)*): FunctionParamList,
+        {
+            type Ret = Ret;
+            type Params = ($($param,)*);
+        }
+    };
+}
+
+impl_function_signature!();
+impl_function_signature!(A0);
+impl_function_signature!(A0, A1);
+impl_function_signature!(A0, A1, A2);
+impl_function_signature!(A0, A1, A2, A3);
+impl_function_signature!(A0, A1, A2, A3, A4);
+impl_function_signature!(A0, A1, A2, A3, A4, A5);
+impl_function_signature!(A0, A1, A2, A3, A4, A5, A6);
+impl_function_signature!(A0, A1, A2, A3, A4, A5, A6, A7);
+impl_function_signature!(A0, A1, A2, A3, A4, A5, A6, A7, A8);
+impl_function_signature!(A0, A1, A2, A3, A4, A5, A6, A7, A8, A9);
+impl_function_signature!(A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10);
+impl_function_signature!(A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11);
+impl_function_signature!(A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12);
+impl_function_signature!(A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13);
+impl_function_signature!(
+    A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14
+);
+impl_function_signature!(
+    A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15
+);

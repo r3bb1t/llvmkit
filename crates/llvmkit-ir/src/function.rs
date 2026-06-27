@@ -48,7 +48,9 @@ use super::derived_types::FunctionType;
 use super::derived_types::{FloatType, IntType};
 use super::error::{IrError, IrResult, ValueCategoryLabel};
 use super::float_kind::FloatKind;
-use super::function_signature::{FunctionParamList, FunctionReturn, TypedFunctionValue};
+use super::function_signature::{
+    FunctionParamList, FunctionReturn, FunctionSignature, TypedFunctionValue,
+};
 use super::global_value::{DllStorageClass, DsoLocality, Linkage, Visibility};
 use super::int_width::IntWidth;
 use super::marker::{Dyn, ReturnMarker};
@@ -286,6 +288,18 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Params: FunctionParamList,
     {
         TypedFunctionValue::<R, Params, B>::try_from_function(self)
+    }
+
+    /// Wrap this function with a Rust function-pointer signature schema.
+    #[inline]
+    pub fn with_typed_signature<Sig>(
+        self,
+    ) -> IrResult<TypedFunctionValue<'ctx, Sig::Ret, Sig::Params, B>>
+    where
+        Sig: FunctionSignature,
+        Sig::Ret: FunctionReturn<Marker = R>,
+    {
+        TypedFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(self)
     }
 
     /// Linkage of this function.

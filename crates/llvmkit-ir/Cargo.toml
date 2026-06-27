@@ -11,9 +11,14 @@ rust-version.workspace = true
 keywords.workspace     = true
 categories.workspace   = true
 
+[features]
+default = ["macros"]
+macros = ["dep:llvmkit-macros"]
+
 [dependencies]
 bitflags  = "2"
 boxcar    = "0.2"
+llvmkit-macros = { workspace = true, optional = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

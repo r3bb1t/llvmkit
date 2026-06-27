@@ -743,6 +743,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> StructValue<'ctx, B> {
         }
     }
 
+    #[inline]
+    pub(crate) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
+        Self {
+            id: v.id,
+            module: v.module,
+            ty: v.ty,
+        }
+    }
+
     /// Owning module reference.
     #[inline]
     pub fn module(self) -> ModuleView<'ctx, B> {

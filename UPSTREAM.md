@@ -19,11 +19,12 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 1017.
+Total `#[test]` functions: 1038.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
 | `crates/llvmkit-ir/tests/asm_writer_basic.rs::module_prints_simple_add_function` | `unittests/IR/AsmWriterTest.cpp::TEST(AsmWriterTest, DebugPrintDetachedInstruction)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/asm_writer_basic.rs::module_prints_blank_line_between_type_identities_and_first_function` | `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printModule`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printTypeIdentities` | mirror |
 | `crates/llvmkit-ir/tests/asm_writer_basic.rs::dollar_names_print_without_quotes` | `llvm/lib/IR/AsmWriter.cpp::printLLVMNameWithoutPrefix` | mirror |
 | `crates/llvmkit-ir/tests/asm_writer_basic.rs::function_local_names_share_argument_block_and_instruction_namespace` | `llvm/lib/IR/Value.cpp::getSymTab`; `llvm/lib/IR/ValueSymbolTable.cpp::ValueSymbolTable::makeUniqueName` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/asm_writer_basic.rs::set_name_reinserts_and_frees_old_binding` | `llvm/include/llvm/IR/Value.h::Value::setName`; `llvm/lib/IR/Value.cpp::Value::setNameImpl`; `llvm/lib/IR/ValueSymbolTable.cpp::ValueSymbolTable::createValueName`; `unittests/IR/ValueTest.cpp::TEST(ValueTest, setNameShrink)` | llvmkit-specific |
@@ -36,6 +37,22 @@ Total `#[test]` functions: 1017.
 | `crates/llvmkit-ir/tests/function_signature.rs::typed_function_facade_supports_pointer_and_float_params` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` for ordered args; `Value::getType` category narrowing | llvmkit-specific |
 | `crates/llvmkit-ir/tests/function_signature.rs::typed_function_facade_rejects_wrong_arity_when_wrapping_raw_function` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/function_signature.rs::typed_function_facade_rejects_wrong_raw_param_type` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)`; `Value::getType` category narrowing | llvmkit-specific |
+| `crates/llvmkit-ir/tests/function_signature.rs::function_pointer_alias_builds_typed_function_and_params` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)`; `unittests/IR/AsmWriterTest.cpp` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/function_signature.rs::extern_system_signature_alias_builds_pointer_return_function` | `unittests/IR/AsmWriterTest.cpp` function type printing | llvmkit-specific |
+| `crates/llvmkit-ir/tests/function_signature.rs::raw_function_can_be_wrapped_with_function_pointer_signature` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/function_signature.rs::builder_can_be_created_from_function_pointer_return_schema` | `unittests/IR/AsmWriterTest.cpp` return printing | llvmkit-specific |
+| `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_reuses_matching_named_body` | `unittests/IR/TypeBuilderTest.cpp::TEST(TypeBuilder, NamedStruct)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_rejects_mismatched_existing_named_body` | `llvm/lib/IR/LLVMContextImpl.cpp::getOrCreateNamedStruct` reuse rules | llvmkit-specific |
+| `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_rejects_recursive_named_body` | `llvm/lib/IR/Type.cpp::StructType::setBodyOrError`; `llvm/lib/IR/Type.cpp::StructType::checkBody` | mirror |
+| `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_rejects_empty_identified_name` | `llvm/lib/IR/Type.cpp::StructType::create`; `llvm/lib/IR/Type.cpp::StructType::setName` | mirror |
+| `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_params_are_branded_wrappers` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_extracts_and_inserts_typed_fields` | `test/Bitcode/compatibility.ll` lines 1549 and 1558 | llvmkit-specific |
+| `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_extract_field_mismatch_does_not_append_instruction` | `IRBuilder::CreateExtractValue` validation-before-insertion contract | llvmkit-specific |
+| `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_can_be_function_return` | `unittests/IR/AsmWriterTest.cpp` aggregate return printing | llvmkit-specific |
+| `crates/llvmkit-ir/tests/struct_schema.rs::nested_struct_schema_accessors_return_nested_wrapper` | `test/Bitcode/compatibility.ll` line 1555 | llvmkit-specific |
+| `crates/llvmkit-ir/tests/derived_struct_schema.rs::derive_builds_nested_named_structs_and_accessors` | `unittests/IR/TypeBuilderTest.cpp::TEST(TypeBuilder, NamedStruct)`; `test/Bitcode/compatibility.ll` aggregate `extractvalue` / `insertvalue` forms | llvmkit-specific |
+| `crates/llvmkit-ir/tests/derived_struct_schema.rs::derive_supports_name_override_and_packed` | `unittests/IR/TypeBuilderTest.cpp::TEST(TypeBuilder, NamedStruct)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/derived_struct_schema.rs::derive_build_accepts_fields_named_like_helper_parameters` | Rust proc-macro hygiene for generated API parameters; closest LLVM reference `unittests/IR/TypeBuilderTest.cpp::TEST(TypeBuilder, NamedStruct)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_alloca.rs::alloca_plain` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, Lifetime)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_alloca.rs::alloca_array_size` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, Lifetime)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_alloca.rs::alloca_aligned` | `test/Assembler/align-inst-alloca.ll` | mirror |
@@ -352,8 +369,10 @@ Total `#[test]` functions: 1017.
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_struct_field0` | `test/Bitcode/compatibility.ll` line 1549 | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_array_index` | `test/Bitcode/compatibility.ll` line 1553 | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_nested_indices` | `test/Bitcode/compatibility.ll` line 1555 | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_rejects_empty_indices` | `llvm/lib/IR/Instructions.cpp::ExtractValueInst::init` | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_value_struct_field0` | `test/Bitcode/compatibility.ll` line 1558 | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_value_array_index_zero` | `test/Bitcode/compatibility.ll` line 1562 | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_value_rejects_empty_indices` | `llvm/lib/IR/Instructions.cpp::InsertValueInst::init` | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_element_vector_i8_index` | `test/Bitcode/compatibility.ll` line 1535 | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_element_vector_float_at_i8` | `test/Bitcode/compatibility.ll` lines 1537-1538 | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::shuffle_vector_zeroinitializer_mask` | `test/Bitcode/compatibility.ll` line 1539 | mirror |

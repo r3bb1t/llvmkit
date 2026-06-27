@@ -1,6 +1,6 @@
 use llvmkit_ir::{
-    FloatValue, IRBuilder, IntValue, IrError, Linkage, Module, ModuleBrand, PointerValue, Ptr,
-    TypeKindLabel, TypedFunctionValue, Width,
+    FloatValue, FunctionSignature, IRBuilder, IntValue, IrError, Linkage, Module, ModuleBrand,
+    PointerValue, Ptr, TypeKindLabel, TypedFunctionValue, Width,
 };
 
 /// Closest upstream coverage:
@@ -115,6 +115,85 @@ fn typed_function_facade_rejects_wrong_raw_param_type() -> Result<(), IrError> {
                 got: TypeKindLabel::Double,
             }
         );
+        Ok(())
+    })
+}
+
+type AddSig = fn(i32, i32) -> i32;
+type WinApiSig = unsafe extern "system" fn(Ptr, i32, f32) -> Ptr;
+
+/// llvmkit-specific Rust-signature facade over LLVM function types; closest
+/// upstream coverage is `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)`.
+#[test]
+fn function_pointer_alias_builds_typed_function_and_params() -> Result<(), IrError> {
+    Module::with_new("alias", |m| {
+        let fn_ty = m.typed_function_type_of::<AddSig>(false)?;
+        assert_eq!(format!("{fn_ty}"), "i32 (i32, i32)");
+        let f = m.add_typed_function_of::<AddSig, _>("add", Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let (lhs, rhs) = f.params();
+        let _: IntValue<'_, i32, _> = lhs;
+        let _: IntValue<'_, i32, _> = rhs;
+        let b = f.builder(&m).position_at_end(entry);
+        let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
+        b.build_ret(sum)?;
+        let text = format!("{m}");
+        assert!(
+            text.contains("define i32 @add(i32 %0, i32 %1)"),
+            "got:\n{text}"
+        );
+        assert!(text.contains("ret i32 %sum\n"), "got:\n{text}");
+        Ok(())
+    })
+}
+
+/// llvmkit-specific Rust-signature facade for platform ABI-shaped function
+/// pointer aliases; closest upstream coverage is LLVM function type printing in
+/// `unittests/IR/AsmWriterTest.cpp`.
+#[test]
+fn extern_system_signature_alias_builds_pointer_return_function() -> Result<(), IrError> {
+    Module::with_new("winapi", |m| {
+        let f = m.add_typed_function_of::<WinApiSig, _>("call_window_proc", Linkage::External)?;
+        let (hwnd, code, scale) = f.params();
+        let _: PointerValue<'_, _> = hwnd;
+        let _: IntValue<'_, i32, _> = code;
+        let _: FloatValue<'_, f32, _> = scale;
+        assert_eq!(
+            format!("{}", f.as_function().signature()),
+            "ptr (ptr, i32, float)"
+        );
+        Ok(())
+    })
+}
+
+/// llvmkit-specific raw-wrapper validation; closest upstream coverage is
+/// `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` for
+/// raw argument counts and order.
+#[test]
+fn raw_function_can_be_wrapped_with_function_pointer_signature() -> Result<(), IrError> {
+    Module::with_new("raw", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+        let raw = m.add_function::<i32, _>("add", fn_ty, Linkage::External)?;
+        let typed = raw.with_typed_signature::<AddSig>()?;
+        let (lhs, rhs) = typed.params();
+        let _: IntValue<'_, i32, _> = lhs;
+        let _: IntValue<'_, i32, _> = rhs;
+        Ok(())
+    })
+}
+
+/// llvmkit-specific typed-builder return schema; closest upstream coverage is
+/// `unittests/IR/AsmWriterTest.cpp` for return instruction printing.
+#[test]
+fn builder_can_be_created_from_function_pointer_return_schema() -> Result<(), IrError> {
+    Module::with_new("builder", |m| {
+        let f = m.add_typed_function_of::<AddSig, _>("zero", Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for_return::<AddSig>(&m).position_at_end(entry);
+        b.build_ret(0_i32)?;
+        let text = format!("{m}");
+        assert!(text.contains("ret i32 0\n"), "got:\n{text}");
         Ok(())
     })
 }

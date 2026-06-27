@@ -464,6 +464,10 @@ pub enum IrError {
     #[error("named struct {name:?} already has a body")]
     StructBodyAlreadySet { name: String },
 
+    /// A struct schema found an existing named struct with a different body.
+    #[error("named struct {name:?} has a different body")]
+    StructBodyMismatch { name: String },
+
     /// An operation that requires a sized type was passed a type that has
     /// no statically-known size (e.g. `function`, `label`, opaque struct).
     #[error("cannot allocate value of unsized type {kind}")]

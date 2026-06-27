@@ -10,7 +10,8 @@ Public umbrella crate for the `llvmkit` workspace, tracking LLVM 22.1.4.
 can depend on one crate:
 
 - `llvmkit::ir` — typed LLVM IR data model, builder, verifier, AsmWriter, CFG,
-  dominance, and value-tracking queries.
+  dominance, value-tracking queries, and the re-exported `#[derive(IrStruct)]`
+  macro when the default `macros` feature is enabled.
 - `llvmkit::asmparser` — textual LLVM IR (`.ll`) lexer and parser.
 - `llvmkit::support` — shared source-location utilities.
 

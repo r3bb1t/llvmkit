@@ -1,0 +1,9 @@
+error[E0308]: `?` operator has incompatible types
+  --> tests/compile_fail/ir_struct_accessor_type_mismatch.rs:24:25
+   |
+24 |         expects_pointer(point.x(&b)?);
+   |                         ^^^^^^^^^^^^ expected `PointerValue<'_, _>`, found `IntValue<'_, i32>`
+   |
+   = note: `?` operator cannot convert from `IntValue<'_, i32, Brand<'_>>` to `PointerValue<'_, _>`
+   = note: expected struct `PointerValue<'_, _>`
+              found struct `IntValue<'_, i32, Brand<'_>>`

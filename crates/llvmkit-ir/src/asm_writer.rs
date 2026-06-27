@@ -2471,26 +2471,25 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
     // globals: a leading blank line if any exist, then one
     // `%Name = type {...}` (or `%Name = type opaque`) line per struct in
     // declaration order.
-    {
-        let struct_ids = m.iter_named_struct_ids();
-        if !struct_ids.is_empty() {
-            f.write_str("\n")?;
-            for id in struct_ids {
-                let data = m.context().type_data(id);
-                let s = data
-                    .as_struct()
-                    .expect("iter_named_struct_ids yields only struct ids");
-                let name = s.name.as_ref().expect("named struct must have a name");
-                fmt_llvm_name(f, "%", name)?;
-                f.write_str(" = type ")?;
-                match s.body.borrow().as_ref() {
-                    Some(body) => fmt_struct_body(f, body, m)?,
-                    // KirpiIR never creates opaque structs, but be faithful
-                    // to LLVM, which prints those as `%Name = type opaque`.
-                    None => f.write_str("opaque")?,
-                }
-                f.write_str("\n")?;
+    let struct_ids = m.iter_named_struct_ids();
+    let has_named_structs = !struct_ids.is_empty();
+    if has_named_structs {
+        f.write_str("\n")?;
+        for id in struct_ids {
+            let data = m.context().type_data(id);
+            let s = data
+                .as_struct()
+                .expect("iter_named_struct_ids yields only struct ids");
+            let name = s.name.as_ref().expect("named struct must have a name");
+            fmt_llvm_name(f, "%", name)?;
+            f.write_str(" = type ")?;
+            match s.body.borrow().as_ref() {
+                Some(body) => fmt_struct_body(f, body, m)?,
+                // KirpiIR never creates opaque structs, but be faithful
+                // to LLVM, which prints those as `%Name = type opaque`.
+                None => f.write_str("opaque")?,
             }
+            f.write_str("\n")?;
         }
     }
 
@@ -2520,11 +2519,7 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
 
     let mut first = true;
     for func in m.iter_functions::<crate::module::Brand<'_>>() {
-        if !first
-            || !m.global_empty()
-            || !m.alias_empty()
-            || !m.ifunc_empty()
-            || m.iter_comdats::<crate::module::Brand<'_>>().len() > 0
+        if !first || !m.global_empty() || !m.alias_empty() || !m.ifunc_empty() || has_named_structs
         {
             f.write_str("\n")?;
         }

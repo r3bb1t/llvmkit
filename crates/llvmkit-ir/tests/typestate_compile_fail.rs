@@ -28,6 +28,11 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/typed_function_params_require_facade.rs");
     t.compile_fail("tests/compile_fail/typed_function_params_token_cannot_escape.rs");
     t.compile_fail("tests/compile_fail/set_struct_body_twice.rs");
+    t.compile_fail("tests/compile_fail/ir_struct_tuple_shape.rs");
+    t.compile_fail("tests/compile_fail/ir_struct_generics.rs");
+    t.compile_fail("tests/compile_fail/ir_struct_unknown_attribute.rs");
+    t.compile_fail("tests/compile_fail/ir_struct_accessor_type_mismatch.rs");
+    t.compile_fail("tests/compile_fail/ir_struct_cross_module_brand.rs");
     t.compile_fail("tests/compile_fail/module_pass_requires_verified.rs");
     t.compile_fail("tests/compile_fail/cross_module_value_brand.rs");
     t.compile_fail("tests/compile_fail/cross_module_global_initializer_brand.rs");

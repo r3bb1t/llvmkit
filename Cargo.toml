@@ -5,6 +5,7 @@ members  = [
     "crates/llvmkit-support",
     "crates/llvmkit-asmparser",
     "crates/llvmkit-ir",
+    "crates/llvmkit-macros",
 ]
 default-members = ["llvmkit"]
 
@@ -23,4 +24,5 @@ categories   = ["compilers", "parser-implementations", "development-tools"]
 llvmkit-support   = { version = "0.0.2", path = "crates/llvmkit-support" }
 llvmkit-asmparser = { version = "0.0.2", path = "crates/llvmkit-asmparser" }
 llvmkit-ir        = { version = "0.0.2", path = "crates/llvmkit-ir" }
+llvmkit-macros    = { version = "0.0.2", path = "crates/llvmkit-macros" }
 thiserror         = "2"

@@ -133,13 +133,57 @@ code keeps using `FunctionValue::param` / `params`; a typed facade uses the tupl
 parameter schema instead, so wrong typed access fails at compile time and
 `TypedFunctionValue::params()` is infallible after construction.
 `TypedFunctionValue::try_from_function` is the fallible boundary for wrapping an
-existing raw function with a mismatched signature. The schema traits are also the
-future extension point for Rust-level IR schemas: a derived `CpuContext` can
-appear directly in `add_typed_function::<CpuContext, (CpuContext,), _>`, while
-extracted values remain branded handles such as `CpuContextValue<'ctx, B>` /
-`StructValue<'ctx, B>`; a Rust declaration like
-`fn simulate_execution(ctx: CpuContext) -> CpuContext` can lower to its logical
-LLVM IR signature without erasing module brands.
+existing raw function with a mismatched signature. For ordinary Rust function
+pointer aliases, `m.add_typed_function_of::<fn(i32) -> i32, _>(...)` builds the
+LLVM signature directly from the alias.
+
+Derived struct schemas use a PyO3-like mental model: derive the schema on a
+plain Rust struct, use the generated `<Struct>Value<'ctx, B>` wrapper in IR, and
+call field accessors/builders instead of indexing aggregates manually:
+
+```rust
+use llvmkit_ir::{IRBuilder, IrStruct, Linkage, Module};
+
+#[derive(IrStruct)]
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+#[derive(IrStruct)]
+struct Rect {
+    min: Point,
+    max: Point,
+}
+
+#[derive(IrStruct)]
+struct WindowPlacement {
+    show_cmd: i32,
+    normal_position: Rect,
+}
+
+type Normalize = fn(WindowPlacement) -> WindowPlacement;
+
+Module::with_new("window", |m| {
+    let f = m.add_typed_function_of::<Normalize, _>("normalize", Linkage::External)?;
+    let entry = f.append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for_return::<Normalize>(&m).position_at_end(entry);
+    let (placement,) = f.params();
+    // `normal_position` returns `RectValue<'ctx, B>`, and `min` returns
+    // `PointValue<'ctx, B>`; nested structs keep their generated wrapper type.
+    let rect = placement.normal_position(&b)?;
+    let _min = rect.min(&b)?;
+    Ok(())
+})?;
+```
+
+Helper attributes are intentionally small: `#[llvmkit(name = "...")]` overrides
+the LLVM identified-struct name, `#[llvmkit(packed)]` emits a packed body, and
+`#[llvmkit(crate = path::to::ir)]` overrides the generated crate path. Field
+rename/skip/default helpers do not ship because LLVM struct layout is positional
+and hiding field changes would obscure ABI/layout changes.
+
+Detailed macro docs: [IrStruct derive macro](docs/ir-struct-derive.md).
 
 ### Same-module safety
 
@@ -172,6 +216,7 @@ cargo run -p llvmkit-ir --example build_add_function
 cargo run -p llvmkit-ir --example cpu_state_add
 cargo run -p llvmkit-ir --example factorial
 cargo run -p llvmkit-ir --example concurrent_counter
+cargo run -p llvmkit-ir --example derived_struct_function
 
 # Build IR, run a built-in analysis, and register custom passes
 cargo run -p llvmkit-ir --example pass_manager_demo

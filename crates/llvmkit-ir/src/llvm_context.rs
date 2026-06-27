@@ -391,8 +391,72 @@ impl Context {
                 name: s.name.clone().expect("named struct"),
             });
         }
+        if self.body_would_be_recursive(id, &body) {
+            return Err(crate::IrError::InvalidOperation {
+                message: "recursive struct body",
+            });
+        }
         *slot = Some(body);
         Ok(())
+    }
+
+    fn body_would_be_recursive(&self, target: TypeId, body: &StructBody) -> bool {
+        body.elements
+            .iter()
+            .any(|&elem| self.type_reaches_type(elem, target, &mut Vec::new()))
+    }
+
+    fn type_reaches_type(&self, ty: TypeId, target: TypeId, visited: &mut Vec<TypeId>) -> bool {
+        if ty == target {
+            return true;
+        }
+        if visited.contains(&ty) {
+            return false;
+        }
+        visited.push(ty);
+
+        match self.type_data(ty) {
+            TypeData::Function { ret, params, .. } => {
+                self.type_reaches_type(*ret, target, visited)
+                    || params
+                        .iter()
+                        .any(|&param| self.type_reaches_type(param, target, visited))
+            }
+            TypeData::Array { elem, .. }
+            | TypeData::FixedVector { elem, .. }
+            | TypeData::ScalableVector { elem, .. } => {
+                self.type_reaches_type(*elem, target, visited)
+            }
+            TypeData::Struct(s) => {
+                let body = s.body.borrow();
+                body.as_ref().is_some_and(|body| {
+                    body.elements
+                        .iter()
+                        .any(|&elem| self.type_reaches_type(elem, target, visited))
+                })
+            }
+            TypeData::TypedPointer { pointee, .. } => {
+                self.type_reaches_type(*pointee, target, visited)
+            }
+            TypeData::TargetExt(data) => data
+                .type_params
+                .iter()
+                .any(|&param| self.type_reaches_type(param, target, visited)),
+            TypeData::Void
+            | TypeData::Half
+            | TypeData::BFloat
+            | TypeData::Float
+            | TypeData::Double
+            | TypeData::X86Fp80
+            | TypeData::Fp128
+            | TypeData::PpcFp128
+            | TypeData::X86Amx
+            | TypeData::Label
+            | TypeData::Metadata
+            | TypeData::Token
+            | TypeData::Integer { .. }
+            | TypeData::Pointer { .. } => false,
+        }
     }
 
     // ---- Value arena ----

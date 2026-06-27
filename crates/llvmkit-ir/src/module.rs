@@ -40,7 +40,9 @@ use super::derived_types::{
 use super::error::{IrError, IrResult, TypeKindLabel};
 use super::float_kind::{BFloat, Fp128, Half, PpcFp128, X86Fp80};
 use super::function::{FunctionBuilder, FunctionValue};
-use super::function_signature::{FunctionParamList, FunctionReturn, TypedFunctionValue};
+use super::function_signature::{
+    FunctionParamList, FunctionReturn, FunctionSignature, TypedFunctionValue,
+};
 use super::global_alias::{GlobalAlias, GlobalAliasBuilder};
 use super::global_ifunc::{GlobalIFunc, GlobalIFuncBuilder};
 use super::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
@@ -54,6 +56,7 @@ use super::metadata::{
 };
 use super::named_md_node::NamedMDNode;
 use super::struct_body_state::StructBodyDyn;
+use super::struct_schema::StructSchema;
 use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, TypeId};
 use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
@@ -2130,6 +2133,53 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
             .map(|id| StructType::new(id, self.module_ref()))
     }
 
+    pub fn get_or_set_named_struct_body<S>(
+        &self,
+    ) -> IrResult<StructType<'ctx, crate::struct_body_state::BodySet, B>>
+    where
+        S: StructSchema,
+    {
+        if S::NAME.is_empty() {
+            return Err(IrError::InvalidOperation {
+                message: "struct schema name must not be empty",
+            });
+        }
+        let field_types = S::field_types(self)?;
+        let elements: Box<[TypeId]> = field_types.iter().map(|t| t.id()).collect();
+        let (id, _existed) = self.core.ctx.get_or_create_named_struct(S::NAME);
+        let data = self
+            .core
+            .ctx
+            .type_data(id)
+            .as_struct()
+            .unwrap_or_else(|| unreachable!("named struct id stores struct data"));
+        {
+            let body = data.body.borrow();
+            if let Some(body) = body.as_ref() {
+                if body.packed == S::PACKED && body.elements.as_ref() == elements.as_ref() {
+                    return Ok(StructType::<crate::struct_body_state::BodySet, B>::new(
+                        id,
+                        self.module_ref(),
+                    ));
+                }
+                return Err(IrError::StructBodyMismatch {
+                    name: S::NAME.to_owned(),
+                });
+            }
+        }
+        self.core.ctx.set_named_struct_body(
+            id,
+            StructBody {
+                elements,
+                packed: S::PACKED,
+            },
+        )?;
+        Ok(StructType::<crate::struct_body_state::BodySet, B>::new(
+            id,
+            self.module_ref(),
+        ))
+    }
+
     pub fn set_struct_body<I, T>(
         &self,
         st: StructType<'ctx, StructBodyDyn, B>,
@@ -2206,6 +2256,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Ok(self.fn_type(ret, params, is_var_arg))
     }
 
+    pub fn typed_function_type_of<Sig>(&self, is_var_arg: bool) -> IrResult<FunctionType<'ctx, B>>
+    where
+        Sig: FunctionSignature,
+    {
+        self.typed_function_type::<Sig::Ret, Sig::Params>(is_var_arg)
+    }
+
     pub fn target_ext_type<Name, I, T, J>(
         &self,
         name: Name,
@@ -2240,6 +2297,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         let signature = self.typed_function_type::<Ret, Params>(false)?;
         let function = self.add_function::<Ret::Marker, _>(name, signature, linkage)?;
         TypedFunctionValue::<Ret, Params, B>::try_from_function(function)
+    }
+
+    pub fn add_typed_function_of<Sig, Name>(
+        &self,
+        name: Name,
+        linkage: Linkage,
+    ) -> IrResult<TypedFunctionValue<'ctx, Sig::Ret, Sig::Params, B>>
+    where
+        Sig: FunctionSignature,
+        Name: AsRef<str>,
+    {
+        let signature = self.typed_function_type_of::<Sig>(false)?;
+        let function =
+            self.add_function::<<Sig::Ret as FunctionReturn>::Marker, _>(name, signature, linkage)?;
+        TypedFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(function)
     }
 
     pub fn add_function<R, Name>(

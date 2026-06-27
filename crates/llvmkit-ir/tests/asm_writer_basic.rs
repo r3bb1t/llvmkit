@@ -43,6 +43,37 @@ fn module_prints_simple_add_function() -> Result<(), IrError> {
     })
 }
 
+/// Mirrors `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printModule`: after
+/// `printTypeIdentities()` emits named struct identities, the function loop
+/// writes a blank line before `printFunction`.
+#[test]
+fn module_prints_blank_line_between_type_identities_and_first_function() -> Result<(), IrError> {
+    Module::with_new("type_separator", |m| {
+        let i32_ty = m.i32_type();
+        let point_ty = m.named_struct("Point");
+        m.set_struct_body(point_ty, [i32_ty.as_type(), i32_ty.as_type()], false)?;
+
+        let fn_ty = m.fn_type(m.void_type(), [i32_ty.as_type()], false);
+        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        IRBuilder::new_for::<()>(&m)
+            .position_at_end(entry)
+            .build_ret_void();
+
+        let expected = "; ModuleID = 'type_separator'\n\
+            \n\
+            %Point = type { i32, i32 }\n\
+            \n\
+            define void @f(i32 %0) {\n\
+            entry:\n\
+            \x20\x20ret void\n\
+            }\n";
+        let text = format!("{m}");
+        assert_eq!(text, expected, "got:\n{text}");
+        Ok(())
+    })
+}
+
 /// Mirrors `llvm/lib/IR/AsmWriter.cpp::printLLVMNameWithoutPrefix`: `$` is a
 /// legal bare LLVM identifier character and must not force quotes.
 #[test]

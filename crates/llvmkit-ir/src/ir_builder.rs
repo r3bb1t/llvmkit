@@ -51,6 +51,7 @@ use super::error::{IrError, IrResult, TypeKindLabel};
 use super::float_kind::{FloatDyn, FloatKind, FloatWiderThan, IntoFloatValue};
 use super::fmf::FastMathFlags;
 use super::function::FunctionValue;
+use super::function_signature::{FunctionReturn, FunctionSignature};
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::inline_asm::InlineAsm;
 use super::instr_types::FNegInstData;
@@ -75,6 +76,7 @@ use super::marker::{Dyn, Ptr, ReturnMarker};
 use super::module::{Brand, Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified};
 use super::phi_state::Open as PhiOpen;
 use super::struct_body_state::StructBodyDyn;
+use super::struct_schema::{IntoIrField, IrField, StructSchema};
 use super::sync_scope::SyncScope;
 use super::term_open_state::Open;
 use super::r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeId};
@@ -254,6 +256,25 @@ where
     ) -> IRBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, R>
     where
         R: ReturnMarker,
+    {
+        IRBuilder {
+            module: module.core_ref(),
+            _module: PhantomData,
+            insert_block: None,
+            insert_before: None,
+            folder: ConstantFolder,
+            fmf: super::fmf::FastMathFlags::empty(),
+            _state: PhantomData,
+        }
+    }
+
+    /// Construct an unpositioned builder from a Rust function-pointer
+    /// signature's return schema.
+    pub fn new_for_return<Sig>(
+        module: &'m Module<'ctx, B, Unverified>,
+    ) -> IRBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, <Sig::Ret as FunctionReturn>::Marker>
+    where
+        Sig: FunctionSignature,
     {
         IRBuilder {
             module: module.core_ref(),
@@ -2155,6 +2176,11 @@ where
     {
         let agg = aggregate.as_value();
         let indices: Vec<u32> = indices.into_iter().collect();
+        if indices.is_empty() {
+            return Err(IrError::InvalidOperation {
+                message: "extractvalue indices must not be empty",
+            });
+        }
         let leaf_ty = walk_aggregate_for_builder(self.module, agg.ty, &indices)?;
         if let Some(folded) = self.folder.fold_extract_value(agg, &indices)? {
             return self.checked_folded_value(folded, leaf_ty);
@@ -2183,6 +2209,11 @@ where
         let agg = aggregate.as_value();
         let val = value.as_value();
         let indices: Vec<u32> = indices.into_iter().collect();
+        if indices.is_empty() {
+            return Err(IrError::InvalidOperation {
+                message: "insertvalue indices must not be empty",
+            });
+        }
         let leaf_ty = walk_aggregate_for_builder(self.module, agg.ty, &indices)?;
         if val.ty != leaf_ty {
             return Err(IrError::TypeMismatch {
@@ -2196,6 +2227,55 @@ where
         let payload = crate::instr_types::InsertValueInstData::new(agg.id, val.id, indices);
         let inst = self.append_instruction(agg.ty, InstructionKindData::InsertValue(payload), name);
         Ok(inst.as_value())
+    }
+
+    /// Extract a named-struct schema field and return the field's typed wrapper.
+    pub fn build_extract_field<S, Field, Aggregate, Name>(
+        &self,
+        aggregate: Aggregate,
+        index: u32,
+        name: Name,
+    ) -> IrResult<Field::Value<'ctx, B>>
+    where
+        S: StructSchema,
+        Field: IrField,
+        Aggregate: IntoIrField<'ctx, S, B>,
+        Name: AsRef<str>,
+    {
+        let module = ModuleRef::new(self.module);
+        let aggregate = aggregate.into_ir_field(module)?;
+        let leaf_ty = walk_aggregate_for_builder(self.module, aggregate.ty, &[index])?;
+        let leaf = Type::new(leaf_ty, self.module);
+        if !Field::matches_ir_type(leaf) {
+            return Err(IrError::TypeMismatch {
+                expected: Field::expected_kind_label(),
+                got: leaf.kind_label(),
+            });
+        }
+        let raw = self.build_extract_value(aggregate, [index], name)?;
+        Field::value_from_ir_value(raw)
+    }
+
+    /// Insert a typed field value into a named-struct schema aggregate.
+    pub fn build_insert_field<S, Field, Aggregate, FieldValue, Name>(
+        &self,
+        aggregate: Aggregate,
+        value: FieldValue,
+        index: u32,
+        name: Name,
+    ) -> IrResult<S::Value<'ctx, B>>
+    where
+        S: StructSchema,
+        Field: IrField,
+        Aggregate: IntoIrField<'ctx, S, B>,
+        FieldValue: IntoIrField<'ctx, Field, B>,
+        Name: AsRef<str>,
+    {
+        let module = ModuleRef::new(self.module);
+        let aggregate = aggregate.into_ir_field(module)?;
+        let value = value.into_ir_field(module)?;
+        let raw = self.build_insert_value(aggregate, value, [index], name)?;
+        <S as IrField>::value_from_ir_value(raw)
     }
 
     // ---- Vector ops: extractelement / insertelement / shufflevector ----

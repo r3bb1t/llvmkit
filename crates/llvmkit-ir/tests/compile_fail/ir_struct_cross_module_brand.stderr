@@ -1,0 +1,36 @@
+error[E0521]: borrowed data escapes outside of closure
+  --> tests/compile_fail/ir_struct_cross_module_brand.rs:25:21
+   |
+17 |           let (left_point,) = left_fn.params();
+   |                ---------- `left_point` declared here, outside of the closure body
+18 |
+19 |           Module::with_new("right", |right| {
+   |                                      ----- `right` is a reference that is only valid in the closure body
+...
+25 |               let _ = builder.build_insert_field::<Point, i32, _, _, _>(
+   |  _____________________^
+26 | |                 left_point,
+27 | |                 1_i32,
+28 | |                 0,
+29 | |                 "wrong_module",
+30 | |             )?;
+   | |_____________^ `right` escapes the closure body here
+   |
+   = note: requirement occurs because of the type `PointValue<'_, Brand<'_>>`, which makes the generic argument `Brand<'_>` invariant
+   = note: the struct `PointValue<'ctx, B>` is invariant over the parameter `B`
+   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+
+error[E0521]: borrowed data escapes outside of closure
+  --> tests/compile_fail/ir_struct_cross_module_brand.rs:24:27
+   |
+15 |     Module::with_new("left", |left| {
+   |                               ----
+   |                               |
+   |                               `left` is a reference that is only valid in the closure body
+   |                               has type `Module<'1>`
+...
+24 |             let builder = IRBuilder::new_for::<()>(&right).position_at_end(entry);
+   |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |                           |
+   |                           `left` escapes the closure body here
+   |                           argument requires that `'1` must outlive `'static`
