@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use llvmkit_ir::{
     DominatorTreeAnalysis, FunctionAnalysisManager, FunctionPassManager, IRBuilder, IntPredicate,
-    IntValue, IrError, Linkage, Module, ModuleAnalysisManager, ModulePassManager,
+    IrError, Linkage, Module, ModuleAnalysisManager, ModulePassManager,
     ModuleToFunctionPassAdaptor, PreservedAnalyses, PreservesVerification, ReadOnlyFunctionPass,
     ReadOnlyFunctionPassContext, ReadOnlyModulePass, ReadOnlyModulePassContext,
 };
@@ -66,14 +66,7 @@ impl<'ctx> ReadOnlyFunctionPass<'ctx> for ReportFunctionPass {
 }
 
 pub fn build(m: &Module<'_>) -> Result<(), IrError> {
-    let bool_ty = m.bool_type();
-    let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(
-        i32_ty,
-        [bool_ty.as_type(), i32_ty.as_type(), i32_ty.as_type()],
-        false,
-    );
-    let f = m.add_function::<i32, _>("select_or_add", fn_ty, Linkage::External)?;
+    let f = m.add_typed_function::<i32, (bool, i32, i32), _>("select_or_add", Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let then_bb = f.append_basic_block(m, "then");
     let else_bb = f.append_basic_block(m, "else");
@@ -82,9 +75,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let else_label = else_bb.label();
     let merge_label = merge.label();
 
-    let cond: IntValue<bool> = f.param(0)?.try_into()?;
-    let x: IntValue<i32> = f.param(1)?.try_into()?;
-    let y: IntValue<i32> = f.param(2)?.try_into()?;
+    let (cond, x, y) = f.params();
 
     IRBuilder::new_for::<i32>(m)
         .position_at_end(entry)

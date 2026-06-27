@@ -43,7 +43,7 @@
 //! cargo run -p llvmkit-ir --example factorial
 //! ```
 
-use llvmkit_ir::{IRBuilder, IntPredicate, IntValue, IrError, Linkage, Module};
+use llvmkit_ir::{IRBuilder, IntPredicate, IrError, Linkage, Module};
 
 pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
@@ -52,7 +52,8 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
         .function_builder::<i32, _>("factorial", fn_ty)
         .linkage(Linkage::External)
         .param_name(0, "n")
-        .build()?;
+        .build()?
+        .with_typed_params::<(i32,)>()?;
 
     let entry = f.append_basic_block(m, "entry");
     let base = f.append_basic_block(m, "base");
@@ -63,7 +64,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let loop_label = loop_bb.label();
     let exit_label = exit.label();
 
-    let n: IntValue<i32> = f.param(0)?.try_into()?;
+    let (n,) = f.params();
 
     // entry: %is_zero = icmp eq i32 %n, 0; br i1 %is_zero, ...
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);

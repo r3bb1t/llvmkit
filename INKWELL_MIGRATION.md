@@ -115,6 +115,7 @@ shapes and is distinct from `IntDyn` / `FloatDyn`.
 |`context.opaque_struct_type(n)`|`module.named_struct(n)`|name preserved|
 |`StructType::set_body(...)`|`module.set_struct_body(st, fields, packed)?`|on `Module`; fallible (returns `Err` on second-set or non-named struct)|
 |`fn_type(&params, var_args)`|`module.fn_type(ret, params, var_arg)`|return type explicit|
+||`m.add_typed_function::<Ret, Params, _>(name, linkage)?`|builds the function signature from Rust marker types and returns `TypedFunctionValue<Ret, Params>`|
 ||`array_type.const_array(...)`|`array_type.const_array(elements)?`|takes any `IntoIterator<Item: IsConstant<'ctx>>`; validates element type + length|
 ||`int_type.const_int(v, sign_extend)`|`int_type.const_int(v_rust)` infallibly when the Rust input fits losslessly; or `const_int_checked` / `const_int_raw(v: u64, sign_extend: bool)` for the raw / fallible paths. Sign-vs-zero extend is driven by the Rust input type's signedness via `IntoConstantInt<'ctx, W>`.|
 ||`float_type.const_float(d)` (f64)|`f64_ty.const_double(value)` / `f32_ty.const_float(value)` infallibly; `const_from_bits(u128)` for the half / bfloat / fp128 / x86_fp80 / ppc_fp128 widths.|
@@ -126,6 +127,7 @@ shapes and is distinct from `IntDyn` / `FloatDyn`.
 ||—|`module.function_builder(name, fn_ty)`|new — chainable `.linkage()` / `.calling_conv()` / `.attribute()` / `.build()?`|
 ||`function.get_nth_param(n)`|`f.param(n)?`|fallible (`Err(ArgumentIndexOutOfRange)`); returns `Argument<'ctx>`|
 ||`function.get_param_iter()`|`f.params()`|`ExactSizeIterator<Item = Argument>`|
+||`typed.params()`|returns a typed tuple such as `(IntValue<i32>, PointerValue)`|
 ||`function.get_first_basic_block()`|`f.entry_block()`|`Option<BasicBlock>`|
 ||`function.get_basic_blocks()`|`f.basic_blocks()`|`ExactSizeIterator<Item = BasicBlock>`|
 ||`function.append_basic_block("l")`|`f.append_basic_block(&m, "l")`|requires the matching unverified module token|
@@ -137,6 +139,7 @@ shapes and is distinct from `IntDyn` / `FloatDyn`.
 ||—|`IRBuilder::new_for::<R>(&m)`|new — produces a return-marker-tagged builder for compile-time-checked `build_ret`|
 ||—|`m.add_function::<R>(name, fn_ty, linkage)?`|new — typed-return form; errors with `IrError::ReturnTypeMismatch` if the signature's return type does not match `R`|
 ||—|`m.function_builder::<R>(name, fn_ty)`|chainable: `.linkage()` / `.calling_conv()` / `.unnamed_addr()` / `.attribute()` / `.return_attribute(kind)` / `.param_attribute(slot, kind)` / `.param_name(slot, name)` / `.build()?`|
+||`f.with_typed_params::<Params>()?`|wraps functions built through the existing `function_builder` path|
 ||`Builder::build_int_truncate(v, dst, name)`|`b.build_trunc::<Src, Dst>(value, dst_ty, name)?`|widths checked at compile time via `Src: WiderThan<Dst>`; widening fails to compile|
 ||—|`b.build_trunc_dyn(value, dst_ty, name)?`|runtime-checked fallback for `IntValue<Dyn>` paths; errors with `IrError::OperandWidthMismatch`|
 ||`Builder::build_int_z_extend(v, dst, name)`|`b.build_zext::<Src, Dst>(value, dst_ty, name)?`|widths checked at compile time via `Dst: WiderThan<Src>`|

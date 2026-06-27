@@ -40,6 +40,7 @@ use super::derived_types::{
 use super::error::{IrError, IrResult, TypeKindLabel};
 use super::float_kind::{BFloat, Fp128, Half, PpcFp128, X86Fp80};
 use super::function::{FunctionBuilder, FunctionValue};
+use super::function_signature::{FunctionParamList, FunctionReturn, TypedFunctionValue};
 use super::global_alias::{GlobalAlias, GlobalAliasBuilder};
 use super::global_ifunc::{GlobalIFunc, GlobalIFuncBuilder};
 use super::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
@@ -2192,6 +2193,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         )
     }
 
+    pub fn typed_function_type<Ret, Params>(
+        &self,
+        is_var_arg: bool,
+    ) -> IrResult<FunctionType<'ctx, B>>
+    where
+        Ret: FunctionReturn,
+        Params: FunctionParamList,
+    {
+        let ret = Ret::ir_type(self)?;
+        let params = Params::ir_types(self)?;
+        Ok(self.fn_type(ret, params, is_var_arg))
+    }
+
     pub fn target_ext_type<Name, I, T, J>(
         &self,
         name: Name,
@@ -2211,6 +2225,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
             self.core.ctx.target_ext_type(name, type_params, int_params),
             self.module_ref(),
         )
+    }
+
+    pub fn add_typed_function<Ret, Params, Name>(
+        &self,
+        name: Name,
+        linkage: Linkage,
+    ) -> IrResult<TypedFunctionValue<'ctx, Ret, Params, B>>
+    where
+        Ret: FunctionReturn,
+        Params: FunctionParamList,
+        Name: AsRef<str>,
+    {
+        let signature = self.typed_function_type::<Ret, Params>(false)?;
+        let function = self.add_function::<Ret::Marker, _>(name, signature, linkage)?;
+        TypedFunctionValue::<Ret, Params, B>::try_from_function(function)
     }
 
     pub fn add_function<R, Name>(

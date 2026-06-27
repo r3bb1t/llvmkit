@@ -24,6 +24,9 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/value_cannot_mint_instruction_lifecycle.rs");
     t.compile_fail("tests/compile_fail/block_terminator_view_cannot_erase.rs");
     t.compile_fail("tests/compile_fail/call_void_no_return_accessor.rs");
+    t.compile_fail("tests/compile_fail/typed_function_params_reject_wrong_binding.rs");
+    t.compile_fail("tests/compile_fail/typed_function_params_require_facade.rs");
+    t.compile_fail("tests/compile_fail/typed_function_params_token_cannot_escape.rs");
     t.compile_fail("tests/compile_fail/set_struct_body_twice.rs");
     t.compile_fail("tests/compile_fail/module_pass_requires_verified.rs");
     t.compile_fail("tests/compile_fail/cross_module_value_brand.rs");

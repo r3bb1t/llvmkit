@@ -48,6 +48,7 @@ use super::derived_types::FunctionType;
 use super::derived_types::{FloatType, IntType};
 use super::error::{IrError, IrResult, ValueCategoryLabel};
 use super::float_kind::FloatKind;
+use super::function_signature::{FunctionParamList, FunctionReturn, TypedFunctionValue};
 use super::global_value::{DllStorageClass, DsoLocality, Linkage, Visibility};
 use super::int_width::IntWidth;
 use super::marker::{Dyn, ReturnMarker};
@@ -275,6 +276,16 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     #[inline]
     pub fn return_type(self) -> Type<'ctx, B> {
         self.signature().return_type()
+    }
+
+    /// Wrap this function with a typed parameter tuple schema.
+    #[inline]
+    pub fn with_typed_params<Params>(self) -> IrResult<TypedFunctionValue<'ctx, R, Params, B>>
+    where
+        R: FunctionReturn<Marker = R>,
+        Params: FunctionParamList,
+    {
+        TypedFunctionValue::<R, Params, B>::try_from_function(self)
     }
 
     /// Linkage of this function.

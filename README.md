@@ -110,19 +110,16 @@ while let Some(tok) = lex.next() {
 Build IR programmatically:
 
 ```rust
-use llvmkit_ir::{IRBuilder, IntValue, IrError, Linkage, Module};
+use llvmkit_ir::{IRBuilder, IrError, Linkage, Module};
 
 fn build() -> Result<(), IrError> {
-    Module::with_new::<_, _, _>("demo", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("add", fn_ty, Linkage::External)?;
+    Module::with_new("demo", |m| {
+        let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let lhs: IntValue<i32> = f.param(0)?.try_into()?;
-        let rhs: IntValue<i32> = f.param(1)?.try_into()?;
-        let sum = b.build_int_add(lhs, rhs, "sum")?;
+        let (lhs, rhs) = f.params();
+        let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
         b.build_ret(sum)?;
 
         print!("{m}");
@@ -130,6 +127,19 @@ fn build() -> Result<(), IrError> {
     })
 }
 ```
+
+Typed function facades are for signatures known in Rust. Parser or dynamic IR
+code keeps using `FunctionValue::param` / `params`; a typed facade uses the tuple
+parameter schema instead, so wrong typed access fails at compile time and
+`TypedFunctionValue::params()` is infallible after construction.
+`TypedFunctionValue::try_from_function` is the fallible boundary for wrapping an
+existing raw function with a mismatched signature. The schema traits are also the
+future extension point for Rust-level IR schemas: a derived `CpuContext` can
+appear directly in `add_typed_function::<CpuContext, (CpuContext,), _>`, while
+extracted values remain branded handles such as `CpuContextValue<'ctx, B>` /
+`StructValue<'ctx, B>`; a Rust declaration like
+`fn simulate_execution(ctx: CpuContext) -> CpuContext` can lower to its logical
+LLVM IR signature without erasing module brands.
 
 ### Same-module safety
 

@@ -19,7 +19,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 1013.
+Total `#[test]` functions: 1017.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -32,6 +32,10 @@ Total `#[test]` functions: 1013.
 | `crates/llvmkit-ir/tests/asm_writer_basic.rs::declare_form_for_empty_function` | `unittests/IR/AsmWriterTest.cpp` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/asm_writer_basic.rs::unnamed_basic_block_uses_slot_label` | `unittests/IR/AsmWriterTest.cpp::TEST(AsmWriterTest, DebugPrintDetachedArgument)` | mirror |
 | `crates/llvmkit-ir/tests/asm_writer_basic.rs::source_filename_api_borrows_and_clears` | `llvm/lib/IR/Module.cpp::Module::setSourceFileName`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printModule` source filename arm | llvmkit-specific |
+| `crates/llvmkit-ir/tests/function_signature.rs::typed_function_facade_builds_signature_and_params` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` for ordered args; `unittests/IR/AsmWriterTest.cpp` for add+ret printing | llvmkit-specific |
+| `crates/llvmkit-ir/tests/function_signature.rs::typed_function_facade_supports_pointer_and_float_params` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` for ordered args; `Value::getType` category narrowing | llvmkit-specific |
+| `crates/llvmkit-ir/tests/function_signature.rs::typed_function_facade_rejects_wrong_arity_when_wrapping_raw_function` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/function_signature.rs::typed_function_facade_rejects_wrong_raw_param_type` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)`; `Value::getType` category narrowing | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_alloca.rs::alloca_plain` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, Lifetime)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_alloca.rs::alloca_array_size` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, Lifetime)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_alloca.rs::alloca_aligned` | `test/Assembler/align-inst-alloca.ll` | mirror |
@@ -319,7 +323,7 @@ Total `#[test]` functions: 1013.
 | `crates/llvmkit-ir/tests/builder_typestate_seal.rs::phi_range_iterates_three_phis` | `unittests/IR/BasicBlockTest.cpp::TEST(BasicBlockTest, PhiRange)` | port |
 | `crates/llvmkit-ir/tests/builder_typestate_seal.rs::seal_typestate_does_not_change_asm_output` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_typestate_phi.rs::phi_finishes_after_all_incomings` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)` | llvmkit-specific |
-| `crates/llvmkit-ir/tests/typestate_compile_fail.rs::typestate_compile_fail` | `lib/IR/Verifier.cpp::visitBasicBlock` + `visitPHINode` (runtime forms); sealed `BlockCursor` and lifecycle-remint fixtures pull `lib/IR/Instruction.cpp::Instruction::eraseFromParent`, `removeFromParent`, `insertBefore`, `insertAfter` plus `lib/IR/Verifier.cpp::visitSwitchInst`, `visitIndirectBrInst`, and `visitLandingPadInst` runtime checks forward to compile time; llvmkit-specific D7/D8 compile-fail fixtures. Cross-module brand fixtures (`cross_module_value_brand`, `cross_module_global_initializer_brand`, `cross_module_branch_target`, `cross_module_select_arm`, `custom_folder_wrong_brand`) are not 1:1 ports: they pull LLVM runtime provenance checks forward to compile time, with closest anchors `lib/IR/Verifier.cpp::visitGlobalValue`, `lib/IR/Verifier.cpp::visitTerminator`, `lib/IR/Verifier.cpp::visitSelectInst`, `lib/IR/Globals.cpp::GlobalVariable::GlobalVariable` / `setInitializer`, and `llvm/include/llvm/IR/IRBuilderFolder.h::IRBuilderFolder` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/typestate_compile_fail.rs::typestate_compile_fail` | `lib/IR/Verifier.cpp::visitBasicBlock` + `visitPHINode` (runtime forms); sealed `BlockCursor` and lifecycle-remint fixtures pull `lib/IR/Instruction.cpp::Instruction::eraseFromParent`, `removeFromParent`, `insertBefore`, `insertAfter` plus `lib/IR/Verifier.cpp::visitSwitchInst`, `visitIndirectBrInst`, and `visitLandingPadInst` runtime checks forward to compile time; llvmkit-specific D7/D8 compile-fail fixtures. Cross-module brand fixtures (`cross_module_value_brand`, `cross_module_global_initializer_brand`, `cross_module_branch_target`, `cross_module_select_arm`, `custom_folder_wrong_brand`) are not 1:1 ports: they pull LLVM runtime provenance checks forward to compile time, with closest anchors `lib/IR/Verifier.cpp::visitGlobalValue`, `lib/IR/Verifier.cpp::visitTerminator`, `lib/IR/Verifier.cpp::visitSelectInst`, `lib/IR/Globals.cpp::GlobalVariable::GlobalVariable` / `setInitializer`, and `llvm/include/llvm/IR/IRBuilderFolder.h::IRBuilderFolder`; typed-function fixtures (`typed_function_params_reject_wrong_binding.rs`, `typed_function_params_require_facade.rs`, `typed_function_params_token_cannot_escape.rs`) cite `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` and llvmkit D4/D7 compile-time tightening | llvmkit-specific |
 | `crates/llvmkit-ir/tests/type_safety_brand.rs::user_owned_value_tables_remain_usable` | llvmkit-specific D7 module-brand value-table usability | llvmkit-specific |
 | `crates/llvmkit-ir/tests/type_safety_brand.rs::read_only_module_pass_returns_verified` | llvmkit-specific D8 effect-typed read-only pass pipeline guarantee | llvmkit-specific |
 | `crates/llvmkit-ir/tests/type_safety_brand.rs::transform_module_pass_returns_unverified` | llvmkit-specific D8 effect-typed module-transform reverify requirement | llvmkit-specific |

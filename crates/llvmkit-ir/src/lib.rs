@@ -44,6 +44,7 @@ pub mod error;
 pub mod float_kind;
 pub mod fmf;
 pub mod function;
+pub mod function_signature;
 pub mod gep_no_wrap_flags;
 pub mod global_alias;
 pub mod global_ifunc;
@@ -155,6 +156,9 @@ pub use dominator_tree::{DominatorTree, DominatorTreeAnalysis, DominatorTreeBloc
 pub use error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel, VerifierRule};
 pub use fmf::FastMathFlags;
 pub use function::{FunctionBuilder, FunctionValue};
+pub use function_signature::{
+    FunctionParam, FunctionParamList, FunctionReturn, TypedFunctionValue,
+};
 pub use gep_no_wrap_flags::GepNoWrapFlags;
 pub use global_alias::{GlobalAlias, GlobalAliasBuilder};
 pub use global_ifunc::{GlobalIFunc, GlobalIFuncBuilder};

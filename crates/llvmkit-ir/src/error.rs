@@ -481,6 +481,11 @@ pub enum IrError {
     #[error("function argument index {index} out of range (have {count})")]
     ArgumentIndexOutOfRange { index: u32, count: u32 },
 
+    /// A typed function facade was requested with a parameter tuple whose arity
+    /// does not match the function signature.
+    #[error("function parameter count mismatch: expected {expected}, got {got}")]
+    FunctionParameterCountMismatch { expected: u32, got: u32 },
+
     /// `Module::add_function` saw a name already bound at module scope.
     #[error("a function named {name:?} already exists in this module")]
     DuplicateFunctionName { name: String },
