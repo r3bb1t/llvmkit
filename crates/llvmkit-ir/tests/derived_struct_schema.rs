@@ -1,4 +1,4 @@
-use llvmkit_ir::{IRBuilder, IrError, IrStruct, Linkage, Module, NoFolder};
+use llvmkit_ir::{IRBuilder, IntValue, IrError, IrStruct, Linkage, Module, NoFolder, StructFields};
 
 #[derive(IrStruct)]
 struct Point {
@@ -97,6 +97,50 @@ fn derive_builds_nested_named_structs_and_accessors() -> Result<(), IrError> {
             text.contains("ret %WindowPlacement %rebuilt.normal_position"),
             "got:\n{text}"
         );
+        Ok(())
+    })
+}
+
+/// llvmkit-specific checked wrapper for derive-generated struct values; closest
+/// upstream coverage is `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)`.
+#[test]
+fn derive_try_from_raw_ir_values() -> Result<(), IrError> {
+    Module::with_new("derived_try_from", |m| {
+        let f = m.add_typed_function::<(), (WindowPlacement,), _>("read_raw", Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let arg = f.as_function().param(0)?;
+        let placement = WindowPlacementValue::try_from(arg)?;
+        let normal_position = placement.normal_position(&b)?;
+        let _: RectValue<'_, _> = normal_position;
+        b.build_ret_void();
+        Ok(())
+    })
+}
+
+/// llvmkit-specific flattened schema-parameter facade over LLVM function
+/// arguments, with aggregate return coverage from `test/Bitcode/compatibility.ll`
+/// `extractvalue` / `insertvalue` forms.
+#[test]
+fn derive_struct_fields_unpacks_top_level_fields() -> Result<(), IrError> {
+    Module::with_new("derived_fields", |m| {
+        let f = m.add_typed_function::<WindowPlacement, StructFields<WindowPlacement>, _>(
+            "normalize_fields",
+            Linkage::External,
+        )?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let (show_cmd, normal_position) = f.params();
+        let _: IntValue<'_, i32, _> = show_cmd;
+        let _: RectValue<'_, _> = normal_position;
+        let rebuilt = WindowPlacementValue::build(&m, &b, show_cmd, normal_position, "rebuilt")?;
+        b.build_ret(rebuilt)?;
+        let text = format!("{m}");
+        assert!(
+            text.contains("define %WindowPlacement @normalize_fields(i32 %0, %Rect %1)"),
+            "got:\n{text}"
+        );
+        assert!(text.contains("ret %WindowPlacement"), "got:\n{text}");
         Ok(())
     })
 }

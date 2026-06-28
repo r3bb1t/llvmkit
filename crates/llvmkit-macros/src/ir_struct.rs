@@ -205,6 +205,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
 
         impl #ir::StructSchema for #ident {
             type Value<'ctx, B: #ir::ModuleBrand + 'ctx> = #value_ident<'ctx, B>;
+            type FieldParams = (#(#field_tys,)*);
 
             const NAME: &'static str = #llvm_name;
             const PACKED: bool = #packed;
@@ -241,6 +242,69 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
                 _validated: &#ir::ValidatedStructValue<'_>,
             ) -> Self {
                 Self { raw }
+            }
+        }
+
+        impl<'ctx, B> ::core::convert::TryFrom<#ir::Argument<'ctx, B>> for #value_ident<'ctx, B>
+        where
+            B: #ir::ModuleBrand + 'ctx,
+        {
+            type Error = #ir::IrError;
+
+            #[inline]
+            fn try_from(value: #ir::Argument<'ctx, B>) -> #ir::IrResult<Self> {
+                <#ident as #ir::StructSchema>::try_value_from_ir(value)
+            }
+        }
+
+        impl<'ctx, B> ::core::convert::TryFrom<#ir::StructValue<'ctx, B>> for #value_ident<'ctx, B>
+        where
+            B: #ir::ModuleBrand + 'ctx,
+        {
+            type Error = #ir::IrError;
+
+            #[inline]
+            fn try_from(value: #ir::StructValue<'ctx, B>) -> #ir::IrResult<Self> {
+                <#ident as #ir::StructSchema>::try_value_from_ir(value)
+            }
+        }
+
+        impl<'ctx, B> ::core::convert::TryFrom<#ir::Value<'ctx, B>> for #value_ident<'ctx, B>
+        where
+            B: #ir::ModuleBrand + 'ctx,
+        {
+            type Error = #ir::IrError;
+
+            #[inline]
+            fn try_from(value: #ir::Value<'ctx, B>) -> #ir::IrResult<Self> {
+                <#ident as #ir::StructSchema>::try_value_from_ir(value)
+            }
+        }
+
+        impl<'ctx, B> ::core::convert::TryFrom<#ir::Constant<'ctx, B>> for #value_ident<'ctx, B>
+        where
+            B: #ir::ModuleBrand + 'ctx,
+        {
+            type Error = #ir::IrError;
+
+            #[inline]
+            fn try_from(value: #ir::Constant<'ctx, B>) -> #ir::IrResult<Self> {
+                <#ident as #ir::StructSchema>::try_value_from_ir(value)
+            }
+        }
+
+        impl<'ctx, B> ::core::convert::TryFrom<#ir::Instruction<'ctx, #ir::instruction::state::Attached, B>>
+            for #value_ident<'ctx, B>
+        where
+            B: #ir::ModuleBrand + 'ctx,
+        {
+            type Error = #ir::IrError;
+
+            #[inline]
+            fn try_from(
+                value: #ir::Instruction<'ctx, #ir::instruction::state::Attached, B>,
+            ) -> #ir::IrResult<Self> {
+                <#ident as #ir::StructSchema>::try_value_from_ir(value)
             }
         }
 

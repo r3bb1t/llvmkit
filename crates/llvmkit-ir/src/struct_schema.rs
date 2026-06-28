@@ -8,10 +8,13 @@ use crate::argument::Argument;
 use crate::constant::Constant;
 use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::float_kind::{BFloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
-use crate::function_signature::{FunctionParam, FunctionReturn, token::ValidatedFunctionParams};
+use crate::function::FunctionValue;
+use crate::function_signature::{
+    FunctionParam, FunctionParamList, FunctionReturn, token::ValidatedFunctionParams,
+};
 use crate::instruction::{Instruction, state::Attached};
 use crate::int_width::{IntDyn, IntoIntValue, Width};
-use crate::marker::{Dyn, Ptr};
+use crate::marker::{Dyn, Ptr, ReturnMarker};
 use crate::module::{Brand, Module, ModuleBrand, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeData};
 use crate::value::{FloatValue, IntValue, IntoPointerValue, PointerValue, StructValue, Value};
@@ -69,6 +72,40 @@ pub trait IntoIrField<'ctx, F: IrField, B: ModuleBrand = Brand<'ctx>>: Sized {
     fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>>;
 }
 
+#[doc(hidden)]
+pub trait TryIntoStructValue<'ctx, B: ModuleBrand = Brand<'ctx>>: Sized {
+    fn try_into_struct_value(self) -> IrResult<StructValue<'ctx, B>>;
+}
+
+impl<'ctx, B> TryIntoStructValue<'ctx, B> for StructValue<'ctx, B>
+where
+    B: ModuleBrand + 'ctx,
+{
+    #[inline]
+    fn try_into_struct_value(self) -> IrResult<StructValue<'ctx, B>> {
+        Ok(self)
+    }
+}
+
+macro_rules! impl_try_into_struct_value {
+    ($source:ty) => {
+        impl<'ctx, B> TryIntoStructValue<'ctx, B> for $source
+        where
+            B: ModuleBrand + 'ctx,
+        {
+            #[inline]
+            fn try_into_struct_value(self) -> IrResult<StructValue<'ctx, B>> {
+                StructValue::try_from(self)
+            }
+        }
+    };
+}
+
+impl_try_into_struct_value!(Value<'ctx, B>);
+impl_try_into_struct_value!(Argument<'ctx, B>);
+impl_try_into_struct_value!(Constant<'ctx, B>);
+impl_try_into_struct_value!(Instruction<'ctx, Attached, B>);
+
 /// Branded wrapper value generated for a [`StructSchema`].
 pub trait StructSchemaValue<'ctx, S: StructSchema, B: ModuleBrand = Brand<'ctx>>:
     Sized + Copy
@@ -76,11 +113,27 @@ pub trait StructSchemaValue<'ctx, S: StructSchema, B: ModuleBrand = Brand<'ctx>>
     fn as_struct_value(self) -> StructValue<'ctx, B>;
 
     fn from_struct_value(raw: StructValue<'ctx, B>, validated: &ValidatedStructValue<'_>) -> Self;
+
+    /// Validate a raw struct-typed value against schema `S` before wrapping it.
+    #[inline]
+    fn try_from_struct_value(raw: StructValue<'ctx, B>) -> IrResult<Self> {
+        if !<S as IrField>::matches_ir_type(raw.ty().as_type()) {
+            return Err(IrError::TypeMismatch {
+                expected: TypeKindLabel::Struct,
+                got: raw.ty().as_type().kind_label(),
+            });
+        }
+        let validated = ValidatedStructValue::new();
+        Ok(Self::from_struct_value(raw, &validated))
+    }
 }
 
 /// Lifetime-free schema token for an LLVM identified struct.
 pub trait StructSchema: Sized + 'static {
     type Value<'ctx, B: ModuleBrand + 'ctx>: StructSchemaValue<'ctx, Self, B>;
+
+    /// Tuple of top-level field schemas in source-layout order.
+    type FieldParams: FunctionParamList;
 
     /// LLVM identified-struct name, without the leading `%`.
     const NAME: &'static str;
@@ -107,6 +160,17 @@ pub trait StructSchema: Sized + 'static {
         B: ModuleBrand + 'ctx,
     {
         module.get_or_set_named_struct_body::<Self>()
+    }
+
+    /// Convert an existing raw IR value into this schema's branded wrapper.
+    #[inline]
+    fn try_value_from_ir<'ctx, B, V>(value: V) -> IrResult<Self::Value<'ctx, B>>
+    where
+        B: ModuleBrand + 'ctx,
+        V: TryIntoStructValue<'ctx, B>,
+    {
+        let raw = value.try_into_struct_value()?;
+        <Self::Value<'ctx, B> as StructSchemaValue<'ctx, Self, B>>::try_from_struct_value(raw)
     }
 }
 
@@ -159,14 +223,7 @@ where
         B: ModuleBrand + 'ctx,
     {
         let raw = StructValue::try_from(value)?;
-        if !<S as IrField>::matches_ir_type(raw.ty().as_type()) {
-            return Err(IrError::TypeMismatch {
-                expected: TypeKindLabel::Struct,
-                got: raw.ty().as_type().kind_label(),
-            });
-        }
-        let validated = ValidatedStructValue::new();
-        Ok(S::Value::from_struct_value(raw, &validated))
+        <S::Value<'ctx, B> as StructSchemaValue<'ctx, S, B>>::try_from_struct_value(raw)
     }
 }
 
@@ -427,14 +484,7 @@ macro_rules! impl_struct_into_field {
             B: ModuleBrand + 'ctx,
         {
             fn into_ir_field(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                let raw = StructValue::try_from(self)?;
-                if !<S as IrField>::matches_ir_type(raw.ty().as_type()) {
-                    return Err(IrError::TypeMismatch {
-                        expected: TypeKindLabel::Struct,
-                        got: raw.ty().as_type().kind_label(),
-                    });
-                }
-                Ok(raw.as_value())
+                Ok(S::try_value_from_ir(self)?.as_struct_value().as_value())
             }
         }
     };
@@ -444,6 +494,48 @@ impl_struct_into_field!(Value<'ctx, B>);
 impl_struct_into_field!(Argument<'ctx, B>);
 impl_struct_into_field!(Constant<'ctx, B>);
 impl_struct_into_field!(Instruction<'ctx, Attached, B>);
+
+/// Explicit function-parameter marker that expands a schema into its top-level fields.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct StructFields<S: StructSchema>(core::marker::PhantomData<S>);
+
+impl<S> FunctionParamList for StructFields<S>
+where
+    S: StructSchema,
+{
+    const ARITY: u32 = <S::FieldParams as FunctionParamList>::ARITY;
+    type Values<'ctx, B: ModuleBrand + 'ctx> =
+        <S::FieldParams as FunctionParamList>::Values<'ctx, B>;
+
+    #[inline]
+    fn ir_types<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Vec<Type<'ctx, B>>>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        <S::FieldParams as FunctionParamList>::ir_types(module)
+    }
+
+    #[inline]
+    fn validate<'ctx, R, B>(function: FunctionValue<'ctx, R, B>) -> IrResult<()>
+    where
+        R: ReturnMarker,
+        B: ModuleBrand + 'ctx,
+    {
+        <S::FieldParams as FunctionParamList>::validate(function)
+    }
+
+    #[inline]
+    fn values<'ctx, R, B>(
+        function: FunctionValue<'ctx, R, B>,
+        validated: &ValidatedFunctionParams<'_>,
+    ) -> Self::Values<'ctx, B>
+    where
+        R: ReturnMarker,
+        B: ModuleBrand + 'ctx,
+    {
+        <S::FieldParams as FunctionParamList>::values(function, validated)
+    }
+}
 
 impl<S> FunctionReturn for S
 where

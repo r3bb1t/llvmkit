@@ -118,6 +118,8 @@ shapes and is distinct from `IntDyn` / `FloatDyn`.
 ||`m.add_typed_function::<Ret, Params, _>(name, linkage)?`|builds the function signature from Rust marker types and returns `TypedFunctionValue<Ret, Params>`|
 ||`m.add_typed_function_of::<fn(i32) -> i32, _>(name, linkage)?`|builds the same typed facade from a Rust function-pointer alias; `unsafe` / `extern "C"` / `extern "system"` aliases are accepted|
 ||`#[derive(IrStruct)] struct Point { x: i32, y: i32 }`|derive-backed named struct schemas; generated `PointValue<'ctx, B>` wrappers expose typed field accessors and builders over `extractvalue` / `insertvalue`. See [`docs/ir-struct-derive.md`](docs/ir-struct-derive.md).|
+||`WindowPlacementValue::try_from(raw)?`|validates an existing raw `StructValue`, `Value`, `Argument`, `Constant`, or attached `Instruction` against the derived schema before returning the generated wrapper.|
+||`StructFields<WindowPlacement>`|typed-function parameter schema that emits one LLVM parameter per top-level field while keeping nested struct fields as generated wrappers.|
 ||`array_type.const_array(...)`|`array_type.const_array(elements)?`|takes any `IntoIterator<Item: IsConstant<'ctx>>`; validates element type + length|
 ||`int_type.const_int(v, sign_extend)`|`int_type.const_int(v_rust)` infallibly when the Rust input fits losslessly; or `const_int_checked` / `const_int_raw(v: u64, sign_extend: bool)` for the raw / fallible paths. Sign-vs-zero extend is driven by the Rust input type's signedness via `IntoConstantInt<'ctx, W>`.|
 ||`float_type.const_float(d)` (f64)|`f64_ty.const_double(value)` / `f32_ty.const_float(value)` infallibly; `const_from_bits(u128)` for the half / bfloat / fp128 / x86_fp80 / ppc_fp128 widths.|

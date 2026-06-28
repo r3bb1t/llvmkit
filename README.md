@@ -177,6 +177,11 @@ Module::with_new("window", |m| {
 })?;
 ```
 
+Existing IR can be checked back into a generated wrapper with
+`WindowPlacementValue::try_from(raw)?`. When a function boundary should receive
+top-level fields separately, `StructFields<WindowPlacement>` emits `i32, %Rect`
+parameters while nested structs keep their generated wrapper values.
+
 Helper attributes are intentionally small: `#[llvmkit(name = "...")]` overrides
 the LLVM identified-struct name, `#[llvmkit(packed)]` emits a packed body, and
 `#[llvmkit(crate = path::to::ir)]` overrides the generated crate path. Field

@@ -19,7 +19,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 1038.
+Total `#[test]` functions: 1043.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -46,11 +46,16 @@ Total `#[test]` functions: 1038.
 | `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_rejects_recursive_named_body` | `llvm/lib/IR/Type.cpp::StructType::setBodyOrError`; `llvm/lib/IR/Type.cpp::StructType::checkBody` | mirror |
 | `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_rejects_empty_identified_name` | `llvm/lib/IR/Type.cpp::StructType::create`; `llvm/lib/IR/Type.cpp::StructType::setName` | mirror |
 | `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_params_are_branded_wrappers` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_try_value_from_ir_wraps_raw_struct` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_try_value_from_ir_rejects_wrong_schema` | `unittests/IR/TypeBuilderTest.cpp::TEST(TypeBuilder, NamedStruct)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/struct_schema.rs::struct_fields_unpacks_manual_schema_into_params` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_extracts_and_inserts_typed_fields` | `test/Bitcode/compatibility.ll` lines 1549 and 1558 | llvmkit-specific |
 | `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_extract_field_mismatch_does_not_append_instruction` | `IRBuilder::CreateExtractValue` validation-before-insertion contract | llvmkit-specific |
 | `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_can_be_function_return` | `unittests/IR/AsmWriterTest.cpp` aggregate return printing | llvmkit-specific |
 | `crates/llvmkit-ir/tests/struct_schema.rs::nested_struct_schema_accessors_return_nested_wrapper` | `test/Bitcode/compatibility.ll` line 1555 | llvmkit-specific |
 | `crates/llvmkit-ir/tests/derived_struct_schema.rs::derive_builds_nested_named_structs_and_accessors` | `unittests/IR/TypeBuilderTest.cpp::TEST(TypeBuilder, NamedStruct)`; `test/Bitcode/compatibility.ll` aggregate `extractvalue` / `insertvalue` forms | llvmkit-specific |
+| `crates/llvmkit-ir/tests/derived_struct_schema.rs::derive_try_from_raw_ir_values` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/derived_struct_schema.rs::derive_struct_fields_unpacks_top_level_fields` | `test/Bitcode/compatibility.ll` aggregate `extractvalue` / `insertvalue` forms | llvmkit-specific |
 | `crates/llvmkit-ir/tests/derived_struct_schema.rs::derive_supports_name_override_and_packed` | `unittests/IR/TypeBuilderTest.cpp::TEST(TypeBuilder, NamedStruct)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/derived_struct_schema.rs::derive_build_accepts_fields_named_like_helper_parameters` | Rust proc-macro hygiene for generated API parameters; closest LLVM reference `unittests/IR/TypeBuilderTest.cpp::TEST(TypeBuilder, NamedStruct)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_alloca.rs::alloca_plain` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, Lifetime)` | llvmkit-specific |

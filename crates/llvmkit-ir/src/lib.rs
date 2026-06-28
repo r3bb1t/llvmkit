@@ -216,7 +216,7 @@ pub use phi_state::{Closed, Open, PhiState};
 pub use sized_element::{ArrayDyn, SizedElement};
 pub use struct_body_state::{BodySet, Opaque, StructBodyDyn, StructBodyState};
 pub use struct_schema::{
-    IntoIrField, IrField, StructSchema, StructSchemaValue, ValidatedStructValue,
+    IntoIrField, IrField, StructFields, StructSchema, StructSchemaValue, ValidatedStructValue,
 };
 pub use sync_scope::SyncScope;
 pub use target_library_info::{LibFunc, TargetLibraryInfo};

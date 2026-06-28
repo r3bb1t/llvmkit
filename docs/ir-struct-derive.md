@@ -100,6 +100,9 @@ For `struct Point { x: i32, y: i32 }`, the derive creates:
   implemented with `IRBuilder::build_extract_field`.
 - `PointValue::build(&module, &builder, x, y, name)`, implemented as a poison
   aggregate plus `insertvalue` steps.
+- `PointValue::try_from(raw)` for `StructValue`, `Value`, `Argument`,
+  `Constant`, and attached `Instruction` sources. Each conversion validates the
+  raw struct against the `Point` schema before returning `PointValue`.
 - Conversion impls that let the wrapper be used as a struct field, function
   parameter, and `Dyn` return value.
 
@@ -170,6 +173,23 @@ A nested field does not degrade to raw `StructValue`; its schema stays in the
 Rust type. This is the main reason the derive exists: field position remains the
 LLVM source of truth, while ordinary Rust names make the call site readable.
 
+## Wrapping existing IR
+
+Use the generated `TryFrom` impls when a raw value already exists and should be
+validated against a known schema:
+
+```rust
+let raw = f.as_function().param(0)?;
+let placement = WindowPlacementValue::try_from(raw)?;
+let normal_position = placement.normal_position(&builder)?;
+```
+
+The conversion accepts `StructValue`, erased `Value`, `Argument`, `Constant`,
+and attached `Instruction` handles. The wrapper is returned only after the raw
+LLVM type has the expected identified-struct name, packed flag, and field
+layout.
+
+
 ## Function signatures
 
 A derived struct can appear directly in typed function facades:
@@ -183,6 +203,26 @@ let (placement,) = f.params(); // WindowPlacementValue<'ctx, B>
 The function-pointer alias is parsed at compile time. `fn`, `unsafe fn`,
 `extern "C" fn`, `unsafe extern "C" fn`, `extern "system" fn`, and
 `unsafe extern "system" fn` aliases are supported up to arity 16.
+
+A bare schema parameter remains one by-value LLVM struct parameter. Use
+`StructFields<S>` to opt into one LLVM parameter per top-level field:
+
+```rust
+use llvmkit_ir::{Linkage, StructFields};
+
+let f = m.add_typed_function::<WindowPlacement, StructFields<WindowPlacement>, _>(
+    "normalize_fields",
+    Linkage::External,
+)?;
+let entry = f.append_basic_block(&m, "entry");
+let b = f.builder(&m).position_at_end(entry);
+let (show_cmd, normal_position) = f.params();
+let rebuilt = WindowPlacementValue::build(&m, &b, show_cmd, normal_position, "rebuilt")?;
+```
+
+`StructFields<S>` unpacks only `S`'s top-level fields. Nested structs remain
+their generated wrapper values, so `normal_position` above is still
+`RectValue<'ctx, B>`, not separate `%Point` fields.
 
 ## Error behavior
 

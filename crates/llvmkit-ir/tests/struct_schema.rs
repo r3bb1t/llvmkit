@@ -1,6 +1,7 @@
 use llvmkit_ir::{
     Constant, IRBuilder, IntValue, IntoIrField, IrError, IrField, Linkage, Module, ModuleBrand,
-    StructSchema, StructSchemaValue, StructValue, Type, Unverified, ValidatedStructValue, Value,
+    StructFields, StructSchema, StructSchemaValue, StructValue, Type, TypeKindLabel, Unverified,
+    ValidatedStructValue, Value,
 };
 
 struct Point;
@@ -61,6 +62,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoIrField<'ctx, Point, B> for PointValue<'ct
 
 impl StructSchema for Point {
     type Value<'ctx, B: ModuleBrand + 'ctx> = PointValue<'ctx, B>;
+    type FieldParams = (i32, i32);
 
     const NAME: &'static str = "Point";
 
@@ -100,6 +102,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> StructSchemaValue<'ctx, BadPoint, B> for Point
 
 impl StructSchema for BadPoint {
     type Value<'ctx, B: ModuleBrand + 'ctx> = PointValue<'ctx, B>;
+    type FieldParams = (i64,);
 
     const NAME: &'static str = "Point";
 
@@ -136,6 +139,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> StructSchemaValue<'ctx, RecursiveNode, B>
 
 impl StructSchema for RecursiveNode {
     type Value<'ctx, B: ModuleBrand + 'ctx> = PointValue<'ctx, B>;
+    type FieldParams = (RecursiveNode,);
 
     const NAME: &'static str = "RecursiveNode";
 
@@ -170,6 +174,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> StructSchemaValue<'ctx, EmptyName, B> for Poin
 
 impl StructSchema for EmptyName {
     type Value<'ctx, B: ModuleBrand + 'ctx> = PointValue<'ctx, B>;
+    type FieldParams = (i32,);
 
     const NAME: &'static str = "";
 
@@ -242,6 +247,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoIrField<'ctx, Rect, B> for RectValue<'ctx,
 
 impl StructSchema for Rect {
     type Value<'ctx, B: ModuleBrand + 'ctx> = RectValue<'ctx, B>;
+    type FieldParams = (Point, Point);
 
     const NAME: &'static str = "Rect";
 
@@ -350,6 +356,67 @@ fn struct_schema_params_are_branded_wrappers() -> Result<(), IrError> {
         assert_eq!(
             point.as_struct_value().ty().as_type(),
             <Point as StructSchema>::ir_type(&m)?.as_type()
+        );
+        Ok(())
+    })
+}
+
+/// llvmkit-specific checked wrapper over an existing LLVM struct argument;
+/// closest upstream coverage is `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)`.
+#[test]
+fn struct_schema_try_value_from_ir_wraps_raw_struct() -> Result<(), IrError> {
+    Module::with_new("schema", |m| {
+        let point_ty = <Point as StructSchema>::ir_type(&m)?;
+        let fn_ty = m.fn_type(m.void_type(), [point_ty.as_type()], false);
+        let f = m.add_function::<(), _>("raw_take_point", fn_ty, Linkage::External)?;
+        let point = Point::try_value_from_ir(f.param(0)?)?;
+        assert_eq!(
+            point.as_struct_value().ty().as_type(),
+            <Point as StructSchema>::ir_type(&m)?.as_type()
+        );
+        Ok(())
+    })
+}
+
+/// llvmkit-specific checked wrapper rejection for schema/name/body mismatch;
+/// closest upstream coverage is `unittests/IR/TypeBuilderTest.cpp::TEST(TypeBuilder, NamedStruct)`.
+#[test]
+fn struct_schema_try_value_from_ir_rejects_wrong_schema() -> Result<(), IrError> {
+    Module::with_new("schema", |m| {
+        let rect_ty = <Rect as StructSchema>::ir_type(&m)?;
+        let fn_ty = m.fn_type(m.void_type(), [rect_ty.as_type()], false);
+        let f = m.add_function::<(), _>("raw_take_rect", fn_ty, Linkage::External)?;
+        assert_eq!(
+            Point::try_value_from_ir(f.param(0)?),
+            Err(IrError::TypeMismatch {
+                expected: TypeKindLabel::Struct,
+                got: TypeKindLabel::Struct,
+            })
+        );
+        Ok(())
+    })
+}
+
+/// llvmkit-specific flattened schema-parameter facade over LLVM function
+/// arguments; closest upstream coverage is
+/// `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)`.
+#[test]
+fn struct_fields_unpacks_manual_schema_into_params() -> Result<(), IrError> {
+    Module::with_new("schema", |m| {
+        let f = m.add_typed_function::<(), StructFields<Point>, _>(
+            "take_point_fields",
+            Linkage::External,
+        )?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let (x, y) = f.params();
+        let _: IntValue<'_, i32, _> = x;
+        let _: IntValue<'_, i32, _> = y;
+        b.build_ret_void();
+        let text = format!("{m}");
+        assert!(
+            text.contains("define void @take_point_fields(i32 %0, i32 %1)"),
+            "got:\n{text}"
         );
         Ok(())
     })
