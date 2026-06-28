@@ -596,6 +596,16 @@ fn type_contains_scalable_vector<B: ModuleBrand>(ty: Type<'_, B>) -> bool {
                 .iter()
                 .any(|elem| type_contains_scalable_vector(Type::new(*elem, ty.module())))
         }),
+        TypeData::TargetExt(data) => match data.name.as_str() {
+            "aarch64.svcount" => true,
+            "riscv.vector.tuple" => data.type_params.first().is_some_and(|elem| {
+                matches!(
+                    Type::new(*elem, ty.module()).data(),
+                    TypeData::ScalableVector { .. }
+                )
+            }),
+            _ => false,
+        },
         _ => false,
     }
 }

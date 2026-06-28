@@ -437,6 +437,28 @@ fn constant_folder_vector_gep_nonzero_index_builds_vector_expr() -> Result<(), I
     })
 }
 
+/// llvmkit-specific subset of `ConstantFolder.h::FoldGEP` lines 107-118
+/// and `Type.cpp::Type::isScalableTy`: scalable target extension source
+/// element types are unsupported for GEP constant expressions.
+#[test]
+fn constant_folder_gep_declines_scalable_target_ext_source_type() -> Result<(), IrError> {
+    Module::with_new("folder-gep-scalable-target-ext", |m| {
+        let source_ty = m.target_ext_type("aarch64.svcount", Vec::<Type>::new(), Vec::<u32>::new());
+        let ptr = m.ptr_type(0).const_null().as_constant();
+
+        assert_eq!(
+            ConstantFolder.fold_gep(
+                source_ty.as_type(),
+                ptr.as_value(),
+                &[],
+                GepNoWrapFlags::empty(),
+            )?,
+            None
+        );
+        Ok(())
+    })
+}
+
 /// llvmkit-specific direct Rust hook coverage for
 /// `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldShuffleVector`
 /// lines 165-172 and `Constants.cpp::ConstantExpr::getShuffleVector`: scalable

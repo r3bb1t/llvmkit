@@ -479,6 +479,11 @@ fn fold_constant_expr_associative_binary<'ctx, B: ModuleBrand + 'ctx>(
                 ValueKindData::Constant(ConstantData::Expr(_))
             )
         {
+            if ConstantIntValue::<IntDyn, B>::try_from(lhs).is_ok()
+                && opcode.is_desirable_constant_expr()
+            {
+                return build_binary_constant_or_expr(opcode, rhs, lhs);
+            }
             return constant_fold_binary_instruction(opcode, rhs, lhs);
         }
         return Ok(None);
@@ -1001,6 +1006,23 @@ pub fn constant_fold_compare_instruction<'ctx, B: ModuleBrand + 'ctx>(
             {
                 return bool_constant_for_type(result_ty, result);
             }
+            let lhs_is_not_expr = !matches!(
+                &lhs.as_value().data().kind,
+                ValueKindData::Constant(ConstantData::Expr(_))
+            );
+            let rhs_is_expr = matches!(
+                &rhs.as_value().data().kind,
+                ValueKindData::Constant(ConstantData::Expr(_))
+            );
+            if (lhs_is_not_expr && rhs_is_expr)
+                || (constant_is_null_value(lhs) && !constant_is_null_value(rhs))
+            {
+                return constant_fold_compare_instruction(
+                    CmpPredicate::Int(swapped_int_predicate(pred)),
+                    rhs,
+                    lhs,
+                );
+            }
             Ok(None)
         }
         CmpPredicate::Float(pred) => {
@@ -1491,21 +1513,20 @@ pub fn constant_fold_extract_element_instruction<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(None);
     };
     let index_ap = index_constant.ap_int();
-    let raw_index = if scalable {
-        let Some(raw_index) = index_ap.try_zext_u64() else {
-            return Ok(None);
-        };
-        raw_index
+    let index_usize = if scalable {
+        index_ap
+            .try_zext_u64()
+            .and_then(|raw_index| usize::try_from(raw_index).ok())
     } else {
         let limit = u64::from(lanes);
         let raw_index = index_ap.limited_value(limit);
         if raw_index == limit {
             return Ok(Some(poison_for(element_ty)));
         }
-        raw_index
-    };
-    let Ok(index_usize) = usize::try_from(raw_index) else {
-        return Ok(None);
+        Some(match usize::try_from(raw_index) {
+            Ok(index) => index,
+            Err(_) => return Ok(None),
+        })
     };
 
     if let ValueKindData::Constant(ConstantData::Expr(expr)) = &vector.as_value().data().kind {
@@ -1586,6 +1607,9 @@ pub fn constant_fold_extract_element_instruction<'ctx, B: ModuleBrand + 'ctx>(
         }
     }
 
+    let Some(index_usize) = index_usize else {
+        return Ok(None);
+    };
     let Some(elements) = aggregate_elements(vector) else {
         return Ok(None);
     };
@@ -2644,12 +2668,7 @@ fn fold_undef_float_binary<'ctx, B: ModuleBrand + 'ctx>(
     };
 
     let folded = match opcode {
-        BinaryOpcode::FSub
-            if vector_ty.is_none()
-                && rhs_undef
-                && ConstantFloatValue::<FloatDyn, B>::try_from(lhs)
-                    .is_ok_and(|value| value.ap_float().is_neg_zero()) =>
-        {
+        BinaryOpcode::FSub if rhs_undef && constant_matches_negative_zero_fp_pattern(lhs) => {
             undef()
         }
         BinaryOpcode::FAdd
@@ -2923,7 +2942,9 @@ fn is_not_poison_for_select<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx
             | ConstantData::Float(_)
             | ConstantData::GlobalValueRef { .. }
             | ConstantData::PointerNull,
-        ) => true,
+        )
+        | ValueKindData::Function(_)
+        | ValueKindData::GlobalVariable(_) => true,
         ValueKindData::Constant(ConstantData::Aggregate(elements))
             if constant.ty().data().as_vector().is_some() =>
         {
@@ -2995,10 +3016,10 @@ fn constant_int_same_unsigned_value<'ctx, B: ModuleBrand + 'ctx>(
     lhs: ConstantIntValue<'ctx, IntDyn, B>,
     rhs: ConstantIntValue<'ctx, IntDyn, B>,
 ) -> bool {
-    let Some(lhs) = lhs.ap_int().try_zext_u128() else {
-        return false;
-    };
-    rhs.ap_int().try_zext_u128() == Some(lhs)
+    let width = lhs.bit_width().max(rhs.bit_width());
+    lhs.ap_int()
+        .zext_or_trunc(width)
+        .eq_ap_int(&rhs.ap_int().zext_or_trunc(width))
 }
 
 fn is_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
@@ -3196,6 +3217,28 @@ fn constant_is_float_negative_zero<'ctx, B: ModuleBrand + 'ctx>(
                 .copied()
                 .all(constant_is_float_negative_zero)
     })
+}
+
+fn constant_matches_negative_zero_fp_pattern<'ctx, B: ModuleBrand + 'ctx>(
+    constant: Constant<'ctx, B>,
+) -> bool {
+    if let Ok(value) = ConstantFloatValue::<FloatDyn, B>::try_from(constant) {
+        return value.ap_float().is_neg_zero();
+    }
+    let Some(elements) = aggregate_elements(constant) else {
+        return false;
+    };
+    let mut has_negative_zero = false;
+    for element in elements {
+        if is_poison(element) {
+            continue;
+        }
+        if !constant_matches_negative_zero_fp_pattern(element) {
+            return false;
+        }
+        has_negative_zero = true;
+    }
+    has_negative_zero
 }
 
 fn is_zero_int_constant<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {

@@ -733,6 +733,36 @@ fn extractelement_from_insertelement_matches_indices_across_widths() -> Result<(
     })
 }
 
+/// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldExtractElementInstruction`
+/// lines 374-381: `APSInt::isSameValue` compares arbitrary-width index
+/// constants without truncating through host integer widths.
+#[test]
+fn extractelement_from_insertelement_matches_wide_indices() -> Result<(), IrError> {
+    Module::with_new("fold-extract-insertelement-wide-index", |m| {
+        let i32_ty = m.i32_type();
+        let i129_ty = m.int_type_n::<129>();
+        let vec_ty = m.vector_type(i32_ty.as_type(), 2, true);
+        let base = vec_ty.as_type().get_undef().as_constant();
+        let inserted = i32_ty.const_int(7_i32).as_constant();
+        let wide_index = i129_ty
+            .const_ap_int(&ApInt::one_bit_set(129, 128))?
+            .as_constant();
+        let insert_expr = m.constant_expr(
+            vec_ty.as_type(),
+            ConstantExprOpcode::InsertElement,
+            [base.as_value(), inserted.as_value(), wide_index.as_value()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+
+        let folded = constant_fold_extract_element_instruction(insert_expr, wide_index)?
+            .expect("same arbitrary-width index extracts inserted lane");
+        assert_eq!(folded, inserted);
+        Ok(())
+    })
+}
+
 /// llvmkit-specific subset of `ConstantFold.cpp` lines 338-341 and 398-407:
 /// poison indices are undef-like for extract/insert, and inserting null into an
 /// all-zero vector returns the original zero vector before range checks.
@@ -1328,6 +1358,39 @@ fn associative_constant_expr_binary_reassociates_folded_rhs() -> Result<(), IrEr
     })
 }
 
+/// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldBinaryInstruction`
+/// lines 783-789: a constant integer LHS and commutative desirable
+/// constant-expression RHS are swapped before building the folded expression.
+#[test]
+fn commuted_desirable_binop_with_constant_expr_rhs_builds_swapped_expr() -> Result<(), IrError> {
+    Module::with_new("fold-commuted-desirable-constexpr", |m| {
+        let i32_ty = m.i32_type();
+        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let ptr_as_i32 = m.constant_expr(
+            i32_ty.as_type(),
+            ConstantExprOpcode::PtrToInt,
+            [g.as_global_constant_ptr().as_value()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+        let one = i32_ty.const_int(1_i32).as_constant();
+
+        let folded = constant_fold_binary_instruction(BinaryOpcode::Xor, one, ptr_as_i32)?
+            .expect("commuted desirable constant expression folds");
+        let expected = m.constant_expr(
+            i32_ty.as_type(),
+            ConstantExprOpcode::Xor,
+            [ptr_as_i32.as_value(), one.as_value()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+        assert_eq!(folded, expected);
+        Ok(())
+    })
+}
+
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldCastInstruction`
 /// lines 129-136: undef casts that introduce a bounded result fold to zero,
 /// while the remaining target-independent casts preserve undef in the
@@ -1398,6 +1461,56 @@ fn fp_undef_binary_rules_fold_to_undef_or_nan() -> Result<(), IrError> {
         .expect("finite fp op with undef folds to NaN");
         let fmul = ConstantFloatValue::<FloatDyn>::try_from(fmul)?;
         assert!(fmul.ap_float().is_nan());
+        Ok(())
+    })
+}
+
+/// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldBinaryInstruction`
+/// lines 693-696 plus `PatternMatch.h::m_NegZeroFP`: scalable vector
+/// `-0.0 - undef` follows the scalar/scalable undef rule only when the
+/// left operand matches the negative-zero FP pattern. Poison lanes are
+/// ignored, but undef lanes and poison-only vectors do not match.
+#[test]
+fn scalable_vector_fsub_negative_zero_pattern_controls_undef_fold() -> Result<(), IrError> {
+    Module::with_new("fold-scalable-fp-negzero-undef", |m| {
+        let f32_ty = m.f32_type();
+        let vec_ty = m.vector_type(f32_ty.as_type(), 2, true);
+        let neg_zero = f32_ty.const_float(-0.0).as_constant();
+        let undef_lane = f32_ty.as_type().get_undef().as_constant();
+        let poison_lane = f32_ty.as_type().get_poison().as_constant();
+        let rhs = vec_ty.as_type().get_undef().as_constant();
+
+        for lhs in [
+            vec_ty
+                .const_vector::<Constant<'_>, _>([neg_zero, neg_zero])?
+                .as_constant(),
+            vec_ty
+                .const_vector::<Constant<'_>, _>([neg_zero, poison_lane])?
+                .as_constant(),
+        ] {
+            let folded = constant_fold_binary_instruction(BinaryOpcode::FSub, lhs, rhs)?
+                .expect("scalable -0.0 - undef folds");
+            assert_eq!(folded, rhs);
+        }
+
+        for lhs in [
+            vec_ty
+                .const_vector::<Constant<'_>, _>([neg_zero, undef_lane])?
+                .as_constant(),
+            vec_ty
+                .const_vector::<Constant<'_>, _>([poison_lane, poison_lane])?
+                .as_constant(),
+        ] {
+            let folded = constant_fold_binary_instruction(BinaryOpcode::FSub, lhs, rhs)?
+                .expect("non-matching scalable fsub undef folds to NaN");
+            let lane_zero = constant_fold_extract_element_instruction(
+                folded,
+                m.i32_type().const_zero().as_constant(),
+            )?
+            .expect("folded NaN splat extracts lane zero");
+            let lane_zero = ConstantFloatValue::<FloatDyn>::try_from(lane_zero)?;
+            assert!(lane_zero.ap_float().is_nan());
+        }
         Ok(())
     })
 }
@@ -1589,6 +1702,36 @@ fn compare_constant_expr_edge_cases_fold() -> Result<(), IrError> {
         )?
         .expect("same FP constexpr ueq folds");
         assert_eq!(ueq, bool_ty.const_int(true).as_constant());
+        Ok(())
+    })
+}
+
+/// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldCompareInstruction`
+/// lines 1298-1305: a null LHS and non-null constant-expression RHS are
+/// retried with a swapped predicate, enabling the RHS-null shortcuts.
+#[test]
+fn compare_null_lhs_constant_expr_rhs_commutes_to_rhs_null_shortcut() -> Result<(), IrError> {
+    Module::with_new("fold-compare-null-lhs-constexpr", |m| {
+        let bool_ty = m.bool_type();
+        let i32_ty = m.i32_type();
+        let i64_ty = m.i64_type();
+        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let ptr_as_i64 = m.constant_expr(
+            i64_ty.as_type(),
+            ConstantExprOpcode::PtrToInt,
+            [g.as_global_constant_ptr().as_value()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+
+        let folded = constant_fold_compare_instruction(
+            CmpPredicate::Int(IntPredicate::Ule),
+            i64_ty.const_zero().as_constant(),
+            ptr_as_i64,
+        )?
+        .expect("null-left compare folds after swapping");
+        assert_eq!(folded, bool_ty.const_int(true).as_constant());
         Ok(())
     })
 }
@@ -1908,6 +2051,32 @@ fn select_undef_poison_and_equal_arm_rules_fold() -> Result<(), IrError> {
             constant_fold_select_instruction(bool_ty.const_int(true).as_constant(), seven, seven)?
                 .expect("equal select arms fold");
         assert_eq!(equal_arms, seven);
+        Ok(())
+    })
+}
+
+/// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldSelectInstruction`
+/// lines 307-329: direct global variables are not-poison constants, so an
+/// undef arm can fold to the direct global arm.
+#[test]
+fn select_undef_arm_with_direct_global_arm_folds_to_global() -> Result<(), IrError> {
+    Module::with_new("fold-select-direct-global", |m| {
+        let i1_ty = m.bool_type();
+        let i32_ty = m.i32_type();
+        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let cond = m.constant_expr(
+            i1_ty.as_type(),
+            ConstantExprOpcode::PtrToInt,
+            [g.as_global_constant_ptr().as_value()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+        let undef_arm = g.as_constant().ty().get_undef().as_constant();
+
+        let folded = constant_fold_select_instruction(cond, undef_arm, g.as_constant())?
+            .expect("undef arm folds to not-poison direct global");
+        assert_eq!(folded, g.as_constant());
         Ok(())
     })
 }
