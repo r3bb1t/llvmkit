@@ -11,7 +11,7 @@ use super::constant_fold::{
     constant_fold_extract_value_instruction, constant_fold_get_element_ptr,
     constant_fold_insert_element_instruction, constant_fold_insert_value_instruction,
     constant_fold_select_instruction, constant_fold_shuffle_vector_instruction,
-    constant_fold_unary_instruction,
+    constant_fold_unary_instruction, gep_result_type,
 };
 use super::folder::IRBuilderFolder;
 use super::{
@@ -128,10 +128,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for ConstantFolder {
         {
             return Ok(Some(folded.as_value()));
         }
+        let result_ty = gep_result_type(ptr.ty(), &index_constants)?;
         let module = ptr.as_value().module().core_ref();
         module
             .constant_expr_with_options(
-                ptr.ty(),
+                result_ty,
                 ConstantExprOpcode::GetElementPtr,
                 operands,
                 [],
@@ -272,7 +273,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for ConstantFolder {
         let Some(result_ty) = shuffle_result_type(lhs.ty(), mask)? else {
             return Ok(None);
         };
-        let mask_constant = shuffle_mask_constant(module, mask)?;
+        let mask_constant = shuffle_mask_constant(
+            module,
+            mask,
+            result_ty
+                .data()
+                .as_vector()
+                .is_some_and(|(_, _, scalable)| scalable),
+        )?;
         module
             .module()
             .constant_expr(
@@ -541,6 +549,7 @@ fn shuffle_result_type<'ctx, B: ModuleBrand + 'ctx>(
 fn shuffle_mask_constant<'ctx, B: ModuleBrand + 'ctx>(
     module: ModuleRef<'ctx, B>,
     mask: &[i32],
+    scalable: bool,
 ) -> IrResult<Constant<'ctx, B>> {
     let i32_ty = IntType::<i32, B>::new(module.module().i32_type().as_type().id(), module);
     let mut elements = Vec::with_capacity(mask.len());
@@ -555,7 +564,7 @@ fn shuffle_mask_constant<'ctx, B: ModuleBrand + 'ctx>(
         message: "shufflevector mask too large",
     })?;
     ModuleView::<B>::new(module.module())
-        .vector_type(i32_ty.as_type(), lanes, false)
+        .vector_type(i32_ty.as_type(), lanes, scalable)
         .const_vector(elements)
         .map(|constant| constant.as_constant())
 }

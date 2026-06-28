@@ -398,6 +398,64 @@ fn constant_folder_binary_intrinsic_declines() -> Result<(), IrError> {
     })
 }
 
+/// llvmkit-specific direct Rust hook coverage for
+/// `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldGEP` lines
+/// 107-118 and `Constants.cpp::ConstantExpr::getGetElementPtr`: a scalar
+/// pointer plus vector index constructs a vector-of-pointer constant expr.
+#[test]
+fn constant_folder_vector_gep_nonzero_index_builds_vector_expr() -> Result<(), IrError> {
+    Module::with_new("folder-vector-gep", |m| {
+        let i32_ty = m.i32_type();
+        let i64_ty = m.i64_type();
+        let ptr_vec_ty = m.vector_type(m.ptr_type(0).as_type(), 2, false);
+        let index_ty = m.vector_type(i64_ty.as_type(), 2, false);
+        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let index = index_ty.const_vector::<ConstantIntValue<'_, i64>, _>([
+            i64_ty.const_int(1_i64),
+            i64_ty.const_int(2_i64),
+        ])?;
+
+        let folded = ConstantFolder
+            .fold_gep(
+                i32_ty.as_type(),
+                g.as_global_constant_ptr().as_value(),
+                &[index.as_value()],
+                GepNoWrapFlags::empty(),
+            )?
+            .expect("vector GEP constexpr constructed");
+        let folded = Constant::try_from(folded)?;
+        assert_eq!(folded.ty(), ptr_vec_ty.as_type());
+        Ok(())
+    })
+}
+
+/// llvmkit-specific direct Rust hook coverage for
+/// `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldShuffleVector`
+/// lines 165-172 and `Constants.cpp::ConstantExpr::getShuffleVector`: scalable
+/// zero-mask shuffles build a scalable mask constant for the fallback constexpr.
+#[test]
+fn constant_folder_scalable_shuffle_builds_scalable_mask_expr() -> Result<(), IrError> {
+    Module::with_new("folder-scalable-shuffle", |m| {
+        let i32_ty = m.i32_type();
+        let vec_ty = m.vector_type(i32_ty.as_type(), 2, true);
+        let lhs = vec_ty.const_vector::<ConstantIntValue<'_, i32>, _>([
+            i32_ty.const_int(1_i32),
+            i32_ty.const_int(2_i32),
+        ])?;
+        let rhs = vec_ty.const_vector::<ConstantIntValue<'_, i32>, _>([
+            i32_ty.const_int(3_i32),
+            i32_ty.const_int(4_i32),
+        ])?;
+
+        let folded = ConstantFolder
+            .fold_shuffle_vector(lhs.as_value(), rhs.as_value(), &[0, 0])?
+            .expect("scalable zero-mask shuffle constexpr constructed");
+        let folded = Constant::try_from(folded)?;
+        assert_eq!(folded.ty(), vec_ty.as_type());
+        Ok(())
+    })
+}
+
 /// Port of `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, InsertExtractElement)`
 /// lines 1127-1138: a folded insertelement chain extracts the inserted
 /// constants without materializing instructions.

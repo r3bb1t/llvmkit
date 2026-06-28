@@ -6,9 +6,9 @@ corpus_dbg_declare_value.ll | test/Assembler/dbg_declare_value.ll | expect=corpu
 corpus_dbg_record_after_terminator_invalid.ll | test/Assembler/dbg-record-invalid-0.ll | status=xfail-parse
 
 # Upstream fixtures checked in now, but expected-failing until the parser grows
-# vector zeroinitializer, same-function forward blockaddress, and ordinary
-# forward-global resolution in constant expressions.
-upstream/vscale-round-trip/const_shufflevector.ll | test/Bitcode/vscale-round-trip.ll::const_shufflevector / const_shufflevector_ex | status=xfail-parse
+# same-function forward blockaddress and ordinary forward-global resolution in
+# constant expressions.
+upstream/vscale-round-trip/const_shufflevector.ll | test/Bitcode/vscale-round-trip.ll::const_shufflevector / const_shufflevector_ex | status=pass
 upstream/blockaddress-addrspace/return_self_good.ll | test/Bitcode/blockaddress-addrspace.ll::return-self-good.ll | status=xfail-parse
 upstream/blockaddress-addrspace/return_self_bad.ll | test/Bitcode/blockaddress-addrspace.ll::return-self-bad.ll | status=xfail-parse
 upstream/2004-11-28-InvalidTypeCrash.ll | test/Assembler/2004-11-28-InvalidTypeCrash.ll | status=xfail-parse

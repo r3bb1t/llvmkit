@@ -97,6 +97,23 @@ fn shufflevector_round_trips() {
     );
 }
 
+/// `shufflevector` typed `zeroinitializer` mask operand from
+/// `test/Bitcode/compatibility.ll` line 1539.
+#[test]
+fn shufflevector_zeroinitializer_mask_operand_round_trips() {
+    let text = parse_fixture(
+        b"define <2 x i8> @shuffle_zero_mask(<2 x i8> %x, <2 x i8> %y) {\n\
+entry:\n\
+  %res = shufflevector <2 x i8> %x, <2 x i8> %y, <2 x i32> zeroinitializer\n\
+  ret <2 x i8> %res\n\
+}\n",
+    );
+    assert_check_lines(
+        &text,
+        &["%res = shufflevector <2 x i8> %x, <2 x i8> %y, <2 x i32> zeroinitializer"],
+    );
+}
+
 // ── Aggregate ops ─────────────────────────────────────────────────────────────
 
 /// llvmkit-specific opaque-pointer subset of `test/Assembler/insertextractvalue.ll`.

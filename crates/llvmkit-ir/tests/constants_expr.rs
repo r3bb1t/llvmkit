@@ -433,41 +433,123 @@ fn shufflevector_constant_expr_uses_mask_operand_when_folding() -> Result<(), Ir
     })
 }
 
-/// Ports `ShuffleVectorInst::isValidOperands`: scalable vector masks accept
-/// only `undef` or true aggregate-zero constants, not explicit zero vectors.
+/// Ports `ShuffleVectorInst::isValidOperands` / `getShuffleMask`: top-level
+/// poison and scalable undef masks are undef-equivalent mask constants, and
+/// constant-expression shuffles fold all-poison masks to poison results.
 #[test]
-fn invalid_scalable_shufflevector_explicit_zero_mask_is_rejected() -> Result<(), IrError> {
-    Module::with_new("constexpr_bad_scalable_shuffle_mask", |m| {
+fn shufflevector_constant_expr_poison_and_scalable_undef_masks_fold() -> Result<(), IrError> {
+    Module::with_new("constexpr_shuffle_poison_masks", |m| {
         let i32_ty = m.i32_type();
-        let vec_i32_ty = m.vector_type(i32_ty.as_type(), 2, true);
-        let one = i32_ty.const_int(1i32);
-        let two = i32_ty.const_int(2i32);
-        let three = i32_ty.const_int(3i32);
-        let four = i32_ty.const_int(4i32);
-        let lhs =
-            vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([one, two])?;
-        let rhs =
-            vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([three, four])?;
-        let zero = i32_ty.const_zero();
-        let mask =
-            vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([zero, zero])?;
+        let fixed_ty = m.vector_type(i32_ty.as_type(), 2, false);
+        let one = i32_ty.const_int(1_i32);
+        let two = i32_ty.const_int(2_i32);
+        let lhs = fixed_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([one, two])?;
+        let rhs = fixed_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([one, two])?;
+        let fixed_mask = fixed_ty.as_type().get_poison().as_constant();
+        let folded = m.constant_expr(
+            fixed_ty.as_type(),
+            ConstantExprOpcode::ShuffleVector,
+            [lhs.as_value(), rhs.as_value(), fixed_mask.as_value()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+        assert_eq!(folded, fixed_ty.as_type().get_poison().as_constant());
+
+        let scalable_ty = m.vector_type(i32_ty.as_type(), 2, true);
+        let lhs = scalable_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([
+            i32_ty.const_int(1_i32),
+            i32_ty.const_int(1_i32),
+        ])?;
+        let rhs = scalable_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([
+            i32_ty.const_int(2_i32),
+            i32_ty.const_int(2_i32),
+        ])?;
+        let scalable_mask = scalable_ty.as_type().get_undef().as_constant();
+        let folded = m.constant_expr(
+            scalable_ty.as_type(),
+            ConstantExprOpcode::ShuffleVector,
+            [lhs.as_value(), rhs.as_value(), scalable_mask.as_value()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+        assert_eq!(folded, scalable_ty.as_type().get_poison().as_constant());
+        Ok(())
+    })
+}
+
+/// llvmkit-specific verifier guard for `Constants.cpp::ConstantExpr::getShuffleVector`:
+/// the parser-style third mask operand is the only shufflevector mask payload,
+/// so direct API callers cannot append a fourth raw mask list.
+#[test]
+fn shufflevector_constant_expr_rejects_extra_raw_mask_payload() -> Result<(), IrError> {
+    Module::with_new("constexpr_shuffle_extra_mask", |m| {
+        let i32_ty = m.i32_type();
+        let vec_ty = m.vector_type(i32_ty.as_type(), 2, false);
+        let lhs = vec_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([
+            i32_ty.const_int(1_i32),
+            i32_ty.const_int(2_i32),
+        ])?;
+        let rhs = vec_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([
+            i32_ty.const_int(3_i32),
+            i32_ty.const_int(4_i32),
+        ])?;
+        let mask = vec_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([
+            i32_ty.const_zero(),
+            i32_ty.const_int(1_i32),
+        ])?;
 
         let err = m
             .constant_expr(
-                vec_i32_ty.as_type(),
+                vec_ty.as_type(),
                 ConstantExprOpcode::ShuffleVector,
                 [lhs.as_value(), rhs.as_value(), mask.as_value()],
                 [],
-                [],
+                [0_i32],
                 ConstantExprFlags::none(),
             )
-            .expect_err("explicit zero scalable shufflevector mask is rejected");
+            .expect_err("raw mask payload is rejected for parser-style shufflevector");
         assert_eq!(
             err,
             IrError::InvalidOperation {
                 message: "invalid shufflevector constant expression"
             }
         );
+        Ok(())
+    })
+}
+
+/// Ports `ShuffleVectorInst::isValidOperands`: scalable vector masks accept
+/// undef and aggregate-zero constants; llvmkit's aggregate-zero representation
+/// prints as `zeroinitializer`.
+#[test]
+fn scalable_shufflevector_zero_mask_is_accepted() -> Result<(), IrError> {
+    Module::with_new("constexpr_scalable_shuffle_zero_mask", |m| {
+        let i32_ty = m.i32_type();
+        let vec_i32_ty = m.vector_type(i32_ty.as_type(), 2, true);
+        let lhs = vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([
+            i32_ty.const_int(1i32),
+            i32_ty.const_int(2i32),
+        ])?;
+        let rhs = vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([
+            i32_ty.const_int(3i32),
+            i32_ty.const_int(4i32),
+        ])?;
+        let zero = i32_ty.const_zero();
+        let mask =
+            vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([zero, zero])?;
+
+        let expr = m.constant_expr(
+            vec_i32_ty.as_type(),
+            ConstantExprOpcode::ShuffleVector,
+            [lhs.as_value(), rhs.as_value(), mask.as_value()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+        let text = format!("{}", expr.as_value());
+        assert!(text.contains("zeroinitializer"), "{text}");
         Ok(())
     })
 }

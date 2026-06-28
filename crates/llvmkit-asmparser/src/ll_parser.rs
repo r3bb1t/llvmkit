@@ -41,7 +41,7 @@ use llvmkit_ir::{
     Module, ModuleBrand, NoFolder, PointerValue, Positioned, RoundingMode, SelectionKind,
     StructType, SyncScope, ThreadLocalMode, Type, TypeKind, UIToFpFlags, UnnamedAddr, Unverified,
     UseListOrderBBRecord, UseListOrderRecord, Visibility, constant_fold_select_instruction,
-    derived_types::PointerType,
+    derived_types::PointerType, shufflevector_mask_from_constant,
 };
 use llvmkit_support::{Span, Spanned};
 
@@ -3630,9 +3630,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     .map_err(|e| self.builder_err("array zeroinitializer", e))
             }
             AnyTypeEnum::Vector(t) => {
-                if t.is_scalable() {
-                    return Err(self.expected("fixed vector zeroinitializer"));
-                }
                 let len = usize::try_from(t.min_len()).map_err(|_| ParseError::Expected {
                     expected: "vector zeroinitializer length fits in usize".into(),
                     loc: DiagLoc::span(self.loc()),
@@ -6783,7 +6780,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v2_ty = self.parse_type(false)?;
         let v2 = self.parse_value(state, v2_ty)?;
         self.expect_punct(PunctKind::Comma, "',' before mask in shufflevector")?;
-        // Parse mask: `poison` or `< i32 N, ... >`
+        // Parse mask as the upstream typed constant operand.
         let mask = self.parse_shuffle_mask()?;
         let v = b
             .build_shuffle_vector(v1, v2, &mask, result_name.as_str())
@@ -6791,53 +6788,26 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         Ok(v)
     }
 
-    /// Parse a shufflevector mask: `poison` → all-poison entries, or
-    /// `< i32 N, i32 M, ... >` → explicit indices.
+    /// Parse a shufflevector mask typed constant operand and decode it with
+    /// `ShuffleVectorInst::getShuffleMask` semantics.
     fn parse_shuffle_mask(&mut self) -> ParseResult<Vec<i32>> {
-        use llvmkit_ir::instr_types::POISON_MASK_ELEM;
-        if matches!(self.peek(), Token::Kw(Keyword::Poison)) {
-            self.bump()?;
-            return Ok(vec![POISON_MASK_ELEM]);
-        }
-        self.expect_punct(PunctKind::Less, "'<' to open shuffle mask")?;
-        if matches!(
-            self.peek(),
-            Token::IntegerLit(_) | Token::Kw(Keyword::Vscale)
-        ) {
-            let _mask_ty = self.parse_array_or_vector_after_open(true)?;
-            self.expect_punct(PunctKind::Less, "'<' to open shuffle mask elements")?;
-        }
-        let mut mask = Vec::new();
-        loop {
-            let _ety = self.parse_type(false).map_err(|err| match err {
-                ParseError::Lex(LexError::UnknownToken { span }) => ParseError::Expected {
-                    expected: "valid shufflevector mask element".into(),
-                    loc: DiagLoc::span(span),
-                },
-                other => other,
-            })?;
-            let elem_loc = self.loc();
-            let parsed = self
-                .parse_int_literal(ExpectedIntWidth::Infer)
-                .map_err(|_| ParseError::Expected {
-                    expected: "valid shufflevector mask element".into(),
-                    loc: DiagLoc::span(elem_loc),
-                })?;
-            let value = parsed_apsint_to_i128(&parsed).ok_or_else(|| ParseError::Expected {
+        let mask_ty = self.parse_type(false)?;
+        let loc = self.loc();
+        let mask = self.parse_global_value(mask_ty).map_err(|err| match err {
+            ParseError::Lex(LexError::UnknownToken { span }) => ParseError::Expected {
                 expected: "valid shufflevector mask element".into(),
-                loc: DiagLoc::span(elem_loc),
-            })?;
-            let entry = i32::try_from(value).map_err(|_| ParseError::Expected {
-                expected: "valid shufflevector mask element".into(),
-                loc: DiagLoc::span(elem_loc),
-            })?;
-            mask.push(entry);
-            if !self.eat_punct(PunctKind::Comma)? {
-                break;
-            }
-        }
-        self.expect_punct(PunctKind::Greater, "'>' to close shuffle mask")?;
-        Ok(mask)
+                loc: DiagLoc::span(span),
+            },
+            ParseError::Expected { .. } => ParseError::Expected {
+                expected: "valid shufflevector mask".into(),
+                loc: DiagLoc::span(loc),
+            },
+            other => other,
+        })?;
+        shufflevector_mask_from_constant(mask).ok_or_else(|| ParseError::Expected {
+            expected: "valid shufflevector mask".into(),
+            loc: DiagLoc::span(loc),
+        })
     }
 
     /// `extractvalue <agg-ty> <agg>, <idx>, ...`. Mirrors

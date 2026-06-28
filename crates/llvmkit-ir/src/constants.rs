@@ -1519,22 +1519,49 @@ fn valid_shufflevector_mask_constant(
     lhs_scalable: bool,
 ) -> bool {
     match &module.context().value_data(mask).kind {
-        ValueKindData::Constant(ConstantData::Undef) => true,
-        ValueKindData::Constant(ConstantData::Aggregate(_)) if lhs_scalable => false,
+        ValueKindData::Constant(ConstantData::Undef | ConstantData::Poison) => true,
+        ValueKindData::Constant(ConstantData::Aggregate(_))
+            if constant_id_is_zero_value(module, mask) =>
+        {
+            true
+        }
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
+            if lhs_scalable {
+                return false;
+            }
             let Some(bound) = u64::from(lhs_lanes).checked_mul(2) else {
                 return false;
             };
-            elements.iter().all(
-                |element| match &module.context().value_data(*element).kind {
-                    ValueKindData::Constant(ConstantData::Undef) => true,
-                    ValueKindData::Constant(ConstantData::Int(_)) => {
-                        const_index_u64(module, *element).is_some_and(|value| value < bound)
-                    }
-                    _ => false,
-                },
-            )
+            elements.iter().all(|element| {
+                if constant_id_is_undef_or_poison(module, *element) {
+                    return true;
+                }
+                matches!(
+                    &module.context().value_data(*element).kind,
+                    ValueKindData::Constant(ConstantData::Int(_))
+                ) && const_index_u64(module, *element).is_some_and(|value| value < bound)
+            })
         }
+        _ => false,
+    }
+}
+
+fn constant_id_is_undef_or_poison(module: &ModuleCore, id: ValueId) -> bool {
+    matches!(
+        &module.context().value_data(id).kind,
+        ValueKindData::Constant(ConstantData::Undef | ConstantData::Poison)
+    )
+}
+
+fn constant_id_is_zero_value(module: &ModuleCore, id: ValueId) -> bool {
+    match &module.context().value_data(id).kind {
+        ValueKindData::Constant(ConstantData::Int(_)) => {
+            const_index_u64(module, id).is_some_and(|value| value == 0)
+        }
+        ValueKindData::Constant(ConstantData::PointerNull) => true,
+        ValueKindData::Constant(ConstantData::Aggregate(elements)) => elements
+            .iter()
+            .all(|element| constant_id_is_zero_value(module, *element)),
         _ => false,
     }
 }
@@ -2007,7 +2034,8 @@ pub(super) fn validate_constant_expr_data(
                 });
             };
             let mask_id = data.operands[2];
-            if lhs_elem != rhs_elem
+            if !data.mask.is_empty()
+                || lhs_elem != rhs_elem
                 || lhs_lanes != rhs_lanes
                 || lhs_scalable != rhs_scalable
                 || mask_elem != module.i32_type().as_type().id()

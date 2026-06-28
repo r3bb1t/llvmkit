@@ -19,6 +19,24 @@
 @bitcast2 = global <4 x i16> bitcast (<2 x i32> <i32 -1, i32 -1> to <4 x i16>)
 
 
+; Need a function to make update_test_checks.py work.
+;.
+; CHECK: @A = global i64 0
+; CHECK: @add = global ptr inttoptr (i64 ptrtoint (ptr @A to i64) to ptr)
+; CHECK: @sub = global ptr inttoptr (i64 ptrtoint (ptr @A to i64) to ptr)
+; CHECK: @xor = global ptr inttoptr (i64 ptrtoint (ptr @A to i64) to ptr)
+; CHECK: @B = external global %Ty
+; CHECK: @cons = weak global i32 0, align 8
+; CHECK: @gep1 = global <2 x ptr> undef
+; CHECK: @gep2 = global <2 x ptr> undef
+; CHECK: @gep3 = global <2 x ptr> zeroinitializer
+; CHECK: @gep4 = global <2 x ptr> zeroinitializer
+; CHECK: @bitcast1 = global <2 x i32> splat (i32 -1)
+; CHECK: @bitcast2 = global <4 x i16> splat (i16 -1)
+;.
 define void @dummy() {
+; CHECK-LABEL: @dummy(
+; CHECK-NEXT:    ret void
+;
   ret void
 }

@@ -162,7 +162,7 @@ fn constant_expr_fold_cast_fixture_matches_upstream() {
 }
 
 /// Exact vector-select folding excerpt from
-/// `test/Assembler/ConstantExprFoldSelect.ll` lines 5-8.
+/// `test/Assembler/ConstantExprFoldSelect.ll` lines 5-9.
 #[test]
 fn constant_expr_fold_select_vector_fixture_matches_upstream() {
     const FIXTURE: &[u8] = include_bytes!(
@@ -447,6 +447,29 @@ fn constant_expr_shufflevector_rejects_out_of_range_mask() {
         b"define <2 x i32> @bad() {\n  ret <2 x i32> shufflevector (<2 x i32> <i32 1, i32 2>, <2 x i32> <i32 3, i32 4>, <2 x i32> <i32 0, i32 4>)\n}\n",
         "invalid operands to shufflevector",
     );
+}
+
+/// Exact scalable constant-expression shufflevector excerpt from
+/// `test/Bitcode/vscale-round-trip.ll` `const_shufflevector` cases.
+#[test]
+fn constant_expr_scalable_shufflevector_zero_mask_fixture_matches_upstream() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/vscale-round-trip/const_shufflevector.ll");
+
+    let text = parse_and_render(
+        "constant_expr_scalable_shufflevector_zero_mask_fixture_matches_upstream",
+        FIXTURE,
+    );
+    assert_check_lines(
+        &text,
+        &[
+            "define <vscale x 4 x i32> @const_shufflevector()",
+            "ret <vscale x 4 x i32> zeroinitializer",
+            "define <vscale x 4 x i32> @const_shufflevector_ex()",
+            "ret <vscale x 4 x i32> zeroinitializer",
+        ],
+    );
+    assert_parse_print_parse_stable(&text);
 }
 
 /// Exact negative constant-GEP fixture from
@@ -738,8 +761,9 @@ fn nested_forward_dso_and_no_cfi_resolve_later_signature() {
     assert_parse_print_parse_stable(&text);
 }
 
-/// Exact `LLParser::parseValID` `kw_splat` accepted shape: a scalar splat
-/// expands to fixed-vector element storage.
+/// Exact `LLParser::parseValID` `kw_splat` accepted shape plus
+/// `AsmWriter.cpp::writeConstantInternal` splat spelling: a scalar splat
+/// expands to fixed-vector element storage and prints as `splat (T C)`.
 #[test]
 fn constant_splat_vector_round_trips() {
     const FIXTURE: &[u8] = include_bytes!(

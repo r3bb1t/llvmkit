@@ -122,6 +122,7 @@ pub use constant_fold::{
     constant_fold_insert_element_instruction, constant_fold_insert_value_instruction,
     constant_fold_instruction, constant_fold_select_instruction,
     constant_fold_shuffle_vector_instruction, constant_fold_unary_instruction,
+    shufflevector_mask_from_constant,
 };
 pub use constant_folding::{
     ConstantOffsetFromGlobal, FoldNonDeterminism, PreservedCastFlags, can_constant_fold_call_to,
