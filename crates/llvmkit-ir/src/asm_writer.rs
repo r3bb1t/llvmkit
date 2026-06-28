@@ -833,6 +833,31 @@ fn collect_byte_string<B: ModuleBrand>(
     }
 }
 
+fn is_zero_initializer_value(module: &ModuleCore, id: ValueId) -> bool {
+    let data = module.context().value_data(id);
+    match &data.kind {
+        ValueKindData::Constant(ConstantData::Int(words)) => words.iter().all(|word| *word == 0),
+        ValueKindData::Constant(ConstantData::Float(bits)) => *bits == 0,
+        ValueKindData::Constant(ConstantData::PointerNull) => true,
+        ValueKindData::Constant(ConstantData::Aggregate(elements)) => elements
+            .iter()
+            .all(|element| is_zero_initializer_value(module, *element)),
+        _ => false,
+    }
+}
+
+fn aggregate_splat_id(elem_ids: &[ValueId]) -> Option<ValueId> {
+    let first = elem_ids.first().copied()?;
+    elem_ids.iter().all(|id| *id == first).then_some(first)
+}
+
+fn is_int_or_fp_splat_value(module: &ModuleCore, id: ValueId) -> bool {
+    matches!(
+        module.context().value_data(id).kind,
+        ValueKindData::Constant(ConstantData::Int(_) | ConstantData::Float(_))
+    )
+}
+
 fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
     host: Value<'ctx, B>,
@@ -847,6 +872,24 @@ fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx>(
     }
     if elem_ids.is_empty() {
         return f.write_str("zeroinitializer");
+    }
+    if elem_ids
+        .iter()
+        .all(|id| is_zero_initializer_value(module.core_ref(), *id))
+    {
+        return f.write_str("zeroinitializer");
+    }
+    if matches!(
+        ty.data(),
+        TypeData::FixedVector { .. } | TypeData::ScalableVector { .. }
+    ) && let Some(splat) = aggregate_splat_id(elem_ids)
+        && is_int_or_fp_splat_value(module.core_ref(), splat)
+    {
+        let data = module.context().value_data(splat);
+        let value = Value::from_parts(splat, module, data.ty);
+        f.write_str("splat (")?;
+        fmt_operand(f, value, None)?;
+        return f.write_str(")");
     }
     let (open, close) = match ty.data() {
         TypeData::Array { .. } => ("[", "]"),

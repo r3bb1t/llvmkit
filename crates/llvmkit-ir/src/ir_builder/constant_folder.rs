@@ -7,11 +7,11 @@
 
 use super::constant_fold::{
     constant_fold_binary_instruction, constant_fold_cast_instruction,
-    constant_fold_compare_instruction, constant_fold_exact_binary_instruction,
-    constant_fold_extract_element_instruction, constant_fold_extract_value_instruction,
-    constant_fold_get_element_ptr, constant_fold_insert_element_instruction,
-    constant_fold_insert_value_instruction, constant_fold_select_instruction,
-    constant_fold_shuffle_vector_instruction, constant_fold_unary_instruction,
+    constant_fold_compare_instruction, constant_fold_extract_element_instruction,
+    constant_fold_extract_value_instruction, constant_fold_get_element_ptr,
+    constant_fold_insert_element_instruction, constant_fold_insert_value_instruction,
+    constant_fold_select_instruction, constant_fold_shuffle_vector_instruction,
+    constant_fold_unary_instruction,
 };
 use super::folder::IRBuilderFolder;
 use super::{
@@ -41,9 +41,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for ConstantFolder {
         opcode: BinaryOpcode,
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
-        is_exact: bool,
+        _is_exact: bool,
     ) -> IrResult<Option<Value<'ctx, B>>> {
-        fold_exact_binary(opcode, lhs, rhs, is_exact)
+        fold_exact_binary(opcode, lhs, rhs)
     }
 
     fn fold_no_wrap_bin_op(
@@ -54,18 +54,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for ConstantFolder {
         has_nuw: bool,
         has_nsw: bool,
     ) -> IrResult<Option<Value<'ctx, B>>> {
-        if !matches!(
-            opcode,
-            BinaryOpcode::Add | BinaryOpcode::Sub | BinaryOpcode::Mul | BinaryOpcode::Shl
-        ) {
-            return Ok(None);
-        }
-        fold_binary(
-            opcode,
-            lhs,
-            rhs,
-            ConstantExprFlags::overflowing(has_nuw, has_nsw),
-        )
+        let flags = if matches!(opcode, BinaryOpcode::Add | BinaryOpcode::Sub) {
+            ConstantExprFlags::overflowing(has_nuw, has_nsw)
+        } else {
+            ConstantExprFlags::none()
+        };
+        fold_binary(opcode, lhs, rhs, flags)
     }
 
     fn fold_bin_op_fmf(
@@ -130,7 +124,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for ConstantFolder {
             operands.push(index.as_value());
             index_constants.push(index);
         }
-        if let Some(folded) = constant_fold_get_element_ptr(source_ty, ptr, &index_constants)? {
+        if let Some(folded) = constant_fold_get_element_ptr(source_ty, ptr, &index_constants, None)?
+        {
             return Ok(Some(folded.as_value()));
         }
         let module = ptr.as_value().module().core_ref();
@@ -341,7 +336,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for ConstantFolder {
         value: Constant<'ctx, B>,
         dest_ty: Type<'ctx, B>,
     ) -> IrResult<Option<Value<'ctx, B>>> {
-        let opcode = pointer_cast_opcode(value.ty(), dest_ty);
+        let opcode = pointer_cast_opcode(value.ty(), dest_ty)?;
         self.fold_cast(opcode, value.as_value(), dest_ty)
     }
 
@@ -350,7 +345,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for ConstantFolder {
         value: Constant<'ctx, B>,
         dest_ty: Type<'ctx, B>,
     ) -> IrResult<Option<Value<'ctx, B>>> {
-        let opcode = pointer_bitcast_or_addrspace_cast_opcode(value.ty(), dest_ty);
+        let opcode = pointer_bitcast_or_addrspace_cast_opcode(value.ty(), dest_ty)?;
         self.fold_cast(opcode, value.as_value(), dest_ty)
     }
 }
@@ -365,6 +360,15 @@ fn fold_binary<'ctx, B: ModuleBrand + 'ctx>(
         Some(values) => values,
         None => return Ok(None),
     };
+    fold_binary_constants(opcode, lhs, rhs, flags)
+}
+
+fn fold_binary_constants<'ctx, B: ModuleBrand + 'ctx>(
+    opcode: BinaryOpcode,
+    lhs: Constant<'ctx, B>,
+    rhs: Constant<'ctx, B>,
+    flags: ConstantExprFlags,
+) -> IrResult<Option<Value<'ctx, B>>> {
     if opcode.is_desirable_constant_expr() {
         let Some(expr_opcode) = binary_constant_expr_opcode(opcode) else {
             return Ok(None);
@@ -390,17 +394,12 @@ fn fold_exact_binary<'ctx, B: ModuleBrand + 'ctx>(
     opcode: BinaryOpcode,
     lhs: Value<'ctx, B>,
     rhs: Value<'ctx, B>,
-    is_exact: bool,
 ) -> IrResult<Option<Value<'ctx, B>>> {
-    if !is_exact {
-        return fold_binary(opcode, lhs, rhs, ConstantExprFlags::none());
-    }
     let (lhs, rhs) = match constants2(lhs, rhs) {
         Some(values) => values,
         None => return Ok(None),
     };
-    constant_fold_exact_binary_instruction(opcode, lhs, rhs, true)
-        .map(|folded| folded.map(Constant::as_value))
+    fold_binary_constants(opcode, lhs, rhs, ConstantExprFlags::none())
 }
 
 fn constants2<'ctx, B: ModuleBrand + 'ctx>(
@@ -431,39 +430,88 @@ fn cast_constant_expr_opcode(opcode: CastOpcode) -> Option<ConstantExprOpcode> {
     }
 }
 
-fn pointer_cast_opcode<B: ModuleBrand>(source_ty: Type<'_, B>, dest_ty: Type<'_, B>) -> CastOpcode {
-    match (
-        pointer_address_space(source_ty),
-        pointer_address_space(dest_ty),
-    ) {
-        (Some(source), Some(dest)) if source != dest => CastOpcode::AddrSpaceCast,
-        (Some(_), Some(_)) => CastOpcode::BitCast,
-        (Some(_), None) if dest_ty.is_integer() => CastOpcode::PtrToInt,
-        (None, Some(_)) if source_ty.is_integer() => CastOpcode::IntToPtr,
-        _ => CastOpcode::BitCast,
+fn pointer_cast_opcode<B: ModuleBrand>(
+    source_ty: Type<'_, B>,
+    dest_ty: Type<'_, B>,
+) -> IrResult<CastOpcode> {
+    let Some(source) = ptr_or_ptr_vector_address_space(source_ty) else {
+        return invalid_pointer_cast();
+    };
+    if !lane_shape_matches(source_ty, dest_ty) {
+        return invalid_pointer_cast();
+    }
+    if is_int_or_int_vector(dest_ty) {
+        return Ok(CastOpcode::PtrToInt);
+    }
+    let Some(dest) = ptr_or_ptr_vector_address_space(dest_ty) else {
+        return invalid_pointer_cast();
+    };
+    if source != dest {
+        Ok(CastOpcode::AddrSpaceCast)
+    } else {
+        Ok(CastOpcode::BitCast)
     }
 }
 
 fn pointer_bitcast_or_addrspace_cast_opcode<B: ModuleBrand>(
     source_ty: Type<'_, B>,
     dest_ty: Type<'_, B>,
-) -> CastOpcode {
-    match (
-        pointer_address_space(source_ty),
-        pointer_address_space(dest_ty),
-    ) {
-        (Some(source), Some(dest)) if source != dest => CastOpcode::AddrSpaceCast,
-        _ => CastOpcode::BitCast,
+) -> IrResult<CastOpcode> {
+    let Some(source) = ptr_or_ptr_vector_address_space(source_ty) else {
+        return invalid_pointer_cast();
+    };
+    let Some(dest) = ptr_or_ptr_vector_address_space(dest_ty) else {
+        return invalid_pointer_cast();
+    };
+    if !lane_shape_matches(source_ty, dest_ty) {
+        return invalid_pointer_cast();
+    }
+    if source != dest {
+        Ok(CastOpcode::AddrSpaceCast)
+    } else {
+        Ok(CastOpcode::BitCast)
     }
 }
 
-fn pointer_address_space<B: ModuleBrand>(ty: Type<'_, B>) -> Option<u32> {
+fn ptr_or_ptr_vector_address_space<B: ModuleBrand>(ty: Type<'_, B>) -> Option<u32> {
     match ty.data() {
         TypeData::Pointer { addr_space } | TypeData::TypedPointer { addr_space, .. } => {
             Some(*addr_space)
         }
+        TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
+            ptr_or_ptr_vector_address_space(Type::new(*elem, ty.module()))
+        }
         _ => None,
     }
+}
+
+fn is_int_or_int_vector<B: ModuleBrand>(ty: Type<'_, B>) -> bool {
+    match ty.data() {
+        TypeData::Integer { .. } => true,
+        TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
+            matches!(
+                Type::new(*elem, ty.module()).data(),
+                TypeData::Integer { .. }
+            )
+        }
+        _ => false,
+    }
+}
+
+fn lane_shape_matches<B: ModuleBrand>(lhs: Type<'_, B>, rhs: Type<'_, B>) -> bool {
+    vector_shape(lhs) == vector_shape(rhs)
+}
+
+fn vector_shape<B: ModuleBrand>(ty: Type<'_, B>) -> Option<(u32, bool)> {
+    ty.data()
+        .as_vector()
+        .map(|(_, lanes, scalable)| (lanes, scalable))
+}
+
+fn invalid_pointer_cast<T>() -> IrResult<T> {
+    Err(IrError::InvalidOperation {
+        message: "invalid pointer cast constant expression",
+    })
 }
 
 fn vector_element_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<Type<'ctx, B>> {

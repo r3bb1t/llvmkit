@@ -22,8 +22,9 @@ Shipped today:
   function declarations and definitions), all 42 instruction opcodes, metadata
   (standalone numbered nodes, named metadata, instruction trailing attachments),
   and value forms (integer/float literals, undef, poison, null,
-  zeroinitializer, global/function references). Round-trip tested via
-  `format!("{module}")`.
+  zeroinitializer, global/function references, and represented `ConstantExpr`
+  forms for parser-needed opcodes, including upstream vector GEP, bitcast, cast,
+  and select folding fixtures). Round-trip tested via `format!("{module}")`.
 - **Typed IR data model** — done. `llvmkit-ir` ships interned types, typed
   values, typed constants, functions, basic blocks, globals, comdats, data
   layout, target triple, module asm directives, and LLVM-style function-local
@@ -31,9 +32,13 @@ Shipped today:
 - **IR construction** — done for the currently modeled instruction families.
   The builder covers integer and floating-point arithmetic, comparisons,
   casts, memory ops, GEP, calls, select, phi, the Parser-1 terminator / EH /
-  atomic families, and the associated typed-return / typestate surfaces.
+  atomic families, and the associated typed-return / typestate surfaces. The
+  default `ConstantFolder` mirrors `llvm/include/llvm/IR/ConstantFolder.h` for
+  the modeled IR surface and routes target-independent pure-constant folds
+  through the LLVM 22.1.4 `ConstantFold.cpp`-derived helper layer.
 - **AsmWriter** — done for the shipped surface. `format!("{module}")`
-  produces real textual LLVM IR.
+  produces real textual LLVM IR, including upstream folded `ConstantExpr` forms
+  for vector GEP, bitcast, cast, and select fixtures.
 - **Verifier** — done for the shipped surface, including CFG-backed PHI checks
   and cross-block SSA dominance checks through a recomputed dominator tree.
 - **CFG and dominance queries** — done. `FunctionCfg`, `BasicBlockEdge`,
@@ -72,6 +77,11 @@ Shipped today:
   `orig_cpp` or hidden C++ fixtures.
 
 Not shipped yet:
+
+- **Full analysis / optimization constant-folding parity beyond the represented
+  target-independent `ConstantFolder` surface** — DataLayout / TLI-dependent
+  folds remain in analysis-only APIs where represented; the default folder does
+  not ship LLVM's full optimization pipeline or broad transform library.
 
 - **Full metadata / attribute surface beyond the represented range,
   `absolute_symbol`, debug/use-list, and `returned` facts**

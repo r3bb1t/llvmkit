@@ -37,10 +37,11 @@ use llvmkit_ir::{
     AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, BasicBlockLabel, Brand, CallingConv,
     Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
     DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType, FloatValue,
-    GepNoWrapFlags, IRBuilder, IntDyn, IntValue, IrError, IrResult, Linkage, MaybeAlign, Module,
-    ModuleBrand, NoFolder, PointerValue, Positioned, RoundingMode, SelectionKind, StructType,
-    SyncScope, ThreadLocalMode, Type, TypeKind, UIToFpFlags, UnnamedAddr, Unverified,
-    UseListOrderBBRecord, UseListOrderRecord, Visibility, derived_types::PointerType,
+    GepNoWrapFlags, IRBuilder, IntDyn, IntType, IntValue, IrError, IrResult, Linkage, MaybeAlign,
+    Module, ModuleBrand, NoFolder, PointerValue, Positioned, RoundingMode, SelectionKind,
+    StructType, SyncScope, ThreadLocalMode, Type, TypeKind, UIToFpFlags, UnnamedAddr, Unverified,
+    UseListOrderBBRecord, UseListOrderRecord, Visibility, constant_fold_select_instruction,
+    derived_types::PointerType,
 };
 use llvmkit_support::{Span, Spanned};
 
@@ -6419,12 +6420,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         let cond_ty = self.parse_type(false)?;
         let cond_v = self.parse_value(state, cond_ty)?;
-        let cond_iv: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = cond_v
-            .try_into()
-            .map_err(|_| self.expected("integer-typed select condition"))?;
-        let cond_i1: llvmkit_ir::IntValue<'ctx, bool, B> = cond_iv
-            .try_into()
-            .map_err(|_| self.expected("i1 select condition"))?;
+        let cond_value = cond_v;
         self.expect_punct(PunctKind::Comma, "',' after select condition")?;
         let true_ty = self.parse_type(false)?;
         let true_v = self.parse_value(state, true_ty)?;
@@ -6434,6 +6430,42 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         if true_ty != false_ty {
             return Err(self.expected("matching arm types in select"));
         }
+        let valid_condition = match cond_ty.into_type_enum() {
+            AnyTypeEnum::Int(ty) => ty.bit_width() == 1,
+            AnyTypeEnum::Vector(ty) => IntType::<IntDyn, B>::try_from(ty.element())
+                .is_ok_and(|element| element.bit_width() == 1),
+            _ => false,
+        };
+        if !valid_condition {
+            return Err(self.expected("i1 select condition"));
+        }
+        let valid_arm_type = match true_ty.into_type_enum() {
+            AnyTypeEnum::Int(_) | AnyTypeEnum::Float(_) | AnyTypeEnum::Pointer(_) => true,
+            AnyTypeEnum::Vector(ty) => matches!(
+                ty.element().into_type_enum(),
+                AnyTypeEnum::Int(_) | AnyTypeEnum::Float(_) | AnyTypeEnum::Pointer(_)
+            ),
+            _ => false,
+        };
+        if !valid_arm_type {
+            return Err(self.expected("select arm category supported by this session (int/fp/ptr)"));
+        }
+        if let (Ok(condition), Ok(true_constant), Ok(false_constant)) = (
+            Constant::try_from(cond_value),
+            Constant::try_from(true_v),
+            Constant::try_from(false_v),
+        ) && let Some(folded) =
+            constant_fold_select_instruction(condition, true_constant, false_constant)
+                .map_err(|e| self.builder_err("select", e))?
+        {
+            return Ok(folded.as_value());
+        }
+        let cond_iv: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = cond_value
+            .try_into()
+            .map_err(|_| self.expected("integer-typed select condition"))?;
+        let cond_i1: llvmkit_ir::IntValue<'ctx, bool, B> = cond_iv
+            .try_into()
+            .map_err(|_| self.expected("i1 select condition"))?;
         let name = result_name.as_str();
         let v = match true_ty.into_type_enum() {
             AnyTypeEnum::Int(_) => {

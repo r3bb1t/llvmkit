@@ -51,7 +51,7 @@ fn vector_binops_emit_elementwise_ir() {
             "expected vector add, got:\n{txt}"
         );
         assert!(
-            txt.contains("%sh = shl <2 x i64> %s, <i64 2, i64 2>\n"),
+            txt.contains("%sh = shl <2 x i64> %s, splat (i64 2)\n"),
             "expected vector shl, got:\n{txt}"
         );
     })

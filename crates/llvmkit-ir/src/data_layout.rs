@@ -19,8 +19,9 @@
 //!
 //! - `getStructLayout` caching (we recompute every call; matches the
 //!   upstream lazy-init shape but without the cache).
-//! - `getGEPIndicesForOffset` / `getIndexedOffsetInType` (depends on
-//!   the planned ConstantExpr layer).
+//! - `getGEPIndicesForOffset` / `getIndexedOffsetInType` (requires the
+//!   remaining DataLayout offset-decomposition helpers beyond the current
+//!   parser-needed ConstantExpr subset).
 //! - `hasMicrosoftFastStdCallMangling` and friends (presentation-only
 //!   helpers; reachable through [`DataLayout::mangling_mode`]).
 

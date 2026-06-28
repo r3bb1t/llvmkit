@@ -111,27 +111,74 @@ fn constant_expr_casts_round_trip() {
     assert_parse_print_parse_stable(&text);
 }
 
-/// Exact integer-binary constant-expression folding assertions from
-/// `test/Assembler/ConstantExprFold.ll`.
+/// Exact constant-expression folding excerpt from `test/Assembler/ConstantExprFold.ll`
+/// lines 9-50, including vector GEP and vector bitcast FileCheck assertions.
 #[test]
-fn constant_expr_binary_identity_folds_like_upstream() {
+fn constant_expr_fold_full_vector_gep_and_bitcast_fixture() {
     const FIXTURE: &[u8] = include_bytes!(
-        "fixtures/upstream/ConstantExprFold/constant_expr_binary_identity_folds_like_upstream.ll"
+        "fixtures/upstream/ConstantExprFold/constant_expr_fold_full_vector_gep_and_bitcast_fixture.ll"
     );
 
-    let text = parse_and_render("constant_expr_binary_identity_folds_like_upstream", FIXTURE);
-    assert_eq!(
-        text,
-        concat!(
-            "; ModuleID = 'constant_expr_binary_identity_folds_like_upstream'\n",
-            "\n",
-            "@A = global i64 0\n",
-            "@add = global ptr inttoptr (i64 ptrtoint (ptr @A to i64) to ptr)\n",
-            "@sub = global ptr inttoptr (i64 ptrtoint (ptr @A to i64) to ptr)\n",
-            "@xor = global ptr inttoptr (i64 ptrtoint (ptr @A to i64) to ptr)\n"
-        )
+    let text = parse_and_render(
+        "constant_expr_fold_full_vector_gep_and_bitcast_fixture",
+        FIXTURE,
+    );
+    assert_check_lines(
+        &text,
+        &[
+            "@A = global i64 0",
+            "@add = global ptr inttoptr (i64 ptrtoint (ptr @A to i64) to ptr)",
+            "@sub = global ptr inttoptr (i64 ptrtoint (ptr @A to i64) to ptr)",
+            "@xor = global ptr inttoptr (i64 ptrtoint (ptr @A to i64) to ptr)",
+            "@B = external global %Ty",
+            "@cons = weak global i32 0, align 8",
+            "@gep1 = global <2 x ptr> undef",
+            "@gep2 = global <2 x ptr> undef",
+            "@gep3 = global <2 x ptr> zeroinitializer",
+            "@gep4 = global <2 x ptr> zeroinitializer",
+            "@bitcast1 = global <2 x i32> splat (i32 -1)",
+            "@bitcast2 = global <4 x i16> splat (i16 -1)",
+            "define void @dummy()",
+            "ret void",
+        ],
     );
     assert_parse_print_parse_stable(&text);
+}
+
+/// Exact constant-expression cast folding excerpt from
+/// `test/Assembler/ConstantExprFoldCast.ll` lines 11-29.
+#[test]
+fn constant_expr_fold_cast_fixture_matches_upstream() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/ConstantExprFoldCast/constant_expr_fold_cast_fixture_matches_upstream.ll"
+    );
+
+    let text = parse_and_render("constant_expr_fold_cast_fixture_matches_upstream", FIXTURE);
+    assert_parse_print_parse_stable(&text);
+    assert!(!text.contains("bitcast"), "{text}");
+    assert!(!text.contains("trunc"), "{text}");
+    assert_eq!(text.matches("addrspacecast").count(), 2, "{text}");
+    assert!(text.contains("@K = global ptr @J"), "{text}");
+}
+
+/// Exact vector-select folding excerpt from
+/// `test/Assembler/ConstantExprFoldSelect.ll` lines 5-8.
+#[test]
+fn constant_expr_fold_select_vector_fixture_matches_upstream() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/ConstantExprFoldSelect/constant_expr_fold_select_vector_fixture_matches_upstream.ll"
+    );
+
+    let text = parse_and_render(
+        "constant_expr_fold_select_vector_fixture_matches_upstream",
+        FIXTURE,
+    );
+    assert_parse_print_parse_stable(&text);
+    assert!(
+        text.contains("<i16 undef, i16 -2, i16 -3, i16 4>"),
+        "{text}"
+    );
+    assert!(!text.contains("select <4 x i1>"), "{text}");
 }
 
 /// Direct port of `LLParser::parseValID`'s general
@@ -700,9 +747,6 @@ fn constant_splat_vector_round_trips() {
     );
 
     let text = parse_and_render("constant_splat_vector_round_trips", FIXTURE);
-    assert_check_lines(
-        &text,
-        &["@v = global <4 x i32> <i32 7, i32 7, i32 7, i32 7>"],
-    );
+    assert_check_lines(&text, &["@v = global <4 x i32> splat (i32 7)"]);
     assert_parse_print_parse_stable(&text);
 }

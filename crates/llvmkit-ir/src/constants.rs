@@ -1322,7 +1322,11 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx>(
             let Some((base, indices)) = operands.split_first() else {
                 return Ok(None);
             };
-            constant_fold_get_element_ptr(source_ty, *base, indices)
+            let in_range = match &data.flags {
+                ConstantExprFlags::Gep(flags) => flags.in_range(),
+                _ => None,
+            };
+            constant_fold_get_element_ptr(source_ty, *base, indices, in_range)
         }
         ConstantExprOpcode::ExtractElement => {
             let [vector, index] = operands.as_slice() else {
@@ -2179,6 +2183,15 @@ fn lane_shape_matches(module: &ModuleCore, lhs: TypeId, rhs: TypeId) -> bool {
     vector_shape(module, lhs) == vector_shape(module, rhs)
 }
 
+fn pointer_bitcast_shape_matches(module: &ModuleCore, src: TypeId, dst: TypeId) -> bool {
+    match (vector_shape(module, src), vector_shape(module, dst)) {
+        (None, None) => true,
+        (Some(src_shape), Some(dst_shape)) => src_shape == dst_shape,
+        (None, Some((1, false))) | (Some((1, false)), None) => true,
+        _ => false,
+    }
+}
+
 fn is_ptr_or_ptr_vector(module: &ModuleCore, id: TypeId) -> bool {
     matches!(
         module.context().type_data(scalar_type_id(module, id)),
@@ -2194,15 +2207,14 @@ fn pointer_address_space(module: &ModuleCore, id: TypeId) -> Option<u32> {
 }
 
 fn valid_bitcast_constant(module: &ModuleCore, src: TypeId, dst: TypeId) -> bool {
-    if !lane_shape_matches(module, src, dst) {
-        return false;
-    }
     let src_scalar = scalar_type_id(module, src);
     let dst_scalar = scalar_type_id(module, dst);
     let src_ptr = pointer_address_space(module, src_scalar);
     let dst_ptr = pointer_address_space(module, dst_scalar);
     match (src_ptr, dst_ptr) {
-        (Some(src_as), Some(dst_as)) => src_as == dst_as,
+        (Some(src_as), Some(dst_as)) => {
+            src_as == dst_as && pointer_bitcast_shape_matches(module, src, dst)
+        }
         (Some(_), None) | (None, Some(_)) => false,
         (None, None) => {
             Type::new(src_scalar, module).is_single_value()

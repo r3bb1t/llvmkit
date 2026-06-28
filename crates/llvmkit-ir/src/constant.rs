@@ -14,7 +14,6 @@
 //!
 //! ## What's shipped
 //!
-//! Phase B continued:
 //! - `Int(magnitude_words)` — arbitrary-precision integer.
 //! - `Float(bit_pattern)` — IEEE bit pattern.
 //! - `PointerNull` — `ptr null` / `null` for typed pointers.
@@ -22,8 +21,9 @@
 //!   `ConstantVector` element list.
 //! - `Undef` / `Poison` — kind-erased markers.
 //!
-//! Session 2 models the LLVM 22.1.4 parser-needed constant subset;
-//! unsupported legacy `ConstantExpr` opcodes remain parser errors.
+//! The represented LLVM 22.1.4 constant subset includes parser-needed
+//! `ConstantExpr` opcodes; unsupported legacy `ConstantExpr` opcodes remain
+//! parser errors.
 //!
 
 //! [`ConstantIntValue`]: crate::constants::ConstantIntValue
@@ -288,24 +288,22 @@ pub(crate) enum ConstantData {
     /// `ConstantVector`. Element categorisation is determined by the
     /// owning aggregate type.
     Aggregate(Box<[ValueId]>),
-    /// A byte-offset into a global, printed as the constant expression
-    /// `getelementptr inbounds (i8, ptr @<base>, i64 <off>)`. `base_id` is the
-    /// value-id of the host global/function; `off` is the byte offset. This is
-    /// the one `ConstantExpr` form llvmkit materialises — added for
-    /// symbol-relative initializers that point into the *middle* of another
-    /// global (e.g. a relocated pointer slot inside an embedded section). The
-    /// owning value's type is `ptr`.
+    /// A specialised byte-offset into a global, printed as the constant
+    /// expression `getelementptr inbounds (i8, ptr @<base>, i64 <off>)`.
+    /// `base_id` is the value-id of the host global/function; `off` is the byte
+    /// offset. This compact form is kept for symbol-relative initializers that
+    /// point into the *middle* of another global, such as a relocated pointer
+    /// slot inside an embedded section. The owning value's type is `ptr`.
     GepOffset { base_id: ValueId, off: i64 },
-    /// Link-time difference of two symbol addresses, printed as the constant
-    /// expression `sub (i64 ptrtoint (ptr @hi to i64), i64 ptrtoint (ptr @lo to
-    /// i64))`. Both ids are globals/functions; the owning value's type is `i64`.
-    /// The subtraction is resolved by the linker (a section-relative
-    /// relocation), so neither operand's absolute address need be known at
-    /// emit time. This is the second `ConstantExpr` form llvmkit materialises —
-    /// added for symbol-relative obfuscation, where a real address is reached as
-    /// `anchor + (real - anchor)` and only the delta lives in data. The two ids
-    /// must differ (a self-delta would be a constant zero; callers should use
-    /// `Int(0)` for that).
+    /// Specialised link-time difference of two symbol addresses, printed as the
+    /// constant expression `sub (i64 ptrtoint (ptr @hi to i64), i64 ptrtoint
+    /// (ptr @lo to i64))`. Both ids are globals/functions; the owning value's
+    /// type is `i64`. The subtraction is resolved by the linker (a
+    /// section-relative relocation), so neither operand's absolute address need
+    /// be known at emit time. This form is kept for symbol-relative obfuscation,
+    /// where a real address is reached as `anchor + (real - anchor)` and only
+    /// the delta lives in data. The two ids must differ (a self-delta would be a
+    /// constant zero; callers should use `Int(0)` for that).
     SymbolDelta { hi_id: ValueId, lo_id: ValueId },
     /// Link-time symbol difference plus a constant addend, printed as
     /// `add (i64 sub (i64 ptrtoint (ptr @hi to i64), i64 ptrtoint (ptr @lo to

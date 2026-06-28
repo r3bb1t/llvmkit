@@ -16,7 +16,7 @@ fn expects_pointer<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx>(value: PointerValue<
 }
 
 fn main() -> Result<(), IrError> {
-    Module::with_new("m", |m| {
+    Module::with_new("m", |m| -> Result<(), IrError> {
         let f = m.add_typed_function::<(), (Point,), _>("f", Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);

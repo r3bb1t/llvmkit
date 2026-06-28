@@ -12,11 +12,17 @@ Shipped today:
 - Effect-typed module/function pass managers.
 - Built-in analyses: `DominatorTreeAnalysis`, `KnownBitsAnalysis`, and
   `DemandedBitsAnalysis`; initial `SimplifyDemandedBitsPass`.
-- A widened but still partial constant-folding layer: APInt-backed constants and selected LLVM-source-derived folds for modeled integer/cast/compare/select/GEP/aggregate/libcall cases; full LLVM `ConstantFolder` parity remains future work.
+- LLVM 22.1.4-style `ConstantFolder` for the modeled IR-builder surface plus
+  target-independent pure-constant `ConstantFold.cpp` folds for represented
+  `ConstantExpr`, integer/float, cast, compare, select, GEP, vector, and
+  aggregate cases; DataLayout / TLI-heavy folds stay in analysis-only APIs.
 
 Hard gaps for replacing more LLVM/Inkwell workflows:
 
-- No real LLVM-equivalent constant folder.
+- Constant folding outside the modeled target-independent builder surface is
+  still partial: DataLayout / TLI / libcall / load-through-bitcast folds are
+  represented only where the analysis APIs implement them, and InstSimplify-
+  style nonconstant folds are still future transform work.
 - KnownBits / ValueTracking is still a represented integer, pointer,
   fixed-vector, and intrinsic-fact subset; LLVM ValueTracking parity remains
   incomplete.
@@ -42,7 +48,7 @@ Relevant Mergen facts read for this roadmap:
 - Its notes call out LLVM `computeKnownBits(Value*, DataLayout&)` as important and warn callers to guard integer/pointer types.
 - Its loop handling depends on CFG shape recognition, PHI construction, possible-value enumeration through PHIs, and downstream optimization to simplify loop/generalized-state IR.
 
-llvmkit does not need to copy Mergen. The actionable takeaway is that a practical lifter/deobfuscator needs constant folding, KnownBits, CFG/value analyses, memory-aware simplification, and repeatable optimization pipelines before it can stop depending on LLVM for cleanup.
+llvmkit does not need to copy Mergen. The actionable takeaway is that a practical lifter/deobfuscator now has a local ConstantFolder foundation, but still needs broader KnownBits, CFG/value analyses, memory-aware simplification, and repeatable optimization pipelines before it can stop depending on LLVM for cleanup.
 
 ---
 
@@ -50,7 +56,7 @@ llvmkit does not need to copy Mergen. The actionable takeaway is that a practica
 
 | Priority | Area | Why it is first-class |
 |---|---|---|
-| P0 | Real constant folder | Without it, builder output stays noisy and optimization passes have no cheap local simplifier. |
+| P0 | ConstantFold / ConstantFolder parity maintenance and extension | Keep the shipped local simplifier aligned with LLVM as new modeled opcodes, types, and ConstantExpr forms land. |
 | P0 | KnownBits / ValueTracking | Needed for opaque predicates, alignment, bit-mask simplification, flag recovery, indirect-branch reasoning. |
 | P0 | Core scalar cleanup passes | Needed to replace the most common LLVM `O1` / `O2` cleanup wins after lifting. |
 | P1 | Lifter-oriented memory/stack passes | Needed for pseudo-memory models, concrete image loads, stack promotion, load-width cleanup. |
@@ -64,55 +70,54 @@ llvmkit does not need to copy Mergen. The actionable takeaway is that a practica
 
 ## Milestone 1: Constant folding parity
 
-### Goal
+### Status
 
-Grow the shipped APInt/APFloat-backed folding layer into a trustworthy
-LLVM-style `ConstantFolder` for the modeled IR surface.
+Shipped for the modeled target-independent surface. The default
+`ConstantFolder` mirrors LLVM 22.1.4 `ConstantFolder.h` hooks for all-constant
+builder inputs, and `constant_fold.rs` ports pure-constant `ConstantFold.cpp`
+behavior for represented integer/float binops, unary `fneg`, casts,
+comparisons, `select`, GEP no-op / poison / undef cases, extract/insert value,
+extract/insert element, `shufflevector`, vector splats/fixed vectors, and
+aggregate constants.
 
-### Shipped baseline
+Represented `ConstantExpr` construction/folding covers the parser-needed
+add/sub/xor, GEP, vector, and cast forms, including upstream vector GEP,
+bitcast, cast, and select fixtures.
 
-- Wide `ApInt` arithmetic/comparison/shift/truncation/count helpers exist and
-  are already used by constants, constant folding, KnownBits, demanded bits, and
-  DataLayout-sized calculations.
-- `ApFloat` semantics and target-independent bit storage exist for the modeled
-  floating kinds; helper operations are still being ported incrementally.
-- The current folder ships selected LLVM-source-derived folds for represented
-  integer, cast, compare, select, GEP, aggregate, and libcall cases.
-- Unsupported folds conservatively leave IR unchanged.
+Analysis-only behavior remains split out: DataLayout / TLI / libcall,
+denormal, load-through-bitcast, and other target/library-dependent folds live in
+`constant_folding.rs` where represented, not in the default builder folder.
 
 ### Remaining work
 
-1. **APInt/APFloat completeness follow-up**
-   - Close helper-operation gaps needed by remaining LLVM folding formulas,
+1. **APFloat and unmodeled-surface follow-up**
+   - Close helper-operation gaps needed by future LLVM folding formulas,
      especially floating-point edge cases around NaNs, signed zero, infinities,
      rounding modes, and fast-math flags.
    - Keep conservative no-fold behavior where exact parity is not implemented.
 
-2. **ConstantFolder parity layer**
-   - Mirror LLVM `ConstantFolder`, `ConstantFoldInstruction`, and
-     `ConstantFoldConstant` behavior for the modeled opcode set.
-   - Fold integer/float binops, unary ops, casts, comparisons, `select`,
-     `freeze`, extract/insert value, extract/insert element, shufflevector where
-     legal, GEP constant expressions, and simple aggregate constants.
-   - Fold identities with one constant operand where LLVM does: `x + 0`,
-     `x * 1`, `x & -1`, `x | 0`, `xor x, 0`, shifts by zero, double negation,
-     redundant casts.
-   - Make DataLayout-aware folds explicit: pointer-size casts, GEP offsets,
-     alignment-derived facts, target extension types.
+2. **ConstantFold / ConstantExpr extension**
+   - Extend parity only when new opcodes, types, or parser-needed expression
+     forms become represented.
+   - Keep LLVM 22.1.4 provenance tests current for every new fold.
+   - Keep InstSimplify-style nonconstant identities (`x + 0`, `x * 1`,
+     redundant casts, and similar transforms) in the optimization-pass roadmap,
+     not in the all-constant default folder.
 
 3. **Folder trait expansion**
    - Expand `IRBuilderFolder` hooks as new builder families need folding.
    - Keep `NoFolder` and allow custom folders.
-   - Add `TargetFolder` later if DataLayout-dependent folds should be separated
-     from target-independent folds.
+   - Consider a `TargetFolder` only if builder-time DataLayout-dependent folds
+     are intentionally exposed; today those folds remain in analysis folding
+     APIs.
 
-### Acceptance criteria
+### Ongoing invariants
 
-- The folder handles constants wider than 128 bits.
-- Folding never panics on legal IR inputs.
+- Folding never panics on legal modeled IR inputs.
 - Every fold cites the upstream LLVM folding entry point or test fixture.
-- Builder tests cover folded and non-folded paths for every modeled opcode family.
-- There is a clear conservative fallback for each unsupported fold.
+- Builder tests cover folded and non-folded paths for every modeled opcode
+  family.
+- Unsupported folds have clear conservative fallback behavior.
 
 ---
 
@@ -665,9 +670,8 @@ Widen from controlled textual IR to broader LLVM ecosystem compatibility.
 
 ### 0.1: Folding and ValueTracking foundation
 
-- APInt.
-- Real ConstantFolder for integer/cast/compare/select/GEP basics.
-- KnownBits for integer/pointer scalar values.
+- ConstantFolder / ConstantFold parity foundation for the modeled IR surface.
+- ValueTracking hardening required by initial cleanup passes.
 - InstSimplify + DCE.
 
 ### 0.2: Lifting cleanup pipeline
@@ -719,7 +723,7 @@ Widen from controlled textual IR to broader LLVM ecosystem compatibility.
 
 ## Non-negotiable engineering rules
 
-- Do not implement optimization transforms before the constant folder and KnownBits foundation exists.
+- New optimization transforms must layer on the shipped ConstantFolder and KnownBits foundations, and must not assume unshipped full ValueTracking, InstCombine, or PassBuilder parity.
 - Do not add memory transforms without alias/memory safety checks or conservative refusal paths.
 - Do not make obfuscation passes part of default optimization pipelines.
 - Every optimization must preserve verifier correctness.

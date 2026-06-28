@@ -18,9 +18,9 @@ fn assert_line(text: &str, expected: &str) {
     panic!("missing line `{expected}` in:\n{text}");
 }
 
-/// Port of `ConstantFold.cpp::FoldBitCast`: PPC double-double bitcasts need
-/// target endianness, so target-independent `ConstantExpr::getBitCast` keeps a
-/// `ConstantExpr` instead of folding the initializer.
+/// Port of `ConstantFold.cpp::ConstantFoldCastInstruction`: null operands fold
+/// to the destination null value before PPC double-double bitcast target checks
+/// can force the expression to remain unfolded.
 #[test]
 fn constant_expr_bitcast_round_trips() -> Result<(), IrError> {
     Module::with_new("constexpr_bitcast", |m| {
@@ -37,7 +37,10 @@ fn constant_expr_bitcast_round_trips() -> Result<(), IrError> {
         )?;
         m.add_global("p", ppc_ty.as_type(), bitcast)?;
         let text = module_text(&m);
-        assert_line(&text, "@p = global ppc_fp128 bitcast (i128 0 to ppc_fp128)");
+        assert_line(
+            &text,
+            "@p = global ppc_fp128 0xM00000000000000000000000000000000",
+        );
         m.verify_borrowed()?;
         Ok(())
     })
@@ -188,6 +191,49 @@ fn constant_expr_opcode_surface_matches_llvm22_parse_val_id() {
             "addrspacecast",
         ]
     );
+}
+
+/// Port of `Instructions.cpp::CastInst::castIsValid`: scalar pointers may
+/// bitcast to and from one-lane fixed pointer vectors in the same address
+/// space.
+#[test]
+fn bitcast_scalar_pointer_and_one_lane_pointer_vector_round_trip() -> Result<(), IrError> {
+    Module::with_new("constexpr_ptr_vec_bitcast", |m| {
+        let i32_ty = m.i32_type();
+        let ptr_ty = m.ptr_type(0);
+        let vec_ptr_ty = m.vector_type(ptr_ty.as_type(), 1, false);
+        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let scalar = g.as_global_constant_ptr();
+        let to_vec = m.constant_expr(
+            vec_ptr_ty.as_type(),
+            ConstantExprOpcode::BitCast,
+            [scalar.as_value()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+        let vector = vec_ptr_ty.const_vector::<llvmkit_ir::Constant<'_>, _>([scalar])?;
+        let to_scalar = m.constant_expr(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::BitCast,
+            [vector.as_value()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+        m.add_global("to_vec", vec_ptr_ty.as_type(), to_vec)?;
+        m.add_global("to_scalar", ptr_ty.as_type(), to_scalar)?;
+        let text = module_text(&m);
+        assert_line(
+            &text,
+            "@to_vec = global <1 x ptr> bitcast (ptr @g to <1 x ptr>)",
+        );
+        assert_line(
+            &text,
+            "@to_scalar = global ptr bitcast (<1 x ptr> <ptr @g> to ptr)",
+        );
+        Ok(())
+    })
 }
 
 /// `llvmkit-specific subset` of `Verifier.cpp::Verifier::visitConstantExpr`:
@@ -517,7 +563,7 @@ fn vector_gep_scalar_sequential_indices_are_splatted_before_interning() -> Resul
 
         let text = format!("{m}");
         assert!(
-            text.contains("@slot = global <2 x ptr> getelementptr ([4 x i8], ptr null, <2 x i64> <i64 0, i64 1>, <2 x i64> <i64 0, i64 0>)"),
+            text.contains("@slot = global <2 x ptr> getelementptr ([4 x i8], ptr null, <2 x i64> <i64 0, i64 1>, <2 x i64> zeroinitializer)"),
             "got:\n{text}"
         );
         Ok(())

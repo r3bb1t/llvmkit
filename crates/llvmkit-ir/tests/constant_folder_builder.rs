@@ -6,10 +6,10 @@
 
 use llvmkit_ir::instr_types::CastOpcode;
 use llvmkit_ir::{
-    BinaryOpcode, CmpPredicate, Constant, ConstantFloatValue, ConstantFolder, FastMathFlags,
-    GepNoWrapFlags, IRBuilder, IRBuilderFolder, InstructionKind, InstructionView, IntDyn, IntValue,
-    IntrinsicId, IrError, IrResult, Linkage, Module, MulFlags, NoFolder, PointerValue, ShlFlags,
-    Type, UDivFlags, UnaryOpcode, Value, constant_fold_binary_instruction,
+    BinaryOpcode, CmpPredicate, Constant, ConstantFloatValue, ConstantFolder, ConstantIntValue,
+    FastMathFlags, GepNoWrapFlags, IRBuilder, IRBuilderFolder, InstructionKind, InstructionView,
+    IntDyn, IntValue, IntrinsicId, IrError, IrResult, Linkage, Module, MulFlags, NoFolder,
+    PointerValue, ShlFlags, Type, UDivFlags, UnaryOpcode, Value, constant_fold_binary_instruction,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -251,10 +251,12 @@ fn constant_folder_folds_udiv_by_zero_to_poison_without_instruction() -> Result<
     })
 }
 
-/// llvmkit-specific subset of `ConstantFolder.h::FoldExactBinOp`: exact-capable
-/// all-constant integer ops fold poison when exactness would be violated.
+/// Mirrors `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldExactBinOp`
+/// lines 56-67: non-desirable exact binops delegate to the plain
+/// `ConstantFoldBinaryInstruction` path, so exact `udiv` does not poison an
+/// inexact all-constant quotient through `ConstantFolder`.
 #[test]
-fn constant_folder_exact_udiv_inexact_constants_fold_to_poison() -> Result<(), IrError> {
+fn constant_folder_exact_udiv_inexact_constants_match_upstream_plain_fold() -> Result<(), IrError> {
     Module::with_new("folder-exact-udiv", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
@@ -271,7 +273,7 @@ fn constant_folder_exact_udiv_inexact_constants_fold_to_poison() -> Result<(), I
 
         assert_eq!(
             Constant::try_from(result.as_value())?,
-            i32_ty.as_type().get_poison().as_constant()
+            i32_ty.const_int(2_i32).as_constant()
         );
         assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
@@ -334,6 +336,102 @@ fn constant_folder_no_wrap_shl_delegates_to_binary_constant_fold() -> Result<(),
             .expect("all-constant no-wrap shl folds");
 
         assert_eq!(Constant::try_from(folded)?, expected);
+        Ok(())
+    })
+}
+
+/// llvmkit-specific direct Rust hook coverage for
+/// `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldNoWrapBinOp`
+/// lines 69-85: the default folder does not prefilter opcodes before delegating
+/// non-desirable all-constant binops to `ConstantFoldBinaryInstruction`
+/// (`llvm/lib/IR/ConstantFold.cpp` lines 598-955).
+#[test]
+fn constant_folder_no_wrap_direct_hook_matches_upstream_for_xor_and_and() -> Result<(), IrError> {
+    Module::with_new("folder-nowrap-direct", |m| {
+        let i32_ty = m.i32_type();
+
+        let xor = ConstantFolder
+            .fold_no_wrap_bin_op(
+                BinaryOpcode::Xor,
+                i32_ty.const_int(5_i32).as_value(),
+                i32_ty.const_int(3_i32).as_value(),
+                true,
+                false,
+            )?
+            .expect("all-constant xor folds through direct no-wrap hook");
+        let xor = ConstantIntValue::<IntDyn>::try_from(Constant::try_from(xor)?)?;
+        assert_eq!(xor.ap_int(), i32_ty.const_int(6_i32).ap_int());
+
+        let and = ConstantFolder
+            .fold_no_wrap_bin_op(
+                BinaryOpcode::And,
+                i32_ty.const_int(5_i32).as_value(),
+                i32_ty.const_zero().as_value(),
+                true,
+                true,
+            )?
+            .expect("all-constant and folds through direct no-wrap hook");
+        let and = ConstantIntValue::<IntDyn>::try_from(Constant::try_from(and)?)?;
+        assert_eq!(and.ap_int(), i32_ty.const_zero().ap_int());
+        Ok(())
+    })
+}
+
+/// llvmkit-specific direct Rust hook coverage for
+/// `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldBinaryIntrinsic`
+/// lines 184-188: default `ConstantFolder` declines intrinsic folding.
+#[test]
+fn constant_folder_binary_intrinsic_declines() -> Result<(), IrError> {
+    Module::with_new("folder-intrinsic", |m| {
+        let i32_ty = m.i32_type();
+        assert_eq!(
+            ConstantFolder.fold_binary_intrinsic(
+                IntrinsicId::UMax,
+                i32_ty.const_int(1_i32).as_value(),
+                i32_ty.const_int(2_i32).as_value(),
+                i32_ty.as_type(),
+                None,
+            )?,
+            None
+        );
+        Ok(())
+    })
+}
+
+/// Port of `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, InsertExtractElement)`
+/// lines 1127-1138: a folded insertelement chain extracts the inserted
+/// constants without materializing instructions.
+#[test]
+fn default_builder_folds_insert_extract_element_chain() -> Result<(), IrError> {
+    Module::with_new("folder-insert-extract-element", |m| {
+        let i64_ty = m.i64_type();
+        let vec_ty = m.vector_type(i64_ty.as_type(), 4, false);
+        let fn_ty = m.fn_type(i64_ty, Vec::<Type>::new(), false);
+        let f = m.add_function::<i64, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
+        let elt1 = i64_ty.const_int(-1_i64);
+        let elt2 = i64_ty.const_int(-2_i64);
+
+        let vec = b.build_insert_element::<_, _, i8, _, _>(
+            vec_ty.as_type().get_poison(),
+            elt1,
+            m.i8_type().const_int(1_i8),
+            "v1",
+        )?;
+        let vec = b.build_insert_element::<_, _, i32, _, _>(
+            vec,
+            elt2,
+            m.i32_type().const_int(2_i32),
+            "v2",
+        )?;
+        let x1 = b.build_extract_element::<_, i8, _, _>(vec, m.i8_type().const_int(1_i8), "x1")?;
+        let x2 =
+            b.build_extract_element::<_, i32, _, _>(vec, m.i32_type().const_int(2_i32), "x2")?;
+
+        assert_eq!(Constant::try_from(x1)?, elt1.as_constant());
+        assert_eq!(Constant::try_from(x2)?, elt2.as_constant());
+        assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
     })
 }

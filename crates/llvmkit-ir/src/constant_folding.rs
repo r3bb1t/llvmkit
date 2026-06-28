@@ -532,6 +532,7 @@ where
                 Type::new(gep.source_ty, value.module()),
                 *pointer,
                 indices,
+                None,
             )
         }
         InstructionKindData::Load(load) => {
@@ -1304,10 +1305,15 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx>(
             let Some((pointer, indices)) = operands.split_first() else {
                 return Ok(None);
             };
+            let in_range = match &expr.flags {
+                ConstantExprFlags::Gep(flags) => flags.in_range(),
+                _ => None,
+            };
             constant_fold_get_element_ptr(
                 Type::new(source_ty, original.as_value().module()),
                 *pointer,
                 indices,
+                in_range,
             )
         }
         ConstantExprOpcode::ShuffleVector => {

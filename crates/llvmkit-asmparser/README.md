@@ -17,12 +17,12 @@ Tracking **LLVM 22.1.4**.
 - **`.ll` parser** — recursive-descent, one-token lookahead. Builds into an
   existing `Module<'ctx, _, Unverified>` from `llvmkit-ir`; the `'ctx` brand
   prevents cross-module mixing at compile time. Covers `target datalayout` /
-  `target triple`,
-  `source_filename`, `module asm`, type definitions, globals, declarations,
-  definitions, function attributes/comdats/header operands, metadata and
-  debug records, use-list directives, summaries, and every shipped opcode.
-  Remaining parser work is tracked by the workspace roadmap rather than by
-  empty parser stubs.
+  `target triple`, `source_filename`, `module asm`, type definitions, globals,
+  declarations, definitions, function attributes/comdats/header operands,
+  metadata and debug records, use-list directives, summaries, every shipped
+  opcode, and represented `ConstantExpr` forms needed by upstream fixtures,
+  including folded vector GEP, bitcast, cast, and select cases. Remaining parser
+  work is tracked by the workspace roadmap rather than by empty parser stubs.
 
 Bitcode is out of scope for this crate today; see the workspace
 [`README`](https://github.com/r3bb1t/llvmkit#readme) for the roadmap.

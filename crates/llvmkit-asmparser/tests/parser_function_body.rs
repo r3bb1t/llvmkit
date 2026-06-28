@@ -415,6 +415,36 @@ fn parses_select_int_fp_ptr() {
     assert!(printed.contains("%rp = select i1 %c, ptr %pa, ptr %pb\n"));
 }
 
+/// Negative regression for `LLParser::parseSelect`: constant-folding must not
+/// accept a non-`i1` condition before the select condition type is validated.
+#[test]
+fn select_constant_non_i1_condition_is_rejected_before_fold() {
+    let err = parser::parse_assembly_string(
+        "define i32 @bad() {\nentry:\n  %r = select i32 0, i32 5, i32 5\n  ret i32 %r\n}\n",
+        |_module, _parsed| (),
+    )
+    .unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("i1 select condition"), "got: {msg}");
+}
+
+/// Negative regression for `LLParser::parseSelect` / `SelectInst` validation:
+/// token-typed select arms are invalid even when constant folding could choose
+/// either equal arm.
+#[test]
+fn select_constant_token_arms_are_rejected_before_fold() {
+    let err = parser::parse_assembly_string(
+        "define void @bad() {\nentry:\n  %r = select i1 true, token none, token none\n  ret void\n}\n",
+        |_module, _parsed| (),
+    )
+    .unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("select arm category supported by this session") || msg.contains("token"),
+        "got: {msg}"
+    );
+}
+
 /// Ports `LLParser::parseCast` `Instruction::{FPToSI,FPToUI}` arms.
 #[test]
 fn parses_fp_to_int_casts() {

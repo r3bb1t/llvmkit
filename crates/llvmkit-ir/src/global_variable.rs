@@ -138,12 +138,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// A `ptr`-typed constant pointing `off` bytes into this global, printed as
     /// `getelementptr inbounds (i8, ptr @<self>, i64 off)`.
     ///
-    /// llvmkit has no general `ConstantExpr`, so a pointer into the *middle* of
-    /// a global cannot be spelled directly; this materialises the one offset
-    /// form needed for symbol-relative initializers (a relocated pointer slot
-    /// inside an embedded data section that targets another section's interior).
-    /// `off == 0` is equivalent to [`Self::as_constant`] but always prints the
-    /// gep form; prefer `as_constant` for the zero case.
+    /// For the common byte-offset-into-global case, this materialises a compact
+    /// special GEP-offset constant. Use the represented `ConstantExpr`
+    /// constructors when you need a parser-needed LLVM constant-expression form
+    /// outside this byte-offset helper. `off == 0` is equivalent to
+    /// [`Self::as_constant`] but always prints the gep form; prefer
+    /// `as_constant` for the zero case.
     pub fn as_global_constant_ptr_offset(self, off: i64, addr_space: u32) -> Constant<'ctx, B> {
         let module = self.module.module();
         let ptr_ty = module.ptr_type(addr_space).as_type().id();
@@ -176,11 +176,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// const-expr `sub (i64 ptrtoint (ptr @self to i64), i64 ptrtoint (ptr
     /// @other to i64))`.
     ///
-    /// llvmkit has no general `ConstantExpr`; this materialises the one
-    /// two-symbol difference form needed to bake a link-time delta into a
-    /// global initializer. lld resolves the subtraction at link time, so the
-    /// delta is a real constant in the image without either absolute address
-    /// being known at emit time. Use it to express an address as
+    /// This specialised symbol-delta constant materialises the two-symbol
+    /// difference form needed to bake a link-time delta into a global
+    /// initializer; it is separate from the represented parser-needed
+    /// `ConstantExpr` opcode subset. lld resolves the subtraction at link time,
+    /// so the delta is a real constant in the image without either absolute
+    /// address being known at emit time. Use it to express an address as
     /// store `real.try_delta_from(anchor)?` in a data global and add it to
     /// `ptrtoint @anchor` at the use site. Both globals must be defined symbols
     /// in the final image.
