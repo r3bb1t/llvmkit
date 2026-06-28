@@ -3591,13 +3591,13 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         scalar: llvmkit_ir::Constant<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         let AnyTypeEnum::Vector(vec_ty) = ty.into_type_enum() else {
-            return Err(self.expected("fixed vector type for splat constant"));
+            return Err(self.expected("vector type for splat constant"));
         };
-        if vec_ty.is_scalable() || scalar.ty() != vec_ty.element() {
-            return Err(self.expected("fixed vector type for splat constant"));
+        if scalar.ty() != vec_ty.element() {
+            return Err(self.expected("vector type for splat constant"));
         }
         let len = usize::try_from(vec_ty.min_len()).map_err(|_| ParseError::Expected {
-            expected: "fixed vector type for splat constant".into(),
+            expected: "vector type for splat constant".into(),
             loc: DiagLoc::span(self.loc()),
         })?;
         let elements = vec![scalar; len];
@@ -6781,7 +6781,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v2 = self.parse_value(state, v2_ty)?;
         self.expect_punct(PunctKind::Comma, "',' before mask in shufflevector")?;
         // Parse mask as the upstream typed constant operand.
-        let mask = self.parse_shuffle_mask()?;
+        let mask = self.parse_shuffle_mask(v1_ty)?;
         let v = b
             .build_shuffle_vector(v1, v2, &mask, result_name.as_str())
             .map_err(|e| self.builder_err("shufflevector", e))?;
@@ -6790,9 +6790,22 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
 
     /// Parse a shufflevector mask typed constant operand and decode it with
     /// `ShuffleVectorInst::getShuffleMask` semantics.
-    fn parse_shuffle_mask(&mut self) -> ParseResult<Vec<i32>> {
+    fn parse_shuffle_mask(&mut self, vector_ty: Type<'ctx, B>) -> ParseResult<Vec<i32>> {
         let mask_ty = self.parse_type(false)?;
         let loc = self.loc();
+        let valid_mask_ty = match (AnyTypeEnum::from(vector_ty), AnyTypeEnum::from(mask_ty)) {
+            (AnyTypeEnum::Vector(vector_ty), AnyTypeEnum::Vector(mask_ty)) => {
+                matches!(mask_ty.element().kind(), TypeKind::Integer { bits: 32 })
+                    && mask_ty.is_scalable() == vector_ty.is_scalable()
+            }
+            _ => false,
+        };
+        if !valid_mask_ty {
+            return Err(ParseError::Expected {
+                expected: "valid shufflevector mask".into(),
+                loc: DiagLoc::span(loc),
+            });
+        }
         let mask = self.parse_global_value(mask_ty).map_err(|err| match err {
             ParseError::Lex(LexError::UnknownToken { span }) => ParseError::Expected {
                 expected: "valid shufflevector mask element".into(),

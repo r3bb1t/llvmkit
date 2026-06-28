@@ -425,6 +425,14 @@ fn constant_folder_vector_gep_nonzero_index_builds_vector_expr() -> Result<(), I
             .expect("vector GEP constexpr constructed");
         let folded = Constant::try_from(folded)?;
         assert_eq!(folded.ty(), ptr_vec_ty.as_type());
+        m.add_global("gep", ptr_vec_ty.as_type(), folded)?;
+        let text = format!("{m}");
+        assert!(
+            text.contains(
+                "@gep = global <2 x ptr> getelementptr (i32, ptr @g, <2 x i64> <i64 1, i64 2>)"
+            ),
+            "{text}"
+        );
         Ok(())
     })
 }
@@ -452,6 +460,79 @@ fn constant_folder_scalable_shuffle_builds_scalable_mask_expr() -> Result<(), Ir
             .expect("scalable zero-mask shuffle constexpr constructed");
         let folded = Constant::try_from(folded)?;
         assert_eq!(folded.ty(), vec_ty.as_type());
+        m.add_global("shuf", vec_ty.as_type(), folded)?;
+        let text = format!("{m}");
+        assert!(
+            text.contains("@shuf = global <vscale x 2 x i32> shufflevector (<vscale x 2 x i32> <i32 1, i32 2>, <vscale x 2 x i32> <i32 3, i32 4>, <vscale x 2 x i32> zeroinitializer)"),
+            "{text}"
+        );
+        Ok(())
+    })
+}
+
+/// llvmkit-specific direct Rust hook coverage for
+/// `llvm/lib/IR/Constants.cpp::ConstantExpr::getPointerCast` and
+/// `getPointerBitCastOrAddrSpaceCast` lines 2277-2300 plus
+/// `llvm/lib/IR/Instructions.cpp::CastInst::castIsValid` lines 3374-3395:
+/// same-address-space scalar pointer <-> fixed one-lane pointer-vector casts
+/// use `bitcast`, not an invalid-cast diagnostic.
+#[test]
+fn constant_folder_pointer_cast_helpers_allow_one_lane_pointer_bitcasts() -> Result<(), IrError> {
+    Module::with_new("folder-ptr-one-lane-bitcast", |m| {
+        let i32_ty = m.i32_type();
+        let ptr_ty = m.ptr_type(0);
+        let vec_ptr_ty = m.vector_type(ptr_ty.as_type(), 1, false);
+        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let scalar = g.as_global_constant_ptr();
+
+        let to_vec = ConstantFolder
+            .create_pointer_bitcast_or_addrspace_cast(scalar, vec_ptr_ty.as_type())?
+            .expect("scalar pointer to one-lane pointer vector folds");
+        let to_vec_via_pointer_cast = ConstantFolder
+            .create_pointer_cast(scalar, vec_ptr_ty.as_type())?
+            .expect("pointer cast helper uses bitcast for one-lane vector destination");
+
+        let vector = vec_ptr_ty.const_vector::<Constant<'_>, _>([scalar])?;
+        let to_scalar = ConstantFolder
+            .create_pointer_bitcast_or_addrspace_cast(vector.as_constant(), ptr_ty.as_type())?
+            .expect("one-lane pointer vector to scalar pointer folds");
+        let to_scalar_via_pointer_cast = ConstantFolder
+            .create_pointer_cast(vector.as_constant(), ptr_ty.as_type())?
+            .expect("pointer cast helper uses bitcast for scalar destination");
+
+        m.add_global("to_vec", vec_ptr_ty.as_type(), Constant::try_from(to_vec)?)?;
+        m.add_global(
+            "to_vec_pc",
+            vec_ptr_ty.as_type(),
+            Constant::try_from(to_vec_via_pointer_cast)?,
+        )?;
+        m.add_global(
+            "to_scalar",
+            ptr_ty.as_type(),
+            Constant::try_from(to_scalar)?,
+        )?;
+        m.add_global(
+            "to_scalar_pc",
+            ptr_ty.as_type(),
+            Constant::try_from(to_scalar_via_pointer_cast)?,
+        )?;
+        let text = format!("{m}");
+        assert!(
+            text.contains("@to_vec = global <1 x ptr> bitcast (ptr @g to <1 x ptr>)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("@to_vec_pc = global <1 x ptr> bitcast (ptr @g to <1 x ptr>)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("@to_scalar = global ptr bitcast (<1 x ptr> <ptr @g> to ptr)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("@to_scalar_pc = global ptr bitcast (<1 x ptr> <ptr @g> to ptr)"),
+            "{text}"
+        );
         Ok(())
     })
 }

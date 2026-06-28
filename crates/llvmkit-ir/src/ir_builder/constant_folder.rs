@@ -445,19 +445,24 @@ fn pointer_cast_opcode<B: ModuleBrand>(
     let Some(source) = ptr_or_ptr_vector_address_space(source_ty) else {
         return invalid_pointer_cast();
     };
-    if !lane_shape_matches(source_ty, dest_ty) {
-        return invalid_pointer_cast();
-    }
     if is_int_or_int_vector(dest_ty) {
+        if !lane_shape_matches(source_ty, dest_ty) {
+            return invalid_pointer_cast();
+        }
         return Ok(CastOpcode::PtrToInt);
     }
     let Some(dest) = ptr_or_ptr_vector_address_space(dest_ty) else {
         return invalid_pointer_cast();
     };
     if source != dest {
+        if !lane_shape_matches(source_ty, dest_ty) {
+            return invalid_pointer_cast();
+        }
         Ok(CastOpcode::AddrSpaceCast)
-    } else {
+    } else if pointer_bitcast_shape_matches(source_ty, dest_ty) {
         Ok(CastOpcode::BitCast)
+    } else {
+        invalid_pointer_cast()
     }
 }
 
@@ -471,13 +476,15 @@ fn pointer_bitcast_or_addrspace_cast_opcode<B: ModuleBrand>(
     let Some(dest) = ptr_or_ptr_vector_address_space(dest_ty) else {
         return invalid_pointer_cast();
     };
-    if !lane_shape_matches(source_ty, dest_ty) {
-        return invalid_pointer_cast();
-    }
     if source != dest {
+        if !lane_shape_matches(source_ty, dest_ty) {
+            return invalid_pointer_cast();
+        }
         Ok(CastOpcode::AddrSpaceCast)
-    } else {
+    } else if pointer_bitcast_shape_matches(source_ty, dest_ty) {
         Ok(CastOpcode::BitCast)
+    } else {
+        invalid_pointer_cast()
     }
 }
 
@@ -508,6 +515,15 @@ fn is_int_or_int_vector<B: ModuleBrand>(ty: Type<'_, B>) -> bool {
 
 fn lane_shape_matches<B: ModuleBrand>(lhs: Type<'_, B>, rhs: Type<'_, B>) -> bool {
     vector_shape(lhs) == vector_shape(rhs)
+}
+
+fn pointer_bitcast_shape_matches<B: ModuleBrand>(lhs: Type<'_, B>, rhs: Type<'_, B>) -> bool {
+    match (vector_shape(lhs), vector_shape(rhs)) {
+        (None, None) => true,
+        (Some(lhs_shape), Some(rhs_shape)) => lhs_shape == rhs_shape,
+        (None, Some((1, false))) | (Some((1, false)), None) => true,
+        _ => false,
+    }
 }
 
 fn vector_shape<B: ModuleBrand>(ty: Type<'_, B>) -> Option<(u32, bool)> {

@@ -45,3 +45,23 @@ entry:\n\
         other => panic!("unexpected error variant: {other:?}"),
     }
 }
+
+/// Mirrors `LLParser.cpp::parseShuffleVector` and
+/// `Instructions.cpp::ShuffleVectorInst::isValidOperands`: the mask operand
+/// must be a vector of i32, not any integer vector later coerced to i32.
+#[test]
+fn shufflevector_rejects_non_i32_mask_type() {
+    let err = parse_err(
+        "define <2 x i8> @shuffle(<2 x i8> %a, <2 x i8> %b) {\n\
+entry:\n\
+  %r = shufflevector <2 x i8> %a, <2 x i8> %b, <2 x i64> <i64 0, i64 1>\n\
+  ret <2 x i8> %r\n\
+}\n",
+    );
+    match err {
+        ParseError::Expected { expected, .. } => {
+            assert_eq!(expected, "valid shufflevector mask")
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}

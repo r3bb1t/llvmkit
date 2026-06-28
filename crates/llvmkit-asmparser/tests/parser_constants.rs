@@ -78,6 +78,18 @@ fn array_constant_initializer_round_trips() {
     );
 }
 
+/// Mirrors `LLParser.cpp::ValID::t_ConstantSplat` lines 6617-6625:
+/// scalable vector splats are valid constants and must parse after AsmWriter
+/// emits `splat (...)`.
+#[test]
+fn scalable_vector_splat_constant_round_trips() {
+    let text = parse_and_render(
+        "scalable_vector_splat_constant_round_trips",
+        b"@v = global <vscale x 2 x i32> splat (i32 7)\n",
+    );
+    assert_check_lines(&text, &["@v = global <vscale x 2 x i32> splat (i32 7)"]);
+    assert_parse_print_parse_stable(&text);
+}
 /// Direct port of `LLParser::parseValID`'s `getelementptr`
 /// global-initializer shape.
 #[test]

@@ -2041,7 +2041,7 @@ fn fold_i1_binary<'ctx, B: ModuleBrand + 'ctx>(
     lhs: Constant<'ctx, B>,
     rhs: Constant<'ctx, B>,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    if !is_i1_or_i1_vector_type(lhs.ty()) {
+    if !matches!(lhs.ty().data(), TypeData::Integer { bits: 1 }) {
         return Ok(None);
     }
     match opcode {
@@ -2403,6 +2403,29 @@ fn fold_bitcast<'ctx, B: ModuleBrand + 'ctx>(
         && let Some(all_ones) = all_ones_constant_for_type(dest_ty)?
     {
         return Ok(Some(all_ones));
+    }
+    if dest_ty.data().as_vector().is_some()
+        && operand.ty().data().as_vector().is_none()
+        && (ConstantIntValue::<IntDyn, B>::try_from(operand).is_ok()
+            || ConstantFloatValue::<FloatDyn, B>::try_from(operand).is_ok())
+    {
+        let vector_ty = operand
+            .as_value()
+            .module()
+            .vector_type(operand.ty(), 1, false);
+        let vector = vector_ty.const_vector::<Constant<'ctx, B>, _>([operand])?;
+        return match operand.as_value().module().core_ref().constant_expr(
+            dest_ty,
+            ConstantExprOpcode::BitCast,
+            [vector.as_value()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        ) {
+            Ok(folded) => Ok(Some(folded)),
+            Err(IrError::InvalidOperation { .. }) => Ok(None),
+            Err(err) => Err(err),
+        };
     }
     if let Some(folded) = fold_vector_bitcast_splat(operand, dest_ty)? {
         return Ok(Some(folded));

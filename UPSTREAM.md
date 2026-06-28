@@ -19,7 +19,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 1096.
+Total `#[test]` functions: 1101.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -761,6 +761,7 @@ Total `#[test]` functions: 1096.
 | `crates/llvmkit-asmparser/tests/parser_value_forms.rs::function_call_global_reference` | `test/Assembler/call.ll`; `LLParser::parseCall` with `@func` callee reference | mirror |
 | `crates/llvmkit-asmparser/tests/parser_errors.rs::malformed_integer_type_rejects_width_overflow` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType` integer width rejection | mirror |
 | `crates/llvmkit-asmparser/tests/parser_errors.rs::malformed_shuffle_mask_rejects_bad_element` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` shufflevector mask element parsing | mirror |
+| `crates/llvmkit-asmparser/tests/parser_errors.rs::shufflevector_rejects_non_i32_mask_type` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseShuffleVector` lines 8295-8306; `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` lines 1805-1853 | mirror |
 | `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_assembly_string_round_trips_module` | `unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, ParseAssemblyString)` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_assembly_file_reads_file` | `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_type_at_beginning_reports_read_count` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseTypeAtBeginning` | mirror |
@@ -779,6 +780,7 @@ Total `#[test]` functions: 1096.
 | `crates/llvmkit-asmparser/tests/parser_forward_refs.rs::undefined_block_label_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::PerFunctionState::finishFunction` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_forward_refs.rs::numbered_declare_records_slot_mapping` | `unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, SlotMappingTest)` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::array_constant_initializer_round_trips` | `test/Assembler/aggregate-constant-values.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_constants.rs::scalable_vector_splat_constant_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::ValID::t_ConstantSplat` lines 6617-6625; `llvm/lib/IR/AsmWriter.cpp::printConstant` vector splat spelling | llvmkit-specific subset |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::struct_constant_initializer_round_trips` | `test/Assembler/aggregate-constant-values.ll` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::getelementptr_constant_expr_initializer_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_getelementptr` global-initializer shape | mirror |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_casts_round_trip` | `test/Assembler/ConstantExprNoFold.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` cast constant-expression arm | mirror |
@@ -933,6 +935,7 @@ Total `#[test]` functions: 1096.
 | `crates/llvmkit-ir/tests/constant_fold.rs::compare_scalable_vector_splats_fold_before_scalable_bailout` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCompareInstruction` splat fast path before scalable-vector bailout | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::scalar_all_ones_bitcast_to_vector_splat_folds` | `llvm/lib/IR/ConstantFold.cpp::FoldBitCast` all-ones fold before scalar-to-vector bitcast canonicalization | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::fp_all_ones_bitcast_to_vector_splat_folds` | `llvm/lib/IR/ConstantFold.cpp::FoldBitCast` all-ones fold; `llvm/lib/IR/Constants.cpp::Constant::isAllOnesValue` floating bit-pattern handling | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::scalar_int_bitcast_to_vector_canonicalizes_as_vector_bitcast` | `llvm/lib/IR/ConstantFold.cpp::FoldBitCast` lines 70-76 scalar-to-vector bitcast canonicalization | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::same_lane_vector_ptrtoint_cast_builds_lane_constant_exprs` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCastInstruction` lines 153-182 same-lane vector casts use `foldMaybeUndesirableCast` per lane | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::extractelement_from_insertelement_constant_expr_folds_inserted_lane` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldExtractElementInstruction` insertelement constant-expression extraction rule | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::extractelement_from_insertelement_matches_indices_across_widths` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldExtractElementInstruction` lines 374-381 uses `APSInt::isSameValue` for insert/extract index comparison | llvmkit-specific subset |
@@ -941,6 +944,7 @@ Total `#[test]` functions: 1096.
 | `crates/llvmkit-ir/tests/constant_fold.rs::i1_constant_expr_binary_special_cases_fold` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` i1 special cases on non-`ConstantInt` constants | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::vector_splat_desirable_binop_builds_splat_constant_expr` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` vector splat desirable-binop constant-expression path | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::scalable_vector_fp_undef_binary_folds_to_nan_splat` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` scalar/scalable undef FP binop rules | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/constant_fold.rs::scalable_i1_non_splat_divrem_does_not_use_scalar_i1_shortcuts` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` lines 620-621 and scalar i1 shortcut behavior guarded by `isIntegerTy(1)` | llvmkit-specific regression |
 | `crates/llvmkit-ir/tests/constant_fold.rs::compare_constant_expr_edge_cases_fold` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCompareInstruction` null shortcut, i1 EQ/NE rewrite, and same-FP fallback | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::compare_vector_constant_expr_operands_fold_by_extracting_lanes` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCompareInstruction` fixed-vector ConstantExpr lane extraction | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::select_vector_shortcuts_and_constant_expr_arms_fold` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldSelectInstruction` vector condition shortcuts and ConstantExpr arm extraction | llvmkit-specific subset |
@@ -1007,6 +1011,7 @@ Total `#[test]` functions: 1096.
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::constant_folder_no_wrap_direct_hook_matches_upstream_for_xor_and_and` | `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldNoWrapBinOp` lines 69-85; `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` lines 598-955 | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::constant_folder_binary_intrinsic_declines` | `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldBinaryIntrinsic` lines 184-188 | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::default_builder_folds_insert_extract_element_chain` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, InsertExtractElement)` lines 1127-1138 | port |
+| `crates/llvmkit-ir/tests/constant_folder_builder.rs::constant_folder_pointer_cast_helpers_allow_one_lane_pointer_bitcasts` | `llvm/lib/IR/Constants.cpp::ConstantExpr::getPointerCast` / `getPointerBitCastOrAddrSpaceCast` lines 2277-2300; `llvm/lib/IR/Instructions.cpp::CastInst::castIsValid` lines 3374-3395 | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::custom_folder_no_wrap_hook_receives_mul` | `llvm/include/llvm/IR/IRBuilder.h::IRBuilder::CreateMul`; `llvm/include/llvm/IR/IRBuilderFolder.h::FoldNoWrapBinOp` | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::custom_folder_no_wrap_hook_receives_shl` | `llvm/include/llvm/IR/IRBuilder.h::IRBuilder::CreateShl`; `llvm/include/llvm/IR/IRBuilderFolder.h::FoldNoWrapBinOp` | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::no_folder_names_add_instruction_exactly` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, NoFolderNames)` | port |

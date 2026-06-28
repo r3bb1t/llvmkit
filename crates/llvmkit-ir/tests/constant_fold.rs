@@ -398,6 +398,62 @@ fn fp_all_ones_bitcast_to_vector_splat_folds() -> Result<(), IrError> {
     })
 }
 
+/// llvmkit-specific subset of `ConstantFold.cpp::FoldBitCast` lines 70-76:
+/// non-all-ones scalar integer bitcasts to vector destinations canonicalize
+/// through a one-lane vector bitcast constant expression instead of declining.
+#[test]
+fn scalar_int_bitcast_to_vector_canonicalizes_as_vector_bitcast() -> Result<(), IrError> {
+    Module::with_new("fold-scalar-vector-bitcast", |m| {
+        let i32_ty = m.i32_type();
+        let i16_ty = m.i16_type();
+        let dst_ty = m.vector_type(i16_ty.as_type(), 2, false);
+        let folded = constant_fold_cast_instruction(
+            CastOpcode::BitCast,
+            i32_ty.const_int(42_i32).as_constant(),
+            dst_ty.as_type(),
+        )?
+        .expect("scalar-to-vector bitcast canonicalizes");
+        m.add_global("bits", dst_ty.as_type(), folded)?;
+        let text = format!("{m}");
+        assert!(
+            text.contains(
+                "@bits = global <2 x i16> bitcast (<1 x i32> splat (i32 42) to <2 x i16>)"
+            ),
+            "{text}"
+        );
+        Ok(())
+    })
+}
+
+/// llvmkit-specific regression for `ConstantFold.cpp::ConstantFoldBinaryInstruction`:
+/// scalar i1 shortcuts do not apply to non-splat scalable i1 vector constants
+/// after the scalable vector elementwise fold declines.
+#[test]
+fn scalable_i1_non_splat_divrem_does_not_use_scalar_i1_shortcuts() -> Result<(), IrError> {
+    Module::with_new("fold-scalable-i1-non-splat", |m| {
+        let i1_ty = m.bool_type();
+        let vec_ty = m.vector_type(i1_ty.as_type(), 2, true);
+        let one = i1_ty.const_int(true).as_constant();
+        let zero = i1_ty.const_int(false).as_constant();
+        let lhs = vec_ty
+            .const_vector::<Constant<'_>, _>([one, zero])?
+            .as_constant();
+        let rhs = vec_ty
+            .const_vector::<Constant<'_>, _>([one, zero])?
+            .as_constant();
+
+        assert_eq!(
+            constant_fold_binary_instruction(BinaryOpcode::UDiv, lhs, rhs)?,
+            None
+        );
+        assert_eq!(
+            constant_fold_binary_instruction(BinaryOpcode::URem, lhs, rhs)?,
+            None
+        );
+        Ok(())
+    })
+}
+
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldCastInstruction`
 /// lines 153-182: same-lane vector casts use `foldMaybeUndesirableCast`, so
 /// desirable scalar casts materialize per-lane constant expressions.
@@ -2331,6 +2387,10 @@ fn constant_fold_unary_fneg_undef_and_vector_elements() -> Result<(), IrError> {
                 .expect("scalable splat fneg folds");
         let expected = scalable_ty.const_vector::<Constant<'_>, _>([neg_one, neg_one])?;
         assert_eq!(folded, expected.as_constant());
+        let scalable_undef = scalable_ty.as_type().get_undef().as_constant();
+        let folded = constant_fold_unary_instruction(UnaryOpcode::FNeg, scalable_undef)?
+            .expect("scalable undef fneg folds");
+        assert_eq!(folded, scalable_undef);
         Ok(())
     })
 }
