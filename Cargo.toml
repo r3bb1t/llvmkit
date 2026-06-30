@@ -12,7 +12,7 @@ default-members = ["llvmkit"]
 [workspace.package]
 authors      = ["Aslan Gurtsiev", "The LLVM Project (original C++ implementation)"]
 edition      = "2024"
-version      = "0.0.2"
+version      = "0.0.3"
 license      = "Apache-2.0 WITH LLVM-exception"
 repository   = "https://github.com/r3bb1t/llvmkit"
 homepage     = "https://github.com/r3bb1t/llvmkit"
@@ -21,8 +21,8 @@ keywords     = ["llvm", "ir", "lexer", "parser", "compiler"]
 categories   = ["compilers", "parser-implementations", "development-tools"]
 
 [workspace.dependencies]
-llvmkit-support   = { version = "0.0.2", path = "crates/llvmkit-support" }
-llvmkit-asmparser = { version = "0.0.2", path = "crates/llvmkit-asmparser" }
-llvmkit-ir        = { version = "0.0.2", path = "crates/llvmkit-ir" }
-llvmkit-macros    = { version = "0.0.2", path = "crates/llvmkit-macros" }
+llvmkit-support   = { version = "0.0.3", path = "crates/llvmkit-support" }
+llvmkit-asmparser = { version = "0.0.3", path = "crates/llvmkit-asmparser" }
+llvmkit-ir        = { version = "0.0.3", path = "crates/llvmkit-ir" }
+llvmkit-macros    = { version = "0.0.3", path = "crates/llvmkit-macros" }
 thiserror         = "2"

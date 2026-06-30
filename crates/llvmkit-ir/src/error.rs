@@ -529,6 +529,15 @@ pub enum IrError {
     /// `lib/IR/DataLayout.cpp::DataLayout::parseLayoutString`.
     #[error("invalid datalayout: {reason}")]
     InvalidDataLayout { reason: String },
+    /// A textual optimization level did not match LLVM's built-in aliases.
+    #[error("invalid optimization level '{level}'")]
+    InvalidOptimizationLevel { level: String },
+    /// A textual pass or pipeline name contains invalid syntax.
+    #[error("invalid pass pipeline name '{name}'")]
+    InvalidPassPipelineName { name: String },
+    /// A textual pass pipeline has invalid delimiter nesting.
+    #[error("invalid pass pipeline '{pipeline}'")]
+    InvalidPassPipeline { pipeline: String },
     /// An analysis result was requested before its analysis pass was registered.
     #[error("analysis {name} is not registered")]
     AnalysisNotRegistered { name: &'static str },

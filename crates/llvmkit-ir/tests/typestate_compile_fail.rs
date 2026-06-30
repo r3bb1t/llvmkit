@@ -55,4 +55,8 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/transform_pass_manager_output_requires_verify.rs");
     t.compile_fail("tests/compile_fail/intrinsic_id_raw_constructor_private.rs");
     t.compile_fail("tests/compile_fail/binary_folder_rejects_non_binary_intrinsic.rs");
+    t.compile_fail("tests/compile_fail/default_pipeline_o2_not_supported.rs");
+    t.compile_fail("tests/compile_fail/function_pass_name_not_module_pass.rs");
+    t.compile_fail("tests/compile_fail/module_pipeline_step_rejects_raw_string.rs");
+    t.compile_fail("tests/compile_fail/pass_pipeline_info_scope_mismatch.rs");
 }

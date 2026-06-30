@@ -66,11 +66,13 @@ Shipped today:
   `returned` call/invoke arguments feed known-bits queries. Unsupported ordinary
   calls stay unknown, and unsupported `llvm.*` intrinsics are rejected unless
   their IDs, signatures, and verifier rules are represented.
-- **Demanded-bits and initial SimplifyDemandedBits** — shipped for the modeled
-  scalar-integer slice. `DemandedBitsAnalysis` covers the represented operator
-  and intrinsic operand-mask subset, and `SimplifyDemandedBitsPass` includes
-  scalar-integer constant replacement, no-use dead instruction-chain erasure,
-  and the upstream `assoc-cast-assoc.ll::AndZextAnd` demanded-mask transform.
+- **Demanded-bits and initial scalar cleanup transforms** — shipped for the
+  modeled scalar-integer slice. `DemandedBitsAnalysis` covers the represented
+  operator and intrinsic operand-mask subset; `SimplifyDemandedBitsPass`
+  includes scalar-integer constant replacement, no-use dead instruction-chain
+  erasure, and the upstream `assoc-cast-assoc.ll::AndZextAnd` demanded-mask
+  transform. `InstSimplifyPass` and `DcePass` provide the first conservative
+  runnable O1-style scalar cleanup passes.
 - **Strict upstream fixture/provenance policy** — in force. Behavior is derived
   from LLVM 22.1.4 sources and in-tree fixtures with `UPSTREAM.md` anchors; no
   shipped analysis fact is a stub, and tests/runtime do not depend on
@@ -251,9 +253,11 @@ Built-in analyses available today:
 - `KnownBitsAnalysis`
 - `DemandedBitsAnalysis`
 
-Initial built-in transform available today:
+Initial built-in transforms available today:
 
 - `SimplifyDemandedBitsPass`
+- `InstSimplifyPass`
+- `DcePass`
 
 Core pass / analysis infrastructure available today:
 
@@ -323,9 +327,12 @@ For a runnable end-to-end version, see
 | mutating a module pass | use a `MutatesIr` manager, call `cx.module_mut()`, receive `Module<'ctx, B, Unverified>` |
 
 Important boundary: the crate currently ships **pass infrastructure, built-in
-analyses, and an initial `SimplifyDemandedBitsPass`**, not a full optimization
-pipeline. There is no public `PassBuilder`, no loop / CGSCC / legacy manager or
-textual pipeline surface, and no broad library of built-in transform passes yet.
+analyses, initial scalar cleanup transforms (`SimplifyDemandedBitsPass`,
+`InstSimplifyPass`, `DcePass`), optimization-level markers, scoped pass /
+pipeline names, and data-only pass-pipeline recipe types**, not a full
+optimization pipeline. There is no public LLVM-compatible `PassBuilder`, no
+runnable `default<O1>` optimizer, no loop / CGSCC / legacy manager, and no
+broad transform library yet.
 
 ## Project Structure
 

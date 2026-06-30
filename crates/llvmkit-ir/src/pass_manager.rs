@@ -7,6 +7,7 @@
 
 use core::marker::PhantomData;
 
+use super::pass_pipeline::{FunctionPassScope, ModulePassScope, PassName, PassScope};
 use crate::IrResult;
 use crate::analysis::{
     AllAnalysesOnFunction, AllAnalysesOnModule, FunctionAnalysisManager,
@@ -110,14 +111,24 @@ pub trait ModulePass<'ctx, B: ModuleBrand = Brand<'ctx>> {
     }
 }
 
+/// Static typed pipeline metadata for future in-tree pass structs.
+pub trait PassPipelineInfo {
+    /// Pass-manager scope where this pass may be inserted by pipeline name.
+    type Scope: PassScope;
+
+    /// Canonical typed pipeline name.
+    const PIPELINE_NAME: PassName<Self::Scope>;
+}
+
 trait ErasedFunctionPass<'ctx, B: ModuleBrand + 'ctx, E: ModulePassEffect> {
     fn run(&mut self, cx: &mut E::FunctionContext<'_, 'ctx, B>) -> IrResult<PreservedAnalyses>;
 
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
     fn is_required(&self) -> bool;
 }
 
 struct FunctionPassModel<P> {
+    name: String,
     pass: P,
 }
 
@@ -133,8 +144,8 @@ where
         self.pass.run(cx)
     }
 
-    fn name(&self) -> &'static str {
-        std::any::type_name::<P>()
+    fn name(&self) -> &str {
+        &self.name
     }
 
     fn is_required(&self) -> bool {
@@ -151,8 +162,8 @@ where
         self.pass.run(cx)
     }
 
-    fn name(&self) -> &'static str {
-        std::any::type_name::<P>()
+    fn name(&self) -> &str {
+        &self.name
     }
 
     fn is_required(&self) -> bool {
@@ -163,11 +174,12 @@ where
 trait ErasedModulePass<'ctx, B: ModuleBrand + 'ctx, E: ModulePassEffect> {
     fn run(&mut self, cx: &mut E::ModuleContext<'_, 'ctx, B>) -> IrResult<PreservedAnalyses>;
 
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
     fn is_required(&self) -> bool;
 }
 
 struct ModulePassModel<P> {
+    name: String,
     pass: P,
 }
 
@@ -183,8 +195,8 @@ where
         self.pass.run(cx)
     }
 
-    fn name(&self) -> &'static str {
-        std::any::type_name::<P>()
+    fn name(&self) -> &str {
+        &self.name
     }
 
     fn is_required(&self) -> bool {
@@ -201,8 +213,8 @@ where
         self.pass.run(cx)
     }
 
-    fn name(&self) -> &'static str {
-        std::any::type_name::<P>()
+    fn name(&self) -> &str {
+        &self.name
     }
 
     fn is_required(&self) -> bool {
@@ -239,6 +251,25 @@ where
     pub fn set_instrumentation(&mut self, callbacks: PassInstrumentationCallbacks) {
         self.instrumentation = Some(callbacks);
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.passes.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.passes.len()
+    }
+
+    pub fn pipeline_text(&self) -> String {
+        let mut text = String::new();
+        for pass in &self.passes {
+            if !text.is_empty() {
+                text.push(',');
+            }
+            text.push_str(pass.name());
+        }
+        text
+    }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionPassManager<'ctx, B, PreservesVerification> {
@@ -250,7 +281,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPassManager<'ctx, B, PreservesVerifica
     where
         P: ReadOnlyFunctionPass<'ctx, B> + 'ctx,
     {
-        self.passes.push(Box::new(FunctionPassModel { pass }));
+        self.passes.push(Box::new(FunctionPassModel {
+            name: std::any::type_name::<P>().to_owned(),
+            pass,
+        }));
+    }
+
+    pub fn add_named_pass<P>(&mut self, name: PassName<FunctionPassScope>, pass: P)
+    where
+        P: ReadOnlyFunctionPass<'ctx, B> + 'ctx,
+    {
+        self.passes.push(Box::new(FunctionPassModel {
+            name: name.as_str().to_owned(),
+            pass,
+        }));
+    }
+
+    pub fn add_pipeline_pass<P>(&mut self, pass: P)
+    where
+        P: PassPipelineInfo<Scope = FunctionPassScope> + ReadOnlyFunctionPass<'ctx, B> + 'ctx,
+    {
+        self.add_named_pass(P::PIPELINE_NAME, pass);
     }
 
     pub fn run<F>(
@@ -303,7 +354,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPassManager<'ctx, B, MutatesIr> {
     where
         P: FunctionPass<'ctx, B> + 'ctx,
     {
-        self.passes.push(Box::new(FunctionPassModel { pass }));
+        self.passes.push(Box::new(FunctionPassModel {
+            name: std::any::type_name::<P>().to_owned(),
+            pass,
+        }));
+    }
+
+    pub fn add_named_pass<P>(&mut self, name: PassName<FunctionPassScope>, pass: P)
+    where
+        P: FunctionPass<'ctx, B> + 'ctx,
+    {
+        self.passes.push(Box::new(FunctionPassModel {
+            name: name.as_str().to_owned(),
+            pass,
+        }));
+    }
+
+    pub fn add_pipeline_pass<P>(&mut self, pass: P)
+    where
+        P: PassPipelineInfo<Scope = FunctionPassScope> + FunctionPass<'ctx, B> + 'ctx,
+    {
+        self.add_named_pass(P::PIPELINE_NAME, pass);
     }
 
     pub fn run<F>(
@@ -378,6 +449,25 @@ where
     pub fn set_instrumentation(&mut self, callbacks: PassInstrumentationCallbacks) {
         self.instrumentation = Some(callbacks);
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.passes.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.passes.len()
+    }
+
+    pub fn pipeline_text(&self) -> String {
+        let mut text = String::new();
+        for pass in &self.passes {
+            if !text.is_empty() {
+                text.push(',');
+            }
+            text.push_str(pass.name());
+        }
+        text
+    }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> ModulePassManager<'ctx, B, PreservesVerification> {
@@ -389,7 +479,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModulePassManager<'ctx, B, PreservesVerificati
     where
         P: ReadOnlyModulePass<'ctx, B> + 'ctx,
     {
-        self.passes.push(Box::new(ModulePassModel { pass }));
+        self.passes.push(Box::new(ModulePassModel {
+            name: std::any::type_name::<P>().to_owned(),
+            pass,
+        }));
+    }
+
+    pub fn add_named_pass<P>(&mut self, name: PassName<ModulePassScope>, pass: P)
+    where
+        P: ReadOnlyModulePass<'ctx, B> + 'ctx,
+    {
+        self.passes.push(Box::new(ModulePassModel {
+            name: name.as_str().to_owned(),
+            pass,
+        }));
+    }
+
+    pub fn add_pipeline_pass<P>(&mut self, pass: P)
+    where
+        P: PassPipelineInfo<Scope = ModulePassScope> + ReadOnlyModulePass<'ctx, B> + 'ctx,
+    {
+        self.add_named_pass(P::PIPELINE_NAME, pass);
     }
 
     pub fn run(
@@ -432,7 +542,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModulePassManager<'ctx, B, MutatesIr> {
     where
         P: ModulePass<'ctx, B> + 'ctx,
     {
-        self.passes.push(Box::new(ModulePassModel { pass }));
+        self.passes.push(Box::new(ModulePassModel {
+            name: std::any::type_name::<P>().to_owned(),
+            pass,
+        }));
+    }
+
+    pub fn add_named_pass<P>(&mut self, name: PassName<ModulePassScope>, pass: P)
+    where
+        P: ModulePass<'ctx, B> + 'ctx,
+    {
+        self.passes.push(Box::new(ModulePassModel {
+            name: name.as_str().to_owned(),
+            pass,
+        }));
+    }
+
+    pub fn add_pipeline_pass<P>(&mut self, pass: P)
+    where
+        P: PassPipelineInfo<Scope = ModulePassScope> + ModulePass<'ctx, B> + 'ctx,
+    {
+        self.add_named_pass(P::PIPELINE_NAME, pass);
     }
 
     pub fn run(

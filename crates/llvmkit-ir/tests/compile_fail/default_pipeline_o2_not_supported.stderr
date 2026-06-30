@@ -1,0 +1,22 @@
+error[E0277]: the trait bound `OptLevelO2: DefaultPipelineLevel` is not satisfied
+ --> tests/compile_fail/default_pipeline_o2_not_supported.rs:2:44
+  |
+2 |     let _ = llvmkit_ir::default_pipeline::<llvmkit_ir::OptLevelO2>();
+  |                                            ^^^^^^^^^^^^^^^^^^^^^^ the trait `DefaultPipelineLevel` is not implemented for `OptLevelO2`
+  |
+help: the following other types implement trait `DefaultPipelineLevel`
+ --> src/pass_pipeline.rs
+  |
+  | impl DefaultPipelineLevel for OptLevelO0 {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `OptLevelO0`
+...
+  | impl DefaultPipelineLevel for OptLevelO1 {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `OptLevelO1`
+note: required by a bound in `default_pipeline`
+ --> src/pass_pipeline.rs
+  |
+  | pub const fn default_pipeline<L>() -> PassPipelineRecipe<ModulePipelineScope, HasOptimizationLevel>
+  |              ---------------- required by a bound in this function
+  | where
+  |     L: DefaultPipelineLevel,
+  |        ^^^^^^^^^^^^^^^^^^^^ required by this bound in `default_pipeline`

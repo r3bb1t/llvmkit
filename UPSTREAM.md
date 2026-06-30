@@ -19,7 +19,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 1130.
+Total `#[test]` functions: 1144.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -1184,4 +1184,22 @@ Total `#[test]` functions: 1130.
 | `crates/llvmkit-ir/tests/demanded_bits.rs::variable_lshr_demands_source_bits_that_can_reach_low_result` | `llvm/lib/Analysis/DemandedBits.cpp::DemandedBits::determineLiveOperandBits`; variable shift range handling | port |
 | `crates/llvmkit-ir/tests/demanded_bits.rs::simplify_demanded_bits_pass_ports_and_zext_and` | `llvm/test/Transforms/InstCombine/assoc-cast-assoc.ll::AndZextAnd`; `llvm/lib/Transforms/InstCombine/InstCombineSimplifyDemanded.cpp::SimplifyDemandedUseBits` / `ShrinkDemandedConstant` | mirror |
 | `crates/llvmkit-ir/tests/demanded_bits.rs::simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement` | `llvm/lib/Transforms/InstCombine/InstCombineSimplifyDemanded.cpp::SimplifyDemandedUseBits` zext arm dropping poison-generating flags after operand simplification | port |
+| `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::instsimplify_pass_folds_constant_add` | `llvm/lib/Transforms/Scalar/InstSimplifyPass.cpp::runImpl`; `llvm/include/llvm/Analysis/InstructionSimplify.h` simplification-to-constant contract | port |
+| `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::dce_pass_erases_dead_integer_chain_and_preserves_store` | `llvm/lib/Transforms/Scalar/DCE.cpp::DCEInstruction`; `llvm/lib/Transforms/Scalar/DCE.cpp::eliminateDeadCode` | port |
+| `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::scalar_cleanup_passes_have_typed_pipeline_names` | `llvm/lib/Passes/PassRegistry.def` entries `FUNCTION_PASS("instsimplify", InstSimplifyPass())` and `FUNCTION_PASS("dce", DCEPass())` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::instsimplify_and_dce_pipeline_folds_and_erases` | `llvm/lib/Transforms/Scalar/InstSimplifyPass.cpp::runImpl`; `llvm/lib/Transforms/Scalar/DCE.cpp::eliminateDeadCode`; `llvm/lib/Passes/PassRegistry.def` scalar pass names | llvmkit-specific |
 | `crates/llvmkit-ir/tests/value_tracking_parity.rs::parity_ledger_mentions_every_upstream_anchor` | `llvm/include/llvm/Support/KnownBits.h`; `llvm/lib/Support/KnownBits.cpp`; `llvm/include/llvm/Analysis/ValueTracking.h`; `llvm/lib/Analysis/ValueTracking.cpp`; `llvm/include/llvm/Analysis/DemandedBits.h`; `llvm/lib/Analysis/DemandedBits.cpp`; `llvm/lib/Transforms/InstCombine/InstCombineSimplifyDemanded.cpp` | parity-ledger |
+| `crates/llvmkit-ir/tests/pass_pipeline_data.rs::optimization_level_matches_upstream_constants` | `llvm/include/llvm/Passes/OptimizationLevel.h`; `llvm/lib/Passes/OptimizationLevel.cpp` | port |
+| `crates/llvmkit-ir/tests/pass_pipeline_data.rs::optimization_level_markers_project_static_levels` | `llvm/include/llvm/Passes/OptimizationLevel.h`; Rust marker types pull runtime level checks into the type system | llvmkit-specific |
+| `crates/llvmkit-ir/tests/pass_pipeline_data.rs::optimization_level_parses_upstream_names` | `llvm/lib/Passes/PassBuilder.cpp::parseOptLevel` | port |
+| `crates/llvmkit-ir/tests/pass_pipeline_data.rs::pass_pipeline_text_name_rejects_invalid_text` | `llvm/include/llvm/Passes/PassBuilder.h` textual pipeline grammar, lines 323-345; llvmkit validates names before pass resolution | llvmkit-specific |
+| `crates/llvmkit-ir/tests/pass_pipeline_data.rs::scoped_pass_name_rejects_invalid_text` | `llvm/include/llvm/Passes/PassBuilder.h` textual pipeline grammar, lines 323-345; scoped Rust names preserve pass-manager layer | llvmkit-specific |
+| `crates/llvmkit-ir/tests/pass_pipeline_data.rs::pass_pipeline_parser_preserves_nested_shape` | `llvm/include/llvm/Passes/PassBuilder.h` lines 323-345; `llvm/lib/Passes/PassBuilder.cpp::parsePipelineText` | mirror |
+| `crates/llvmkit-ir/tests/pass_pipeline_data.rs::pass_pipeline_parser_rejects_invalid_or_empty_pipelines` | `llvm/lib/Passes/PassBuilder.cpp::parsePipelineText` | mirror |
+| `crates/llvmkit-ir/tests/pass_pipeline_data.rs::pass_manager_named_pipeline_text_uses_scoped_names` | `llvm/include/llvm/IR/PassManager.h::PassInfoMixin::printPipeline`; `llvm/include/llvm/IR/PassManager.h::PassManager::printPipeline` | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/pass_pipeline_data.rs::pass_manager_pipeline_info_uses_scoped_constants` | `llvm/include/llvm/IR/PassManager.h::PassInfoMixin::printPipeline`; typed associated constants are llvmkit's scope-safe equivalent | llvmkit-specific |
+| `crates/llvmkit-ir/tests/pass_pipeline_data.rs::roadmap_recipes_are_typed_data_only` | `ROADMAP.md` lines 348-356; `llvm/lib/Passes/PassRegistry.def` lines 259-264 | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/compile_fail/default_pipeline_o2_not_supported.rs` | `ROADMAP.md` data-only O1 milestone boundary; `llvm/lib/Passes/PassRegistry.def` lines 259-264 are broader than this subset | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/compile_fail/function_pass_name_not_module_pass.rs` | `llvm/include/llvm/IR/PassManager.h` pass-manager layer separation; D8 effect-typed manager boundary | llvmkit-specific |
+| `crates/llvmkit-ir/tests/compile_fail/module_pipeline_step_rejects_raw_string.rs` | `ROADMAP.md` lines 348-356; D3 typed recipe boundary rejects raw strings | llvmkit-specific |
+| `crates/llvmkit-ir/tests/compile_fail/pass_pipeline_info_scope_mismatch.rs` | `llvm/include/llvm/IR/PassManager.h::PassInfoMixin::printPipeline`; typed scoped constants prevent cross-layer registration | llvmkit-specific |

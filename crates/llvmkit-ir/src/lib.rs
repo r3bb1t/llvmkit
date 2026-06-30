@@ -35,6 +35,7 @@ pub mod constant_folding;
 pub mod constant_range;
 pub mod constants;
 pub mod data_layout;
+pub mod dce;
 pub mod debug_loc;
 pub mod demanded_bits;
 pub mod denormal_mode;
@@ -51,6 +52,7 @@ pub mod global_ifunc;
 pub mod global_value;
 pub mod global_variable;
 pub mod inline_asm;
+pub mod inst_simplify;
 pub mod instr_types;
 pub mod instruction;
 pub mod instructions;
@@ -66,9 +68,11 @@ pub mod metadata;
 pub mod module;
 pub mod named_md_node;
 pub mod operator;
+pub mod optimization_level;
 pub mod pass_context;
 pub mod pass_instrumentation;
 pub mod pass_manager;
+pub mod pass_pipeline;
 pub mod phi_state;
 pub mod sized_element;
 pub mod struct_body_state;
@@ -145,6 +149,7 @@ pub use constants::{
 pub use data_layout::{
     DataLayout, FunctionPtrAlignType, ManglingMode, PointerSpec, PrimitiveSpec, StructLayoutInfo,
 };
+pub use dce::DcePass;
 pub use debug_loc::DebugLoc;
 pub use demanded_bits::{
     DemandedBits, DemandedBitsAnalysis, SimplifyDemandedBitsPass, SimplifyDemandedBitsResult,
@@ -169,6 +174,7 @@ pub use global_ifunc::{GlobalIFunc, GlobalIFuncBuilder};
 pub use global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode, Visibility};
 pub use global_variable::{GlobalBuilder, GlobalVariable};
 pub use inline_asm::{AsmDialect, InlineAsm, InlineAsmOptions};
+pub use inst_simplify::InstSimplifyPass;
 pub use instr_types::{
     AShrFlags, AddFlags, AtomicCmpXchgConfig, AtomicLoadConfig, AtomicRMWConfig, AtomicRMWFlags,
     AtomicStoreConfig, BinaryOpcode, CallAttributeData, CmpXchgFlags, ICmpFlags, LShrFlags,
@@ -209,6 +215,10 @@ pub use module::{
     Verified,
 };
 pub use operator::OverflowingBinaryOperator;
+pub use optimization_level::{
+    OptLevelO0, OptLevelO1, OptLevelO2, OptLevelO3, OptLevelOs, OptLevelOz, OptimizationLevel,
+    OptimizationLevelMarker, ThinOrFullLtoPhase,
+};
 pub use pass_context::{
     BasicBlockView, FunctionBody, FunctionPassContext, FunctionView, ModuleFunctionViews,
     ModulePassContext, ReadOnlyFunctionPassContext, ReadOnlyModulePassContext,
@@ -216,8 +226,17 @@ pub use pass_context::{
 pub use pass_instrumentation::{PassInstrumentationAnalysis, PassInstrumentationCallbacks};
 pub use pass_manager::{
     FunctionPass, FunctionPassManager, ModulePass, ModulePassEffect, ModulePassManager,
-    ModuleToFunctionPassAdaptor, MutatesIr, PreservesVerification, ReadOnlyFunctionPass,
-    ReadOnlyModulePass,
+    ModuleToFunctionPassAdaptor, MutatesIr, PassPipelineInfo, PreservesVerification,
+    ReadOnlyFunctionPass, ReadOnlyModulePass,
+};
+pub use pass_pipeline::{
+    BDCE, CLEANUP_LIFT, CLEANUP_MIN, CLEANUP_O1_ISH, DCE, DEFAULT_O0, DEFAULT_O1, EARLY_CSE,
+    FunctionPassScope, FunctionPipelineScope, FunctionPipelineStep, GVN_LITE, HasOptimizationLevel,
+    INSTCOMBINE, INSTSIMPLIFY, ModulePassScope, ModulePipelineScope, ModulePipelineStep,
+    NoOptimizationLevel, PassName, PassPipeline, PassPipelineElement, PassPipelineRecipe,
+    PassPipelineTextName, PassScope, PipelineName, PipelineScope, RecipeLevelState, SCCP,
+    SIMPLIFYCFG, cleanup_lift_pipeline, cleanup_min_pipeline, cleanup_o1_ish_pipeline,
+    default_o0_pipeline, default_o1_pipeline, default_pipeline, parse_pass_pipeline_text,
 };
 pub use phi_state::{Closed, Open, PhiState};
 pub use sized_element::{ArrayDyn, SizedElement};

@@ -1,0 +1,21 @@
+error[E0271]: type mismatch resolving `<WrongScopeFunctionPass as PassPipelineInfo>::Scope == FunctionPassScope`
+  --> tests/compile_fail/pass_pipeline_info_scope_mismatch.rs:25:27
+   |
+25 |     fpm.add_pipeline_pass(WrongScopeFunctionPass);
+   |         ----------------- ^^^^^^^^^^^^^^^^^^^^^^ type mismatch resolving `<WrongScopeFunctionPass as PassPipelineInfo>::Scope == FunctionPassScope`
+   |         |
+   |         required by a bound introduced by this call
+   |
+note: expected this to be `FunctionPassScope`
+  --> tests/compile_fail/pass_pipeline_info_scope_mismatch.rs:18:18
+   |
+18 |     type Scope = ModulePassScope;
+   |                  ^^^^^^^^^^^^^^^
+note: required by a bound in `FunctionPassManager::<'ctx, B, PreservesVerification>::add_pipeline_pass`
+  --> src/pass_manager.rs
+   |
+   |     pub fn add_pipeline_pass<P>(&mut self, pass: P)
+   |            ----------------- required by a bound in this associated function
+   |     where
+   |         P: PassPipelineInfo<Scope = FunctionPassScope> + ReadOnlyFunctionPass<'ctx, B> + 'ctx,
+   |                             ^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `FunctionPassManager::<'ctx, B, PreservesVerification>::add_pipeline_pass`

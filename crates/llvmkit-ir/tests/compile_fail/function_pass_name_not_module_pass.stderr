@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+  --> tests/compile_fail/function_pass_name_not_module_pass.rs:20:24
+   |
+20 |     mpm.add_named_pass(INSTCOMBINE, ModuleReportPass);
+   |         -------------- ^^^^^^^^^^^ expected `PassName<ModulePassScope>`, found `PassName<FunctionPassScope>`
+   |         |
+   |         arguments to this method are incorrect
+   |
+   = note: expected struct `PassName<ModulePassScope>`
+              found struct `PassName<FunctionPassScope>`
+note: method defined here
+  --> src/pass_manager.rs
+   |
+   |     pub fn add_named_pass<P>(&mut self, name: PassName<ModulePassScope>, pass: P)
+   |            ^^^^^^^^^^^^^^
