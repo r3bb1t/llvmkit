@@ -6,9 +6,9 @@
 
 use llvmkit_ir::instr_types::CastOpcode;
 use llvmkit_ir::{
-    BinaryOpcode, CmpPredicate, Constant, ConstantFloatValue, ConstantFolder, ConstantIntValue,
-    FastMathFlags, GepNoWrapFlags, IRBuilder, IRBuilderFolder, InstructionKind, InstructionView,
-    IntDyn, IntValue, IntrinsicId, IrError, IrResult, Linkage, Module, MulFlags, NoFolder,
+    BinaryIntrinsic, BinaryOpcode, CmpPredicate, Constant, ConstantFloatValue, ConstantFolder,
+    ConstantIntValue, FastMathFlags, GepNoWrapFlags, IRBuilder, IRBuilderFolder, InstructionKind,
+    InstructionView, IntDyn, IntValue, IrError, IrResult, Linkage, Module, MulFlags, NoFolder,
     PointerValue, ShlFlags, Type, UDivFlags, UnaryOpcode, Value, constant_fold_binary_instruction,
 };
 
@@ -182,7 +182,7 @@ impl<'ctx> IRBuilderFolder<'ctx> for ReturningFolder<'ctx> {
 
     fn fold_binary_intrinsic(
         &self,
-        _id: IntrinsicId,
+        _id: BinaryIntrinsic,
         _lhs: Value<'ctx>,
         _rhs: Value<'ctx>,
         _ty: Type<'ctx>,
@@ -386,7 +386,7 @@ fn constant_folder_binary_intrinsic_declines() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         assert_eq!(
             ConstantFolder.fold_binary_intrinsic(
-                IntrinsicId::UMax,
+                BinaryIntrinsic::UMax,
                 i32_ty.const_int(1_i32).as_value(),
                 i32_ty.const_int(2_i32).as_value(),
                 i32_ty.as_type(),

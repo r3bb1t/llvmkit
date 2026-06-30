@@ -19,6 +19,8 @@ mod concurrent_counter_example;
 
 use llvmkit_ir::{IrError, Module};
 
+/// Locks the example output against the Atomics documentation sequence and
+/// `test/Bitcode/compatibility.ll` atomic/fence/switch print forms cited above.
 #[test]
 fn concurrent_counter_example_emits_locked_ir() -> Result<(), IrError> {
     Module::with_new("concurrent_counter", |m| {

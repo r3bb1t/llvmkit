@@ -69,8 +69,7 @@ fn callbr_void_with_one_indirect_dest() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let bool_ty = m.bool_type();
         let void_ty = m.void_type();
-        let callee_ty = m.fn_type(void_ty.as_type(), [bool_ty.as_type()], false);
-        let callee = m.add_function::<(), _>("llvm.amdgcn.kill", callee_ty, Linkage::External)?;
+        let callee = m.get_or_insert_intrinsic_declaration_by_name("llvm.amdgcn.kill")?;
         let caller_ty = m.fn_type(void_ty.as_type(), [bool_ty.as_type()], false);
         let caller = m.add_function::<(), _>("test_kill", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");

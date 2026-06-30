@@ -941,6 +941,8 @@ pub enum AnyTypeEnum<'ctx, B: ModuleBrand = Brand<'ctx>> {
     Label(LabelType<'ctx, B>),
     Metadata(MetadataType<'ctx, B>),
     Token(TokenType<'ctx, B>),
+    X86Amx(Type<'ctx, B>),
+    WasmExnRef(Type<'ctx, B>),
     TargetExt(TargetExtType<'ctx, B>),
 }
 
@@ -958,6 +960,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AnyTypeEnum<'ctx, B> {
             Self::Label(t) => t.as_type(),
             Self::Metadata(t) => t.as_type(),
             Self::Token(t) => t.as_type(),
+            Self::X86Amx(t) | Self::WasmExnRef(t) => t,
             Self::TargetExt(t) => t.as_type(),
         }
     }
@@ -986,12 +989,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> From<Type<'ctx, B>> for AnyTypeEnum<'ctx, B> {
             TypeKind::Label => Self::Label(LabelType::new(t.id(), m)),
             TypeKind::Metadata => Self::Metadata(MetadataType::new(t.id(), m)),
             TypeKind::Token => Self::Token(TokenType::new(t.id(), m)),
-            // X86_AMX has no dedicated handle in DerivedTypes.h; route
-            // through the catch-all TargetExt slot for now. A future
-            // revision may add `X86AmxType`.
-            TypeKind::X86Amx | TypeKind::TargetExt => {
-                Self::TargetExt(TargetExtType::new(t.id(), m))
-            }
+            TypeKind::X86Amx => Self::X86Amx(t),
+            TypeKind::WasmExnRef => Self::WasmExnRef(t),
+            TypeKind::TargetExt => Self::TargetExt(TargetExtType::new(t.id(), m)),
             TypeKind::TypedPointer => Self::Pointer(PointerType::new(t.id(), m)),
         }
     }

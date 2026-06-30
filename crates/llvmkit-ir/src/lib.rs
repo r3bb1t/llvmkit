@@ -55,6 +55,7 @@ pub mod instr_types;
 pub mod instruction;
 pub mod instructions;
 pub mod int_width;
+pub mod intrinsic_inst;
 pub mod intrinsics;
 pub mod ir_builder;
 pub mod iter;
@@ -103,7 +104,8 @@ pub use atomic_ordering::AtomicOrdering;
 pub use atomicrmw_binop::AtomicRMWBinOp;
 pub use attribute_mask::AttributeMask;
 pub use attributes::{
-    AttrIndex, AttrKind, Attribute, AttributeList, AttributeSet, AttributeStorage,
+    AttrIndex, AttrKind, Attribute, AttributeList, AttributeSet, AttributeStorage, MemoryEffects,
+    MemoryLocation, ModRefInfo,
 };
 pub use basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
 pub use block_state::{BlockSealState, Sealed, Unsealed};
@@ -184,7 +186,11 @@ pub use instructions::{
     SelectInst, ShlInst, ShuffleVectorInst, StoreInst, SubInst, SwitchInst, UDivInst, URemInst,
     UnreachableInst, VAArgInst, XorInst,
 };
-pub use intrinsics::{IntrinsicFloatKind, IntrinsicId, IntrinsicSignature, IntrinsicTypePattern};
+pub use intrinsic_inst::{IntrinsicInst, LifetimeIntrinsic, MemIntrinsic};
+pub use intrinsics::{
+    BinaryIntrinsic, IntrinsicDescriptor, IntrinsicId, IntrinsicNameResolution,
+    descriptor_for_callee, resolve_intrinsic_name,
+};
 pub use ir_builder::constant_folder::ConstantFolder;
 pub use ir_builder::folder::IRBuilderFolder;
 pub use ir_builder::no_folder::NoFolder;

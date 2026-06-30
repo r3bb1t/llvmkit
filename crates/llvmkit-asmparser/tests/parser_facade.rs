@@ -66,6 +66,39 @@ fn parse_type_requires_end() {
     });
 }
 
+/// Mirrors `LLParser.cpp::parseTargetExtType`: target extension types parse
+/// their name plus type and integer parameters.
+#[test]
+fn parse_target_extension_type() {
+    Module::with_new::<_, _, _>("facade_target_ext_type", |module| {
+        let ty = parser::parse_type(b"target(\"aarch64.svcount\")", &module, None)
+            .expect("target extension type parses");
+        assert_eq!(format!("{ty}"), "target(\"aarch64.svcount\")");
+        assert!(matches!(
+            AnyTypeEnum::from(ty),
+            AnyTypeEnum::TargetExt(t) if t.name() == "aarch64.svcount"
+        ));
+
+        let with_params = parser::parse_type(b"target(\"spirv.Image\", i32, 7)", &module, None)
+            .expect("target extension type with parameters parses");
+        assert_eq!(format!("{with_params}"), "target(\"spirv.Image\", i32, 7)");
+    });
+}
+
+/// Mirrors `LLParser.cpp::parseTargetExtType`: type parameters must precede
+/// integer parameters in target extension types.
+#[test]
+fn parse_target_extension_rejects_type_after_integer_param() {
+    Module::with_new::<_, _, _>("facade_target_ext_bad_param_order", |module| {
+        let err = parser::parse_type(b"target(\"spirv.Image\", 7, i32)", &module, None)
+            .expect_err("type parameter after integer parameter is malformed");
+        match err {
+            ParseError::Expected { expected, .. } => assert_eq!(expected, "target extension type"),
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    });
+}
+
 /// Mirrors `LLParser.cpp::parseStandaloneConstantValue` through the facade.
 #[test]
 fn parse_constant_value_uses_slot_mapping() {

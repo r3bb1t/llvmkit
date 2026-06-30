@@ -7,8 +7,8 @@
 //! or constant, and `Err(_)` reports a malformed custom-folder result.
 
 use super::{
-    BinaryOpcode, Brand, CastOpcode, CmpPredicate, Constant, FastMathFlags, GepNoWrapFlags,
-    InstructionView, IntrinsicId, IrResult, ModuleBrand, Type, UnaryOpcode, Value,
+    BinaryIntrinsic, BinaryOpcode, Brand, CastOpcode, CmpPredicate, Constant, FastMathFlags,
+    GepNoWrapFlags, InstructionView, IrResult, ModuleBrand, Type, UnaryOpcode, Value,
 };
 
 /// Strategy for folding values during builder calls.
@@ -116,7 +116,7 @@ pub trait IRBuilderFolder<'ctx, B: ModuleBrand = Brand<'ctx>> {
 
     fn fold_binary_intrinsic(
         &self,
-        id: IntrinsicId,
+        id: BinaryIntrinsic,
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
         ty: Type<'ctx, B>,

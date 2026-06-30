@@ -34,6 +34,7 @@ use super::instr_types::{
     ReturnOpData,
 };
 use super::instruction::{InstructionKindData, InstructionView};
+use super::intrinsics::{PrettyPrintArg, descriptor_for_callee};
 use super::marker::Dyn;
 use super::module::{
     ModuleBrand, ModuleCore, ModuleView, UseListOrderBBRecord, UseListOrderRecord,
@@ -1590,16 +1591,15 @@ fn fmt_call(
         write!(f, "{} ", inst.ty())?;
     }
     let cd = module.context().value_data(c.callee.get());
+    let callee = Value::from_parts(c.callee.get(), module, cd.ty);
+    let intrinsic_descriptor = descriptor_for_callee(callee);
     // An inline-asm callee prints the `asm "...", "..."` form in place of
     // an `@name` / SSA operand. Mirrors `AssemblyWriter`'s `CallInst`
     // path, which routes an `InlineAsm` callee through `writeOperand`'s
     // `asm` printer rather than emitting a symbolic callee.
     match &cd.kind {
         ValueKindData::InlineAsm(d) => fmt_inline_asm(f, d)?,
-        _ => {
-            let callee = Value::from_parts(c.callee.get(), module, cd.ty);
-            fmt_operand_ref(f, callee, Some(slots))?;
-        }
+        _ => fmt_operand_ref(f, callee, Some(slots))?,
     }
     f.write_str("(")?;
     let mut first = true;
@@ -1611,6 +1611,9 @@ fn fmt_call(
         first = false;
         let ad = module.context().value_data(aid);
         let av = Value::from_parts(aid, module, ad.ty);
+        if let Some(descriptor) = intrinsic_descriptor.as_ref() {
+            fmt_intrinsic_pretty_arg_comment(f, descriptor.pretty_print_arg(idx), av)?;
+        }
         write!(f, "{} ", av.ty())?;
         if let Some(arg_attr) = c.attrs.arg_attrs().get(idx) {
             fmt_attribute_set(f, arg_attr, AttrIndex::Param(0), false, module)?;
@@ -1632,6 +1635,118 @@ fn fmt_call(
         write!(f, " #{group}")?;
     }
     fmt_operand_bundles(f, c.attrs.operand_bundles_slice(), module.core_ref(), slots)
+}
+
+fn fmt_intrinsic_pretty_arg_comment<B: ModuleBrand>(
+    f: &mut fmt::Formatter<'_>,
+    pretty: Option<PrettyPrintArg>,
+    value: Value<'_, B>,
+) -> fmt::Result {
+    let Some(pretty) = pretty else {
+        return Ok(());
+    };
+    let Some(comment) = intrinsic_pretty_arg_comment(pretty, value) else {
+        return Ok(());
+    };
+    write!(f, "/* {comment} */ ")
+}
+
+fn intrinsic_pretty_arg_comment<B: ModuleBrand>(
+    pretty: PrettyPrintArg,
+    value: Value<'_, B>,
+) -> Option<String> {
+    let rendered_value = intrinsic_pretty_arg_value(pretty.printer, value)?;
+    if pretty.name.is_empty() {
+        return Some(rendered_value);
+    }
+    Some(format!("{}={rendered_value}", pretty.name))
+}
+
+fn intrinsic_pretty_arg_value<B: ModuleBrand>(
+    printer: &str,
+    value: Value<'_, B>,
+) -> Option<String> {
+    let zext = constant_int_zext_u128(value)?;
+    let text = match printer {
+        "" => zext.to_string(),
+        "printTcgen05MMAKind" => match zext {
+            0 => "f16",
+            1 => "tf32",
+            2 => "f8f6f4",
+            3 => "i8",
+            _ => return None,
+        }
+        .to_owned(),
+        "printTcgen05CollectorUsageOp" => match zext {
+            0 => "discard",
+            1 => "lastuse",
+            2 => "fill",
+            3 => "use",
+            _ => return None,
+        }
+        .to_owned(),
+        "printTensormapElemType" => lookup_pretty_arg_name(
+            zext,
+            &[
+                "u8",
+                "u16",
+                "u32",
+                "s32",
+                "u64",
+                "s64",
+                "f16",
+                "f32",
+                "f32.ftz",
+                "f64",
+                "bf16",
+                "tf32",
+                "tf32.ftz",
+                "b4x16",
+                "b4x16_p64",
+                "b6x16_p32",
+            ],
+        )?,
+        "printTensormapInterleaveLayout" => {
+            lookup_pretty_arg_name(zext, &["No interleave", "16B interleave", "32B interleave"])?
+        }
+        "printTensormapSwizzleMode" => lookup_pretty_arg_name(
+            zext,
+            &[
+                "No swizzling",
+                "32B swizzling",
+                "64B swizzling",
+                "128B swizzling",
+                "96B swizzling",
+            ],
+        )?,
+        "printTensormapSwizzleAtomicity" => {
+            lookup_pretty_arg_name(zext, &["16B", "32B", "32B + 8B flip", "64B"])?
+        }
+        "printTensormapFillMode" => {
+            if zext == 0 {
+                "Zero fill".to_owned()
+            } else {
+                "OOB-NaN fill".to_owned()
+            }
+        }
+        _ => return None,
+    };
+    Some(text)
+}
+
+fn lookup_pretty_arg_name(value: u128, names: &[&str]) -> Option<String> {
+    let index = usize::try_from(value).ok()?;
+    names.get(index).map(|name| (*name).to_owned())
+}
+
+fn constant_int_zext_u128<B: ModuleBrand>(value: Value<'_, B>) -> Option<u128> {
+    let TypeData::Integer { bits } = value.ty().data() else {
+        return None;
+    };
+    let ValueKindData::Constant(ConstantData::Int(words)) = &value.data().kind else {
+        return None;
+    };
+    ApInt::from_words(*bits, words).try_zext_u128()
 }
 
 fn operand_bundle_tag_name(tag: &crate::instr_types::OperandBundleTag) -> &str {
@@ -2182,6 +2297,7 @@ fn fmt_attribute_stored<'ctx, B: ModuleBrand + 'ctx>(
             lower.to_string_radix(10, ApIntSignedness::Signed),
             upper.to_string_radix(10, ApIntSignedness::Signed)
         ),
+        AttributeStored::Memory(effects) => write!(f, "{effects}"),
         AttributeStored::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
         AttributeStored::String { key, value } => write!(f, "\"{key}\"=\"{value}\""),
     }

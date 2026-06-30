@@ -222,12 +222,13 @@ fn sized_refinement_accepts_sized_rejects_unsized() {
         assert!(SizedType::try_from(f64.as_type()).is_ok());
         assert!(SizedType::try_from(arr.as_type()).is_ok());
 
-        // void, label, metadata, token, function, opaque struct are unsized.
+        // void, label, metadata, token, wasm exnref, function, opaque struct are unsized.
         let unsized_kinds = [
             m.void_type().as_type(),
             m.label_type().as_type(),
             m.metadata_type().as_type(),
             m.token_type().as_type(),
+            m.wasm_exnref_type().as_type(),
             m.fn_type(m.void_type().as_type(), Vec::<Type>::new(), false)
                 .as_type(),
             m.named_struct("Opaque").as_type(),

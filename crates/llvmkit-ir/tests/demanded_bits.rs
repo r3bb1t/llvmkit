@@ -152,83 +152,79 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let i16_ty = m.i16_type();
         let i128_ty = m.i128_type();
 
-        let rev_ty = m.fn_type(i8_ty, [i8_ty.as_type()], false);
-        let rev_fn = m.add_function::<i8, _>("llvm.bitreverse.i8", rev_ty, Linkage::External)?;
+        let rev_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.bitreverse.i8")?;
         let rev_host_ty = m.fn_type(i8_ty, [i8_ty.as_type()], false);
         let rev_host = m.add_function::<i8, _>("rev_host", rev_host_ty, Linkage::External)?;
         let rev_entry = rev_host.append_basic_block(&m, "entry");
         let rev_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(rev_entry);
         let rev_x: IntValue<i8> = rev_host.param(0)?.try_into()?;
-        let rev = rev_b
+        let rev: IntValue<i8> = rev_b
             .call_builder(rev_fn)
             .arg(rev_x)
             .name("rev")
             .build()?
-            .return_int_value();
+            .return_value()
+            .expect("bitreverse returns value")
+            .try_into()?;
         let rev_mask = rev_b.build_int_and::<i8, _, _, _>(rev, i8_ty.const_int(0x0f_u8), "mask")?;
         rev_b.build_ret(rev_mask)?;
 
-        let swap_ty = m.fn_type(i16_ty, [i16_ty.as_type()], false);
-        let swap_fn = m.add_function::<i16, _>("llvm.bswap.i16", swap_ty, Linkage::External)?;
+        let swap_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.bswap.i16")?;
         let swap_host_ty = m.fn_type(i16_ty, [i16_ty.as_type()], false);
         let swap_host = m.add_function::<i16, _>("swap_host", swap_host_ty, Linkage::External)?;
         let swap_entry = swap_host.append_basic_block(&m, "entry");
         let swap_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(swap_entry);
         let swap_x: IntValue<i16> = swap_host.param(0)?.try_into()?;
-        let swap = swap_b
+        let swap: IntValue<i16> = swap_b
             .call_builder(swap_fn)
             .arg(swap_x)
             .name("swap")
             .build()?
-            .return_int_value();
+            .return_value()
+            .expect("bswap returns value")
+            .try_into()?;
         let swap_mask =
             swap_b.build_int_and::<i16, _, _, _>(swap, i16_ty.const_int(0x00ff_u16), "mask")?;
         swap_b.build_ret(swap_mask)?;
 
-        let fshl_ty = m.fn_type(
-            i8_ty,
-            [i8_ty.as_type(), i8_ty.as_type(), i8_ty.as_type()],
-            false,
-        );
-        let fshl_fn = m.add_function::<i8, _>("llvm.fshl.i8", fshl_ty, Linkage::External)?;
+        let fshl_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.fshl.i8")?;
         let fshl_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
         let fshl_host = m.add_function::<i8, _>("fshl_host", fshl_host_ty, Linkage::External)?;
         let fshl_entry = fshl_host.append_basic_block(&m, "entry");
         let fshl_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(fshl_entry);
         let fshl_x: IntValue<i8> = fshl_host.param(0)?.try_into()?;
         let fshl_y: IntValue<i8> = fshl_host.param(1)?.try_into()?;
-        let fshl = fshl_b
+        let fshl: IntValue<i8> = fshl_b
             .call_builder(fshl_fn)
             .arg(fshl_x)
             .arg(fshl_y)
             .arg(i8_ty.const_int(4_u8))
             .name("fshl")
             .build()?
-            .return_int_value();
+            .return_value()
+            .expect("fshl returns value")
+            .try_into()?;
         let fshl_mask =
             fshl_b.build_int_and::<i8, _, _, _>(fshl, i8_ty.const_int(0x0f_u8), "mask")?;
         fshl_b.build_ret(fshl_mask)?;
 
-        let fshr_ty = m.fn_type(
-            i8_ty,
-            [i8_ty.as_type(), i8_ty.as_type(), i8_ty.as_type()],
-            false,
-        );
-        let fshr_fn = m.add_function::<i8, _>("llvm.fshr.i8", fshr_ty, Linkage::External)?;
+        let fshr_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.fshr.i8")?;
         let fshr_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
         let fshr_host = m.add_function::<i8, _>("fshr_host", fshr_host_ty, Linkage::External)?;
         let fshr_entry = fshr_host.append_basic_block(&m, "entry");
         let fshr_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(fshr_entry);
         let fshr_x: IntValue<i8> = fshr_host.param(0)?.try_into()?;
         let fshr_y: IntValue<i8> = fshr_host.param(1)?.try_into()?;
-        let fshr = fshr_b
+        let fshr: IntValue<i8> = fshr_b
             .call_builder(fshr_fn)
             .arg(fshr_x)
             .arg(fshr_y)
             .arg(i8_ty.const_int(2_u8))
             .name("fshr")
             .build()?
-            .return_int_value();
+            .return_value()
+            .expect("fshr returns value")
+            .try_into()?;
         let fshr_mask =
             fshr_b.build_int_and::<i8, _, _, _>(fshr, i8_ty.const_int(0x0f_u8), "mask")?;
         fshr_b.build_ret(fshr_mask)?;
@@ -240,14 +236,16 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let fshr_zero_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(fshr_zero_entry);
         let fshr_zero_x: IntValue<i8> = fshr_zero_host.param(0)?.try_into()?;
         let fshr_zero_y: IntValue<i8> = fshr_zero_host.param(1)?.try_into()?;
-        let fshr_zero = fshr_zero_b
+        let fshr_zero: IntValue<i8> = fshr_zero_b
             .call_builder(fshr_fn)
             .arg(fshr_zero_x)
             .arg(fshr_zero_y)
             .arg(i8_ty.const_int(8_u8))
             .name("fshr.zero")
             .build()?
-            .return_int_value();
+            .return_value()
+            .expect("fshr returns value")
+            .try_into()?;
         let fshr_zero_mask = fshr_zero_b.build_int_and::<i8, _, _, _>(
             fshr_zero,
             i8_ty.const_int(0x0f_u8),
@@ -255,13 +253,7 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         )?;
         fshr_zero_b.build_ret(fshr_zero_mask)?;
 
-        let wide_fshl_ty = m.fn_type(
-            i128_ty,
-            [i128_ty.as_type(), i128_ty.as_type(), i128_ty.as_type()],
-            false,
-        );
-        let wide_fshl_fn =
-            m.add_function::<i128, _>("llvm.fshl.i128", wide_fshl_ty, Linkage::External)?;
+        let wide_fshl_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.fshl.i128")?;
         let wide_fshl_host_ty = m.fn_type(i128_ty, [i128_ty.as_type(), i128_ty.as_type()], false);
         let wide_fshl_host =
             m.add_function::<i128, _>("wide_fshl_host", wide_fshl_host_ty, Linkage::External)?;
@@ -270,91 +262,97 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let wide_fshl_x: IntValue<i128> = wide_fshl_host.param(0)?.try_into()?;
         let wide_fshl_y: IntValue<i128> = wide_fshl_host.param(1)?.try_into()?;
         let wide_fshl_amount = i128_ty.const_ap_int(&ApInt::from_words(128, &[1, 1]))?;
-        let wide_fshl = wide_fshl_b
+        let wide_fshl: IntValue<i128> = wide_fshl_b
             .call_builder(wide_fshl_fn)
             .arg(wide_fshl_x)
             .arg(wide_fshl_y)
             .arg(wide_fshl_amount)
             .name("wide.fshl")
             .build()?
-            .return_int_value();
+            .return_value()
+            .expect("fshl returns value")
+            .try_into()?;
         let wide_fshl_mask = i128_ty.const_ap_int(&ApInt::from_words(128, &[0xff]))?;
         let wide_fshl_masked =
             wide_fshl_b.build_int_and::<i128, _, _, _>(wide_fshl, wide_fshl_mask, "mask")?;
         wide_fshl_b.build_ret(wide_fshl_masked)?;
 
-        let umax_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
-        let umax_fn = m.add_function::<i8, _>("llvm.umax.i8", umax_ty, Linkage::External)?;
+        let umax_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.umax.i8")?;
         let umax_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
         let umax_host = m.add_function::<i8, _>("umax_host", umax_host_ty, Linkage::External)?;
         let umax_entry = umax_host.append_basic_block(&m, "entry");
         let umax_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(umax_entry);
         let umax_x: IntValue<i8> = umax_host.param(0)?.try_into()?;
         let umax_y: IntValue<i8> = umax_host.param(1)?.try_into()?;
-        let umax = umax_b
+        let umax: IntValue<i8> = umax_b
             .call_builder(umax_fn)
             .arg(umax_x)
             .arg(umax_y)
             .name("umax")
             .build()?
-            .return_int_value();
+            .return_value()
+            .expect("umax returns value")
+            .try_into()?;
         let umax_mask =
             umax_b.build_int_and::<i8, _, _, _>(umax, i8_ty.const_int(0xf0_u8), "mask")?;
         umax_b.build_ret(umax_mask)?;
 
-        let umin_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
-        let umin_fn = m.add_function::<i8, _>("llvm.umin.i8", umin_ty, Linkage::External)?;
+        let umin_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.umin.i8")?;
         let umin_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
         let umin_host = m.add_function::<i8, _>("umin_host", umin_host_ty, Linkage::External)?;
         let umin_entry = umin_host.append_basic_block(&m, "entry");
         let umin_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(umin_entry);
         let umin_x: IntValue<i8> = umin_host.param(0)?.try_into()?;
         let umin_y: IntValue<i8> = umin_host.param(1)?.try_into()?;
-        let umin = umin_b
+        let umin: IntValue<i8> = umin_b
             .call_builder(umin_fn)
             .arg(umin_x)
             .arg(umin_y)
             .name("umin")
             .build()?
-            .return_int_value();
+            .return_value()
+            .expect("umin returns value")
+            .try_into()?;
         let umin_mask =
             umin_b.build_int_and::<i8, _, _, _>(umin, i8_ty.const_int(0xf0_u8), "mask")?;
         umin_b.build_ret(umin_mask)?;
 
-        let smax_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
-        let smax_fn = m.add_function::<i8, _>("llvm.smax.i8", smax_ty, Linkage::External)?;
+        let smax_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.smax.i8")?;
         let smax_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
         let smax_host = m.add_function::<i8, _>("smax_host", smax_host_ty, Linkage::External)?;
         let smax_entry = smax_host.append_basic_block(&m, "entry");
         let smax_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(smax_entry);
         let smax_x: IntValue<i8> = smax_host.param(0)?.try_into()?;
         let smax_y: IntValue<i8> = smax_host.param(1)?.try_into()?;
-        let smax = smax_b
+        let smax: IntValue<i8> = smax_b
             .call_builder(smax_fn)
             .arg(smax_x)
             .arg(smax_y)
             .name("smax")
             .build()?
-            .return_int_value();
+            .return_value()
+            .expect("smax returns value")
+            .try_into()?;
         let smax_mask =
             smax_b.build_int_and::<i8, _, _, _>(smax, i8_ty.const_int(0xf0_u8), "mask")?;
         smax_b.build_ret(smax_mask)?;
 
-        let smin_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
-        let smin_fn = m.add_function::<i8, _>("llvm.smin.i8", smin_ty, Linkage::External)?;
+        let smin_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.smin.i8")?;
         let smin_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
         let smin_host = m.add_function::<i8, _>("smin_host", smin_host_ty, Linkage::External)?;
         let smin_entry = smin_host.append_basic_block(&m, "entry");
         let smin_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(smin_entry);
         let smin_x: IntValue<i8> = smin_host.param(0)?.try_into()?;
         let smin_y: IntValue<i8> = smin_host.param(1)?.try_into()?;
-        let smin = smin_b
+        let smin: IntValue<i8> = smin_b
             .call_builder(smin_fn)
             .arg(smin_x)
             .arg(smin_y)
             .name("smin")
             .build()?
-            .return_int_value();
+            .return_value()
+            .expect("smin returns value")
+            .try_into()?;
         let smin_mask =
             smin_b.build_int_and::<i8, _, _, _>(smin, i8_ty.const_int(0xf0_u8), "mask")?;
         smin_b.build_ret(smin_mask)?;
@@ -468,6 +466,44 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         assert_eq!(
             bits(smin_demanded.get_operand_demanded_bits(smin.as_value(), 2)?),
             "11110000"
+        );
+        Ok(())
+    })
+}
+
+/// Defensive regression for `llvm/lib/IR/Intrinsics.cpp::getIntrinsicInfoTableEntries`
+/// and `llvm/lib/Analysis/DemandedBits.cpp::determineLiveOperandBits`:
+/// intrinsic operand masks require a generated intrinsic callee; ordinary
+/// lookalike functions stay conservative.
+#[test]
+fn demanded_bits_ignore_mismatched_intrinsic_declarations() -> Result<(), IrError> {
+    Module::with_new("demanded-intrinsic-mismatch", |m| {
+        let i16_ty = m.i16_type();
+        let fn_ty = m.fn_type(i16_ty, [i16_ty.as_type()], false);
+        let malformed =
+            m.add_function::<i16, _>("not.llvm.bitreverse.i8", fn_ty, Linkage::External)?;
+        let host_ty = m.fn_type(i16_ty, [i16_ty.as_type()], false);
+        let host = m.add_function::<i16, _>("host", host_ty, Linkage::External)?;
+        let entry = host.append_basic_block(&m, "entry");
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let x: IntValue<i16> = host.param(0)?.try_into()?;
+        let call: IntValue<i16> = b
+            .call_builder(malformed)
+            .arg(x)
+            .name("rev")
+            .build()?
+            .return_value()
+            .expect("lookalike returns value")
+            .try_into()?;
+        let masked = b.build_int_and::<i16, _, _, _>(call, i16_ty.const_int(0x00ff_u16), "mask")?;
+        b.build_ret(masked)?;
+
+        let mut fam = FunctionAnalysisManager::new();
+        fam.register_pass(DemandedBitsAnalysis);
+        let demanded = fam.get_result::<DemandedBitsAnalysis, _>(host)?;
+        assert_eq!(
+            bits(demanded.get_operand_demanded_bits(call.as_value(), 1)?),
+            "1111111111111111"
         );
         Ok(())
     })

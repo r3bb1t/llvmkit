@@ -3,7 +3,7 @@
 //! Each `#[test]` mirrors a constructive `.ll` fixture or unit-test case
 //! from upstream LLVM. Citations live in `UPSTREAM.md`.
 
-use llvmkit_asmparser::ll_parser::Parser;
+use llvmkit_asmparser::{ll_parser::Parser, parse_error::ParseError};
 use llvmkit_ir::Module;
 
 fn parse_fixture(module_name: &str, src: &[u8]) -> String {
@@ -13,6 +13,15 @@ fn parse_fixture(module_name: &str, src: &[u8]) -> String {
             .parse_module()
             .expect("parse succeeded");
         format!("{module}")
+    })
+}
+
+fn parse_err(src: &[u8]) -> ParseError {
+    Module::with_new("parser_modifiers_err", |module| {
+        Parser::new(src, &module)
+            .expect("parse constructor")
+            .parse_module()
+            .expect_err("parse rejected invalid modifier")
     })
 }
 
@@ -134,4 +143,92 @@ fn disjoint_or_round_trips() {
 
     let text = parse_fixture("disjoint_or_round_trips", FIXTURE);
     assert_check_lines(&text, &["%res = or disjoint i64 %a, %b"]);
+}
+
+// ── Function memory attributes ────────────────────────────────────────────
+
+/// Mirrors `llvm/test/Assembler/memory-attribute.ll` and
+/// `lib/IR/Attributes.cpp::Attribute::getAsString`: exact `memory(...)`
+/// attributes parse, and legacy memory keywords upgrade to the canonical form.
+#[test]
+fn memory_attribute_round_trips() {
+    let text = parse_fixture(
+        "memory_attribute_round_trips",
+        b"declare void @f() memory(argmem: read, target_mem0: write)\ndeclare void @g() readonly\n",
+    );
+
+    assert_check_lines(
+        &text,
+        &[
+            "declare void @f() memory(argmem: read, target_mem0: write)",
+            "declare void @g() memory(read)",
+        ],
+    );
+}
+
+/// Mirrors `llvm/test/Assembler/memory-attribute-errors.ll`: `other` is the
+/// default memory access class in `Attribute::getAsString`, not an explicit
+/// `memory(...)` location accepted by the LLVM parser.
+#[test]
+fn memory_attribute_rejects_explicit_other_location() {
+    let err = parse_err(b"declare void @f() memory(other: read, argmem: write)\n");
+    match err {
+        ParseError::Expected { expected, .. } => {
+            assert_eq!(expected, "memory attribute access kind");
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// Mirrors `llvm/test/Bitcode/upgrade-memory-intrinsics.ll`: legacy memory
+/// keywords on pointer parameters remain parameter attributes, while bare
+/// function attributes upgrade to `memory(...)`.
+#[test]
+fn parameter_legacy_memory_keywords_remain_parameter_attrs() {
+    let text = parse_fixture(
+        "parameter_legacy_memory_keywords_remain_parameter_attrs",
+        b"declare void @f(ptr readonly, ptr writeonly, ptr readnone)\n",
+    );
+
+    assert_check_lines(
+        &text,
+        &["ptr readonly %0", "ptr writeonly %1", "ptr readnone %2"],
+    );
+}
+
+/// Mirrors `llvm/test/Bitcode/upgrade-memory-intrinsics.ll`: legacy memory
+/// keywords on call operands remain parameter attributes rather than upgrading
+/// the call's function attributes.
+#[test]
+fn call_parameter_legacy_memory_keywords_remain_parameter_attrs() {
+    let text = parse_fixture(
+        "call_parameter_legacy_memory_keywords_remain_parameter_attrs",
+        b"declare void @g(ptr, ptr, ptr)\ndefine void @f(ptr %p, ptr %q, ptr %r) {\nentry:\n  call void @g(ptr readonly %p, ptr writeonly %q, ptr readnone %r)\n  ret void\n}\n",
+    );
+
+    assert_check_lines(
+        &text,
+        &["call void @g(ptr readonly %p, ptr writeonly %q, ptr readnone %r)"],
+    );
+    assert!(!text.contains("memory("), "{text}");
+}
+
+/// Mirrors `llvm/test/Assembler/memory-attribute-errors.ll`: after a
+/// location-specific component, LLVM requires an explicit access kind; a bare
+/// default access kind is not another component.
+#[test]
+fn memory_attribute_rejects_default_access_after_location() {
+    let err = Module::with_new("memory_attribute_error", |module| {
+        Parser::new(b"declare void @f() memory(argmem: read, write)\n", &module)
+            .expect("parse constructor")
+            .parse_module()
+            .expect_err("memory attribute is malformed")
+    });
+
+    match err {
+        llvmkit_asmparser::parse_error::ParseError::Expected { expected, .. } => {
+            assert_eq!(expected, "memory attribute access kind")
+        }
+        other => panic!("unexpected parse error: {other:?}"),
+    }
 }

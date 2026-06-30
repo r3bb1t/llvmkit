@@ -355,6 +355,7 @@ fn get_stack_alignment_default_unset() {
     assert!(dl.stack_alignment().is_none());
 }
 
+/// Mirrors `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, GetStackAlignment)`.
 #[test]
 fn get_stack_alignment_table() {
     let cases: &[(&str, u64)] = &[("S8", 1), ("S64", 8), ("S32768", 4096)];

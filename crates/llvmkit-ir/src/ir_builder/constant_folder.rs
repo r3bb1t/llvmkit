@@ -15,10 +15,10 @@ use super::constant_fold::{
 };
 use super::folder::IRBuilderFolder;
 use super::{
-    BinaryOpcode, CastOpcode, CmpPredicate, Constant, ConstantExprFlags, ConstantExprOpcode,
-    ConstantExprOptions, FastMathFlags, GepNoWrapFlags, InstructionView, IntType, IntrinsicId,
-    IrError, IrResult, ModuleBrand, ModuleRef, ModuleView, POISON_MASK_ELEM, Type, TypeData,
-    UnaryOpcode, Value,
+    BinaryIntrinsic, BinaryOpcode, CastOpcode, CmpPredicate, Constant, ConstantExprFlags,
+    ConstantExprOpcode, ConstantExprOptions, FastMathFlags, GepNoWrapFlags, InstructionView,
+    IntType, IrError, IrResult, ModuleBrand, ModuleRef, ModuleView, POISON_MASK_ELEM, Type,
+    TypeData, UnaryOpcode, Value,
 };
 
 /// Default fold strategy: fold target-independent constant-on-constant
@@ -329,7 +329,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for ConstantFolder {
 
     fn fold_binary_intrinsic(
         &self,
-        _id: IntrinsicId,
+        _id: BinaryIntrinsic,
         _lhs: Value<'ctx, B>,
         _rhs: Value<'ctx, B>,
         _ty: Type<'ctx, B>,

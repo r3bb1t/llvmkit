@@ -48,6 +48,10 @@ use super::global_ifunc::{GlobalIFunc, GlobalIFuncBuilder};
 use super::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
 use super::global_variable::{GlobalBuilder, GlobalVariable};
 use super::int_width::{IntDyn, Width};
+use super::intrinsics::{
+    IntrinsicDescriptor, IntrinsicId, IntrinsicNameResolution, descriptor_for_name,
+    resolve_intrinsic_name,
+};
 use super::llvm_context::Context;
 use super::marker::Dyn;
 use super::metadata::{
@@ -61,6 +65,18 @@ use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, Type
 use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{Value, ValueData, ValueId, ValueKindData, ValueUse};
+
+fn reject_reserved_intrinsic_name(name: &str) -> IrResult<()> {
+    match resolve_intrinsic_name(name) {
+        IntrinsicNameResolution::NonIntrinsic => Ok(()),
+        IntrinsicNameResolution::UnknownIntrinsic => Err(IrError::UnknownIntrinsic {
+            name: name.to_owned(),
+        }),
+        IntrinsicNameResolution::Known(_) => Err(IrError::ReservedIntrinsicName {
+            name: name.to_owned(),
+        }),
+    }
+}
 
 // --------------------------------------------------------------------------
 // ModuleId
@@ -1072,6 +1088,7 @@ impl<'ctx> ModuleCore {
         Name: AsRef<str>,
     {
         let name = name.as_ref();
+        reject_reserved_intrinsic_name(name)?;
         if !name.is_empty() && self.global_name_exists(name) {
             return Err(IrError::DuplicateFunctionName {
                 name: name.to_owned(),
@@ -1086,17 +1103,36 @@ impl<'ctx> ModuleCore {
             });
         }
 
+        self.push_function(
+            name,
+            signature,
+            linkage,
+            crate::CallingConv::default(),
+            None,
+            None,
+        )
+    }
+
+    fn push_function<B: ModuleBrand + 'ctx, R>(
+        &'ctx self,
+        name: &str,
+        signature: FunctionType<'ctx, B>,
+        linkage: crate::global_value::Linkage,
+        calling_conv: crate::CallingConv,
+        intrinsic: Option<crate::intrinsics::IntrinsicFunctionData>,
+        attributes: Option<AttributeStorage>,
+    ) -> IrResult<FunctionValue<'ctx, R, B>>
+    where
+        R: crate::marker::ReturnMarker,
+    {
         let signature_id = signature.id;
 
-        // Push the function value first so each argument's
-        // `parent_fn` can already point at the real id. Initial
-        // `args` is empty; we patch it via `RefCell` once every
-        // parameter is in the arena.
         let fn_data = crate::function::FunctionData::new(
             name.to_owned(),
             signature_id,
             linkage,
-            crate::CallingConv::default(),
+            calling_conv,
+            intrinsic,
         );
         let fn_id = self.ctx.push_value(crate::value::ValueData {
             ty: signature_id,
@@ -1106,7 +1142,6 @@ impl<'ctx> ModuleCore {
             use_list: core::cell::RefCell::new(Vec::new()),
         });
 
-        // Push each parameter as its own value-arena entry.
         let param_types: Vec<TypeId> = signature.params().map(|t| t.id()).collect();
         let mut arg_ids = Vec::with_capacity(param_types.len());
         for (slot, &ty) in param_types.iter().enumerate() {
@@ -1125,13 +1160,15 @@ impl<'ctx> ModuleCore {
             arg_ids.push(id);
         }
 
-        // Patch the function's args list.
         let fn_value_data = self.ctx.value_data(fn_id);
         let fn_inner = match &fn_value_data.kind {
             crate::value::ValueKindData::Function(f) => f,
-            _ => unreachable!("just pushed Function variant"),
+            _ => unreachable!("function arena push returned the inserted function variant"),
         };
         *fn_inner.args.borrow_mut() = arg_ids.into_boxed_slice();
+        if let Some(attributes) = attributes {
+            *fn_inner.attributes.borrow_mut() = attributes;
+        }
 
         self.functions.borrow_mut().push(fn_id);
         if !name.is_empty() {
@@ -1143,6 +1180,76 @@ impl<'ctx> ModuleCore {
             fn_id,
             ModuleRef::<B>::new(self),
         ))
+    }
+
+    pub(crate) fn intrinsic_descriptor_from_signature<B: ModuleBrand + 'ctx>(
+        &'ctx self,
+        name: &str,
+        fn_ty: FunctionType<'ctx, B>,
+    ) -> IrResult<IntrinsicDescriptor<'ctx, B>> {
+        let id = match resolve_intrinsic_name(name) {
+            IntrinsicNameResolution::Known(id) => id,
+            IntrinsicNameResolution::UnknownIntrinsic => {
+                return Err(IrError::UnknownIntrinsic {
+                    name: name.to_owned(),
+                });
+            }
+            IntrinsicNameResolution::NonIntrinsic => {
+                return Err(IrError::InvalidOperation {
+                    message: "not an intrinsic name",
+                });
+            }
+        };
+        let module_ref = ModuleRef::<B>::new(self);
+        let descriptor = descriptor_for_name(module_ref, id, name)?;
+        let expected = descriptor.function_type_ref(module_ref)?;
+        if expected != fn_ty || descriptor.mangled_name()? != name {
+            return Err(IrError::IntrinsicSignatureMismatch {
+                name: name.to_owned(),
+            });
+        }
+        Ok(descriptor)
+    }
+
+    pub(crate) fn get_or_insert_intrinsic_declaration<B: ModuleBrand + 'ctx>(
+        &'ctx self,
+        descriptor: &IntrinsicDescriptor<'ctx, B>,
+    ) -> IrResult<FunctionValue<'ctx, Dyn, B>> {
+        let name = descriptor.mangled_name()?;
+        let module_ref = ModuleRef::<B>::new(self);
+        let signature = descriptor.function_type_ref(module_ref)?;
+        if let Some(existing_id) = self.function_by_name.borrow().get(&name).copied() {
+            let existing =
+                FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(existing_id, module_ref);
+            if existing.signature() != signature
+                || existing.basic_blocks().len() != 0
+                || existing.intrinsic_descriptor().as_ref() != Some(descriptor)
+            {
+                return Err(IrError::IntrinsicSignatureMismatch { name });
+            }
+            return Ok(existing);
+        }
+        let attributes = descriptor.declaration_attributes(signature)?;
+        self.push_function::<B, Dyn>(
+            &name,
+            signature,
+            Linkage::External,
+            crate::CallingConv::default(),
+            Some(descriptor.to_function_data()),
+            Some(attributes),
+        )
+    }
+
+    pub(crate) fn get_or_insert_intrinsic_declaration_by_name<B: ModuleBrand + 'ctx>(
+        &'ctx self,
+        name: &str,
+    ) -> IrResult<FunctionValue<'ctx, Dyn, B>> {
+        let id = IntrinsicId::lookup(name).ok_or_else(|| IrError::UnknownIntrinsic {
+            name: name.to_owned(),
+        })?;
+        let module_ref = ModuleRef::<B>::new(self);
+        let descriptor = descriptor_for_name(module_ref, id, name)?;
+        self.get_or_insert_intrinsic_declaration(&descriptor)
     }
 
     /// Iterate the module's functions in declaration order, widened
@@ -1995,6 +2102,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Type::new(self.core.ctx.x86_amx(), self.module_ref())
     }
 
+    /// `exnref`.
+    #[inline]
+    pub fn wasm_exnref_type(&self) -> Type<'ctx, B> {
+        Type::new(self.core.ctx.wasm_exnref(), self.module_ref())
+    }
+
     /// `i1`.
     #[inline]
     pub fn bool_type(&self) -> IntType<'ctx, bool, B> {
@@ -2325,6 +2438,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Name: AsRef<str>,
     {
         let name = name.as_ref();
+        reject_reserved_intrinsic_name(name)?;
         if !name.is_empty() && self.core.global_name_exists(name) {
             return Err(IrError::DuplicateFunctionName {
                 name: name.to_owned(),
@@ -2337,54 +2451,63 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
                 got: signature.return_type().kind_label(),
             });
         }
-        let signature_id = signature.id;
-        let fn_data = crate::function::FunctionData::new(
-            name.to_owned(),
-            signature_id,
+        self.core.push_function(
+            name,
+            signature,
             linkage,
             crate::CallingConv::default(),
-        );
-        let fn_id = self.core.ctx.push_value(crate::value::ValueData {
-            ty: signature_id,
-            name: core::cell::RefCell::new((!name.is_empty()).then(|| name.to_owned())),
-            debug_loc: None,
-            kind: ValueKindData::Function(Box::new(fn_data)),
-            use_list: core::cell::RefCell::new(Vec::new()),
-        });
-        let param_types: Vec<TypeId> = signature.params().map(|t| t.id()).collect();
-        let mut arg_ids = Vec::with_capacity(param_types.len());
-        for (slot, &ty) in param_types.iter().enumerate() {
-            let slot_u32 = u32::try_from(slot)
-                .unwrap_or_else(|_| unreachable!("function parameter slot exceeds u32::MAX"));
-            let id = self.core.ctx.push_value(crate::value::ValueData {
-                ty,
-                name: core::cell::RefCell::new(None),
-                debug_loc: None,
-                kind: ValueKindData::Argument {
-                    parent_fn: fn_id,
-                    slot: slot_u32,
-                },
-                use_list: core::cell::RefCell::new(Vec::new()),
-            });
-            arg_ids.push(id);
+            None,
+            None,
+        )
+    }
+
+    pub fn intrinsic_descriptor_from_signature(
+        &self,
+        name: &str,
+        fn_ty: FunctionType<'ctx, B>,
+    ) -> IrResult<IntrinsicDescriptor<'ctx, B>> {
+        self.core
+            .intrinsic_descriptor_from_signature::<B>(name, fn_ty)
+    }
+
+    /// Return the existing declaration for `descriptor`, or insert its canonical
+    /// generated declaration.
+    pub fn get_or_insert_intrinsic_declaration(
+        &self,
+        descriptor: &IntrinsicDescriptor<'ctx, B>,
+    ) -> IrResult<FunctionValue<'ctx, Dyn, B>> {
+        let function = self
+            .core
+            .get_or_insert_intrinsic_declaration::<B>(descriptor)?;
+        for (arg_index, name) in descriptor.argument_names() {
+            let arg = function.param(arg_index)?;
+            arg.set_name(self, name);
         }
-        let fn_value_data = self.core.ctx.value_data(fn_id);
-        let fn_inner = match &fn_value_data.kind {
-            crate::value::ValueKindData::Function(f) => f,
-            _ => unreachable!("just pushed Function variant"),
-        };
-        *fn_inner.args.borrow_mut() = arg_ids.into_boxed_slice();
-        self.core.functions.borrow_mut().push(fn_id);
-        if !name.is_empty() {
-            self.core
-                .function_by_name
-                .borrow_mut()
-                .insert(name.to_owned(), fn_id);
-        }
-        Ok(FunctionValue::<'ctx, R, B>::from_parts_unchecked(
-            fn_id,
-            self.module_ref(),
-        ))
+        Ok(function)
+    }
+
+    pub fn get_or_insert_intrinsic_declaration_by_id(
+        &self,
+        id: IntrinsicId,
+        overloads: &[Type<'ctx, B>],
+    ) -> IrResult<FunctionValue<'ctx, Dyn, B>> {
+        let descriptor = IntrinsicDescriptor::new(id, overloads.to_vec())?;
+        self.get_or_insert_intrinsic_declaration(&descriptor)
+    }
+
+    pub fn get_or_insert_intrinsic_declaration_by_name<Name>(
+        &self,
+        name: Name,
+    ) -> IrResult<FunctionValue<'ctx, Dyn, B>>
+    where
+        Name: AsRef<str>,
+    {
+        let name = name.as_ref();
+        let id = IntrinsicId::lookup(name).ok_or_else(|| IrError::UnknownIntrinsic {
+            name: name.to_owned(),
+        })?;
+        let descriptor = descriptor_for_name(self.module_ref(), id, name)?;
+        self.get_or_insert_intrinsic_declaration(&descriptor)
     }
 
     pub fn add_global<N, C>(

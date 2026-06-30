@@ -6,7 +6,10 @@
 //! `unittests/IR/InstructionsTest.cpp` `TEST` (or `test/Assembler/*.ll`
 //! fixture) it ports.
 
-use llvmkit_ir::{IRBuilder, IrError, Linkage, Module, Ptr};
+use llvmkit_ir::{
+    FloatValue, IRBuilder, IntValue, IntrinsicDescriptor, IntrinsicId, IrError, Linkage, Module,
+    Ptr,
+};
 
 /// Port of `unittests/IR/InstructionsTest.cpp::TEST_F(ModuleWithFunctionTest, CallInst)`
 /// — exercises construction of a non-void `CallInst` against a declared
@@ -122,6 +125,71 @@ fn call_tail() -> Result<(), IrError> {
         b.build_ret(r)?;
         let text = format!("{m}");
         assert!(text.contains("%r = tail call i32 @g()"), "got:\n{text}");
+        Ok(())
+    })
+}
+
+/// Mirrors `Intrinsic::getOrInsertDeclaration` plus `IRBuilder::CreateCall`:
+/// an intrinsic call helper inserts the canonical declaration and emits a
+/// direct call to it.
+#[test]
+fn intrinsic_call_inserts_declaration_and_emits_direct_call() -> Result<(), IrError> {
+    Module::with_new("intrinsic-call", |m| {
+        let f32_ty = m.f32_type();
+        let caller_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
+        let caller = m.add_function::<f32, _>("caller", caller_ty, Linkage::External)?;
+        let entry = caller.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
+        let x: FloatValue<f32> = caller.param(0)?.try_into()?;
+        let descriptor = IntrinsicDescriptor::new(
+            IntrinsicId::lookup("llvm.acos.f32").expect("acos intrinsic"),
+            [f32_ty.as_type()],
+        )?;
+        let call = b.build_intrinsic_call(&descriptor, &[x.as_value()], "r")?;
+        let r: FloatValue<f32> = call
+            .return_value()
+            .ok_or(IrError::InvalidOperation {
+                message: "non-void intrinsic result",
+            })?
+            .try_into()?;
+        b.build_ret(r)?;
+        let text = format!("{m}");
+        assert!(
+            text.contains("declare float @llvm.acos.f32(float %0)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("%r = call float @llvm.acos.f32(float %0)"),
+            "{text}"
+        );
+        Ok(())
+    })
+}
+/// Mirrors `Intrinsic::getOrInsertDeclaration` plus `IRBuilder::CreateCall`:
+/// descriptor-backed intrinsic builders reject operands that do not match the
+/// generated IIT signature.
+#[test]
+fn intrinsic_call_rejects_wrong_argument_type() -> Result<(), IrError> {
+    Module::with_new("intrinsic-call-mismatch", |m| {
+        let i32_ty = m.i32_type();
+        let f32_ty = m.f32_type();
+        let caller_ty = m.fn_type(m.void_type().as_type(), [i32_ty.as_type()], false);
+        let caller = m.add_function::<(), _>("caller", caller_ty, Linkage::External)?;
+        let entry = caller.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let x: IntValue<i32> = caller.param(0)?.try_into()?;
+        let descriptor = IntrinsicDescriptor::new(
+            IntrinsicId::lookup("llvm.acos.f32").expect("acos intrinsic"),
+            [f32_ty.as_type()],
+        )?;
+        let err = b
+            .build_intrinsic_call(&descriptor, &[x.as_value()], "bad")
+            .expect_err("i32 argument should not match llvm.acos.f32");
+        assert!(matches!(
+            err,
+            IrError::IntrinsicSignatureMismatch { name } if name == "llvm.acos.f32"
+        ));
+        let _ = b.build_ret_void();
         Ok(())
     })
 }

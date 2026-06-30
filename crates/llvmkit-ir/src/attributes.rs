@@ -25,6 +25,194 @@ use super::ApInt;
 use super::module::{Brand, ModuleBrand};
 use super::r#type::{Type, TypeId, TypeKind};
 
+/// Whether an operation references memory, modifies memory, both, or neither.
+/// Mirrors `llvm::ModRefInfo` in `llvm/include/llvm/Support/ModRef.h`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ModRefInfo {
+    NoModRef,
+    Ref,
+    Mod,
+    ModRef,
+}
+
+impl ModRefInfo {
+    const fn bits(self) -> u32 {
+        match self {
+            Self::NoModRef => 0,
+            Self::Ref => 1,
+            Self::Mod => 2,
+            Self::ModRef => 3,
+        }
+    }
+
+    const fn from_bits(bits: u32) -> Self {
+        match bits {
+            0 => Self::NoModRef,
+            1 => Self::Ref,
+            2 => Self::Mod,
+            _ => Self::ModRef,
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::NoModRef => "none",
+            Self::Ref => "read",
+            Self::Mod => "write",
+            Self::ModRef => "readwrite",
+        }
+    }
+}
+
+/// Memory location class used by the `memory(...)` function attribute.
+/// Mirrors `llvm::IRMemLocation`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MemoryLocation {
+    ArgMem,
+    InaccessibleMem,
+    ErrnoMem,
+    Other,
+    TargetMem0,
+    TargetMem1,
+}
+
+impl MemoryLocation {
+    const ALL: [Self; 6] = [
+        Self::ArgMem,
+        Self::InaccessibleMem,
+        Self::ErrnoMem,
+        Self::Other,
+        Self::TargetMem0,
+        Self::TargetMem1,
+    ];
+
+    const fn shift(self) -> u32 {
+        match self {
+            Self::ArgMem => 0,
+            Self::InaccessibleMem => 2,
+            Self::ErrnoMem => 4,
+            Self::Other => 6,
+            Self::TargetMem0 => 8,
+            Self::TargetMem1 => 10,
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::ArgMem => "argmem",
+            Self::InaccessibleMem => "inaccessiblemem",
+            Self::ErrnoMem => "errnomem",
+            Self::Other => "other",
+            Self::TargetMem0 => "target_mem0",
+            Self::TargetMem1 => "target_mem1",
+        }
+    }
+}
+
+/// Encoded memory effects for `memory(...)`. Two bits are stored per
+/// [`MemoryLocation`], exactly matching `MemoryEffectsBase` in `ModRef.h`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MemoryEffects {
+    data: u32,
+}
+
+impl MemoryEffects {
+    const LOC_MASK: u32 = 3;
+
+    pub const fn unknown() -> Self {
+        Self::from_mod_ref(ModRefInfo::ModRef)
+    }
+
+    pub const fn none() -> Self {
+        Self::from_mod_ref(ModRefInfo::NoModRef)
+    }
+
+    pub const fn read_only() -> Self {
+        Self::from_mod_ref(ModRefInfo::Ref)
+    }
+
+    pub const fn write_only() -> Self {
+        Self::from_mod_ref(ModRefInfo::Mod)
+    }
+
+    pub const fn arg_mem_only() -> Self {
+        Self::none().with_mod_ref(MemoryLocation::ArgMem, ModRefInfo::ModRef)
+    }
+
+    pub const fn inaccessible_mem_only() -> Self {
+        Self::none().with_mod_ref(MemoryLocation::InaccessibleMem, ModRefInfo::ModRef)
+    }
+
+    pub const fn inaccessible_or_arg_mem_only() -> Self {
+        Self::none()
+            .with_mod_ref(MemoryLocation::ArgMem, ModRefInfo::ModRef)
+            .with_mod_ref(MemoryLocation::InaccessibleMem, ModRefInfo::ModRef)
+    }
+
+    pub const fn create_from_int_value(data: u32) -> Self {
+        Self { data }
+    }
+
+    pub const fn to_int_value(self) -> u32 {
+        self.data
+    }
+
+    pub const fn get_mod_ref(self, location: MemoryLocation) -> ModRefInfo {
+        ModRefInfo::from_bits((self.data >> location.shift()) & Self::LOC_MASK)
+    }
+
+    pub const fn with_mod_ref(self, location: MemoryLocation, mod_ref: ModRefInfo) -> Self {
+        let shift = location.shift();
+        Self {
+            data: (self.data & !(Self::LOC_MASK << shift)) | (mod_ref.bits() << shift),
+        }
+    }
+
+    pub(crate) const fn from_mod_ref(mod_ref: ModRefInfo) -> Self {
+        let bits = mod_ref.bits();
+        Self {
+            data: bits | (bits << 2) | (bits << 4) | (bits << 6) | (bits << 8) | (bits << 10),
+        }
+    }
+
+    fn aggregate_mod_ref(self) -> ModRefInfo {
+        let mut bits = 0;
+        for location in MemoryLocation::ALL {
+            bits |= self.get_mod_ref(location).bits();
+        }
+        ModRefInfo::from_bits(bits)
+    }
+}
+
+impl fmt::Display for MemoryEffects {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let effects = *self;
+        let other = effects.get_mod_ref(MemoryLocation::Other);
+        let aggregate = effects.aggregate_mod_ref();
+        let mut first = true;
+
+        f.write_str("memory(")?;
+        if other != ModRefInfo::NoModRef || aggregate == other {
+            f.write_str(other.name())?;
+            first = false;
+        }
+
+        for location in MemoryLocation::ALL {
+            let mod_ref = effects.get_mod_ref(location);
+            if mod_ref == other || location == MemoryLocation::Other {
+                continue;
+            }
+            if !first {
+                f.write_str(", ")?;
+            }
+            first = false;
+            write!(f, "{}: {}", location.name(), mod_ref.name())?;
+        }
+
+        f.write_str(")")
+    }
+}
+
 // --------------------------------------------------------------------------
 // AttrKind
 // --------------------------------------------------------------------------
@@ -57,6 +245,7 @@ pub enum AttrKind {
     NoAlias,
     NoBuiltin,
     NoCallback,
+    NoCreateUndefOrPoison,
     NoCapture,
     NoCfCheck,
     NoDuplicate,
@@ -117,6 +306,7 @@ pub enum AttrKind {
     UWTable,
     VScaleRange,
     Range,
+    Memory,
 
     // ---- Type-valued attributes ----
     ByRef,
@@ -151,6 +341,7 @@ impl AttrKind {
             Self::NoAlias => "noalias",
             Self::NoBuiltin => "nobuiltin",
             Self::NoCallback => "nocallback",
+            Self::NoCreateUndefOrPoison => "nocreateundeforpoison",
             Self::NoCapture => "nocapture",
             Self::NoCfCheck => "nocf_check",
             Self::NoDuplicate => "noduplicate",
@@ -210,6 +401,7 @@ impl AttrKind {
             Self::UWTable => "uwtable",
             Self::VScaleRange => "vscale_range",
             Self::Range => "range",
+            Self::Memory => "memory",
             // Type
             Self::ByRef => "byref",
             Self::ByVal => "byval",
@@ -253,10 +445,19 @@ impl AttrKind {
     pub const fn is_range_kind(self) -> bool {
         matches!(self, Self::Range)
     }
+
+    /// `true` for the exact memory-effects payload attribute.
+    #[inline]
+    pub const fn is_memory_kind(self) -> bool {
+        matches!(self, Self::Memory)
+    }
     /// `true` for plain enum / flag kinds (no payload).
     #[inline]
     pub const fn is_enum_kind(self) -> bool {
-        !self.is_int_kind() && !self.is_type_kind() && !self.is_range_kind()
+        !self.is_int_kind()
+            && !self.is_type_kind()
+            && !self.is_range_kind()
+            && !self.is_memory_kind()
     }
 }
 
@@ -291,6 +492,8 @@ pub enum Attribute<'ctx, B: ModuleBrand = Brand<'ctx>> {
         lower: ApInt,
         upper: ApInt,
     },
+    /// Exact function memory effects (`memory(read)`, `memory(argmem: read)`).
+    Memory(MemoryEffects),
     /// Free-form key=value string attribute. Used for target-dependent
     /// attributes (`"target-features"`, `"frame-pointer"`, ...).
     String { key: String, value: String },
@@ -307,6 +510,11 @@ impl<'ctx> Attribute<'ctx> {
     /// Returns `None` if `kind` is not an integer-flavored kind.
     pub fn int(kind: AttrKind, value: u64) -> Option<Self> {
         Self::int_for_brand(kind, value)
+    }
+
+    /// Construct a memory-effects attribute with the default module brand.
+    pub fn memory(effects: MemoryEffects) -> Self {
+        Self::memory_for_brand(effects)
     }
 
     /// Construct a string key=value attribute with the default module brand.
@@ -339,6 +547,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
         } else {
             None
         }
+    }
+
+    /// Construct a memory-effects attribute for an explicitly branded module.
+    pub fn memory_for_brand(effects: MemoryEffects) -> Self {
+        Self::Memory(effects)
     }
 
     /// Construct a type-valued attribute. Returns `None` if `kind` is
@@ -392,6 +605,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
         match self {
             Self::Enum(k) | Self::Int(k, _) | Self::Type(k, _) => Some(*k),
             Self::Range { .. } => Some(AttrKind::Range),
+            Self::Memory(_) => Some(AttrKind::Memory),
             Self::String { .. } => None,
         }
     }
@@ -411,6 +625,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Attribute<'ctx, B> {
                 lower.to_string_radix(10, crate::ApIntSignedness::Signed),
                 upper.to_string_radix(10, crate::ApIntSignedness::Signed)
             ),
+            Self::Memory(effects) => write!(f, "{effects}"),
             Self::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
             Self::String { key, value } => write!(f, "\"{key}\"=\"{value}\""),
         }
@@ -593,6 +808,7 @@ pub(super) enum AttributeStored {
         lower: ApInt,
         upper: ApInt,
     },
+    Memory(MemoryEffects),
     String {
         key: String,
         value: String,
@@ -611,6 +827,7 @@ impl AttributeStored {
                 lower,
                 upper,
             },
+            Attribute::Memory(effects) => Self::Memory(effects),
             Attribute::String { key, value } => Self::String { key, value },
         }
     }
@@ -623,6 +840,7 @@ impl fmt::Display for AttributeStored {
             Self::Type(_, _) | Self::Range { .. } => {
                 unreachable!("typed attributes need a module context to print")
             }
+            Self::Memory(effects) => write!(f, "{effects}"),
             Self::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
             Self::String { key, value } => write!(f, "\"{key}\"=\"{value}\""),
         }
@@ -660,6 +878,67 @@ impl AttributeStorage {
 
     pub fn is_empty(&self) -> bool {
         self.entries.iter().all(|(_, attrs)| attrs.is_empty())
+    }
+
+    /// `true` if every stored attribute here is also present in `other`.
+    pub fn is_subset_of(&self, other: &Self) -> bool {
+        self.entries.iter().all(|(index, attrs)| {
+            other
+                .get(*index)
+                .is_some_and(|other_attrs| attrs.iter().all(|attr| other_attrs.contains(attr)))
+        })
+    }
+
+    /// Merge every attribute from `other` into this storage, preserving
+    /// per-index de-duplication.
+    pub fn merge_from(&mut self, other: &Self) {
+        for (index, attrs) in &other.entries {
+            for attr in attrs {
+                self.add_stored(*index, attr.clone());
+            }
+        }
+    }
+
+    /// Set equality over attribute contents. Entry and attribute insertion
+    /// order are intentionally ignored; attributes are already de-duplicated
+    /// within each index by [`Self::add`].
+    pub fn has_same_attributes(&self, other: &Self) -> bool {
+        self.is_subset_of(other) && other.is_subset_of(self)
+    }
+
+    /// Set equality for one attribute index. Attribute storage at other
+    /// indexes is ignored.
+    pub fn index_has_same_attributes(&self, other: &Self, index: AttrIndex) -> bool {
+        self.index_is_subset_of(other, index) && other.index_is_subset_of(self, index)
+    }
+
+    /// `true` when every non-empty entry in this storage is at `index`, and
+    /// that entry exactly matches `other` at the same index.
+    pub fn has_only_index_attributes_matching(&self, other: &Self, index: AttrIndex) -> bool {
+        self.entries
+            .iter()
+            .all(|(entry_index, attrs)| *entry_index == index || attrs.is_empty())
+            && self.index_has_same_attributes(other, index)
+    }
+
+    /// `true` when every non-empty entry in this storage is at `index`, and
+    /// that entry contains only attributes also present in `other` at the same
+    /// index.
+    pub fn has_only_index_attributes_subset_of(&self, other: &Self, index: AttrIndex) -> bool {
+        self.entries
+            .iter()
+            .all(|(entry_index, attrs)| *entry_index == index || attrs.is_empty())
+            && self.index_is_subset_of(other, index)
+    }
+
+    fn index_is_subset_of(&self, other: &Self, index: AttrIndex) -> bool {
+        let Some(attrs) = self.get(index) else {
+            return true;
+        };
+        match other.get(index) {
+            Some(other_attrs) => attrs.iter().all(|attr| other_attrs.contains(attr)),
+            None => attrs.is_empty(),
+        }
     }
 
     /// Borrow the slice of stored attributes at `index`, or `None`
@@ -704,15 +983,16 @@ mod tests {
 
     /// llvmkit-specific: Rust enum partition. Closest upstream:
     /// `Attribute::isEnumAttribute` / `isIntAttribute` / `isTypeAttribute`
-    /// in `lib/IR/Attributes.cpp`, extended for `RangeAttr`.
+    /// in `lib/IR/Attributes.cpp`, extended for `RangeAttr` and `Memory`.
     #[test]
     fn kind_partition_is_total() {
-        // Every variant is exactly one of enum/int/type/range.
+        // Every variant is exactly one of enum/int/type/range/memory.
         let kinds = [
             AttrKind::AlwaysInline,
             AttrKind::Alignment,
             AttrKind::ByVal,
             AttrKind::Range,
+            AttrKind::Memory,
         ];
         for k in kinds {
             let categories = [
@@ -720,6 +1000,7 @@ mod tests {
                 k.is_int_kind(),
                 k.is_type_kind(),
                 k.is_range_kind(),
+                k.is_memory_kind(),
             ];
             assert_eq!(
                 categories.into_iter().filter(|category| *category).count(),
@@ -746,6 +1027,24 @@ mod tests {
         assert_eq!(format!("{s}"), "\"target-features\"=\"+sse2\"");
         let bare = TestAttribute::<'_>::string("nobuiltin", "");
         assert_eq!(format!("{bare}"), "\"nobuiltin\"");
+        assert_eq!(
+            format!(
+                "{}",
+                TestAttribute::<'_>::memory(MemoryEffects::read_only())
+            ),
+            "memory(read)"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                TestAttribute::<'_>::memory(
+                    MemoryEffects::none()
+                        .with_mod_ref(MemoryLocation::ArgMem, ModRefInfo::Ref)
+                        .with_mod_ref(MemoryLocation::TargetMem0, ModRefInfo::Mod)
+                )
+            ),
+            "memory(argmem: read, target_mem0: write)"
+        );
     }
 
     /// Mirrors `AttributeSetNode::get` dedup semantics in

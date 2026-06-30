@@ -28,6 +28,7 @@
 
 use std::collections::HashMap;
 
+use crate::attributes::AttributeStorage;
 use crate::basic_block::BasicBlock;
 use crate::constant_range::{ConstantRange, metadata_constant_int};
 use crate::derived_types::SizedType;
@@ -402,23 +403,92 @@ impl<'ctx> Verifier<'ctx> {
 
     fn verify_intrinsic_function(&self, f: FunctionValue<'ctx, Dyn>) -> IrResult<()> {
         let name = f.name();
-        if !name.starts_with("llvm.") {
-            return Ok(());
+        match crate::intrinsics::resolve_intrinsic_name(name) {
+            crate::intrinsics::IntrinsicNameResolution::NonIntrinsic => return Ok(()),
+            crate::intrinsics::IntrinsicNameResolution::UnknownIntrinsic => {
+                return Err(IrError::UnknownIntrinsic {
+                    name: name.to_owned(),
+                });
+            }
+            crate::intrinsics::IntrinsicNameResolution::Known(_) => {}
         }
-        let id = crate::intrinsics::IntrinsicId::lookup(name).ok_or(IrError::InvalidOperation {
-            message: "unknown intrinsic",
-        })?;
-        let expected = id
-            .function_type_ref(crate::module::ModuleRef::new(self.module), name)
-            .map_err(|_| IrError::InvalidOperation {
-                message: "intrinsic signature mismatch",
+        let descriptor = self
+            .module
+            .intrinsic_descriptor_from_signature::<crate::module::Brand<'ctx>>(name, f.signature())
+            .map_err(|err| match err {
+                IrError::UnknownIntrinsic { .. } | IrError::IntrinsicSignatureMismatch { .. } => {
+                    err
+                }
+                _ => IrError::IntrinsicSignatureMismatch {
+                    name: name.to_owned(),
+                },
             })?;
-        if f.signature() != expected {
-            return Err(IrError::InvalidOperation {
-                message: "intrinsic signature mismatch",
+        if f.is_intrinsic() && f.intrinsic_descriptor().as_ref() != Some(&descriptor) {
+            return Err(IrError::IntrinsicSignatureMismatch {
+                name: name.to_owned(),
             });
         }
+        if f.basic_blocks().next().is_some() {
+            return Err(IrError::InvalidOperation {
+                message: "intrinsic functions should never be defined",
+            });
+        }
+        let expected_attrs = descriptor
+            .declaration_attributes(f.signature())
+            .map_err(|err| match err {
+                IrError::UnknownIntrinsic { .. } | IrError::IntrinsicSignatureMismatch { .. } => {
+                    err
+                }
+                _ => IrError::IntrinsicSignatureMismatch {
+                    name: name.to_owned(),
+                },
+            })?;
+        let Some(actual_attrs) = self.function_attrs_with_groups(f) else {
+            return Err(IrError::InvalidOperation {
+                message: "intrinsic declaration modifier",
+            });
+        };
+        if !expected_attrs.is_subset_of(&actual_attrs) {
+            return Err(IrError::InvalidOperation {
+                message: "intrinsic declaration modifier",
+            });
+        }
+        let intrinsic_value = f.as_value();
+        for user in intrinsic_value.users() {
+            let used_as_callee = match user.kind() {
+                Some(crate::instruction::InstructionKind::Call(call)) => {
+                    call.callee().id() == intrinsic_value.id()
+                }
+                _ => match user.terminator_kind() {
+                    Some(crate::instruction::TerminatorKind::Invoke(invoke)) => {
+                        invoke.callee().id() == intrinsic_value.id()
+                    }
+                    Some(crate::instruction::TerminatorKind::CallBr(callbr)) => {
+                        callbr.callee().id() == intrinsic_value.id()
+                    }
+                    _ => false,
+                },
+            };
+            if !used_as_callee {
+                return Err(IrError::InvalidOperation {
+                    message: "intrinsic can only be used as callee",
+                });
+            }
+        }
         Ok(())
+    }
+
+    fn function_attrs_with_groups(&self, f: FunctionValue<'ctx, Dyn>) -> Option<AttributeStorage> {
+        let module_attr_groups = self.module.attribute_groups();
+        let mut attrs = f.data().attributes.borrow().clone();
+        for group in f.function_attr_groups() {
+            let (_, group_attrs) = module_attr_groups
+                .iter()
+                .rev()
+                .find(|(id, _)| *id == group)?;
+            attrs.merge_from(group_attrs);
+        }
+        Some(attrs)
     }
 
     fn visit_block(
@@ -2135,6 +2205,7 @@ impl<'ctx> Verifier<'ctx> {
                 ));
             }
         }
+        self.check_intrinsic_call(f, bb, c.callee.get(), c.fn_ty, &c.args)?;
         if let ValueKindData::InlineAsm(_) = &self.module.context().value_data(c.callee.get()).kind
         {
             let inline_asm =
@@ -2153,6 +2224,66 @@ impl<'ctx> Verifier<'ctx> {
             // current call surface cannot spell per-operand elementtype attrs.
         }
 
+        Ok(())
+    }
+
+    fn check_intrinsic_call(
+        &self,
+        f: FunctionValue<'ctx, Dyn>,
+        bb: &BasicBlock<'ctx, Dyn>,
+        callee_id: ValueId,
+        fn_ty: TypeId,
+        args: &[core::cell::Cell<ValueId>],
+    ) -> IrResult<()> {
+        let callee_data = self.module.context().value_data(callee_id);
+        let ValueKindData::Function(_) = &callee_data.kind else {
+            return Ok(());
+        };
+        let callee = crate::value::Value::from_parts(callee_id, self.module, callee_data.ty);
+        let Some(descriptor) = crate::intrinsics::descriptor_for_callee(callee) else {
+            return Ok(());
+        };
+        let expected = descriptor
+            .function_type_ref(crate::module::ModuleRef::new(self.module))
+            .map_err(|_| {
+                self.fail(
+                    f,
+                    bb,
+                    VerifierRule::CallArgTypeMismatch,
+                    "intrinsic signature mismatch".to_string(),
+                )
+            })?;
+        if expected.as_type().id() != fn_ty {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::CallArgTypeMismatch,
+                "intrinsic signature mismatch".to_string(),
+            ));
+        }
+        for index in descriptor.immarg_operand_indices() {
+            let Some(arg) = args.get(index) else {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::CallArgCountMismatch,
+                    "intrinsic signature mismatch".to_string(),
+                ));
+            };
+            if !matches!(
+                self.module.context().value_data(arg.get()).kind,
+                ValueKindData::Constant(
+                    crate::constant::ConstantData::Int(_) | crate::constant::ConstantData::Float(_)
+                )
+            ) {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::CallArgTypeMismatch,
+                    "immarg operand has non-immediate parameter".to_string(),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -2473,6 +2604,7 @@ impl<'ctx> Verifier<'ctx> {
                 "invoke destination is not a basic block of the parent function".into(),
             ));
         }
+        self.check_intrinsic_call(f, bb, d.callee.get(), d.fn_ty, &d.args)?;
         Ok(())
     }
 
@@ -2505,6 +2637,7 @@ impl<'ctx> Verifier<'ctx> {
                 ));
             }
         }
+        self.check_intrinsic_call(f, bb, d.callee.get(), d.fn_ty, &d.args)?;
         Ok(())
     }
 
@@ -3060,6 +3193,48 @@ mod tests {
         match err {
             IrError::VerifierFailure { rule, .. } if *rule == expected => {}
             _ => panic!("expected VerifierRule::{expected:?}, got {err:?}"),
+        }
+    }
+
+    /// Mirrors `Verifier::visitFunction`: generated intrinsic declarations
+    /// must carry the generated declaration attributes, not a subset with
+    /// silently missing `immarg` / memory attributes.
+    #[test]
+    fn intrinsic_declaration_missing_generated_attrs_is_rejected() {
+        let err = Module::with_new("intrinsic-missing-attrs", |m| {
+            let f = m
+                .get_or_insert_intrinsic_declaration_by_name("llvm.abs.i32")
+                .expect("intrinsic declaration");
+            *f.data().attributes.borrow_mut() = crate::attributes::AttributeStorage::new();
+            m.verify_borrowed()
+                .expect_err("missing generated attrs rejected")
+        });
+
+        match err {
+            IrError::InvalidOperation { message } => {
+                assert_eq!(message, "intrinsic declaration modifier")
+            }
+            other => panic!("unexpected verifier error: {other:?}"),
+        }
+    }
+
+    /// Mirrors `Verifier::visitFunction`: intrinsic declaration attribute
+    /// groups must resolve before generated attributes can be checked.
+    #[test]
+    fn intrinsic_declaration_extra_attr_group_is_rejected() {
+        let err = Module::with_new("intrinsic-extra-group", |m| {
+            let f = m
+                .get_or_insert_intrinsic_declaration_by_name("llvm.bswap.i32")
+                .expect("intrinsic declaration");
+            f.data().function_attr_groups.borrow_mut().push(0);
+            m.verify_borrowed().expect_err("extra attr group rejected")
+        });
+
+        match err {
+            IrError::InvalidOperation { message } => {
+                assert_eq!(message, "intrinsic declaration modifier")
+            }
+            other => panic!("unexpected verifier error: {other:?}"),
         }
     }
 

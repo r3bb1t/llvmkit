@@ -14,6 +14,7 @@ categories.workspace   = true
 [features]
 default = ["macros"]
 macros = ["dep:llvmkit-macros"]
+gen-intrinsics = []
 
 [dependencies]
 bitflags  = "2"
@@ -23,3 +24,8 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 trybuild = "1"
+
+[[bin]]
+name = "gen_intrinsics"
+path = "tools/gen_intrinsics.rs"
+required-features = ["gen-intrinsics"]

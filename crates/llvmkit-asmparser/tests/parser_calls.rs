@@ -101,7 +101,8 @@ fn inline_asm_callbr_label_constraints_subset() {
     }
 }
 
-/// llvmkit-specific callbr successor subset of `test/Assembler/callbr.ll`.
+/// Mirrors `test/Assembler/callbr.ll` successor structure with the upstream
+/// `@llvm.amdgcn.kill` intrinsic callee.
 #[test]
 fn callbr_successor_structure_round_trips() {
     const FIXTURE: &[u8] =
@@ -111,7 +112,7 @@ fn callbr_successor_structure_round_trips() {
     assert_check_lines(
         &text,
         &[
-            "callbr void @callee(i1 %c)",
+            "callbr void @llvm.amdgcn.kill(i1 %c)",
             "to label %cont [label %kill]",
             "cont:",
             "ret void",

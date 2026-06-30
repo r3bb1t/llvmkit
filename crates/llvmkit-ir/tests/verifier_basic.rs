@@ -18,10 +18,42 @@
 //! marked accordingly.
 
 use llvmkit_ir::{
-    AShrFlags, AddFlags, Align, Dyn, FloatPredicate, FloatValue, IRBuilder, IntPredicate, IntValue,
-    IrError, LShrFlags, Linkage, Module, MulFlags, PointerValue, SDivFlags, ShlFlags, SubFlags,
-    Type, UDivFlags, VerifierRule,
+    AShrFlags, AddFlags, Align, AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn,
+    FloatPredicate, FloatValue, IRBuilder, IntPredicate, IntValue, IntrinsicId, IrError, LShrFlags,
+    Linkage, MemoryEffects, Module, MulFlags, PointerValue, SDivFlags, ShlFlags, SubFlags, Type,
+    UDivFlags, VerifierRule,
 };
+
+fn abs_function_attrs_without_immarg() -> AttributeStorage {
+    let mut attrs = AttributeStorage::new();
+    for kind in [
+        AttrKind::NoUnwind,
+        AttrKind::NoCallback,
+        AttrKind::NoSync,
+        AttrKind::NoFree,
+        AttrKind::WillReturn,
+        AttrKind::Speculatable,
+    ] {
+        attrs.add(
+            AttrIndex::Function,
+            Attribute::enum_attr(kind).expect("generated enum attribute"),
+        );
+    }
+    attrs.add(
+        AttrIndex::Function,
+        Attribute::memory(MemoryEffects::none()),
+    );
+    attrs
+}
+
+fn assert_intrinsic_modifier_error(err: IrError) {
+    match err {
+        IrError::InvalidOperation { message } => {
+            assert_eq!(message, "intrinsic declaration modifier");
+        }
+        other => panic!("unexpected verifier error: {other:?}"),
+    }
+}
 
 /// Empty module is trivially well-formed.
 /// Closest upstream coverage: `unittests/IR/VerifierTest.cpp` -- the
@@ -41,39 +73,32 @@ fn verify_empty_module() -> Result<(), IrError> {
 #[test]
 fn verify_represented_intrinsic_declarations() -> Result<(), IrError> {
     Module::with_new::<_, _, _>("intrinsics", |m| {
-        let void_ty = m.void_type().as_type();
-        let i1_ty = m.i1_type().as_type();
-        let i32_ty = m.i32_type().as_type();
-        let i64_ty = m.i64_type().as_type();
-        let v4i32_ty = m.vector_type(i32_ty, 4, false).as_type();
-        let ptr_ty = m.ptr_type(0).as_type();
-
-        for (name, ret, params) in [
-            ("llvm.assume", void_ty, vec![i1_ty]),
-            ("llvm.abs.i32", i32_ty, vec![i32_ty, i1_ty]),
-            ("llvm.bswap.i32", i32_ty, vec![i32_ty]),
-            ("llvm.bitreverse.i32", i32_ty, vec![i32_ty]),
-            ("llvm.ctlz.i32", i32_ty, vec![i32_ty, i1_ty]),
-            ("llvm.cttz.i32", i32_ty, vec![i32_ty, i1_ty]),
-            ("llvm.ctpop.i32", i32_ty, vec![i32_ty]),
-            ("llvm.fshl.i32", i32_ty, vec![i32_ty, i32_ty, i32_ty]),
-            ("llvm.fshr.i32", i32_ty, vec![i32_ty, i32_ty, i32_ty]),
-            ("llvm.umax.i32", i32_ty, vec![i32_ty, i32_ty]),
-            ("llvm.umin.i32", i32_ty, vec![i32_ty, i32_ty]),
-            ("llvm.smax.i32", i32_ty, vec![i32_ty, i32_ty]),
-            ("llvm.smin.i32", i32_ty, vec![i32_ty, i32_ty]),
-            ("llvm.uadd.sat.i32", i32_ty, vec![i32_ty, i32_ty]),
-            ("llvm.usub.sat.i32", i32_ty, vec![i32_ty, i32_ty]),
-            ("llvm.sadd.sat.i32", i32_ty, vec![i32_ty, i32_ty]),
-            ("llvm.ssub.sat.i32", i32_ty, vec![i32_ty, i32_ty]),
-            ("llvm.ctpop.v4i32", v4i32_ty, vec![v4i32_ty]),
-            ("llvm.uadd.sat.v4i32", v4i32_ty, vec![v4i32_ty, v4i32_ty]),
-            ("llvm.vector.reduce.add.v4i32", i32_ty, vec![v4i32_ty]),
-            ("llvm.ptrmask.p0.i64", ptr_ty, vec![ptr_ty, i64_ty]),
-            ("llvm.vscale.i32", i32_ty, Vec::new()),
+        for name in [
+            "llvm.acos.f32",
+            "llvm.assume",
+            "llvm.abs.i32",
+            "llvm.bswap.i32",
+            "llvm.bitreverse.i32",
+            "llvm.ctlz.i32",
+            "llvm.cttz.i32",
+            "llvm.ctpop.i32",
+            "llvm.fshl.i32",
+            "llvm.fshr.i32",
+            "llvm.umax.i32",
+            "llvm.umin.i32",
+            "llvm.smax.i32",
+            "llvm.smin.i32",
+            "llvm.uadd.sat.i32",
+            "llvm.usub.sat.i32",
+            "llvm.sadd.sat.i32",
+            "llvm.ssub.sat.i32",
+            "llvm.ctpop.v4i32",
+            "llvm.uadd.sat.v4i32",
+            "llvm.vector.reduce.add.v4i32",
+            "llvm.ptrmask.p0.i64",
+            "llvm.vscale.i32",
         ] {
-            let fn_ty = m.fn_type(ret, params, false);
-            m.add_function::<Dyn, _>(name, fn_ty, Linkage::External)?;
+            m.get_or_insert_intrinsic_declaration_by_name(name)?;
         }
 
         m.verify_borrowed()?;
@@ -81,22 +106,132 @@ fn verify_represented_intrinsic_declarations() -> Result<(), IrError> {
     })
 }
 
-/// Mirrors `llvm/lib/IR/Verifier.cpp` intrinsic validation: declaration type
-/// must match the canonical overloaded type encoded by the `llvm.*` name.
+/// Mirrors `llvm/lib/IR/Verifier.cpp::visitIntrinsicCall`: every generated
+/// fixed-signature intrinsic declaration materializes through the canonical
+/// descriptor path and passes module verification.
 #[test]
-fn verify_represented_intrinsic_mismatch_fails() -> Result<(), IrError> {
+fn verify_all_fixed_signature_intrinsic_declarations() -> Result<(), IrError> {
+    Module::with_new::<_, _, _>("all-fixed-intrinsics", |m| {
+        for id in IntrinsicId::all().filter(|id| !id.is_overloaded()) {
+            m.get_or_insert_intrinsic_declaration_by_id(id, &[])
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "{}#{} declaration failed verifier setup: {err}",
+                        id.enum_name(),
+                        id.raw()
+                    )
+                });
+        }
+
+        m.verify_borrowed()?;
+        Ok(())
+    })
+}
+
+/// Mirrors `llvm/lib/IR/Verifier.cpp::visitFunction`: generated intrinsic
+/// declarations must retain TableGen-emitted function attributes such as
+/// `nounwind`, `willreturn`, `speculatable`, and `memory(none)`.
+#[test]
+fn intrinsic_declaration_missing_generated_function_attrs_is_rejected() -> Result<(), IrError> {
+    Module::with_new::<_, _, _>("intrinsic-missing-function-attrs", |m| {
+        let abs = m.get_or_insert_intrinsic_declaration_by_name("llvm.abs.i32")?;
+        let mut attrs = AttributeStorage::new();
+        attrs.add(
+            AttrIndex::Param(1),
+            Attribute::enum_attr(AttrKind::ImmArg).expect("generated immarg attribute"),
+        );
+        abs.set_attributes(&m, attrs);
+
+        let err = m
+            .verify_borrowed()
+            .expect_err("missing generated function attrs rejected");
+        assert_intrinsic_modifier_error(err);
+        Ok(())
+    })
+}
+
+/// Mirrors `llvm/lib/IR/Verifier.cpp::visitFunction`: generated intrinsic
+/// declarations must retain indexed argument attributes from Intrinsics.td;
+/// `llvm.abs.*` marks its `is_int_min_poison` argument as `immarg`.
+#[test]
+fn intrinsic_declaration_missing_generated_argument_attr_is_rejected() -> Result<(), IrError> {
+    Module::with_new::<_, _, _>("intrinsic-missing-argument-attrs", |m| {
+        let abs = m.get_or_insert_intrinsic_declaration_by_id(
+            IntrinsicId::ABS,
+            &[m.i32_type().as_type()],
+        )?;
+        abs.set_attributes(&m, abs_function_attrs_without_immarg());
+
+        let err = m
+            .verify_borrowed()
+            .expect_err("missing generated argument attr rejected");
+        assert_intrinsic_modifier_error(err);
+        Ok(())
+    })
+}
+
+/// Mirrors `llvm/utils/TableGen/Basic/IntrinsicEmitter.cpp` pretty-printer
+/// argument metadata: generated declaration construction applies descriptor
+/// argument names even when callers use the name-based convenience API.
+#[test]
+fn intrinsic_declaration_by_name_applies_generated_argument_names() -> Result<(), IrError> {
+    Module::with_new::<_, _, _>("intrinsic-arg-names", |m| {
+        let intrinsic =
+            m.get_or_insert_intrinsic_declaration_by_name("llvm.nvvm.tcgen05.mma.tensor")?;
+
+        assert_eq!(intrinsic.param(5)?.name().as_deref(), Some("kind"));
+        assert_eq!(intrinsic.param(6)?.name().as_deref(), Some("cta_group"));
+        assert_eq!(intrinsic.param(7)?.name().as_deref(), Some("collector"));
+
+        m.verify_borrowed()?;
+        Ok(())
+    })
+}
+
+/// Mirrors `Verifier::visitFunction` / `visitInstruction`: intrinsic
+/// declarations may only be used as the direct callee operand, not as an
+/// ordinary call argument.
+#[test]
+fn intrinsic_declaration_used_as_non_callee_operand_is_rejected() -> Result<(), IrError> {
+    Module::with_new::<_, _, _>("intrinsic-noncallee-use", |m| {
+        let void_ty = m.void_type();
+        let intrinsic = m.get_or_insert_intrinsic_declaration_by_name("llvm.bswap.i32")?;
+        let sink_ty = m.fn_type(void_ty.as_type(), [intrinsic.signature().as_type()], false);
+        let sink = m.add_function::<(), _>("sink", sink_ty, Linkage::External)?;
+        let caller_ty = m.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
+        let caller = m.add_function::<(), _>("caller", caller_ty, Linkage::External)?;
+        let entry = caller.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        b.build_call(sink, [intrinsic.as_value()], "")?;
+        b.build_ret_void();
+
+        let err = m
+            .verify_borrowed()
+            .expect_err("non-callee intrinsic operand rejected");
+        assert!(
+            err.to_string()
+                .contains("intrinsic can only be used as callee"),
+            "{err}"
+        );
+        Ok(())
+    })
+}
+
+/// Mirrors `llvm/lib/IR/Verifier.cpp` intrinsic validation: public construction
+/// rejects direct `llvm.*` declarations that must instead use the canonical
+/// intrinsic declaration API.
+#[test]
+fn direct_represented_intrinsic_declaration_is_rejected() -> Result<(), IrError> {
     Module::with_new::<_, _, _>("intrinsic_mismatch", |m| {
         let i32_ty = m.i32_type().as_type();
         let i64_ty = m.i64_type().as_type();
         let fn_ty = m.fn_type(i64_ty, [i32_ty], false);
-        m.add_function::<Dyn, _>("llvm.bswap.i32", fn_ty, Linkage::External)?;
-
         let err = m
-            .verify_borrowed()
-            .expect_err("verifier rejects intrinsic signature mismatch");
+            .add_function::<Dyn, _>("llvm.bswap.i32", fn_ty, Linkage::External)
+            .expect_err("direct intrinsic declaration is rejected");
         match err {
-            IrError::InvalidOperation { message } => {
-                assert_eq!(message, "intrinsic signature mismatch");
+            IrError::ReservedIntrinsicName { name } => {
+                assert_eq!(name, "llvm.bswap.i32");
             }
             other => panic!("unexpected verifier error: {other:?}"),
         }

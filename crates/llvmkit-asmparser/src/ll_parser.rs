@@ -29,7 +29,9 @@
 //!   `'ctx` brand on [`llvmkit_ir::Module`].
 
 use core::marker::PhantomData;
-use llvmkit_ir::attributes::{AttrIndex, AttrKind, Attribute, AttributeStorage};
+use llvmkit_ir::attributes::{
+    AttrIndex, AttrKind, Attribute, AttributeStorage, MemoryEffects, MemoryLocation, ModRefInfo,
+};
 use std::collections::HashMap;
 
 use llvmkit_ir::{
@@ -37,11 +39,12 @@ use llvmkit_ir::{
     AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, BasicBlockLabel, Brand, CallingConv,
     Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
     DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType, FloatValue,
-    GepNoWrapFlags, IRBuilder, IntDyn, IntType, IntValue, IrError, IrResult, Linkage, MaybeAlign,
-    Module, ModuleBrand, NoFolder, PointerValue, Positioned, RoundingMode, SelectionKind,
-    StructType, SyncScope, ThreadLocalMode, Type, TypeKind, UIToFpFlags, UnnamedAddr, Unverified,
-    UseListOrderBBRecord, UseListOrderRecord, Visibility, constant_fold_select_instruction,
-    derived_types::PointerType, shufflevector_mask_from_constant,
+    GepNoWrapFlags, IRBuilder, IntDyn, IntType, IntValue, IntrinsicNameResolution, IrError,
+    IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue, Positioned,
+    RoundingMode, SelectionKind, StructType, SyncScope, ThreadLocalMode, Type, TypeKind,
+    UIToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord, UseListOrderRecord, Visibility,
+    constant_fold_select_instruction, derived_types::PointerType, resolve_intrinsic_name,
+    shufflevector_mask_from_constant,
 };
 use llvmkit_support::{Span, Spanned};
 
@@ -249,8 +252,8 @@ pub struct Parser<'src, 'm, 'ctx, B: ModuleBrand = Brand<'ctx>> {
     deferred_global_initializers: Vec<DeferredGlobalInitializer<'ctx, B>>,
     deferred_block_addresses: Vec<DeferredBlockAddress<'ctx, B>>,
     deferred_personality_fns: Vec<DeferredPersonalityFn<'ctx, B>>,
+    deferred_intrinsic_attribute_checks: Vec<DeferredIntrinsicAttributeCheck>,
     forward_function_decls: HashMap<String, Span>,
-    unresolved_intrinsic_uses: Vec<UnresolvedIntrinsicUse<'ctx, B>>,
     _brand: PhantomData<B>,
 }
 
@@ -286,16 +289,16 @@ struct DeferredPersonalityFn<'ctx, B: ModuleBrand = Brand<'ctx>> {
     loc: Span,
 }
 
+struct DeferredIntrinsicAttributeCheck {
+    attrs: AttributeStorage,
+    attr_groups: Vec<u32>,
+    expected_attrs: AttributeStorage,
+    loc: Span,
+}
+
 enum ParsedBlockAddressFunction<'ctx, B: ModuleBrand = Brand<'ctx>> {
     Resolved(llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn, B>),
     Forward { function: NameOrId, loc: Span },
-}
-struct UnresolvedIntrinsicUse<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    name: String,
-    loc: Span,
-    parsed_fn_ty: llvmkit_ir::FunctionType<'ctx, B>,
-    provisional: llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn, B>,
-    direct_callee: bool,
 }
 
 enum ParsedDirectCallee {
@@ -833,8 +836,8 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             metadata_slots: HashMap::new(),
             deferred_global_initializers: Vec::new(),
             deferred_personality_fns: Vec::new(),
+            deferred_intrinsic_attribute_checks: Vec::new(),
             forward_function_decls: HashMap::new(),
-            unresolved_intrinsic_uses: Vec::new(),
             _brand: PhantomData,
         })
     }
@@ -983,7 +986,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         self.resolve_deferred_global_initializers()?;
         self.resolve_deferred_block_addresses()?;
         self.resolve_deferred_personality_fns()?;
-        self.validate_intrinsic_uses()?;
+        self.validate_deferred_intrinsic_attribute_checks()?;
         self.validate_forward_function_decls()?;
 
         Ok(ParsedModule {
@@ -1080,6 +1083,69 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         }
         Ok(())
     }
+    fn validate_deferred_intrinsic_attribute_checks(&self) -> ParseResult<()> {
+        for item in &self.deferred_intrinsic_attribute_checks {
+            if !self.intrinsic_declaration_attrs_match(
+                &item.attrs,
+                &item.attr_groups,
+                &item.expected_attrs,
+            )? {
+                return Err(self.intrinsic_attribute_error(item.loc));
+            }
+        }
+        Ok(())
+    }
+
+    fn intrinsic_declaration_attrs_match(
+        &self,
+        attrs: &AttributeStorage,
+        attr_groups: &[u32],
+        expected_attrs: &AttributeStorage,
+    ) -> ParseResult<bool> {
+        if !attrs.is_subset_of(expected_attrs) {
+            return Ok(false);
+        }
+        self.intrinsic_declaration_attr_groups_match(attr_groups, expected_attrs)
+    }
+
+    fn intrinsic_declaration_attr_groups_match(
+        &self,
+        attr_groups: &[u32],
+        expected_attrs: &AttributeStorage,
+    ) -> ParseResult<bool> {
+        if attr_groups.is_empty() {
+            return Ok(true);
+        }
+        if Self::has_duplicate_attr_groups(attr_groups) {
+            return Ok(false);
+        }
+        let mut group_attrs = AttributeStorage::new();
+        for group in attr_groups {
+            let Some(attrs) = self.numbered_attr_groups.get(*group) else {
+                return Ok(false);
+            };
+            group_attrs.merge_from(attrs);
+        }
+        Ok(group_attrs.has_only_index_attributes_subset_of(expected_attrs, AttrIndex::Function))
+    }
+
+    fn intrinsic_declaration_attrs_are_pending(&self, attr_groups: &[u32]) -> bool {
+        attr_groups
+            .iter()
+            .any(|group| self.numbered_attr_groups.get(*group).is_none())
+    }
+
+    fn has_duplicate_attr_groups(attr_groups: &[u32]) -> bool {
+        let mut seen = Vec::new();
+        for group in attr_groups {
+            if seen.contains(group) {
+                return true;
+            }
+            seen.push(*group);
+        }
+        false
+    }
+
     fn validate_forward_function_decls(&self) -> ParseResult<()> {
         if let Some((name, loc)) = self.forward_function_decls.iter().next() {
             return Err(ParseError::UndefinedSymbol {
@@ -1091,34 +1157,31 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         Ok(())
     }
 
-    fn validate_intrinsic_uses(&self) -> ParseResult<()> {
-        for use_site in &self.unresolved_intrinsic_uses {
-            if !use_site.direct_callee {
-                return Err(ParseError::Expected {
-                    expected: "intrinsic can only be used as callee".into(),
-                    loc: DiagLoc::span(use_site.loc),
-                });
-            }
-            let id = llvmkit_ir::IntrinsicId::lookup(&use_site.name).ok_or_else(|| {
-                ParseError::Expected {
-                    expected: "unknown intrinsic".into(),
-                    loc: DiagLoc::span(use_site.loc),
-                }
-            })?;
-            let expected = id.function_type(self.module, &use_site.name).map_err(|_| {
-                ParseError::Expected {
-                    expected: "intrinsic signature mismatch".into(),
-                    loc: DiagLoc::span(use_site.loc),
-                }
-            })?;
-            if use_site.parsed_fn_ty != expected || use_site.provisional.signature() != expected {
-                return Err(ParseError::Expected {
-                    expected: "intrinsic signature mismatch".into(),
-                    loc: DiagLoc::span(use_site.loc),
-                });
-            }
+    fn intrinsic_parse_error(&self, loc: Span, err: IrError) -> ParseError {
+        let expected = match err {
+            IrError::UnknownIntrinsic { .. } => "unknown intrinsic",
+            IrError::IntrinsicSignatureMismatch { .. } => "intrinsic signature mismatch",
+            IrError::ReservedIntrinsicName { .. } => "intrinsic declaration modifier",
+            _ => "intrinsic signature mismatch",
+        };
+        ParseError::Expected {
+            expected: expected.into(),
+            loc: DiagLoc::span(loc),
         }
-        Ok(())
+    }
+
+    fn intrinsic_modifier_error(&self, loc: Span) -> ParseError {
+        ParseError::Expected {
+            expected: "intrinsic declaration modifier".into(),
+            loc: DiagLoc::span(loc),
+        }
+    }
+
+    fn intrinsic_attribute_error(&self, loc: Span) -> ParseError {
+        ParseError::Expected {
+            expected: "intrinsic declaration attribute mismatch".into(),
+            loc: DiagLoc::span(loc),
+        }
     }
 
     fn slot_mapping_snapshot(&self) -> SlotMapping<'ctx, B> {
@@ -2535,6 +2598,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                         self.bump()?; // eat `[`
                         self.parse_array_or_vector_after_open(false)?
                     }
+                    Token::Kw(Keyword::Target) => self.parse_target_ext_type()?,
                     Token::LocalVar(_) => {
                         let name = self
                             .current_str_payload()
@@ -2591,6 +2655,30 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
             }
         }
+    }
+
+    fn parse_target_ext_type(&mut self) -> ParseResult<Type<'ctx, B>> {
+        self.expect_keyword(Keyword::Target, "'target'")?;
+        self.expect_punct(PunctKind::LParen, "'(' in target extension type")?;
+        let name = self.parse_string_constant("target extension type name")?;
+        let mut type_params = Vec::new();
+        let mut int_params = Vec::new();
+        let mut seen_integer_param = false;
+        while self.eat_punct(PunctKind::Comma)? {
+            if matches!(self.peek(), Token::IntegerLit(_)) {
+                seen_integer_param = true;
+                int_params.push(self.parse_uint32("target extension integer parameter")?);
+            } else if seen_integer_param {
+                return Err(self.expected("target extension type"));
+            } else {
+                type_params.push(self.parse_type(false)?);
+            }
+        }
+        self.expect_punct(PunctKind::RParen, "')' in target extension type")?;
+        Ok(self
+            .module
+            .target_ext_type(name, type_params, int_params)
+            .as_type())
     }
 
     fn parse_legacy_typed_pointer_suffix(&mut self) -> ParseResult<Option<Type<'ctx, B>>> {
@@ -2701,6 +2789,9 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 self.bump()?;
                 self.skip_array_or_vector_type_syntax_only(false)?;
             }
+            Token::Kw(Keyword::Target) => {
+                self.skip_target_ext_type_syntax_only()?;
+            }
             _ => return Err(self.expected("type")),
         }
         Ok(())
@@ -2733,6 +2824,25 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         } else {
             self.expect_punct(PunctKind::RSquare, "']' at end of array type")?;
         }
+        Ok(())
+    }
+
+    fn skip_target_ext_type_syntax_only(&mut self) -> ParseResult<()> {
+        self.expect_keyword(Keyword::Target, "'target'")?;
+        self.expect_punct(PunctKind::LParen, "'(' in target extension type")?;
+        self.parse_string_constant("target extension type name")?;
+        let mut seen_integer_param = false;
+        while self.eat_punct(PunctKind::Comma)? {
+            if matches!(self.peek(), Token::IntegerLit(_)) {
+                seen_integer_param = true;
+                self.parse_uint32("target extension integer parameter")?;
+            } else if seen_integer_param {
+                return Err(self.expected("target extension type"));
+            } else {
+                self.skip_type_syntax_only()?;
+            }
+        }
+        self.expect_punct(PunctKind::RParen, "')' in target extension type")?;
         Ok(())
     }
 
@@ -2822,6 +2932,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             PrimitiveTy::Metadata => Ok(m.metadata_type().as_type()),
             PrimitiveTy::Token => Ok(m.token_type().as_type()),
             PrimitiveTy::X86Amx => Ok(m.x86_amx_type()),
+            PrimitiveTy::WasmExnRef => Ok(m.wasm_exnref_type()),
             PrimitiveTy::Half => Ok(m.half_type().as_type()),
             PrimitiveTy::BFloat => Ok(m.bfloat_type().as_type()),
             PrimitiveTy::Float => Ok(m.f32_type().as_type()),
@@ -3849,7 +3960,10 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         &self,
         name: String,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        if name.starts_with("llvm.") {
+        if !matches!(
+            resolve_intrinsic_name(&name),
+            IntrinsicNameResolution::NonIntrinsic
+        ) {
             return Err(ParseError::Expected {
                 expected: "intrinsic can only be used as callee".into(),
                 loc: DiagLoc::span(self.loc()),
@@ -3893,7 +4007,10 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         &self,
         name: String,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
-        if name.starts_with("llvm.") {
+        if !matches!(
+            resolve_intrinsic_name(&name),
+            IntrinsicNameResolution::NonIntrinsic
+        ) {
             return Err(ParseError::Expected {
                 expected: "intrinsic can only be used as callee".into(),
                 loc: DiagLoc::span(self.loc()),
@@ -4627,6 +4744,14 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             Keyword::Nonnull => AttrKind::NonNull,
             Keyword::Noalias => AttrKind::NoAlias,
             Keyword::Nounwind => AttrKind::NoUnwind,
+            Keyword::Nocreateundeforpoison => AttrKind::NoCreateUndefOrPoison,
+            Keyword::Nocallback => AttrKind::NoCallback,
+            Keyword::Noduplicate => AttrKind::NoDuplicate,
+            Keyword::Nomerge => AttrKind::NoMerge,
+            Keyword::Convergent => AttrKind::Convergent,
+            Keyword::Cold => AttrKind::Cold,
+            Keyword::Strictfp => AttrKind::StrictFP,
+            Keyword::Immarg => AttrKind::ImmArg,
             Keyword::Readnone => AttrKind::ReadNone,
             Keyword::Readonly => AttrKind::ReadOnly,
             Keyword::Alwaysinline => AttrKind::AlwaysInline,
@@ -4649,10 +4774,20 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
     fn is_attr_start(&self) -> bool {
         match self.peek() {
             Token::AttrGrpId(_) | Token::StringConstant(_) => true,
-            Token::Kw(Keyword::Align | Keyword::Alignstack) => true,
+            Token::Kw(Keyword::Align | Keyword::Alignstack | Keyword::Memory) => true,
+            Token::Kw(keyword) if Self::legacy_memory_effects(*keyword).is_some() => true,
             Token::Kw(keyword) => Self::attr_kind_for_keyword(*keyword).is_some(),
             _ => false,
         }
+    }
+
+    fn is_function_header_attr_start(&self) -> bool {
+        // `align N` in the function header grammar is a function alignment
+        // suffix, not an `AttributeList` entry. Leave it for
+        // `parse_optional_function_suffix` so intrinsic declarations reject it
+        // through the noncanonical modifier path rather than treating it as an
+        // extra generated-attribute mismatch.
+        self.is_attr_start() && !matches!(self.peek(), Token::Kw(Keyword::Align))
     }
 
     fn parse_optional_function_header_attrs(
@@ -4660,7 +4795,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         attrs: &mut AttributeStorage,
     ) -> ParseResult<Vec<u32>> {
         let mut groups = Vec::new();
-        while self.is_attr_start() {
+        while self.is_function_header_attr_start() {
             groups.extend(self.parse_fn_attribute_value_pairs(attrs, AttrIndex::Function, true)?);
         }
         Ok(groups)
@@ -4774,6 +4909,9 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     };
                     out.add(index, Attribute::<B>::string_for_brand(key, value));
                 }
+                Token::Kw(Keyword::Align) if index == AttrIndex::Function && allow_group_refs => {
+                    break;
+                }
                 Token::Kw(Keyword::Align) => {
                     self.bump()?;
                     let value = self.parse_uint64("align value")?;
@@ -4787,6 +4925,19 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     let attr = Attribute::<B>::int_for_brand(AttrKind::StackAlignment, value)
                         .ok_or_else(|| self.expected("attribute"))?;
                     out.add(index, attr);
+                }
+                Token::Kw(Keyword::Memory) => {
+                    let attr = self.parse_memory_attribute()?;
+                    out.add(index, attr);
+                }
+                Token::Kw(keyword)
+                    if index == AttrIndex::Function
+                        && Self::legacy_memory_effects(*keyword).is_some() =>
+                {
+                    let effects = Self::legacy_memory_effects(*keyword)
+                        .ok_or_else(|| self.expected("memory attribute"))?;
+                    self.bump()?;
+                    out.add(index, Attribute::<B>::memory_for_brand(effects));
                 }
                 Token::Kw(Keyword::Range) => {
                     let attr = self.parse_range_attribute()?;
@@ -4824,6 +4975,95 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             lower_parsed_apsint(&upper, bits),
         )
         .ok_or_else(|| self.expected("valid range attribute"))
+    }
+
+    fn parse_memory_attribute(&mut self) -> ParseResult<Attribute<'ctx, B>> {
+        self.expect_keyword(Keyword::Memory, "'memory'")?;
+        self.expect_punct(PunctKind::LParen, "'(' in memory attribute")?;
+        let mut effects = MemoryEffects::none();
+        let mut parsed = false;
+        let mut seen_location = false;
+        loop {
+            if self.eat_punct(PunctKind::RParen)? {
+                if parsed {
+                    return Ok(Attribute::<B>::memory_for_brand(effects));
+                }
+                return Err(self.expected("memory attribute access kind"));
+            }
+            if parsed {
+                self.expect_punct(PunctKind::Comma, "',' in memory attribute")?;
+            }
+            let (next_effects, component_had_location) =
+                self.parse_memory_effect_component(effects, seen_location)?;
+            effects = next_effects;
+            seen_location |= component_had_location;
+            parsed = true;
+        }
+    }
+
+    fn parse_memory_effect_component(
+        &mut self,
+        effects: MemoryEffects,
+        seen_location: bool,
+    ) -> ParseResult<(MemoryEffects, bool)> {
+        if let Token::LabelStr(bytes) = self.peek() {
+            let name = std::str::from_utf8(bytes.as_ref())
+                .map_err(|_| self.expected("memory location"))?;
+            if let Some(location) = Self::memory_location_for_name(name) {
+                self.bump()?;
+                let mod_ref = self.parse_memory_access_kind()?;
+                return Ok((effects.with_mod_ref(location, mod_ref), true));
+            }
+        }
+        if seen_location {
+            return Err(self.expected("memory attribute access kind"));
+        }
+        let mod_ref = self.parse_memory_access_kind()?;
+        Ok((Self::memory_effects_for_mod_ref(mod_ref), false))
+    }
+
+    fn parse_memory_access_kind(&mut self) -> ParseResult<ModRefInfo> {
+        let mod_ref = match self.peek() {
+            Token::Kw(Keyword::None) => ModRefInfo::NoModRef,
+            Token::Kw(Keyword::Read) => ModRefInfo::Ref,
+            Token::Kw(Keyword::Write) => ModRefInfo::Mod,
+            Token::Kw(Keyword::Readwrite) => ModRefInfo::ModRef,
+            _ => return Err(self.expected("memory attribute access kind")),
+        };
+        self.bump()?;
+        Ok(mod_ref)
+    }
+
+    fn memory_location_for_name(name: &str) -> Option<MemoryLocation> {
+        Some(match name {
+            "argmem" => MemoryLocation::ArgMem,
+            "inaccessiblemem" => MemoryLocation::InaccessibleMem,
+            "errnomem" => MemoryLocation::ErrnoMem,
+            "target_mem0" => MemoryLocation::TargetMem0,
+            "target_mem1" => MemoryLocation::TargetMem1,
+            _ => return None,
+        })
+    }
+
+    fn legacy_memory_effects(keyword: Keyword) -> Option<MemoryEffects> {
+        Some(match keyword {
+            Keyword::Readnone => MemoryEffects::none(),
+            Keyword::Readonly => MemoryEffects::read_only(),
+            Keyword::Writeonly => MemoryEffects::write_only(),
+            Keyword::Argmemonly => MemoryEffects::arg_mem_only(),
+            Keyword::Inaccessiblememonly => MemoryEffects::inaccessible_mem_only(),
+            Keyword::InaccessiblememOrArgmemonly => MemoryEffects::inaccessible_or_arg_mem_only(),
+            _ => return None,
+        })
+    }
+
+    fn memory_effects_for_mod_ref(mod_ref: ModRefInfo) -> MemoryEffects {
+        match mod_ref {
+            ModRefInfo::NoModRef => MemoryEffects::none(),
+            ModRefInfo::Ref => MemoryEffects::read_only(),
+            ModRefInfo::Mod => MemoryEffects::write_only(),
+            ModRefInfo::ModRef => MemoryEffects::unknown(),
+        }
     }
 
     fn parse_optional_param_attrs(&mut self) -> ParseResult<AttributeStorage> {
@@ -4982,6 +5222,81 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let suffix = self.parse_optional_function_suffix(&mut attrs)?;
 
         let fn_ty = self.module.fn_type(ret_ty, params, var_args);
+        match resolve_intrinsic_name(&name) {
+            IntrinsicNameResolution::NonIntrinsic => {}
+            IntrinsicNameResolution::UnknownIntrinsic => {
+                return Err(ParseError::Expected {
+                    expected: "unknown intrinsic".into(),
+                    loc: DiagLoc::span(decl_loc),
+                });
+            }
+            IntrinsicNameResolution::Known(_) => {
+                if linkage != Linkage::External
+                    || visibility != Visibility::Default
+                    || dll_storage_class != DllStorageClass::Default
+                    || dso_locality != llvmkit_ir::DsoLocality::Default
+                    || calling_conv != CallingConv::default()
+                    || unnamed_addr != UnnamedAddr::None
+                    || address_space != 0
+                    || suffix.section.is_some()
+                    || suffix.partition.is_some()
+                    || suffix.comdat.is_some()
+                    || suffix.align != MaybeAlign::NONE
+                    || suffix.gc.is_some()
+                    || suffix.prefix_data.is_some()
+                    || suffix.prologue_data.is_some()
+                    || suffix.personality_fn.is_some()
+                    || !suffix.metadata.is_empty()
+                {
+                    return Err(self.intrinsic_modifier_error(decl_loc));
+                }
+                let descriptor = self
+                    .module
+                    .intrinsic_descriptor_from_signature(&name, fn_ty)
+                    .map_err(|e| self.intrinsic_parse_error(decl_loc, e))?;
+                let expected_attrs = descriptor
+                    .declaration_attributes(fn_ty)
+                    .map_err(|e| self.intrinsic_parse_error(decl_loc, e))?;
+                if !attrs.is_subset_of(&expected_attrs) {
+                    return Err(self.intrinsic_attribute_error(decl_loc));
+                }
+                if self.intrinsic_declaration_attrs_are_pending(&suffix.attr_groups) {
+                    if Self::has_duplicate_attr_groups(&suffix.attr_groups) {
+                        return Err(self.intrinsic_attribute_error(decl_loc));
+                    }
+                    self.deferred_intrinsic_attribute_checks.push(
+                        DeferredIntrinsicAttributeCheck {
+                            attrs: attrs.clone(),
+                            attr_groups: suffix.attr_groups.clone(),
+                            expected_attrs: expected_attrs.clone(),
+                            loc: decl_loc,
+                        },
+                    );
+                } else if !self
+                    .intrinsic_declaration_attr_groups_match(&suffix.attr_groups, &expected_attrs)?
+                {
+                    return Err(self.intrinsic_attribute_error(decl_loc));
+                }
+                let f = self
+                    .module
+                    .get_or_insert_intrinsic_declaration(&descriptor)
+                    .map_err(|e| self.intrinsic_parse_error(decl_loc, e))?;
+                for (slot, name) in param_names.into_iter().enumerate() {
+                    if let Some(name) = name {
+                        let slot = u32::try_from(slot).map_err(|_| ParseError::Expected {
+                            expected: "parameter slot fits in u32".into(),
+                            loc: DiagLoc::span(decl_loc),
+                        })?;
+                        let arg = f.param(slot).map_err(|e| ParseError::Expected {
+                            expected: format!("function parameter slot {slot}: {e}"),
+                            loc: DiagLoc::span(decl_loc),
+                        })?;
+                        arg.set_name(self.module, &name);
+                    }
+                }
+                return Ok(());
+            }
+        }
         let existing_by_id = match &name_id {
             NameOrId::Id(id) => self.numbered_globals.get(*id).and_then(|r| match r {
                 GlobalRef::Function(f) => Some(*f),
@@ -5128,6 +5443,21 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         };
         let decl_loc = self.loc();
         self.bump()?;
+        match resolve_intrinsic_name(&name) {
+            IntrinsicNameResolution::NonIntrinsic => {}
+            IntrinsicNameResolution::UnknownIntrinsic => {
+                return Err(ParseError::Expected {
+                    expected: "unknown intrinsic".into(),
+                    loc: DiagLoc::span(decl_loc),
+                });
+            }
+            IntrinsicNameResolution::Known(_) => {
+                return Err(ParseError::Expected {
+                    expected: "intrinsic functions should never be defined".into(),
+                    loc: DiagLoc::span(decl_loc),
+                });
+            }
+        }
         self.expect_punct(PunctKind::LParen, "'(' in function header")?;
 
         let mut param_types = Vec::new();
@@ -7273,31 +7603,61 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                             loc: DiagLoc::span(loc),
                         });
                     }
-                    if name.starts_with("llvm.") {
-                        self.record_intrinsic_use(name, loc, parsed_fn_ty, f, true);
+                    match resolve_intrinsic_name(&name) {
+                        IntrinsicNameResolution::NonIntrinsic => {}
+                        IntrinsicNameResolution::UnknownIntrinsic => {
+                            return Err(ParseError::Expected {
+                                expected: "unknown intrinsic".into(),
+                                loc: DiagLoc::span(loc),
+                            });
+                        }
+                        IntrinsicNameResolution::Known(_) => {
+                            let descriptor = self
+                                .module
+                                .intrinsic_descriptor_from_signature(&name, parsed_fn_ty)
+                                .map_err(|e| self.intrinsic_parse_error(loc, e))?;
+                            if f.intrinsic_descriptor() != Some(descriptor) {
+                                return Err(ParseError::Expected {
+                                    expected: "intrinsic signature mismatch".into(),
+                                    loc: DiagLoc::span(loc),
+                                });
+                            }
+                        }
                     }
                     return Ok(ParsedCallee::Function(f));
                 }
-                if name.starts_with("llvm.") {
-                    let f = self
-                        .module
-                        .add_function::<llvmkit_ir::Dyn, _>(&name, parsed_fn_ty, Linkage::External)
-                        .map_err(|_| ParseError::Expected {
-                            expected: "intrinsic signature mismatch".into(),
-                            loc: DiagLoc::span(loc),
-                        })?;
-                    self.record_intrinsic_use(name, loc, parsed_fn_ty, f, true);
-                    return Ok(ParsedCallee::Function(f));
-                }
-                let f = self
-                    .module
-                    .add_function::<llvmkit_ir::Dyn, _>(&name, parsed_fn_ty, Linkage::External)
-                    .map_err(|e| ParseError::Expected {
-                        expected: format!("forward function declaration: {e}"),
+                match resolve_intrinsic_name(&name) {
+                    IntrinsicNameResolution::Known(_) => {
+                        let descriptor = self
+                            .module
+                            .intrinsic_descriptor_from_signature(&name, parsed_fn_ty)
+                            .map_err(|e| self.intrinsic_parse_error(loc, e))?;
+                        let f = self
+                            .module
+                            .get_or_insert_intrinsic_declaration(&descriptor)
+                            .map_err(|e| self.intrinsic_parse_error(loc, e))?;
+                        Ok(ParsedCallee::Function(f))
+                    }
+                    IntrinsicNameResolution::UnknownIntrinsic => Err(ParseError::Expected {
+                        expected: "unknown intrinsic".into(),
                         loc: DiagLoc::span(loc),
-                    })?;
-                self.forward_function_decls.entry(name).or_insert(loc);
-                Ok(ParsedCallee::Function(f))
+                    }),
+                    IntrinsicNameResolution::NonIntrinsic => {
+                        let f = self
+                            .module
+                            .add_function::<llvmkit_ir::Dyn, _>(
+                                &name,
+                                parsed_fn_ty,
+                                Linkage::External,
+                            )
+                            .map_err(|e| ParseError::Expected {
+                                expected: format!("forward function declaration: {e}"),
+                                loc: DiagLoc::span(loc),
+                            })?;
+                        self.forward_function_decls.entry(name).or_insert(loc);
+                        Ok(ParsedCallee::Function(f))
+                    }
+                }
             }
             ParsedDirectCallee::Id { id, loc } => self
                 .numbered_globals
@@ -7335,23 +7695,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 Ok(ParsedCallee::Indirect(callee))
             }
         }
-    }
-
-    fn record_intrinsic_use(
-        &mut self,
-        name: String,
-        loc: Span,
-        parsed_fn_ty: llvmkit_ir::FunctionType<'ctx, B>,
-        provisional: llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn, B>,
-        direct_callee: bool,
-    ) {
-        self.unresolved_intrinsic_uses.push(UnresolvedIntrinsicUse {
-            name,
-            loc,
-            parsed_fn_ty,
-            provisional,
-            direct_callee,
-        });
     }
 
     /// Parse an LHS assignment that may precede an `invoke` terminator.

@@ -9,11 +9,11 @@ use llvmkit_ir::constant_folding::{
 };
 use llvmkit_ir::instr_types::CastOpcode;
 use llvmkit_ir::{
-    ApFloat, ApFloatSemantics, ApInt, AttrIndex, Attribute, BinaryOpcode, CmpPredicate,
-    ConstantExprOpcode, ConstantExprOptions, ConstantFloatValue, ConstantIntValue, DataLayout,
-    DenormalMode, DenormalModeKind, DenormalModeSide, FoldNonDeterminism, IRBuilder,
-    InstructionView, IntDyn, IntPredicate, IntrinsicId, IrError, LibFunc, Linkage, Module,
-    NoFolder, PreservedCastFlags, RoundingMode, TargetLibraryInfo, Type, UnaryOpcode,
+    ApFloat, ApFloatSemantics, ApInt, AttrIndex, Attribute, BinaryIntrinsic, BinaryOpcode,
+    CmpPredicate, ConstantExprOpcode, ConstantExprOptions, ConstantFloatValue, ConstantIntValue,
+    DataLayout, DenormalMode, DenormalModeKind, DenormalModeSide, FoldNonDeterminism, IRBuilder,
+    InstructionView, IntDyn, IntPredicate, IrError, LibFunc, Linkage, Module, NoFolder,
+    PreservedCastFlags, RoundingMode, TargetLibraryInfo, Type, UnaryOpcode,
     attributes::AttributeStorage, constant_fold_binary_intrinsic, constant_fold_binary_op_operands,
     constant_fold_compare_inst_operands, constant_fold_constant, constant_fold_fp_inst_operands,
     constant_fold_inst_operands, constant_fold_integer_cast, constant_fold_load_from_uniform_value,
@@ -451,7 +451,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
             Some(i16_ty.const_all_ones().as_constant())
         );
         assert_eq!(
-            constant_fold_binary_intrinsic(IntrinsicId::Expect, c7, c7, i32_ty.as_type(), &dl)?,
+            constant_fold_binary_intrinsic(BinaryIntrinsic::UMax, c7, c7, i32_ty.as_type(), &dl)?,
             None
         );
         let one_bits = i32_ty

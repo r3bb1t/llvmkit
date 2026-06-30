@@ -52,6 +52,7 @@ pub(super) fn classify_word(word: &[u8]) -> Option<Token<'static>> {
         b"label" => ty(Ty::Label),
         b"metadata" => ty(Ty::Metadata),
         b"x86_amx" => ty(Ty::X86Amx),
+        b"exnref" => ty(Ty::WasmExnRef),
         b"token" => ty(Ty::Token),
         b"ptr" => ty(Ty::Ptr),
 

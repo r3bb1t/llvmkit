@@ -3,6 +3,8 @@
 //! unrepresentable). Each fixture in `tests/compile_fail/` documents
 //! the runtime LLVM check it pulls forward to compile time.
 
+/// Mirrors verifier/runtime lifecycle checks by pulling invalid construction
+/// lifecycles forward into compile-fail fixtures listed below.
 #[test]
 fn typestate_compile_fail() {
     let t = trybuild::TestCases::new();
@@ -51,4 +53,6 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/saved_global_handle_requires_unverified_token.rs");
     t.compile_fail("tests/compile_fail/read_only_pass_manager_rejects_transform_pass.rs");
     t.compile_fail("tests/compile_fail/transform_pass_manager_output_requires_verify.rs");
+    t.compile_fail("tests/compile_fail/intrinsic_id_raw_constructor_private.rs");
+    t.compile_fail("tests/compile_fail/binary_folder_rejects_non_binary_intrinsic.rs");
 }

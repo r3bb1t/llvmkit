@@ -69,7 +69,8 @@ use super::instructions::{
     PointerPhiInst, StoreInst, SwitchInst, VAArgInst,
 };
 use super::int_width::{IntDyn, IntWidth, IntoIntValue};
-use super::intrinsics::IntrinsicId;
+use super::intrinsic_inst::IntrinsicInst;
+use super::intrinsics::{BinaryIntrinsic, IntrinsicDescriptor, IntrinsicId};
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::folder::IRBuilderFolder;
 use super::marker::{Dyn, Ptr, ReturnMarker};
@@ -3342,6 +3343,97 @@ where
         builder.build()
     }
 
+    /// Flat descriptor-backed intrinsic-call form.
+    pub fn build_intrinsic_call<Name>(
+        &self,
+        descriptor: &IntrinsicDescriptor<'ctx, B>,
+        args: &[Value<'ctx, B>],
+        name: Name,
+    ) -> IrResult<IntrinsicInst<'ctx, Dyn, B>>
+    where
+        Name: AsRef<str>,
+    {
+        let mut builder = self.intrinsic_call_builder(descriptor)?.name(name);
+        for arg in args.iter().copied() {
+            builder = builder.arg(arg);
+        }
+        builder.build()
+    }
+
+    /// Builder-pattern descriptor-backed intrinsic-call construction.
+    pub fn intrinsic_call_builder(
+        &self,
+        descriptor: &IntrinsicDescriptor<'ctx, B>,
+    ) -> IrResult<IntrinsicCallBuilder<'_, 'm, 'ctx, B, F, R>> {
+        let callee = self
+            .module
+            .get_or_insert_intrinsic_declaration(descriptor)?;
+        let mut inner = self.call_builder(callee);
+        inner.intrinsic_descriptor = Some(descriptor.clone());
+        Ok(IntrinsicCallBuilder { inner })
+    }
+
+    /// Flat ID/name intrinsic-call form for typed convenience wrappers.
+    pub fn build_intrinsic_call_by_id<I, V, IntrinsicName, ResultName>(
+        &self,
+        id: IntrinsicId,
+        intrinsic_name: IntrinsicName,
+        args: I,
+        result_name: ResultName,
+    ) -> IrResult<IntrinsicInst<'ctx, Dyn, B>>
+    where
+        IntrinsicName: AsRef<str>,
+        ResultName: AsRef<str>,
+        I: IntoIterator<Item = V>,
+        V: IsValue<'ctx, B>,
+    {
+        let mut builder = self
+            .intrinsic_call_builder_by_id(id, intrinsic_name)?
+            .name(result_name);
+        for arg in args {
+            builder = builder.arg(arg);
+        }
+        builder.build()
+    }
+
+    /// Builder-pattern ID/name intrinsic-call construction for typed
+    /// convenience wrappers.
+    pub fn intrinsic_call_builder_by_id<Name>(
+        &self,
+        id: IntrinsicId,
+        intrinsic_name: Name,
+    ) -> IrResult<IntrinsicCallBuilder<'_, 'm, 'ctx, B, F, R>>
+    where
+        Name: AsRef<str>,
+    {
+        let callee = self.intrinsic_callee_by_id(id, intrinsic_name)?;
+        let descriptor =
+            callee
+                .intrinsic_descriptor()
+                .ok_or_else(|| IrError::IntrinsicSignatureMismatch {
+                    name: callee.name().to_owned(),
+                })?;
+        self.intrinsic_call_builder(&descriptor)
+    }
+
+    fn intrinsic_callee_by_id<Name>(
+        &self,
+        id: IntrinsicId,
+        intrinsic_name: Name,
+    ) -> IrResult<FunctionValue<'ctx, Dyn, B>>
+    where
+        Name: AsRef<str>,
+    {
+        let name = intrinsic_name.as_ref();
+        if IntrinsicId::lookup(name) != Some(id) {
+            return Err(IrError::IntrinsicSignatureMismatch {
+                name: name.to_owned(),
+            });
+        }
+        self.module
+            .get_or_insert_intrinsic_declaration_by_name::<B>(name)
+    }
+
     /// Builder-pattern call construction. Returns a
     /// [`CallBuilder`] that accumulates per-arg / flag state via
     /// chainable methods, then emits the call on `.build()`. Each
@@ -3361,6 +3453,7 @@ where
             tail_kind: crate::instr_types::TailCallKind::None,
             attrs: crate::instr_types::CallAttributeData::default(),
             name: String::new(),
+            intrinsic_descriptor: None,
             _rp: PhantomData,
             _rc: PhantomData,
         }
@@ -5923,6 +6016,7 @@ where
     tail_kind: crate::instr_types::TailCallKind,
     attrs: crate::instr_types::CallAttributeData,
     name: String,
+    intrinsic_descriptor: Option<IntrinsicDescriptor<'ctx, B>>,
     _rp: PhantomData<RP>,
     _rc: PhantomData<RC>,
 }
@@ -5974,8 +6068,36 @@ where
         self
     }
 
+    fn validate_intrinsic_descriptor_args(&self) -> IrResult<()> {
+        let Some(descriptor) = &self.intrinsic_descriptor else {
+            return Ok(());
+        };
+        let fn_ty = descriptor.function_type_ref(ModuleRef::<B>::new(self.parent.module))?;
+        let params: Vec<_> = fn_ty.params().collect();
+        let wrong_count = if fn_ty.is_var_arg() {
+            self.args.len() < params.len()
+        } else {
+            self.args.len() != params.len()
+        };
+        if wrong_count {
+            return Err(IrError::IntrinsicSignatureMismatch {
+                name: intrinsic_descriptor_error_name(descriptor),
+            });
+        }
+        for (arg, expected) in self.args.iter().zip(params) {
+            let actual_ty = self.parent.module.context().value_data(*arg).ty;
+            if actual_ty != expected.id() {
+                return Err(IrError::IntrinsicSignatureMismatch {
+                    name: intrinsic_descriptor_error_name(descriptor),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Emit the call instruction.
     pub fn build(self) -> IrResult<CallInst<'ctx, RC, B>> {
+        self.validate_intrinsic_descriptor_args()?;
         let payload = crate::instr_types::CallInstData::new_with_attrs(
             self.callee_id,
             self.fn_ty,
@@ -5994,6 +6116,84 @@ where
             ModuleRef::<B>::new(self.parent.module),
             inst.ty().id(),
         ))
+    }
+}
+
+/// Builder for descriptor-backed intrinsic calls.
+pub struct IntrinsicCallBuilder<'a, 'm, 'ctx, B, F, RP>
+where
+    B: ModuleBrand + 'ctx,
+    F: IRBuilderFolder<'ctx, B>,
+    RP: ReturnMarker,
+{
+    inner: CallBuilder<'a, 'm, 'ctx, B, F, RP, Dyn>,
+}
+
+impl<'a, 'm, 'ctx, B, F, RP> IntrinsicCallBuilder<'a, 'm, 'ctx, B, F, RP>
+where
+    B: ModuleBrand + 'ctx,
+    F: IRBuilderFolder<'ctx, B>,
+    RP: ReturnMarker,
+{
+    /// Add an argument. Statically dispatched per `V: IsValue` so
+    /// mixed-type argument lists work without homogeneity.
+    pub fn arg<V: IsValue<'ctx, B>>(mut self, value: V) -> Self {
+        self.inner = self.inner.arg(value);
+        self
+    }
+
+    pub fn tail(mut self) -> Self {
+        self.inner = self.inner.tail();
+        self
+    }
+
+    pub fn must_tail(mut self) -> Self {
+        self.inner = self.inner.must_tail();
+        self
+    }
+
+    pub fn no_tail(mut self) -> Self {
+        self.inner = self.inner.no_tail();
+        self
+    }
+
+    pub fn calling_conv(mut self, cc: CallingConv) -> Self {
+        self.inner = self.inner.calling_conv(cc);
+        self
+    }
+
+    pub fn call_attributes(mut self, attrs: CallAttributeData) -> Self {
+        self.inner = self.inner.call_attributes(attrs);
+        self
+    }
+
+    pub fn name<Name>(mut self, name: Name) -> Self
+    where
+        Name: AsRef<str>,
+    {
+        self.inner = self.inner.name(name);
+        self
+    }
+
+    /// Emit the intrinsic call instruction.
+    pub fn build(self) -> IrResult<IntrinsicInst<'ctx, Dyn, B>> {
+        let descriptor = self.inner.intrinsic_descriptor.clone();
+        let call = self.inner.build()?;
+        IntrinsicInst::from_call(call).ok_or_else(|| IrError::IntrinsicSignatureMismatch {
+            name: descriptor
+                .as_ref()
+                .map(intrinsic_descriptor_error_name)
+                .unwrap_or_else(|| "intrinsic call".to_owned()),
+        })
+    }
+}
+
+fn intrinsic_descriptor_error_name<B: ModuleBrand>(
+    descriptor: &IntrinsicDescriptor<'_, B>,
+) -> String {
+    match descriptor.mangled_name() {
+        Ok(name) => name,
+        Err(_) => descriptor.base_name().to_owned(),
     }
 }
 

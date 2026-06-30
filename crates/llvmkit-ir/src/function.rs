@@ -53,6 +53,7 @@ use super::function_signature::{
 };
 use super::global_value::{DllStorageClass, DsoLocality, Linkage, Visibility};
 use super::int_width::IntWidth;
+use super::intrinsics::{IntrinsicDescriptor, IntrinsicFunctionData, IntrinsicId};
 use super::marker::{Dyn, ReturnMarker};
 use super::metadata::MetadataAttachmentSet;
 use super::module::{
@@ -102,6 +103,7 @@ pub(super) struct FunctionData {
     pub(super) function_attr_groups: RefCell<Vec<u32>>,
     pub(super) use_list_orders: RefCell<Vec<UseListOrderRecord>>,
     pub(super) metadata: RefCell<MetadataAttachmentSet>,
+    pub(super) intrinsic: Option<IntrinsicFunctionData>,
     pub(super) symbol_table: ValueSymbolTable,
 }
 
@@ -111,6 +113,7 @@ impl FunctionData {
         signature: TypeId,
         linkage: Linkage,
         calling_conv: CallingConv,
+        intrinsic: Option<IntrinsicFunctionData>,
     ) -> Self {
         Self {
             name,
@@ -136,6 +139,7 @@ impl FunctionData {
             function_attr_groups: RefCell::new(Vec::new()),
             use_list_orders: RefCell::new(Vec::new()),
             metadata: RefCell::new(MetadataAttachmentSet::new()),
+            intrinsic,
             symbol_table: ValueSymbolTable::new(),
         }
     }
@@ -272,6 +276,29 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     #[inline]
     pub fn signature(self) -> FunctionType<'ctx, B> {
         FunctionType::new(self.signature, self.module)
+    }
+
+    /// Generated intrinsic identity, when this function is an intrinsic declaration.
+    #[inline]
+    pub fn intrinsic_id(self) -> Option<IntrinsicId> {
+        self.data().intrinsic.as_ref().map(|data| data.id)
+    }
+
+    /// Generated intrinsic descriptor, including overload types, when present.
+    pub fn intrinsic_descriptor(self) -> Option<IntrinsicDescriptor<'ctx, B>> {
+        let data = self.data().intrinsic.as_ref()?;
+        let overloads = data
+            .overloads
+            .iter()
+            .map(|id| Type::new(*id, self.module))
+            .collect::<Box<[_]>>();
+        IntrinsicDescriptor::new(data.id, overloads).ok()
+    }
+
+    /// Whether this function was created through the intrinsic declaration API.
+    #[inline]
+    pub fn is_intrinsic(self) -> bool {
+        self.intrinsic_id().is_some()
     }
 
     /// Function return type.

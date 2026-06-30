@@ -50,8 +50,6 @@ fn assert_no_line_with_fragment(text: &str, fragment: &str) {
 fn call_with_metadata_argument() -> Result<(), IrError> {
     Module::with_new("named_registers", |m| {
         let i64_ty = m.i64_type();
-        let void_ty = m.void_type();
-        let md_ty = m.metadata_type();
 
         // !N = !{!"rsp"}  — a tuple whose only operand is the register name.
         let s = m.metadata_string("rsp");
@@ -59,17 +57,9 @@ fn call_with_metadata_argument() -> Result<(), IrError> {
         let md = m.metadata_as_value(node);
 
         // declare i64  @llvm.read_register.i64(metadata)
-        let read_ty = m.fn_type(i64_ty, [md_ty.as_type()], false);
-        let read =
-            m.add_function::<i64, _>("llvm.read_register.i64", read_ty, Linkage::External)?;
+        let read = m.get_or_insert_intrinsic_declaration_by_name("llvm.read_register.i64")?;
         // declare void @llvm.write_register.i64(metadata, i64)
-        let write_ty = m.fn_type(
-            void_ty.as_type(),
-            [md_ty.as_type(), i64_ty.as_type()],
-            false,
-        );
-        let write =
-            m.add_function::<(), _>("llvm.write_register.i64", write_ty, Linkage::External)?;
+        let write = m.get_or_insert_intrinsic_declaration_by_name("llvm.write_register.i64")?;
 
         // define i64 @get_sp() { %rsp = call ...; call void ...; ret i64 %rsp }
         let host_ty = m.fn_type(i64_ty, Vec::<llvmkit_ir::Type>::new(), false);
@@ -78,7 +68,10 @@ fn call_with_metadata_argument() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
 
         let rsp = b.build_call(read, [md], "rsp")?;
-        let rsp_val = rsp.return_int_value();
+        let rsp_val: llvmkit_ir::IntValue<i64> = rsp
+            .return_value()
+            .expect("read_register returns value")
+            .try_into()?;
         b.build_call(write, [md, rsp_val.as_value()], "")?;
         b.build_ret(rsp_val)?;
 

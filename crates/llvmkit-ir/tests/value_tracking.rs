@@ -425,87 +425,91 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
-        let abs_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i1_ty.as_type()], false);
-        let abs_fn = m.add_function::<i8, _>("llvm.abs.i8", abs_ty, Linkage::External)?;
-        let abs = b
+        let abs_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.abs.i8")?;
+        let abs: IntValue<i8> = b
             .call_builder(abs_fn)
             .arg(i8_ty.const_int(-5_i8))
             .arg(i1_ty.const_int(true))
             .name("abs")
             .build()?
-            .return_int_value();
+            .return_value()
+            .expect("abs returns value")
+            .try_into()?;
 
-        let unary_i8_ty = m.fn_type(i8_ty, [i8_ty.as_type()], false);
-        let bitreverse_fn =
-            m.add_function::<i8, _>("llvm.bitreverse.i8", unary_i8_ty, Linkage::External)?;
-        let bitreverse = b
+        let bitreverse_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.bitreverse.i8")?;
+        let bitreverse: IntValue<i8> = b
             .call_builder(bitreverse_fn)
             .arg(i8_ty.const_int(0x10_u8))
             .name("rev")
             .build()?
-            .return_int_value();
+            .return_value()
+            .expect("bitreverse returns value")
+            .try_into()?;
 
-        let ctlz_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i1_ty.as_type()], false);
-        let ctlz_fn = m.add_function::<i8, _>("llvm.ctlz.i8", ctlz_ty, Linkage::External)?;
-        let ctlz = b
+        let ctlz_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.ctlz.i8")?;
+        let ctlz: IntValue<i8> = b
             .call_builder(ctlz_fn)
             .arg(i8_ty.const_int(0x10_u8))
             .arg(i1_ty.const_int(true))
             .name("ctlz")
             .build()?
-            .return_int_value();
+            .return_value()
+            .expect("ctlz returns value")
+            .try_into()?;
 
-        let ctpop_fn = m.add_function::<i8, _>("llvm.ctpop.i8", unary_i8_ty, Linkage::External)?;
-        let ctpop = b
+        let ctpop_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.ctpop.i8")?;
+        let ctpop: IntValue<i8> = b
             .call_builder(ctpop_fn)
             .arg(i8_ty.const_int(0x0f_u8))
             .name("pop")
             .build()?
-            .return_int_value();
+            .return_value()
+            .expect("ctpop returns value")
+            .try_into()?;
 
-        let bin_i8_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
-        let uadd_sat_fn =
-            m.add_function::<i8, _>("llvm.uadd.sat.i8", bin_i8_ty, Linkage::External)?;
-        let uadd_sat = b
+        let uadd_sat_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.uadd.sat.i8")?;
+        let uadd_sat: IntValue<i8> = b
             .call_builder(uadd_sat_fn)
             .arg(i8_ty.const_int(250_u8))
             .arg(i8_ty.const_int(10_u8))
             .name("usat")
             .build()?
-            .return_int_value();
+            .return_value()
+            .expect("uadd.sat returns value")
+            .try_into()?;
 
-        let smax_fn = m.add_function::<i8, _>("llvm.smax.i8", bin_i8_ty, Linkage::External)?;
-        let smax = b
+        let smax_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.smax.i8")?;
+        let smax: IntValue<i8> = b
             .call_builder(smax_fn)
             .arg(i8_ty.const_int(-5_i8))
             .arg(i8_ty.const_int(7_i8))
             .name("smax")
             .build()?
-            .return_int_value();
+            .return_value()
+            .expect("smax returns value")
+            .try_into()?;
 
-        let bswap_ty = m.fn_type(i16_ty, [i16_ty.as_type()], false);
-        let bswap_fn = m.add_function::<i16, _>("llvm.bswap.i16", bswap_ty, Linkage::External)?;
-        let bswap = b
+        let bswap_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.bswap.i16")?;
+        let bswap: IntValue<i16> = b
             .call_builder(bswap_fn)
             .arg(i16_ty.const_int(0x1234_u16))
             .name("swap")
             .build()?
-            .return_int_value();
+            .return_value()
+            .expect("bswap returns value")
+            .try_into()?;
 
-        let fshl_ty = m.fn_type(
-            i8_ty,
-            [i8_ty.as_type(), i8_ty.as_type(), i8_ty.as_type()],
-            false,
-        );
-        let fshl_fn = m.add_function::<i8, _>("llvm.fshl.i8", fshl_ty, Linkage::External)?;
-        let fshl = b
+        let fshl_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.fshl.i8")?;
+        let fshl: IntValue<i8> = b
             .call_builder(fshl_fn)
             .arg(i8_ty.const_int(0x12_u8))
             .arg(i8_ty.const_int(0x34_u8))
             .arg(i8_ty.const_int(4_u8))
             .name("fshl")
             .build()?
-            .return_int_value();
+            .return_value()
+            .expect("fshl returns value")
+            .try_into()?;
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
@@ -523,6 +527,43 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
             "0011010000010010"
         );
         assert_eq!(known(fshl.as_value(), &query)?.to_string(), "00100011");
+        Ok(())
+    })
+}
+
+/// Defensive regression for `llvm/lib/IR/Intrinsics.cpp::getIntrinsicInfoTableEntries`
+/// intrinsic semantics require a generated intrinsic callee; ordinary lookalike
+/// functions stay conservative.
+#[test]
+fn intrinsic_known_bits_ignore_mismatched_declarations() -> Result<(), IrError> {
+    Module::with_new("vt-intrinsic-mismatch", |m| {
+        let i1_ty = m.bool_type();
+        let i16_ty = m.i16_type();
+        let void_ty = m.void_type();
+        let caller_ty = m.fn_type(void_ty, Vec::<Type>::new(), false);
+        let caller = m.add_function::<(), _>("caller", caller_ty, Linkage::External)?;
+        let entry = caller.append_basic_block(&m, "entry");
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+
+        let malformed_ty = m.fn_type(i16_ty, [i16_ty.as_type(), i1_ty.as_type()], false);
+        let malformed =
+            m.add_function::<i16, _>("not.llvm.abs.i8", malformed_ty, Linkage::External)?;
+        let call: IntValue<i16> = b
+            .call_builder(malformed)
+            .arg(i16_ty.const_int(-5_i16))
+            .arg(i1_ty.const_int(true))
+            .name("abs")
+            .build()?
+            .return_value()
+            .expect("lookalike returns value")
+            .try_into()?;
+
+        let dl = m.data_layout();
+        let query = ValueTrackingQuery::new(&dl);
+        assert_eq!(
+            known(call.as_value(), &query)?.to_string(),
+            "????????????????"
+        );
         Ok(())
     })
 }

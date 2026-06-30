@@ -29,6 +29,7 @@ pub enum TypeKindLabel {
     Metadata,
     Token,
     X86Amx,
+    WasmExnRef,
     Integer,
     Function,
     Pointer,
@@ -56,6 +57,7 @@ impl fmt::Display for TypeKindLabel {
             TypeKindLabel::Metadata => "metadata",
             TypeKindLabel::Token => "token",
             TypeKindLabel::X86Amx => "x86_amx",
+            TypeKindLabel::WasmExnRef => "exnref",
             TypeKindLabel::Integer => "integer",
             TypeKindLabel::Function => "function",
             TypeKindLabel::Pointer => "pointer",
@@ -493,6 +495,18 @@ pub enum IrError {
     /// `Module::add_function` saw a name already bound at module scope.
     #[error("a function named {name:?} already exists in this module")]
     DuplicateFunctionName { name: String },
+
+    /// A reserved `llvm.*` name is absent from the generated LLVM intrinsic table.
+    #[error("unknown intrinsic `{name}`")]
+    UnknownIntrinsic { name: String },
+
+    /// Ordinary function construction attempted to use a generated intrinsic name.
+    #[error("intrinsic name `{name}` is reserved; use Module::get_or_insert_intrinsic_declaration")]
+    ReservedIntrinsicName { name: String },
+
+    /// A known intrinsic's name, overload suffix, or function signature is invalid.
+    #[error("intrinsic `{name}` signature mismatch")]
+    IntrinsicSignatureMismatch { name: String },
 
     /// `IRBuilder::build_ret` was given a value whose type does not
     /// match the function's declared return type.

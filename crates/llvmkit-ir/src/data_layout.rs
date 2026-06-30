@@ -664,8 +664,13 @@ impl DataLayout {
                 Some(layout) => self.type_size_in_bits_inner(module, layout),
                 None => 0,
             },
-            // Unsized cases: void, function, label-only, metadata, token.
-            TypeData::Void | TypeData::Function { .. } | TypeData::Metadata | TypeData::Token => 0,
+            // Unsized cases: void, function, label-only, metadata, token,
+            // and WebAssembly exception references.
+            TypeData::Void
+            | TypeData::Function { .. }
+            | TypeData::Metadata
+            | TypeData::Token
+            | TypeData::WasmExnRef => 0,
         }
     }
 
@@ -805,11 +810,13 @@ impl DataLayout {
                 Some(layout) => self.alignment(module, layout, abi_or_pref),
                 None => Align::ONE,
             },
-            // Unsized: void, function, metadata, token. Upstream
-            // unreachable; we return ONE rather than panic.
-            TypeData::Void | TypeData::Function { .. } | TypeData::Metadata | TypeData::Token => {
-                Align::ONE
-            }
+            // Unsized: void, function, metadata, token, WebAssembly exception
+            // references. Upstream unreachable; we return ONE rather than panic.
+            TypeData::Void
+            | TypeData::Function { .. }
+            | TypeData::Metadata
+            | TypeData::Token
+            | TypeData::WasmExnRef => Align::ONE,
         }
     }
 

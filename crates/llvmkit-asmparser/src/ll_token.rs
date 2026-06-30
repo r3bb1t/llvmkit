@@ -146,6 +146,7 @@ pub enum PrimitiveTy {
     Metadata,
     Token,
     X86Amx,
+    WasmExnRef,
     Half,
     BFloat,
     Float,

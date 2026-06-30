@@ -44,6 +44,7 @@ pub(crate) struct Context {
     x86_fp80: Cell<Option<TypeId>>,
     ppc_fp128: Cell<Option<TypeId>>,
     x86_amx: Cell<Option<TypeId>>,
+    wasm_exnref: Cell<Option<TypeId>>,
 
     // ---- Parameterised — one map per kind. Keys are small structural
     // fingerprints (mirrors LLVMContextImpl).
@@ -134,6 +135,7 @@ impl Context {
             x86_fp80: Cell::new(None),
             ppc_fp128: Cell::new(None),
             x86_amx: Cell::new(None),
+            wasm_exnref: Cell::new(None),
             int_types: RefCell::new(HashMap::new()),
             ptr_types: RefCell::new(HashMap::new()),
             array_types: RefCell::new(HashMap::new()),
@@ -214,6 +216,9 @@ impl Context {
     }
     pub(crate) fn x86_amx(&self) -> TypeId {
         self.singleton(&self.x86_amx, TypeData::X86Amx)
+    }
+    pub(crate) fn wasm_exnref(&self) -> TypeId {
+        self.singleton(&self.wasm_exnref, TypeData::WasmExnRef)
     }
 
     fn singleton(&self, slot: &Cell<Option<TypeId>>, data: TypeData) -> TypeId {
@@ -451,6 +456,7 @@ impl Context {
             | TypeData::Fp128
             | TypeData::PpcFp128
             | TypeData::X86Amx
+            | TypeData::WasmExnRef
             | TypeData::Label
             | TypeData::Metadata
             | TypeData::Token

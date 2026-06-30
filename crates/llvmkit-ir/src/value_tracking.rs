@@ -19,7 +19,7 @@ use crate::instr_types::{
     ShuffleVectorInstData,
 };
 use crate::instruction::{InstructionData, InstructionKindData, InstructionView};
-use crate::intrinsics::IntrinsicId;
+use crate::intrinsics::{IntrinsicSemantic, semantic_for_callee};
 use crate::metadata::MetadataAttachmentKind;
 use crate::module::{Brand, ModuleBrand, ModuleCore, ModuleRef};
 use crate::pass_context::FunctionView;
@@ -827,8 +827,9 @@ fn call_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             stack,
         )?);
     }
-    if let Some(id) = intrinsic_id_for_callee(anchor, inputs.callee_id) {
-        let intrinsic_known = intrinsic_known_bits(anchor, id, inputs.args, query, depth, stack)?;
+    if let Some(semantic) = intrinsic_semantic_for_callee(anchor, inputs.callee_id) {
+        let intrinsic_known =
+            intrinsic_known_bits(anchor, semantic, inputs.args, query, depth, stack)?;
         known = known.union_with(&intrinsic_known);
     }
     if known.has_conflict() {
@@ -870,20 +871,16 @@ fn attribute_slice_has_returned(attrs: &[AttributeStored]) -> bool {
         .any(|attr| matches!(attr, AttributeStored::Enum(AttrKind::Returned)))
 }
 
-fn intrinsic_id_for_callee<'ctx, B: ModuleBrand + 'ctx>(
+fn intrinsic_semantic_for_callee<'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
     callee_id: ValueId,
-) -> Option<IntrinsicId> {
-    let callee = value_from_id(anchor, callee_id);
-    let ValueKindData::Function(function) = &callee.data().kind else {
-        return None;
-    };
-    IntrinsicId::lookup(&function.name)
+) -> Option<IntrinsicSemantic> {
+    semantic_for_callee(value_from_id(anchor, callee_id))
 }
 
 fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
-    id: IntrinsicId,
+    semantic: IntrinsicSemantic,
     args: &[Cell<ValueId>],
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
@@ -897,14 +894,14 @@ fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         };
         compute_known_bits_inner(value, query, depth + 1, stack)
     };
-    match id {
-        IntrinsicId::Abs => {
+    match semantic {
+        IntrinsicSemantic::Abs => {
             let input = arg_bits(0, stack)?;
             Ok(input.abs_with_int_min_poison(argument_is_const_one(arg(1))))
         }
-        IntrinsicId::BitReverse => Ok(arg_bits(0, stack)?.reverse_bits()),
-        IntrinsicId::BSwap => Ok(arg_bits(0, stack)?.byte_swap()),
-        IntrinsicId::CTLZ => {
+        IntrinsicSemantic::BitReverse => Ok(arg_bits(0, stack)?.reverse_bits()),
+        IntrinsicSemantic::BSwap => Ok(arg_bits(0, stack)?.byte_swap()),
+        IntrinsicSemantic::Ctlz => {
             let input = arg_bits(0, stack)?;
             let mut possible = input.count_max_leading_zeros();
             if argument_is_const_one(arg(1)) {
@@ -914,7 +911,7 @@ fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             known.set_known_zero_bits_from(bit_width_u32(possible));
             Ok(known)
         }
-        IntrinsicId::CTTZ => {
+        IntrinsicSemantic::Cttz => {
             let input = arg_bits(0, stack)?;
             let mut possible = input.count_max_trailing_zeros();
             if argument_is_const_one(arg(1)) {
@@ -924,13 +921,13 @@ fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             known.set_known_zero_bits_from(bit_width_u32(possible));
             Ok(known)
         }
-        IntrinsicId::CTPOP => {
+        IntrinsicSemantic::Ctpop => {
             let input = arg_bits(0, stack)?;
             let mut known = KnownBits::unknown(width);
             known.set_known_zero_bits_from(bit_width_u32(input.count_max_population()));
             Ok(known)
         }
-        IntrinsicId::FShl | IntrinsicId::FShr => {
+        IntrinsicSemantic::FShl | IntrinsicSemantic::FShr => {
             let Some(shift) = argument_constant(arg(2)) else {
                 return Ok(KnownBits::unknown(width));
             };
@@ -939,7 +936,7 @@ fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             }
             let raw_shift = shift.try_zext_u64().unwrap_or(0);
             let shift = u32::try_from(raw_shift % u64::from(width)).unwrap_or(0);
-            let left_shift = if id == IntrinsicId::FShr {
+            let left_shift = if semantic == IntrinsicSemantic::FShr {
                 width - shift
             } else {
                 shift
@@ -956,47 +953,47 @@ fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
                 &KnownBits::lshr(&rhs, &right_shift_bits),
             ))
         }
-        IntrinsicId::UAddSat => {
+        IntrinsicSemantic::UAddSat => {
             let lhs = arg_bits(0, stack)?;
             let rhs = arg_bits(1, stack)?;
             Ok(KnownBits::uadd_sat(&lhs, &rhs))
         }
-        IntrinsicId::USubSat => {
+        IntrinsicSemantic::USubSat => {
             let lhs = arg_bits(0, stack)?;
             let rhs = arg_bits(1, stack)?;
             Ok(KnownBits::usub_sat(&lhs, &rhs))
         }
-        IntrinsicId::SAddSat => {
+        IntrinsicSemantic::SAddSat => {
             let lhs = arg_bits(0, stack)?;
             let rhs = arg_bits(1, stack)?;
             Ok(KnownBits::sadd_sat(&lhs, &rhs))
         }
-        IntrinsicId::SSubSat => {
+        IntrinsicSemantic::SSubSat => {
             let lhs = arg_bits(0, stack)?;
             let rhs = arg_bits(1, stack)?;
             Ok(KnownBits::ssub_sat(&lhs, &rhs))
         }
-        IntrinsicId::UMin => {
+        IntrinsicSemantic::UMin => {
             let lhs = arg_bits(0, stack)?;
             let rhs = arg_bits(1, stack)?;
             Ok(KnownBits::umin(&lhs, &rhs))
         }
-        IntrinsicId::UMax => {
+        IntrinsicSemantic::UMax => {
             let lhs = arg_bits(0, stack)?;
             let rhs = arg_bits(1, stack)?;
             Ok(KnownBits::umax(&lhs, &rhs))
         }
-        IntrinsicId::SMin => {
+        IntrinsicSemantic::SMin => {
             let lhs = arg_bits(0, stack)?;
             let rhs = arg_bits(1, stack)?;
             Ok(KnownBits::smin(&lhs, &rhs))
         }
-        IntrinsicId::SMax => {
+        IntrinsicSemantic::SMax => {
             let lhs = arg_bits(0, stack)?;
             let rhs = arg_bits(1, stack)?;
             Ok(KnownBits::smax(&lhs, &rhs))
         }
-        IntrinsicId::VectorReduceAdd => {
+        IntrinsicSemantic::VectorReduceAdd => {
             let Some(vector) = arg(0) else {
                 return Ok(KnownBits::unknown(width));
             };
@@ -1008,24 +1005,12 @@ fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             };
             Ok(compute_known_bits_inner(vector, query, depth + 1, stack)?.reduce_add(lanes))
         }
-        IntrinsicId::PtrMask => {
+        IntrinsicSemantic::PtrMask => {
             let ptr = arg_bits(0, stack)?;
             let mask = arg_bits(1, stack)?.anyext_or_trunc(width);
             Ok(KnownBits::bitand(&ptr, &mask))
         }
-        IntrinsicId::VScale
-        | IntrinsicId::Assume
-        | IntrinsicId::LifetimeStart
-        | IntrinsicId::LifetimeEnd
-        | IntrinsicId::Memcpy
-        | IntrinsicId::Memmove
-        | IntrinsicId::Memset
-        | IntrinsicId::Expect
-        | IntrinsicId::Trap
-        | IntrinsicId::Donothing
-        | IntrinsicId::ReadCycleCounter
-        | IntrinsicId::ReadRegisterI64
-        | IntrinsicId::WriteRegisterI64 => Ok(KnownBits::unknown(width)),
+        _ => Ok(KnownBits::unknown(width)),
     }
 }
 
@@ -1884,6 +1869,7 @@ fn type_bit_width<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>, dl: &DataLayou
         | TypeKind::Fp128
         | TypeKind::PpcFp128
         | TypeKind::X86Amx
+        | TypeKind::WasmExnRef
         | TypeKind::Label
         | TypeKind::Metadata
         | TypeKind::Token

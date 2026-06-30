@@ -5,8 +5,8 @@
 
 use super::folder::IRBuilderFolder;
 use super::{
-    BinaryOpcode, CastOpcode, CmpPredicate, Constant, FastMathFlags, GepNoWrapFlags,
-    InstructionView, IntrinsicId, IrResult, ModuleBrand, Type, UnaryOpcode, Value,
+    BinaryIntrinsic, BinaryOpcode, CastOpcode, CmpPredicate, Constant, FastMathFlags,
+    GepNoWrapFlags, InstructionView, IrResult, ModuleBrand, Type, UnaryOpcode, Value,
 };
 
 /// Folder that never folds.
@@ -145,7 +145,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for NoFolder {
 
     fn fold_binary_intrinsic(
         &self,
-        _id: IntrinsicId,
+        _id: BinaryIntrinsic,
         _lhs: Value<'ctx, B>,
         _rhs: Value<'ctx, B>,
         _ty: Type<'ctx, B>,

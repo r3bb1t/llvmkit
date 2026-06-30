@@ -88,6 +88,7 @@ pub(crate) enum TypeData {
     Fp128,
     PpcFp128,
     X86Amx,
+    WasmExnRef,
     Label,
     Metadata,
     Token,
@@ -332,6 +333,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
             TypeData::Fp128 => TypeKind::Fp128,
             TypeData::PpcFp128 => TypeKind::PpcFp128,
             TypeData::X86Amx => TypeKind::X86Amx,
+            TypeData::WasmExnRef => TypeKind::WasmExnRef,
             TypeData::Label => TypeKind::Label,
             TypeData::Metadata => TypeKind::Metadata,
             TypeData::Token => TypeKind::Token,
@@ -361,6 +363,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
             TypeData::Fp128 => TypeKindLabel::Fp128,
             TypeData::PpcFp128 => TypeKindLabel::PpcFp128,
             TypeData::X86Amx => TypeKindLabel::X86Amx,
+            TypeData::WasmExnRef => TypeKindLabel::WasmExnRef,
             TypeData::Label => TypeKindLabel::Label,
             TypeData::Metadata => TypeKindLabel::Metadata,
             TypeData::Token => TypeKindLabel::Token,
@@ -491,6 +494,7 @@ pub enum TypeKind {
     Fp128,
     PpcFp128,
     X86Amx,
+    WasmExnRef,
     Label,
     Metadata,
     Token,
@@ -524,6 +528,7 @@ impl<'ctx, B: ModuleBrand> fmt::Display for Type<'ctx, B> {
             TypeData::Fp128 => f.write_str("fp128"),
             TypeData::PpcFp128 => f.write_str("ppc_fp128"),
             TypeData::X86Amx => f.write_str("x86_amx"),
+            TypeData::WasmExnRef => f.write_str("exnref"),
             TypeData::Label => f.write_str("label"),
             TypeData::Metadata => f.write_str("metadata"),
             TypeData::Token => f.write_str("token"),
@@ -626,6 +631,7 @@ fn is_sized(module: &ModuleCore, id: TypeId) -> bool {
         | TypeData::Label
         | TypeData::Metadata
         | TypeData::Token
+        | TypeData::WasmExnRef
         | TypeData::Function { .. } => false,
         TypeData::Half
         | TypeData::BFloat

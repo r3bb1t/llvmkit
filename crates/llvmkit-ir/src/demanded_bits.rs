@@ -14,7 +14,7 @@ use super::data_layout::DataLayout;
 use super::instr_types::{BinaryOpData, CallInstData, CastOpData, CastOpcode, InvokeInstData};
 use super::instruction::{Instruction, InstructionData, InstructionKindData, state};
 use super::int_width::IntDyn;
-use super::intrinsics::IntrinsicId;
+use super::intrinsics::{IntrinsicSemantic, semantic_for_callee};
 use super::module::{ModuleBrand, ModuleRef};
 use super::pass_context::{FunctionPassContext, FunctionView};
 use super::pass_manager::FunctionPass;
@@ -588,14 +588,14 @@ impl DemandedBits {
         let Some(arg_index) = operand_index.checked_sub(1) else {
             return Ok(None);
         };
-        let Some(id) = intrinsic_id_for_callee(value_from_id(user, callee_id)) else {
+        let Some(semantic) = intrinsic_semantic_for_callee(value_from_id(user, callee_id)) else {
             return Ok(None);
         };
         let width = alive_out.bit_width();
-        Ok(match id {
-            IntrinsicId::BSwap if arg_index == 0 => Some(alive_out.byte_swap()),
-            IntrinsicId::BitReverse if arg_index == 0 => Some(alive_out.reverse_bits()),
-            IntrinsicId::CTLZ if arg_index == 0 => {
+        Ok(match semantic {
+            IntrinsicSemantic::BSwap if arg_index == 0 => Some(alive_out.byte_swap()),
+            IntrinsicSemantic::BitReverse if arg_index == 0 => Some(alive_out.reverse_bits()),
+            IntrinsicSemantic::Ctlz if arg_index == 0 => {
                 let known = compute_known_bits(
                     operand_value(user, operand_index)?,
                     &ValueTrackingQuery::new(&self.data_layout),
@@ -605,7 +605,7 @@ impl DemandedBits {
                     known.count_max_leading_zeros().saturating_add(1).min(width),
                 ))
             }
-            IntrinsicId::CTTZ if arg_index == 0 => {
+            IntrinsicSemantic::Cttz if arg_index == 0 => {
                 let known = compute_known_bits(
                     operand_value(user, operand_index)?,
                     &ValueTrackingQuery::new(&self.data_layout),
@@ -618,10 +618,13 @@ impl DemandedBits {
                         .min(width),
                 ))
             }
-            IntrinsicId::FShl | IntrinsicId::FShr => {
-                self.funnel_shift_operand_bits(user, id, arg_index, alive_out)?
+            IntrinsicSemantic::FShl | IntrinsicSemantic::FShr => {
+                self.funnel_shift_operand_bits(user, semantic, arg_index, alive_out)?
             }
-            IntrinsicId::UMax | IntrinsicId::UMin | IntrinsicId::SMax | IntrinsicId::SMin
+            IntrinsicSemantic::UMax
+            | IntrinsicSemantic::UMin
+            | IntrinsicSemantic::SMax
+            | IntrinsicSemantic::SMin
                 if arg_index == 0 || arg_index == 1 =>
             {
                 Some(ApInt::bits_set_from(
@@ -636,7 +639,7 @@ impl DemandedBits {
     fn funnel_shift_operand_bits<'ctx, B: ModuleBrand + 'ctx>(
         &self,
         user: Value<'ctx, B>,
-        id: IntrinsicId,
+        semantic: IntrinsicSemantic,
         arg_index: usize,
         alive_out: &ApInt,
     ) -> IrResult<Option<ApInt>> {
@@ -653,7 +656,7 @@ impl DemandedBits {
             return Ok(None);
         };
         let mut shift = apint_unsigned_rem_u32(&shift, width);
-        if id == IntrinsicId::FShr && shift != 0 {
+        if semantic == IntrinsicSemantic::FShr && shift != 0 {
             shift = width.saturating_sub(shift);
         }
         Ok(match arg_index {
@@ -1224,13 +1227,10 @@ fn replace_instruction_operand<'ctx, B: ModuleBrand + 'ctx>(
     Ok(true)
 }
 
-fn intrinsic_id_for_callee<'ctx, B: ModuleBrand + 'ctx>(
+fn intrinsic_semantic_for_callee<'ctx, B: ModuleBrand + 'ctx>(
     callee: Value<'ctx, B>,
-) -> Option<IntrinsicId> {
-    let ValueKindData::Function(function) = &callee.data().kind else {
-        return None;
-    };
-    IntrinsicId::lookup(&function.name)
+) -> Option<IntrinsicSemantic> {
+    semantic_for_callee(callee)
 }
 
 fn is_power_of_two_u32(value: u32) -> bool {
@@ -1344,6 +1344,7 @@ fn int_scalar_bit_width<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Optio
         | TypeKind::Fp128
         | TypeKind::PpcFp128
         | TypeKind::X86Amx
+        | TypeKind::WasmExnRef
         | TypeKind::Label
         | TypeKind::Metadata
         | TypeKind::Token

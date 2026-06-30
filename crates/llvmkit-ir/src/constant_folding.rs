@@ -27,7 +27,7 @@ use super::global_variable::GlobalVariable;
 use super::instr_types::{BinaryOpcode, CastOpcode, PhiData, UnaryOpcode};
 use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::IntDyn;
-use super::intrinsics::IntrinsicId;
+use super::intrinsics::BinaryIntrinsic;
 use super::module::{Brand, ModuleBrand, ModuleRef, ModuleView};
 use super::target_library_info::{LibFunc, TargetLibraryInfo};
 use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData};
@@ -728,7 +728,7 @@ pub fn constant_fold_fp_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Fold the currently modelled binary intrinsic set.
 pub fn constant_fold_binary_intrinsic<'ctx, B: ModuleBrand + 'ctx>(
-    intrinsic: IntrinsicId,
+    intrinsic: BinaryIntrinsic,
     lhs: Constant<'ctx, B>,
     rhs: Constant<'ctx, B>,
     ty: Type<'ctx, B>,
