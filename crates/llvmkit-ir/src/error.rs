@@ -487,6 +487,13 @@ pub enum IrError {
     #[error("function argument index {index} out of range (have {count})")]
     ArgumentIndexOutOfRange { index: u32, count: u32 },
 
+    /// `extractvalue` / `insertvalue` indexed past the end of an array or
+    /// struct's element list. Mirrors `ExtractValueInst::getIndexedType`
+    /// (`lib/IR/Instructions.cpp`), which rejects out-of-range indices
+    /// rather than clamping them.
+    #[error("aggregate index {index} out of range (have {count})")]
+    AggregateIndexOutOfRange { index: u32, count: u64 },
+
     /// A typed function facade was requested with a parameter tuple whose arity
     /// does not match the function signature.
     #[error("function parameter count mismatch: expected {expected}, got {got}")]

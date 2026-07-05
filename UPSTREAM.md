@@ -383,6 +383,7 @@ Total `#[test]` functions: 1137.
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_array_index` | `test/Bitcode/compatibility.ll` line 1553 | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_nested_indices` | `test/Bitcode/compatibility.ll` line 1555 | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_rejects_empty_indices` | `llvm/lib/IR/Instructions.cpp::ExtractValueInst::init` | mirror |
+| `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::extract_value_rejects_out_of_range_array_index` | `test/Assembler/extractvalue-invalid-idx.ll` (PR4170); `llvm/lib/IR/Instructions.cpp::ExtractValueInst::getIndexedType` | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_value_struct_field0` | `test/Bitcode/compatibility.ll` line 1558 | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_value_array_index_zero` | `test/Bitcode/compatibility.ll` line 1562 | mirror |
 | `crates/llvmkit-ir/tests/builder_aggregate_vector.rs::insert_value_rejects_empty_indices` | `llvm/lib/IR/Instructions.cpp::InsertValueInst::init` | mirror |

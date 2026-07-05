@@ -49,7 +49,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TypedPointerType<'ctx, B> {
         let (pointee, _) = self
             .data()
             .as_typed_pointer()
-            .expect("TypedPointerType invariant: wraps TypedPointer");
+            .unwrap_or_else(|| unreachable!("TypedPointerType invariant: wraps TypedPointer"));
         Type::new(pointee, self.module)
     }
 
@@ -58,7 +58,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TypedPointerType<'ctx, B> {
         let (_, addr_space) = self
             .data()
             .as_typed_pointer()
-            .expect("TypedPointerType invariant: wraps TypedPointer");
+            .unwrap_or_else(|| unreachable!("TypedPointerType invariant: wraps TypedPointer"));
         addr_space
     }
 }

@@ -8,6 +8,18 @@
 //! [`InstructionView`] for read-only rediscovery;
 //! lifecycle mutation requires a builder-produced instruction or
 //! [`BlockCursor`](crate::iter::BlockCursor).
+//!
+//! ## Why arithmetic/memory handles carry no type parameters
+//!
+//! `CallInst<R>` / `PhiInst<W, P>` carry markers because the builder
+//! returns them typed and the marker gates real accessors. `AddInst`,
+//! `LoadInst`, and the other per-opcode handles do not: the typed
+//! information already lives on the value handles the builder returns
+//! (D4 — `build_int_add::<W>` returns `IntValue<W>`), and the handles'
+//! reachable constructors are rediscovery paths (`BlockCursor`,
+//! `InstructionView`, `TryFrom`) which are inherently dyn-shaped — a
+//! marker there would instantiate as `AddInst<IntDyn>` everywhere and
+//! gate nothing.
 
 use super::IrResult;
 use super::align::Align;
@@ -287,6 +299,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> LoadInst<'ctx, B> {
             },
             _ => unreachable!("LoadInst invariant: kind is Instruction"),
         }
+    }
+    /// The loaded type (the instruction's result type).
+    #[inline]
+    pub fn loaded_ty(self) -> Type<'ctx, B> {
+        Type::new(self.ty, self.module)
     }
     pub fn pointer(self) -> Value<'ctx, B> {
         let id = self.payload().ptr.get();

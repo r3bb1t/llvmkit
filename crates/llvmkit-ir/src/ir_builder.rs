@@ -2922,7 +2922,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(p, payload, name)?;
+        let inst = self.build_load_inner(payload, name)?;
         Ok(inst.as_value())
     }
 
@@ -2950,7 +2950,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(p, payload, name)?;
+        let inst = self.build_load_inner(payload, name)?;
         Ok(inst.as_value())
     }
 
@@ -2973,7 +2973,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(p, payload, name)?;
+        let inst = self.build_load_inner(payload, name)?;
         Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
     }
 
@@ -2998,7 +2998,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(p, payload, name)?;
+        let inst = self.build_load_inner(payload, name)?;
         Ok(IntValue::<IntDyn, B>::from_value_unchecked(inst.as_value()))
     }
 
@@ -3019,7 +3019,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(p, payload, name)?;
+        let inst = self.build_load_inner(payload, name)?;
         Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
     }
 
@@ -3044,7 +3044,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(p, payload, name)?;
+        let inst = self.build_load_inner(payload, name)?;
         Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(
             inst.as_value(),
         ))
@@ -3069,7 +3069,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(p, payload, name)?;
+        let inst = self.build_load_inner(payload, name)?;
         Ok(PointerValue::from_value_unchecked(inst.as_value()))
     }
 
@@ -3095,7 +3095,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(p, payload, name)?;
+        let inst = self.build_load_inner(payload, name)?;
         Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
     }
 
@@ -3134,7 +3134,6 @@ where
 
     fn build_load_inner(
         &self,
-        _ptr: PointerValue<'ctx, B>,
         payload: LoadInstData,
         name: impl AsRef<str>,
     ) -> IrResult<Instruction<'ctx, Attached, B>> {
@@ -3165,7 +3164,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(p, payload, name)?;
+        let inst = self.build_load_inner(payload, name)?;
         Ok(inst.as_value())
     }
 
@@ -3193,7 +3192,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(p, payload, name)?;
+        let inst = self.build_load_inner(payload, name)?;
         Ok(inst.as_value())
     }
 
@@ -3378,7 +3377,7 @@ where
             config.ordering_value(),
             config.sync_scope_value().clone(),
         );
-        let inst = self.build_load_inner(p, payload, name)?;
+        let inst = self.build_load_inner(payload, name)?;
         Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
     }
 
@@ -3407,7 +3406,7 @@ where
             config.ordering_value(),
             config.sync_scope_value().clone(),
         );
-        let inst = self.build_load_inner(p, payload, name)?;
+        let inst = self.build_load_inner(payload, name)?;
         Ok(inst.as_value())
     }
 
@@ -4696,7 +4695,10 @@ where
         };
         let inserted =
             self.build_insert_element::<_, _, i64, _, _>(poison, scalar, zero_idx, insert_name)?;
-        let mask = vec![0_i32; usize::try_from(count).unwrap_or(usize::MAX)];
+        let n = usize::try_from(count).map_err(|_| IrError::InvalidOperation {
+            message: "vector splat lane count exceeds the platform address range",
+        })?;
+        let mask = vec![0_i32; n];
         let splat_name = if name_ref.is_empty() {
             String::from("splat")
         } else {
@@ -5363,13 +5365,7 @@ where
         let unwind_dest = unwind_dest.into_basic_block_label();
         let callee_v = callee.as_value();
         let fn_ty = callee.signature().as_type().id();
-        let ret_ty = self
-            .module
-            .context()
-            .type_data(fn_ty)
-            .as_function()
-            .map(|(r, _, _)| r)
-            .unwrap_or(fn_ty);
+        let ret_ty = callee.return_type().id();
         let (name, calling_conv, attrs) = config.into_parts();
         let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.as_value().id).collect();
         let payload = crate::instr_types::InvokeInstData::new_with_attrs(
@@ -5516,13 +5512,7 @@ where
         let default_dest = default_dest.into_basic_block_label();
         let callee_v = callee.as_value();
         let fn_ty = callee.signature().as_type().id();
-        let ret_ty = self
-            .module
-            .context()
-            .type_data(fn_ty)
-            .as_function()
-            .map(|(r, _, _)| r)
-            .unwrap_or(fn_ty);
+        let ret_ty = callee.return_type().id();
         let (name, calling_conv, attrs) = config.into_parts();
         let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.as_value().id).collect();
         let indirect_ids: Vec<ValueId> = indirect_dests
@@ -6659,18 +6649,19 @@ where
 // --------------------------------------------------------------------------
 
 /// Walk the aggregate `root` by `indices` and return the leaf type.
-/// Mirrors `ExtractValueInst::getIndexedType` in `Instructions.cpp`.
+/// Mirrors `ExtractValueInst::getIndexedType` in `Instructions.cpp`, which
+/// rejects (rather than clamps) an index at or past the element count.
 fn walk_aggregate_for_builder(m: &ModuleCore, root: TypeId, indices: &[u32]) -> IrResult<TypeId> {
     let mut cur = root;
     for &idx in indices {
         let d = m.context().type_data(cur);
         match d {
             TypeData::Array { elem, n } => {
-                let n_u32 = u32::try_from(*n).unwrap_or(u32::MAX);
-                if idx >= n_u32 {
-                    return Err(IrError::ArgumentIndexOutOfRange {
+                let count_u64 = *n;
+                if u64::from(idx) >= count_u64 {
+                    return Err(IrError::AggregateIndexOutOfRange {
                         index: idx,
-                        count: n_u32,
+                        count: count_u64,
                     });
                 }
                 cur = *elem;
@@ -6679,11 +6670,29 @@ fn walk_aggregate_for_builder(m: &ModuleCore, root: TypeId, indices: &[u32]) -> 
                 let body = s.body.borrow();
                 match body.as_ref() {
                     Some(b) => {
-                        let count = u32::try_from(b.elements.len()).unwrap_or(u32::MAX);
-                        if idx >= count {
-                            return Err(IrError::ArgumentIndexOutOfRange { index: idx, count });
+                        // `elements.len()` is a `usize` count of an in-memory
+                        // Vec, so it always fits `u64` on every platform this
+                        // targets; treat overflow as out-of-range rather
+                        // than masking it, matching the array arm above.
+                        let count_u64 = u64::try_from(b.elements.len()).map_err(|_| {
+                            IrError::AggregateIndexOutOfRange {
+                                index: idx,
+                                count: u64::MAX,
+                            }
+                        })?;
+                        if u64::from(idx) >= count_u64 {
+                            return Err(IrError::AggregateIndexOutOfRange {
+                                index: idx,
+                                count: count_u64,
+                            });
                         }
-                        cur = b.elements[idx as usize];
+                        let i = usize::try_from(idx).map_err(|_| {
+                            IrError::AggregateIndexOutOfRange {
+                                index: idx,
+                                count: count_u64,
+                            }
+                        })?;
+                        cur = b.elements[i];
                     }
                     None => {
                         return Err(IrError::TypeMismatch {
