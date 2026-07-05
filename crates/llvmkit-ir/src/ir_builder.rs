@@ -6218,6 +6218,33 @@ fn intrinsic_descriptor_error_name<B: ModuleBrand>(
 // SelectArm + build_select
 // --------------------------------------------------------------------------
 
+#[doc(hidden)]
+pub mod select_narrow_token {
+    use core::marker::PhantomData;
+
+    /// Evidence that a select fold/result value has already been checked
+    /// against the arm type. Only this crate can mint it (private field,
+    /// `pub(crate)` constructor), so downstream code can *name* the type in
+    /// trait impls but cannot call `from_select_value` with a forged value.
+    /// Follows the `ValidatedStructValue` capability-token precedent
+    /// (`struct_schema.rs`).
+    #[derive(Debug)]
+    pub struct SelectNarrow<'a> {
+        _private: PhantomData<&'a ()>,
+    }
+
+    impl<'a> SelectNarrow<'a> {
+        #[inline]
+        pub(crate) fn new() -> Self {
+            Self {
+                _private: PhantomData,
+            }
+        }
+    }
+}
+
+pub use select_narrow_token::SelectNarrow;
+
 /// Sealed: types that can appear as the true/false arms of a
 /// `select`. The associated `Output` pins the result handle's
 /// shape so `b.build_select(cond, a, b)` returns the same handle
@@ -6226,7 +6253,7 @@ fn intrinsic_descriptor_error_name<B: ModuleBrand>(
 pub trait SelectArm<'ctx, B: ModuleBrand = Brand<'ctx>>: Sized + select_arm_sealed::Sealed {
     type Output;
     #[doc(hidden)]
-    fn from_select_value(v: Value<'ctx, B>) -> Self::Output;
+    fn from_select_value(v: Value<'ctx, B>, narrow: &SelectNarrow<'_>) -> Self::Output;
     #[doc(hidden)]
     fn arm_value(self) -> Value<'ctx, B>;
 }
@@ -6244,7 +6271,7 @@ mod select_arm_sealed {
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for IntValue<'ctx, W, B> {
     type Output = IntValue<'ctx, W, B>;
     #[inline]
-    fn from_select_value(v: Value<'ctx, B>) -> Self::Output {
+    fn from_select_value(v: Value<'ctx, B>, _narrow: &SelectNarrow<'_>) -> Self::Output {
         IntValue::<W, B>::from_value_unchecked(v)
     }
     #[inline]
@@ -6256,7 +6283,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for IntValue<'
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for FloatValue<'ctx, K, B> {
     type Output = FloatValue<'ctx, K, B>;
     #[inline]
-    fn from_select_value(v: Value<'ctx, B>) -> Self::Output {
+    fn from_select_value(v: Value<'ctx, B>, _narrow: &SelectNarrow<'_>) -> Self::Output {
         FloatValue::<K, B>::from_value_unchecked(v)
     }
     #[inline]
@@ -6268,7 +6295,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for FloatValu
 impl<'ctx, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for PointerValue<'ctx, B> {
     type Output = PointerValue<'ctx, B>;
     #[inline]
-    fn from_select_value(v: Value<'ctx, B>) -> Self::Output {
+    fn from_select_value(v: Value<'ctx, B>, _narrow: &SelectNarrow<'_>) -> Self::Output {
         PointerValue::from_value_unchecked(v)
     }
     #[inline]
@@ -6314,12 +6341,12 @@ where
         }
         if let Some(folded) = self.folder.fold_select(c.as_value(), true_v, false_v)? {
             let folded = self.checked_folded_value(folded, true_ty)?;
-            return Ok(A::from_select_value(folded));
+            return Ok(A::from_select_value(folded, &SelectNarrow::new()));
         }
         let payload =
             crate::instr_types::SelectInstData::new(c.as_value().id, true_v.id, false_v.id);
         let inst = self.append_instruction(true_ty, InstructionKindData::Select(payload), name);
-        Ok(A::from_select_value(inst.as_value()))
+        Ok(A::from_select_value(inst.as_value(), &SelectNarrow::new()))
     }
 }
 

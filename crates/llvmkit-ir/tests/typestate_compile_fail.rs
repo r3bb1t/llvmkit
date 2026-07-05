@@ -55,4 +55,5 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/transform_pass_manager_output_requires_verify.rs");
     t.compile_fail("tests/compile_fail/intrinsic_id_raw_constructor_private.rs");
     t.compile_fail("tests/compile_fail/binary_folder_rejects_non_binary_intrinsic.rs");
+    t.compile_fail("tests/compile_fail/select_arm_forge.rs");
 }

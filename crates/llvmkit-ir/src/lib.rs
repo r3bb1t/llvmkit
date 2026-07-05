@@ -196,7 +196,7 @@ pub use ir_builder::folder::IRBuilderFolder;
 pub use ir_builder::no_folder::NoFolder;
 pub use ir_builder::{
     BuilderPositionState, CallBuilder, CallSiteConfig, IRBuilder, InsertPoint, Positioned,
-    SelectArm, Unpositioned,
+    SelectArm, SelectNarrow, Unpositioned,
 };
 pub use known_bits::KnownBits;
 pub use marker::{Dyn, Ptr, ReturnMarker};
