@@ -241,3 +241,74 @@ fn atomicrmw_umax_singlethread() -> Result<(), IrError> {
         Ok(())
     })
 }
+
+/// Ports `test/Bitcode/compatibility.ll` line 935 (`@fp_atomics`):
+/// `atomicrmw fmaximum ptr %word, float 1.0 monotonic`. `FMaximum` is one
+/// of the LLVM 21 IEEE-754 `maximum`/`minimum`-semantics atomicrmw ops
+/// (`AtomicRMWInst::BinOp` in `Instructions.h`); this locks its print
+/// form end to end (`AtomicRMWBinOp::keyword` -> `fmt_atomicrmw`).
+#[test]
+fn atomicrmw_fmaximum_monotonic() -> Result<(), IrError> {
+    Module::with_new("a", |m| {
+        let f32_ty = m.f32_type();
+        let ptr_ty = m.ptr_type(0);
+        let void_ty = m.void_type();
+        let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let word: PointerValue = f.param(0)?.try_into()?;
+        let one = f32_ty.const_float(1.0_f32);
+        let _ = b.build_atomicrmw(
+            AtomicRMWBinOp::FMaximum,
+            word,
+            one,
+            llvmkit_ir::AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
+            "atomicrmw.fmaximum",
+        )?;
+        b.build_ret_void();
+        let text = format!("{m}");
+        assert!(
+            text.contains(
+                "%atomicrmw.fmaximum = atomicrmw fmaximum ptr %0, float 1.000000e+00 monotonic\n"
+            ),
+            "got:\n{text}"
+        );
+        Ok(())
+    })
+}
+
+/// Ports `test/Bitcode/compatibility.ll` line 938 (`@fp_atomics`):
+/// `atomicrmw fminimum ptr %word, float 1.0 monotonic`. `FMinimum` is
+/// `FMaximum`'s IEEE-754 `minimum` counterpart, added alongside it in
+/// LLVM 21's `AtomicRMWInst::BinOp`.
+#[test]
+fn atomicrmw_fminimum_monotonic() -> Result<(), IrError> {
+    Module::with_new("a", |m| {
+        let f32_ty = m.f32_type();
+        let ptr_ty = m.ptr_type(0);
+        let void_ty = m.void_type();
+        let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let word: PointerValue = f.param(0)?.try_into()?;
+        let one = f32_ty.const_float(1.0_f32);
+        let _ = b.build_atomicrmw(
+            AtomicRMWBinOp::FMinimum,
+            word,
+            one,
+            llvmkit_ir::AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
+            "atomicrmw.fminimum",
+        )?;
+        b.build_ret_void();
+        let text = format!("{m}");
+        assert!(
+            text.contains(
+                "%atomicrmw.fminimum = atomicrmw fminimum ptr %0, float 1.000000e+00 monotonic\n"
+            ),
+            "got:\n{text}"
+        );
+        Ok(())
+    })
+}

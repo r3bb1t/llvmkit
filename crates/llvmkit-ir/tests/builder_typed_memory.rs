@@ -50,7 +50,9 @@ fn typed_alloca_load_store_round_trip_prints_identically_to_erased() -> IrResult
 /// `CreateStructGEP`'s result type only at runtime). Print form is anchored
 /// on `test/Assembler/getelementptr_struct.ll` via the existing
 /// `tests/builder_gep.rs::struct_gep` fixture's exact `getelementptr
-/// inbounds %S, ptr %x, i32 0, i32 N` form.
+/// inbounds nuw %S, ptr %x, i32 0, i32 N` form (the `nuw` flag matches
+/// `IRBuilder::CreateStructGEP` in `IRBuilder.h`, which passes
+/// `GEPNoWrapFlags::inBounds() | GEPNoWrapFlags::noUnsignedWrap()`).
 #[test]
 fn field_gep_projects_field_type_at_compile_time() -> IrResult<()> {
     // `#[derive(IrStruct)]` is dual-purpose (Rust data + IR schema, see
@@ -71,7 +73,7 @@ fn field_gep_projects_field_type_at_compile_time() -> IrResult<()> {
         b.build_ret(pc)?;
         let printed = format!("{m}");
         assert!(
-            printed.contains("getelementptr inbounds %CpuState, ptr %cpu, i32 0, i32 1"),
+            printed.contains("getelementptr inbounds nuw %CpuState, ptr %cpu, i32 0, i32 1"),
             "got:\n{printed}"
         );
         Ok(())

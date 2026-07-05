@@ -68,8 +68,12 @@ fn gep_inbounds() -> Result<(), IrError> {
 }
 
 /// Mirrors `test/Assembler/getelementptr_struct.ll` for the
-/// `getelementptr inbounds %S, ptr %x, i32 0, i32 N` struct-field
-/// access print form.
+/// `getelementptr inbounds nuw %S, ptr %x, i32 0, i32 N` struct-field
+/// access print form. The `nuw` flag matches `IRBuilder::CreateStructGEP`
+/// (`IRBuilder.h`), which passes `GEPNoWrapFlags::inBounds() |
+/// GEPNoWrapFlags::noUnsignedWrap()`; the combined printed form is locked
+/// against `test/Assembler/flags.ll` (`gep_inbounds_nuw`, `inbounds nuw`
+/// prints in that order per `GEPNoWrapFlags`'s canonical ordering).
 #[test]
 fn struct_gep() -> Result<(), IrError> {
     Module::with_new("g", |m| {
@@ -87,7 +91,7 @@ fn struct_gep() -> Result<(), IrError> {
         b.build_ret(r)?;
         let text = format!("{m}");
         assert!(
-            text.contains("%p2 = getelementptr inbounds %S, ptr %0, i32 0, i32 1"),
+            text.contains("%p2 = getelementptr inbounds nuw %S, ptr %0, i32 0, i32 1"),
             "got:\n{text}"
         );
         Ok(())

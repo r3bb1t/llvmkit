@@ -3809,8 +3809,12 @@ where
         )
     }
 
-    /// Produce `getelementptr inbounds <struct-ty>, ptr <ptr>,
-    /// i32 0, i32 <field-idx>`. Mirrors `IRBuilder::CreateStructGEP`.
+    /// Produce `getelementptr inbounds nuw <struct-ty>, ptr <ptr>,
+    /// i32 0, i32 <field-idx>`. Mirrors `IRBuilder::CreateStructGEP`
+    /// (`IRBuilder.h`), which passes `GEPNoWrapFlags::inBounds() |
+    /// GEPNoWrapFlags::noUnsignedWrap()` -- a struct-field offset can
+    /// never wrap the pointer's index-width arithmetic, so upstream
+    /// asserts `nuw` in addition to `inbounds`.
     pub fn build_struct_gep<P, Name>(
         &self,
         struct_ty: StructType<'ctx, StructBodyDyn, B>,
@@ -3833,7 +3837,8 @@ where
             struct_ty,
             ptr,
             [zero, idx_val],
-            crate::gep_no_wrap_flags::GepNoWrapFlags::inbounds(),
+            crate::gep_no_wrap_flags::GepNoWrapFlags::inbounds()
+                | crate::gep_no_wrap_flags::GepNoWrapFlags::NUW,
             name,
         )
     }

@@ -272,3 +272,24 @@ fn atomicrmw_round_trips() {
     let text = parse_fixture(FIXTURE);
     assert_check_lines(&text, &["@f", "atomicrmw"]);
 }
+
+/// `atomicrmw fmaximum`/`fminimum` parse+print round trip from
+/// `test/Bitcode/compatibility.ll` (`@fp_atomics`, lines 935/938). These
+/// are the LLVM 21 IEEE-754 `maximum`/`minimum`-semantics atomicrmw ops
+/// (`AtomicRMWInst::BinOp` in `Instructions.h`); this locks the
+/// `Keyword::Fmaximum`/`Keyword::Fminimum` parser arms end to end.
+#[test]
+fn atomicrmw_fmaximum_fminimum_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/compatibility/atomicrmw_fmaximum_fminimum_round_trips.ll"
+    );
+
+    let text = parse_fixture(FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "%atomicrmw.fmaximum = atomicrmw fmaximum ptr %word, float 1.000000e+00 monotonic",
+            "%atomicrmw.fminimum = atomicrmw fminimum ptr %word, float 1.000000e+00 monotonic",
+        ],
+    );
+}
