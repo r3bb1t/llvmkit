@@ -5,9 +5,21 @@
 
 /// Mirrors verifier/runtime lifecycle checks by pulling invalid construction
 /// lifecycles forward into compile-fail fixtures listed below.
+///
+/// `t.pass(...)` is registered alongside the `compile_fail` cases so that
+/// `trybuild::cargo`'s `if project.has_pass { "build" } else { "check" }`
+/// switch runs the whole harness under `cargo build` instead of `cargo
+/// check`. This is load-bearing for
+/// `extract_value_empty_indices.rs`: its `const { assert!(N > 0) }`
+/// (Doctrine D3) is a monomorphisation/codegen-time `E0080` diagnostic
+/// that a `cargo check` never reaches (verified empirically: the same
+/// fixture reports "succeeded" under `check` and fails correctly under
+/// `build`), so without a `pass` case that fixture would silently never
+/// fail to compile.
 #[test]
 fn typestate_compile_fail() {
     let t = trybuild::TestCases::new();
+    t.pass("tests/compile_fail/extract_value_dyn_empty_slice_compiles.rs");
     t.compile_fail("tests/compile_fail/position_at_end_terminated_block.rs");
     t.compile_fail("tests/compile_fail/add_incoming_after_finish.rs");
     t.compile_fail("tests/compile_fail/retained_unterminated_block_cannot_reposition.rs");
@@ -59,4 +71,5 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/folder_typed_wrong_width.rs");
     t.compile_fail("tests/compile_fail/typed_gep_bad_index.rs");
     t.compile_fail("tests/compile_fail/fp_ext_equal_width.rs");
+    t.compile_fail("tests/compile_fail/extract_value_empty_indices.rs");
 }

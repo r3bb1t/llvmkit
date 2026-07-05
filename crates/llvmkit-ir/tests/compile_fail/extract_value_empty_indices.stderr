@@ -1,0 +1,23 @@
+error[E0080]: evaluation panicked: extractvalue requires at least one index
+ --> $RUST/core/src/panic.rs
+  |
+  = note: evaluation of `llvmkit_ir::IRBuilder::<'_, '_, llvmkit_ir::Brand<'_>, llvmkit_ir::ConstantFolder, llvmkit_ir::Positioned, ()>::build_extract_value::<llvmkit_ir::Argument<'_>, 0, &str>::{constant#1}` failed here
+  |
+ ::: src/ir_builder.rs
+  |
+  |             assert!(N > 0, "extractvalue requires at least one index");
+  |             ---------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/ir_builder.rs
+  |
+  | /         const {
+  | |             assert!(N > 0, "extractvalue requires at least one index");
+  | |         }
+  | |_________^
+
+note: the above error was encountered while instantiating `fn IRBuilder::<'_, '_, Brand<'_>, ConstantFolder, Positioned, ()>::build_extract_value::<llvmkit_ir::Argument<'_>, 0, &str>`
+  --> tests/compile_fail/extract_value_empty_indices.rs:23:20
+   |
+23 |         let _bad = b.build_extract_value(up, [], "x")?;
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -7171,7 +7171,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             indices.push(idx);
         }
         let v = b
-            .build_extract_value(agg_v, indices, result_name.as_str())
+            .build_extract_value_dyn(agg_v, &indices, result_name.as_str())
             .map_err(|e| self.builder_err("extractvalue", e))?;
         Ok(v)
     }
@@ -7197,7 +7197,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             indices.push(idx);
         }
         let v = b
-            .build_insert_value(agg_v, elt_v, indices, result_name.as_str())
+            .build_insert_value_dyn(agg_v, elt_v, &indices, result_name.as_str())
             .map_err(|e| self.builder_err("insertvalue", e))?;
         Ok(v)
     }

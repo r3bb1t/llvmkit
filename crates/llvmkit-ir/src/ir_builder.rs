@@ -2131,29 +2131,59 @@ where
 
     /// Produce `extractvalue <agg-ty> <agg>, idx0, idx1, ...`.
     /// Mirrors `IRBuilder::CreateExtractValue`.
-    pub fn build_extract_value<V, I, Name>(
+    ///
+    /// The index list is a fixed-size array whose length is checked at
+    /// compile time (Doctrine D3): `ExtractValueInst::init`
+    /// (`lib/IR/Instructions.cpp`) asserts a non-empty index list, and
+    /// `N > 0` pulls that assertion forward to monomorphisation instead of
+    /// a runtime error. Use [`Self::build_extract_value_dyn`] for a
+    /// slice/`Vec`-driven index list that keeps the runtime check.
+    pub fn build_extract_value<V, const N: usize, Name>(
         &self,
         aggregate: V,
-        indices: I,
+        indices: [u32; N],
         name: Name,
     ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
         V: IsValue<'ctx, B>,
-        I: IntoIterator<Item = u32>,
+    {
+        const {
+            assert!(N > 0, "extractvalue requires at least one index");
+        }
+        self.build_extract_value_dyn(aggregate, &indices, name)
+    }
+
+    /// Produce `extractvalue <agg-ty> <agg>, idx0, idx1, ...` from a
+    /// dynamically-sized index slice. Mirrors `IRBuilder::CreateExtractValue`.
+    ///
+    /// Ports the empty-index-list rejection in
+    /// `ExtractValueInst::init` (`lib/IR/Instructions.cpp`); see
+    /// `test/Assembler/extractvalue-no-idx.ll` for the upstream assembler
+    /// diagnostic this pulls forward. Prefer
+    /// [`Self::build_extract_value`] when the index count is known at
+    /// compile time, which upgrades this runtime check to a compile error.
+    pub fn build_extract_value_dyn<V, Name>(
+        &self,
+        aggregate: V,
+        indices: &[u32],
+        name: Name,
+    ) -> IrResult<Value<'ctx, B>>
+    where
+        Name: AsRef<str>,
+        V: IsValue<'ctx, B>,
     {
         let agg = aggregate.as_value();
-        let indices: Vec<u32> = indices.into_iter().collect();
         if indices.is_empty() {
             return Err(IrError::InvalidOperation {
                 message: "extractvalue indices must not be empty",
             });
         }
-        let leaf_ty = walk_aggregate_for_builder(self.module, agg.ty, &indices)?;
-        if let Some(folded) = self.folder.fold_extract_value_dyn(agg, &indices)? {
+        let leaf_ty = walk_aggregate_for_builder(self.module, agg.ty, indices)?;
+        if let Some(folded) = self.folder.fold_extract_value_dyn(agg, indices)? {
             return self.checked_folded_value(folded, leaf_ty);
         }
-        let payload = crate::instr_types::ExtractValueInstData::new(agg.id, indices);
+        let payload = crate::instr_types::ExtractValueInstData::new(agg.id, indices.to_vec());
         let inst =
             self.append_instruction(leaf_ty, InstructionKindData::ExtractValue(payload), name);
         Ok(inst.as_value())
@@ -2161,38 +2191,73 @@ where
 
     /// Produce `insertvalue <agg-ty> <agg>, <elt-ty> <elt>, idx0, ...`.
     /// Mirrors `IRBuilder::CreateInsertValue`.
-    pub fn build_insert_value<A, V, I, Name>(
+    ///
+    /// The index list is a fixed-size array whose length is checked at
+    /// compile time (Doctrine D3): `InsertValueInst::init`
+    /// (`lib/IR/Instructions.cpp`) asserts a non-empty index list, and
+    /// `N > 0` pulls that assertion forward to monomorphisation instead of
+    /// a runtime error. Use [`Self::build_insert_value_dyn`] for a
+    /// slice/`Vec`-driven index list that keeps the runtime check.
+    pub fn build_insert_value<A, V, const N: usize, Name>(
         &self,
         aggregate: A,
         value: V,
-        indices: I,
+        indices: [u32; N],
         name: Name,
     ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
         A: IsValue<'ctx, B>,
         V: IsValue<'ctx, B>,
-        I: IntoIterator<Item = u32>,
+    {
+        const {
+            assert!(N > 0, "insertvalue requires at least one index");
+        }
+        self.build_insert_value_dyn(aggregate, value, &indices, name)
+    }
+
+    /// Produce `insertvalue <agg-ty> <agg>, <elt-ty> <elt>, idx0, ...` from
+    /// a dynamically-sized index slice. Mirrors
+    /// `IRBuilder::CreateInsertValue`.
+    ///
+    /// Ports the empty-index-list rejection in `InsertValueInst::init`
+    /// (`lib/IR/Instructions.cpp`); see
+    /// `test/Assembler/extractvalue-no-idx.ll` for the upstream assembler
+    /// diagnostic this pulls forward (the parser shares one "expected
+    /// index" path for both opcodes). Prefer [`Self::build_insert_value`]
+    /// when the index count is known at compile time, which upgrades this
+    /// runtime check to a compile error.
+    pub fn build_insert_value_dyn<A, V, Name>(
+        &self,
+        aggregate: A,
+        value: V,
+        indices: &[u32],
+        name: Name,
+    ) -> IrResult<Value<'ctx, B>>
+    where
+        Name: AsRef<str>,
+        A: IsValue<'ctx, B>,
+        V: IsValue<'ctx, B>,
     {
         let agg = aggregate.as_value();
         let val = value.as_value();
-        let indices: Vec<u32> = indices.into_iter().collect();
         if indices.is_empty() {
             return Err(IrError::InvalidOperation {
                 message: "insertvalue indices must not be empty",
             });
         }
-        let leaf_ty = walk_aggregate_for_builder(self.module, agg.ty, &indices)?;
+        let leaf_ty = walk_aggregate_for_builder(self.module, agg.ty, indices)?;
         if val.ty != leaf_ty {
             return Err(IrError::TypeMismatch {
                 expected: Type::new(leaf_ty, self.module).kind_label(),
                 got: val.ty().kind_label(),
             });
         }
-        if let Some(folded) = self.folder.fold_insert_value_dyn(agg, val, &indices)? {
+        if let Some(folded) = self.folder.fold_insert_value_dyn(agg, val, indices)? {
             return self.checked_folded_value(folded, agg.ty);
         }
-        let payload = crate::instr_types::InsertValueInstData::new(agg.id, val.id, indices);
+        let payload =
+            crate::instr_types::InsertValueInstData::new(agg.id, val.id, indices.to_vec());
         let inst = self.append_instruction(agg.ty, InstructionKindData::InsertValue(payload), name);
         Ok(inst.as_value())
     }

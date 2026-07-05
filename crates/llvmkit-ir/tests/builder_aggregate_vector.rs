@@ -88,9 +88,13 @@ fn extract_value_nested_indices() -> Result<(), IrError> {
 }
 
 /// Mirrors `ExtractValueInst::init` (`lib/IR/Instructions.cpp`): LLVM rejects
-/// `extractvalue` with an empty index list.
+/// `extractvalue` with an empty index list. The typed `build_extract_value`
+/// upgrades this to a compile-time `const { assert!(N > 0) }` failure (see
+/// `tests/compile_fail/extract_value_empty_indices.rs`); `build_extract_value_dyn`
+/// keeps the runtime check for slice/`Vec`-driven index lists, ported from
+/// the assembler diagnostic in `test/Assembler/extractvalue-no-idx.ll`.
 #[test]
-fn extract_value_rejects_empty_indices() -> Result<(), IrError> {
+fn extract_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let i8_ty = m.i8_type();
         let i32_ty = m.i32_type();
@@ -102,7 +106,7 @@ fn extract_value_rejects_empty_indices() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let up = f.param(0)?;
         let err = b
-            .build_extract_value(up, std::iter::empty::<u32>(), "bad")
+            .build_extract_value_dyn(up, &[], "bad")
             .expect_err("empty extractvalue indices must be rejected");
         assert_eq!(
             err,
@@ -233,9 +237,14 @@ fn insert_value_array_index_zero() -> Result<(), IrError> {
 }
 
 /// Mirrors `InsertValueInst::init` (`lib/IR/Instructions.cpp`): LLVM rejects
-/// `insertvalue` with an empty index list.
+/// `insertvalue` with an empty index list. The typed `build_insert_value`
+/// upgrades this to a compile-time `const { assert!(N > 0) }` failure (see
+/// `tests/compile_fail/extract_value_empty_indices.rs` for the shared
+/// pattern); `build_insert_value_dyn` keeps the runtime check for
+/// slice/`Vec`-driven index lists, ported from the assembler diagnostic in
+/// `test/Assembler/extractvalue-no-idx.ll`.
 #[test]
-fn insert_value_rejects_empty_indices() -> Result<(), IrError> {
+fn insert_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let i8_ty = m.i8_type();
         let i32_ty = m.i32_type();
@@ -247,7 +256,7 @@ fn insert_value_rejects_empty_indices() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let up = f.param(0)?;
         let err = b
-            .build_insert_value(up, up, std::iter::empty::<u32>(), "bad")
+            .build_insert_value_dyn(up, up, &[], "bad")
             .expect_err("empty insertvalue indices must be rejected");
         assert_eq!(
             err,
