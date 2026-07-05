@@ -927,6 +927,15 @@ impl OverflowFlags {
     pub const fn has_nsw(self) -> bool {
         self.nsw
     }
+
+    /// Crate-internal bool-pair constructor. Builder call sites that carry
+    /// runtime nuw/nsw bools (rather than the chainable public builder)
+    /// funnel through here instead of duplicating the two `.nuw()`/`.nsw()`
+    /// calls behind an `if`.
+    #[inline]
+    pub(crate) const fn from_parts(nuw: bool, nsw: bool) -> Self {
+        Self { nuw, nsw }
+    }
 }
 
 /// Flags for `or`. The `disjoint` flag asserts the two operands have no set

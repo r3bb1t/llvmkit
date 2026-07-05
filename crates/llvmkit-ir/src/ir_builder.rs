@@ -57,7 +57,7 @@ use super::inline_asm::InlineAsm;
 use super::instr_types::FNegInstData;
 use super::instr_types::{
     BinaryOpData, BinaryOpcode, CallAttributeData, CastOpData, CastOpcode, LoadInstData,
-    POISON_MASK_ELEM, ReturnOpData, StoreInstData, UnaryOpcode,
+    OverflowFlags, POISON_MASK_ELEM, ReturnOpData, StoreInstData, UnaryOpcode,
 };
 use super::instruction::{
     Instruction, InstructionKind, InstructionKindData, InstructionView, build_instruction_value,
@@ -212,7 +212,7 @@ impl CallSiteConfig {
 /// - `R` — parent function's [`ReturnMarker`].
 pub struct IRBuilder<'m, 'ctx, B, F, S, R>
 where
-    B: ModuleBrand,
+    B: ModuleBrand + 'ctx,
     F: IRBuilderFolder<'ctx, B>,
     S: BuilderPositionState,
     R: ReturnMarker,
@@ -612,12 +612,8 @@ where
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
-        if let Some(folded) =
-            self.folder
-                .fold_bin_op(BinaryOpcode::Add, lhs.as_value(), rhs.as_value())?
-        {
-            let folded = self.checked_folded_value(folded, lhs.ty().as_type().id())?;
-            return Ok(IntValue::<W, B>::from_value_unchecked(folded));
+        if let Some(folded) = self.folder.fold_int_bin_op(BinaryOpcode::Add, lhs, rhs)? {
+            return self.accept_folded_int(folded, lhs);
         }
         let payload = BinaryOpData::new(lhs.as_value().id, rhs.as_value().id);
         let inst = self.append_instruction(
@@ -643,12 +639,8 @@ where
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
-        if let Some(folded) =
-            self.folder
-                .fold_bin_op(BinaryOpcode::Sub, lhs.as_value(), rhs.as_value())?
-        {
-            let folded = self.checked_folded_value(folded, lhs.ty().as_type().id())?;
-            return Ok(IntValue::<W, B>::from_value_unchecked(folded));
+        if let Some(folded) = self.folder.fold_int_bin_op(BinaryOpcode::Sub, lhs, rhs)? {
+            return self.accept_folded_int(folded, lhs);
         }
         let payload = BinaryOpData::new(lhs.as_value().id, rhs.as_value().id);
         let inst = self.append_instruction(
@@ -1174,26 +1166,19 @@ where
         let mut payload = BinaryOpData::new(lhs.as_value().id, rhs.as_value().id);
         flags.apply(&mut payload);
         let folded = if payload.is_exact {
-            self.folder
-                .fold_exact_bin_op(opcode, lhs.as_value(), rhs.as_value(), true)?
+            self.folder.fold_int_bin_op_exact(opcode, lhs, rhs)?
         } else if matches!(
             opcode,
             BinaryOpcode::Add | BinaryOpcode::Sub | BinaryOpcode::Mul | BinaryOpcode::Shl
         ) {
-            self.folder.fold_no_wrap_bin_op(
-                opcode,
-                lhs.as_value(),
-                rhs.as_value(),
-                payload.no_unsigned_wrap,
-                payload.no_signed_wrap,
-            )?
-        } else {
+            let flags = OverflowFlags::from_parts(payload.no_unsigned_wrap, payload.no_signed_wrap);
             self.folder
-                .fold_bin_op(opcode, lhs.as_value(), rhs.as_value())?
+                .fold_int_bin_op_no_wrap(opcode, lhs, rhs, flags)?
+        } else {
+            self.folder.fold_int_bin_op(opcode, lhs, rhs)?
         };
         if let Some(folded) = folded {
-            let folded = self.checked_folded_value(folded, lhs.ty().as_type().id())?;
-            return Ok(IntValue::<W, B>::from_value_unchecked(folded));
+            return self.accept_folded_int(folded, lhs);
         }
         let inst = self.append_instruction(lhs.ty().as_type().id(), kind_ctor(payload), name);
         Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
@@ -1219,12 +1204,8 @@ where
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
-        if let Some(folded) = self
-            .folder
-            .fold_bin_op(opcode, lhs.as_value(), rhs.as_value())?
-        {
-            let folded = self.checked_folded_value(folded, lhs.ty().as_type().id())?;
-            return Ok(IntValue::<W, B>::from_value_unchecked(folded));
+        if let Some(folded) = self.folder.fold_int_bin_op(opcode, lhs, rhs)? {
+            return self.accept_folded_int(folded, lhs);
         }
         let payload = BinaryOpData::new(lhs.as_value().id, rhs.as_value().id);
         let inst = self.append_instruction(lhs.ty().as_type().id(), kind_ctor(payload), name);
@@ -1259,7 +1240,7 @@ where
     where
         F2: FnOnce(BinaryOpData) -> InstructionKindData,
     {
-        if let Some(folded) = self.folder.fold_bin_op(opcode, lhs, rhs)? {
+        if let Some(folded) = self.folder.fold_bin_op_dyn(opcode, lhs, rhs)? {
             return self.checked_folded_value(folded, lhs.ty);
         }
         let payload = BinaryOpData::new(lhs.id, rhs.id);
@@ -1535,14 +1516,8 @@ where
     {
         let lhs = lhs.into_float_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
-        if let Some(folded) = self.folder.fold_bin_op_fmf(
-            opcode,
-            IsValue::as_value(lhs),
-            IsValue::as_value(rhs),
-            self.fmf,
-        )? {
-            let folded = self.checked_folded_value(folded, crate::value::Typed::ty(lhs).id())?;
-            return Ok(FloatValue::<K, B>::from_value_unchecked(folded));
+        if let Some(folded) = self.folder.fold_fp_bin_op(opcode, lhs, rhs, self.fmf)? {
+            return self.accept_folded_fp(folded, lhs);
         }
         let mut payload = BinaryOpData::new(IsValue::as_value(lhs).id, IsValue::as_value(rhs).id);
         // Apply the builder-context FMF (parallel to upstream
@@ -1574,14 +1549,8 @@ where
     {
         let lhs = lhs.into_float_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
-        if let Some(folded) = self.folder.fold_bin_op_fmf(
-            opcode,
-            IsValue::as_value(lhs),
-            IsValue::as_value(rhs),
-            fmf,
-        )? {
-            let folded = self.checked_folded_value(folded, crate::value::Typed::ty(lhs).id())?;
-            return Ok(FloatValue::<K, B>::from_value_unchecked(folded));
+        if let Some(folded) = self.folder.fold_fp_bin_op(opcode, lhs, rhs, fmf)? {
+            return self.accept_folded_fp(folded, lhs);
         }
         let mut payload = BinaryOpData::new(IsValue::as_value(lhs).id, IsValue::as_value(rhs).id);
         payload.fmf = fmf;
@@ -1730,13 +1699,8 @@ where
         let lhs = lhs.into_float_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
         let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
-        if let Some(folded) = self.folder.fold_cmp(
-            crate::cmp_predicate::CmpPredicate::Float(pred),
-            IsValue::as_value(lhs),
-            IsValue::as_value(rhs),
-        )? {
-            let folded = self.checked_folded_value(folded, i1_ty)?;
-            return Ok(IntValue::<bool, B>::from_value_unchecked(folded));
+        if let Some(folded) = self.folder.fold_fp_cmp(pred, lhs, rhs)? {
+            return Ok(folded);
         }
         let mut payload = crate::instr_types::FCmpInstData::new(
             pred,
@@ -1766,13 +1730,8 @@ where
         let lhs = lhs.into_float_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
         let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
-        if let Some(folded) = self.folder.fold_cmp(
-            crate::cmp_predicate::CmpPredicate::Float(pred),
-            IsValue::as_value(lhs),
-            IsValue::as_value(rhs),
-        )? {
-            let folded = self.checked_folded_value(folded, i1_ty)?;
-            return Ok(IntValue::<bool, B>::from_value_unchecked(folded));
+        if let Some(folded) = self.folder.fold_fp_cmp(pred, lhs, rhs)? {
+            return Ok(folded);
         }
         let mut payload = crate::instr_types::FCmpInstData::new(
             pred,
@@ -2119,12 +2078,8 @@ where
     {
         let v = value.into_float_value(ModuleRef::new(self.module))?;
         let ty = crate::value::Typed::ty(v).id();
-        if let Some(folded) =
-            self.folder
-                .fold_un_op_fmf(UnaryOpcode::FNeg, IsValue::as_value(v), fmf)?
-        {
-            let folded = self.checked_folded_value(folded, ty)?;
-            return Ok(FloatValue::<K, B>::from_value_unchecked(folded));
+        if let Some(folded) = self.folder.fold_fp_un_op(UnaryOpcode::FNeg, v, fmf)? {
+            return self.accept_folded_fp(folded, v);
         }
         let payload = FNegInstData::new(IsValue::as_value(v).id, fmf);
         let inst = self.append_instruction(ty, InstructionKindData::FNeg(payload), name);
@@ -2194,7 +2149,7 @@ where
             });
         }
         let leaf_ty = walk_aggregate_for_builder(self.module, agg.ty, &indices)?;
-        if let Some(folded) = self.folder.fold_extract_value(agg, &indices)? {
+        if let Some(folded) = self.folder.fold_extract_value_dyn(agg, &indices)? {
             return self.checked_folded_value(folded, leaf_ty);
         }
         let payload = crate::instr_types::ExtractValueInstData::new(agg.id, indices);
@@ -2233,7 +2188,7 @@ where
                 got: val.ty().kind_label(),
             });
         }
-        if let Some(folded) = self.folder.fold_insert_value(agg, val, &indices)? {
+        if let Some(folded) = self.folder.fold_insert_value_dyn(agg, val, &indices)? {
             return self.checked_folded_value(folded, agg.ty);
         }
         let payload = crate::instr_types::InsertValueInstData::new(agg.id, val.id, indices);
@@ -2318,7 +2273,7 @@ where
                 });
             }
         };
-        if let Some(folded) = self.folder.fold_extract_element(vec, idx)? {
+        if let Some(folded) = self.folder.fold_extract_element_dyn(vec, idx)? {
             return self.checked_folded_value(folded, elem_ty);
         }
         let payload = crate::instr_types::ExtractElementInstData::new(vec.id, idx.id);
@@ -2347,7 +2302,7 @@ where
         let val = elt.as_value();
         let idx_v = index.into_int_value(ModuleRef::new(self.module))?;
         let idx = IsValue::as_value(idx_v);
-        if let Some(folded) = self.folder.fold_insert_element(vec, val, idx)? {
+        if let Some(folded) = self.folder.fold_insert_element_dyn(vec, val, idx)? {
             return self.checked_folded_value(folded, vec.ty);
         }
         let payload = crate::instr_types::InsertElementInstData::new(vec.id, val.id, idx.id);
@@ -2400,7 +2355,7 @@ where
             message: "shufflevector mask too large",
         })?;
         let result_ty_id = self.module.context().fixed_vector_type(elem, mask_len);
-        if let Some(folded) = self.folder.fold_shuffle_vector(l, r, mask)? {
+        if let Some(folded) = self.folder.fold_shuffle_vector_dyn(l, r, mask)? {
             return self.checked_folded_value(folded, result_ty_id);
         }
         let payload =
@@ -2530,13 +2485,12 @@ where
         Src: crate::int_width::WiderThan<Dst>,
         Dst: IntWidth,
     {
-        if let Some(folded) = self.folder.fold_cast(
+        if let Some(folded) = self.folder.fold_cast_to_int(
             crate::instr_types::CastOpcode::Trunc,
             value.as_value(),
-            dst_ty.as_type(),
+            dst_ty,
         )? {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(IntValue::<Dst, B>::from_value_unchecked(folded));
+            return self.accept_folded_cast_int(folded, dst_ty);
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.as_value().id);
         let inst = self.append_instruction(
@@ -2564,13 +2518,12 @@ where
         Src: IntWidth,
         Dst: crate::int_width::WiderThan<Src>,
     {
-        if let Some(folded) = self.folder.fold_cast(
+        if let Some(folded) = self.folder.fold_cast_to_int(
             crate::instr_types::CastOpcode::ZExt,
             value.as_value(),
-            dst_ty.as_type(),
+            dst_ty,
         )? {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(IntValue::<Dst, B>::from_value_unchecked(folded));
+            return self.accept_folded_cast_int(folded, dst_ty);
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, value.as_value().id);
         let inst = self.append_instruction(
@@ -2598,13 +2551,12 @@ where
         Src: IntWidth,
         Dst: crate::int_width::WiderThan<Src>,
     {
-        if let Some(folded) = self.folder.fold_cast(
+        if let Some(folded) = self.folder.fold_cast_to_int(
             crate::instr_types::CastOpcode::SExt,
             value.as_value(),
-            dst_ty.as_type(),
+            dst_ty,
         )? {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(IntValue::<Dst, B>::from_value_unchecked(folded));
+            return self.accept_folded_cast_int(folded, dst_ty);
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::SExt, value.as_value().id);
         let inst = self.append_instruction(
@@ -2637,7 +2589,7 @@ where
                 rhs: dst_w,
             });
         }
-        if let Some(folded) = self.folder.fold_cast(
+        if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::Trunc,
             value.as_value(),
             dst_ty.as_type(),
@@ -2675,7 +2627,7 @@ where
                 rhs: dst_w,
             });
         }
-        if let Some(folded) = self.folder.fold_cast(
+        if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::Trunc,
             value.as_value(),
             dst_ty.as_type(),
@@ -2730,7 +2682,7 @@ where
                 rhs: dst_w,
             });
         }
-        if let Some(folded) = self.folder.fold_cast(
+        if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::ZExt,
             src.as_value(),
             dst.as_type(),
@@ -2776,9 +2728,9 @@ where
                 rhs: dst_w,
             });
         }
-        if let Some(folded) = self
-            .folder
-            .fold_cast(opcode, value.as_value(), dst_ty.as_type())?
+        if let Some(folded) =
+            self.folder
+                .fold_cast_dyn(opcode, value.as_value(), dst_ty.as_type())?
         {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
@@ -3718,7 +3670,7 @@ where
         let result_ty = self.module.ptr_type(p.ty().address_space()).as_type().id();
         if let Some(folded) = self
             .folder
-            .fold_gep(source_ty, ptr_value, &idx_values, flags)?
+            .fold_gep_dyn(source_ty, ptr_value, &idx_values, flags)?
         {
             let folded = self.checked_folded_value(folded, result_ty)?;
             return Ok(PointerValue::from_value_unchecked(folded));
@@ -3784,10 +3736,11 @@ where
         Name: AsRef<str>,
     {
         let v = IsValue::as_value(value);
-        if let Some(folded) =
-            self.folder
-                .fold_cast(crate::instr_types::CastOpcode::FpTrunc, v, dst_ty.as_type())?
-        {
+        if let Some(folded) = self.folder.fold_cast_dyn(
+            crate::instr_types::CastOpcode::FpTrunc,
+            v,
+            dst_ty.as_type(),
+        )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded));
         }
@@ -3821,7 +3774,7 @@ where
         let v = IsValue::as_value(value);
         if let Some(folded) =
             self.folder
-                .fold_cast(crate::instr_types::CastOpcode::FpExt, v, dst_ty.as_type())?
+                .fold_cast_dyn(crate::instr_types::CastOpcode::FpExt, v, dst_ty.as_type())?
         {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded));
@@ -3850,9 +3803,8 @@ where
         Dst: FloatKind,
     {
         let v = IsValue::as_value(value);
-        if let Some(folded) = self.folder.fold_cast(opcode, v, dst_ty.as_type())? {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(FloatValue::<Dst, B>::from_value_unchecked(folded));
+        if let Some(folded) = self.folder.fold_cast_to_fp(opcode, v, dst_ty)? {
+            return self.accept_folded_cast_fp(folded, dst_ty);
         }
         let payload = CastOpData::new(opcode, v.id);
         let inst = self.append_instruction(
@@ -3907,9 +3859,8 @@ where
         W: IntWidth,
     {
         let v = IsValue::as_value(value);
-        if let Some(folded) = self.folder.fold_cast(opcode, v, dst_ty.as_type())? {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(IntValue::<W, B>::from_value_unchecked(folded));
+        if let Some(folded) = self.folder.fold_cast_to_int(opcode, v, dst_ty)? {
+            return self.accept_folded_cast_int(folded, dst_ty);
         }
         let payload = CastOpData::new(opcode, v.id);
         let inst = self.append_instruction(
@@ -3965,7 +3916,7 @@ where
     where
         Name: AsRef<str>,
     {
-        if let Some(folded) = self.folder.fold_cast(
+        if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::UIToFp,
             src.as_value(),
             dst.as_type(),
@@ -3994,9 +3945,8 @@ where
         K: FloatKind,
     {
         let v = value.as_value();
-        if let Some(folded) = self.folder.fold_cast(opcode, v, dst_ty.as_type())? {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(FloatValue::<K, B>::from_value_unchecked(folded));
+        if let Some(folded) = self.folder.fold_cast_to_fp(opcode, v, dst_ty)? {
+            return self.accept_folded_cast_fp(folded, dst_ty);
         }
         let payload = CastOpData::new(opcode, v.id);
         let inst = self.append_instruction(
@@ -4048,7 +3998,7 @@ where
         }
         if let Some(folded) = self
             .folder
-            .fold_cast(CastOpcode::PtrToAddr, value, dst_ty)?
+            .fold_cast_dyn(CastOpcode::PtrToAddr, value, dst_ty)?
         {
             return self.checked_folded_value(folded, dst_ty.id());
         }
@@ -4070,13 +4020,11 @@ where
         W: IntWidth,
     {
         let v = IsValue::as_value(value);
-        if let Some(folded) = self.folder.fold_cast(
-            crate::instr_types::CastOpcode::PtrToInt,
-            v,
-            dst_ty.as_type(),
-        )? {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(IntValue::<W, B>::from_value_unchecked(folded));
+        if let Some(folded) =
+            self.folder
+                .fold_cast_to_int(crate::instr_types::CastOpcode::PtrToInt, v, dst_ty)?
+        {
+            return self.accept_folded_cast_int(folded, dst_ty);
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::PtrToInt, v.id);
         let inst = self.append_instruction(
@@ -4100,7 +4048,7 @@ where
         W: IntWidth,
     {
         let v = value.as_value();
-        if let Some(folded) = self.folder.fold_cast(
+        if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::IntToPtr,
             v,
             dst_ty.as_type(),
@@ -4146,13 +4094,12 @@ where
         }
         let v = value.into_int_value(ModuleRef::new(self.module))?;
         let v_value = IsValue::as_value(v);
-        if let Some(folded) = self.folder.fold_cast(
+        if let Some(folded) = self.folder.fold_cast_to_int(
             super::instr_types::CastOpcode::BitCast,
             v_value,
-            dst_ty.as_type(),
+            dst_ty,
         )? {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(IntValue::<Dst, B>::from_value_unchecked(folded));
+            return self.accept_folded_cast_int(folded, dst_ty);
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
         let inst = self.append_instruction(
@@ -4188,13 +4135,11 @@ where
         }
         let v = value.into_int_value(ModuleRef::new(self.module))?;
         let v_value = IsValue::as_value(v);
-        if let Some(folded) = self.folder.fold_cast(
-            super::instr_types::CastOpcode::BitCast,
-            v_value,
-            dst_ty.as_type(),
-        )? {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(FloatValue::<K, B>::from_value_unchecked(folded));
+        if let Some(folded) =
+            self.folder
+                .fold_cast_to_fp(super::instr_types::CastOpcode::BitCast, v_value, dst_ty)?
+        {
+            return self.accept_folded_cast_fp(folded, dst_ty);
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
         let inst = self.append_instruction(
@@ -4230,13 +4175,12 @@ where
         }
         let v = value.into_float_value(ModuleRef::new(self.module))?;
         let v_value = IsValue::as_value(v);
-        if let Some(folded) = self.folder.fold_cast(
+        if let Some(folded) = self.folder.fold_cast_to_int(
             super::instr_types::CastOpcode::BitCast,
             v_value,
-            dst_ty.as_type(),
+            dst_ty,
         )? {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(IntValue::<W, B>::from_value_unchecked(folded));
+            return self.accept_folded_cast_int(folded, dst_ty);
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
         let inst = self.append_instruction(
@@ -4272,13 +4216,11 @@ where
         }
         let v = value.into_float_value(ModuleRef::new(self.module))?;
         let v_value = IsValue::as_value(v);
-        if let Some(folded) = self.folder.fold_cast(
-            super::instr_types::CastOpcode::BitCast,
-            v_value,
-            dst_ty.as_type(),
-        )? {
-            let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(FloatValue::<Dst, B>::from_value_unchecked(folded));
+        if let Some(folded) =
+            self.folder
+                .fold_cast_to_fp(super::instr_types::CastOpcode::BitCast, v_value, dst_ty)?
+        {
+            return self.accept_folded_cast_fp(folded, dst_ty);
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
         let inst = self.append_instruction(
@@ -4306,7 +4248,7 @@ where
     {
         if let Some(folded) =
             self.folder
-                .fold_cast(super::instr_types::CastOpcode::BitCast, value, dst_ty)?
+                .fold_cast_dyn(super::instr_types::CastOpcode::BitCast, value, dst_ty)?
         {
             return self.checked_folded_value(folded, dst_ty.id());
         }
@@ -4327,7 +4269,7 @@ where
         Name: AsRef<str>,
     {
         let v = IsValue::as_value(value);
-        if let Some(folded) = self.folder.fold_cast(
+        if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::AddrSpaceCast,
             v,
             dst_ty.as_type(),
@@ -4372,7 +4314,7 @@ where
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(PointerValue::from_value_unchecked(folded));
         }
-        if let Some(folded) = self.folder.fold_cast(opcode, v, dst_ty.as_type())? {
+        if let Some(folded) = self.folder.fold_cast_dyn(opcode, v, dst_ty.as_type())? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(PointerValue::from_value_unchecked(folded));
         }
@@ -4569,13 +4511,8 @@ where
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
         let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
-        if let Some(folded) = self.folder.fold_cmp(
-            crate::cmp_predicate::CmpPredicate::Int(pred),
-            lhs.as_value(),
-            rhs.as_value(),
-        )? {
-            let folded = self.checked_folded_value(folded, i1_ty)?;
-            return Ok(IntValue::<bool, B>::from_value_unchecked(folded));
+        if let Some(folded) = self.folder.fold_int_cmp(pred, lhs, rhs)? {
+            return Ok(folded);
         }
         let payload =
             crate::instr_types::CmpInstData::new(pred, lhs.as_value().id, rhs.as_value().id);
@@ -4598,13 +4535,8 @@ where
         Name: AsRef<str>,
     {
         let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
-        if let Some(folded) = self.folder.fold_cmp(
-            crate::cmp_predicate::CmpPredicate::Int(pred),
-            lhs.as_value(),
-            rhs.as_value(),
-        )? {
-            let folded = self.checked_folded_value(folded, i1_ty)?;
-            return Ok(IntValue::<bool, B>::from_value_unchecked(folded));
+        if let Some(folded) = self.folder.fold_int_cmp(pred, lhs, rhs)? {
+            return Ok(folded);
         }
         let mut payload =
             crate::instr_types::CmpInstData::new(pred, lhs.as_value().id, rhs.as_value().id);
@@ -5808,6 +5740,78 @@ where
         Ok(folded)
     }
 
+    /// Accept a typed fold result. For static markers this is the identity —
+    /// the type system already guarantees the width/kind. For dyn markers
+    /// (IntDyn) the marker doesn't pin the width, so keep a TypeId check.
+    /// The branch monomorphizes away for static W.
+    fn accept_folded_int<W: IntWidth>(
+        &self,
+        folded: IntValue<'ctx, W, B>,
+        like: IntValue<'ctx, W, B>,
+    ) -> IrResult<IntValue<'ctx, W, B>> {
+        if W::static_bits().is_none() && folded.as_value().ty().id() != like.as_value().ty().id() {
+            return Err(IrError::TypeMismatch {
+                expected: like.as_value().ty().kind_label(),
+                got: folded.as_value().ty().kind_label(),
+            });
+        }
+        Ok(folded)
+    }
+
+    /// Mirrors [`Self::accept_folded_int`] for float kinds, keyed on
+    /// `K::ieee_label().is_none()` (the erased `FloatDyn` marker) instead of
+    /// `W::static_bits()`.
+    fn accept_folded_fp<K: FloatKind>(
+        &self,
+        folded: FloatValue<'ctx, K, B>,
+        like: FloatValue<'ctx, K, B>,
+    ) -> IrResult<FloatValue<'ctx, K, B>> {
+        if K::ieee_label().is_none()
+            && crate::value::Typed::ty(folded).id() != crate::value::Typed::ty(like).id()
+        {
+            return Err(IrError::TypeMismatch {
+                expected: crate::value::Typed::ty(like).kind_label(),
+                got: crate::value::Typed::ty(folded).kind_label(),
+            });
+        }
+        Ok(folded)
+    }
+
+    /// Accept a typed cast fold result against the destination int type.
+    /// Casts have no same-type operand to compare against (unlike binops),
+    /// so this checks against `dst_ty` instead of a `like` operand; otherwise
+    /// mirrors [`Self::accept_folded_int`].
+    fn accept_folded_cast_int<W: IntWidth>(
+        &self,
+        folded: IntValue<'ctx, W, B>,
+        dst_ty: IntType<'ctx, W, B>,
+    ) -> IrResult<IntValue<'ctx, W, B>> {
+        if W::static_bits().is_none() && folded.as_value().ty().id() != dst_ty.as_type().id() {
+            return Err(IrError::TypeMismatch {
+                expected: dst_ty.as_type().kind_label(),
+                got: folded.as_value().ty().kind_label(),
+            });
+        }
+        Ok(folded)
+    }
+
+    /// Mirrors [`Self::accept_folded_cast_int`] for float destination kinds.
+    fn accept_folded_cast_fp<K: FloatKind>(
+        &self,
+        folded: FloatValue<'ctx, K, B>,
+        dst_ty: FloatType<'ctx, K, B>,
+    ) -> IrResult<FloatValue<'ctx, K, B>> {
+        if K::ieee_label().is_none()
+            && crate::value::Typed::ty(folded).id() != dst_ty.as_type().id()
+        {
+            return Err(IrError::TypeMismatch {
+                expected: dst_ty.as_type().kind_label(),
+                got: crate::value::Typed::ty(folded).kind_label(),
+            });
+        }
+        Ok(folded)
+    }
+
     /// Build the `ret` payload and append. Crate-internal: the typed
     /// `build_ret` methods funnel here after their per-marker
     /// validation. Cannot fail by construction.
@@ -6339,7 +6343,7 @@ where
                 got: false_v.ty().kind_label(),
             });
         }
-        if let Some(folded) = self.folder.fold_select(c.as_value(), true_v, false_v)? {
+        if let Some(folded) = self.folder.fold_select_dyn(c.as_value(), true_v, false_v)? {
             let folded = self.checked_folded_value(folded, true_ty)?;
             return Ok(A::from_select_value(folded, &SelectNarrow::new()));
         }

@@ -1,0 +1,32 @@
+warning: unreachable expression
+  --> tests/compile_fail/folder_typed_wrong_width.rs:16:9
+   |
+15 |         let wide: IntValue<'ctx, i64, B> = todo!();
+   |                                            ------- any code following this expression is unreachable
+16 |         Ok(Some(wide)) //~ ERROR mismatched types
+   |         ^^^^^^^^^^^^^^ unreachable expression
+   |
+   = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
+
+error[E0308]: mismatched types
+  --> tests/compile_fail/folder_typed_wrong_width.rs:16:17
+   |
+ 9 |     fn fold_int_bin_op<W: llvmkit_ir::IntWidth>(
+   |                        - expected this type parameter
+...
+16 |         Ok(Some(wide)) //~ ERROR mismatched types
+   |            ---- ^^^^ expected `IntValue<'_, W, B>`, found `IntValue<'_, i64, B>`
+   |            |
+   |            arguments to this enum variant are incorrect
+   |
+   = note: expected struct `IntValue<'_, W, B>`
+              found struct `IntValue<'ctx, i64, B>`
+help: the type constructed contains `IntValue<'ctx, i64, B>` due to the type of the argument passed
+  --> tests/compile_fail/folder_typed_wrong_width.rs:16:12
+   |
+16 |         Ok(Some(wide)) //~ ERROR mismatched types
+   |            ^^^^^----^
+   |                 |
+   |                 this argument influences the type of `Some`
+note: tuple variant defined here
+  --> $RUST/core/src/option.rs
