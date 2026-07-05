@@ -2030,6 +2030,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
+    /// Crate-internal: reconstruct an unverified module token from the
+    /// raw core storage plus an already-established brand `B`. Lossless
+    /// inverse of [`Self::core_ref`] -- `IRBuilder` only stores
+    /// `&'ctx ModuleCore` internally (see `ir_builder.rs`), so builder
+    /// methods that need to call schema methods taking
+    /// `&Module<'ctx, B, Unverified>` (e.g. [`crate::IrField::ir_type`])
+    /// use this to reconstruct the typed view the builder was
+    /// originally positioned against.
+    #[inline]
+    pub(crate) fn from_core(core: &'ctx ModuleCore) -> Self {
+        Self {
+            core,
+            _brand: PhantomData,
+            _state: PhantomData,
+        }
+    }
+
     /// `void`.
     #[inline]
     pub fn void_type(&self) -> VoidType<'ctx, B> {

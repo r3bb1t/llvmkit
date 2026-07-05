@@ -77,10 +77,11 @@ use super::marker::{Dyn, Ptr, ReturnMarker};
 use super::module::{Brand, Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified};
 use super::phi_state::Open as PhiOpen;
 use super::struct_body_state::StructBodyDyn;
-use super::struct_schema::{IntoIrField, IrField, StructSchema};
+use super::struct_schema::{FieldOf, IntoIrField, IrField, StructFieldAt, StructSchema};
 use super::sync_scope::SyncScope;
 use super::term_open_state::Open;
 use super::r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeId};
+use super::typed_pointer_value::TypedPointerValue;
 use super::value::{
     FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Value, ValueId, ValueKindData,
     ValueUse, VectorValue,
@@ -2809,6 +2810,21 @@ where
         Ok(PointerValue::from_value_unchecked(inst.as_value()))
     }
 
+    /// `alloca` for schema `T`, returning a pointee-typed pointer. The
+    /// pointee schema `T` is Rust-side bookkeeping only -- the emitted
+    /// IR is identical to [`Self::build_alloca`] with `T::ir_type`.
+    /// Mirrors `IRBuilder::CreateAlloca` + the Rust-side
+    /// [`TypedPointerValue`] overlay.
+    pub fn build_typed_alloca<T, Name>(&self, name: Name) -> IrResult<TypedPointerValue<'ctx, T, B>>
+    where
+        T: IrField,
+        Name: AsRef<str>,
+    {
+        let ty = T::ir_type(&Module::from_core(self.module))?;
+        let ptr = self.build_alloca(ty, name)?;
+        Ok(ptr.with_pointee::<T>())
+    }
+
     /// Erased load: `load <ty>, ptr <ptr>`. Result type is whatever
     /// `ty` decodes to at runtime; returned as a [`Value`] handle the
     /// caller narrows via `try_into()`. Mirrors
@@ -3006,6 +3022,39 @@ where
         Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
     }
 
+    /// Typed `load`: the result type is derived from the pointer's
+    /// schema `T`. Mirrors `IRBuilder::CreateLoad` + the Rust-side
+    /// [`TypedPointerValue`] overlay.
+    pub fn build_typed_load<T, Name>(
+        &self,
+        ptr: TypedPointerValue<'ctx, T, B>,
+        name: Name,
+    ) -> IrResult<T::Value<'ctx, B>>
+    where
+        T: IrField,
+        Name: AsRef<str>,
+    {
+        let ty = T::ir_type(&Module::from_core(self.module))?;
+        let raw = self.build_load(ty, ptr.as_pointer_value(), name)?;
+        T::value_from_ir_value(raw)
+    }
+
+    /// Same as [`Self::build_typed_load`] plus an explicit alignment.
+    pub fn build_typed_load_with_align<T, Name>(
+        &self,
+        ptr: TypedPointerValue<'ctx, T, B>,
+        align: Align,
+        name: Name,
+    ) -> IrResult<T::Value<'ctx, B>>
+    where
+        T: IrField,
+        Name: AsRef<str>,
+    {
+        let ty = T::ir_type(&Module::from_core(self.module))?;
+        let raw = self.build_load_with_align(ty, ptr.as_pointer_value(), align, name)?;
+        T::value_from_ir_value(raw)
+    }
+
     fn build_load_inner(
         &self,
         _ptr: PointerValue<'ctx, B>,
@@ -3109,6 +3158,37 @@ where
             SyncScope::System,
         )?;
         self.build_store_inner(payload)
+    }
+
+    /// Typed `store`: the value lifts through the schema's
+    /// [`IntoIrField`]. Mirrors `IRBuilder::CreateStore` + the
+    /// Rust-side [`TypedPointerValue`] overlay.
+    pub fn build_typed_store<T, V>(
+        &self,
+        value: V,
+        ptr: TypedPointerValue<'ctx, T, B>,
+    ) -> IrResult<StoreInst<'ctx, B>>
+    where
+        T: IrField,
+        V: IntoIrField<'ctx, T, B>,
+    {
+        let v = value.into_ir_field(ModuleRef::new(self.module))?;
+        self.build_store(v, ptr.as_pointer_value())
+    }
+
+    /// Same as [`Self::build_typed_store`] plus an explicit alignment slot.
+    pub fn build_typed_store_with_align<T, V>(
+        &self,
+        value: V,
+        ptr: TypedPointerValue<'ctx, T, B>,
+        align: Align,
+    ) -> IrResult<StoreInst<'ctx, B>>
+    where
+        T: IrField,
+        V: IntoIrField<'ctx, T, B>,
+    {
+        let v = value.into_ir_field(ModuleRef::new(self.module))?;
+        self.build_store_with_align(v, ptr.as_pointer_value(), align)
     }
 
     /// `store volatile <value>, ptr <ptr>`. Non-atomic volatile store.
@@ -3615,6 +3695,79 @@ where
             crate::gep_no_wrap_flags::GepNoWrapFlags::inbounds(),
             name,
         )
+    }
+
+    /// `getelementptr inbounds %S, ptr %p, i32 0, i32 I` with the field
+    /// type projected at compile time from the [`StructSchema`]. An
+    /// out-of-range `I` fails to compile (no [`StructFieldAt<I>`] impl).
+    /// Mirrors `IRBuilder::CreateStructGEP` + the Rust-side
+    /// [`TypedPointerValue`] overlay.
+    pub fn build_field_gep<S, const I: u32, Name>(
+        &self,
+        ptr: TypedPointerValue<'ctx, S, B>,
+        name: Name,
+    ) -> IrResult<TypedPointerValue<'ctx, FieldOf<S, I>, B>>
+    where
+        S: StructSchema,
+        S::FieldParams: StructFieldAt<I>,
+        Name: AsRef<str>,
+    {
+        let struct_ty = S::ir_type(&Module::from_core(self.module))?.as_dyn();
+        let raw = self.build_struct_gep(struct_ty, ptr.as_pointer_value(), I, name)?;
+        Ok(raw.with_pointee::<FieldOf<S, I>>())
+    }
+
+    /// `getelementptr T, ptr %p, <idx>` -- element-stride arithmetic;
+    /// the pointee schema is preserved. Mirrors the 1-index
+    /// `IRBuilder::CreateGEP` + the Rust-side [`TypedPointerValue`]
+    /// overlay.
+    pub fn build_element_gep<T, W, Idx, Name>(
+        &self,
+        ptr: TypedPointerValue<'ctx, T, B>,
+        index: Idx,
+        name: Name,
+    ) -> IrResult<TypedPointerValue<'ctx, T, B>>
+    where
+        T: IrField,
+        W: IntWidth,
+        Idx: IntoIntValue<'ctx, W, B>,
+        Name: AsRef<str>,
+    {
+        let elem_ty = T::ir_type(&Module::from_core(self.module))?;
+        let idx_value = index.into_int_value(ModuleRef::new(self.module))?;
+        let raw = self.build_gep(
+            elem_ty,
+            ptr.as_pointer_value(),
+            core::iter::once(IsValue::as_value(idx_value)),
+            name,
+        )?;
+        Ok(raw.with_pointee::<T>())
+    }
+
+    /// `getelementptr inbounds T, ptr %p, <idx>`. Mirrors the 1-index
+    /// `IRBuilder::CreateInBoundsGEP` + the Rust-side
+    /// [`TypedPointerValue`] overlay.
+    pub fn build_inbounds_element_gep<T, W, Idx, Name>(
+        &self,
+        ptr: TypedPointerValue<'ctx, T, B>,
+        index: Idx,
+        name: Name,
+    ) -> IrResult<TypedPointerValue<'ctx, T, B>>
+    where
+        T: IrField,
+        W: IntWidth,
+        Idx: IntoIntValue<'ctx, W, B>,
+        Name: AsRef<str>,
+    {
+        let elem_ty = T::ir_type(&Module::from_core(self.module))?;
+        let idx_value = index.into_int_value(ModuleRef::new(self.module))?;
+        let raw = self.build_inbounds_gep(
+            elem_ty,
+            ptr.as_pointer_value(),
+            core::iter::once(IsValue::as_value(idx_value)),
+            name,
+        )?;
+        Ok(raw.with_pointee::<T>())
     }
 
     /// `getelementptr` with explicit [`crate::GepNoWrapFlags`]. Use this

@@ -19,7 +19,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 1131.
+Total `#[test]` functions: 1133.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -1190,3 +1190,6 @@ Total `#[test]` functions: 1131.
 | `crates/llvmkit-ir/src/ir_builder.rs::tests::hostile_native_typed_override_wrong_width_rejected_by_accept_folded_int` | `llvm/include/llvm/IR/IRBuilderFolder.h` typed fold hook contract; in-crate sibling of the `folder_typed_wrong_width.rs` example-lock above -- locks the `accept_folded_int` dyn-marker re-check (`ir_builder.rs`) as defense-in-depth against an in-crate folder bug reachable only via the crate-internal `from_value_unchecked` constructor, since external folders are already compiler-blocked from this shape | llvmkit-specific |
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::typed_and_dyn_int_add_fold_to_identical_constant` | `unittests/IR/ConstantsTest.cpp` constant-folding parity rows (folder produces the same `ConstantInt` regardless of the call shape used to reach it) | llvmkit-specific parity |
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::dyn_marker_fold_keeps_runtime_width_check` | `llvm/include/llvm/IR/IRBuilderFolder.h` `Value*` folder hook contract; locks the `IntValue<IntDyn>` builder-side TypeId re-check the typed-folder rewrite (task 5) preserves for erased markers | llvmkit-specific validation |
+| `crates/llvmkit-ir/tests/builder_typed_memory.rs::typed_alloca_load_store_round_trip_prints_identically_to_erased` | `llvm/include/llvm/IR/IRBuilder.h::CreateAlloca`/`CreateLoad`/`CreateStore` (opaque pointers have no upstream compile-time pointee overlay to port; anchored on the existing `alloca`/`load`/`store` print forms, e.g. `tests/medium_builder_int.rs`) | llvmkit-specific example-lock |
+| `crates/llvmkit-ir/tests/builder_typed_memory.rs::field_gep_projects_field_type_at_compile_time` | `test/Assembler/getelementptr_struct.ll` (print-form anchor, shared with `tests/builder_gep.rs::struct_gep`); `llvm/include/llvm/IR/IRBuilder.h::CreateStructGEP` (C++ narrows the field type only at runtime -- `build_field_gep::<S, I>`'s compile-time projection is llvmkit-specific) | llvmkit-specific example-lock |
+| `crates/llvmkit-ir/tests/compile_fail/typed_gep_bad_index.rs` | `llvm/include/llvm/IR/IRBuilder.h::CreateStructGEP` (C++ has no static analog for an out-of-range struct-field index -- the upstream check is a runtime assertion) | llvmkit-specific example-lock |

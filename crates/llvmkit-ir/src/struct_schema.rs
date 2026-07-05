@@ -495,6 +495,66 @@ impl_struct_into_field!(Argument<'ctx, B>);
 impl_struct_into_field!(Constant<'ctx, B>);
 impl_struct_into_field!(Instruction<'ctx, Attached, B>);
 
+/// The `I`-th top-level field schema of a field tuple. Implemented for
+/// tuple arities 1..=16, one impl per (arity, index) pair, so an
+/// out-of-range index is "no impl" -- a compile error at the
+/// `build_field_gep::<S, I>` call site.
+pub trait StructFieldAt<const I: u32> {
+    type Field: IrField;
+}
+
+/// Field schema of `S` at index `I`.
+pub type FieldOf<S, const I: u32> = <<S as StructSchema>::FieldParams as StructFieldAt<I>>::Field;
+
+// `$generics` / `$tuple` are matched as single opaque token trees (each a
+// parenthesized group, not a `$(...)+` repetition), so both can be spliced
+// verbatim any number of times inside the `$idx`/`$pick` repetition below
+// without Rust's "two independently-lengthed repetitions at the same
+// depth" restriction -- only one sequence (`$idx`/`$pick`) is ever
+// repeated in this macro arm.
+macro_rules! impl_struct_field_at_row {
+    ($generics:tt, $tuple:tt => [ $( $idx:literal : $pick:ident ),+ $(,)? ]) => {
+        $(
+            impl_struct_field_at_one!($generics, $tuple, $idx, $pick);
+        )+
+    };
+}
+
+macro_rules! impl_struct_field_at_one {
+    (($($generics:tt)*), $tuple:tt, $idx:literal, $pick:ident) => {
+        impl<$($generics)*> StructFieldAt<$idx> for $tuple {
+            type Field = $pick;
+        }
+    };
+}
+
+macro_rules! impl_struct_field_at {
+    ($( ($($f:ident),+) => $picks:tt );+ $(;)?) => {
+        $(
+            impl_struct_field_at_row!(($($f: IrField),+), ($($f,)+) => $picks);
+        )+
+    };
+}
+
+impl_struct_field_at! {
+    (F0) => [0: F0];
+    (F0, F1) => [0: F0, 1: F1];
+    (F0, F1, F2) => [0: F0, 1: F1, 2: F2];
+    (F0, F1, F2, F3) => [0: F0, 1: F1, 2: F2, 3: F3];
+    (F0, F1, F2, F3, F4) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4];
+    (F0, F1, F2, F3, F4, F5) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5];
+    (F0, F1, F2, F3, F4, F5, F6) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6];
+    (F0, F1, F2, F3, F4, F5, F6, F7) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6, 7: F7];
+    (F0, F1, F2, F3, F4, F5, F6, F7, F8) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6, 7: F7, 8: F8];
+    (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6, 7: F7, 8: F8, 9: F9];
+    (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6, 7: F7, 8: F8, 9: F9, 10: F10];
+    (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6, 7: F7, 8: F8, 9: F9, 10: F10, 11: F11];
+    (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6, 7: F7, 8: F8, 9: F9, 10: F10, 11: F11, 12: F12];
+    (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12, F13) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6, 7: F7, 8: F8, 9: F9, 10: F10, 11: F11, 12: F12, 13: F13];
+    (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12, F13, F14) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6, 7: F7, 8: F8, 9: F9, 10: F10, 11: F11, 12: F12, 13: F13, 14: F14];
+    (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12, F13, F14, F15) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6, 7: F7, 8: F8, 9: F9, 10: F10, 11: F11, 12: F12, 13: F13, 14: F14, 15: F15];
+}
+
 /// Explicit function-parameter marker that expands a schema into its top-level fields.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct StructFields<S: StructSchema>(core::marker::PhantomData<S>);

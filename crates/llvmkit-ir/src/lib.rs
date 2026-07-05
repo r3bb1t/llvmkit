@@ -78,6 +78,7 @@ pub mod target_library_info;
 pub mod term_open_state;
 pub mod r#type;
 pub mod typed_pointer_type;
+pub mod typed_pointer_value;
 pub mod r#use;
 pub mod user;
 pub mod value;
@@ -224,12 +225,14 @@ pub use phi_state::{Closed, Open, PhiState};
 pub use sized_element::{ArrayDyn, SizedElement};
 pub use struct_body_state::{BodySet, Opaque, StructBodyDyn, StructBodyState};
 pub use struct_schema::{
-    IntoIrField, IrField, StructFields, StructSchema, StructSchemaValue, ValidatedStructValue,
+    FieldOf, IntoIrField, IrField, StructFieldAt, StructFields, StructSchema, StructSchemaValue,
+    ValidatedStructValue,
 };
 pub use sync_scope::SyncScope;
 pub use target_library_info::{LibFunc, TargetLibraryInfo};
 pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeId, TypeKind};
 pub use typed_pointer_type::TypedPointerType;
+pub use typed_pointer_value::TypedPointerValue;
 pub use unnamed_addr::UnnamedAddr;
 pub use r#use::Use;
 pub use user::User;

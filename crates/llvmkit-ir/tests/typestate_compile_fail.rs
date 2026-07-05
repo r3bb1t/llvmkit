@@ -57,4 +57,5 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/binary_folder_rejects_non_binary_intrinsic.rs");
     t.compile_fail("tests/compile_fail/select_arm_forge.rs");
     t.compile_fail("tests/compile_fail/folder_typed_wrong_width.rs");
+    t.compile_fail("tests/compile_fail/typed_gep_bad_index.rs");
 }
