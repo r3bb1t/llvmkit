@@ -14,7 +14,7 @@ use super::align::Align;
 use super::atomic_ordering::AtomicOrdering;
 use super::atomicrmw_binop::AtomicRMWBinOp;
 use super::basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
-use super::block_state::Unsealed;
+use super::block_state::Unterminated;
 use super::calling_conv::CallingConv;
 use super::cmp_predicate::{FloatPredicate, IntPredicate};
 use super::derived_types::FunctionType;
@@ -848,7 +848,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> BranchInst<'ctx, B> {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
         self.successor_ids().into_iter().map(move |id| {
-            BasicBlock::<Dyn, Unsealed, B>::from_parts(id, self.module, label_ty).label()
+            BasicBlock::<Dyn, Unterminated, B>::from_parts(id, self.module, label_ty).label()
         })
     }
 }
@@ -969,7 +969,8 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
         let v_data = module.context().value_data(vid);
         let value = Value::from_parts(vid, self.module, v_data.ty);
         let label_ty = module.label_type().as_type().id();
-        let block = BasicBlock::<Dyn, Unsealed, B>::from_parts(bid, self.module, label_ty).label();
+        let block =
+            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, self.module, label_ty).label();
         Ok((value, block))
     }
 }
@@ -1871,7 +1872,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> SwitchInst<'ctx, P, B> {
     pub fn default_destination(&self) -> BasicBlockLabel<'ctx, Dyn, B> {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
-        BasicBlock::<Dyn, Unsealed, B>::from_parts(
+        BasicBlock::<Dyn, Unterminated, B>::from_parts(
             self.payload().default_bb.get(),
             self.module,
             label_ty,
@@ -2134,7 +2135,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     pub fn normal_destination(self) -> BasicBlockLabel<'ctx, Dyn, B> {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
-        BasicBlock::<Dyn, Unsealed, B>::from_parts(
+        BasicBlock::<Dyn, Unterminated, B>::from_parts(
             self.payload().normal_dest.get(),
             self.module,
             label_ty,
@@ -2144,7 +2145,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     pub fn unwind_destination(self) -> BasicBlockLabel<'ctx, Dyn, B> {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
-        BasicBlock::<Dyn, Unsealed, B>::from_parts(
+        BasicBlock::<Dyn, Unterminated, B>::from_parts(
             self.payload().unwind_dest.get(),
             self.module,
             label_ty,
@@ -2199,7 +2200,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
     pub fn default_destination(self) -> BasicBlockLabel<'ctx, Dyn, B> {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
-        BasicBlock::<Dyn, Unsealed, B>::from_parts(
+        BasicBlock::<Dyn, Unterminated, B>::from_parts(
             self.payload().default_dest.get(),
             self.module,
             label_ty,
@@ -2218,7 +2219,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
             .map(|c| c.get())
             .collect();
         ids.into_iter().map(move |id| {
-            BasicBlock::<Dyn, Unsealed, B>::from_parts(id, self.module, label_ty).label()
+            BasicBlock::<Dyn, Unterminated, B>::from_parts(id, self.module, label_ty).label()
         })
     }
 }
@@ -2494,8 +2495,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchReturnInst<'ctx, B> {
     pub fn target(self) -> BasicBlockLabel<'ctx, Dyn, B> {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
-        BasicBlock::<Dyn, Unsealed, B>::from_parts(self.payload().target_bb, self.module, label_ty)
-            .label()
+        BasicBlock::<Dyn, Unterminated, B>::from_parts(
+            self.payload().target_bb,
+            self.module,
+            label_ty,
+        )
+        .label()
     }
 }
 
@@ -2531,7 +2536,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CleanupReturnInst<'ctx, B> {
         let id = self.payload().unwind_dest?;
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
-        Some(BasicBlock::<Dyn, Unsealed, B>::from_parts(id, self.module, label_ty).label())
+        Some(BasicBlock::<Dyn, Unterminated, B>::from_parts(id, self.module, label_ty).label())
     }
 }
 
@@ -2611,7 +2616,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
         let id = self.payload().unwind_dest.get()?;
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
-        Some(BasicBlock::<Dyn, Unsealed, B>::from_parts(id, self.module, label_ty).label())
+        Some(BasicBlock::<Dyn, Unterminated, B>::from_parts(id, self.module, label_ty).label())
     }
     pub fn handler_count(&self) -> u32 {
         let len = self.payload().handlers.borrow().len();

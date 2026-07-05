@@ -108,7 +108,7 @@ pub use attributes::{
     MemoryLocation, ModRefInfo,
 };
 pub use basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
-pub use block_state::{BlockSealState, Sealed, Unsealed};
+pub use block_state::{BlockTerminationState, Terminated, Unterminated};
 pub use calling_conv::CallingConv;
 pub use cfg::{BasicBlockEdge, FunctionCfg};
 pub use cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
@@ -195,7 +195,8 @@ pub use ir_builder::constant_folder::ConstantFolder;
 pub use ir_builder::folder::IRBuilderFolder;
 pub use ir_builder::no_folder::NoFolder;
 pub use ir_builder::{
-    CallBuilder, CallSiteConfig, IRBuilder, InsertPoint, Positioned, SelectArm, Unpositioned,
+    BuilderPositionState, CallBuilder, CallSiteConfig, IRBuilder, InsertPoint, Positioned,
+    SelectArm, Unpositioned,
 };
 pub use known_bits::KnownBits;
 pub use marker::{Dyn, Ptr, ReturnMarker};

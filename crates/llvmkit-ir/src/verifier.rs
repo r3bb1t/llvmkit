@@ -395,7 +395,7 @@ impl<'ctx> Verifier<'ctx> {
             dom_tree: &dom_tree,
         };
         for bb in f.basic_blocks() {
-            let bb = bb.retag_seal::<crate::block_state::Unsealed>();
+            let bb = bb.retag_termination::<crate::block_state::Unterminated>();
             self.visit_block(f, &bb, &cx)?;
         }
         Ok(())

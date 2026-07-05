@@ -22,7 +22,7 @@
 
 use super::asm_writer::{SlotTracker, fmt_instruction};
 use super::basic_block::{BasicBlock, BasicBlockLabel};
-use super::block_state::Unsealed;
+use super::block_state::Unterminated;
 use super::function::FunctionValue;
 use super::instr_types::{
     BinaryOpData, BranchInstData, BranchKind, CastOpData, CmpInstData, FCmpInstData, PhiData,
@@ -555,7 +555,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     pub fn parent(&self) -> BasicBlockLabel<'ctx, Dyn, B> {
         let parent = self.data().parent.get();
         let label_ty = self.module.module().label_type().as_type().id();
-        BasicBlock::<Dyn, Unsealed, B>::from_parts(parent, self.module, label_ty).label()
+        BasicBlock::<Dyn, Unterminated, B>::from_parts(parent, self.module, label_ty).label()
     }
 
     /// Read-only opcode discriminator for non-terminator opcodes.
@@ -1028,7 +1028,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     pub fn append_to<R: ReturnMarker>(
         self,
         module_token: &Module<'ctx, B, Unverified>,
-        block: &BasicBlock<'ctx, R, Unsealed, B>,
+        block: &BasicBlock<'ctx, R, Unterminated, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
         let module = module_token.core_ref();
         let parent_id = block.as_value().id;
@@ -1557,7 +1557,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for InstructionView<'ctx, B
         let parent_id = self.data().parent.get();
         let label_ty = module.label_type().as_type().id();
         let parent =
-            BasicBlock::<'ctx, Dyn, Unsealed, B>::from_parts(parent_id, self.module, label_ty);
+            BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(parent_id, self.module, label_ty);
         let slots = match parent.parent_id() {
             Some(parent_fn_id) => {
                 let parent_fn =

@@ -1972,7 +1972,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     ) -> IrResult<Constant<'ctx, B>>
     where
         R: crate::ReturnMarker,
-        S: crate::BlockSealState,
+        S: crate::BlockTerminationState,
     {
         self.core.block_address::<B, R, S>(function, block)
     }

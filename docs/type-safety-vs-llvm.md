@@ -23,7 +23,7 @@ on user-visible API failure modes; D11's test-provenance rule is tracked in
 | Branch to a block from another module | D7 | Builder accepts `BasicBlock *`; verifier later rejects malformed control flow | Branch target carries the builder module's brand |
 | Global initializer expression tied to another module | D7 | Constructor accepts `Constant *`; type is asserted, module provenance is not statically represented | `add_global` requires `Type<'ctx, B>` and `IsConstant<'ctx, B>` with the same `B` |
 | Custom folder returns a value from the wrong module | D7 | Folder hooks return raw `Value *` | Folder hooks return `IrResult<Option<Value<'ctx, B>>>` |
-| Insert after a terminated block | D1 | Insertion point is a mutable iterator into a `BasicBlock *` | Terminator builders consume the builder and return a `Sealed` view; retained `Unsealed` block copies remain verifier-backed |
+| Insert after a terminated block | D1 | Insertion point is a mutable iterator into a `BasicBlock *` | Terminator builders consume the builder and return a `Terminated` view; retained `Unterminated` block copies remain verifier-backed |
 | Return a value from a `void` function, or `ret void` from a value-returning function | D1, D4 | `CreateRet(Value *)` / `CreateRetVoid()` are just methods; mismatch is verifier/runtime state | `IRBuilder<..., R>` exposes return methods according to the function return marker |
 | Read a typed result from a `void` call | D3, D4 | Caller must inspect the call/function type | `CallInst<'ctx, ()>` exposes no typed result accessor |
 | Use an instruction handle after erase | D2 | Raw pointer discipline | Lifecycle methods consume a non-`Copy`, non-`Clone` `Instruction` handle |
@@ -172,10 +172,10 @@ Check(OpBB->getParent() == BB->getParent(),
 `llvmkit` requires the target block to carry the builder's brand:
 
 ```rust
-pub fn build_br<S2: BlockSealState>(
+pub fn build_br<S2: BlockTerminationState>(
     self,
     target: BasicBlock<'ctx, R, S2, B>,
-) -> IrResult<SealedBlockInst<'ctx, R, B>>
+) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
 ```
 
 Bad Rust program:
@@ -299,7 +299,7 @@ fn return_foreign_folder_value<'ctx, B: ModuleBrand>(
 Result: compile error. The unbranded/default-branded `foreign` value cannot be
 returned as an arbitrary `Value<'ctx, B>`.
 
-## 5. Terminator builders return sealed block views
+## 5. Terminator builders return terminated block views
 
 LLVM C++ insertion points are mutable positions in raw IR lists:
 
@@ -317,21 +317,21 @@ ReturnInst *CreateRet(Value *V) {
 That API shape cannot statically prevent code from appending more instructions
 after a terminator. LLVM's verifier rejects malformed blocks later.
 
-`llvmkit` models the common construction path with a seal-state marker.
-Positioning only accepts an unsealed block:
+`llvmkit` models the common construction path with a termination-state marker.
+Positioning only accepts an unterminated block:
 
 ```rust
 pub fn position_at_end(
     self,
-    bb: BasicBlock<'ctx, R, Unsealed, B>,
+    bb: BasicBlock<'ctx, R, Unterminated, B>,
 ) -> IRBuilder<'m, 'ctx, B, F, Positioned, R>
 ```
 
-Terminator builders consume the positioned builder and return a sealed view of
-the insertion block:
+Terminator builders consume the positioned builder and return a terminated view
+of the insertion block:
 
 ```rust
-pub fn build_ret<V>(self, value: V) -> IrResult<SealedBlockInst<'ctx, R, B>>
+pub fn build_ret<V>(self, value: V) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
 where
     V: IntoReturnValue<'ctx, R, B>,
 ```
@@ -340,15 +340,15 @@ where
 pub fn build_ret_void(self) -> VoidReturnInst<'ctx, B> {
     let bb = self.insert_block();
     let inst = self.append_ret(None);
-    (bb.retag_seal::<Sealed>(), inst)
+    (bb.retag_termination::<Terminated>(), inst)
 }
 ```
 
 After the terminator, the positioned builder has been consumed. Code that follows
-the returned handle sees `Seal = Sealed`, so `position_at_end` is not callable on
-that handle. `BasicBlock` handles are `Copy` today; retaining an earlier
-`Unsealed` copy can still spell a malformed append, and `Module::verify()` remains
-the backstop for that escape hatch.
+the returned handle sees `Term = Terminated`, so `position_at_end` is not callable
+on that handle. `BasicBlock` handles are `Copy` today; retaining an earlier
+`Unterminated` copy can still spell a malformed append, and `Module::verify()`
+remains the backstop for that escape hatch.
 
 ## 6. Return type mismatches are rejected by the builder type
 
@@ -370,7 +370,7 @@ runtime/verifier concern.
 `llvmkit` carries the parent function's return shape in the builder marker `R`:
 
 ```rust
-pub fn build_ret<V>(self, value: V) -> IrResult<SealedBlockInst<'ctx, R, B>>
+pub fn build_ret<V>(self, value: V) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
 where
     V: IntoReturnValue<'ctx, R, B>,
 ```

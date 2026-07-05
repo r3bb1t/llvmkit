@@ -2388,7 +2388,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
     }
 
     /// Mirrors the metadata-attachment loop in `LLParser::parseInstructionMetadata`.
-    fn skip_trailing_metadata<S: llvmkit_ir::BlockSealState>(
+    fn skip_trailing_metadata<S: llvmkit_ir::BlockTerminationState>(
         &mut self,
         bb: &llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, S, B>,
     ) -> ParseResult<()> {
@@ -8703,7 +8703,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         module: &Module<'ctx, B, Unverified>,
         name: &str,
         loc: Span,
-    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>> {
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
+    {
         if let Some(value) = self.blocks.get(name).copied() {
             return self.value_as_block(module, value, loc);
         }
@@ -8732,7 +8733,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         module: &Module<'ctx, B, Unverified>,
         name: String,
         loc: Span,
-    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>> {
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
+    {
         self.defined_blocks.insert(name.clone());
         self.ensure_block(module, &name, loc)
     }
@@ -8743,7 +8745,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         &mut self,
         module: &Module<'ctx, B, Unverified>,
         loc: Span,
-    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>> {
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
+    {
         let id = self.next_unnamed_value_id;
         self.define_numbered_block(module, id, loc)
     }
@@ -8753,7 +8756,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         module: &Module<'ctx, B, Unverified>,
         id: u32,
         loc: Span,
-    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>> {
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
+    {
         if self.defined_numbered_blocks.contains(&id) {
             return Err(ParseError::Redefinition {
                 kind: crate::parse_error::SymbolKind::Block,
@@ -8772,7 +8776,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         module: &Module<'ctx, B, Unverified>,
         id: u32,
         loc: Span,
-    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>> {
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
+    {
         if self.defined_numbered_blocks.contains(&id) {
             return Err(ParseError::Redefinition {
                 kind: crate::parse_error::SymbolKind::Block,
@@ -8809,7 +8814,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         module: &Module<'ctx, B, Unverified>,
         value: llvmkit_ir::Value<'ctx, B>,
         loc: Span,
-    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>> {
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
+    {
         self.func
             .basic_block_for_construction(module, value)
             .map_err(|_| ParseError::Expected {
@@ -8822,7 +8828,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         &self,
         value: llvmkit_ir::Value<'ctx, B>,
         loc: Span,
-    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Sealed, B>> {
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Terminated, B>> {
         self.func
             .basic_blocks()
             .find(|bb| bb.as_value() == value)
@@ -8845,7 +8851,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         module: &Module<'ctx, B, Unverified>,
         id: u32,
         loc: Span,
-    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>> {
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
+    {
         if let Some(value) = self.local_numbered.get(&id).copied() {
             return self.value_as_block(module, value, loc);
         }
@@ -8891,7 +8898,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         module: &Module<'ctx, B, Unverified>,
         block_ref: &BlockRef,
         loc: Span,
-    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unsealed, B>> {
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
+    {
         match block_ref {
             BlockRef::Named(name) => self.ensure_block(module, name, loc),
             BlockRef::Numbered(id) => self.get_or_create_numbered_block(module, *id, loc),

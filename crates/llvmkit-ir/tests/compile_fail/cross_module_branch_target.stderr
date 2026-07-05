@@ -10,8 +10,8 @@ error[E0521]: borrowed data escapes outside of closure
 24 |             let _ = builder.build_br(left_target);
    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `right` escapes the closure body here
    |
-   = note: requirement occurs because of the type `llvmkit_ir::BasicBlock<'_, (), Unsealed, Brand<'_>>`, which makes the generic argument `Brand<'_>` invariant
-   = note: the struct `llvmkit_ir::BasicBlock<'ctx, R, Seal, B>` is invariant over the parameter `B`
+   = note: requirement occurs because of the type `llvmkit_ir::BasicBlock<'_, (), Unterminated, Brand<'_>>`, which makes the generic argument `Brand<'_>` invariant
+   = note: the struct `llvmkit_ir::BasicBlock<'ctx, R, Term, B>` is invariant over the parameter `B`
    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
 
 error[E0521]: borrowed data escapes outside of closure

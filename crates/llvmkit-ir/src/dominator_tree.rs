@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::basic_block::{BasicBlock, BasicBlockLabel};
-use super::block_state::BlockSealState;
+use super::block_state::BlockTerminationState;
 use super::cfg::{BasicBlockEdge, FunctionCfg};
 use super::function::FunctionValue;
 use super::instruction::{InstructionKindData, InstructionView};
@@ -49,7 +49,7 @@ pub trait DominatorTreeBlock<'ctx>: dominator_block_sealed::Sealed {
 impl<'ctx, R, S, B> dominator_block_sealed::Sealed for BasicBlock<'ctx, R, S, B>
 where
     R: ReturnMarker,
-    S: BlockSealState,
+    S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
 {
 }
@@ -57,7 +57,7 @@ where
 impl<'ctx, R, S, B> DominatorTreeBlock<'ctx> for BasicBlock<'ctx, R, S, B>
 where
     R: ReturnMarker,
-    S: BlockSealState,
+    S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
 {
     #[inline]
@@ -69,7 +69,7 @@ where
 impl<'ctx, R, S, B> dominator_block_sealed::Sealed for &BasicBlock<'ctx, R, S, B>
 where
     R: ReturnMarker,
-    S: BlockSealState,
+    S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
 {
 }
@@ -77,7 +77,7 @@ where
 impl<'ctx, R, S, B> DominatorTreeBlock<'ctx> for &BasicBlock<'ctx, R, S, B>
 where
     R: ReturnMarker,
-    S: BlockSealState,
+    S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
 {
     #[inline]

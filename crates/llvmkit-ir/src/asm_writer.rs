@@ -24,7 +24,7 @@ use std::collections::HashMap;
 
 use super::attributes::{AttributeStorage, AttributeStored};
 use super::basic_block::BasicBlock;
-use super::block_state::BlockSealState;
+use super::block_state::BlockTerminationState;
 use super::constant::{ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode};
 use super::function::FunctionValue;
 use super::global_alias::GlobalAlias;
@@ -2369,7 +2369,7 @@ fn fmt_debug_record(
     }
 }
 
-pub(super) fn fmt_basic_block<S: BlockSealState>(
+pub(super) fn fmt_basic_block<S: BlockTerminationState>(
     f: &mut fmt::Formatter<'_>,
     bb: BasicBlock<'_, Dyn, S, impl ModuleBrand>,
     slots: &SlotTracker,

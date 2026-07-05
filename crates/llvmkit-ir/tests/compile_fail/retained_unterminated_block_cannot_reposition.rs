@@ -1,8 +1,8 @@
 //! llvmkit typestate compile-fail (Doctrine D1).
 //!
-//! A terminator builder consumes its positioned builder and returns a `Sealed`
-//! block view. Retaining an earlier `Unsealed` block handle must not permit a
-//! second builder to append after the terminator.
+//! A terminator builder consumes its positioned builder and returns a
+//! `Terminated` block view. Retaining an earlier `Unterminated` block handle
+//! must not permit a second builder to append after the terminator.
 
 use llvmkit_ir::{IRBuilder, Linkage, Module};
 

@@ -22,10 +22,10 @@
 //! [`llvmkit_ir::Value`] view of every handle. This dodges three
 //! complications that pure-typed keys would carry:
 //!
-//! 1. `BasicBlock<'ctx, Dyn, Sealed>` and `BasicBlock<'ctx, Dyn, Unsealed>`
+//! 1. `BasicBlock<'ctx, Dyn, Terminated>` and `BasicBlock<'ctx, Dyn, Unterminated>`
 //!    are distinct Rust types but refer to the same IR object — the parser
-//!    inserts an unsealed block, downstream tooling may hold the sealed
-//!    form.
+//!    inserts an unterminated block, downstream tooling may hold the
+//!    terminated form.
 //! 2. `InstructionView<'ctx, B>` is the copyable read-only instruction
 //!    identity; storing lifecycle handles would break Doctrine D2.
 //! 3. `FunctionValue<'ctx, R, B>` carries a return marker that the parser
@@ -36,7 +36,7 @@
 use std::collections::HashMap;
 
 use llvmkit_ir::{
-    BasicBlock, BasicBlockLabel, BlockSealState, Brand, Dyn, FunctionValue, InstructionView,
+    BasicBlock, BasicBlockLabel, BlockTerminationState, Brand, Dyn, FunctionValue, InstructionView,
     ModuleBrand, ReturnMarker, Value,
 };
 
@@ -165,7 +165,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
     /// Source range of a recorded basic block. Mirrors
     /// `getBlockLocation(const BasicBlock *)`.
     #[inline]
-    pub fn block_location<R: ReturnMarker, S: BlockSealState>(
+    pub fn block_location<R: ReturnMarker, S: BlockTerminationState>(
         &self,
         b: &BasicBlock<'ctx, R, S, B>,
     ) -> Option<FileLocRange> {
@@ -248,7 +248,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
 
     /// Record `b`'s location. Mirrors `addBlockLocation`.
     #[inline]
-    pub fn add_block_location<R: ReturnMarker, S: BlockSealState>(
+    pub fn add_block_location<R: ReturnMarker, S: BlockTerminationState>(
         &mut self,
         b: &BasicBlock<'ctx, R, S, B>,
         loc: FileLocRange,

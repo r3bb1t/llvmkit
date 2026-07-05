@@ -23,7 +23,7 @@ use super::DebugLoc;
 use super::ap_float::{ApFloat, ApFloatSemantics};
 use super::ap_int::ApInt;
 use super::basic_block::BasicBlock;
-use super::block_state::BlockSealState;
+use super::block_state::BlockTerminationState;
 use super::constant::{
     BlockAddressPlaceholder, Constant, ConstantData, ConstantExprData, ConstantExprFlags,
     ConstantExprInRange, ConstantExprOpcode, IsConstant,
@@ -1055,7 +1055,7 @@ impl<'ctx> ModuleCore {
     ) -> IrResult<Constant<'ctx, B>>
     where
         R: ReturnMarker,
-        S: BlockSealState,
+        S: BlockTerminationState,
     {
         if block.parent_function().map(|f| f.as_value().id) != Some(function.as_dyn().as_value().id)
         {

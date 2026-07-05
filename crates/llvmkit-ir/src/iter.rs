@@ -19,7 +19,7 @@
 //! (iteration safety is structural).
 
 use super::basic_block::BasicBlock;
-use super::block_state::{BlockSealState, Unsealed};
+use super::block_state::{BlockTerminationState, Unterminated};
 use super::instruction::{Instruction, state};
 use super::marker::ReturnMarker;
 use super::module::{Brand, ModuleBrand};
@@ -36,7 +36,7 @@ use super::value::ValueId;
 pub struct BlockCursor<
     'ctx,
     R: ReturnMarker,
-    S: BlockSealState = Unsealed,
+    S: BlockTerminationState = Unterminated,
     B: ModuleBrand = Brand<'ctx>,
 > {
     block: BasicBlock<'ctx, R, S, B>,
@@ -56,15 +56,15 @@ pub type BlockCursorStep<'ctx, R, S, B = Brand<'ctx>> = (
     BlockCursor<'ctx, R, S, B>,
 );
 
-impl<'ctx, R, B> BlockCursor<'ctx, R, Unsealed, B>
+impl<'ctx, R, B> BlockCursor<'ctx, R, Unterminated, B>
 where
     R: ReturnMarker,
     B: ModuleBrand + 'ctx,
 {
-    /// Create a lifecycle-producing cursor at the start of an unsealed block.
-    /// Mirrors `BB->begin()` in C++ while keeping sealed/read-only block
+    /// Create a lifecycle-producing cursor at the start of an unterminated block.
+    /// Mirrors `BB->begin()` in C++ while keeping terminated/read-only block
     /// rediscovery from minting mutation capabilities.
-    pub fn at_start(block: BasicBlock<'ctx, R, Unsealed, B>) -> Self {
+    pub fn at_start(block: BasicBlock<'ctx, R, Unterminated, B>) -> Self {
         let snapshot = block.instruction_ids();
         Self {
             block,
@@ -77,7 +77,7 @@ where
 impl<'ctx, R, S, B> BlockCursor<'ctx, R, S, B>
 where
     R: ReturnMarker,
-    S: BlockSealState,
+    S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
 {
     /// Recover the block carried by this cursor.

@@ -11,7 +11,7 @@ use super::IrResult;
 use super::analysis::{
     FunctionAnalysis, FunctionAnalysisManager, ModuleAnalysis, ModuleAnalysisManager,
 };
-use super::block_state::Sealed;
+use super::block_state::Terminated;
 use super::function::FunctionValue;
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{
@@ -21,7 +21,7 @@ use super::module::{
 /// Read-only view of a basic block under its owning module brand.
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct BasicBlockView<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    block: BasicBlock<'ctx, Dyn, Sealed, B>,
+    block: BasicBlock<'ctx, Dyn, Terminated, B>,
     _brand: Invariant<B>,
 }
 
@@ -37,7 +37,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Clone for BasicBlockView<'ctx, B> {
 
 impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
     #[inline]
-    pub(super) fn new(block: BasicBlock<'ctx, Dyn, Sealed, B>) -> Self {
+    pub(super) fn new(block: BasicBlock<'ctx, Dyn, Terminated, B>) -> Self {
         Self {
             block,
             _brand: PhantomData,
@@ -46,7 +46,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
 
     /// Underlying basic-block handle.
     #[inline]
-    pub(super) fn as_basic_block(&self) -> BasicBlock<'ctx, Dyn, Sealed, B> {
+    pub(super) fn as_basic_block(&self) -> BasicBlock<'ctx, Dyn, Terminated, B> {
         self.block.copy_handle()
     }
 
@@ -163,7 +163,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionBody<'ctx, B> {
 
     /// Entry block if the function is a definition.
     #[inline]
-    pub fn entry_block(self) -> Option<BasicBlock<'ctx, Dyn, Sealed, B>> {
+    pub fn entry_block(self) -> Option<BasicBlock<'ctx, Dyn, Terminated, B>> {
         self.function.entry_block()
     }
 
@@ -171,7 +171,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionBody<'ctx, B> {
     #[inline]
     pub fn basic_blocks(
         self,
-    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, Dyn, Sealed, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, Dyn, Terminated, B>> + 'ctx {
         self.function.basic_blocks()
     }
 }

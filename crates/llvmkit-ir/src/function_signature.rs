@@ -13,7 +13,7 @@ use core::marker::PhantomData;
 
 use crate::argument::Argument;
 use crate::basic_block::BasicBlock;
-use crate::block_state::Unsealed;
+use crate::block_state::Unterminated;
 use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::float_kind::{BFloat, Fp128, Half, PpcFp128, X86Fp80};
 use crate::function::FunctionValue;
@@ -263,7 +263,7 @@ where
         self,
         module: &Module<'ctx, B, Unverified>,
         name: Name,
-    ) -> BasicBlock<'ctx, Ret::Marker, Unsealed, B>
+    ) -> BasicBlock<'ctx, Ret::Marker, Unterminated, B>
     where
         Name: Into<String>,
     {
