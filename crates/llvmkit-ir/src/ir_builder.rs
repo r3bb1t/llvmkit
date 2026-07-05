@@ -6686,6 +6686,8 @@ fn walk_aggregate_for_builder(m: &ModuleCore, root: TypeId, indices: &[u32]) -> 
                                 count: count_u64,
                             });
                         }
+                        // 16-bit-usize targets are unsupported; erroring (not unreachable!) here keeps
+                        // the aggregate walk total without a new invariant.
                         let i = usize::try_from(idx).map_err(|_| {
                             IrError::AggregateIndexOutOfRange {
                                 index: idx,

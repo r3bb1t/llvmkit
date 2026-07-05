@@ -146,6 +146,37 @@ fn extract_value_rejects_out_of_range_array_index() -> Result<(), IrError> {
     })
 }
 
+/// Ports `test/Assembler/extractvalue-invalid-idx.ll` (PR4170), struct variant:
+/// `extractvalue { i8, i32 } undef, 2` is rejected because index 2 is
+/// out of range for a 2-field struct. Mirrors
+/// `ExtractValueInst::getIndexedType` (`lib/IR/Instructions.cpp`),
+/// which returns null (rather than clamping) once `Index >=
+/// ST->getNumElements()`.
+#[test]
+fn extract_value_rejects_out_of_range_struct_index() -> Result<(), IrError> {
+    Module::with_new("a", |m| {
+        let i8_ty = m.i8_type();
+        let i32_ty = m.i32_type();
+        let void_ty = m.void_type();
+        let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
+        let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
+        let f = m.add_function::<(), _>("test", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let undef = s_ty.as_type().get_undef();
+        let err = b
+            .build_extract_value(undef, [2u32], "")
+            .expect_err("index 2 into a 2-field struct must be rejected");
+        assert_eq!(
+            err,
+            IrError::AggregateIndexOutOfRange { index: 2, count: 2 }
+        );
+        assert_eq!(b.insert_block().instructions().len(), 0);
+        b.build_ret_void();
+        Ok(())
+    })
+}
+
 // --------------------------------------------------------------------------
 // insertvalue
 // --------------------------------------------------------------------------
