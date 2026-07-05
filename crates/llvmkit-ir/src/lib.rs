@@ -185,8 +185,8 @@ pub use instructions::{
     FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FpPhiInst, FreezeInst, GepInst, ICmpInst,
     IndirectBrInst, InsertElementInst, InsertValueInst, InvokeInst, LShrInst, LandingPadInst,
     LoadInst, MulInst, OrInst, PhiInst, PointerPhiInst, ResumeInst, RetInst, SDivInst, SRemInst,
-    SelectInst, ShlInst, ShuffleVectorInst, StoreInst, SubInst, SwitchInst, UDivInst, URemInst,
-    UnreachableInst, VAArgInst, XorInst,
+    SelectInst, ShlInst, ShuffleVectorInst, StoreInst, SubInst, SwitchInst, TypedCallInst,
+    UDivInst, URemInst, UnreachableInst, VAArgInst, XorInst,
 };
 pub use intrinsic_inst::{IntrinsicInst, LifetimeIntrinsic, MemIntrinsic};
 pub use intrinsics::{

@@ -43,6 +43,21 @@ pub mod token {
             }
         }
     }
+
+    /// Capability proving that a call result's type was validated when the
+    /// typed callee facade was constructed. Only this crate mints it.
+    #[derive(Debug)]
+    pub struct ValidatedCallResult<'a> {
+        _private: core::marker::PhantomData<&'a ()>,
+    }
+
+    impl<'a> ValidatedCallResult<'a> {
+        pub(crate) fn new() -> Self {
+            Self {
+                _private: core::marker::PhantomData,
+            }
+        }
+    }
 }
 
 use token::ValidatedFunctionParams;
@@ -64,6 +79,22 @@ pub trait FunctionReturn: Sized + 'static {
 
     /// Diagnostic kind label expected by this schema.
     fn expected_kind_label() -> TypeKindLabel;
+
+    /// Branded result handle of a typed call to a callee with this
+    /// return schema: `()` for void, `IntValue<'ctx, i32, B>` for
+    /// `i32`, `S::Value<'ctx, B>` for a struct schema, etc.
+    type CallResult<'ctx, B: ModuleBrand + 'ctx>;
+
+    /// Wrap a raw call result. The token is only minted by this crate
+    /// after the callee schema was validated
+    /// (`TypedFunctionValue::try_from_function`), so the unchecked
+    /// wraps below cannot mistype.
+    fn call_result_from_value<'ctx, B>(
+        value: Value<'ctx, B>,
+        validated: &token::ValidatedCallResult<'_>,
+    ) -> Self::CallResult<'ctx, B>
+    where
+        B: ModuleBrand + 'ctx;
 }
 
 /// Lifetime-free schema token for one function parameter.
@@ -303,6 +334,19 @@ impl FunctionReturn for () {
     fn expected_kind_label() -> TypeKindLabel {
         TypeKindLabel::Void
     }
+
+    type CallResult<'ctx, B: ModuleBrand + 'ctx> = ();
+
+    #[inline]
+    fn call_result_from_value<'ctx, B>(
+        value: Value<'ctx, B>,
+        validated: &token::ValidatedCallResult<'_>,
+    ) -> Self::CallResult<'ctx, B>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        let _ = (value, validated);
+    }
 }
 
 impl FunctionReturn for Ptr {
@@ -327,6 +371,19 @@ impl FunctionReturn for Ptr {
     #[inline]
     fn expected_kind_label() -> TypeKindLabel {
         TypeKindLabel::Pointer
+    }
+
+    type CallResult<'ctx, B: ModuleBrand + 'ctx> = PointerValue<'ctx, B>;
+
+    #[inline]
+    fn call_result_from_value<'ctx, B>(
+        value: Value<'ctx, B>,
+        _validated: &token::ValidatedCallResult<'_>,
+    ) -> Self::CallResult<'ctx, B>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        PointerValue::from_value_unchecked(value)
     }
 }
 
@@ -398,6 +455,19 @@ macro_rules! impl_int_signature_marker {
             #[inline]
             fn expected_kind_label() -> TypeKindLabel {
                 TypeKindLabel::Integer
+            }
+
+            type CallResult<'ctx, B: ModuleBrand + 'ctx> = IntValue<'ctx, $marker, B>;
+
+            #[inline]
+            fn call_result_from_value<'ctx, B>(
+                value: Value<'ctx, B>,
+                _validated: &token::ValidatedCallResult<'_>,
+            ) -> Self::CallResult<'ctx, B>
+            where
+                B: ModuleBrand + 'ctx,
+            {
+                IntValue::<$marker, B>::from_value_unchecked(value)
             }
         }
 
@@ -477,6 +547,19 @@ impl<const N: u32> FunctionReturn for Width<N> {
     fn expected_kind_label() -> TypeKindLabel {
         TypeKindLabel::Integer
     }
+
+    type CallResult<'ctx, B: ModuleBrand + 'ctx> = IntValue<'ctx, Width<N>, B>;
+
+    #[inline]
+    fn call_result_from_value<'ctx, B>(
+        value: Value<'ctx, B>,
+        _validated: &token::ValidatedCallResult<'_>,
+    ) -> Self::CallResult<'ctx, B>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        IntValue::<Width<N>, B>::from_value_unchecked(value)
+    }
 }
 
 impl<const N: u32> FunctionParam for Width<N> {
@@ -547,6 +630,19 @@ macro_rules! impl_float_signature_marker {
             #[inline]
             fn expected_kind_label() -> TypeKindLabel {
                 TypeKindLabel::$label
+            }
+
+            type CallResult<'ctx, B: ModuleBrand + 'ctx> = FloatValue<'ctx, $marker, B>;
+
+            #[inline]
+            fn call_result_from_value<'ctx, B>(
+                value: Value<'ctx, B>,
+                _validated: &token::ValidatedCallResult<'_>,
+            ) -> Self::CallResult<'ctx, B>
+            where
+                B: ModuleBrand + 'ctx,
+            {
+                FloatValue::<$marker, B>::from_value_unchecked(value)
             }
         }
 

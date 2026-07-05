@@ -19,7 +19,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 1138.
+Total `#[test]` functions: 1139.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -1207,3 +1207,4 @@ Total `#[test]` functions: 1138.
 | `crates/llvmkit-ir/tests/builder_cast_fp.rs::fpext_f64_to_x86_fp80` | `llvm/lib/IR/Instructions.cpp::CastInst::castIsValid` FPExt arm (strict `SrcScalarBitSize < DstScalarBitSize`, no restriction on which `FloatKind` participates); closes the D4 audit gap where `FloatWiderThan` had no rows for the non-IEEE layouts (`X86Fp80`/`Fp128`/`PpcFp128`), making the typed `build_fp_ext`/`build_fp_trunc` path stricter than upstream | port |
 | `crates/llvmkit-ir/tests/compile_fail/fp_ext_equal_width.rs` | `llvm/lib/IR/Instructions.cpp::CastInst::castIsValid` FPExt arm (C++ has no static analog for the equal-width rejection -- the upstream check is the `castIsValid` assert in `FPExtInst::FPExtInst`); `Fp128`/`PpcFp128` are both 128-bit non-IEEE layouts, so neither is `FloatWiderThan` the other under the strict-inequality rule (D4) | llvmkit-specific example-lock |
 | `crates/llvmkit-ir/tests/compile_fail/extract_value_empty_indices.rs` | `llvm/lib/IR/Instructions.cpp::ExtractValueInst::init` (C++ has no static analog for the empty-index-list rejection -- the upstream check is a runtime assert); `test/Assembler/extractvalue-no-idx.ll` closest assembler-diagnostic anchor. `build_extract_value<V, const N: usize, Name>`'s `const { assert!(N > 0) }` (D3) upgrades this to a monomorphisation-time `E0080` diagnostic; `build_extract_value_dyn` keeps the runtime `IrError` for slice/`Vec`-driven index lists (locked by `builder_aggregate_vector.rs::extract_value_dyn_rejects_empty_indices`) | llvmkit-specific example-lock |
+| `crates/llvmkit-ir/src/instructions.rs::tests::typed_call_inst_result_narrows_to_callresult` | `unittests/IR/InstructionsTest.cpp` `CallInst` result-type accessors (C++ has no derived-return-schema overlay to port; the `FunctionReturn::CallResult` GAT and `TypedCallInst::result()` narrowing are llvmkit-specific). Field-literal construction stands in for the crate-internal `TypedCallInst::from_call`, whose typed-callee-builder caller lands in Task 15 (same defer-until-first-caller discipline `OverflowFlags::from_parts` followed across Task 4/5) | llvmkit-specific |

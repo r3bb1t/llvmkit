@@ -11,7 +11,7 @@ use crate::float_kind::{BFloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
 use crate::function::FunctionValue;
 use crate::function_signature::{
     CallArgs, FunctionParam, FunctionParamList, FunctionReturn, IntoCallArg,
-    token::ValidatedFunctionParams,
+    token::{ValidatedCallResult, ValidatedFunctionParams},
 };
 use crate::instruction::{Instruction, state::Attached};
 use crate::int_width::{IntDyn, IntoIntValue, Width};
@@ -654,6 +654,19 @@ where
     #[inline]
     fn expected_kind_label() -> TypeKindLabel {
         TypeKindLabel::Struct
+    }
+
+    type CallResult<'ctx, B: ModuleBrand + 'ctx> = S::Value<'ctx, B>;
+
+    fn call_result_from_value<'ctx, B>(
+        value: Value<'ctx, B>,
+        _validated: &ValidatedCallResult<'_>,
+    ) -> Self::CallResult<'ctx, B>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        let validated = ValidatedStructValue::new();
+        S::Value::from_struct_value(StructValue::from_value_unchecked(value), &validated)
     }
 }
 

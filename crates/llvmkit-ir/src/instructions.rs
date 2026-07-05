@@ -21,6 +21,8 @@
 //! marker there would instantiate as `AddInst<IntDyn>` everywhere and
 //! gate nothing.
 
+use core::fmt;
+
 use super::IrResult;
 use super::align::Align;
 use super::atomic_ordering::AtomicOrdering;
@@ -32,6 +34,7 @@ use super::cmp_predicate::{FloatPredicate, IntPredicate};
 use super::derived_types::FunctionType;
 use super::float_kind::{FloatKind, IntoFloatValue};
 use super::fmf::FastMathFlags;
+use super::function_signature::{FunctionReturn, token::ValidatedCallResult};
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::instr_types::TailCallKind;
 use super::instr_types::{
@@ -572,12 +575,12 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
 // `return_float_value`, and a `CallInst<'ctx, ()>` exposes neither.
 macro_rules! call_inst_int_return {
     ($($w:ty),+ $(,)?) => { $(
-        impl<'ctx> CallInst<'ctx, $w> {
+        impl<'ctx, B: ModuleBrand + 'ctx> CallInst<'ctx, $w, B> {
             /// Typed result handle for an integer-returning call.
             #[inline]
-            pub fn return_int_value(self) -> IntValue<'ctx, $w> {
+            pub fn return_int_value(self) -> IntValue<'ctx, $w, B> {
                 let v = Value::from_parts(self.id, self.module, self.ty);
-                IntValue::<$w>::from_value_unchecked(v)
+                IntValue::<$w, B>::from_value_unchecked(v)
             }
         }
     )+ };
@@ -586,12 +589,12 @@ call_inst_int_return!(bool, i8, i16, i32, i64, i128, IntDyn);
 
 macro_rules! call_inst_float_return {
     ($($k:ty),+ $(,)?) => { $(
-        impl<'ctx> CallInst<'ctx, $k> {
+        impl<'ctx, B: ModuleBrand + 'ctx> CallInst<'ctx, $k, B> {
             /// Typed result handle for a float-returning call.
             #[inline]
-            pub fn return_float_value(self) -> FloatValue<'ctx, $k> {
+            pub fn return_float_value(self) -> FloatValue<'ctx, $k, B> {
                 let v = Value::from_parts(self.id, self.module, self.ty);
-                FloatValue::<$k>::from_value_unchecked(v)
+                FloatValue::<$k, B>::from_value_unchecked(v)
             }
         }
     )+ };
@@ -616,6 +619,74 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallInst<'ctx, Ptr, B> {
             self.module,
             self.ty,
         ))
+    }
+}
+
+/// Call handle whose full return schema is carried at the type level.
+/// The marker on the inner [`CallInst`] is `Ret::Marker` — derived from
+/// the callee by [`crate::IRBuilder::build_call`], never caller-asserted.
+pub struct TypedCallInst<'ctx, Ret, B: ModuleBrand = Brand<'ctx>>
+where
+    Ret: FunctionReturn,
+{
+    inner: CallInst<'ctx, Ret::Marker, B>,
+    _ret: core::marker::PhantomData<Ret>,
+}
+
+impl<'ctx, Ret: FunctionReturn, B: ModuleBrand> Clone for TypedCallInst<'ctx, Ret, B> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'ctx, Ret: FunctionReturn, B: ModuleBrand> Copy for TypedCallInst<'ctx, Ret, B> {}
+impl<'ctx, Ret: FunctionReturn, B: ModuleBrand> PartialEq for TypedCallInst<'ctx, Ret, B> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+impl<'ctx, Ret: FunctionReturn, B: ModuleBrand> Eq for TypedCallInst<'ctx, Ret, B> {}
+impl<'ctx, Ret: FunctionReturn, B: ModuleBrand> core::hash::Hash for TypedCallInst<'ctx, Ret, B> {
+    #[inline]
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.inner.hash(state);
+    }
+}
+impl<'ctx, Ret: FunctionReturn, B: ModuleBrand> fmt::Debug for TypedCallInst<'ctx, Ret, B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TypedCallInst")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> TypedCallInst<'ctx, Ret, B> {
+    /// Typed result. Infallible: the schema was validated when the
+    /// typed callee facade was constructed. `()` for a void callee.
+    #[inline]
+    pub fn result(self) -> Ret::CallResult<'ctx, B> {
+        let validated = ValidatedCallResult::new();
+        let value = Value::from_parts(self.inner.id, self.inner.module, self.inner.ty);
+        Ret::call_result_from_value(value, &validated)
+    }
+
+    /// Marker-typed handle (keeps `Ret::Marker`, drops the schema).
+    #[inline]
+    pub fn as_call_inst(self) -> CallInst<'ctx, Ret::Marker, B> {
+        self.inner
+    }
+
+    /// Fully-erased handle (D3).
+    #[inline]
+    pub fn as_dyn(self) -> CallInst<'ctx, Dyn, B> {
+        self.inner.as_dyn()
+    }
+
+    /// Widen to the erased [`Value`] handle.
+    #[inline]
+    pub fn as_value(self) -> Value<'ctx, B> {
+        self.inner.as_value()
     }
 }
 
@@ -2657,5 +2728,52 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, TermOpen, B> {
     #[inline]
     pub fn finish(self) -> CatchSwitchInst<'ctx, TermClosed, B> {
         self.retag()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{IrError, Linkage, Module};
+
+    /// Locks `TypedCallInst::result` as the `CallResult` GAT's narrowing
+    /// path: wrapping a raw `CallInst<'ctx, i32, B>` and reading
+    /// `result()` back must yield an `IntValue<'ctx, i32, B>` that names
+    /// the exact same underlying value (same `ValueId`) as the call
+    /// instruction itself -- i.e. `result()` narrows the derived
+    /// `CallResult` GAT without losing or renaming the value.
+    ///
+    /// Field-literal construction stands in for the crate-internal
+    /// `TypedCallInst::from_call` minting constructor here: `from_call`
+    /// gets its typed-callee-builder caller in Task 15, per the same
+    /// defer-until-first-caller discipline `OverflowFlags::from_parts`
+    /// followed across Task 4/5 (`from_call` has no caller yet, and
+    /// clippy's dead-code lint fires on a `pub(super)` item even when
+    /// its only caller is `#[cfg(test)]`-gated, since the non-test
+    /// `(lib)` artifact `-D warnings` gates never sees `#[cfg(test)]`
+    /// code at all).
+    #[test]
+    fn typed_call_inst_result_narrows_to_callresult() -> Result<(), IrError> {
+        Module::with_new("typed-call-inst-result", |m| {
+            let fn_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
+            let callee = m.add_function::<i32, _>("callee", fn_ty, Linkage::External)?;
+            let caller_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
+            let caller = m.add_function::<i32, _>("caller", caller_ty, Linkage::External)?;
+            let entry = caller.append_basic_block(&m, "entry");
+            let b = crate::IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+
+            let call: CallInst<'_, i32, _> =
+                b.build_call(callee, Vec::<Value<'_, _>>::new(), "call")?;
+            let call_id = call.as_value().id();
+
+            let typed = TypedCallInst::<i32, _> {
+                inner: call,
+                _ret: core::marker::PhantomData,
+            };
+            let result = typed.result();
+
+            assert_eq!(result.as_value().id(), call_id);
+            Ok(())
+        })
     }
 }
