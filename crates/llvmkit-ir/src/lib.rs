@@ -172,8 +172,8 @@ pub use inline_asm::{AsmDialect, InlineAsm, InlineAsmOptions};
 pub use instr_types::{
     AShrFlags, AddFlags, AtomicCmpXchgConfig, AtomicLoadConfig, AtomicRMWConfig, AtomicRMWFlags,
     AtomicStoreConfig, BinaryOpcode, CallAttributeData, CmpXchgFlags, ICmpFlags, LShrFlags,
-    MulFlags, OperandBundleData, OperandBundleTag, OrFlags, SDivFlags, ShlFlags, SubFlags,
-    TailCallKind, TruncFlags, UDivFlags, UIToFpFlags, UnaryOpcode, ZExtFlags,
+    MulFlags, OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags, SDivFlags, ShlFlags,
+    SubFlags, TailCallKind, TruncFlags, UDivFlags, UIToFpFlags, UnaryOpcode, ZExtFlags,
 };
 pub use instruction::{Instruction, InstructionKind, InstructionView, TerminatorKind};
 pub use instructions::{

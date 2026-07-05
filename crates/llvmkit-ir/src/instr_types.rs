@@ -885,6 +885,56 @@ impl_exact_flags_writer!(SDivFlags);
 impl_exact_flags_writer!(LShrFlags);
 impl_exact_flags_writer!(AShrFlags);
 
+/// nuw/nsw pair for overflowing binary operators. Mirrors the flag
+/// pair on `OverflowingBinaryOperator` (`IR/Operator.h`). Public
+/// construction is chainable (`OverflowFlags::none().nuw().nsw()`);
+/// the bool-pair constructor is crate-internal per the no-bool-params
+/// convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct OverflowFlags {
+    nuw: bool,
+    nsw: bool,
+}
+
+impl OverflowFlags {
+    /// No wrap flags set.
+    #[inline]
+    pub const fn none() -> Self {
+        Self {
+            nuw: false,
+            nsw: false,
+        }
+    }
+
+    /// Set `nuw` (no unsigned wrap).
+    #[inline]
+    pub const fn nuw(self) -> Self {
+        Self { nuw: true, ..self }
+    }
+
+    /// Set `nsw` (no signed wrap).
+    #[inline]
+    pub const fn nsw(self) -> Self {
+        Self { nsw: true, ..self }
+    }
+
+    #[inline]
+    pub const fn has_nuw(self) -> bool {
+        self.nuw
+    }
+
+    #[inline]
+    pub const fn has_nsw(self) -> bool {
+        self.nsw
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) const fn from_parts(nuw: bool, nsw: bool) -> Self {
+        Self { nuw, nsw }
+    }
+}
+
 /// Flags for `or`. The `disjoint` flag asserts the two operands have no set
 /// bits in common. Mirrors `PossiblyDisjointOperator` in `Operator.h`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
