@@ -15,14 +15,14 @@ use crate::argument::Argument;
 use crate::basic_block::BasicBlock;
 use crate::block_state::Unterminated;
 use crate::error::{IrError, IrResult, TypeKindLabel};
-use crate::float_kind::{BFloat, Fp128, Half, PpcFp128, X86Fp80};
+use crate::float_kind::{BFloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
 use crate::function::FunctionValue;
-use crate::int_width::Width;
+use crate::int_width::{IntoIntValue, Width};
 use crate::ir_builder::{IRBuilder, Unpositioned, constant_folder::ConstantFolder};
 use crate::marker::{Ptr, ReturnMarker};
-use crate::module::{Brand, Module, ModuleBrand, Unverified};
+use crate::module::{Brand, Module, ModuleBrand, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeKind};
-use crate::value::{FloatValue, IntValue, PointerValue};
+use crate::value::{FloatValue, IntValue, IntoPointerValue, PointerValue, Value, ValueId};
 
 #[doc(hidden)]
 pub mod token {
@@ -790,4 +790,272 @@ impl_function_signature!(
 );
 impl_function_signature!(
     A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15
+);
+
+/// Inputs that can fill the call-argument slot described by schema
+/// token `P` in a typed call. Mirrors the multi-source posture of
+/// [`IntoIrField`]: typed handles, constants, Rust literals,
+/// `Argument`, and erased `Value` all lift through the underlying
+/// operand traits. Cross-module rejection lives inside those traits'
+/// `into_*_value(module)` methods (D7), not at the call site.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot fill a call-argument slot of schema `{P}`",
+    label = "wrong argument type for this parameter position"
+)]
+pub trait IntoCallArg<'ctx, P: FunctionParam, B: ModuleBrand = Brand<'ctx>>: Sized {
+    #[doc(hidden)]
+    fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>>;
+}
+
+macro_rules! impl_into_call_arg_int {
+    ($($w:ty),+ $(,)?) => {$(
+        impl<'ctx, B, V> IntoCallArg<'ctx, $w, B> for V
+        where
+            B: ModuleBrand + 'ctx,
+            V: IntoIntValue<'ctx, $w, B>,
+        {
+            #[inline]
+            fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+                Ok(self.into_int_value(module)?.as_value())
+            }
+        }
+    )+};
+}
+impl_into_call_arg_int!(bool, i8, i16, i32, i64, i128);
+
+impl<'ctx, B, V, const N: u32> IntoCallArg<'ctx, Width<N>, B> for V
+where
+    B: ModuleBrand + 'ctx,
+    V: IntoIntValue<'ctx, Width<N>, B>,
+{
+    #[inline]
+    fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+        Ok(self.into_int_value(module)?.as_value())
+    }
+}
+
+macro_rules! impl_into_call_arg_float {
+    ($($k:ty),+ $(,)?) => {$(
+        impl<'ctx, B, V> IntoCallArg<'ctx, $k, B> for V
+        where
+            B: ModuleBrand + 'ctx,
+            V: IntoFloatValue<'ctx, $k, B>,
+        {
+            #[inline]
+            fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+                Ok(self.into_float_value(module)?.as_value())
+            }
+        }
+    )+};
+}
+impl_into_call_arg_float!(f32, f64, Half, BFloat, Fp128, X86Fp80, PpcFp128);
+
+impl<'ctx, B, V> IntoCallArg<'ctx, Ptr, B> for V
+where
+    B: ModuleBrand + 'ctx,
+    V: IntoPointerValue<'ctx, B>,
+{
+    #[inline]
+    fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+        Ok(self.into_pointer_value(module)?.as_value())
+    }
+}
+
+mod call_args_sealed {
+    pub trait Sealed {}
+}
+
+/// Argument tuple for a typed call site: arity must equal
+/// `Params::ARITY` and position `i` must satisfy `IntoCallArg<P_i>`.
+/// Wrong arity has no impl (compile error); a wrong-typed position
+/// fails its `IntoCallArg` bound (compile error).
+#[diagnostic::on_unimplemented(
+    message = "argument tuple `{Self}` does not match the callee's parameter schema `{Params}`",
+    note = "argument count and per-position types must match the callee's typed signature"
+)]
+pub trait CallArgs<'ctx, Params: FunctionParamList, B: ModuleBrand = Brand<'ctx>>:
+    Sized + call_args_sealed::Sealed
+{
+    #[doc(hidden)]
+    fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueId]>>;
+}
+
+impl call_args_sealed::Sealed for () {}
+impl<'ctx, B: ModuleBrand + 'ctx> CallArgs<'ctx, (), B> for () {
+    #[inline]
+    fn lower(self, _module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueId]>> {
+        Ok(Box::new([]))
+    }
+}
+
+macro_rules! impl_call_args_tuple {
+    ($($p:ident / $v:ident / $x:ident),+) => {
+        impl<$($v),+> call_args_sealed::Sealed for ($($v,)+) {}
+
+        impl<'ctx, B, $($p,)+ $($v,)+> CallArgs<'ctx, ($($p,)+), B> for ($($v,)+)
+        where
+            B: ModuleBrand + 'ctx,
+            $($p: FunctionParam,)+
+            $($v: IntoCallArg<'ctx, $p, B>,)+
+        {
+            fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueId]>> {
+                let ($($x,)+) = self;
+                Ok(Box::new([$( $x.into_call_arg(module)?.id(), )+]))
+            }
+        }
+    };
+}
+impl_call_args_tuple!(P0 / V0 / v0);
+impl_call_args_tuple!(P0 / V0 / v0, P1 / V1 / v1);
+impl_call_args_tuple!(P0 / V0 / v0, P1 / V1 / v1, P2 / V2 / v2);
+impl_call_args_tuple!(P0 / V0 / v0, P1 / V1 / v1, P2 / V2 / v2, P3 / V3 / v3);
+impl_call_args_tuple!(
+    P0 / V0 / v0,
+    P1 / V1 / v1,
+    P2 / V2 / v2,
+    P3 / V3 / v3,
+    P4 / V4 / v4
+);
+impl_call_args_tuple!(
+    P0 / V0 / v0,
+    P1 / V1 / v1,
+    P2 / V2 / v2,
+    P3 / V3 / v3,
+    P4 / V4 / v4,
+    P5 / V5 / v5
+);
+impl_call_args_tuple!(
+    P0 / V0 / v0,
+    P1 / V1 / v1,
+    P2 / V2 / v2,
+    P3 / V3 / v3,
+    P4 / V4 / v4,
+    P5 / V5 / v5,
+    P6 / V6 / v6
+);
+impl_call_args_tuple!(
+    P0 / V0 / v0,
+    P1 / V1 / v1,
+    P2 / V2 / v2,
+    P3 / V3 / v3,
+    P4 / V4 / v4,
+    P5 / V5 / v5,
+    P6 / V6 / v6,
+    P7 / V7 / v7
+);
+impl_call_args_tuple!(
+    P0 / V0 / v0,
+    P1 / V1 / v1,
+    P2 / V2 / v2,
+    P3 / V3 / v3,
+    P4 / V4 / v4,
+    P5 / V5 / v5,
+    P6 / V6 / v6,
+    P7 / V7 / v7,
+    P8 / V8 / v8
+);
+impl_call_args_tuple!(
+    P0 / V0 / v0,
+    P1 / V1 / v1,
+    P2 / V2 / v2,
+    P3 / V3 / v3,
+    P4 / V4 / v4,
+    P5 / V5 / v5,
+    P6 / V6 / v6,
+    P7 / V7 / v7,
+    P8 / V8 / v8,
+    P9 / V9 / v9
+);
+impl_call_args_tuple!(
+    P0 / V0 / v0,
+    P1 / V1 / v1,
+    P2 / V2 / v2,
+    P3 / V3 / v3,
+    P4 / V4 / v4,
+    P5 / V5 / v5,
+    P6 / V6 / v6,
+    P7 / V7 / v7,
+    P8 / V8 / v8,
+    P9 / V9 / v9,
+    P10 / V10 / v10
+);
+impl_call_args_tuple!(
+    P0 / V0 / v0,
+    P1 / V1 / v1,
+    P2 / V2 / v2,
+    P3 / V3 / v3,
+    P4 / V4 / v4,
+    P5 / V5 / v5,
+    P6 / V6 / v6,
+    P7 / V7 / v7,
+    P8 / V8 / v8,
+    P9 / V9 / v9,
+    P10 / V10 / v10,
+    P11 / V11 / v11
+);
+impl_call_args_tuple!(
+    P0 / V0 / v0,
+    P1 / V1 / v1,
+    P2 / V2 / v2,
+    P3 / V3 / v3,
+    P4 / V4 / v4,
+    P5 / V5 / v5,
+    P6 / V6 / v6,
+    P7 / V7 / v7,
+    P8 / V8 / v8,
+    P9 / V9 / v9,
+    P10 / V10 / v10,
+    P11 / V11 / v11,
+    P12 / V12 / v12
+);
+impl_call_args_tuple!(
+    P0 / V0 / v0,
+    P1 / V1 / v1,
+    P2 / V2 / v2,
+    P3 / V3 / v3,
+    P4 / V4 / v4,
+    P5 / V5 / v5,
+    P6 / V6 / v6,
+    P7 / V7 / v7,
+    P8 / V8 / v8,
+    P9 / V9 / v9,
+    P10 / V10 / v10,
+    P11 / V11 / v11,
+    P12 / V12 / v12,
+    P13 / V13 / v13
+);
+impl_call_args_tuple!(
+    P0 / V0 / v0,
+    P1 / V1 / v1,
+    P2 / V2 / v2,
+    P3 / V3 / v3,
+    P4 / V4 / v4,
+    P5 / V5 / v5,
+    P6 / V6 / v6,
+    P7 / V7 / v7,
+    P8 / V8 / v8,
+    P9 / V9 / v9,
+    P10 / V10 / v10,
+    P11 / V11 / v11,
+    P12 / V12 / v12,
+    P13 / V13 / v13,
+    P14 / V14 / v14
+);
+impl_call_args_tuple!(
+    P0 / V0 / v0,
+    P1 / V1 / v1,
+    P2 / V2 / v2,
+    P3 / V3 / v3,
+    P4 / V4 / v4,
+    P5 / V5 / v5,
+    P6 / V6 / v6,
+    P7 / V7 / v7,
+    P8 / V8 / v8,
+    P9 / V9 / v9,
+    P10 / V10 / v10,
+    P11 / V11 / v11,
+    P12 / V12 / v12,
+    P13 / V13 / v13,
+    P14 / V14 / v14,
+    P15 / V15 / v15
 );

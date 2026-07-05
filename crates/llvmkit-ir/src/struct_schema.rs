@@ -10,14 +10,17 @@ use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::float_kind::{BFloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
 use crate::function::FunctionValue;
 use crate::function_signature::{
-    FunctionParam, FunctionParamList, FunctionReturn, token::ValidatedFunctionParams,
+    CallArgs, FunctionParam, FunctionParamList, FunctionReturn, IntoCallArg,
+    token::ValidatedFunctionParams,
 };
 use crate::instruction::{Instruction, state::Attached};
 use crate::int_width::{IntDyn, IntoIntValue, Width};
 use crate::marker::{Dyn, Ptr, ReturnMarker};
 use crate::module::{Brand, Module, ModuleBrand, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeData};
-use crate::value::{FloatValue, IntValue, IntoPointerValue, PointerValue, StructValue, Value};
+use crate::value::{
+    FloatValue, IntValue, IntoPointerValue, PointerValue, StructValue, Value, ValueId,
+};
 
 #[doc(hidden)]
 pub mod token {
@@ -495,6 +498,24 @@ impl_struct_into_field!(Argument<'ctx, B>);
 impl_struct_into_field!(Constant<'ctx, B>);
 impl_struct_into_field!(Instruction<'ctx, Attached, B>);
 
+macro_rules! impl_struct_into_call_arg {
+    ($source:ty) => {
+        impl<'ctx, S, B> IntoCallArg<'ctx, S, B> for $source
+        where
+            S: StructSchema,
+            B: ModuleBrand + 'ctx,
+        {
+            fn into_call_arg(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+                Ok(S::try_value_from_ir(self)?.as_struct_value().as_value())
+            }
+        }
+    };
+}
+impl_struct_into_call_arg!(Value<'ctx, B>);
+impl_struct_into_call_arg!(Argument<'ctx, B>);
+impl_struct_into_call_arg!(Constant<'ctx, B>);
+impl_struct_into_call_arg!(Instruction<'ctx, Attached, B>);
+
 /// The `I`-th top-level field schema of a field tuple. Implemented for
 /// tuple arities 1..=16, one impl per (arity, index) pair, so an
 /// out-of-range index is "no impl" -- a compile error at the
@@ -594,6 +615,17 @@ where
         B: ModuleBrand + 'ctx,
     {
         <S::FieldParams as FunctionParamList>::values(function, validated)
+    }
+}
+
+impl<'ctx, B, S, A> CallArgs<'ctx, StructFields<S>, B> for A
+where
+    B: ModuleBrand + 'ctx,
+    S: StructSchema,
+    A: CallArgs<'ctx, S::FieldParams, B>,
+{
+    fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueId]>> {
+        <A as CallArgs<'ctx, S::FieldParams, B>>::lower(self, module)
     }
 }
 

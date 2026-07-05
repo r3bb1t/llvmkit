@@ -41,6 +41,7 @@ Total `#[test]` functions: 1138.
 | `crates/llvmkit-ir/tests/function_signature.rs::extern_system_signature_alias_builds_pointer_return_function` | `unittests/IR/AsmWriterTest.cpp` function type printing | llvmkit-specific |
 | `crates/llvmkit-ir/tests/function_signature.rs::raw_function_can_be_wrapped_with_function_pointer_signature` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/function_signature.rs::builder_can_be_created_from_function_pointer_return_schema` | `unittests/IR/AsmWriterTest.cpp` return printing | llvmkit-specific |
+| `crates/llvmkit-ir/tests/function_signature.rs::call_args_lowers_tuple_to_value_ids` | `unittests/IR/InstructionsTest.cpp` `CallInst` operand construction | llvmkit-specific |
 | `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_reuses_matching_named_body` | `unittests/IR/TypeBuilderTest.cpp::TEST(TypeBuilder, NamedStruct)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_rejects_mismatched_existing_named_body` | `llvm/lib/IR/LLVMContextImpl.cpp::getOrCreateNamedStruct` reuse rules | llvmkit-specific |
 | `crates/llvmkit-ir/tests/struct_schema.rs::struct_schema_rejects_recursive_named_body` | `llvm/lib/IR/Type.cpp::StructType::setBodyOrError`; `llvm/lib/IR/Type.cpp::StructType::checkBody` | mirror |
@@ -55,6 +56,7 @@ Total `#[test]` functions: 1138.
 | `crates/llvmkit-ir/tests/struct_schema.rs::nested_struct_schema_accessors_return_nested_wrapper` | `test/Bitcode/compatibility.ll` line 1555 | llvmkit-specific |
 | `crates/llvmkit-ir/tests/derived_struct_schema.rs::derive_builds_nested_named_structs_and_accessors` | `unittests/IR/TypeBuilderTest.cpp::TEST(TypeBuilder, NamedStruct)`; `test/Bitcode/compatibility.ll` aggregate `extractvalue` / `insertvalue` forms | llvmkit-specific |
 | `crates/llvmkit-ir/tests/derived_struct_schema.rs::derive_try_from_raw_ir_values` | `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/derived_struct_schema.rs::derive_emits_into_call_arg_for_struct_schema` | `unittests/IR/InstructionsTest.cpp` `CallInst` operand construction | llvmkit-specific |
 | `crates/llvmkit-ir/tests/derived_struct_schema.rs::derive_struct_fields_unpacks_top_level_fields` | `test/Bitcode/compatibility.ll` aggregate `extractvalue` / `insertvalue` forms | llvmkit-specific |
 | `crates/llvmkit-ir/tests/derived_struct_schema.rs::derive_supports_name_override_and_packed` | `unittests/IR/TypeBuilderTest.cpp::TEST(TypeBuilder, NamedStruct)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/derived_struct_schema.rs::derive_build_accepts_fields_named_like_helper_parameters` | Rust proc-macro hygiene for generated API parameters; closest LLVM reference `unittests/IR/TypeBuilderTest.cpp::TEST(TypeBuilder, NamedStruct)` | llvmkit-specific |

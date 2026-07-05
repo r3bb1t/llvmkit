@@ -162,7 +162,8 @@ pub use error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel, VerifierRu
 pub use fmf::FastMathFlags;
 pub use function::{FunctionBuilder, FunctionValue};
 pub use function_signature::{
-    FunctionParam, FunctionParamList, FunctionReturn, FunctionSignature, TypedFunctionValue,
+    CallArgs, FunctionParam, FunctionParamList, FunctionReturn, FunctionSignature, IntoCallArg,
+    TypedFunctionValue,
 };
 pub use gep_no_wrap_flags::GepNoWrapFlags;
 pub use global_alias::{GlobalAlias, GlobalAliasBuilder};
