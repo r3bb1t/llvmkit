@@ -723,13 +723,41 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
     Ok(())
 }
 
-/// A folder whose `fold_int_bin_op` override returns a wrong-width value for
+/// A folder whose `fold_bin_op_dyn` override returns a wrong-width value for
 /// `IntDyn` operands must yield `IrError::TypeMismatch` through the typed
 /// `build_int_add::<IntDyn, _, _, _>` path. This locks the
-/// `accept_folded_int` dyn seam: for the erased `IntDyn` marker,
-/// `W::static_bits()` is `None`, so `accept_folded_int` keeps a runtime
-/// TypeId re-check even on the typed hook path (the check monomorphizes
-/// away only for statically-known `W`).
+/// `narrow_folded_int` default-delegation seam: `WideningDynFolder` overrides
+/// only the erased `fold_bin_op_dyn` hook, so `build_int_add`'s call to
+/// `fold_int_bin_op` runs the trait's *default* body (`folder.rs`'s
+/// `fold_int_bin_op<W>` -- there is no native override here), which forwards
+/// to `fold_bin_op_dyn` and then re-narrows the erased result by `TypeId`
+/// through `narrow_folded_int`. That re-narrow call is where the wrong-width
+/// 64-bit replacement is rejected; the builder's own `accept_folded_int`
+/// dyn-marker re-check (`ir_builder.rs`) is never reached on this path,
+/// because `fold_int_bin_op` already returns `Err(TypeMismatch)` before
+/// `build_int_add` gets to call it.
+///
+/// `accept_folded_int`'s dyn-marker branch is only reachable behind a
+/// *native* override of a typed hook (`fold_int_bin_op<W>` or one of its
+/// siblings) that itself returns `Some(IntValue<'ctx, W, B>)` without going
+/// through `narrow_folded_int`. No such override can be written here: the
+/// trait declares `fn fold_int_bin_op<W: IntWidth>(...) -> IrResult<Option<
+/// IntValue<'ctx, W, B>>>` with only `W: IntWidth` in scope, and this crate
+/// exposes no safe, public construction of `IntValue<'ctx, W, B>` from an
+/// erased value that is generic over arbitrary `W` (every `TryFrom<Value>`/
+/// `IntoIntValue` impl is per concrete marker; the crate-internal
+/// `IntValue::from_value_unchecked` escape hatch `ConstantFolder` uses is
+/// `pub(super)`, unreachable from this external test crate). Confirmed by
+/// the sibling compile-fail golden
+/// `tests/compile_fail/folder_typed_wrong_width.rs`, which locks exactly
+/// this shape (`Ok(Some(concrete_width_value))` inside a generic
+/// `fold_int_bin_op<W>` override) as a compiler error
+/// (`E0308: mismatched types`), and independently reproduced with a
+/// `TryFrom`-based construction attempt (same wall, different error:
+/// `IntValue<'ctx, W, B>: TryFrom<Value<'ctx, B>>` is not implemented for
+/// generic `W`, and adding it as an extra `where` bound on the impl is
+/// itself rejected -- an impl may not add bounds beyond what the trait
+/// declares for a generic method).
 ///
 /// The wrong-width replacement value is built once in the test (where the
 /// owning `Module` is available to mint a 64-bit `IntDyn` constant) and
@@ -751,10 +779,15 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B>
         _rhs: Value<'ctx, B>,
     ) -> IrResult<Option<Value<'ctx, B>>> {
         // Deliberately answers with a 64-bit constant zero regardless of the
-        // (32-bit) operand width -- exercises the dyn-marker TypeId
-        // re-check at the builder's `accept_folded_int`, not the folder
-        // default's `narrow_folded_int` (this hook has no default body to
-        // bypass; it IS the erased hook).
+        // (32-bit) operand width -- this IS the erased hook (it has no
+        // default body to bypass), so overriding only this hook routes the
+        // typed `build_int_add::<IntDyn, ...>` call through
+        // `fold_int_bin_op`'s *default* body, which re-narrows this erased
+        // result via `narrow_folded_int`'s TypeId check. That is the seam
+        // this test exercises -- not the builder's separate
+        // `accept_folded_int` dyn-marker re-check, which only runs behind a
+        // typed hook's *native* override (see the struct doc comment above
+        // for why no such override is reachable from this external crate).
         Ok(Some(self.replacement))
     }
 }
