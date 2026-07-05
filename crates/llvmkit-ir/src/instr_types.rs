@@ -927,12 +927,6 @@ impl OverflowFlags {
     pub const fn has_nsw(self) -> bool {
         self.nsw
     }
-
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) const fn from_parts(nuw: bool, nsw: bool) -> Self {
-        Self { nuw, nsw }
-    }
 }
 
 /// Flags for `or`. The `disjoint` flag asserts the two operands have no set
