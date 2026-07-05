@@ -6403,3 +6403,111 @@ fn walk_aggregate_for_builder(m: &ModuleCore, root: TypeId, indices: &[u32]) -> 
     }
     Ok(cur)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Linkage;
+
+    /// Hostile in-crate folder simulating a *buggy* native typed-hook
+    /// override (the class of bug `ConstantFolder`'s own native
+    /// `fold_int_bin_op<W>` override -- see `ir_builder/constant_folder.rs`
+    /// -- is trusted, by kernel-invariant audit, not to commit). Unlike
+    /// `tests/constant_folder_builder.rs`'s external `WideningDynFolder`
+    /// (which can only override the erased `fold_bin_op_dyn` hook and so
+    /// gets caught by `folder::narrow_folded_int`'s TypeId re-check before
+    /// the builder ever sees the result), this folder overrides the
+    /// *typed* `fold_int_bin_op<W>` hook directly and answers with an
+    /// `IntValue<'ctx, W, B>` built via the crate-internal
+    /// `IntValue::from_value_unchecked` escape hatch (`pub(super)` in
+    /// `value.rs`, reachable here because this module lives at the crate
+    /// root, same as `value`). That constructor performs no width check at
+    /// all, so this override can -- and deliberately does -- lie about the
+    /// width of its `stored` payload: it always answers with a 64-bit
+    /// constant, regardless of `W`. Because this is a *native* override
+    /// (not the trait's delegating default body at `folder.rs`'s
+    /// `fold_int_bin_op<W>`), `narrow_folded_int` never runs on this path;
+    /// the only remaining guard is the builder's own
+    /// `accept_folded_int` dyn-marker re-check.
+    #[derive(Debug, Clone, Copy)]
+    struct HostileTypedFolder<'ctx, B: ModuleBrand + 'ctx> {
+        /// Always a 64-bit constant, deliberately the wrong width for any
+        /// 32-bit `W` the builder calls this with.
+        stored: IntValue<'ctx, i64, B>,
+    }
+
+    impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for HostileTypedFolder<'ctx, B> {
+        fn fold_int_bin_op<W: IntWidth>(
+            &self,
+            _opcode: BinaryOpcode,
+            _lhs: IntValue<'ctx, W, B>,
+            _rhs: IntValue<'ctx, W, B>,
+        ) -> IrResult<Option<IntValue<'ctx, W, B>>> {
+            // Bypasses `narrow_folded_int` entirely: this reuses the
+            // already-erased `Value` payload behind `self.stored` (a
+            // 64-bit constant) and rewraps it as `IntValue<'ctx, W, B>`
+            // via the unchecked constructor, exactly mirroring the shape
+            // `ConstantFolder::fold_int_bin_op` uses for its (audited,
+            // correct) native override -- except here the "audit" is
+            // deliberately false: the payload's true IR type never
+            // matches `W` when `W` is a 32-bit dyn width.
+            Ok(Some(IntValue::<W, B>::from_value_unchecked(
+                self.stored.as_value(),
+            )))
+        }
+    }
+
+    /// Locks `accept_folded_int`'s dyn-marker branch (`ir_builder.rs`,
+    /// `W::static_bits().is_none()` arm) as the seam that rejects a
+    /// wrong-width result from a *native* typed-hook override -- the bug
+    /// class external folders are compile-time barred from producing
+    /// (see the sibling compile-fail golden
+    /// `tests/compile_fail/folder_typed_wrong_width.rs`, which locks the
+    /// external-facing half of this contract) but an in-crate folder can
+    /// still write by hand via `from_value_unchecked`.
+    ///
+    /// Trace confirming *this* line rejects, not `narrow_folded_int`:
+    /// `build_int_add::<IntDyn, _, _, _>` (this file, `build_int_add`)
+    /// calls `self.folder.fold_int_bin_op(BinaryOpcode::Add, lhs, rhs)`.
+    /// `HostileTypedFolder`'s override above is a *native* override of
+    /// `fold_int_bin_op`, so it runs directly -- it never calls
+    /// `fold_bin_op_dyn` or `folder::narrow_folded_int` (those only run
+    /// inside the *trait's default* body, which this override replaces).
+    /// The native override returns `Ok(Some(wrong_width_value))`
+    /// straight back to `build_int_add`, which forwards it to
+    /// `self.accept_folded_int(folded, lhs)`. Inside `accept_folded_int`:
+    /// `W = IntDyn`, so `W::static_bits().is_none()` is `true`
+    /// (`int_width.rs`'s `impl IntWidth for IntDyn`), and
+    /// `folded.as_value().ty().id() != like.as_value().ty().id()` is
+    /// `true` (the stored value's real type is `i64`, `lhs`'s is the
+    /// 32-bit custom-width `IntDyn` type) -- so `accept_folded_int`
+    /// returns `Err(IrError::TypeMismatch { .. })`. That is the exact
+    /// line under test; `narrow_folded_int` is never reached on this path.
+    #[test]
+    fn hostile_native_typed_override_wrong_width_rejected_by_accept_folded_int()
+    -> Result<(), IrError> {
+        Module::with_new("hostile-typed-folder", |m| {
+            let i32_dyn_ty = m.custom_width_int_type(32)?;
+            let i64_dyn_ty = m.custom_width_int_type(64)?;
+            let fn_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+
+            let stored: IntValue<'_, i64, _> =
+                IntValue::from_value_unchecked(i64_dyn_ty.const_zero().as_value());
+            let folder = HostileTypedFolder { stored };
+            let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+
+            let lhs = i32_dyn_ty.const_int_checked(1_i32)?;
+            let rhs = i32_dyn_ty.const_int_checked(2_i32)?;
+
+            let err = b
+                .build_int_add::<IntDyn, _, _, _>(lhs, rhs, "sum")
+                .expect_err("wrong-width native-override fold result is rejected");
+
+            assert!(matches!(err, IrError::TypeMismatch { .. }));
+            assert_eq!(b.insert_block().instructions().len(), 0);
+            Ok(())
+        })
+    }
+}
