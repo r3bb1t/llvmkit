@@ -6329,7 +6329,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             llvmkit_ir::instr_types::ICmpFlags::new()
         };
         let r = b
-            .build_int_cmp_with_flags_dyn(flags, pred, lhs, rhs, name)
+            .build_int_cmp_with_flags_dyn(pred, lhs, rhs, flags, name)
             .map_err(|e| self.builder_err("icmp", e))?;
         Ok(r.as_value())
     }

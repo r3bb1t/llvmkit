@@ -9,7 +9,8 @@
 //! `test/Assembler/` exercising integer predicates.
 
 use llvmkit_ir::{
-    Constant, ConstantIntValue, IRBuilder, IntPredicate, IntValue, IrError, Linkage, Module, Type,
+    Constant, ConstantIntValue, ICmpFlags, IRBuilder, IntPredicate, IntValue, IrError, Linkage,
+    Module, Type,
 };
 
 fn build_eq_module() -> Result<String, IrError> {
@@ -115,6 +116,39 @@ fn default_constant_folder_folds_integer_compare() -> Result<(), IrError> {
         let result = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ugt, 9_i32, 3_i32, "is_gt")?;
         let folded = ConstantIntValue::<bool>::try_from(Constant::try_from(result.as_value())?)?;
         assert!(folded.ap_int().try_zext_u64() == Some(1));
+        Ok(())
+    })
+}
+
+/// Mirrors `test/Assembler/flags.ll:290-292` (`test_icmp_samesign`):
+/// `%res = icmp samesign ult i32 %a, %b`. Typed operands need no `_dyn`
+/// erasure to spell the `samesign` flag. Upstream sets `samesign` post-hoc
+/// via `ICmpInst::setSameSign` (LLVM 19+, `InstrTypes.h`); llvmkit's
+/// construction-time flag is the deliberate Rust-side improvement.
+#[test]
+fn typed_icmp_samesign_prints_flag() -> Result<(), IrError> {
+    Module::with_new("c", |m| {
+        let bool_ty = m.bool_type();
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+        let f = m.add_function::<bool, _>("test_icmp_samesign", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);
+        let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let bv: IntValue<i32> = f.param(1)?.try_into()?;
+        let r = b.build_int_cmp_with_flags::<i32, _, _, _>(
+            IntPredicate::Ult,
+            a,
+            bv,
+            ICmpFlags::new().samesign(),
+            "res",
+        )?;
+        b.build_ret(r)?;
+        let text = format!("{m}");
+        assert!(
+            text.contains("%res = icmp samesign ult i32 %0, %1"),
+            "got:\n{text}"
+        );
         Ok(())
     })
 }

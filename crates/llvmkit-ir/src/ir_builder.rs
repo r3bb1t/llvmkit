@@ -2502,6 +2502,48 @@ where
         Ok(IntValue::<Dst, B>::from_value_unchecked(inst.as_value()))
     }
 
+    /// `trunc nuw/nsw` with explicit [`crate::TruncFlags`]. Mirrors
+    /// `IRBuilder::CreateTrunc` plus `Instruction::setHasNoUnsignedWrap` /
+    /// `setHasNoSignedWrap`.
+    ///
+    /// The `Src: WiderThan<Dst>` bound is the same one [`Self::build_trunc`]
+    /// uses, enforced at compile time. Upstream `IRBuilder::CreateTrunc`
+    /// (`IRBuilder.cpp`) returns `V` unchanged -- silently dropping any
+    /// requested `nuw`/`nsw` -- when `SrcTy == DestTy`. Because `WiderThan`
+    /// requires `Src` strictly wider than `Dst`, that same-type case is
+    /// unspellable through this method: the flag-dropping branch cannot
+    /// arise here (D10 -- no silent bad-codegen). Use
+    /// [`Self::build_trunc_with_flags_dyn`] when both widths are erased.
+    pub fn build_trunc_with_flags<Src, Dst, Name>(
+        &self,
+        value: IntValue<'ctx, Src, B>,
+        dst_ty: IntType<'ctx, Dst, B>,
+        flags: crate::instr_types::TruncFlags,
+        name: Name,
+    ) -> IrResult<IntValue<'ctx, Dst, B>>
+    where
+        Name: AsRef<str>,
+        Src: crate::int_width::WiderThan<Dst>,
+        Dst: IntWidth,
+    {
+        if let Some(folded) = self.folder.fold_cast_to_int(
+            crate::instr_types::CastOpcode::Trunc,
+            value.as_value(),
+            dst_ty,
+        )? {
+            return self.accept_folded_cast_int(folded, dst_ty);
+        }
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.as_value().id);
+        payload.nuw.set(flags.nuw);
+        payload.nsw.set(flags.nsw);
+        let inst = self.append_instruction(
+            dst_ty.as_type().id(),
+            InstructionKindData::Cast(payload),
+            name,
+        );
+        Ok(IntValue::<Dst, B>::from_value_unchecked(inst.as_value()))
+    }
+
     /// Produce `zext <value> to <dst_ty>`. Mirrors
     /// `IRBuilder::CreateZExt`.
     ///
@@ -2527,6 +2569,41 @@ where
             return self.accept_folded_cast_int(folded, dst_ty);
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, value.as_value().id);
+        let inst = self.append_instruction(
+            dst_ty.as_type().id(),
+            InstructionKindData::Cast(payload),
+            name,
+        );
+        Ok(IntValue::<Dst, B>::from_value_unchecked(inst.as_value()))
+    }
+
+    /// `zext nneg` with explicit [`crate::ZExtFlags`]. Mirrors
+    /// `IRBuilder::CreateZExt` plus `Instruction::setNonNeg`.
+    ///
+    /// The `Dst: WiderThan<Src>` bound is the same one [`Self::build_zext`]
+    /// uses, enforced at compile time. Use [`Self::build_zext_with_flags_dyn`]
+    /// when both widths are erased.
+    pub fn build_zext_with_flags<Src, Dst, Name>(
+        &self,
+        value: IntValue<'ctx, Src, B>,
+        dst_ty: IntType<'ctx, Dst, B>,
+        flags: crate::instr_types::ZExtFlags,
+        name: Name,
+    ) -> IrResult<IntValue<'ctx, Dst, B>>
+    where
+        Name: AsRef<str>,
+        Src: IntWidth,
+        Dst: crate::int_width::WiderThan<Src>,
+    {
+        if let Some(folded) = self.folder.fold_cast_to_int(
+            crate::instr_types::CastOpcode::ZExt,
+            value.as_value(),
+            dst_ty,
+        )? {
+            return self.accept_folded_cast_int(folded, dst_ty);
+        }
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, value.as_value().id);
+        payload.nneg.set(flags.nneg);
         let inst = self.append_instruction(
             dst_ty.as_type().id(),
             InstructionKindData::Cast(payload),
@@ -4040,6 +4117,40 @@ where
         self.build_int_to_fp(value, dst_ty, name, crate::instr_types::CastOpcode::UIToFp)
     }
 
+    /// `uitofp nneg` with explicit [`crate::UIToFpFlags`]. Mirrors
+    /// `IRBuilder::CreateUIToFP` plus `Instruction::setNonNeg`. The `nneg`
+    /// flag asserts the source value is non-negative.
+    pub fn build_ui_to_fp_with_flags<W, K, V, Name>(
+        &self,
+        value: V,
+        dst_ty: FloatType<'ctx, K, B>,
+        flags: crate::instr_types::UIToFpFlags,
+        name: Name,
+    ) -> IrResult<FloatValue<'ctx, K, B>>
+    where
+        Name: AsRef<str>,
+        W: IntWidth,
+        K: FloatKind,
+        V: IntoIntValue<'ctx, W, B>,
+    {
+        let value = value.into_int_value(ModuleRef::new(self.module))?;
+        let v = value.as_value();
+        if let Some(folded) =
+            self.folder
+                .fold_cast_to_fp(crate::instr_types::CastOpcode::UIToFp, v, dst_ty)?
+        {
+            return self.accept_folded_cast_fp(folded, dst_ty);
+        }
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::UIToFp, v.id);
+        payload.nneg.set(flags.nneg);
+        let inst = self.append_instruction(
+            dst_ty.as_type().id(),
+            InstructionKindData::Cast(payload),
+            name,
+        );
+        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
+    }
+
     /// Produce `sitofp <value> to <dst>`. Mirrors
     /// `IRBuilder::CreateSIToFP`.
     pub fn build_si_to_fp<W, K, Name>(
@@ -4673,15 +4784,51 @@ where
         Ok(IntValue::<bool, B>::from_value_unchecked(inst.as_value()))
     }
 
+    /// `icmp samesign` with explicit [`crate::ICmpFlags`]. Mirrors
+    /// `IRBuilder::CreateICmp` plus `ICmpInst::setSameSign`. The `samesign`
+    /// flag asserts both operands carry the same sign (LLVM 19+).
+    ///
+    /// Upstream sets `samesign` post-hoc via `ICmpInst::setSameSign`
+    /// (`Instructions.h`) after construction; llvmkit's construction-time
+    /// flag parameter is a deliberate Rust-side improvement -- the flag is
+    /// part of the payload from the moment the instruction exists, so there
+    /// is no window where an `ICmpInst` is live with a stale `samesign` bit.
+    pub fn build_int_cmp_with_flags<W, Lhs, Rhs, Name>(
+        &self,
+        predicate: crate::cmp_predicate::IntPredicate,
+        lhs: Lhs,
+        rhs: Rhs,
+        flags: crate::instr_types::ICmpFlags,
+        name: Name,
+    ) -> IrResult<IntValue<'ctx, bool, B>>
+    where
+        Name: AsRef<str>,
+        W: IntWidth,
+        Lhs: IntoIntValue<'ctx, W, B>,
+        Rhs: IntoIntValue<'ctx, W, B>,
+    {
+        let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
+        let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
+        let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
+        if let Some(folded) = self.folder.fold_int_cmp(predicate, lhs, rhs)? {
+            return Ok(folded);
+        }
+        let mut payload =
+            crate::instr_types::CmpInstData::new(predicate, lhs.as_value().id, rhs.as_value().id);
+        payload.samesign = flags.samesign;
+        let inst = self.append_instruction(i1_ty, InstructionKindData::ICmp(payload), name);
+        Ok(IntValue::<bool, B>::from_value_unchecked(inst.as_value()))
+    }
+
     /// `icmp samesign` with explicit [`crate::ICmpFlags`]. Both operands
     /// must be dynamically-typed (`IntDyn`). The `samesign` flag asserts
     /// both operands carry the same sign (LLVM 19+).
     pub fn build_int_cmp_with_flags_dyn<Name>(
         &self,
-        flags: crate::instr_types::ICmpFlags,
         pred: crate::cmp_predicate::IntPredicate,
         lhs: IntValue<'ctx, IntDyn, B>,
         rhs: IntValue<'ctx, IntDyn, B>,
+        flags: crate::instr_types::ICmpFlags,
         name: Name,
     ) -> IrResult<IntValue<'ctx, bool, B>>
     where

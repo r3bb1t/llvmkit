@@ -19,7 +19,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 1133.
+Total `#[test]` functions: 1137.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -1193,3 +1193,7 @@ Total `#[test]` functions: 1133.
 | `crates/llvmkit-ir/tests/builder_typed_memory.rs::typed_alloca_load_store_round_trip_prints_identically_to_erased` | `llvm/include/llvm/IR/IRBuilder.h::CreateAlloca`/`CreateLoad`/`CreateStore` (opaque pointers have no upstream compile-time pointee overlay to port; anchored on the existing `alloca`/`load`/`store` print forms, e.g. `tests/medium_builder_int.rs`) | llvmkit-specific example-lock |
 | `crates/llvmkit-ir/tests/builder_typed_memory.rs::field_gep_projects_field_type_at_compile_time` | `test/Assembler/getelementptr_struct.ll` (print-form anchor, shared with `tests/builder_gep.rs::struct_gep`); `llvm/include/llvm/IR/IRBuilder.h::CreateStructGEP` (C++ narrows the field type only at runtime -- `build_field_gep::<S, I>`'s compile-time projection is llvmkit-specific) | llvmkit-specific example-lock |
 | `crates/llvmkit-ir/tests/compile_fail/typed_gep_bad_index.rs` | `llvm/include/llvm/IR/IRBuilder.h::CreateStructGEP` (C++ has no static analog for an out-of-range struct-field index -- the upstream check is a runtime assertion) | llvmkit-specific example-lock |
+| `crates/llvmkit-ir/tests/medium_builder_cmp.rs::typed_icmp_samesign_prints_flag` | `llvm/test/Assembler/flags.ll:290-292` (`test_icmp_samesign`: `%res = icmp samesign ult i32 %a, %b`); `llvm/include/llvm/IR/InstrTypes.h::ICmpInst::setSameSign` (upstream sets `samesign` post-hoc after construction -- llvmkit's construction-time flag parameter is a deliberate Rust-side improvement) | mirror |
+| `crates/llvmkit-ir/tests/medium_builder_cast.rs::typed_zext_nneg_prints_flag` | `llvm/test/Assembler/flags.ll:224-225` (`%res = zext nneg i32 %a to i64`) | mirror |
+| `crates/llvmkit-ir/tests/medium_builder_cast.rs::typed_trunc_nuw_nsw_prints_flags` | `llvm/test/Assembler/flags.ll:254-258` (`test_trunc_both`: `%res = trunc nuw nsw i64 %a to i32`); `llvm/lib/IR/IRBuilder.cpp::IRBuilderBase::CreateTrunc` (upstream silently drops requested nuw/nsw when `SrcTy == DestTy` by returning `V` unchanged -- llvmkit's `Src: WiderThan<Dst>` bound makes that same-type trunc unspellable, so the flag-dropping case cannot arise, D10) | mirror |
+| `crates/llvmkit-ir/tests/medium_builder_cast.rs::typed_uitofp_nneg_prints_flag` | `llvm/test/Assembler/flags.ll:230-231` (`%res = uitofp nneg i32 %a to float`) | mirror |
