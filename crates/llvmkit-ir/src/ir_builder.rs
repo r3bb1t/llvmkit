@@ -555,7 +555,7 @@ where
     }
 
     /// Consume this positioned builder without emitting a terminator,
-    /// returning its unsealed insertion block for cursor-driven mutation
+    /// returning its unterminated insertion block for cursor-driven mutation
     /// or later repositioning.
     #[inline]
     pub fn into_insert_block(self) -> BasicBlock<'ctx, R, Unterminated, B> {
@@ -4970,10 +4970,10 @@ where
 
     /// Produce `br label %target`. Mirrors `IRBuilder::CreateBr`.
     ///
-    /// Consumes `self`: the builder's insertion block is sealed and
+    /// Consumes `self`: the builder's insertion block is terminated and
     /// returned alongside the new terminator instruction. The branch
-    /// target may be in any seal state -- backward edges (loop
-    /// back-edges) target already-sealed blocks.
+    /// target may be in any termination state -- backward edges (loop
+    /// back-edges) target already-terminated blocks.
     pub fn build_br<T>(self, target: T) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
     where
         T: IntoBasicBlockLabel<'ctx, R, B>,
@@ -4991,7 +4991,7 @@ where
     /// Produce `br i1 <cond>, label %then, label %else`. Mirrors
     /// `IRBuilder::CreateCondBr`.
     ///
-    /// Consumes `self`; both target blocks may be in any seal state.
+    /// Consumes `self`; both target blocks may be in any termination state.
     pub fn build_cond_br<C, Then, Else>(
         self,
         cond: C,
@@ -5022,7 +5022,7 @@ where
     /// Produce `switch <cond>, label <default> [...]`. Mirrors
     /// `IRBuilder::CreateSwitch`.
     ///
-    /// Returns the sealed parent block plus an [`Open`]-typestate
+    /// Returns the terminated parent block plus an [`Open`]-typestate
     /// [`SwitchInst`]. The caller adds
     /// cases via [`SwitchInst::add_case`](SwitchInst::add_case)
     /// (chainable) and seals the case list with
@@ -5055,7 +5055,7 @@ where
     /// Produce `indirectbr <addr>, [...]`. Mirrors
     /// `IRBuilder::CreateIndirectBr`.
     ///
-    /// Returns the sealed parent block plus an [`Open`]-typestate
+    /// Returns the terminated parent block plus an [`Open`]-typestate
     /// [`IndirectBrInst`]. The
     /// caller adds destinations via
     /// [`IndirectBrInst::add_destination`](IndirectBrInst::add_destination)
