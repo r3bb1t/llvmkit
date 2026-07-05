@@ -3711,7 +3711,11 @@ where
             idx_values.push(iv.as_value());
             idx_ids.push(iv.as_value().id);
         }
-        let result_ty = self.module.ptr_type(0).as_type().id();
+        // Mirrors `GetElementPtrInst::getGEPReturnType` (`IR/Instructions.h`):
+        // for the scalar (non-vector-of-pointers) case the result type is
+        // exactly the base pointer's type, i.e. it lives in the SAME address
+        // space as `ptr`, not always address space 0.
+        let result_ty = self.module.ptr_type(p.ty().address_space()).as_type().id();
         if let Some(folded) = self
             .folder
             .fold_gep(source_ty, ptr_value, &idx_values, flags)?

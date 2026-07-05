@@ -19,7 +19,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 1130.
+Total `#[test]` functions: 1131.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -93,6 +93,7 @@ Total `#[test]` functions: 1130.
 | `crates/llvmkit-ir/tests/builder_gep.rs::gep_inbounds` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, GEPIndices)` | port |
 | `crates/llvmkit-ir/tests/builder_gep.rs::struct_gep` | `test/Assembler/getelementptr_struct.ll` | mirror |
 | `crates/llvmkit-ir/tests/builder_gep.rs::gep_zero_index` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, ZeroIndexGEP)` | port |
+| `crates/llvmkit-ir/tests/builder_gep_addrspace.rs::gep_result_preserves_base_pointer_address_space` | `test/Assembler/2007-12-11-AddressSpaces.ll`; `GetElementPtrInst::getGEPReturnType` (`IR/Instructions.h`) | mirror |
 | `crates/llvmkit-ir/tests/builder_int_div_rem.rs::udiv_plain` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, WrapFlags)` | mirror |
 | `crates/llvmkit-ir/tests/builder_int_div_rem.rs::sdiv_plain` | `test/Assembler/flags.ll` | mirror |
 | `crates/llvmkit-ir/tests/builder_int_div_rem.rs::urem_plain` | `test/Assembler/flags.ll` | mirror |
