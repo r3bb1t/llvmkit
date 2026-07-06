@@ -381,8 +381,8 @@ fn call_builder_rejects_wrong_argument_type() -> Result<(), IrError> {
             err,
             IrError::CallArgumentTypeMismatch {
                 index: 0,
-                expected: llvmkit_ir::TypeKindLabel::Integer,
-                got: llvmkit_ir::TypeKindLabel::Float,
+                expected: "i32".to_owned(),
+                got: "float".to_owned(),
             }
         );
         let _ = b.build_ret(0_i32);

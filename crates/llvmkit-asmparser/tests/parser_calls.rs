@@ -201,14 +201,15 @@ fn call_explicit_type_arg_type_mismatch_rejected() {
     assert_fixture_rejected(
         "call_explicit_type_arg_type_mismatch_rejected",
         FIXTURE,
-        "valid call: call argument #0 type mismatch: expected integer, got float",
+        "valid call: call argument #0 type mismatch: expected i32, got float",
     );
 }
 
 /// Crafted against the same `parseCall` argument-loop rule as
 /// [`call_explicit_type_arg_type_mismatch_rejected`]: the comparison is type
-/// IDENTITY, so i8-vs-i32 is rejected even though both sides render as the
-/// `integer` kind label in the diagnostic.
+/// IDENTITY, so i8-vs-i32 is rejected, and the diagnostic spells the
+/// concrete widths (`expected i32, got i8`) the way upstream's
+/// "argument is not of expected type 'i32'" spells the full expected type.
 #[test]
 fn call_explicit_type_arg_width_mismatch_rejected() {
     const FIXTURE: &[u8] = include_bytes!(
@@ -218,7 +219,7 @@ fn call_explicit_type_arg_width_mismatch_rejected() {
     assert_fixture_rejected(
         "call_explicit_type_arg_width_mismatch_rejected",
         FIXTURE,
-        "valid call: call argument #0 type mismatch: expected integer, got integer",
+        "valid call: call argument #0 type mismatch: expected i32, got i8",
     );
 }
 
@@ -297,7 +298,7 @@ fn indirect_call_arg_type_mismatch_rejected() {
     assert_fixture_rejected(
         "indirect_call_arg_type_mismatch_rejected",
         FIXTURE,
-        "valid indirect call: call argument #0 type mismatch: expected integer, got float",
+        "valid indirect call: call argument #0 type mismatch: expected i32, got float",
     );
 }
 

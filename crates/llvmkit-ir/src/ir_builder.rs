@@ -3549,8 +3549,8 @@ where
                 return Err(IrError::CallArgumentTypeMismatch {
                     index: u32::try_from(i)
                         .unwrap_or_else(|_| unreachable!("argument index bounded by u32")),
-                    expected: param_ty.kind_label(),
-                    got: arg_ty.kind_label(),
+                    expected: param_ty.to_string(),
+                    got: arg_ty.to_string(),
                 });
             }
         }
