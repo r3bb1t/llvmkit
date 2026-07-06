@@ -172,11 +172,16 @@ Check(OpBB->getParent() == BB->getParent(),
 `llvmkit` requires the target block to carry the builder's brand:
 
 ```rust
-pub fn build_br<S2: BlockTerminationState>(
-    self,
-    target: BasicBlock<'ctx, R, S2, B>,
-) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+pub fn build_br<T>(self, target: T) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+where
+    T: IntoBasicBlockLabel<'ctx, R, B>,
 ```
+
+`IntoBasicBlockLabel<'ctx, R, B>` is implemented for both a bare
+`BasicBlockLabel<'ctx, R, B>` and any `BasicBlock<'ctx, R, Term, B>`
+(any termination state) -- but always parameterised over the SAME `B`
+as the builder, so a target block minted under a different module's
+brand has no impl to satisfy this bound at all.
 
 Bad Rust program:
 

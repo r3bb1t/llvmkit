@@ -368,7 +368,7 @@ detach, move, and RAUW operations. Those methods consume the handle, so a used
 lifecycle capability cannot be reused. Copyable discovery APIs return
 `InstructionView` instead: blocks, value use-lists, and per-opcode handles expose
 read-only inspection without minting a new mutation handle. Cursor-driven
-mutation uses `BlockCursor::next` on an unsealed block.
+mutation uses `BlockCursor::next` on an unterminated block.
 
 Run the examples:
 

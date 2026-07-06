@@ -5121,7 +5121,7 @@ where
 
     /// `icmp samesign` with explicit [`crate::ICmpFlags`]. Mirrors
     /// `IRBuilder::CreateICmp` plus `ICmpInst::setSameSign`. The `samesign`
-    /// flag asserts both operands carry the same sign (LLVM 19+).
+    /// flag asserts both operands carry the same sign (LLVM 20+).
     ///
     /// Upstream sets `samesign` post-hoc via `ICmpInst::setSameSign`
     /// (`Instructions.h`) after construction; llvmkit's construction-time
@@ -5157,7 +5157,7 @@ where
 
     /// `icmp samesign` with explicit [`crate::ICmpFlags`]. Both operands
     /// must be dynamically-typed (`IntDyn`). The `samesign` flag asserts
-    /// both operands carry the same sign (LLVM 19+).
+    /// both operands carry the same sign (LLVM 20+).
     pub fn build_int_cmp_with_flags_dyn<Name>(
         &self,
         pred: crate::cmp_predicate::IntPredicate,

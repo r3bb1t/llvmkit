@@ -19,11 +19,17 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 1266. Genuinely recounted (not incremental
-arithmetic) for this session's final audit via
-`grep -rc '#\[test\]' --include='*.rs' crates llvmkit | awk -F: '{sum+=$2} END {print sum}'`,
-cross-checked against `grep -ro '#\[test\]' --include='*.rs' -r crates llvmkit | wc -l`
-(both report 1266; no stray `.rs` files exist outside `crates/`/`llvmkit/`).
+Total `#[test]` functions: 1242. Genuinely recounted (not incremental
+arithmetic) for the whole-branch review's final audit via the
+attribute-anchored
+`grep -rEc "^\s*#\[test\]" --include="*.rs" crates/ llvmkit/ | awk -F: '{sum+=$2} END {print sum}'`
+(matches counting every attribute line, one per test). A prior count used
+the unanchored `grep -rc '#\[test\]' --include='*.rs' crates llvmkit`, which
+also matches the literal string `#[test]` inside `//!` module-doc-comment
+PROSE (e.g. "Each `#[test]` cites its upstream source") -- 25 such prose
+mentions across the tree inflated that count to 1267; the attribute-anchored
+form above counts only real `#[test]` attribute lines and is the number to
+trust going forward.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -1260,6 +1266,7 @@ cross-checked against `grep -ro '#\[test\]' --include='*.rs' -r crates llvmkit |
 | `crates/llvmkit-ir/tests/ssa_builder.rs::loop_backedge_completes_incomplete_phi_on_seal` | Braun et al. 2013, Fig. 4 (`readVariableRecursive`'s not-sealed branch: operandless phi, completed via `addPhiOperands` at `sealBlock` time); ports the `examples/factorial.rs` loop shape (locked byte-for-byte by `tests/factorial_example.rs`) through the public def/use/terminator lifecycle instead of raw `build_int_phi`/`add_incoming` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/ssa_builder.rs::strict_use_before_def_is_typed_error` | llvmkit-specific: no single upstream C++ unit test exists for this (`mem2reg`/`SSAUpdater` assume the caller already proved definedness via dominance analysis on existing IR); ports `crates/llvmkit-ir/src/ssa_builder.rs::tests::strict_variable_undefined_read_errors` through the public `switch_to_block`/`use_int_var` surface | llvmkit-specific |
 | `crates/llvmkit-ir/tests/ssa_builder.rs::poison_variable_reads_poison_on_undef_path` | `llvm/lib/IR/Constants.cpp::PoisonValue::get`; D10's explicit poison-on-undef opt-in has no direct upstream analog -- ports `crates/llvmkit-ir/src/ssa_builder.rs::tests::poison_variable_undefined_read_yields_poison` through the public surface and additionally locks the `poison` token in the printed IR (the private test only compares `ValueId`s) | llvmkit-specific |
+| `crates/llvmkit-ir/tests/ssa_builder.rs::dead_cycle_phi_names_the_actual_strict_variable_not_same_type_poison` | Whole-branch-review regression (D10): Braun et al. 2013's dead-cycle case for `tryRemoveTrivialPhi` (a phi whose only reachable operand is itself, only possible inside a predecessor-unreachable-from-entry cycle) -- llvmkit-specific, no upstream analog (`undefined_phi_replacement`'s variable-recovery-by-type ambiguity is internal to this layer's own bookkeeping; LLVM's `IRBuilder` has no on-the-fly SSA layer to face it) | llvmkit-specific |
 | `crates/llvmkit-ir/tests/ssa_builder.rs::branch_to_sealed_block_rejected` | Braun et al. 2013 (a sealed block's predecessor set is final); `llvm/lib/IR/Verifier.cpp::visitFunction` (entry block has no predecessors) -- `create_block`'s auto-sealed entry doubles as this invariant at construction time; no upstream analog for the runtime `br`-into-sealed-block rejection itself | llvmkit-specific |
 | `crates/llvmkit-ir/tests/ssa_builder.rs::double_seal_rejected` | Braun et al. 2013 (`sealBlock` single-call invariant) -- ports `crates/llvmkit-ir/src/ssa_builder.rs::tests::seal_block_twice_errors` / `crates/llvmkit-ir/tests/ssa_builder.rs::seal_block_succeeds_once_then_errors` through a fresh block reached via the public lifecycle | llvmkit-specific |
 | `crates/llvmkit-ir/tests/ssa_builder.rs::foreign_variable_rejected` | llvmkit-specific: `owner: SsaBuilderId` runtime brand sibling check (`check_owner_var`) to the existing `check_owner_block`/`SsaForeignBlock` coverage, no upstream analog | llvmkit-specific |
@@ -1273,6 +1280,7 @@ cross-checked against `grep -ro '#\[test\]' --include='*.rs' -r crates llvmkit |
 | `crates/llvmkit-ir/tests/factorial_auto_ssa_example.rs::factorial_auto_ssa_example_emits_locked_ir` | `unittests/IR/IRBuilderTest.cpp` (same reference `tests/factorial_example.rs` cites) -- the flagship D11 example-lock: `SsaBuilder`'s Braun on-the-fly SSA engine (`examples/factorial_auto_ssa.rs`) and the manual `build_int_phi`/`add_incoming` construction (`examples/factorial.rs`) print byte-IDENTICAL `.ll` for the same factorial loop | example |
 | `crates/llvmkit-ir/tests/ssa_builder.rs::every_well_defined_generated_module_verifies` (proptest) | `llvm/lib/IR/Verifier.cpp` (`Module::verify_borrowed` as oracle), swept over a randomised generalisation of `every_auto_ssa_module_verifies`'s four bounded shapes (straight-line/diamond/loop/switch-with-shared-destination) instead of the hand-picked literals -- llvmkit-specific, no upstream analog for a randomised construction-layer fuzzer of its own on-the-fly SSA engine | llvmkit-specific |
 | `crates/llvmkit-ir/tests/ssa_builder.rs::undef_schedules_only_ever_yield_typed_undefined_variable_error` (proptest) | llvmkit-specific: generalises `strict_use_before_def_is_typed_error` across the same four bounded shapes with a randomised which-variable-goes-undefined schedule, asserting the ONLY possible outcome besides a clean verify is exactly `SsaUseOfUndefinedVariable` -- no upstream C++ unit test exists for this (`mem2reg`/`SSAUpdater` assume the caller already proved definedness via dominance analysis on existing IR) | llvmkit-specific |
+| `crates/llvmkit-ir/tests/ssa_builder.rs::switch_dyn_condition_bad_width_case_rejected_before_emit` | `llvm/lib/IR/Verifier.cpp::visitSwitchInst` (every case value's type must match the condition's type) -- llvmkit-specific: the dyn-condition path's `IntoConstantInt<IntDyn>` pre-pass rejects an out-of-range case literal via `ImmediateOverflow` before `SsaBuilder::switch` ever calls `build_switch`, so the invalid case is never given a chance to reach the verifier at all | llvmkit-specific |
 | `crates/llvmkit-ir/tests/compile_fail/ssa_def_unpositioned.rs` | llvmkit-specific: `SsaBuilder::def_int_var` exists only on the `Positioned` typestate (D1) -- LLVM's `IRBuilder` has no on-the-fly SSA layer and no analogous "must position before writing a variable" compile-time gate; closest functional idea is `IRBuilderBase::GetInsertBlock()` being required (at runtime) before any instruction can append | llvmkit-specific example-lock |
 | `crates/llvmkit-ir/tests/compile_fail/ssa_use_after_terminator.rs` | llvmkit-specific: every `SsaBuilder` terminator consumes `self` by value (D1), mirroring `retained_unterminated_block_cannot_reposition.rs`'s plain-`IRBuilder` move-checker lock but for the SSA layer's own terminator family -- no upstream analog (LLVM's `BasicBlock` has no linear ownership type to move) | llvmkit-specific example-lock |
 | `crates/llvmkit-ir/tests/compile_fail/ssa_def_wrong_width.rs` | `llvm/lib/IR/Verifier.cpp::visitFunction` / instruction type checks reject a mismatched-type SSA def at verify time (C++ has no static analog); llvmkit's statically-widthed `IntVariable<W>` pushes that same invariant into the type system via the `IntoIntValue<W>` bound (D4) -- sibling compile-fail to the existing dyn-width runtime check (`dyn_int_var_wrong_width_def_rejected`) | llvmkit-specific example-lock |

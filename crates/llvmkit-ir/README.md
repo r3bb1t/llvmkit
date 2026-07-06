@@ -25,7 +25,7 @@ KnownBits / ValueTracking parity are not claimed here.
 Instruction lifecycle mutation uses linear `Instruction<Attached>` handles:
 erase, detach, move, and RAUW consume the handle. Copyable rediscovery paths
 return `InstructionView`, and cursor-driven mutation goes through
-`BlockCursor::next` on an unsealed block.
+`BlockCursor::next` on an unterminated block.
 
 
 Every `Module::with_new` session carries a fresh compile-time module brand.

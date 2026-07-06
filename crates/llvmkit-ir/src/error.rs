@@ -599,10 +599,11 @@ pub enum IrError {
     #[error("use of undefined SSA variable {variable:?} in block {block:?}")]
     SsaUseOfUndefinedVariable { variable: String, block: String },
 
-    /// [`crate::SsaBuilder::seal_block`] observed a `br`/incoming-edge
-    /// recorded against a block that was already sealed at the time the
-    /// edge was added. Braun's algorithm requires every predecessor edge
-    /// to be recorded before the block is sealed.
+    /// One of [`crate::SsaBuilder`]'s terminator methods (`br` / `cond_br`
+    /// / `switch`) recorded an incoming edge against a destination block
+    /// that was already sealed at the time the edge was added. Braun's
+    /// algorithm requires every predecessor edge to be recorded before
+    /// the block is sealed.
     #[error("branch to already-sealed SSA block {block:?}")]
     SsaBranchToSealedBlock { block: String },
 

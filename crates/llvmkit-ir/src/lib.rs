@@ -226,7 +226,7 @@ pub use pass_manager::{
 pub use phi_state::{Closed, Open, PhiState};
 pub use sized_element::{ArrayDyn, SizedElement};
 pub use ssa_builder::{
-    FloatVariable, IntVariable, PointerVariable, SsaBlock, SsaBuilder, SsaBuilderId,
+    FloatVariable, IntVariable, IntoIrResult, PointerVariable, SsaBlock, SsaBuilder, SsaBuilderId,
 };
 pub use struct_body_state::{BodySet, Opaque, StructBodyDyn, StructBodyState};
 pub use struct_schema::{

@@ -1118,26 +1118,32 @@ fn shape_kind_strategy() -> impl Strategy<Value = ShapeKind> {
 /// tops out at 5 blocks (switch: entry/pre/case/default/shared), well
 /// under the brief's "<=8 blocks" cap; literals are kept small (the
 /// values themselves are irrelevant to well-formedness, only their
-/// presence as distinct phi incoming operands matters).
+/// presence as distinct phi incoming operands matters). The undef-sweep
+/// arm's `undef_var` is sampled uniformly from `0..var_count` (rather
+/// than pinned to variable 0) -- the doc comments on each `build_*`
+/// function below advertise a "randomised which-variable" schedule, so
+/// every declared variable, not just the first, must actually get
+/// exercised as the undefined one across the property's shrink space.
 fn generated_case_strategy(allow_undef: bool) -> impl Strategy<Value = GeneratedCase> {
     (
         shape_kind_strategy(),
         1_usize..=4,
         prop::collection::vec(-100_i32..100, 4),
-        proptest::bool::ANY,
     )
-        .prop_map(
-            move |(shape, var_count, literals, want_undef)| GeneratedCase {
+        .prop_flat_map(move |(shape, var_count, literals)| {
+            let undef_var_strategy: proptest::prelude::BoxedStrategy<Option<usize>> = if allow_undef
+            {
+                proptest::option::of(0_usize..var_count).boxed()
+            } else {
+                Just(None).boxed()
+            };
+            undef_var_strategy.prop_map(move |undef_var| GeneratedCase {
                 shape,
                 var_count,
-                literals,
-                undef_var: if allow_undef && want_undef {
-                    Some(0)
-                } else {
-                    None
-                },
-            },
-        )
+                literals: literals.clone(),
+                undef_var,
+            })
+        })
 }
 
 /// What building one [`GeneratedCase`] observed. A strict-undef schedule
@@ -1184,7 +1190,7 @@ where
 /// Builds (and, on the well-defined path, finishes) the `StraightLine`
 /// shape (`entry -> mid -> exit`): every variable is defined in `entry`,
 /// `mid` is a pass-through, `exit` reads every variable. With
-/// `undef_var = Some(0)`, variable 0's def in `entry` is skipped, so
+/// `undef_var = Some(idx)`, variable `idx`'s def in `entry` is skipped, so
 /// `exit`'s read of it chases back through `mid` to the sealed,
 /// predecessor-less function entry and must error.
 fn build_straight_line(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, IrError> {
@@ -1225,9 +1231,9 @@ fn build_straight_line(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutc
 /// Builds (and, on the well-defined path, finishes) the `Diamond` shape
 /// (`entry -> {left, right} -> join`): every variable gets a DIFFERENT
 /// literal on each arm (forcing a real, surviving phi at `join`, not a
-/// trivially-eliminated one). With `undef_var = Some(0)`, variable 0's
-/// def on the `right` arm is skipped, so `join`'s read chases a phi
-/// operand back through the sealed `right` block to function entry and
+/// trivially-eliminated one). With `undef_var = Some(idx)`, variable
+/// `idx`'s def on the `right` arm is skipped, so `join`'s read chases a
+/// phi operand back through the sealed `right` block to function entry and
 /// must error.
 fn build_diamond(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, IrError> {
     let i32_ty = m.i32_type();
@@ -1289,7 +1295,7 @@ fn build_diamond(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, I
 /// runs) -- Braun's `readVariableRecursive` never errors on an unsealed
 /// block, it always places an operandless "incomplete" phi instead
 /// (`read_variable_in`'s not-sealed branch). So with `undef_var =
-/// Some(0)`, variable 0's read inside `loop` itself always succeeds; the
+/// Some(idx)`, variable `idx`'s read inside `loop` itself always succeeds; the
 /// deferred error only surfaces once `loop` is SEALED (completing that
 /// phi via `add_phi_operands`, which chases the entry-edge operand back
 /// to the sealed, predecessor-less function entry) -- i.e. at
@@ -1363,8 +1369,8 @@ fn build_loop(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, IrEr
 /// mirrors `switch_records_one_edge_per_case_occurrence`'s shape, minus
 /// the duplicate-case multiplicity focus (this sweep only needs a real
 /// multi-pred join fed by a `switch` terminator, the third CFG-edge kind
-/// alongside `br`/`cond_br`). With `undef_var = Some(0)`, variable 0's
-/// def before the switch is skipped, so `shared`'s read must error.
+/// alongside `br`/`cond_br`). With `undef_var = Some(idx)`, variable
+/// `idx`'s def before the switch is skipped, so `shared`'s read must error.
 fn build_switch_shared(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);

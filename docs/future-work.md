@@ -105,13 +105,10 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   for the modeled subset), SMT-backed later -- would make llvmkit the only
   IR library with built-in transform validation. Pairs with Doctrine D10 (no
   silent UB).
-- Note: the full 5-lens inspiration sweep + synthesis workflow died on the
-  session usage limit during planning (resets 21:00 UTC+3). The three
-  findings above come from direct main-session searches during planning. If
-  deeper inspiration mining is wanted, rerun the sweep after the reset: the
-  workflow script was saved at
-  `C:\Users\olegg\.claude\projects\C--Users-olegg-Desktop-llvmkit\4db9a8ff-25ec-4cae-aa22-4c6eca15f44c\workflows\scripts\irbuilder-inspiration-sweep-wf_faed8e78-60c.js`
-  (relaunch with `Workflow({scriptPath})`).
+- Note: the full 5-lens inspiration sweep + synthesis workflow did not
+  complete during planning; the three findings above come from direct
+  main-session searches instead. If deeper inspiration mining is wanted,
+  see the session's archived plan for the sweep's methodology and rerun it.
 
 ## Type-system follow-ups
 

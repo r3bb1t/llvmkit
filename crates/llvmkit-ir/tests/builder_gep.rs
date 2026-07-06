@@ -67,9 +67,12 @@ fn gep_inbounds() -> Result<(), IrError> {
     })
 }
 
-/// Mirrors `test/Assembler/getelementptr_struct.ll` for the
-/// `getelementptr inbounds nuw %S, ptr %x, i32 0, i32 N` struct-field
-/// access print form. The `nuw` flag matches `IRBuilder::CreateStructGEP`
+/// Mirrors `test/Assembler/getelementptr.ll`'s positive struct-GEP print
+/// form (e.g. `%B = getelementptr {i32, i32}, ptr %t, i92 %n, i32 0`) for
+/// the `getelementptr inbounds nuw %S, ptr %x, i32 0, i32 N` struct-field
+/// access print form -- `getelementptr_struct.ll` is a NEGATIVE fixture
+/// (`RUN: not llvm-as`, invalid indices) and is not an accurate print-form
+/// anchor. The `nuw` flag matches `IRBuilder::CreateStructGEP`
 /// (`IRBuilder.h`), which passes `GEPNoWrapFlags::inBounds() |
 /// GEPNoWrapFlags::noUnsignedWrap()`; the combined printed form is locked
 /// against `test/Assembler/flags.ll` (`gep_inbounds_nuw`, `inbounds nuw`

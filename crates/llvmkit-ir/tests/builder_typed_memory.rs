@@ -1,7 +1,9 @@
 //! TypedPointerValue: Rust-side static pointee overlay on opaque `ptr`.
 //! Example-locks (opaque pointers have no upstream typed analog); the IR
 //! shape is anchored on the existing alloca/load/store fixtures and
-//! `test/Assembler/getelementptr_struct.ll` for the field-GEP form.
+//! `test/Assembler/getelementptr.ll`'s positive struct-GEP print form for
+//! the field-GEP form (`getelementptr_struct.ll` is a negative fixture and
+//! is not an accurate print-form anchor).
 
 use llvmkit_ir::{IrResult, IrStruct, Linkage, Module};
 
@@ -48,8 +50,8 @@ fn typed_alloca_load_store_round_trip_prints_identically_to_erased() -> IrResult
 /// Example-lock: `build_field_gep::<S, I>` is llvmkit-specific compile-time
 /// field projection over opaque pointers (LLVM's own `IRBuilder` narrows
 /// `CreateStructGEP`'s result type only at runtime). Print form is anchored
-/// on `test/Assembler/getelementptr_struct.ll` via the existing
-/// `tests/builder_gep.rs::struct_gep` fixture's exact `getelementptr
+/// on `test/Assembler/getelementptr.ll`'s positive struct-GEP print form,
+/// shared with `tests/builder_gep.rs::struct_gep`'s exact `getelementptr
 /// inbounds nuw %S, ptr %x, i32 0, i32 N` form (the `nuw` flag matches
 /// `IRBuilder::CreateStructGEP` in `IRBuilder.h`, which passes
 /// `GEPNoWrapFlags::inBounds() | GEPNoWrapFlags::noUnsignedWrap()`).

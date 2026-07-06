@@ -168,7 +168,7 @@ fn constant_folder_no_wrap_mul_delegates_to_binary_constant_fold() -> Result<(),
                 BinaryOpcode::Mul,
                 lhs.as_value(),
                 rhs.as_value(),
-                OverflowFlags::none().nuw(),
+                OverflowFlags::new().nuw(),
             )?
             .expect("all-constant no-wrap mul folds");
 
@@ -197,7 +197,7 @@ fn constant_folder_no_wrap_shl_delegates_to_binary_constant_fold() -> Result<(),
                 BinaryOpcode::Shl,
                 lhs.as_value(),
                 rhs.as_value(),
-                OverflowFlags::none().nuw().nsw(),
+                OverflowFlags::new().nuw().nsw(),
             )?
             .expect("all-constant no-wrap shl folds");
 
@@ -221,7 +221,7 @@ fn constant_folder_no_wrap_direct_hook_matches_upstream_for_xor_and_and() -> Res
                 BinaryOpcode::Xor,
                 i32_ty.const_int(5_i32).as_value(),
                 i32_ty.const_int(3_i32).as_value(),
-                OverflowFlags::none().nuw(),
+                OverflowFlags::new().nuw(),
             )?
             .expect("all-constant xor folds through direct no-wrap hook");
         let xor = ConstantIntValue::<IntDyn>::try_from(Constant::try_from(xor)?)?;
@@ -232,7 +232,7 @@ fn constant_folder_no_wrap_direct_hook_matches_upstream_for_xor_and_and() -> Res
                 BinaryOpcode::And,
                 i32_ty.const_int(5_i32).as_value(),
                 i32_ty.const_zero().as_value(),
-                OverflowFlags::none().nuw().nsw(),
+                OverflowFlags::new().nuw().nsw(),
             )?
             .expect("all-constant and folds through direct no-wrap hook");
         let and = ConstantIntValue::<IntDyn>::try_from(Constant::try_from(and)?)?;
@@ -792,6 +792,12 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B>
     }
 }
 
+/// `llvm/include/llvm/IR/IRBuilderFolder.h` `Value*` folder hook contract:
+/// locks the `IntValue<IntDyn>` builder-side `TypeId` re-check the
+/// typed-folder rewrite (task 5) preserves for erased markers -- an erased
+/// `fold_bin_op_dyn` override that answers with a wrong-width replacement
+/// must still be caught by `narrow_folded_int`'s runtime check rather than
+/// silently accepted.
 #[test]
 fn dyn_marker_fold_keeps_runtime_width_check() -> Result<(), IrError> {
     Module::with_new("folder-dyn-widen", |m| {
