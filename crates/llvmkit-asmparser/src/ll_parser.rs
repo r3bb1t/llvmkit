@@ -301,11 +301,20 @@ enum ParsedBlockAddressFunction<'ctx, B: ModuleBrand = Brand<'ctx>> {
     Forward { function: NameOrId, loc: Span },
 }
 
-enum ParsedDirectCallee {
-    Name { name: String, loc: Span },
-    Id { id: u32, loc: Span },
+enum ParsedDirectCallee<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    Name {
+        name: String,
+        loc: Span,
+    },
+    Id {
+        id: u32,
+        loc: Span,
+    },
     InlineAsm(ParsedInlineAsm),
-    Undef { loc: Span },
+    Value {
+        v: llvmkit_ir::Value<'ctx, B>,
+        loc: Span,
+    },
 }
 
 struct ParsedInlineAsm {
@@ -7418,7 +7427,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let calling_conv = self.parse_optional_calling_conv()?;
         let return_attrs = self.parse_optional_return_attrs()?;
         let callee_ty = self.parse_type(true)?;
-        let parsed_callee = self.parse_direct_callee_ref()?;
+        let parsed_callee = self.parse_direct_callee_ref(state)?;
         self.expect_punct(PunctKind::LParen, "'(' in call argument list")?;
         let mut args: Vec<llvmkit_ir::Value<'ctx, B>> = Vec::new();
         let mut arg_tys: Vec<Type<'ctx, B>> = Vec::new();
@@ -7551,7 +7560,16 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         }
     }
 
-    fn parse_direct_callee_ref(&mut self) -> ParseResult<ParsedDirectCallee> {
+    /// Parse the callee operand of `call` / `invoke` / `callbr`. Global
+    /// callees (`@f`, `@42`) and inline asm keep dedicated arms so direct
+    /// resolution (forward declarations, intrinsics) still sees names; any
+    /// other token parses as a general pointer-typed value (`%fp`, `null`,
+    /// `undef`, constants), mirroring `LLParser::parseCall`'s
+    /// `parseValID` + `convertValIDToValue(PointerType)` callee handling.
+    fn parse_direct_callee_ref(
+        &mut self,
+        state: &PerFunctionState<'ctx, B>,
+    ) -> ParseResult<ParsedDirectCallee<'ctx, B>> {
         let loc = self.loc();
         match self.peek() {
             Token::GlobalVar(_) => {
@@ -7588,17 +7606,17 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     can_unwind,
                 }))
             }
-            Token::Kw(Keyword::Undef) => {
-                self.bump()?;
-                Ok(ParsedDirectCallee::Undef { loc })
+            _ => {
+                let ptr_ty = self.module.ptr_type(0).as_type();
+                let v = self.parse_value(state, ptr_ty)?;
+                Ok(ParsedDirectCallee::Value { v, loc })
             }
-            _ => Err(self.expected("function name after call")),
         }
     }
 
     fn resolve_direct_callee(
         &mut self,
-        parsed: ParsedDirectCallee,
+        parsed: ParsedDirectCallee<'ctx, B>,
         parsed_fn_ty: llvmkit_ir::FunctionType<'ctx, B>,
     ) -> ParseResult<ParsedCallee<'ctx, B>> {
         match parsed {
@@ -7691,14 +7709,14 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                         .with_can_unwind(data.can_unwind),
                 ),
             )),
-            ParsedDirectCallee::Undef { loc } => {
-                let callee = llvmkit_ir::PointerValue::try_from(
-                    self.module.ptr_type(0).as_type().get_undef().as_value(),
-                )
-                .map_err(|e| ParseError::Expected {
-                    expected: format!("undef pointer callee: {e}"),
-                    loc: DiagLoc::span(loc),
-                })?;
+            ParsedDirectCallee::Value { v, loc } => {
+                // Mirrors `PerFunctionState::getVal`'s type check: whatever
+                // value form the callee took, it must be pointer-typed.
+                let callee =
+                    llvmkit_ir::PointerValue::try_from(v).map_err(|e| ParseError::Expected {
+                        expected: format!("pointer callee: {e}"),
+                        loc: DiagLoc::span(loc),
+                    })?;
                 Ok(ParsedCallee::Indirect(callee))
             }
         }
@@ -8214,8 +8232,8 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         // parse_lhs_before_invoke already consumed `invoke` and optionally LHS.
         let calling_conv = self.parse_optional_calling_conv()?;
         let return_attrs = self.parse_optional_return_attrs()?;
-        let ret_ty = self.parse_type(true)?;
-        let parsed_callee = self.parse_direct_callee_ref()?;
+        let callee_ty = self.parse_type(true)?;
+        let parsed_callee = self.parse_direct_callee_ref(state)?;
         self.expect_punct(PunctKind::LParen, "'(' in invoke argument list")?;
         let mut args: Vec<llvmkit_ir::Value<'ctx, B>> = Vec::new();
         let mut arg_tys: Vec<Type<'ctx, B>> = Vec::new();
@@ -8261,7 +8279,12 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             "'label' for invoke unwind destination",
         )?;
         let unwind_bb = self.parse_block_ref(state)?;
-        let parsed_fn_ty = self.module.fn_type(ret_ty, arg_tys, var_args);
+        // Upstream `resolveFunctionType`: an explicitly written function
+        // type IS the call-site type; otherwise infer from the arguments.
+        let parsed_fn_ty = match callee_ty.into_type_enum() {
+            AnyTypeEnum::Function(fn_ty) => fn_ty,
+            _ => self.module.fn_type(callee_ty, arg_tys, var_args),
+        };
         let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty)?;
         let name = result_name.as_str();
         let (_, inst) = match callee {
@@ -8295,7 +8318,10 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 return Err(self.expected("direct function callee for invoke"));
             }
         };
-        let ret_is_void = matches!(ret_ty.into_type_enum(), AnyTypeEnum::Void(_));
+        let ret_is_void = matches!(
+            parsed_fn_ty.return_type().into_type_enum(),
+            AnyTypeEnum::Void(_)
+        );
         // For void-returning invokes, don't bind a result. Non-void unnamed
         // invokes still consume the next numbered local slot, matching
         // `LLParser::setInstName(NameID=-1, NameStr="")`.
@@ -8320,8 +8346,8 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         self.bump()?; // eat `callbr`
         let calling_conv = self.parse_optional_calling_conv()?;
         let return_attrs = self.parse_optional_return_attrs()?;
-        let ret_ty = self.parse_type(true)?;
-        let parsed_callee = self.parse_direct_callee_ref()?;
+        let callee_ty = self.parse_type(true)?;
+        let parsed_callee = self.parse_direct_callee_ref(state)?;
         self.expect_punct(PunctKind::LParen, "'(' in callbr argument list")?;
         let mut args: Vec<llvmkit_ir::Value<'ctx, B>> = Vec::new();
         let mut arg_tys: Vec<Type<'ctx, B>> = Vec::new();
@@ -8382,7 +8408,12 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 let _ = self.eat_punct(PunctKind::Comma)?;
             }
         }
-        let parsed_fn_ty = self.module.fn_type(ret_ty, arg_tys, var_args);
+        // Upstream `resolveFunctionType`: an explicitly written function
+        // type IS the call-site type; otherwise infer from the arguments.
+        let parsed_fn_ty = match callee_ty.into_type_enum() {
+            AnyTypeEnum::Function(fn_ty) => fn_ty,
+            _ => self.module.fn_type(callee_ty, arg_tys, var_args),
+        };
         let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty)?;
         let name = result_name.as_str();
         let (_, inst) = match callee {
@@ -8418,7 +8449,10 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 return Err(self.expected("direct function callee for callbr"));
             }
         };
-        let ret_is_void = matches!(ret_ty.into_type_enum(), AnyTypeEnum::Void(_));
+        let ret_is_void = matches!(
+            parsed_fn_ty.return_type().into_type_enum(),
+            AnyTypeEnum::Void(_)
+        );
         if ret_is_void {
             Ok(None)
         } else {

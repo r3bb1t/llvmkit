@@ -352,3 +352,214 @@ fn callbr_inferred_signature_arg_mismatch_rejected() {
         "function callee signature mismatch",
     );
 }
+
+/// Mirrors `test/Feature/indirectcall.ll`'s `call i64 %fibfunc(...)`: a
+/// callee may be any pointer-typed value, parsed through `parseCall`'s
+/// `parseValID` + `convertValIDToValue(PointerType)` path. Non-vararg
+/// indirect calls print in AsmWriter's short form.
+#[test]
+fn indirect_call_local_fn_ptr_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/indirect_call_local_fn_ptr_round_trips.ll"
+    );
+
+    let text = parse_and_render_bytes("indirect_call_local_fn_ptr_round_trips", FIXTURE);
+    assert_check_lines(&text, &["call void %fp(i32 1)", "ret void"]);
+}
+
+/// Mirrors `test/Assembler/call-arg-is-callee.ll` `@call`: an explicit
+/// vararg call-site type through a local function pointer exercises
+/// `resolveFunctionType`'s FunctionType branch together with the
+/// indirect-callee path; vararg call sites keep the long-form type.
+#[test]
+fn indirect_call_vararg_fn_ptr_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/indirect_call_vararg_fn_ptr_round_trips.ll"
+    );
+
+    let text = parse_and_render_bytes("indirect_call_vararg_fn_ptr_round_trips", FIXTURE);
+    assert_check_lines(&text, &["call void (i32, ...) %fp(i32 1, i8 2)"]);
+}
+
+/// Crafted against `convertValIDToValue`'s `t_Null` arm with a pointer
+/// target type: `null` is a legal (if degenerate) callee upstream; no
+/// upstream lit coverage of the spelling, rule shape is the anchor (D11).
+#[test]
+fn indirect_call_null_callee_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/indirect_call_null_callee_round_trips.ll"
+    );
+
+    let text = parse_and_render_bytes("indirect_call_null_callee_round_trips", FIXTURE);
+    assert_check_lines(&text, &["call void null()"]);
+}
+
+/// Positive guard for the retired dedicated `undef`-callee arm: `undef`
+/// callees ride the generic value path (`convertValIDToValue` `t_Undef`)
+/// and must keep parsing after the special case's removal.
+#[test]
+fn indirect_call_undef_callee_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/indirect_call_undef_callee_round_trips.ll"
+    );
+
+    let text = parse_and_render_bytes("indirect_call_undef_callee_round_trips", FIXTURE);
+    assert_check_lines(&text, &["call void undef()"]);
+}
+
+/// Mirrors `LLParser::PerFunctionState::getVal`'s type check at the callee
+/// position ("'%x' defined with type 'i32' but expected 'ptr'"): a
+/// non-pointer local cannot be a callee. llvmkit surfaces the rule when
+/// converting the parsed callee value to a pointer; no upstream lit
+/// coverage of the diagnostic, rule shape is the anchor (D11).
+#[test]
+fn indirect_call_non_pointer_callee_rejected() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/indirect_call_non_pointer_callee_rejected.ll"
+    );
+
+    assert_fixture_rejected(
+        "indirect_call_non_pointer_callee_rejected",
+        FIXTURE,
+        "pointer callee: type mismatch: expected pointer, got integer",
+    );
+}
+
+/// llvmkit-specific GAP lock: upstream `test/Assembler/call-arg-is-callee.ll`
+/// `@invoke` accepts an indirect invoke (`parseInvoke` shares `parseCall`'s
+/// callee path); llvmkit has no indirect-invoke builder yet, so the parser
+/// rejects the resolved indirect callee with a deliberate diagnostic
+/// instead of the pre-port generic parse failure.
+#[test]
+fn invoke_indirect_callee_rejected() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/invoke_indirect_callee_rejected.ll");
+
+    assert_fixture_rejected(
+        "invoke_indirect_callee_rejected",
+        FIXTURE,
+        "direct function callee for invoke",
+    );
+}
+
+/// llvmkit-specific STRICTNESS lock: upstream parses an indirect callbr but
+/// `Verifier::visitCallBrInst` rejects it ("Callbr: indirect function /
+/// invalid signature"); llvmkit rejects at parse time.
+#[test]
+fn callbr_indirect_callee_rejected() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/callbr_indirect_callee_rejected.ll");
+
+    assert_fixture_rejected(
+        "callbr_indirect_callee_rejected",
+        FIXTURE,
+        "direct function callee for callbr",
+    );
+}
+
+/// Mirrors `parseInvoke`'s use of `resolveFunctionType`: a written
+/// FunctionType IS the call-site type (no inference from the argument
+/// list); the non-vararg invoke prints back in short form.
+#[test]
+fn invoke_explicit_type_round_trips() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/invoke_explicit_type_round_trips.ll");
+
+    let text = parse_and_render_bytes("invoke_explicit_type_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["invoke void @f(i32 1)", "to label %ok unwind label %lp"],
+    );
+}
+
+/// Crafted against `resolveFunctionType`'s FunctionType branch reached
+/// from `parseInvoke`: vararg invokes are only expressible through the
+/// explicit call-site type (upstream shape: the vararg statepoint invoke
+/// in `test/Assembler/opaque-ptr-intrinsic-remangling.ll`).
+#[test]
+fn invoke_explicit_type_vararg_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/invoke_explicit_type_vararg_round_trips.ll"
+    );
+
+    let text = parse_and_render_bytes("invoke_explicit_type_vararg_round_trips", FIXTURE);
+    assert_check_lines(&text, &["invoke void (ptr, ...) @vf(ptr %p, i32 7)"]);
+}
+
+/// Crafted against `resolveFunctionType`'s FunctionType branch reached
+/// from `parseCallBr`; no upstream lit coverage of the explicit spelling
+/// on callbr, rule shape is the anchor (D11).
+#[test]
+fn callbr_explicit_type_round_trips() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/callbr_explicit_type_round_trips.ll");
+
+    let text = parse_and_render_bytes("callbr_explicit_type_round_trips", FIXTURE);
+    assert_check_lines(&text, &["callbr void @g(i32 1)", "to label %cont []"]);
+}
+
+/// Vararg form of [`callbr_explicit_type_round_trips`]: only expressible
+/// through the explicit type, printed back in long form. Parse-level
+/// mirror; upstream's verifier additionally restricts non-asm callbr to
+/// direct intrinsic callees.
+#[test]
+fn callbr_explicit_type_vararg_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/callbr_explicit_type_vararg_round_trips.ll"
+    );
+
+    let text = parse_and_render_bytes("callbr_explicit_type_vararg_round_trips", FIXTURE);
+    assert_check_lines(&text, &["callbr void (i32, ...) @g(i32 1, i8 2)"]);
+}
+
+/// Crafted against `parseInvoke`'s argument loop ("argument is not of
+/// expected type") with an explicit call-site type; no upstream lit or
+/// unittest coverage, rule shape is the anchor (D11). llvmkit routes the
+/// check through `validate_call_site_args` in
+/// `build_invoke_dyn_with_config`.
+#[test]
+fn invoke_explicit_type_arg_type_mismatch_rejected() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/invoke_explicit_type_arg_type_mismatch_rejected.ll"
+    );
+
+    assert_fixture_rejected(
+        "invoke_explicit_type_arg_type_mismatch_rejected",
+        FIXTURE,
+        "valid invoke: call argument #0 type mismatch: expected integer, got float",
+    );
+}
+
+/// Crafted against `parseCallBr`'s argument loop with an explicit
+/// call-site type — same rule as
+/// [`invoke_explicit_type_arg_type_mismatch_rejected`], surfaced through
+/// `build_callbr_with_config`.
+#[test]
+fn callbr_explicit_type_arg_type_mismatch_rejected() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/callbr_explicit_type_arg_type_mismatch_rejected.ll"
+    );
+
+    assert_fixture_rejected(
+        "callbr_explicit_type_arg_type_mismatch_rejected",
+        FIXTURE,
+        "valid callbr: call argument #0 type mismatch: expected integer, got float",
+    );
+}
+
+/// llvmkit-specific STRICTNESS lock, explicit-type invoke form: upstream
+/// accepts a written call-site type that disagrees with the declaration
+/// (opaque-pointer UB-not-error); llvmkit's `resolve_direct_callee`
+/// rejects at parse time, same doctrine as the inferred-signature locks.
+#[test]
+fn invoke_explicit_type_signature_mismatch_rejected() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/invoke_explicit_type_signature_mismatch_rejected.ll"
+    );
+
+    assert_fixture_rejected(
+        "invoke_explicit_type_signature_mismatch_rejected",
+        FIXTURE,
+        "function callee signature mismatch",
+    );
+}
