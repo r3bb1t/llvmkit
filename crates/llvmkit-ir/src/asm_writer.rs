@@ -1453,7 +1453,16 @@ fn fmt_alloca(
 ) -> fmt::Result {
     let module = inst.module();
     let allocated = Type::new(a.allocated_ty, module);
-    write!(f, "alloca {}", allocated)?;
+    // Mirrors AsmWriter's AllocaInst arm: `inalloca` then `swifterror`
+    // before the allocated type.
+    write!(f, "alloca ")?;
+    if a.flags.is_inalloca() {
+        write!(f, "inalloca ")?;
+    }
+    if a.flags.is_swifterror() {
+        write!(f, "swifterror ")?;
+    }
+    write!(f, "{}", allocated)?;
     if let Some(num_id) = a.num_elements.get() {
         let nd = module.context().value_data(num_id);
         let nv = Value::from_parts(num_id, module, nd.ty);

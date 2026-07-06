@@ -199,6 +199,9 @@ pub enum VerifierRule {
     /// `alloca` num-elements operand is not an integer.
     /// Mirrors `Verifier::visitAllocaInst`.
     AllocaNonIntegerCount,
+    /// `swifterror` alloca is not pointer-typed, or is an array allocation.
+    /// Mirrors `Verifier::visitAllocaInst`.
+    SwiftErrorAlloca,
     /// `load` pointer operand is not a pointer.
     /// Mirrors `Verifier::visitLoadInst`.
     LoadNonPointer,
@@ -369,6 +372,7 @@ impl fmt::Display for VerifierRule {
             Self::GepNonIntegerIndex => "getelementptr index operand is not an integer",
             Self::AllocaUnsizedType => "alloca allocated type is unsized",
             Self::AllocaNonIntegerCount => "alloca num-elements operand is not an integer",
+            Self::SwiftErrorAlloca => "swifterror alloca must be a non-array pointer allocation",
             Self::LoadNonPointer => "load pointer operand is not a pointer",
             Self::LoadUnsizedType => "loading unsized types is not allowed",
             Self::StoreNonPointer => "store pointer operand is not a pointer",

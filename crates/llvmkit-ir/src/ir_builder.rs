@@ -2959,6 +2959,7 @@ where
             None,
             MaybeAlign::NONE,
             self.alloca_addr_space(),
+            crate::instr_types::AllocaFlags::none(),
             name,
         )
     }
@@ -2982,6 +2983,7 @@ where
             Some(n.as_value().id),
             MaybeAlign::NONE,
             self.alloca_addr_space(),
+            crate::instr_types::AllocaFlags::none(),
             name,
         )
     }
@@ -3006,6 +3008,7 @@ where
             Some(n.as_value().id),
             MaybeAlign::new(align),
             self.alloca_addr_space(),
+            crate::instr_types::AllocaFlags::none(),
             name,
         )
     }
@@ -3027,6 +3030,7 @@ where
             None,
             MaybeAlign::new(align),
             self.alloca_addr_space(),
+            crate::instr_types::AllocaFlags::none(),
             name,
         )
     }
@@ -3037,6 +3041,7 @@ where
         num_elements: Option<ValueId>,
         align: MaybeAlign,
         addr_space: u32,
+        flags: crate::instr_types::AllocaFlags,
         name: impl AsRef<str>,
     ) -> IrResult<PointerValue<'ctx, B>> {
         // Materialise the DataLayout preferred alignment when omitted, like
@@ -3047,11 +3052,44 @@ where
         } else {
             align
         };
-        let payload =
-            crate::instr_types::AllocaInstData::new(allocated_ty, num_elements, align, addr_space);
+        let payload = crate::instr_types::AllocaInstData::new_with_flags(
+            allocated_ty,
+            num_elements,
+            align,
+            addr_space,
+            flags,
+        );
         let ptr_ty = self.module.ptr_type(addr_space).as_type().id();
         let inst = self.append_instruction(ptr_ty, InstructionKindData::Alloca(payload), name);
         Ok(PointerValue::from_value_unchecked(inst.as_value()))
+    }
+
+    /// Erased `alloca` construction (D3 dyn twin of the typed
+    /// [`Self::build_alloca`] family): array size, alignment, and
+    /// `inalloca`/`swifterror` flags in one call, with the DataLayout's
+    /// alloca address space and default alignment filled in. Used by the
+    /// parser, which reconstructs any spelled combination.
+    pub fn build_alloca_dyn<T, Name>(
+        &self,
+        ty: T,
+        num_elements: Option<IntValue<'ctx, IntDyn, B>>,
+        align: MaybeAlign,
+        flags: crate::instr_types::AllocaFlags,
+        name: Name,
+    ) -> IrResult<PointerValue<'ctx, B>>
+    where
+        Name: AsRef<str>,
+        T: IrType<'ctx, B>,
+    {
+        let size = num_elements.map(|n| n.as_value().id);
+        self.build_alloca_inner(
+            ty.as_type().id(),
+            size,
+            align,
+            self.alloca_addr_space(),
+            flags,
+            name,
+        )
     }
 
     /// `alloca` for schema `T`, returning a pointee-typed pointer. The

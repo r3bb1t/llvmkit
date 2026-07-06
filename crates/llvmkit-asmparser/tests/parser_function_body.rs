@@ -404,6 +404,27 @@ fn parses_array_alloca() {
     );
 }
 
+/// Ports the `inalloca` / `swifterror` marker arms of
+/// `LLParser::parseAlloc` and AsmWriter's AllocaInst printer.
+#[test]
+fn parses_alloca_markers() {
+    let printed = parse_and_print(
+        "define void @m() {\nentry:\n  \
+           %i = alloca inalloca i32\n  \
+           %e = alloca swifterror ptr\n  \
+           ret void\n\
+         }\n",
+    );
+    assert!(
+        printed.contains("%i = alloca inalloca i32, align 4\n"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("%e = alloca swifterror ptr, align 8\n"),
+        "{printed}"
+    );
+}
+
 /// Ports `LLParser::parseGetElementPtr` plain + inbounds arms.
 /// Mirrors `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, GEPIndices)`.
 #[test]

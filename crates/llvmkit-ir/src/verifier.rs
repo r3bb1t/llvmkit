@@ -1881,6 +1881,34 @@ impl<'ctx> Verifier<'ctx> {
                 ));
             }
         }
+        // Verifier.cpp `visitAllocaInst`: a swifterror alloca must have
+        // pointer type and must not be an array allocation.
+        if a.flags.is_swifterror() {
+            if !self
+                .module
+                .context()
+                .type_data(a.allocated_ty)
+                .is_pointer_data()
+            {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::SwiftErrorAlloca,
+                    format!(
+                        "swifterror alloca must have pointer type, got {}",
+                        self.type_label(a.allocated_ty)
+                    ),
+                ));
+            }
+            if a.num_elements.get().is_some() {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::SwiftErrorAlloca,
+                    "swifterror alloca must not be an array allocation".to_owned(),
+                ));
+            }
+        }
         // Result type must be a pointer; the IRBuilder construction
         // path always emits one, but assert it for parsed/foreign IR.
         if !self

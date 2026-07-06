@@ -1069,6 +1069,38 @@ impl ICmpFlags {
 // Memory ops: alloca / load / store
 // --------------------------------------------------------------------------
 
+/// The `inalloca` / `swifterror` markers on an `alloca` (mirrors
+/// `AllocaInst::isUsedWithInAlloca` / `isSwiftError`). A typed carrier rather
+/// than trailing bool parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct AllocaFlags {
+    inalloca: bool,
+    swifterror: bool,
+}
+
+impl AllocaFlags {
+    /// No markers.
+    pub fn none() -> Self {
+        Self::default()
+    }
+    /// Set `inalloca`.
+    pub fn with_inalloca(mut self) -> Self {
+        self.inalloca = true;
+        self
+    }
+    /// Set `swifterror`.
+    pub fn with_swifterror(mut self) -> Self {
+        self.swifterror = true;
+        self
+    }
+    pub fn is_inalloca(self) -> bool {
+        self.inalloca
+    }
+    pub fn is_swifterror(self) -> bool {
+        self.swifterror
+    }
+}
+
 /// Storage payload for `alloca`. Mirrors `AllocaInst`
 /// (`Instructions.h`).
 #[derive(Debug)]
@@ -1077,20 +1109,23 @@ pub(crate) struct AllocaInstData {
     pub(crate) num_elements: Cell<Option<ValueId>>,
     pub(crate) align: crate::align::MaybeAlign,
     pub(crate) addr_space: u32,
+    pub(crate) flags: AllocaFlags,
 }
 
 impl AllocaInstData {
-    pub(crate) fn new(
+    pub(crate) fn new_with_flags(
         allocated_ty: crate::r#type::TypeId,
         num_elements: Option<ValueId>,
         align: crate::align::MaybeAlign,
         addr_space: u32,
+        flags: AllocaFlags,
     ) -> Self {
         Self {
             allocated_ty,
             num_elements: Cell::new(num_elements),
             align,
             addr_space,
+            flags,
         }
     }
 }
@@ -1101,6 +1136,7 @@ impl Clone for AllocaInstData {
             num_elements: Cell::new(self.num_elements.get()),
             align: self.align,
             addr_space: self.addr_space,
+            flags: self.flags,
         }
     }
 }
@@ -1110,6 +1146,7 @@ impl PartialEq for AllocaInstData {
             && self.num_elements.get() == other.num_elements.get()
             && self.align == other.align
             && self.addr_space == other.addr_space
+            && self.flags == other.flags
     }
 }
 impl Eq for AllocaInstData {}
@@ -1119,6 +1156,7 @@ impl core::hash::Hash for AllocaInstData {
         self.num_elements.get().hash(h);
         self.align.hash(h);
         self.addr_space.hash(h);
+        self.flags.hash(h);
     }
 }
 

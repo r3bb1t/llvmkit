@@ -35,16 +35,16 @@ use llvmkit_ir::attributes::{
 use std::collections::HashMap;
 
 use llvmkit_ir::{
-    Align, AnyTypeEnum, ApFloat, ApFloatSemantics, ApInt, ApIntSignedness, AtomicLoadConfig,
-    AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, BasicBlockLabel, Brand, CallingConv,
-    Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
-    DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType, FloatValue,
-    GepNoWrapFlags, IRBuilder, IntDyn, IntType, IntValue, IntrinsicNameResolution, IrError,
-    IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue, Positioned,
-    RoundingMode, SelectionKind, StructType, SyncScope, ThreadLocalMode, Type, TypeKind,
-    UIToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord, UseListOrderRecord, Visibility,
-    constant_fold_select_instruction, derived_types::PointerType, resolve_intrinsic_name,
-    shufflevector_mask_from_constant,
+    Align, AllocaFlags, AnyTypeEnum, ApFloat, ApFloatSemantics, ApInt, ApIntSignedness,
+    AtomicLoadConfig, AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, BasicBlockLabel, Brand,
+    CallingConv, Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode,
+    ConstantExprOptions, DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType,
+    FloatValue, GepNoWrapFlags, IRBuilder, IntDyn, IntType, IntValue, IntrinsicNameResolution,
+    IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue,
+    Positioned, RoundingMode, SelectionKind, StructType, SyncScope, ThreadLocalMode, Type,
+    TypeKind, UIToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord, UseListOrderRecord,
+    Visibility, constant_fold_select_instruction, derived_types::PointerType,
+    resolve_intrinsic_name, shufflevector_mask_from_constant,
 };
 use llvmkit_support::{Span, Spanned};
 
@@ -6606,25 +6606,25 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         b: &ParsedBlockBuilder<'m, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
+        // `inalloca` / `swifterror` markers precede the type
+        // (`LLParser::parseAlloc`).
+        let mut flags = AllocaFlags::none();
+        if self.eat_keyword(Keyword::Inalloca)? {
+            flags = flags.with_inalloca();
+        }
+        if self.eat_keyword(Keyword::Swifterror)? {
+            flags = flags.with_swifterror();
+        }
         let ty = self.parse_type(false)?;
         // Upstream parses the array-size operand before the alignment.
         let size = self.parse_optional_comma_array_size(state)?;
-        let align = self.parse_optional_comma_align()?;
-        let name = result_name.as_str();
-        let r = match (size, align) {
-            (Some(n), Some(a)) => b
-                .build_array_alloca_with_align(ty, n, a, name)
-                .map_err(|e| self.builder_err("alloca", e))?,
-            (Some(n), None) => b
-                .build_array_alloca(ty, n, name)
-                .map_err(|e| self.builder_err("alloca", e))?,
-            (None, Some(a)) => b
-                .build_alloca_with_align(ty, a, name)
-                .map_err(|e| self.builder_err("alloca", e))?,
-            (None, None) => b
-                .build_alloca(ty, name)
-                .map_err(|e| self.builder_err("alloca", e))?,
-        };
+        let align = self
+            .parse_optional_comma_align()?
+            .map(MaybeAlign::new)
+            .unwrap_or(MaybeAlign::NONE);
+        let r = b
+            .build_alloca_dyn(ty, size, align, flags, result_name.as_str())
+            .map_err(|e| self.builder_err("alloca", e))?;
         Ok(r.as_value())
     }
 

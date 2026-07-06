@@ -179,10 +179,10 @@ pub use global_variable::{GlobalBuilder, GlobalVariable};
 pub use inline_asm::{AsmDialect, InlineAsm, InlineAsmOptions};
 pub use inst_simplify::InstSimplifyPass;
 pub use instr_types::{
-    AShrFlags, AddFlags, AtomicCmpXchgConfig, AtomicLoadConfig, AtomicRMWConfig, AtomicRMWFlags,
-    AtomicStoreConfig, BinaryOpcode, CallAttributeData, CmpXchgFlags, ICmpFlags, LShrFlags,
-    MulFlags, OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags, SDivFlags, ShlFlags,
-    SubFlags, TailCallKind, TruncFlags, UDivFlags, UIToFpFlags, UnaryOpcode, ZExtFlags,
+    AShrFlags, AddFlags, AllocaFlags, AtomicCmpXchgConfig, AtomicLoadConfig, AtomicRMWConfig,
+    AtomicRMWFlags, AtomicStoreConfig, BinaryOpcode, CallAttributeData, CmpXchgFlags, ICmpFlags,
+    LShrFlags, MulFlags, OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags, SDivFlags,
+    ShlFlags, SubFlags, TailCallKind, TruncFlags, UDivFlags, UIToFpFlags, UnaryOpcode, ZExtFlags,
 };
 pub use instruction::{Instruction, InstructionKind, InstructionView, TerminatorKind};
 pub use instructions::{
