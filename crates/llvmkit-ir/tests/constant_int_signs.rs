@@ -65,6 +65,49 @@ fn int_signs_i32_propagates_sign() -> Result<(), IrError> {
     })
 }
 
+/// llvmkit-specific (Doctrine D11): a negative `i64` lifted into a WIDER
+/// target must sign-extend, per the signed-lift contract documented on
+/// [`llvmkit_ir::IntType::const_int`] ("signed Rust ints sign-extend") and
+/// the `i64 -> Width<N>` impl's own "preserve the signed bit pattern"
+/// comment. Closest upstream reference:
+/// `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, IntSigns)` --
+/// upstream's `ConstantInt::getSigned` is exactly `get(ty, v, true)`
+/// (sign-extend), the semantics these lifts must match for signed sources.
+#[test]
+fn int_signs_i64_sign_extends_into_wider_targets() -> Result<(), IrError> {
+    Module::with_new("s", |m| {
+        // Static wide target: Width<128>.
+        let w128 = m.int_type_n::<128>();
+        let neg_one = w128.const_int(-1_i64);
+        // Sign-extension: all 128 bits set, NOT the zero-extended 2^64 - 1.
+        assert_eq!(neg_one.value_sext_i128(), Some(-1));
+        assert_eq!(neg_one.value_zext_u128(), Some(u128::MAX));
+
+        let min = w128.const_int(i64::MIN);
+        assert_eq!(min.value_sext_i128(), Some(i128::from(i64::MIN)));
+
+        // Dyn wide target: 128-bit IntDyn.
+        let dyn128 = m.custom_width_int_type(128)?;
+        let dyn_neg = dyn128.const_int_checked(-1_i64)?;
+        assert_eq!(dyn_neg.value_sext_i128(), Some(-1));
+        assert_eq!(dyn_neg.value_zext_u128(), Some(u128::MAX));
+
+        // Dyn NARROW target: -1 fits in i32 under signed interpretation,
+        // exactly as the signed i8/i16/i32 dyn lifts already accept it.
+        let dyn32 = m.custom_width_int_type(32)?;
+        let narrow_neg = dyn32.const_int_checked(-1_i64)?;
+        assert_eq!(narrow_neg.value_sext_i128(), Some(-1));
+        assert_eq!(narrow_neg.value_zext_u128(), Some(0xFFFF_FFFF));
+
+        // A value that genuinely does not fit still rejects.
+        assert!(matches!(
+            dyn32.const_int_checked(i64::MAX),
+            Err(IrError::ImmediateOverflow { .. })
+        ));
+        Ok(())
+    })
+}
+
 /// llvmkit-specific (Doctrine D11): exercises the `bool` (i1) edge case.
 /// Closest upstream reference: `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest,
 /// IntSigns)` (the `int1_t` corner of `getSExtValue` -- a one-bit `1`

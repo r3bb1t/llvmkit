@@ -420,9 +420,12 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoConstantInt<'ctx, Width<N>, 
         const {
             assert!(N >= 64, "i64 lift to Width<N> requires N >= 64");
         }
+        // Sign-extend (mirrors ConstantInt::getSigned): a negative i64
+        // must fill the upper bits of any N > 64 target. For N == 64 the
+        // signed interpretation is the identity on the bit pattern.
         let raw = self.cast_unsigned();
         Ok(ty
-            .const_int_raw(raw, false)
+            .const_int_raw(raw, true)
             .unwrap_or_else(|_| unreachable!("i64 fits in Width<N>, N >= 64")))
     }
 }
@@ -492,14 +495,16 @@ macro_rules! impl_into_constant_int_dyn {
     )+ };
 }
 impl_into_constant_int_dyn!(signed i8, i16, i32);
-// i64 to IntDyn passes through the u64 bit-pattern.
+// i64 to IntDyn sign-extends like its signed siblings above: wider
+// runtime targets get the sign bits, and narrower targets fit-check the
+// SIGNED value (so -1 fits any width; mirrors ConstantInt::getSigned).
 impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, IntDyn, B> for i64 {
     type Error = IrError;
     fn into_constant_int(
         self,
         ty: IntType<'ctx, IntDyn, B>,
     ) -> IrResult<ConstantIntValue<'ctx, IntDyn, B>> {
-        ty.const_int_raw(self.cast_unsigned(), false)
+        ty.const_int_raw(self.cast_unsigned(), true)
     }
 }
 impl_into_constant_int_dyn!(unsigned u8, u16, u32, u64);
