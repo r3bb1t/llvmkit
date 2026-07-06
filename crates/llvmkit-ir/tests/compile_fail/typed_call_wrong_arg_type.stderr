@@ -1,0 +1,28 @@
+error[E0277]: the trait bound `FloatValue<'_, f64, Brand<'_>>: IntoIntValue<'_, i32, Brand<'_>>` is not satisfied
+  --> tests/compile_fail/typed_call_wrong_arg_type.rs:27:39
+   |
+27 |         let _ = b.build_call(callee, (x,), "bad");
+   |                   ----------          ^ the trait `IntoIntValue<'_, i32, Brand<'_>>` is not implemented for `FloatValue<'_, f64, Brand<'_>>`
+   |                   |
+   |                   required by a bound introduced by this call
+   |
+   = help: the following other types implement trait `IntoIntValue<'ctx, W, B>`:
+             `ConstantIntValue<'ctx, W, B>` implements `IntoIntValue<'ctx, W, B>`
+             `IntValue<'ctx, W, B>` implements `IntoIntValue<'ctx, W, B>`
+             `bool` implements `IntoIntValue<'ctx, Width<N>, B>`
+             `bool` implements `IntoIntValue<'ctx, bool, B>`
+             `i128` implements `IntoIntValue<'ctx, Width<N>, B>`
+             `i128` implements `IntoIntValue<'ctx, i128, B>`
+             `i16` implements `IntoIntValue<'ctx, Width<N>, B>`
+             `i16` implements `IntoIntValue<'ctx, i128, B>`
+           and $N others
+   = note: required for `FloatValue<'_, f64, Brand<'_>>` to implement `IntoCallArg<'_, i32, Brand<'_>>`
+   = note: required for `(FloatValue<'_, f64, Brand<'_>>,)` to implement `CallArgs<'_, (i32,), Brand<'_>>`
+note: required by a bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_call`
+  --> src/ir_builder.rs
+   |
+   |     pub fn build_call<Ret, Params, A, Name>(
+   |            ---------- required by a bound in this associated function
+...
+   |         A: CallArgs<'ctx, Params, B>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_call`

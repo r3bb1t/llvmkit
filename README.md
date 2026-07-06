@@ -147,6 +147,53 @@ existing raw function with a mismatched signature. For ordinary Rust function
 pointer aliases, `m.add_typed_function_of::<fn(i32) -> i32, _>(...)` builds the
 LLVM signature directly from the alias.
 
+### Typed calls
+
+`IRBuilder::build_call` takes a `TypedFunctionValue` callee and an argument
+tuple typed against its parameter schema. Wrong arity, a wrong-typed argument,
+or misusing a void call's result are all compile errors instead of runtime
+`IrError`s or verifier failures, and the result narrows to the callee's real
+return type with no `try_into`:
+
+```rust
+use llvmkit_ir::{IRBuilder, IrError, Linkage, Module};
+
+fn build_typed_call() -> Result<(), IrError> {
+    Module::with_new("demo", |m| {
+        let callee = m.add_typed_function::<i32, (i32, i32), _>("add_inner", Linkage::External)?;
+        let entry = callee.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let (lhs, rhs) = callee.params();
+        let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
+        b.build_ret(sum)?;
+
+        let caller = m.add_typed_function::<i32, (i32, i32), _>("caller", Linkage::External)?;
+        let entry = caller.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let (x, y) = caller.params();
+
+        // `call.result()` is already `IntValue<i32>` -- no `try_into`.
+        let call = b.build_call(callee, (x, y), "r")?;
+        b.build_ret(call.result())?;
+
+        print!("{m}");
+        Ok(())
+    })
+}
+```
+
+A callee whose signature is only known at runtime (parsed IR, an `extern`
+declaration built from user input) keeps using the `_dyn` counterparts —
+`build_call_dyn`, `build_indirect_call_dyn`, `build_invoke_dyn` — which take a
+plain `FunctionValue` and an iterable of pre-widened `Value`s, and reject a
+wrong argument count or type with `IrError::CallArgumentCountMismatch` /
+`CallArgumentTypeMismatch` at build time rather than deferring to the verifier.
+`build_indirect_call::<Sig>` derives the callee's function type from a Rust
+function-pointer schema `Sig` instead of taking it by hand; `build_varargs_call`
+lowers a fixed, schema-typed prefix the same way `build_call` does and appends
+an erased `...` tail, matching LLVM's own no-static-check contract on variadic
+arguments.
+
 Derived struct schemas let you derive the schema on a plain Rust struct, use the
 generated `<Struct>Value<'ctx, B>` wrapper in IR, and call field
 accessors/builders instead of indexing aggregates manually:

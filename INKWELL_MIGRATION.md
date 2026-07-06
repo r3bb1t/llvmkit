@@ -137,6 +137,7 @@ shapes and is distinct from `IntDyn` / `FloatDyn`.
 ||`function.append_basic_block("l")`|`f.append_basic_block(&m, "l")`|requires the matching unverified module token|
 ||`Builder::build_int_add(a, b, name)`|`b.build_int_add::<W, _, _>(lhs: IntValue<'ctx, W>, rhs: IntValue<'ctx, W>, name)?` "" `W` is inferred at the call site, mismatched widths reject at compile time.|
 ||`Builder::build_int_sub` / `_mul`|`b.build_int_sub(...)` / `b.build_int_mul(...)`|same shape as `add`|
+||`Builder::build_call(callee, &[args], name)`|`b.build_call(typed_callee, (args...), name)?` for a `TypedFunctionValue` callee, or `b.build_call_dyn(callee, [args], name)?` for a plain `FunctionValue`|typed path: wrong arity / wrong-typed argument are compile errors via `CallArgs`/`IntoCallArg`, and `call.result()` narrows to the callee's real return type with no `try_into`; dyn path: wrong arity / wrong argument type reject at build time with `IrError::CallArgumentCountMismatch` / `CallArgumentTypeMismatch` instead of reaching the verifier|
 ||`Builder::build_return(Some(v))`|`b.build_ret(value)?`|`value: impl IntoReturnValue<'ctx, R, B>`; type must match the function's return marker|
 ||`Builder::build_return(None)`|`b.build_ret_void()` (`R = ()`) or `b.build_ret_void()?` (`Dyn`)|typed `void` builders are infallible; the `Dyn` path errors if the function does not return `void`|
 ||`Builder::position_at_end(bb)`|`IRBuilder::new(&m).position_at_end(bb)`|consumes `self` and transitions `Unpositioned` → `Positioned`; `build_*` methods are only reachable in `Positioned`|

@@ -72,4 +72,8 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/typed_gep_bad_index.rs");
     t.compile_fail("tests/compile_fail/fp_ext_equal_width.rs");
     t.compile_fail("tests/compile_fail/extract_value_empty_indices.rs");
+    t.compile_fail("tests/compile_fail/typed_call_wrong_arity.rs");
+    t.compile_fail("tests/compile_fail/typed_call_wrong_arg_type.rs");
+    t.compile_fail("tests/compile_fail/typed_call_void_result_use.rs");
+    t.compile_fail("tests/compile_fail/typed_call_cross_module_arg.rs");
 }

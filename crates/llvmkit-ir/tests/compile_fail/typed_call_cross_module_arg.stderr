@@ -1,0 +1,31 @@
+error[E0521]: borrowed data escapes outside of closure
+  --> tests/compile_fail/typed_call_cross_module_arg.rs:31:21
+   |
+18 |         let left_value = i32_ty.const_int(1_i32);
+   |             ---------- `left_value` declared here, outside of the closure body
+19 |         Module::with_new::<_, _, _>("right", |right| {
+   |                                               ----- `right` is a reference that is only valid in the closure body
+...
+31 |             let _ = builder.build_call(callee, (left_value,), "bad");
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `right` escapes the closure body here
+   |
+   = note: requirement occurs because of the type `ConstantIntValue<'_, i32, Brand<'_>>`, which makes the generic argument `Brand<'_>` invariant
+   = note: the struct `ConstantIntValue<'ctx, W, B>` is invariant over the parameter `B`
+   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+
+error[E0521]: borrowed data escapes outside of closure
+  --> tests/compile_fail/typed_call_cross_module_arg.rs:20:26
+   |
+16 |       Module::with_new::<_, _, _>("left", |left| {
+   |                                            ----
+   |                                            |
+   |                                            `left` is a reference that is only valid in the closure body
+   |                                            has type `Module<'1>`
+...
+20 |               let callee = right
+   |  __________________________^
+21 | |                 .add_typed_function::<i32, (i32,), _>("callee", Linkage::External)
+   | |                                                                                  ^
+   | |                                                                                  |
+   | |__________________________________________________________________________________`left` escapes the closure body here
+   |                                                                                    argument requires that `'1` must outlive `'static`

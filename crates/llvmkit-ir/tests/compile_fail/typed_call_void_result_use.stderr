@@ -1,0 +1,26 @@
+error[E0277]: the trait bound `(): IntoIntValue<'_, i32, Brand<'_>>` is not satisfied
+  --> tests/compile_fail/typed_call_void_result_use.rs:27:40
+   |
+27 |         let _ = b.build_int_add::<i32, _, _, _>(void_call.result(), n, "x");
+   |                   -------------        ^ the trait `IntoIntValue<'_, i32, Brand<'_>>` is not implemented for `()`
+   |                   |
+   |                   required by a bound introduced by this call
+   |
+   = help: the following other types implement trait `IntoIntValue<'ctx, W, B>`:
+             `ConstantIntValue<'ctx, W, B>` implements `IntoIntValue<'ctx, W, B>`
+             `IntValue<'ctx, W, B>` implements `IntoIntValue<'ctx, W, B>`
+             `bool` implements `IntoIntValue<'ctx, Width<N>, B>`
+             `bool` implements `IntoIntValue<'ctx, bool, B>`
+             `i128` implements `IntoIntValue<'ctx, Width<N>, B>`
+             `i128` implements `IntoIntValue<'ctx, i128, B>`
+             `i16` implements `IntoIntValue<'ctx, Width<N>, B>`
+             `i16` implements `IntoIntValue<'ctx, i128, B>`
+           and $N others
+note: required by a bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_int_add`
+  --> src/ir_builder.rs
+   |
+   |     pub fn build_int_add<W, Lhs, Rhs, Name>(
+   |            ------------- required by a bound in this associated function
+...
+   |         Lhs: IntoIntValue<'ctx, W, B>,
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_int_add`
