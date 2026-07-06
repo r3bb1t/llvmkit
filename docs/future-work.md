@@ -218,4 +218,9 @@ deliberately deferred; each cites its upstream anchor.
   no-wrap/exact hooks.
 - **Vector-of-pointer GEP bases** -- `build_gep` / the parser assume a scalar
   pointer base; `<N x ptr>` vector GEP bases (`getGEPReturnType`'s vector arm)
-  are unmodeled (documented earlier in this file).
+  are unmodeled (documented earlier in this file). Consequence for the new GEP
+  index validation: the struct-index-must-be-`i32` check (`StructType::indexValid`,
+  upstream `isIntOrIntVectorTy(32)`) is enforced for scalar indices only; the
+  `<N x i32>` vector-index case is unreachable here because a vector-index GEP
+  requires a vector base, which is rejected earlier. Revisit the check when
+  vector GEP bases land.

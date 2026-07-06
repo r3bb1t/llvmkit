@@ -1900,7 +1900,12 @@ impl<'ctx> Verifier<'ctx> {
                     ),
                 ));
             }
-            if a.num_elements.get().is_some() {
+            // `isArrayAllocation()` is false for an omitted size or a
+            // constant-`1` size, so those are permitted.
+            if a.num_elements
+                .get()
+                .is_some_and(|count| !crate::constants::is_constant_int_one(self.module, count))
+            {
                 return Err(self.fail(
                     f,
                     bb,

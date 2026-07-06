@@ -106,3 +106,29 @@ entry:
         "output:\n{text}"
     );
 }
+
+/// Regression (broad-review Critical): an align-less alloca with attached
+/// `!dbg` metadata parses. The metadata comma must not be mis-consumed as an
+/// array size (`LLParser::parseAlloc` branches on `MetadataVar` before the
+/// size parse). Ubiquitous in debug builds.
+#[test]
+fn alloca_with_trailing_dbg_metadata_parses() {
+    let src = r#"
+define void @f() !dbg !3 {
+entry:
+  %p = alloca i32, !dbg !4
+  ret void
+}
+
+!0 = !DIFile(filename: "a.c", directory: "/tmp")
+!1 = !DICompileUnit(file: !0, language: DW_LANG_C, producer: "llvmkit")
+!2 = !DISubroutineType(types: !{null})
+!3 = distinct !DISubprogram(name: "f", file: !0, type: !2, unit: !1)
+!4 = !DILocation(line: 1, column: 1, scope: !3)
+"#;
+    let printed = parse_and_render(src);
+    assert!(
+        printed.contains("%p = alloca i32, align 4, !dbg !"),
+        "{printed}"
+    );
+}

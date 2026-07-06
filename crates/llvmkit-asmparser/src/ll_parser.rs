@@ -6616,14 +6616,15 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             flags = flags.with_swifterror();
         }
         let ty = self.parse_type(false)?;
-        // Upstream parses the array-size operand before the alignment.
+        // Upstream parses size, then alignment, then address space.
         let size = self.parse_optional_comma_array_size(state)?;
         let align = self
             .parse_optional_comma_align()?
             .map(MaybeAlign::new)
             .unwrap_or(MaybeAlign::NONE);
+        let addr_space = self.parse_optional_comma_addrspace()?;
         let r = b
-            .build_alloca_dyn(ty, size, align, flags, result_name.as_str())
+            .build_alloca_dyn(ty, size, align, addr_space, flags, result_name.as_str())
             .map_err(|e| self.builder_err("alloca", e))?;
         Ok(r.as_value())
     }
@@ -6643,8 +6644,15 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let saved_lex = self.lex.clone();
         let saved_current = self.current.clone();
         self.bump()?;
-        if matches!(self.peek(), Token::Kw(Keyword::Align)) {
-            // A `, align N` clause, not a size — restore for the align parse.
+        // A `, align N`, `, addrspace(N)`, or `, !dbg !N` (trailing metadata)
+        // clause is not an array size — restore the comma for the align /
+        // addrspace / metadata handlers. Mirrors `LLParser::parseAlloc`, which
+        // branches on `kw_align` / `kw_addrspace` / `MetadataVar` before
+        // attempting the size parse.
+        if matches!(
+            self.peek(),
+            Token::Kw(Keyword::Align) | Token::Kw(Keyword::Addrspace) | Token::MetadataVar(_)
+        ) {
             self.lex = saved_lex;
             self.current = saved_current;
             return Ok(None);
@@ -6655,6 +6663,25 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             .try_into()
             .map_err(|_| self.expected("integer alloca array size"))?;
         Ok(Some(n))
+    }
+
+    /// Optional `, addrspace(N)` clause for `alloca` (after any align),
+    /// mirroring `LLParser::parseAlloc`. Uses the same save/restore peek so a
+    /// trailing `, !dbg` metadata comma is left intact.
+    fn parse_optional_comma_addrspace(&mut self) -> ParseResult<Option<u32>> {
+        if !matches!(self.peek(), Token::Comma) {
+            return Ok(None);
+        }
+        let saved_lex = self.lex.clone();
+        let saved_current = self.current.clone();
+        self.bump()?;
+        if !matches!(self.peek(), Token::Kw(Keyword::Addrspace)) {
+            self.lex = saved_lex;
+            self.current = saved_current;
+            return Ok(None);
+        }
+        self.bump()?;
+        Ok(Some(self.parse_addr_space_paren()?))
     }
 
     /// `load [volatile] TYPE, ptr PTR [, align N]` or

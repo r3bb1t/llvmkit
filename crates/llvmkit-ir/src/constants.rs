@@ -2345,6 +2345,16 @@ fn const_index_u64(module: &ModuleCore, id: ValueId) -> Option<u64> {
     }
 }
 
+/// `true` when `id` is a constant integer equal to 1. Mirrors the check in
+/// `AllocaInst::isArrayAllocation` (a size operand of constant 1 is NOT an
+/// array allocation) and the matching AsmWriter size-print suppression.
+pub(crate) fn is_constant_int_one(module: &ModuleCore, id: ValueId) -> bool {
+    matches!(
+        &module.context().value_data(id).kind,
+        ValueKindData::Constant(ConstantData::Int(words)) if words.len() == 1 && words[0] == 1
+    )
+}
+
 fn type_bit_width(module: &ModuleCore, id: TypeId) -> Option<u32> {
     match module.context().type_data(id) {
         TypeData::Half | TypeData::BFloat => Some(16),

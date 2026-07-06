@@ -3074,6 +3074,7 @@ where
         ty: T,
         num_elements: Option<IntValue<'ctx, IntDyn, B>>,
         align: MaybeAlign,
+        addr_space: Option<u32>,
         flags: crate::instr_types::AllocaFlags,
         name: Name,
     ) -> IrResult<PointerValue<'ctx, B>>
@@ -3082,14 +3083,8 @@ where
         T: IrType<'ctx, B>,
     {
         let size = num_elements.map(|n| n.as_value().id);
-        self.build_alloca_inner(
-            ty.as_type().id(),
-            size,
-            align,
-            self.alloca_addr_space(),
-            flags,
-            name,
-        )
+        let addr_space = addr_space.unwrap_or_else(|| self.alloca_addr_space());
+        self.build_alloca_inner(ty.as_type().id(), size, align, addr_space, flags, name)
     }
 
     /// `alloca` for schema `T`, returning a pointee-typed pointer. The

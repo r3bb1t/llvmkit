@@ -1466,8 +1466,17 @@ fn fmt_alloca(
     if let Some(num_id) = a.num_elements.get() {
         let nd = module.context().value_data(num_id);
         let nv = Value::from_parts(num_id, module, nd.ty);
-        write!(f, ", {} ", nv.ty())?;
-        fmt_operand_ref(f, nv, Some(slots))?;
+        // Upstream suppresses a canonical `i32 1` array size (isArrayAllocation
+        // is false and the size type is i32); print any other size.
+        let is_canonical_one = crate::constants::is_constant_int_one(module.core_ref(), num_id)
+            && matches!(
+                module.context().type_data(nd.ty),
+                crate::r#type::TypeData::Integer { bits: 32 }
+            );
+        if !is_canonical_one {
+            write!(f, ", {} ", nv.ty())?;
+            fmt_operand_ref(f, nv, Some(slots))?;
+        }
     }
     if let Some(al) = a.align.align() {
         write!(f, ", align {}", al.value())?;

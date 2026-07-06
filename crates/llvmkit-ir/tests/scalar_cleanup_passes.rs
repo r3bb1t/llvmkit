@@ -270,3 +270,45 @@ fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
         Ok(())
     })
 }
+
+/// Regression (broad-review Critical): InstSimplify must TERMINATE on an
+/// ordered atomic load from a constant global. The load folds to the constant
+/// but is not trivially dead (its ordering is a side effect), so it is RAUW'd
+/// but kept; without upstream's use-empty guard the restart loop re-folded it
+/// forever. Mirrors `InstSimplifyPass::runImpl` only simplifying use-having
+/// instructions.
+#[test]
+fn instsimplify_terminates_on_ordered_atomic_load_from_constant() -> Result<(), IrError> {
+    Module::with_new("is-atomic", |m| {
+        let i32_ty = m.i32_type();
+        let g = m.add_global_constant("g", i32_ty.as_type(), i32_ty.const_int(7_i32))?;
+        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let gp = PointerValue::try_from(g.as_global_constant_ptr().as_value())?;
+        let cfg =
+            AtomicLoadConfig::new(AtomicOrdering::Monotonic, SyncScope::System, Align::new(4)?);
+        let s = b.build_int_load_atomic::<i32, _, _>(gp, cfg, "s")?;
+        b.build_ret(s)?;
+
+        let verified = m.verify()?;
+        let mut fpm = FunctionPassManager::<_, MutatesIr>::new_transform();
+        fpm.add_pipeline_pass(InstSimplifyPass);
+        let mut fam = FunctionAnalysisManager::new();
+        let reverified = fpm.run(verified, f, &mut fam)?.verify()?;
+        let text = format!("{reverified}");
+
+        // The pass terminated (no hang); the side-effecting load is kept, its
+        // use replaced by the folded constant.
+        assert!(
+            text.contains("load atomic i32"),
+            "atomic load kept:\n{text}"
+        );
+        assert!(
+            text.contains("ret i32 7"),
+            "use folded to constant:\n{text}"
+        );
+        Ok(())
+    })
+}

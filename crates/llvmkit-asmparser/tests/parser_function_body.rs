@@ -588,3 +588,20 @@ fn parses_addrspacecast() {
     );
     assert!(printed.contains("%r = addrspacecast ptr %p to ptr addrspace(1)\n"));
 }
+
+/// The `alloca <ty>, addrspace(N)` clause round-trips (parse + print),
+/// mirroring `LLParser::parseAlloc`'s addrspace branch and AsmWriter's
+/// AllocaInst addrspace arm.
+#[test]
+fn alloca_addrspace_round_trips() {
+    let printed = parse_and_print(
+        "define void @f() {\nentry:\n  \
+           %p = alloca i32, addrspace(5)\n  \
+           ret void\n\
+         }\n",
+    );
+    assert!(
+        printed.contains("%p = alloca i32, align 4, addrspace(5)"),
+        "{printed}"
+    );
+}

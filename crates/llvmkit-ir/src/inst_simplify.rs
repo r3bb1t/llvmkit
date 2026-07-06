@@ -57,6 +57,18 @@ fn inst_simplify_iteration<'ctx, B: ModuleBrand + 'ctx>(
         for id in instruction_ids {
             let inst = Instruction::<state::Attached, B>::from_parts(id, module_token.module_ref());
             let view = inst.as_view();
+            // Upstream `InstSimplifyPass::runImpl` only simplifies instructions
+            // with uses (`!I.use_empty()`) and never re-queues a
+            // simplified-but-live instruction. This restart-scan loop would
+            // otherwise re-fold a folded-but-not-erased instruction (e.g. an
+            // ordered atomic load from a constant global, kept by the
+            // trivially-dead gate below) forever. Skipping use-empty
+            // instructions makes the loop terminate: a folded instruction
+            // has its uses replaced, so on the next scan it is use-empty and
+            // skipped here (dead-code removal is DCE's job, not this pass's).
+            if !view.as_value().has_uses() {
+                continue;
+            }
             let Some(replacement) = constant_fold_instruction(&view, &data_layout, None)? else {
                 continue;
             };
