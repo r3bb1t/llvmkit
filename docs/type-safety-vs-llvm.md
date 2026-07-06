@@ -572,6 +572,24 @@ The rule of thumb is simple: if Rust can know the invariant from the types at th
 call site, `llvmkit` makes it a type error. If the invariant depends on the whole
 module, CFG, data layout, or erased parser input, `Module::verify()` reports it.
 
+## Deliberate divergences from upstream defaults
+
+llvmkit's *semantics* track upstream LLVM; a small number of API *defaults*
+deliberately do not. These change what the equivalent construction sequence
+emits, so they are documented here rather than left to surprise a diff:
+
+- **Call sites default to the callee's calling convention.** Upstream
+  `IRBuilder::CreateCall` leaves every new call site at `ccc` even when the
+  callee declares `fastcc`; making them agree is the frontend's job
+  (`CallBase::setCallingConv`), and a mismatch is undefined behavior at run
+  time. llvmkit's call builders (`build_call`, `build_varargs_call`,
+  `call_builder`, `typed_call_builder`) instead default the call site to the
+  callee's own convention, so the same construction sequence against a
+  `fastcc` callee prints `call fastcc ...` where upstream prints `call ...`.
+  Pass an explicit convention (`with_config` / `.calling_conv(..)`) to
+  override. Parsed IR is unaffected: the parser stores exactly the convention
+  the input spells.
+
 ## Proof in the repository
 
 The compile-fail suite locks these guarantees with `trybuild`:

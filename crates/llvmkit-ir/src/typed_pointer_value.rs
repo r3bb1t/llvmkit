@@ -88,9 +88,15 @@ impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B>
 impl<'ctx, B: ModuleBrand + 'ctx> PointerValue<'ctx, B> {
     /// Attach a pointee schema. This is an *assertion*, not a checked
     /// conversion -- opaque pointers carry nothing to check against. A
-    /// mis-assertion is exactly as (un)safe as passing the wrong type
-    /// to `build_load(ty, ptr, ..)` today: wrong IR, caught by the
-    /// verifier, never memory-unsafe (D10).
+    /// mis-assertion is exactly as unchecked as passing the wrong type
+    /// to `build_load(ty, ptr, ..)` today: the emitted IR reads a
+    /// different type than the slot was written with, which is *legal*
+    /// IR under opaque pointers -- neither llvmkit's verifier nor
+    /// upstream's can see through a `ptr`, so nothing downstream flags
+    /// it. What the assertion can never do is make the Rust side
+    /// memory-unsafe (D10): the cost of a wrong pointee is wrong IR
+    /// semantics, observable in the printed module, not UB in your
+    /// compiler.
     #[inline]
     pub fn with_pointee<T: IrField>(self) -> TypedPointerValue<'ctx, T, B> {
         TypedPointerValue::from_pointer(self)
