@@ -175,67 +175,47 @@ deferred it.
 
 A six-agent audit of the shipped overhaul against
 `orig_cpp/llvm-project-llvmorg-22.1.4/` confirmed the builder semantics clean
-and produced a fix wave (fold_phi poison skip, definitive-initializer gate,
-i128 sign-extension, SSA poison-arm RAUW + chase cycle detection, any-order
-flag parsing, call-site fn_ty independence). These verified findings were
-deliberately deferred; each cites its upstream anchor so a later session can
-start cold.
+and produced two fix waves: the first (fold_phi poison skip,
+definitive-initializer gate, i128 sign-extension, SSA poison-arm RAUW + chase
+cycle detection, any-order flag parsing, call-site fn_ty independence), and the
+LLVM 22.1.4 parity-completion pass (DataLayout default alignment on
+load/store/alloca, alloca array-size / `inalloca` / `swifterror` / DL alloca
+address space, GEP index validation, indirect invoke, musttail ellipsis rules,
+unordered-atomic-load DCE + trivially-dead InstSimplify erase, and the
+`llvmkit-default<On>` recipe rename). The `build_is_null`/`build_pointer_cmp`
+folder-bypass item was already fixed on dev (`b06413e`). The items below remain
+deliberately deferred; each cites its upstream anchor.
 
-- **Default-align materialization** -- align-less `load`/`store`/`alloca`
-  never materialize the DataLayout default, so llvmkit prints
-  `load i32, ptr %p` where upstream always prints `, align 4`: upstream fills
-  missing alignment at construction (`computeLoadStoreDefaultAlign` /
-  `computeAllocaDefaultAlign`, `lib/IR/Instructions.cpp`) and at parse
-  (`LLParser.cpp` fills `MaybeAlign` from the DataLayout). Genuine byte-parity
-  gap for align-less input; large fixture ripple (every existing align-less
-  expectation changes), needs its own dedicated pass.
-- **GEP `getIndexedType` walk on build/parse/verify** -- llvmkit accepts
-  `getelementptr {i32,i64}, ptr %p, i32 0, i32 5` (out-of-range struct field)
-  and non-constant struct indices; upstream rejects at parse ("invalid
-  getelementptr indices", `LLParser.cpp`) and asserts in
-  `GetElementPtrInst::Create`. `build_gep_inner` should walk
-  `getIndexedType` and the verifier's `check_gep` should mirror it.
-- **`alloca` parse/build gaps** -- no array-size operand
-  (`alloca i32, i32 %n`), no `, addrspace(N)`, no `inalloca`/`swifterror` in
-  `parse_alloca`; `build_alloca` hard-codes address space 0 instead of
-  `DL.getAllocaAddrSpace()` (`IRBuilder.h` `CreateAlloca`), and `fmt_alloca`
-  never prints `, addrspace(N)`.
-- **Indirect `invoke`/`callbr`** -- `invoke void %fp(...)` is valid upstream
-  (`LLParser::parseInvoke` accepts any callee operand); llvmkit's parser
-  requires a direct function callee. Needs a pointer-callee invoke payload
-  path mirroring `build_indirect_call_dyn`.
-- **musttail ellipsis asymmetries** -- the parser accepts `...` in ANY call
-  argument list where upstream errors outside musttail-in-varargs
-  (`LLParser::parseParameterList`), and the printer never emits the `, ...`
-  musttail-forwarding marker upstream prints (`AsmWriter.cpp:4633-4637`).
-- **`build_is_null`/`build_pointer_cmp` bypass the folder** -- upstream
-  `CreateICmp` always consults `Folder.FoldCmp`, so
-  `icmp eq ptr null, null` folds to `true` upstream but materializes an
-  instruction here; the relation kernel (`evaluate_icmp_relation`,
-  `constant_fold.rs`) already exists, the builder just never asks (a chip
-  session was spawned for this during the review).
+- **Indirect `callbr`** -- `callbr void %fp(...)` is invalid IR upstream
+  (`Verifier::visitCallBrInst` requires a direct callee for non-asm callbr:
+  "Callbr: indirect function / invalid signature"), so llvmkit rejects it at
+  parse, which reaches the same verdict. A stricter port would accept it at
+  parse and reject in the verifier. (Indirect *invoke* is now supported -- it
+  is valid IR.)
+- **DCE removable calls / allocs** -- llvmkit still keeps `willReturn`+readnone
+  calls, removable allocation-function calls, `free(null)`, and lifetime-only
+  allocas that upstream `wouldInstructionBeTriviallyDead`
+  (`lib/Transforms/Utils/Local.cpp`) deletes. Porting these needs faithful
+  allocation-function / attribute modeling to avoid over-removal (a miscompile
+  if wrong), so the current DCE stays conservative-but-safe. `Value::has_uses`
+  also counts debug-record uses upstream ignores (upstream salvages debug info
+  instead). (Unordered atomic loads are now removed.)
+- **InstSimplify unreachable-block skip** -- the pass still folds in
+  unreachable blocks that upstream skips (`InstSimplifyPass.cpp:33-37`), a
+  textual-only divergence in dead code; needs reachability (a dominator tree)
+  threaded into the pass. No InstSimplify tests cover freeze folds or
+  unreachable-block behavior yet (the latter blocked on this skip). (The
+  erase-only-when-trivially-dead behavior is now matched.)
+- **Deeper `swifterror` dataflow verification** -- the swifterror alloca
+  support verifies the parse-level constraints (pointer type, non-array); the
+  full `Verifier` use-site rules (swifterror values may only flow through
+  specific call/load/store positions) are not yet enforced.
 - **Plain add/sub/div/shift hook dispatch** -- `build_int_add`/`build_int_sub`
   consult the plain `fold_int_bin_op` hook where upstream `CreateAdd` funnels
   through `FoldNoWrapBinOp(.., false, false)` (and `CreateUDiv` et al. through
   `FoldExactBinOp(.., false)`). Identical results with the shipped folders;
   observable only by third-party folders that override just the
   no-wrap/exact hooks.
-- **InstSimplify pass shape** -- erases folded instructions unconditionally
-  where upstream erases only `isInstructionTriviallyDead` survivors
-  (`InstSimplifyPass.cpp:59-61`), and processes unreachable blocks upstream
-  skips (`:33-37`). Both textual-only divergences today (constant memory has
-  no synchronizes-with edges; dead code folds are inert).
-- **DCE conservatism** -- keeps unordered atomic loads, removable allocs,
-  `willReturn`+readnone calls, and lifetime-only allocas that upstream
-  `wouldInstructionBeTriviallyDead` (`lib/Transforms/Utils/Local.cpp`)
-  deletes; `Value::has_uses` counts debug-record uses upstream ignores
-  (upstream salvages debug info instead). Missed cleanups only, never
-  over-deletion.
-- **`default<O0>`/`default<O1>` recipe names** -- reuse upstream's textual
-  pipeline-alias spellings for non-upstream compositions
-  (`PassBuilderPipelines.cpp` `buildO0DefaultPipeline` is NOT empty).
-  Data-only today; rename or implement faithfully before a runner consumes
-  them.
-- **Negative-coverage gaps in `scalar_cleanup_passes.rs`** -- nothing asserts
-  DCE keeps volatile/atomic loads, calls, or fences; no InstSimplify tests
-  for freeze folds or unreachable-block behavior.
+- **Vector-of-pointer GEP bases** -- `build_gep` / the parser assume a scalar
+  pointer base; `<N x ptr>` vector GEP bases (`getGEPReturnType`'s vector arm)
+  are unmodeled (documented earlier in this file).
