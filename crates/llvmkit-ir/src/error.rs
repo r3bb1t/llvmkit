@@ -512,12 +512,16 @@ pub enum IrError {
     /// A call/invoke/callbr site passed an argument whose type does not
     /// exactly match the callee's parameter type at that position.
     /// Mirrors the same `CallInst::init` assertion and
-    /// `Verifier::visitCallBase`'s per-argument type check.
+    /// `Verifier::visitCallBase`'s per-argument type check. Both sides
+    /// carry the IR-textual rendering of the type (`Type`'s `Display`,
+    /// e.g. `i32`), not just its kind, so same-kind mismatches such as
+    /// i8-vs-i32 stay distinguishable — the way `LLParser::parseCall`'s
+    /// "argument is not of expected type 'i32'" spells the full type.
     #[error("call argument #{index} type mismatch: expected {expected}, got {got}")]
     CallArgumentTypeMismatch {
         index: u32,
-        expected: TypeKindLabel,
-        got: TypeKindLabel,
+        expected: String,
+        got: String,
     },
 
     /// A typed function facade ([`crate::TypedFunctionValue`]) was requested

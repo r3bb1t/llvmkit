@@ -418,8 +418,8 @@ fn build_call_dyn_rejects_wrong_argument_type() -> Result<(), IrError> {
             err,
             IrError::CallArgumentTypeMismatch {
                 index: 0,
-                expected: TypeKindLabel::Integer,
-                got: TypeKindLabel::Double,
+                expected: "i32".to_owned(),
+                got: "double".to_owned(),
             }
         );
         let _ = b.build_ret(0_i32);

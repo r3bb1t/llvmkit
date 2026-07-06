@@ -3570,8 +3570,8 @@ where
                 return Err(IrError::CallArgumentTypeMismatch {
                     index: u32::try_from(i)
                         .unwrap_or_else(|_| unreachable!("argument index bounded by u32")),
-                    expected: param_ty.kind_label(),
-                    got: arg_ty.kind_label(),
+                    expected: param_ty.to_string(),
+                    got: arg_ty.to_string(),
                 });
             }
         }
@@ -5001,6 +5001,14 @@ where
     {
         let lhs = lhs.into_pointer_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_pointer_value(ModuleRef::new(self.module))?;
+        let folded = self.folder.fold_cmp_dyn(
+            pred.into(),
+            IsValue::as_value(lhs),
+            IsValue::as_value(rhs),
+        )?;
+        if let Some(folded) = folder::narrow_folded_bool(folded)? {
+            return Ok(folded);
+        }
         let payload = super::instr_types::CmpInstData::new(
             pred,
             IsValue::as_value(lhs).id,

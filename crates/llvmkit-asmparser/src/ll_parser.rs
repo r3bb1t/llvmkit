@@ -6156,17 +6156,21 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             UDivFlags,
         };
         // Parse optional flags before the type: upstream grammar accepts
-        //   add/sub/mul/shl [nuw] [nsw] TYPE LHS, RHS
+        //   add/sub/mul/shl [nuw] [nsw] TYPE LHS, RHS   (nuw/nsw in either order)
         //   udiv/sdiv/lshr/ashr [exact] TYPE LHS, RHS
         //   or [disjoint] TYPE LHS, RHS
-        let nuw = matches!(
+        // The retry after `nsw` mirrors the kw_add/sub/mul/shl instruction arm
+        // (LLParser.cpp ~7323): `nsw nuw` parses and prints canonically as
+        // `nuw nsw`.
+        let is_overflowing_binop = matches!(
             op,
             IntBinOp::Add | IntBinOp::Sub | IntBinOp::Mul | IntBinOp::Shl
-        ) && self.eat_keyword(Keyword::Nuw)?;
-        let nsw = matches!(
-            op,
-            IntBinOp::Add | IntBinOp::Sub | IntBinOp::Mul | IntBinOp::Shl
-        ) && self.eat_keyword(Keyword::Nsw)?;
+        );
+        let mut nuw = is_overflowing_binop && self.eat_keyword(Keyword::Nuw)?;
+        let nsw = is_overflowing_binop && self.eat_keyword(Keyword::Nsw)?;
+        if !nuw {
+            nuw = is_overflowing_binop && self.eat_keyword(Keyword::Nuw)?;
+        }
         let exact = matches!(
             op,
             IntBinOp::UDiv | IntBinOp::SDiv | IntBinOp::LShr | IntBinOp::AShr
@@ -6352,8 +6356,14 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         op: IntCast,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        let trunc_nuw = matches!(op, IntCast::Trunc) && self.eat_keyword(Keyword::Nuw)?;
-        let trunc_nsw = matches!(op, IntCast::Trunc) && self.eat_keyword(Keyword::Nsw)?;
+        // nuw/nsw parse in either order (retry mirrors the kw_trunc arm,
+        // LLParser.cpp ~7405); print order is canonically `nuw nsw`.
+        let is_trunc = matches!(op, IntCast::Trunc);
+        let mut trunc_nuw = is_trunc && self.eat_keyword(Keyword::Nuw)?;
+        let trunc_nsw = is_trunc && self.eat_keyword(Keyword::Nsw)?;
+        if !trunc_nuw {
+            trunc_nuw = is_trunc && self.eat_keyword(Keyword::Nuw)?;
+        }
         let zext_nneg = matches!(op, IntCast::ZExt) && self.eat_keyword(Keyword::Nneg)?;
         let src_ty = self.parse_type(false)?;
         let src_v = self.parse_value(state, src_ty)?;

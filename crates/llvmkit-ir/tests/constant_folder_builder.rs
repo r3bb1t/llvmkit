@@ -7,9 +7,9 @@
 use llvmkit_ir::instr_types::CastOpcode;
 use llvmkit_ir::{
     BinaryIntrinsic, BinaryOpcode, Constant, ConstantFloatValue, ConstantFolder, ConstantIntValue,
-    GepNoWrapFlags, IRBuilder, IRBuilderFolder, InstructionKind, InstructionView, IntDyn, IntValue,
-    IrError, IrResult, Linkage, Module, MulFlags, NoFolder, OverflowFlags, PointerValue, ShlFlags,
-    Type, UDivFlags, Value, constant_fold_binary_instruction,
+    GepNoWrapFlags, IRBuilder, IRBuilderFolder, InstructionKind, InstructionView, IntDyn,
+    IntPredicate, IntValue, IrError, IrResult, Linkage, Module, MulFlags, NoFolder, OverflowFlags,
+    PointerValue, ShlFlags, Type, UDivFlags, Value, constant_fold_binary_instruction,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -422,6 +422,91 @@ fn constant_folder_pointer_cast_helpers_allow_one_lane_pointer_bitcasts() -> Res
     })
 }
 
+/// Mirrors `IRBuilder.h::CreateIsNull` -> `CreateICmpEQ` -> `Folder.FoldCmp`
+/// (`IRBuilder.h::CreateICmp` line 2442) +
+/// `ConstantFold.cpp::ConstantFoldCompareInstruction`: `icmp eq ptr null,
+/// null` folds to `i1 true` under the default folder and no instruction is
+/// inserted.
+#[test]
+fn constant_folder_folds_is_null_of_constant_null_without_instruction() -> Result<(), IrError> {
+    Module::with_new("folder-is-null", |m| {
+        let bool_ty = m.bool_type();
+        let ptr_ty = m.ptr_type(0);
+        let fn_ty = m.fn_type(bool_ty, Vec::<Type>::new(), false);
+        let f = m.add_function::<bool, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);
+        let null = PointerValue::try_from(ptr_ty.const_null().as_value())?;
+
+        let result = b.build_is_null(null, "isn")?;
+
+        assert_eq!(
+            Constant::try_from(result.as_value())?,
+            bool_ty.const_int(true).as_constant()
+        );
+        assert_eq!(b.insert_block().instructions().len(), 0);
+        Ok(())
+    })
+}
+
+/// Sibling of the `CreateIsNull` fold above for `IRBuilder.h::
+/// CreateIsNotNull`: `icmp ne ptr null, null` folds to `i1 false` under the
+/// default folder and no instruction is inserted.
+#[test]
+fn constant_folder_folds_is_not_null_of_constant_null_without_instruction() -> Result<(), IrError> {
+    Module::with_new("folder-is-not-null", |m| {
+        let bool_ty = m.bool_type();
+        let ptr_ty = m.ptr_type(0);
+        let fn_ty = m.fn_type(bool_ty, Vec::<Type>::new(), false);
+        let f = m.add_function::<bool, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);
+        let null = PointerValue::try_from(ptr_ty.const_null().as_value())?;
+
+        let result = b.build_is_not_null(null, "ok")?;
+
+        assert_eq!(
+            Constant::try_from(result.as_value())?,
+            bool_ty.const_int(false).as_constant()
+        );
+        assert_eq!(b.insert_block().instructions().len(), 0);
+        Ok(())
+    })
+}
+
+/// Mirrors `ConstantFold.cpp::evaluateICmpRelation`: a non-extern-weak
+/// addrspace(0) global compared against null is known `ICMP_UGT`, so the
+/// default folder resolves `icmp eq ptr @g, null` to `i1 false` (and `ne`
+/// to `i1 true`) without materializing instructions.
+#[test]
+fn constant_folder_folds_pointer_cmp_global_vs_null_without_instruction() -> Result<(), IrError> {
+    Module::with_new("folder-ptr-cmp-global", |m| {
+        let bool_ty = m.bool_type();
+        let i32_ty = m.i32_type();
+        let ptr_ty = m.ptr_type(0);
+        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let gp = PointerValue::try_from(g.as_global_constant_ptr().as_value())?;
+        let fn_ty = m.fn_type(bool_ty, Vec::<Type>::new(), false);
+        let f = m.add_function::<bool, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);
+
+        let eq = b.build_pointer_cmp(IntPredicate::Eq, gp, ptr_ty.const_null(), "eq")?;
+        let ne = b.build_pointer_cmp(IntPredicate::Ne, gp, ptr_ty.const_null(), "ne")?;
+
+        assert_eq!(
+            Constant::try_from(eq.as_value())?,
+            bool_ty.const_int(false).as_constant()
+        );
+        assert_eq!(
+            Constant::try_from(ne.as_value())?,
+            bool_ty.const_int(true).as_constant()
+        );
+        assert_eq!(b.insert_block().instructions().len(), 0);
+        Ok(())
+    })
+}
+
 /// Port of `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, InsertExtractElement)`
 /// lines 1127-1138: a folded insertelement chain extracts the inserted
 /// constants without materializing instructions.
@@ -613,6 +698,34 @@ fn no_folder_emits_ptrtoaddr_instruction_with_address_type() -> Result<(), IrErr
         let typed_result: IntValue<IntDyn> = result;
         assert_eq!(typed_result.ty().bit_width(), 32);
         assert_eq!(typed_result.as_value().name().as_deref(), Some("addr"));
+        assert_eq!(b.insert_block().instructions().len(), 1);
+        Ok(())
+    })
+}
+
+/// llvmkit-specific subset of `NoFolder.h`: with `NoFolder`, an all-constant
+/// pointer compare still materializes a real `icmp` instruction.
+#[test]
+fn no_folder_emits_pointer_cmp_instruction_for_constant_nulls() -> Result<(), IrError> {
+    Module::with_new("nofolder-ptr-cmp", |m| {
+        let bool_ty = m.bool_type();
+        let ptr_ty = m.ptr_type(0);
+        let fn_ty = m.fn_type(bool_ty, Vec::<Type>::new(), false);
+        let f = m.add_function::<bool, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let null = ptr_ty.const_null();
+
+        let result = b.build_pointer_cmp(IntPredicate::Eq, null, null, "isn")?;
+        let instruction = InstructionView::try_from(result.as_value())?;
+        let Some(InstructionKind::ICmp(icmp)) = instruction.kind() else {
+            panic!("expected icmp instruction");
+        };
+
+        assert_eq!(icmp.predicate(), IntPredicate::Eq);
+        assert_eq!(icmp.lhs(), null.as_value());
+        assert_eq!(icmp.rhs(), null.as_value());
+        assert_eq!(result.as_value().name().as_deref(), Some("isn"));
         assert_eq!(b.insert_block().instructions().len(), 1);
         Ok(())
     })

@@ -56,6 +56,66 @@ fn nuw_nsw_sub_round_trips() {
     assert_check_lines(&text, &["%z = sub nuw nsw i64 %x, %y"]);
 }
 
+/// `add/sub/mul nsw nuw` — reversed flag order from `test/Assembler/flags.ll`
+/// (`@add_both_reversed` etc.); must parse and print canonically as `nuw nsw`.
+#[test]
+fn nsw_nuw_reversed_binops_round_trips() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/flags/nsw_nuw_reversed_binops_round_trips.ll");
+
+    let text = parse_fixture("nsw_nuw_reversed_binops_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "%z = add nuw nsw i64 %x, %y",
+            "%z = sub nuw nsw i64 %x, %y",
+            "%z = mul nuw nsw i64 %x, %y",
+        ],
+    );
+}
+
+/// `trunc nuw nsw` — exact `test/Assembler/flags.ll` spelling
+/// (`@test_trunc_both`; the upstream vector form needs vector int-cast
+/// support, which parse_int_cast lacks).
+#[test]
+fn nuw_nsw_trunc_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/flags/nuw_nsw_trunc_round_trips.ll");
+
+    let text = parse_fixture("nuw_nsw_trunc_round_trips", FIXTURE);
+    assert_check_lines(&text, &["%res = trunc nuw nsw i64 %a to i32"]);
+}
+
+/// `trunc nsw nuw` — reversed flag order from `test/Assembler/flags.ll`
+/// (`@test_trunc_both_reversed`; the upstream vector form needs vector
+/// int-cast support, which parse_int_cast lacks); prints canonically as
+/// `nuw nsw`.
+#[test]
+fn nsw_nuw_reversed_trunc_round_trips() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/flags/nsw_nuw_reversed_trunc_round_trips.ll");
+
+    let text = parse_fixture("nsw_nuw_reversed_trunc_round_trips", FIXTURE);
+    assert_check_lines(&text, &["%res = trunc nuw nsw i64 %a to i32"]);
+}
+
+/// `add/sub nsw nuw (...)` constant expressions — reversed flag order from
+/// `test/Assembler/flags.ll` (`@add_both_reversed_ce`/`@sub_both_reversed_ce`);
+/// print canonically as `nuw nsw`.
+#[test]
+fn nsw_nuw_reversed_constexpr_round_trips() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/flags/nsw_nuw_reversed_constexpr_round_trips.ll");
+
+    let text = parse_fixture("nsw_nuw_reversed_constexpr_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "ret i64 add nuw nsw (i64 ptrtoint (ptr @addr to i64), i64 91)",
+            "ret i64 sub nuw nsw (i64 ptrtoint (ptr @addr to i64), i64 91)",
+        ],
+    );
+}
+
 /// `udiv exact` — exact `test/Assembler/flags.ll` spelling.
 #[test]
 fn exact_udiv_round_trips() {
