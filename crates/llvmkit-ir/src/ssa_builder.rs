@@ -384,6 +384,13 @@ struct SsaState<'ctx, R: ReturnMarker, B: ModuleBrand> {
     open_blocks: HashMap<ValueId, BasicBlock<'ctx, R, Unterminated, B>>,
     /// Linear lifecycle handles for layer-created phis (RAUW / erase).
     created_phis: HashMap<ValueId, Instruction<'ctx, Attached, B>>,
+    /// `phi -> declaring variable index`, populated alongside
+    /// `created_phis` in `emit_operandless_phi` (the one place that
+    /// KNOWS which variable a phi was created for). Lets
+    /// `undefined_phi_replacement` key strict/poison off `vars[idx]`
+    /// directly instead of re-deriving the variable from the phi's
+    /// cached type -- see that method's doc comment (D10).
+    phi_var: HashMap<ValueId, u32>,
     /// Deterministic iteration for a future `finish()`.
     block_order: Vec<ValueId>,
 }
@@ -400,6 +407,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand> SsaState<'ctx, R, B> {
             incomplete_phis: HashMap::new(),
             open_blocks: HashMap::new(),
             created_phis: HashMap::new(),
+            phi_var: HashMap::new(),
             block_order: Vec::new(),
         }
     }
@@ -1458,6 +1466,7 @@ where
         // non-phi instruction (nothing to re-check) or a phi some earlier
         // step already resolved away.
         let users: Vec<ValueId> = self.phi_user_ids(phi);
+        self.state.phi_var.remove(&phi);
         let handle = self.state.created_phis.remove(&phi).unwrap_or_else(|| {
             unreachable!(
                 "SsaBuilder invariant: every ValueId reachable through try_remove_trivial_phi \
@@ -1620,6 +1629,7 @@ where
         self.state
             .created_phis
             .insert(inst, Instruction::<Attached, B>::from_parts(inst, module));
+        self.state.phi_var.insert(inst, var);
         Ok(inst)
     }
 
@@ -1705,25 +1715,30 @@ where
                      phi still present in created_phis"
                 )
             });
-        // Recover which declared variable this phi belongs to by matching
-        // its cached type against the declared variable table. Ambiguous
-        // only if two variables share both type and poison policy, in
-        // which case either is a faithful diagnostic source.
-        let var = self
-            .state
-            .vars
-            .iter()
-            .find(|v| v.ty == ty)
-            .unwrap_or_else(|| {
-                unreachable!(
-                    "SsaBuilder invariant: every layer-created phi's type was taken from a \
-                     declared VarData.ty in Self::emit_operandless_phi"
-                )
-            });
+        // Recover which declared variable this phi belongs to via
+        // `phi_var`, populated alongside `created_phis` in
+        // `emit_operandless_phi` (the one place that KNOWS which
+        // variable it is building the phi for). D10: a type-only search
+        // over `vars` is ambiguous whenever two variables share a type
+        // (e.g. a poison i32 and a strict i32) -- it would silently
+        // return the FIRST matching declaration regardless of which
+        // variable's phi is actually being resolved, letting a strict
+        // variable's dead-cycle read resolve to poison (or a poison
+        // variable's error misname the wrong variable).
+        let var_idx = *self.state.phi_var.get(&phi).unwrap_or_else(|| {
+            unreachable!(
+                "SsaBuilder invariant: every layer-created phi's index was recorded in phi_var \
+                 by Self::emit_operandless_phi"
+            )
+        });
+        let var = &self.state.vars[usize::try_from(var_idx).unwrap_or_else(|_| {
+            unreachable!("SsaBuilder invariant: var indices are u32::try_from(vars.len())")
+        })];
         if var.poison_on_undef {
             let poison_ty = super::r#type::Type::new(ty, module);
             let poison = poison_ty.get_poison();
             self.state.created_phis.remove(&phi);
+            self.state.phi_var.remove(&phi);
             Instruction::<Attached, B>::from_parts(phi, module).erase_from_parent(self.module);
             let resolved = poison.as_value().id;
             self.state.resolved.borrow_mut().insert(phi, resolved);

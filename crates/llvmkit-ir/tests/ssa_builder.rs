@@ -458,6 +458,87 @@ fn poison_variable_reads_poison_on_undef_path() -> Result<(), IrError> {
     })
 }
 
+/// Whole-branch-review regression (D10): a dead (function-entry-
+/// unreachable) two-block cycle `loop1 <-> loop2` reads a STRICT i32
+/// variable declared AFTER a same-type POISON variable. The read happens
+/// while `loop1` is still unsealed, seeding an operandless "incomplete"
+/// phi (Braun's `incompletePhis`); once both blocks' `br`s complete the
+/// cycle and `loop1` is sealed, `add_phi_operands` discovers the phi's
+/// only reachable operand is itself (the cycle has no external
+/// predecessor) and collapses it via `try_remove_trivial_phi` into
+/// `undefined_phi_replacement`.
+///
+/// `undefined_phi_replacement` used to recover the phi's owning variable
+/// by TYPE ALONE (`vars.iter().find(|v| v.ty == ty)`), so with a
+/// same-type POISON variable declared FIRST, the strict variable's dead
+/// phi would silently resolve to `poison` (masking the D10 violation)
+/// instead of erroring -- or, if the naming happened to differ, the
+/// error would misname the poison variable rather than the strict one
+/// actually being read. This must instead name the STRICT variable and
+/// error, never poison. No upstream analogue: LLVM's `IRBuilder` has no
+/// on-the-fly SSA layer and never faces this ambiguity (see the module
+/// doc's `SSAUpdater` comparison).
+#[test]
+fn dead_cycle_phi_names_the_actual_strict_variable_not_same_type_poison() -> Result<(), IrError> {
+    Module::with_new("ssa-dead-cycle-strict-vs-poison", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let mut b = SsaBuilder::for_function(&m, f)?;
+        let entry = b.create_block("entry");
+        let loop1 = b.create_block("loop1");
+        let loop2 = b.create_block("loop2");
+
+        // Same-type (i32) poison variable declared FIRST -- the buggy
+        // type-only lookup would match this one regardless of which
+        // variable's phi is actually being resolved.
+        let _poison_var = b.declare_int_var_poison::<i32, _>("poisoned");
+        let strict_var = b.declare_int_var::<i32, _>("strict");
+
+        // Entry is unreachable into the cycle below -- it just returns
+        // on its own, keeping `loop1`/`loop2` a genuinely dead cycle.
+        let b = b.switch_to_block(entry)?;
+        let b = b.ret(0_i32)?;
+
+        // `loop1` is not sealed yet (its predecessor set -- `loop2`, plus
+        // its own eventual back-edge -- is not yet fully recorded), so
+        // this read seeds an operandless incomplete phi rather than
+        // erroring or resolving immediately.
+        let mut b = b.switch_to_block(loop1)?;
+        let _read = b.use_int_var(strict_var)?;
+        let b = b.br(loop2)?;
+
+        // Completes the cycle: `loop2`'s only predecessor is `loop1`.
+        let b = b.switch_to_block(loop2)?;
+        let mut b = b.br(loop1)?;
+        b.seal_block(loop2)?;
+
+        // `loop1`'s predecessor set (`loop2` only -- there is no
+        // external entry into this cycle) is now fully known. Sealing
+        // completes the incomplete phi seeded above; that phi's only
+        // operand chases back to itself (the dead cycle has no other
+        // source), so `try_remove_trivial_phi` falls through to
+        // `undefined_phi_replacement`.
+        match b.seal_block(loop1) {
+            Err(IrError::SsaUseOfUndefinedVariable { variable, .. }) => {
+                assert_eq!(
+                    variable, "strict",
+                    "expected the error to name the STRICT variable actually read, not a \
+                     same-type poison variable matched by type alone"
+                );
+                Ok(())
+            }
+            Ok(()) => panic!(
+                "expected SsaUseOfUndefinedVariable naming \"strict\", got Ok -- the dead \
+                 cycle's strict read was silently satisfied (likely resolved to poison)"
+            ),
+            Err(other) => {
+                panic!("expected SsaUseOfUndefinedVariable naming \"strict\", got {other:?}")
+            }
+        }
+    })
+}
+
 /// `br`ing into the entry block is rejected: `create_block`'s first call
 /// auto-seals the entry block (per `Verifier::visitFunction`'s "entry
 /// has no predecessors" invariant), so ANY edge recorded into it --
