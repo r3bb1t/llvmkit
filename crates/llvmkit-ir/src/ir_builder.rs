@@ -2986,6 +2986,30 @@ where
         )
     }
 
+    /// Produce `alloca <ty>, <size-ty> <num_elements>, align <N>`. The
+    /// array-size form of `IRBuilder::CreateAlloca` with an explicit `Align`.
+    pub fn build_array_alloca_with_align<T, N, Name>(
+        &self,
+        ty: T,
+        num_elements: N,
+        align: Align,
+        name: Name,
+    ) -> IrResult<PointerValue<'ctx, B>>
+    where
+        Name: AsRef<str>,
+        T: IrType<'ctx, B>,
+        N: IntoIntValue<'ctx, IntDyn, B>,
+    {
+        let n = num_elements.into_int_value(ModuleRef::new(self.module))?;
+        self.build_alloca_inner(
+            ty.as_type().id(),
+            Some(n.as_value().id),
+            MaybeAlign::new(align),
+            self.alloca_addr_space(),
+            name,
+        )
+    }
+
     /// Produce `alloca <ty>, align <N>`. Mirrors
     /// `IRBuilder::CreateAlignedAlloca`.
     pub fn build_alloca_with_align<T, Name>(

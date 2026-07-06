@@ -383,6 +383,27 @@ fn parses_alloca_load_store() {
     assert!(printed.contains("%r = load i32, ptr %slot, align 4\n"));
 }
 
+/// Ports the array-size branch of `LLParser::parseAlloc`
+/// (`alloca <ty>, <intty> <size>` and the `, align N` combination).
+#[test]
+fn parses_array_alloca() {
+    let printed = parse_and_print(
+        "define void @arr(i32 %n) {\nentry:\n  \
+           %a = alloca i32, i32 %n\n  \
+           %b = alloca i8, i64 5, align 8\n  \
+           ret void\n\
+         }\n",
+    );
+    assert!(
+        printed.contains("%a = alloca i32, i32 %n, align 4\n"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("%b = alloca i8, i64 5, align 8\n"),
+        "{printed}"
+    );
+}
+
 /// Ports `LLParser::parseGetElementPtr` plain + inbounds arms.
 /// Mirrors `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, GEPIndices)`.
 #[test]

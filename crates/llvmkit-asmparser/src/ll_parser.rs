@@ -5960,7 +5960,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     self.parse_fp_binop(state, b_ref, FpBinOp::Rem, &result_name)?
                 }
                 crate::ll_token::Opcode::FCmp => self.parse_fcmp(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::Alloca => self.parse_alloca(b_ref, &result_name)?,
+                crate::ll_token::Opcode::Alloca => self.parse_alloca(state, b_ref, &result_name)?,
                 crate::ll_token::Opcode::Load => self.parse_load(state, b_ref, &result_name)?,
                 crate::ll_token::Opcode::GetElementPtr => {
                     self.parse_gep(state, b_ref, &result_name)?
@@ -6602,20 +6602,59 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
     /// Mirrors `LLParser::parseAlloc` (LLParser.cpp ~8540).
     fn parse_alloca(
         &mut self,
+        state: &PerFunctionState<'ctx, B>,
         b: &ParsedBlockBuilder<'m, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         let ty = self.parse_type(false)?;
+        // Upstream parses the array-size operand before the alignment.
+        let size = self.parse_optional_comma_array_size(state)?;
         let align = self.parse_optional_comma_align()?;
-        let r = match align {
-            Some(a) => b
-                .build_alloca_with_align(ty, a, result_name.as_str())
+        let name = result_name.as_str();
+        let r = match (size, align) {
+            (Some(n), Some(a)) => b
+                .build_array_alloca_with_align(ty, n, a, name)
                 .map_err(|e| self.builder_err("alloca", e))?,
-            None => b
-                .build_alloca(ty, result_name.as_str())
+            (Some(n), None) => b
+                .build_array_alloca(ty, n, name)
+                .map_err(|e| self.builder_err("alloca", e))?,
+            (None, Some(a)) => b
+                .build_alloca_with_align(ty, a, name)
+                .map_err(|e| self.builder_err("alloca", e))?,
+            (None, None) => b
+                .build_alloca(ty, name)
                 .map_err(|e| self.builder_err("alloca", e))?,
         };
         Ok(r.as_value())
+    }
+
+    /// Optional `, <intty> <size>` array-size operand for `alloca`, present
+    /// when the token after the comma is a type rather than the `align`
+    /// keyword (mirrors `LLParser::parseAlloc`'s size branch). Uses the same
+    /// save/restore peek as [`Self::parse_optional_comma_align`], so a
+    /// `, align N` clause is left intact for that method.
+    fn parse_optional_comma_array_size(
+        &mut self,
+        state: &PerFunctionState<'ctx, B>,
+    ) -> ParseResult<Option<llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B>>> {
+        if !matches!(self.peek(), Token::Comma) {
+            return Ok(None);
+        }
+        let saved_lex = self.lex.clone();
+        let saved_current = self.current.clone();
+        self.bump()?;
+        if matches!(self.peek(), Token::Kw(Keyword::Align)) {
+            // A `, align N` clause, not a size — restore for the align parse.
+            self.lex = saved_lex;
+            self.current = saved_current;
+            return Ok(None);
+        }
+        let size_ty = self.parse_type(false)?;
+        let size_v = self.parse_value(state, size_ty)?;
+        let n: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = size_v
+            .try_into()
+            .map_err(|_| self.expected("integer alloca array size"))?;
+        Ok(Some(n))
     }
 
     /// `load [volatile] TYPE, ptr PTR [, align N]` or

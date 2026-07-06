@@ -731,6 +731,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_fneg_opcode` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseUnaryOp` `Instruction::FNeg` arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_fcmp_opcodes` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCompare` FP arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_alloca_load_store` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseAlloc` / `parseLoad` / `parseStore` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_array_alloca` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseAlloc` array-size branch (`alloca <ty>, <intty> <size> [, align N]`) | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_gep_plain_and_inbounds` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseGetElementPtr`; `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, GEPIndices)` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::parses_select_int_fp_ptr` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseSelect`; `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, SelectMask)` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::select_constant_non_i1_condition_is_rejected_before_fold` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseSelect`; `llvm/lib/IR/Verifier.cpp::Verifier::visitSelectInst` select condition type invariant | llvmkit-specific regression |
