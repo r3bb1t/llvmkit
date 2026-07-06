@@ -526,9 +526,10 @@ let verified = unverified.verify()?;
 
 Named pipelines:
 
-- `default<O0>`: verifier-only / no-op cleanup.
-- `default<O1>`: conservative scalar cleanup.
-- `default<O2>`: stronger scalar + memory + loop cleanup as available.
+- `llvmkit-default<O0>`: verifier-only / no-op cleanup. (llvmkit-specific
+  subset, deliberately named apart from upstream's non-empty `default<O0>`.)
+- `llvmkit-default<O1>`: conservative scalar cleanup.
+- `llvmkit-default<O2>`: stronger scalar + memory + loop cleanup as available.
 - `cleanup-lift`: binary-lifting/deobfuscation-biased cleanup.
 - `obfuscate<...>`: obfuscation pipeline once Milestone 10 lands.
 

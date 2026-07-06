@@ -109,10 +109,15 @@ pub const CLEANUP_MIN: PipelineName<FunctionPipelineScope> = PipelineName::new("
 pub const CLEANUP_LIFT: PipelineName<FunctionPipelineScope> = PipelineName::new("cleanup-lift");
 /// Roadmap recipe: `cleanup-o1-ish`.
 pub const CLEANUP_O1_ISH: PipelineName<FunctionPipelineScope> = PipelineName::new("cleanup-o1-ish");
-/// Roadmap module recipe: `default<O0>`.
-pub const DEFAULT_O0: PipelineName<ModulePipelineScope> = PipelineName::new("default<O0>");
-/// Roadmap module recipe: `default<O1>`.
-pub const DEFAULT_O1: PipelineName<ModulePipelineScope> = PipelineName::new("default<O1>");
+/// llvmkit-specific module recipe. Named `llvmkit-default<O0>` rather than
+/// upstream's `default<O0>` alias because this is a small cleanup subset, not
+/// a faithful port of `PassBuilderPipelines.cpp::buildO0DefaultPipeline`
+/// (which is not empty). The distinct spelling prevents a silent divergence
+/// once a pipeline runner materializes these steps.
+pub const DEFAULT_O0: PipelineName<ModulePipelineScope> = PipelineName::new("llvmkit-default<O0>");
+/// llvmkit-specific module recipe (see [`DEFAULT_O0`]). Named
+/// `llvmkit-default<O1>` rather than upstream's `default<O1>` alias.
+pub const DEFAULT_O1: PipelineName<ModulePipelineScope> = PipelineName::new("llvmkit-default<O1>");
 
 /// Built-in function pass name: `instsimplify`.
 pub const INSTSIMPLIFY: PassName<FunctionPassScope> = PassName::new("instsimplify");
@@ -570,13 +575,13 @@ where
     }
 }
 
-/// Returns the `default<O0>` module-pipeline recipe.
+/// Returns the `llvmkit-default<O0>` module-pipeline recipe.
 pub const fn default_o0_pipeline() -> PassPipelineRecipe<ModulePipelineScope, HasOptimizationLevel>
 {
     default_pipeline::<OptLevelO0>()
 }
 
-/// Returns the `default<O1>` module-pipeline recipe.
+/// Returns the `llvmkit-default<O1>` module-pipeline recipe.
 pub const fn default_o1_pipeline() -> PassPipelineRecipe<ModulePipelineScope, HasOptimizationLevel>
 {
     default_pipeline::<OptLevelO1>()

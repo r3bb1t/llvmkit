@@ -91,8 +91,8 @@ fn pass_pipeline_text_name_rejects_invalid_text() -> IrResult<()> {
     }
 
     assert_eq!(
-        PassPipelineTextName::try_new("default<O1>")?.as_str(),
-        "default<O1>"
+        PassPipelineTextName::try_new("llvmkit-default<O1>")?.as_str(),
+        "llvmkit-default<O1>"
     );
     assert_eq!(
         PassPipelineTextName::try_new("early-cse")?.as_str(),
