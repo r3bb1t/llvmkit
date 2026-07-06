@@ -1,10 +1,12 @@
 //! Compile-fail lock for `build_fp_ext::<Fp128, PpcFp128, _>` (Doctrine
 //! D4, D11). `Fp128` and `PpcFp128` are both 128-bit non-IEEE layouts;
 //! upstream `CastInst::castIsValid` (`lib/IR/Instructions.cpp`) legalizes
-//! FPExt only on a STRICT `getPrimitiveSizeInBits` inequality, so an
-//! equal-width pair has no valid direction. `PpcFp128` has no
-//! `FloatWiderThan<Fp128>` impl, so the call fails to compile instead of
-//! asserting at runtime (`FPExtInst::FPExtInst`'s `castIsValid` assert).
+//! FPExt only on a STRICT `getScalarSizeInBits` inequality (the FPExt arm
+//! compares `SrcScalarBitSize < DstScalarBitSize`, not
+//! `getPrimitiveSizeInBits` -- numerically identical for these scalar
+//! kinds), so an equal-width pair has no valid direction. `PpcFp128` has
+//! no `FloatWiderThan<Fp128>` impl, so the call fails to compile instead
+//! of asserting at runtime (`FPExtInst::FPExtInst`'s `castIsValid` assert).
 
 use llvmkit_ir::{IrError, Linkage, Module};
 

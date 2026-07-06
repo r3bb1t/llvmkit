@@ -123,7 +123,11 @@ fn default_constant_folder_folds_integer_compare() -> Result<(), IrError> {
 /// Mirrors `test/Assembler/flags.ll:290-292` (`test_icmp_samesign`):
 /// `%res = icmp samesign ult i32 %a, %b`. Typed operands need no `_dyn`
 /// erasure to spell the `samesign` flag. Upstream sets `samesign` post-hoc
-/// via `ICmpInst::setSameSign` (LLVM 19+, `Instructions.h`); llvmkit's
+/// via `ICmpInst::setSameSign` (landed in LLVM 20, `Instructions.h`; the
+/// extracted `llvmorg-22.1.4` snapshot has no archived per-version release
+/// notes to re-derive this locally -- re-verified against the session's
+/// design doc `docs/superpowers/specs/2026-07-05-irbuilder-typed-calls-autossa-design.md:101`,
+/// which cites the same web-verified "LLVM 20" fact); llvmkit's
 /// construction-time flag is the deliberate Rust-side improvement.
 #[test]
 fn typed_icmp_samesign_prints_flag() -> Result<(), IrError> {

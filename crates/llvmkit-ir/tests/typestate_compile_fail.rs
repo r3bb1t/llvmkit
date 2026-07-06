@@ -19,6 +19,7 @@
 #[test]
 fn typestate_compile_fail() {
     let t = trybuild::TestCases::new();
+    // Relies on the unblessed `has_pass` workaround (dtolnay/trybuild#258); re-verify this still forces `cargo build` mode after any trybuild version bump.
     t.pass("tests/compile_fail/extract_value_dyn_empty_slice_compiles.rs");
     t.compile_fail("tests/compile_fail/position_at_end_terminated_block.rs");
     t.compile_fail("tests/compile_fail/add_incoming_after_finish.rs");

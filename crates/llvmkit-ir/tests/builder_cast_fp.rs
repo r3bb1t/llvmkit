@@ -65,7 +65,7 @@ fn fptrunc_f64_to_f32() -> Result<(), IrError> {
 // destination).
 // `b.build_fp_ext::<Fp128, PpcFp128, _>(...)` is a compile error even
 // though both are 128-bit non-IEEE layouts: `castIsValid` requires a
-// STRICT `getPrimitiveSizeInBits` inequality, so neither is
+// STRICT `getScalarSizeInBits` inequality, so neither is
 // `FloatWiderThan` the other (see `compile_fail/fp_ext_equal_width.rs`).
 
 /// Non-IEEE layout coverage for `castIsValid`'s FPExt arm

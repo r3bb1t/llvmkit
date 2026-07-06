@@ -19,7 +19,11 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 1266.
+Total `#[test]` functions: 1266. Genuinely recounted (not incremental
+arithmetic) for this session's final audit via
+`grep -rc '#\[test\]' --include='*.rs' crates llvmkit | awk -F: '{sum+=$2} END {print sum}'`,
+cross-checked against `grep -ro '#\[test\]' --include='*.rs' -r crates llvmkit | wc -l`
+(both report 1266; no stray `.rs` files exist outside `crates/`/`llvmkit/`).
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -116,7 +120,7 @@ Total `#[test]` functions: 1266.
 | `crates/llvmkit-ir/tests/builder_fp_cmp.rs::fcmp_uno` | `-` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_gep.rs::gep_array_offset` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, GEPIndices)` | port |
 | `crates/llvmkit-ir/tests/builder_gep.rs::gep_inbounds` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, GEPIndices)` | port |
-| `crates/llvmkit-ir/tests/builder_gep.rs::struct_gep` | `test/Assembler/getelementptr_struct.ll` (base print form) + `test/Assembler/flags.ll` `@gep_inbounds_nuw` (`inbounds nuw` flag print form); `llvm/include/llvm/IR/IRBuilder.h::CreateStructGEP` (passes `GEPNoWrapFlags::inBounds() \| GEPNoWrapFlags::noUnsignedWrap()`) | mirror |
+| `crates/llvmkit-ir/tests/builder_gep.rs::struct_gep` | `test/Assembler/getelementptr.ll` (positive struct-GEP print form, e.g. `%B = getelementptr {i32, i32}, ptr %t, i92 %n, i32 0`; `getelementptr_struct.ll` is a NEGATIVE fixture -- invalid indices, `not llvm-as` -- and is not an accurate print-form anchor) + `test/Assembler/flags.ll` `@gep_inbounds_nuw` (`inbounds nuw` flag print form); `llvm/include/llvm/IR/IRBuilder.h::CreateStructGEP` (passes `GEPNoWrapFlags::inBounds() \| GEPNoWrapFlags::noUnsignedWrap()`) | mirror |
 | `crates/llvmkit-ir/tests/builder_gep.rs::gep_zero_index` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, ZeroIndexGEP)` | port |
 | `crates/llvmkit-ir/tests/builder_gep_addrspace.rs::gep_result_preserves_base_pointer_address_space` | `test/Assembler/2007-12-11-AddressSpaces.ll`; `GetElementPtrInst::getGEPReturnType` (`IR/Instructions.h`) | mirror |
 | `crates/llvmkit-ir/tests/builder_int_div_rem.rs::udiv_plain` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, WrapFlags)` | mirror |
@@ -1222,7 +1226,7 @@ Total `#[test]` functions: 1266.
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::typed_and_dyn_int_add_fold_to_identical_constant` | `unittests/IR/ConstantsTest.cpp` constant-folding parity rows (folder produces the same `ConstantInt` regardless of the call shape used to reach it) | llvmkit-specific parity |
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::dyn_marker_fold_keeps_runtime_width_check` | `llvm/include/llvm/IR/IRBuilderFolder.h` `Value*` folder hook contract; locks the `IntValue<IntDyn>` builder-side TypeId re-check the typed-folder rewrite (task 5) preserves for erased markers | llvmkit-specific validation |
 | `crates/llvmkit-ir/tests/builder_typed_memory.rs::typed_alloca_load_store_round_trip_prints_identically_to_erased` | `llvm/include/llvm/IR/IRBuilder.h::CreateAlloca`/`CreateLoad`/`CreateStore` (opaque pointers have no upstream compile-time pointee overlay to port; anchored on the existing `alloca`/`load`/`store` print forms, e.g. `tests/medium_builder_int.rs`) | llvmkit-specific example-lock |
-| `crates/llvmkit-ir/tests/builder_typed_memory.rs::field_gep_projects_field_type_at_compile_time` | `test/Assembler/getelementptr_struct.ll` + `test/Assembler/flags.ll` `@gep_inbounds_nuw` (print-form anchor, shared with `tests/builder_gep.rs::struct_gep`); `llvm/include/llvm/IR/IRBuilder.h::CreateStructGEP` (C++ narrows the field type only at runtime -- `build_field_gep::<S, I>`'s compile-time projection is llvmkit-specific; the `inbounds nuw` flag pair itself is ported) | llvmkit-specific example-lock |
+| `crates/llvmkit-ir/tests/builder_typed_memory.rs::field_gep_projects_field_type_at_compile_time` | `test/Assembler/getelementptr.ll` (positive struct-GEP print-form anchor, shared with `tests/builder_gep.rs::struct_gep`; `getelementptr_struct.ll` is a negative fixture and was a misleading citation here) + `test/Assembler/flags.ll` `@gep_inbounds_nuw` (print-form anchor); `llvm/include/llvm/IR/IRBuilder.h::CreateStructGEP` (C++ narrows the field type only at runtime -- `build_field_gep::<S, I>`'s compile-time projection is llvmkit-specific; the `inbounds nuw` flag pair itself is ported) | llvmkit-specific example-lock |
 | `crates/llvmkit-ir/tests/compile_fail/typed_gep_bad_index.rs` | `llvm/include/llvm/IR/IRBuilder.h::CreateStructGEP` (C++ has no static analog for an out-of-range struct-field index -- the upstream check is a runtime assertion) | llvmkit-specific example-lock |
 | `crates/llvmkit-ir/tests/medium_builder_cmp.rs::typed_icmp_samesign_prints_flag` | `llvm/test/Assembler/flags.ll:290-292` (`test_icmp_samesign`: `%res = icmp samesign ult i32 %a, %b`); `llvm/include/llvm/IR/Instructions.h::ICmpInst::setSameSign` (upstream sets `samesign` post-hoc after construction -- llvmkit's construction-time flag parameter is a deliberate Rust-side improvement) | mirror |
 | `crates/llvmkit-ir/tests/medium_builder_cast.rs::typed_zext_nneg_prints_flag` | `llvm/test/Assembler/flags.ll:224-225` (`%res = zext nneg i32 %a to i64`) | mirror |

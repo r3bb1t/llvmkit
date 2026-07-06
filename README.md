@@ -247,6 +247,109 @@ and hiding field changes would obscure ABI/layout changes.
 
 Detailed macro docs: [IrStruct derive macro](docs/ir-struct-derive.md).
 
+### Typed pointers
+
+`TypedPointerValue<'ctx, T: IrField, B>` overlays a compile-time pointee
+schema on top of a plain opaque `ptr` value -- it is Rust-side bookkeeping
+only, so printed IR is byte-identical to the erased path. `PointerValue::with_pointee::<T>()`
+attaches the schema as an explicit, documented assertion (exactly as
+powerful as passing a type to `build_load` today; a mis-assertion produces
+wrong IR that the verifier catches, never memory-unsafe behavior).
+`build_typed_alloca::<T>`, `build_typed_load`, and `build_typed_store` skip
+the runtime type-narrowing that the erased path needs, and
+`build_field_gep::<S, I>` projects the field type at compile time straight
+from a `#[derive(IrStruct)]` schema -- an out-of-range field index is a
+missing trait impl, not a runtime bounds check.
+
+### Auto-SSA: typed local variables instead of manual phi wiring
+
+`SsaBuilder` (`crates/llvmkit-ir/src/ssa_builder.rs`) sits on top of the
+typed `IRBuilder` and implements Braun et al.'s 2013 on-the-fly SSA
+construction algorithm (the same family of technique Cranelift's
+`FunctionBuilder` uses). Instead of pre-declaring phi nodes and patching
+their incoming edges by hand, you declare a typed variable once and then
+`def_*_var`/`use_*_var` it like a mutable local; the engine inserts,
+completes, and trivial-phi-eliminates the phis for you as blocks are sealed.
+
+The point isn't fewer lines -- the auto-SSA version of a loop is not
+shorter than its manually-phi-wired twin. It is **less error-prone and more
+declarative**: there is no phi pre-declaration, no incoming-edge patching,
+and no label plumbing to get wrong. Compare the loop body of
+`examples/factorial.rs` (manual phis) and `examples/factorial_auto_ssa.rs`
+(auto-SSA) -- both are byte-parity locked to print the identical `.ll`:
+
+```rust
+// Manual phi wiring (examples/factorial.rs): declare empty phis up front,
+// build the loop body, then patch both incoming edges by hand.
+let acc_phi = b.build_int_phi::<i32, _>("acc")?;
+let i_phi = b.build_int_phi::<i32, _>("i")?;
+let acc = acc_phi.as_int_value();
+let i = i_phi.as_int_value();
+let next_acc = b.build_int_mul(acc, i, "next_acc")?;
+let next_i = b.build_int_sub(i, 1_i32, "next_i")?;
+// ... build the rest of the loop body, then:
+acc_phi.add_incoming(1_i32, entry_label)?.add_incoming(next_acc, loop_label)?.finish();
+i_phi.add_incoming(n, entry_label)?.add_incoming(next_i, loop_label)?.finish();
+```
+
+```rust
+// Auto-SSA (examples/factorial_auto_ssa.rs): declare typed variables once;
+// def/use them like mutable locals. No phi, no incoming-edge bookkeeping,
+// no label plumbing -- SsaBuilder inserts and completes the phis itself
+// when `loop_bb` is sealed.
+let acc_var = b.declare_int_var::<i32, _>("acc");
+let i_var = b.declare_int_var::<i32, _>("i");
+// entry block:
+b.def_int_var(acc_var, 1_i32)?;
+b.def_int_var(i_var, n)?;
+// loop block:
+let i = b.use_int_var(i_var)?;
+let acc = b.use_int_var(acc_var)?;
+let next_acc = b.ins().build_int_mul(acc, i, "next_acc")?;
+let next_i = b.ins().build_int_sub(i, 1_i32, "next_i")?;
+b.def_int_var(acc_var, next_acc)?;
+b.def_int_var(i_var, next_i)?;
+b.seal_block(loop_bb)?; // completes both phis from the now-known predecessor set
+```
+
+`SsaBuilder` also turns "branch to a block whose predecessors are already
+fully known" (Braun sealing) and "read/write before the builder is
+positioned" into typed errors rather than caller discipline: `create_block`
+auto-seals the entry block, `seal_block` completes a block's incomplete
+phis, and `finish()` is the always-correct seal-everything fallback that
+also rejects any created-but-never-filled block. v1 covers int / float /
+pointer variables and the `br` / `cond_br` / `switch` / `ret` / `ret_void` /
+`unreachable` terminators; mixing in manual phis via `b.ins()` for anything
+outside that scope is legal and verifier-checked. See
+[`docs/future-work.md`](docs/future-work.md) for the v2 scope (aggregate
+variables, invoke/EH terminators).
+
+### Why llvmkit instead of inkwell
+
+Both `llvmkit` and [`inkwell`](https://github.com/TheDan64/inkwell) give
+Rust a typed LLVM IR-construction API, but they take different positions on
+where invalid usage is caught. inkwell wraps `libLLVM` through
+`llvm-sys`, and several of its typed accessors resolve their type check at
+runtime: calling `into_float_value()` on a value that isn't actually a
+float panics rather than failing to compile (see
+[wasmer#962](https://github.com/wasmerio/wasmer/issues/962) for a
+production crate hitting exactly this), and inkwell's own
+[README](https://github.com/TheDan64/inkwell) documents panics on
+interior-NUL strings and the lack of a safe multithreaded mode.
+
+`llvmkit` makes the corresponding class of bugs a compile error instead:
+conversions between typed handles go through `TryFrom`/lift traits that
+either resolve at the call site or fail to compile, module identifiers are
+plain owned `String`s (there is no C-string boundary to panic on interior
+NULs), and every workspace crate ships `#![forbid(unsafe_code)]` -- there is
+no FFI boundary into `libLLVM` to begin with, because `llvmkit` is a
+from-scratch reimplementation, not a binding. The tradeoff is real: `llvmkit`
+does not generate code, link, or do anything past IR construction and
+verification (see "Out of scope" above) -- pick `inkwell` when you need to
+reach codegen through upstream LLVM, and `llvmkit` when the task is IR
+construction / analysis and compile-time misuse safety matters more than
+having `libLLVM`'s full backend behind it.
+
 ### Same-module safety
 
 `Module::with_new` gives every module construction session a fresh compile-time

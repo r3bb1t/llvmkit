@@ -1054,6 +1054,25 @@ impl_function_signature!(
 /// underlying operand traits. Cross-module rejection lives inside
 /// those traits' `into_*_value(module)` methods (D7), not at the call
 /// site.
+///
+/// ## Diagnostic behavior
+///
+/// The `#[diagnostic::on_unimplemented]` message below only fires when a
+/// call-argument type has **zero** candidate `IntoCallArg<P>` impls at
+/// all -- the case for schema types with no matching family (e.g. a
+/// struct-schema slot fed a type with no `IntoCallArg` impl in scope, or
+/// an unrelated concrete type like `String`). For the int / float /
+/// pointer slot families, `IntoCallArg` is implemented through a blanket
+/// impl bounded by the underlying lift trait (`IntoIntValue<W>` /
+/// `IntoFloatValue<K>` / `IntoPointerValue`); when the argument fails to
+/// satisfy that lift-trait bound, rustc reports the *lift trait* as
+/// unsatisfied, not `IntoCallArg` itself, so this message is not shown --
+/// the caller instead sees the root `IntoIntValue<W>` (or float/pointer
+/// equivalent) trait-bound error. Both shapes are locked by compile-fail
+/// fixtures: `tests/compile_fail/typed_call_wrong_arg_type.rs` (no
+/// candidate impl -- this message fires) and
+/// `tests/compile_fail/typed_call_wrong_arg_type_lifted.rs` (candidate
+/// impl exists, root lift-trait bound fails instead).
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot fill a call-argument slot of schema `{P}`",
     label = "wrong argument type for this parameter position"

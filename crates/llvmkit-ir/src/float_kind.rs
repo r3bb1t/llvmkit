@@ -115,13 +115,17 @@ impl FloatKind for FloatDyn {
 /// (destination must be strictly lower precision than source).
 ///
 /// Upstream `CastInst::castIsValid` (`lib/IR/Instructions.cpp`) legalizes
-/// FPExt/FPTrunc on a strict `getPrimitiveSizeInBits` inequality alone,
-/// with no restriction on which `FloatKind` participates -- so the
-/// non-IEEE layouts (`X86Fp80` = 80 bits, `Fp128`/`PpcFp128` = 128 bits)
-/// take part in the same total order as the IEEE-binary kinds: half/bfloat
-/// (16) < float (32) < double (64) < x86_fp80 (80) < fp128/ppc_fp128
-/// (128). `Fp128` and `PpcFp128` are equal-width and neither is
-/// `FloatWiderThan` the other (see the deliberately-absent rows below).
+/// FPExt/FPTrunc on a strict `getScalarSizeInBits` inequality alone
+/// (the FPExt/FPTrunc arms compare `SrcScalarBitSize`/`DstScalarBitSize`,
+/// not `getPrimitiveSizeInBits` -- numerically identical for the scalar
+/// kinds modeled here, but the precise upstream API name matters for
+/// future vector-typed follow-up work), with no restriction on which
+/// `FloatKind` participates -- so the non-IEEE layouts (`X86Fp80` = 80
+/// bits, `Fp128`/`PpcFp128` = 128 bits) take part in the same total order
+/// as the IEEE-binary kinds: half/bfloat (16) < float (32) < double (64)
+/// < x86_fp80 (80) < fp128/ppc_fp128 (128). `Fp128` and `PpcFp128` are
+/// equal-width and neither is `FloatWiderThan` the other (see the
+/// deliberately-absent rows below).
 pub trait FloatWiderThan<K: FloatKind>: FloatKind + sealed::Sealed {}
 
 macro_rules! decl_float_wider_than {
@@ -136,7 +140,7 @@ decl_float_wider_than!(Fp128: Half, BFloat, f32, f64, X86Fp80);
 decl_float_wider_than!(PpcFp128: Half, BFloat, f32, f64, X86Fp80);
 // Deliberately absent: Fp128 <-> PpcFp128 (both 128 bits) and
 // Half <-> BFloat (both 16 bits) -- `castIsValid` requires a STRICT
-// `getPrimitiveSizeInBits` inequality (lib/IR/Instructions.cpp,
+// `getScalarSizeInBits` inequality (lib/IR/Instructions.cpp,
 // `CastInst::castIsValid`'s FPExt/FPTrunc arms), so neither direction
 // is a valid fpext/fptrunc for an equal-width pair.
 

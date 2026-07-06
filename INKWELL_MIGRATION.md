@@ -157,6 +157,8 @@ shapes and is distinct from `IntDyn` / `FloatDyn`.
 ||`Builder::build_conditional_branch(c, t, e)`|`b.build_cond_br(cond, then_bb, else_bb)?`|`cond` accepts any `IntoIntValue<'ctx, bool>`|
 ||`Builder::build_unreachable()`|`b.build_unreachable()`|infallible (no operands)|
 ||`Builder::build_phi(ty, name)` + `phi.add_incoming(&[...])`|`b.build_int_phi::<W, _, _>(ty, incoming, name)?` + `phi.add_incoming(value, block)?`|empty initial list allowed; mirrors `PHINode::addIncoming` for the loop-edge flow|
+||manual `builder.build_phi` + `phi.add_incoming` for loop-carried values|`SsaBuilder::declare_int_var::<W>` / `_float`/`_pointer` + `def_*_var`/`use_*_var`|new -- no inkwell counterpart. Braun et al. on-the-fly SSA construction: declare a typed variable once, then read/write it like a mutable local. The engine inserts, completes, and trivial-phi-eliminates the phis itself as blocks are sealed; no manual phi pre-declaration or incoming-edge patching. See the README's "Auto-SSA" section.|
+||`value.into_pointer_value()` narrowing plus manual bookkeeping of "what this pointer points to"|`ptr.with_pointee::<T>()` -> `TypedPointerValue<'ctx, T, B>`|new -- no inkwell counterpart. Rust-side-only pointee-schema overlay on an opaque pointer; `build_typed_alloca`/`build_typed_load`/`build_typed_store`/`build_field_gep::<S, I>` skip the runtime type-narrow the erased path needs. Printed IR is byte-identical to the erased path -- this is a compile-time ergonomics layer, not a new IR construct.|
 
 ## Error model
 
