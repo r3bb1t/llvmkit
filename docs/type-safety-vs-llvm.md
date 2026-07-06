@@ -282,14 +282,22 @@ only catch the resulting broken IR later.
 
 ```rust
 pub trait IRBuilderFolder<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    fn fold_bin_op(
+    fn fold_bin_op_dyn(
         &self,
         opcode: BinaryOpcode,
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
-    ) -> IrResult<Option<Value<'ctx, B>>>;
+    ) -> IrResult<Option<Value<'ctx, B>>> {
+        let _ = (opcode, lhs, rhs);
+        Ok(None) // decline to fold
+    }
 }
 ```
+
+The typed hooks go further: `fold_int_bin_op<W>` returns
+`IrResult<Option<IntValue<'ctx, W, B>>>`, so a custom folder cannot forge a
+wrong *width* either -- the hook's signature pins it, and the builder accepts
+typed fold results with no runtime re-check.
 
 Bad Rust helper:
 

@@ -105,6 +105,8 @@ For `struct Point { x: i32, y: i32 }`, the derive creates:
   raw struct against the `Point` schema before returning `PointValue`.
 - Conversion impls that let the wrapper be used as a struct field, function
   parameter, and `Dyn` return value.
+- An `IntoCallArg` impl, so `PointValue` fills a `Point`-typed parameter slot
+  in a typed `IRBuilder::build_call` argument tuple directly.
 
 Generated value wrappers intentionally do not implement `IsValue`. Use the
 wrapper's typed accessors/builders, or call `as_struct_value()` / `as_value()`
