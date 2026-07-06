@@ -14,29 +14,33 @@
 //! problem incrementally for a single value at a time during
 //! transformation passes rather than during initial construction.
 //!
-//! The public def/use/terminator-building surface lands in a later
-//! session; this module ships the typed variable/block vocabulary,
-//! `SsaState`, construction, `create_block`/`declare_*`/`seal_block`,
-//! and the private Braun engine (`write_variable`, `read_variable_in`,
+//! This module ships the typed variable/block vocabulary, `SsaState`,
+//! construction, `create_block`/`declare_*`/`seal_block`, the private
+//! Braun engine (`write_variable`, `read_variable_in`,
 //! `add_phi_operands`, `try_remove_trivial_phi`, `emit_operandless_phi`,
-//! `resolve`).
+//! `resolve`), and the full public lifecycle built on top of it:
+//! `switch_to_block`/`finish` (Unpositioned-only) and
+//! `ins`/`current_block`/`def_*_var`/`use_*_var`/the terminator family
+//! `br`/`cond_br`/`switch`/`ret`/`ret_void`/`unreachable` (Positioned-only).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use super::basic_block::{BasicBlock, BasicBlockLabel};
 use super::block_state::Unterminated;
-use super::float_kind::{FloatKind, StaticFloatKind};
+use super::float_kind::{FloatKind, IntoFloatValue, StaticFloatKind};
 use super::function::FunctionValue;
 use super::instruction::{Instruction, state::Attached};
-use super::int_width::{IntWidth, StaticIntWidth};
+use super::int_width::{IntWidth, IntoIntValue, StaticIntWidth};
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::folder::IRBuilderFolder;
-use super::ir_builder::{BuilderPositionState, Positioned, Unpositioned};
+use super::ir_builder::{BuilderPositionState, IntoReturnValue, Positioned, Unpositioned};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::TypeId;
-use super::value::{Value, ValueId};
+use super::value::{
+    FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Typed, Value, ValueId,
+};
 use super::{FloatType, IntType, IrError, IrResult, PointerType};
 
 // --------------------------------------------------------------------------
@@ -324,17 +328,13 @@ struct SsaState<'ctx, R: ReturnMarker, B: ModuleBrand> {
     /// Recorded CFG edges, duplicates preserved (phi operand order).
     preds: HashMap<ValueId, Vec<ValueId>>,
     sealed: HashSet<ValueId>,
-    // NOTE: a `filled: HashSet<ValueId>` set (mirroring Braun's `filledBlocks`)
-    // is deliberately NOT shipped in this task: `emit_operandless_phi`'s
-    // insertion-point logic only needs a *read-only* "does this block have
-    // an instruction yet" check (`BasicBlock::instructions().next()`), which
-    // does not need a separate tracked set, and nothing else in this task's
-    // surface (create_block/declare_*/seal_block) fills or queries fill
-    // state. The terminator-building methods that land with the def/use API
-    // will populate/consult it (for `IrError::SsaBlockAlreadyFilled` /
-    // `SsaUnfilledBlock`, both pre-declared in error.rs); adding the field
-    // now with no reader would be dead code under `-D warnings` (Task-4
-    // precedent: defer until the first real caller lands).
+    /// Braun `filledBlocks`: blocks that have received their terminator.
+    /// Populated by the terminator-building methods (`br`/`cond_br`/
+    /// `switch`/`ret`/`ret_void`/`unreachable`); consulted by
+    /// `switch_to_block` (reject repositioning into a filled block --
+    /// `IrError::SsaBlockAlreadyFilled`) and `finish` (every created
+    /// block must be filled -- `IrError::SsaUnfilledBlock`).
+    filled: HashSet<ValueId>,
     /// Braun `incompletePhis`: `block -> [(var index, phi value)]`.
     incomplete_phis: HashMap<ValueId, Vec<(u32, ValueId)>>,
     /// Linear insertion capabilities for not-yet-current blocks.
@@ -353,6 +353,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand> SsaState<'ctx, R, B> {
             resolved: RefCell::new(HashMap::new()),
             preds: HashMap::new(),
             sealed: HashSet::new(),
+            filled: HashSet::new(),
             incomplete_phis: HashMap::new(),
             open_blocks: HashMap::new(),
             created_phis: HashMap::new(),
@@ -631,15 +632,19 @@ where
         Ok(())
     }
 
-    // NOTE: a `check_owner_var` sibling to `check_owner_block` (returning
-    // `IrError::SsaForeignVariable` for a variable handle from a different
-    // `SsaBuilder`) is deliberately NOT shipped in this task: nothing in
-    // this task's surface (create_block/declare_*/seal_block) ever reads
-    // or writes a declared variable, so the check has no caller yet. The
-    // def/use methods landing with Task 18 (`read_var`/`write_var` or
-    // equivalent) are the first real call sites; per the Task-4 precedent,
-    // an unused private check is deferred to its first caller rather than
-    // shipped dead under `-D warnings`.
+    /// Sibling to [`Self::check_owner_block`] for variable handles: a
+    /// declared variable used against a different `SsaBuilder` than the
+    /// one that declared it is a typed runtime error. Takes just the
+    /// owner id (rather than a whole variable handle) since
+    /// `IntVariable`/`FloatVariable`/`PointerVariable` are three
+    /// unrelated structs with no shared trait -- every def/use call site
+    /// passes `var.owner`.
+    fn check_owner_var(&self, owner: SsaBuilderId) -> IrResult<()> {
+        if owner != self.id {
+            return Err(IrError::SsaForeignVariable);
+        }
+        Ok(())
+    }
 
     /// Braun `sealBlock`: the predecessor set is complete; complete this
     /// block's incomplete phis.
@@ -661,6 +666,493 @@ where
             self.add_phi_operands(var, phi_id, block_id)?;
         }
         Ok(())
+    }
+}
+
+// --------------------------------------------------------------------------
+// Unpositioned-only surface: switch_to_block, finish
+// --------------------------------------------------------------------------
+
+impl<'m, 'ctx, B, F, R> SsaBuilder<'m, 'ctx, B, F, Unpositioned, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IRBuilderFolder<'ctx, B> + Clone,
+    R: ReturnMarker,
+{
+    /// Position at the end of `block`. "Terminate the current block
+    /// before switching" is a COMPILE error -- this method does not
+    /// exist on the `Positioned` state, so a caller can never leave a
+    /// half-built block behind while moving to another one.
+    pub fn switch_to_block(
+        mut self,
+        block: SsaBlock<'ctx, R, B>,
+    ) -> IrResult<SsaBuilder<'m, 'ctx, B, F, Positioned, R>> {
+        self.check_owner_block(&block)?;
+        let block_id = label_value_id(&block.label);
+        if self.state.filled.contains(&block_id) {
+            return Err(IrError::SsaBlockAlreadyFilled {
+                block: block_name(self.module_ref(), block_id),
+            });
+        }
+        let handle = self.state.open_blocks.remove(&block_id).unwrap_or_else(|| {
+            unreachable!("SsaBuilder invariant: an unfilled block retains its linear handle")
+        });
+        let inner = super::ir_builder::IRBuilder::with_folder(self.module, self.folder.clone())
+            .position_at_end(handle);
+        Ok(SsaBuilder {
+            module: self.module,
+            function: self.function,
+            id: self.id,
+            folder: self.folder,
+            inner: Some(inner),
+            state: self.state,
+            _s: core::marker::PhantomData,
+        })
+    }
+
+    /// Seal every remaining unsealed block (draining their incomplete
+    /// phis via [`Self::add_phi_operands`], exactly as
+    /// [`Self::seal_block`] would), then require every created block to
+    /// have been filled (received a terminator). Consuming `self` on
+    /// `Unpositioned` gives two static guarantees: no def/use/terminator
+    /// call is reachable after `finish`, and no block can be mid-
+    /// construction (`Positioned`) when it runs.
+    pub fn finish(mut self) -> IrResult<()> {
+        for block_id in self.state.block_order.clone() {
+            if !self.state.sealed.contains(&block_id) {
+                let pending = self
+                    .state
+                    .incomplete_phis
+                    .remove(&block_id)
+                    .unwrap_or_default();
+                self.state.sealed.insert(block_id);
+                for (var, phi) in pending {
+                    self.add_phi_operands(var, phi, block_id)?;
+                }
+            }
+        }
+        for block_id in &self.state.block_order {
+            if !self.state.filled.contains(block_id) {
+                return Err(IrError::SsaUnfilledBlock {
+                    block: block_name(self.module_ref(), *block_id),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+// --------------------------------------------------------------------------
+// Positioned-only surface: ins, current_block, def/use, terminators
+// --------------------------------------------------------------------------
+
+impl<'m, 'ctx, B, F, R> SsaBuilder<'m, 'ctx, B, F, Positioned, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IRBuilderFolder<'ctx, B> + Clone,
+    R: ReturnMarker,
+{
+    /// The full existing typed instruction surface, cranelift-style:
+    /// `b.ins().build_int_mul(a, b, "x")?`. The `&`-return makes the
+    /// inner [`IRBuilder`](super::ir_builder::IRBuilder)'s
+    /// self-consuming methods (terminators, repositioning) structurally
+    /// unreachable through this handle -- the `SsaBuilder` never
+    /// surrenders the inner builder, which keeps its CFG bookkeeping
+    /// (edges/fill state) complete. Reaching a terminator or a
+    /// reposition requires going through this type's own terminator
+    /// methods below, each of which records the bookkeeping the inner
+    /// call alone would skip.
+    pub fn ins(&self) -> &super::ir_builder::IRBuilder<'m, 'ctx, B, F, Positioned, R> {
+        self.inner.as_ref().unwrap_or_else(|| {
+            unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
+        })
+    }
+
+    /// The block this builder is currently positioned at, as a copyable
+    /// [`SsaBlock`] handle (usable as a branch target / phi predecessor
+    /// elsewhere in this builder's own surface).
+    pub fn current_block(&self) -> SsaBlock<'ctx, R, B> {
+        SsaBlock {
+            label: self.ins().insert_block().label(),
+            owner: self.id,
+        }
+    }
+
+    /// [`ValueId`] of the block this builder is currently positioned at
+    /// -- the Braun engine's block key.
+    #[inline]
+    fn current_block_id(&self) -> ValueId {
+        self.ins().insert_block().as_value().id
+    }
+
+    /// Braun `writeVariable`: pure bookkeeping, no IR emitted.
+    ///
+    /// D11 (`task_ff09d3e3`, Task 17 review follow-up): the engine's
+    /// trivial-phi RAUW (`try_remove_trivial_phi`) assumes every value
+    /// ever written for a variable shares that variable's pinned `ty`.
+    /// For a statically-widthed `var` (`W::static_bits().is_some()`)
+    /// this holds by construction -- `value` was lifted through
+    /// `IntoIntValue<W>`, and `var` was declared via `W::ir_type`, so
+    /// the two `W`s (and therefore the two types) are the same type by
+    /// the type system alone; the runtime check below monomorphizes
+    /// away (see [`super::ir_builder::IRBuilder::accept_folded_int`] for
+    /// the same pattern applied to fold results). For a dyn-declared
+    /// `var` (`declare_int_var_dyn`, `W = IntDyn`) the marker only
+    /// proves "some integer width" -- `IntoIntValue<IntDyn>` happily
+    /// lifts a DIFFERENT width than `var.ty` pins, so the width must be
+    /// checked at runtime here, the one seam where an external value
+    /// enters `current_def`.
+    pub fn def_int_var<W: IntWidth, V>(
+        &mut self,
+        var: IntVariable<'ctx, W, B>,
+        value: V,
+    ) -> IrResult<()>
+    where
+        V: IntoIntValue<'ctx, W, B>,
+    {
+        self.check_owner_var(var.owner)?;
+        let v = value.into_int_value(self.module_ref())?;
+        if W::static_bits().is_none() && v.as_value().ty().id() != var.ty {
+            return Err(IrError::TypeMismatch {
+                expected: super::r#type::Type::new(var.ty, self.module_ref()).kind_label(),
+                got: v.as_value().ty().kind_label(),
+            });
+        }
+        let block = self.current_block_id();
+        self.write_variable(var.index, block, v.as_value().id);
+        Ok(())
+    }
+
+    /// Braun `readVariable`; the result type reflects the declared
+    /// variable (D4), sound because every writer of this variable's
+    /// `current_def` entries was type-checked at `def_int_var` time
+    /// (static `W`: by the type system; dyn `W`: by the runtime check
+    /// above) -- see that method's doc comment for the full argument.
+    pub fn use_int_var<W: IntWidth>(
+        &mut self,
+        var: IntVariable<'ctx, W, B>,
+    ) -> IrResult<IntValue<'ctx, W, B>> {
+        self.check_owner_var(var.owner)?;
+        let block = self.current_block_id();
+        let id = self.read_variable_in(var.index, block)?;
+        let value = Value::from_parts(id, self.module_ref(), var.ty);
+        Ok(IntValue::from_value_unchecked(value))
+    }
+
+    /// Float twin of [`Self::def_int_var`]; see that method's doc
+    /// comment for the dyn-width type-check rationale (mirrored here
+    /// keyed on `K::ieee_label().is_none()` instead of
+    /// `W::static_bits().is_none()`, matching
+    /// [`super::ir_builder::IRBuilder::accept_folded_fp`]'s split).
+    pub fn def_float_var<K: FloatKind, V>(
+        &mut self,
+        var: FloatVariable<'ctx, K, B>,
+        value: V,
+    ) -> IrResult<()>
+    where
+        V: IntoFloatValue<'ctx, K, B>,
+    {
+        self.check_owner_var(var.owner)?;
+        let v = value.into_float_value(self.module_ref())?;
+        if K::ieee_label().is_none() && Typed::ty(v).id() != var.ty {
+            return Err(IrError::TypeMismatch {
+                expected: super::r#type::Type::new(var.ty, self.module_ref()).kind_label(),
+                got: Typed::ty(v).kind_label(),
+            });
+        }
+        let block = self.current_block_id();
+        self.write_variable(var.index, block, v.as_value().id);
+        Ok(())
+    }
+
+    /// Float twin of [`Self::use_int_var`].
+    pub fn use_float_var<K: FloatKind>(
+        &mut self,
+        var: FloatVariable<'ctx, K, B>,
+    ) -> IrResult<FloatValue<'ctx, K, B>> {
+        self.check_owner_var(var.owner)?;
+        let block = self.current_block_id();
+        let id = self.read_variable_in(var.index, block)?;
+        let value = Value::from_parts(id, self.module_ref(), var.ty);
+        Ok(FloatValue::from_value_unchecked(value))
+    }
+
+    /// Pointer twin of [`Self::def_int_var`]. Pointer variables pin an
+    /// address space via `var.ty` (`declare_pointer_var_in_addrspace`),
+    /// but [`PointerValue`] does not statically pin its address space --
+    /// `IntoPointerValue` happily lifts a pointer of ANY address space,
+    /// so unlike the int/float sides (where the static-marker case
+    /// monomorphizes the check away), the pointer def path always
+    /// carries a cheap runtime check. Honest rather than optimised: a
+    /// `TypeId` equality compare is negligible next to the rest of
+    /// `def_int_var`'s work, and skipping it would silently accept a
+    /// wrong-address-space write.
+    pub fn def_pointer_var<V>(&mut self, var: PointerVariable<'ctx, B>, value: V) -> IrResult<()>
+    where
+        V: IntoPointerValue<'ctx, B>,
+    {
+        self.check_owner_var(var.owner)?;
+        let v = value.into_pointer_value(self.module_ref())?;
+        if Typed::ty(v).id() != var.ty {
+            return Err(IrError::TypeMismatch {
+                expected: super::r#type::Type::new(var.ty, self.module_ref()).kind_label(),
+                got: Typed::ty(v).kind_label(),
+            });
+        }
+        let block = self.current_block_id();
+        self.write_variable(var.index, block, v.as_value().id);
+        Ok(())
+    }
+
+    /// Pointer twin of [`Self::use_int_var`].
+    pub fn use_pointer_var(
+        &mut self,
+        var: PointerVariable<'ctx, B>,
+    ) -> IrResult<PointerValue<'ctx, B>> {
+        self.check_owner_var(var.owner)?;
+        let block = self.current_block_id();
+        let id = self.read_variable_in(var.index, block)?;
+        let value = Value::from_parts(id, self.module_ref(), var.ty);
+        Ok(PointerValue::from_value_unchecked(value))
+    }
+
+    // ---- Terminators ----
+    //
+    // Each terminator consumes `self`, delegates to the inner builder's
+    // OWN consuming terminator (which does the actual IR emission and
+    // block-termination bookkeeping), records the CFG edge(s) the Braun
+    // engine needs (`preds`, in the exact order phi incoming operands
+    // should later be added in), marks the source block filled, and
+    // returns the `Unpositioned` builder so construction can continue
+    // at a different (or the same, if re-`switch_to_block`ed) block.
+    //
+    // "ANY edge into a Braun-sealed block is an error" both enforces
+    // Braun's own precondition (a sealed block's predecessor set is
+    // final) and, since `create_block`'s first call auto-seals the
+    // entry block, doubles as `Verifier::visitFunction`'s "entry has no
+    // predecessors" check -- at construction time rather than at
+    // `verify()` time.
+
+    /// Produce `br label %dest`. Mirrors `IRBuilder::CreateBr`.
+    pub fn br(
+        mut self,
+        dest: SsaBlock<'ctx, R, B>,
+    ) -> IrResult<SsaBuilder<'m, 'ctx, B, F, Unpositioned, R>> {
+        self.check_owner_block(&dest)?;
+        let dest_id = label_value_id(&dest.label);
+        if self.state.sealed.contains(&dest_id) {
+            return Err(IrError::SsaBranchToSealedBlock {
+                block: block_name(self.module_ref(), dest_id),
+            });
+        }
+        let src_id = self.current_block_id();
+        let inner = self.inner.take().unwrap_or_else(|| {
+            unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
+        });
+        let (_terminated, _inst) = inner.build_br(dest.label)?;
+        self.state.preds.entry(dest_id).or_default().push(src_id);
+        self.state.filled.insert(src_id);
+        Ok(SsaBuilder {
+            module: self.module,
+            function: self.function,
+            id: self.id,
+            folder: self.folder,
+            inner: None,
+            state: self.state,
+            _s: core::marker::PhantomData,
+        })
+    }
+
+    /// Produce `br i1 <cond>, label %then, label %else`. Mirrors
+    /// `IRBuilder::CreateCondBr`. Records the then-edge before the
+    /// else-edge -- a phi at a block reachable from both arms sees its
+    /// incoming operands added in the same order once each predecessor
+    /// is later completed.
+    pub fn cond_br<C>(
+        mut self,
+        cond: C,
+        then_dest: SsaBlock<'ctx, R, B>,
+        else_dest: SsaBlock<'ctx, R, B>,
+    ) -> IrResult<SsaBuilder<'m, 'ctx, B, F, Unpositioned, R>>
+    where
+        C: IntoIntValue<'ctx, bool, B>,
+    {
+        self.check_owner_block(&then_dest)?;
+        self.check_owner_block(&else_dest)?;
+        let then_id = label_value_id(&then_dest.label);
+        let else_id = label_value_id(&else_dest.label);
+        if self.state.sealed.contains(&then_id) {
+            return Err(IrError::SsaBranchToSealedBlock {
+                block: block_name(self.module_ref(), then_id),
+            });
+        }
+        if self.state.sealed.contains(&else_id) {
+            return Err(IrError::SsaBranchToSealedBlock {
+                block: block_name(self.module_ref(), else_id),
+            });
+        }
+        let src_id = self.current_block_id();
+        let inner = self.inner.take().unwrap_or_else(|| {
+            unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
+        });
+        let (_terminated, _inst) = inner.build_cond_br(cond, then_dest.label, else_dest.label)?;
+        self.state.preds.entry(then_id).or_default().push(src_id);
+        self.state.preds.entry(else_id).or_default().push(src_id);
+        self.state.filled.insert(src_id);
+        Ok(SsaBuilder {
+            module: self.module,
+            function: self.function,
+            id: self.id,
+            folder: self.folder,
+            inner: None,
+            state: self.state,
+            _s: core::marker::PhantomData,
+        })
+    }
+
+    /// Produce `switch <cond>, label %default [ <case> label %dest ... ]`.
+    /// Mirrors `IRBuilder::CreateSwitch` followed by the closed-form
+    /// `SwitchInst::add_case` chain. `cases` is collected up front
+    /// (closed form: every destination edge is observed by the time
+    /// this method records any of them) and each `(value, target)` is
+    /// added, then the switch is `finish()`ed.
+    ///
+    /// Edges are recorded per case OCCURRENCE, duplicates preserved:
+    /// the default counts once, and each entry in `cases` counts once
+    /// more, even if two entries target the SAME block -- matching
+    /// `crate::cfg::FunctionCfg`'s switch successor list (default, then
+    /// every case target in order, no deduplication), which is exactly
+    /// what the verifier's `build_predecessors` counts phi incoming
+    /// entries against ("entry-count must equal predecessor-count with
+    /// multiplicity").
+    pub fn switch<W, C, V, Cases>(
+        mut self,
+        cond: C,
+        default_dest: SsaBlock<'ctx, R, B>,
+        cases: Cases,
+    ) -> IrResult<SsaBuilder<'m, 'ctx, B, F, Unpositioned, R>>
+    where
+        W: IntWidth,
+        C: IntoIntValue<'ctx, W, B>,
+        V: IsValue<'ctx, B>,
+        Cases: IntoIterator<Item = (V, SsaBlock<'ctx, R, B>)>,
+    {
+        self.check_owner_block(&default_dest)?;
+        let cases: Vec<(V, SsaBlock<'ctx, R, B>)> = cases.into_iter().collect();
+        for (_, target) in &cases {
+            self.check_owner_block(target)?;
+        }
+        let mut dest_ids = Vec::with_capacity(cases.len() + 1);
+        let default_id = label_value_id(&default_dest.label);
+        dest_ids.push(default_id);
+        for (_, target) in &cases {
+            dest_ids.push(label_value_id(&target.label));
+        }
+        for &dest_id in &dest_ids {
+            if self.state.sealed.contains(&dest_id) {
+                return Err(IrError::SsaBranchToSealedBlock {
+                    block: block_name(self.module_ref(), dest_id),
+                });
+            }
+        }
+        let src_id = self.current_block_id();
+        let inner = self.inner.take().unwrap_or_else(|| {
+            unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
+        });
+        let cond = cond.into_int_value(self.module_ref())?;
+        let (_terminated, open) = inner.build_switch(cond, default_dest.label, "")?;
+        let mut open = open;
+        for (case_value, target) in cases {
+            open = open.add_case(case_value, target.label)?;
+        }
+        let _closed = open.finish();
+        for &dest_id in &dest_ids {
+            self.state.preds.entry(dest_id).or_default().push(src_id);
+        }
+        self.state.filled.insert(src_id);
+        Ok(SsaBuilder {
+            module: self.module,
+            function: self.function,
+            id: self.id,
+            folder: self.folder,
+            inner: None,
+            state: self.state,
+            _s: core::marker::PhantomData,
+        })
+    }
+
+    /// Produce `ret <value>`. Mirrors `IRBuilder::CreateRet`. Records no
+    /// edges -- a `ret` has no successors.
+    pub fn ret<V>(mut self, value: V) -> IrResult<SsaBuilder<'m, 'ctx, B, F, Unpositioned, R>>
+    where
+        V: IntoReturnValue<'ctx, R, B>,
+    {
+        let src_id = self.current_block_id();
+        let inner = self.inner.take().unwrap_or_else(|| {
+            unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
+        });
+        let (_terminated, _inst) = inner.build_ret(value)?;
+        self.state.filled.insert(src_id);
+        Ok(SsaBuilder {
+            module: self.module,
+            function: self.function,
+            id: self.id,
+            folder: self.folder,
+            inner: None,
+            state: self.state,
+            _s: core::marker::PhantomData,
+        })
+    }
+
+    /// Produce `unreachable`. Mirrors `IRBuilder::CreateUnreachable`.
+    /// Infallible (matching the inner builder's own `build_unreachable`
+    /// shape); records no edges.
+    pub fn unreachable(mut self) -> SsaBuilder<'m, 'ctx, B, F, Unpositioned, R> {
+        let src_id = self.current_block_id();
+        let inner = self.inner.take().unwrap_or_else(|| {
+            unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
+        });
+        let (_terminated, _inst) = inner.build_unreachable();
+        self.state.filled.insert(src_id);
+        SsaBuilder {
+            module: self.module,
+            function: self.function,
+            id: self.id,
+            folder: self.folder,
+            inner: None,
+            state: self.state,
+            _s: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<'m, 'ctx, B, F> SsaBuilder<'m, 'ctx, B, F, Positioned, ()>
+where
+    B: ModuleBrand + 'ctx,
+    F: IRBuilderFolder<'ctx, B> + Clone,
+{
+    /// Produce `ret void`. Mirrors `IRBuilder::CreateRetVoid`. Gated on
+    /// the builder's return marker being statically `()`, matching the
+    /// inner builder's own `build_ret_void` split (a [`Dyn`]-marker
+    /// builder's `ret_void` would need a runtime parent-function check;
+    /// no such builder shape is reachable here since `R = ()` is fixed
+    /// by this impl block).
+    pub fn ret_void(mut self) -> SsaBuilder<'m, 'ctx, B, F, Unpositioned, ()> {
+        let src_id = self.current_block_id();
+        let inner = self.inner.take().unwrap_or_else(|| {
+            unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
+        });
+        let (_terminated, _inst) = inner.build_ret_void();
+        self.state.filled.insert(src_id);
+        SsaBuilder {
+            module: self.module,
+            function: self.function,
+            id: self.id,
+            folder: self.folder,
+            inner: None,
+            state: self.state,
+            _s: core::marker::PhantomData,
+        }
     }
 }
 
