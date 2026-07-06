@@ -19,17 +19,19 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 1257. Genuinely recounted (not incremental
-arithmetic) for the whole-branch review's final audit via the
-attribute-anchored
+Total `#[test]` functions: 1267. Genuinely recounted (not incremental
+arithmetic) on 2026-07-06 after the parser-level negative call-site
+fixtures landed (pre-fixture baseline 1257, from the D10 sign-extension
+commit's recount), via the attribute-anchored
 `grep -rEc "^\s*#\[test\]" --include="*.rs" crates/ llvmkit/ | awk -F: '{sum+=$2} END {print sum}'`
 (matches counting every attribute line, one per test). A prior count used
 the unanchored `grep -rc '#\[test\]' --include='*.rs' crates llvmkit`, which
 also matches the literal string `#[test]` inside `//!` module-doc-comment
 PROSE (e.g. "Each `#[test]` cites its upstream source") -- 25 such prose
-mentions across the tree inflated that count to 1267; the attribute-anchored
-form above counts only real `#[test]` attribute lines and is the number to
-trust going forward.
+mentions across the then-1256-test tree inflated that count to 1267, a
+number today's genuine total matches only by coincidence; the
+attribute-anchored form above counts only real `#[test]` attribute lines
+and is the number to trust going forward.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -986,6 +988,16 @@ trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::call_modifiers_round_trip` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCall`; `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printInstruction` CallInst arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::call_return_range_attribute_round_trips` | `test/Assembler/amdgcn-intrinsic-attributes.ll`; `llvm/lib/AsmParser/LLParser.cpp::parseOptionalReturnAttrs` range attribute spelling | mirror |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::operand_bundles_round_trip` | `test/Bitcode/operand-bundles.ll` call/invoke bundle print-shape subset; `llvm/lib/AsmParser/LLParser.cpp::parseOperandBundles` | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::call_explicit_type_arg_type_mismatch_rejected` | `llvm/lib/AsmParser/LLParser.cpp::parseCall` argument loop ("argument is not of expected type"); no upstream lit/unittest coverage of the diagnostic at 22.1.4, rule shape is the anchor | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::call_explicit_type_arg_width_mismatch_rejected` | `llvm/lib/AsmParser/LLParser.cpp::parseCall` argument loop ("argument is not of expected type") — type-identity comparison, i8 vs i32 | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::call_explicit_type_too_few_args_rejected` | `llvm/lib/AsmParser/LLParser.cpp::parseCall` post-loop check ("not enough parameters specified for call") | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::call_explicit_type_too_many_args_rejected` | `llvm/lib/AsmParser/LLParser.cpp::parseCall` argument loop non-vararg arm ("too many arguments specified") | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::call_vararg_missing_fixed_arg_rejected` | `llvm/lib/AsmParser/LLParser.cpp::parseCall` post-loop check with vararg callee ("not enough parameters specified for call") | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::call_vararg_extra_args_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseCall` vararg arm positive guard; `llvm/lib/IR/AsmWriter.cpp` explicit vararg call-site type printing | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::indirect_call_arg_type_mismatch_rejected` | `llvm/lib/AsmParser/LLParser.cpp::parseCall` argument loop via indirect callee; llvmkit routes through `IRBuilder::validate_call_site_args` (`crates/llvmkit-ir/src/ir_builder.rs`) | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::call_inferred_signature_arg_mismatch_rejected` | `llvm/lib/AsmParser/LLParser.cpp::parseCall` short-syntax inference (upstream ACCEPTS the mismatched direct call under opaque pointers; llvmkit rejects at `resolve_direct_callee`) | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::invoke_inferred_signature_arg_mismatch_rejected` | `llvm/lib/AsmParser/LLParser.cpp::parseInvoke` short-syntax inference (upstream ACCEPTS; llvmkit rejects at `resolve_direct_callee`) | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::callbr_inferred_signature_arg_mismatch_rejected` | `llvm/lib/AsmParser/LLParser.cpp::parseCallBr` short-syntax inference (upstream ACCEPTS at parse time; llvmkit rejects at `resolve_direct_callee`) | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_summary.rs::summary_module_entry_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseModuleEntry` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_summary.rs::summary_function_entry_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseFunctionSummary` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_summary.rs::summary_variable_entry_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseVariableSummary` | mirror |
