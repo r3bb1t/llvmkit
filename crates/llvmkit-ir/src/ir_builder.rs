@@ -4980,6 +4980,14 @@ where
     {
         let lhs = lhs.into_pointer_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_pointer_value(ModuleRef::new(self.module))?;
+        let folded = self.folder.fold_cmp_dyn(
+            pred.into(),
+            IsValue::as_value(lhs),
+            IsValue::as_value(rhs),
+        )?;
+        if let Some(folded) = folder::narrow_folded_bool(folded)? {
+            return Ok(folded);
+        }
         let payload = super::instr_types::CmpInstData::new(
             pred,
             IsValue::as_value(lhs).id,
