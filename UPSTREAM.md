@@ -743,6 +743,8 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::alloca_align_round_trips` | `test/Assembler/align-inst.ll` constructive alloca alignment excerpt; `LLParser::parseAlloc` align arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::load_align_round_trips` | `test/Assembler/align-inst.ll` constructive load alignment excerpt; `LLParser::parseLoad` align arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::gep_inbounds_nuw_round_trips` | `test/Assembler/flags.ll` `@gep_inbounds_nuw`; `LLParser::parseGetElementPtr` inbounds/nuw arms | mirror |
+| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::gep_nusw_nuw_round_trips` | `test/Assembler/flags.ll` `@gep_nusw_nuw` (AsmWriter's canonical GEP flag order); `LLParser::parseGetElementPtr` any-order flag loop | mirror |
+| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::gep_reversed_flag_order_round_trips` | `test/Assembler/flags.ll` `@gep_nuw_nusw_inbounds` (any-order parse, canonical re-print with nusw suppressed under inbounds) | mirror |
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::samesign_icmp_round_trips` | `test/Assembler/flags.ll`; `LLParser::parseCompare` `samesign` arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::disjoint_or_round_trips` | `test/Assembler/flags.ll` `@test_or`; `LLParser::parseArithmetic` `disjoint` arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::memory_attribute_round_trips` | `llvm/test/Assembler/memory-attribute.ll`; `llvm/lib/IR/Attributes.cpp::Attribute::getAsString` | mirror |

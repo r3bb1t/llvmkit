@@ -6687,7 +6687,8 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         Ok(())
     }
 
-    /// `getelementptr [inbounds] [nuw] [nusw] SOURCE_TY, ptr P, INDEX, INDEX, ...`.
+    /// `getelementptr FLAGS SOURCE_TY, ptr P, INDEX, INDEX, ...` where
+    /// FLAGS is any-order `inbounds` / `nusw` / `nuw`.
     /// Mirrors `LLParser::parseGetElementPtr` (LLParser.cpp ~8900).
     fn parse_gep(
         &mut self,
@@ -6695,9 +6696,24 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         b: &ParsedBlockBuilder<'m, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        let inbounds = self.eat_keyword(Keyword::Inbounds)?;
-        let nuw = self.eat_keyword(Keyword::Nuw)?;
-        let nusw = self.eat_keyword(Keyword::Nusw)?;
+        // Upstream loops over the flag keywords in any order
+        // (`test/Assembler/flags.ll` has both `nusw nuw` and
+        // `nuw nusw inbounds`); AsmWriter's canonical print order is
+        // `inbounds` / `nusw` / `nuw`, so a fixed eat order could not even
+        // re-parse this crate's own output. Same loop as
+        // `Self::parse_gep_constant_expr_flags`.
+        let mut flags = GepNoWrapFlags::empty();
+        loop {
+            if self.eat_keyword(Keyword::Inbounds)? {
+                flags |= GepNoWrapFlags::inbounds();
+            } else if self.eat_keyword(Keyword::Nusw)? {
+                flags |= GepNoWrapFlags::NUSW;
+            } else if self.eat_keyword(Keyword::Nuw)? {
+                flags |= GepNoWrapFlags::NUW;
+            } else {
+                break;
+            }
+        }
         let source_ty = self.parse_type(false)?;
         self.expect_punct(PunctKind::Comma, "',' after GEP source type")?;
         let ptr_ty = self.parse_type(false)?;
@@ -6715,20 +6731,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             indices.push(idx);
         }
         let name = result_name.as_str();
-        let flags = {
-            let mut f = if inbounds {
-                GepNoWrapFlags::inbounds()
-            } else {
-                GepNoWrapFlags::empty()
-            };
-            if nuw {
-                f |= GepNoWrapFlags::NUW;
-            }
-            if nusw {
-                f |= GepNoWrapFlags::NUSW;
-            }
-            f
-        };
         let v = b
             .build_gep_with_flags(source_ty, ptr, indices, flags, name)
             .map_err(|e| self.builder_err("getelementptr", e))?;

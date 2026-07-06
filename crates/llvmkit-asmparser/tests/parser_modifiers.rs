@@ -123,6 +123,35 @@ fn gep_inbounds_nuw_round_trips() {
     );
 }
 
+/// getelementptr nusw nuw — `test/Assembler/flags.ll::gep_nusw_nuw`. This is
+/// AsmWriter's own canonical flag order, so failing to parse it means the
+/// printer emits IR the parser cannot read back.
+#[test]
+fn gep_nusw_nuw_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/flags/gep_nusw_nuw_round_trips.ll");
+
+    let text = parse_fixture("gep_nusw_nuw_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["%gep = getelementptr nusw nuw i8, ptr %p, i64 %idx"],
+    );
+}
+
+/// getelementptr nuw nusw inbounds — `test/Assembler/flags.ll::gep_nuw_nusw_inbounds`:
+/// GEP flags parse in ANY order (upstream `LLParser::parseGetElementPtr`
+/// loops) and re-print canonically, with nusw suppressed under inbounds.
+#[test]
+fn gep_reversed_flag_order_round_trips() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/flags/gep_reversed_flag_order_round_trips.ll");
+
+    let text = parse_fixture("gep_reversed_flag_order_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["%gep = getelementptr inbounds nuw i8, ptr %p, i64 %idx"],
+    );
+}
+
 // ── samesign on icmp ──────────────────────────────────────────────────────
 
 /// `icmp samesign ult` — exact `test/Assembler/flags.ll` spelling.
