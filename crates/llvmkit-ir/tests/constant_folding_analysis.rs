@@ -12,7 +12,7 @@ use llvmkit_ir::{
     ApFloat, ApFloatSemantics, ApInt, AttrIndex, Attribute, BinaryIntrinsic, BinaryOpcode,
     CmpPredicate, ConstantExprOpcode, ConstantExprOptions, ConstantFloatValue, ConstantIntValue,
     DataLayout, DenormalMode, DenormalModeKind, DenormalModeSide, FoldNonDeterminism, IRBuilder,
-    InstructionView, IntDyn, IntPredicate, IrError, LibFunc, Linkage, Module, NoFolder,
+    InstructionView, IntDyn, IntPredicate, IntValue, IrError, LibFunc, Linkage, Module, NoFolder,
     PreservedCastFlags, RoundingMode, TargetLibraryInfo, Type, UnaryOpcode,
     attributes::AttributeStorage, constant_fold_binary_intrinsic, constant_fold_binary_op_operands,
     constant_fold_compare_inst_operands, constant_fold_constant, constant_fold_fp_inst_operands,
@@ -163,6 +163,100 @@ fn phi_same_constant_folds() -> Result<(), IrError> {
         let folded =
             constant_fold_instruction(&instruction, &dl, None)?.expect("same-constant phi folds");
 
+        assert_eq!(folded, i32_ty.const_int(7_i32).as_constant());
+        Ok(())
+    })
+}
+
+/// Port of `ConstantFolding.cpp::ConstantFoldInstruction`'s PHI arm: undef-like
+/// incomings are skipped — upstream tests `isa<UndefValue>`, and `PoisonValue`
+/// is-a `UndefValue` there — so a PHI over poison and undef folds to undef.
+/// Folding to poison instead would weaken a possibly-undef value to poison,
+/// which is the illegal refinement direction.
+#[test]
+fn phi_poison_and_undef_incomings_fold_to_undef() -> Result<(), IrError> {
+    Module::with_new("analysis-phi-poison-undef", |m| {
+        let dl = DataLayout::default();
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let entry_label = entry.label();
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let poison = IntValue::try_from(i32_ty.as_type().get_poison().as_value())?;
+        let undef = IntValue::try_from(i32_ty.as_type().get_undef().as_value())?;
+        let phi = b
+            .build_int_phi::<i32, _>("p")?
+            .add_incoming(poison, entry_label)?
+            .add_incoming(undef, entry_label)?;
+        let instruction = InstructionView::try_from(phi.as_int_value().as_value())?;
+
+        let folded =
+            constant_fold_instruction(&instruction, &dl, None)?.expect("undef-like phi folds");
+
+        assert_eq!(folded, i32_ty.as_type().get_undef().as_constant());
+        Ok(())
+    })
+}
+
+/// Same `ConstantFoldInstruction` PHI arm: a poison incoming is skipped like
+/// undef, so the remaining concrete constant wins.
+#[test]
+fn phi_poison_beside_constant_folds_to_the_constant() -> Result<(), IrError> {
+    Module::with_new("analysis-phi-poison-const", |m| {
+        let dl = DataLayout::default();
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let entry_label = entry.label();
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let poison = IntValue::try_from(i32_ty.as_type().get_poison().as_value())?;
+        let phi = b
+            .build_int_phi::<i32, _>("p")?
+            .add_incoming(poison, entry_label)?
+            .add_incoming(7_i32, entry_label)?;
+        let instruction = InstructionView::try_from(phi.as_int_value().as_value())?;
+
+        let folded =
+            constant_fold_instruction(&instruction, &dl, None)?.expect("poison-skipped phi folds");
+
+        assert_eq!(folded, i32_ty.const_int(7_i32).as_constant());
+        Ok(())
+    })
+}
+
+/// Port of `ConstantFolding.cpp::ConstantFoldLoadFromConstPtr` +
+/// `GlobalValue::hasDefinitiveInitializer`: an interposable (weak) constant
+/// global's initializer is not authoritative — the linker may select another
+/// definition — so the load declines to fold, while a strong definition folds.
+#[test]
+fn interposable_constant_global_load_declines_to_fold() -> Result<(), IrError> {
+    Module::with_new("analysis-load-interposable", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i32_ty = m.i32_type();
+        let weak = m.add_global_constant("weak_g", i32_ty.as_type(), i32_ty.const_int(42_i32))?;
+        weak.set_linkage(&m, Linkage::WeakAny);
+        let strong =
+            m.add_global_constant("strong_g", i32_ty.as_type(), i32_ty.const_int(7_i32))?;
+
+        assert_eq!(
+            constant_fold_load_from_const_ptr(
+                weak.as_global_constant_ptr(),
+                i32_ty.as_type(),
+                ApInt::zero(64),
+                &dl,
+            )?,
+            None,
+            "interposable initializer must not fold"
+        );
+        let folded = constant_fold_load_from_const_ptr(
+            strong.as_global_constant_ptr(),
+            i32_ty.as_type(),
+            ApInt::zero(64),
+            &dl,
+        )?
+        .expect("definitive initializer folds");
         assert_eq!(folded, i32_ty.const_int(7_i32).as_constant());
         Ok(())
     })

@@ -181,6 +181,12 @@ pub fn constant_fold_load_from_const_ptr<'ctx, B: ModuleBrand + 'ctx>(
     if !global.is_constant() || global.is_externally_initialized() {
         return Ok(None);
     }
+    // `hasDefinitiveInitializer()`: an interposable definition (weak,
+    // linkonce, common, extern_weak) may be replaced by the linker, so its
+    // local initializer is not authoritative (`ConstantFoldLoadFromConstPtr`).
+    if crate::constant_fold::linkage_is_interposable(global.linkage()) {
+        return Ok(None);
+    }
     let Some(initializer) = global.initializer() else {
         return Ok(None);
     };
@@ -885,7 +891,11 @@ fn fold_phi<'ctx, B: ModuleBrand + 'ctx>(
         let Some(constant) = constant_from_id(module, incoming.get()) else {
             return Ok(None);
         };
-        if is_undef(constant) {
+        // Upstream skips `isa<UndefValue>`, and `PoisonValue` is-a
+        // `UndefValue` there, so poison incomings are skipped too; treating
+        // poison as a candidate would fold `phi [poison], [undef]` to poison
+        // — an illegal undef-to-poison weakening.
+        if is_undef(constant) || is_poison(constant) {
             continue;
         }
         if let Some(previous) = common {

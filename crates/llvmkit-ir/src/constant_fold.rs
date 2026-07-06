@@ -1318,7 +1318,7 @@ fn global_is_unsafe_for_equality<B: ModuleBrand>(module: ModuleView<'_, B>, id: 
     }
 }
 
-fn linkage_is_interposable(linkage: Linkage) -> bool {
+pub(crate) fn linkage_is_interposable(linkage: Linkage) -> bool {
     matches!(
         linkage,
         Linkage::WeakAny | Linkage::LinkOnceAny | Linkage::Common | Linkage::ExternalWeak

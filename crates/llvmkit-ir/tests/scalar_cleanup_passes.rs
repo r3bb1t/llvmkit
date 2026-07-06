@@ -1,7 +1,7 @@
 use llvmkit_ir::{
     Brand, DcePass, FunctionAnalysisManager, FunctionPassManager, IRBuilder, InstSimplifyPass,
-    IrError, Linkage, Module, ModuleAnalysisManager, ModulePassManager,
-    ModuleToFunctionPassAdaptor, MutatesIr, NoFolder, Type,
+    IntValue, IrError, Linkage, Module, ModuleAnalysisManager, ModulePassManager,
+    ModuleToFunctionPassAdaptor, MutatesIr, NoFolder, PointerValue, Type,
 };
 
 /// Port of `llvm/lib/Transforms/Scalar/InstSimplifyPass.cpp::runImpl` and
@@ -137,6 +137,51 @@ fn instsimplify_and_dce_pipeline_folds_and_erases() -> Result<(), IrError> {
         assert!(!text.contains("folded"), "{text}");
         assert!(!text.contains("dead0"), "{text}");
         assert!(!text.contains("dead1"), "{text}");
+        Ok(())
+    })
+}
+
+/// Port of `ConstantFolding.cpp::ConstantFoldLoadFromConstPtr` +
+/// `GlobalValue::hasDefinitiveInitializer` through the pass pipeline:
+/// instsimplify keeps a load from an interposable (weak) constant global —
+/// the linker may select a different definition — while a load from a strong
+/// definition still folds away.
+#[test]
+fn instsimplify_pass_keeps_load_from_interposable_constant_global() -> Result<(), IrError> {
+    Module::with_new("instsimplify-weak-global", |m| {
+        let i32_ty = m.i32_type();
+        let weak = m.add_global_constant("weak_g", i32_ty.as_type(), i32_ty.const_int(42_i32))?;
+        weak.set_linkage(&m, Linkage::WeakAny);
+        let strong =
+            m.add_global_constant("strong_g", i32_ty.as_type(), i32_ty.const_int(7_i32))?;
+        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let weak_ptr = PointerValue::try_from(weak.as_global_constant_ptr().as_value())?;
+        let strong_ptr = PointerValue::try_from(strong.as_global_constant_ptr().as_value())?;
+        let w = IntValue::try_from(b.build_load(i32_ty.as_type(), weak_ptr, "w")?)?;
+        let s = IntValue::try_from(b.build_load(i32_ty.as_type(), strong_ptr, "s")?)?;
+        let sum = b.build_int_add::<i32, _, _, _>(w, s, "sum")?;
+        b.build_ret(sum)?;
+
+        let verified = m.verify()?;
+        let mut fpm = FunctionPassManager::<_, MutatesIr>::new_transform();
+        fpm.add_pipeline_pass(InstSimplifyPass);
+        let mut fam = FunctionAnalysisManager::new();
+        let unverified = fpm.run(verified, f, &mut fam)?;
+        let reverified = unverified.verify()?;
+        let text = format!("{reverified}");
+
+        assert!(
+            text.contains("%w = load i32, ptr @weak_g"),
+            "weak-global load must survive:\n{text}"
+        );
+        assert!(
+            !text.contains("%s = load"),
+            "strong-global load must fold away:\n{text}"
+        );
+        assert!(text.contains("%sum = add i32 %w, 7"), "{text}");
         Ok(())
     })
 }
