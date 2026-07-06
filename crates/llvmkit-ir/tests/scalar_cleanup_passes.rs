@@ -1,7 +1,8 @@
 use llvmkit_ir::{
-    Brand, DcePass, FunctionAnalysisManager, FunctionPassManager, IRBuilder, InstSimplifyPass,
-    IntValue, IrError, Linkage, Module, ModuleAnalysisManager, ModulePassManager,
-    ModuleToFunctionPassAdaptor, MutatesIr, NoFolder, PointerValue, Type,
+    Align, AtomicLoadConfig, AtomicOrdering, Brand, DcePass, FunctionAnalysisManager,
+    FunctionPassManager, IRBuilder, InstSimplifyPass, IntValue, IrError, Linkage, Module,
+    ModuleAnalysisManager, ModulePassManager, ModuleToFunctionPassAdaptor, MutatesIr, NoFolder,
+    PointerValue, SyncScope, Type, Value,
 };
 
 /// Port of `llvm/lib/Transforms/Scalar/InstSimplifyPass.cpp::runImpl` and
@@ -182,6 +183,90 @@ fn instsimplify_pass_keeps_load_from_interposable_constant_global() -> Result<()
             "strong-global load must fold away:\n{text}"
         );
         assert!(text.contains("%sum = add i32 %w, 7"), "{text}");
+        Ok(())
+    })
+}
+
+/// Matches `wouldInstructionBeTriviallyDead` via `LoadInst::isUnordered`: an
+/// unused unordered atomic load has no memory-ordering side effects and is
+/// removed, while an ordered (monotonic) atomic load and a volatile load are
+/// kept.
+#[test]
+fn dce_removes_unordered_atomic_load_keeps_ordered_and_volatile() -> Result<(), IrError> {
+    Module::with_new("dce-loads", |m| {
+        let i32_ty = m.i32_type();
+        let ptr_ty = m.ptr_type(0);
+        let fn_ty = m.fn_type(m.void_type().as_type(), [ptr_ty.as_type()], false);
+        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let p: PointerValue = f.param(0)?.try_into()?;
+        let unordered =
+            AtomicLoadConfig::new(AtomicOrdering::Unordered, SyncScope::System, Align::new(4)?);
+        let _u = b.build_int_load_atomic::<i32, _, _>(p, unordered, "u")?;
+        let monotonic =
+            AtomicLoadConfig::new(AtomicOrdering::Monotonic, SyncScope::System, Align::new(4)?);
+        let _mo = b.build_int_load_atomic::<i32, _, _>(p, monotonic, "mo")?;
+        let _v = b.build_load_volatile(i32_ty, p, "v")?;
+        b.build_ret_void();
+
+        let verified = m.verify()?;
+        let mut fpm = FunctionPassManager::<_, MutatesIr>::new_transform();
+        fpm.add_pipeline_pass(DcePass);
+        let mut fam = FunctionAnalysisManager::new();
+        let reverified = fpm.run(verified, f, &mut fam)?.verify()?;
+        let text = format!("{reverified}");
+
+        assert!(
+            !text.contains("%u ="),
+            "unordered atomic load should be removed:\n{text}"
+        );
+        assert!(
+            text.contains("%mo = load atomic"),
+            "ordered atomic load must be kept:\n{text}"
+        );
+        assert!(
+            text.contains("%v = load volatile"),
+            "volatile load must be kept:\n{text}"
+        );
+        Ok(())
+    })
+}
+
+/// Negative DCE coverage: side-effecting instructions (store, fence, call)
+/// are never trivially dead, matching `wouldInstructionBeTriviallyDead`.
+#[test]
+fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
+    Module::with_new("dce-effects", |m| {
+        let i32_ty = m.i32_type();
+        let ptr_ty = m.ptr_type(0);
+        let void_ty = m.void_type().as_type();
+        let sink_ty = m.fn_type(void_ty, Vec::<Type>::new(), false);
+        let sink = m.add_function::<(), _>("sink", sink_ty, Linkage::External)?;
+        let fn_ty = m.fn_type(void_ty, [ptr_ty.as_type()], false);
+        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let p: PointerValue = f.param(0)?.try_into()?;
+        b.build_store(i32_ty.const_int(1_u32), p)?;
+        b.build_fence(
+            AtomicOrdering::SequentiallyConsistent,
+            SyncScope::System,
+            "",
+        )?;
+        b.build_call_dyn::<(), _, _, _>(sink, Vec::<Value>::new(), "")?;
+        b.build_ret_void();
+
+        let verified = m.verify()?;
+        let mut fpm = FunctionPassManager::<_, MutatesIr>::new_transform();
+        fpm.add_pipeline_pass(DcePass);
+        let mut fam = FunctionAnalysisManager::new();
+        let reverified = fpm.run(verified, f, &mut fam)?.verify()?;
+        let text = format!("{reverified}");
+
+        assert!(text.contains("store i32 1"), "store kept:\n{text}");
+        assert!(text.contains("fence seq_cst"), "fence kept:\n{text}");
+        assert!(text.contains("call void @sink()"), "call kept:\n{text}");
         Ok(())
     })
 }

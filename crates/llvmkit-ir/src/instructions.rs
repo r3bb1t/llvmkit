@@ -335,6 +335,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> LoadInst<'ctx, B> {
     pub fn is_atomic(self) -> bool {
         self.payload().is_atomic()
     }
+    /// `true` when this load has no memory-ordering side effects
+    /// (non-volatile and non-atomic or `unordered`). Mirrors
+    /// `LoadInst::isUnordered` in `Instructions.h`.
+    pub fn is_unordered(self) -> bool {
+        self.payload().is_unordered()
+    }
 }
 
 /// `store` instruction. Mirrors `StoreInst` (`Instructions.h`).

@@ -1202,6 +1202,17 @@ impl LoadInstData {
             crate::atomic_ordering::AtomicOrdering::NotAtomic,
         )
     }
+
+    /// `true` when the load has no memory-ordering side effects: non-volatile
+    /// and either non-atomic or `unordered`. Mirrors `LoadInst::isUnordered`.
+    pub(crate) fn is_unordered(&self) -> bool {
+        !self.volatile
+            && matches!(
+                self.ordering,
+                crate::atomic_ordering::AtomicOrdering::NotAtomic
+                    | crate::atomic_ordering::AtomicOrdering::Unordered,
+            )
+    }
 }
 impl Clone for LoadInstData {
     fn clone(&self) -> Self {

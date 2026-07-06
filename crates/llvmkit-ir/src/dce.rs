@@ -62,13 +62,19 @@ fn dce_iteration<'ctx, B: ModuleBrand + 'ctx>(cx: &mut FunctionPassContext<'_, '
     false
 }
 
-fn is_trivially_dead<'ctx, B: ModuleBrand + 'ctx>(view: &InstructionView<'ctx, B>) -> bool {
+pub(crate) fn is_trivially_dead<'ctx, B: ModuleBrand + 'ctx>(
+    view: &InstructionView<'ctx, B>,
+) -> bool {
     if view.as_value().has_uses() || view.is_terminator() {
         return false;
     }
 
     match view.kind() {
-        Some(InstructionKind::Load(load)) => !(load.is_volatile() || load.is_atomic()),
+        // An unordered (non-volatile, NotAtomic-or-Unordered) load has no
+        // memory-ordering side effects, so it is trivially dead — matches
+        // `wouldInstructionBeTriviallyDead` via `LoadInst::isUnordered`
+        // (an ordered atomic or volatile load is kept).
+        Some(InstructionKind::Load(load)) => load.is_unordered(),
         Some(
             InstructionKind::Store(_)
             | InstructionKind::Fence(_)

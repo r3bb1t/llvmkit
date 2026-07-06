@@ -62,9 +62,17 @@ fn inst_simplify_iteration<'ctx, B: ModuleBrand + 'ctx>(
             };
             let id = inst.as_value().id();
             inst.replace_all_uses_with(module_token, replacement)?;
+            // Upstream `InstSimplifyPass::runImpl` erases the simplified
+            // instruction only when it is trivially dead ("a call can get
+            // simplified, but it may not be trivially dead"). Everything the
+            // folder simplifies here is side-effect-free, so after RAUW it is
+            // always trivially dead — but gate on it to match upstream and
+            // stay correct if the folder ever grows a call path.
             let erased =
                 Instruction::<state::Attached, B>::from_parts(id, module_token.module_ref());
-            erased.erase_from_parent(module_token);
+            if crate::dce::is_trivially_dead(&erased.as_view()) {
+                erased.erase_from_parent(module_token);
+            }
             return Ok(true);
         }
     }
