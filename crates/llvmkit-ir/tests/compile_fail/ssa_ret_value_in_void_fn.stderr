@@ -1,0 +1,16 @@
+error[E0277]: the trait bound `i32: IntoReturnValue<'_, (), Brand<'_>>` is not satisfied
+  --> tests/compile_fail/ssa_ret_value_in_void_fn.rs:31:27
+   |
+31 |         let _oops = b.ret(1_i32).unwrap();
+   |                       --- ^^^^^ the trait `IntoReturnValue<'_, (), Brand<'_>>` is not implemented for `i32`
+   |                       |
+   |                       required by a bound introduced by this call
+   |
+note: required by a bound in `SsaBuilder::<'m, 'ctx, B, F, Positioned, R>::ret`
+  --> src/ssa_builder.rs
+   |
+   |     pub fn ret<V>(mut self, value: V) -> IrResult<SsaBuilder<'m, 'ctx, B, F, Unpositioned, R>>
+   |            --- required by a bound in this associated function
+   |     where
+   |         V: IntoReturnValue<'ctx, R, B>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `SsaBuilder::<'m, 'ctx, B, F, Positioned, R>::ret`

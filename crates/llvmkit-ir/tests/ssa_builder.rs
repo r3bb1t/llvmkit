@@ -20,6 +20,7 @@
 //! convention unless noted otherwise.
 
 use llvmkit_ir::{IntPredicate, IntValue, IrError, Linkage, Module, NoFolder, SsaBuilder, Type};
+use proptest::prelude::*;
 
 /// llvmkit-specific: locks `SsaBuilder::for_function`'s happy path --
 /// construction succeeds against a function with no existing body.
@@ -971,4 +972,430 @@ fn switch_dyn_condition_bad_width_case_rejected_before_emit() -> Result<(), IrEr
         );
         Ok(())
     })
+}
+
+// --------------------------------------------------------------------------
+// Property test (Task 19 Step 3): random bounded reducible CFGs always
+// verify; strict-undef schedules always yield `SsaUseOfUndefinedVariable`,
+// never invalid IR.
+// --------------------------------------------------------------------------
+//
+// Rather than a fully general random CFG generator (unbounded blocks/edges
+// risks generating shapes the typed Positioned/Unpositioned lifecycle makes
+// awkward to drive generically, and risks non-reducible CFGs the Braun
+// engine was never designed for), this sweeps a small TABLE of the same
+// bounded shapes `every_auto_ssa_module_verifies` above already hand-locks
+// (straight-line chain, if/then/else diamond, loop with a back-edge,
+// switch with a shared destination) -- each shape capped at <= 8 blocks
+// and parameterised by a random var count (1..=4) and random small integer
+// literals, always following seal-after-all-preds discipline and always
+// calling `finish()`. This is the "table of shapes + random schedule
+// choices" the brief sanctions over a fully general generator.
+//
+// llvmkit-specific: `llvm/lib/IR/Verifier.cpp` has no analogous randomised
+// construction fuzzer of its own on-the-fly SSA layer (LLVM's IR is always
+// built by a frontend that already knows dominance; this engine documents
+// new IR into existence and must prove its own output well-formed no
+// matter which of these bounded schedules produced it).
+
+/// One of the four bounded CFG shapes every generated case builds. Mirrors
+/// `every_auto_ssa_module_verifies`'s four hand-written shapes above,
+/// parameterised instead of hard-coded.
+#[derive(Debug, Clone, Copy)]
+enum ShapeKind {
+    StraightLine,
+    Diamond,
+    Loop,
+    SwitchShared,
+}
+
+/// A single generated test case: which shape, how many `i32` variables
+/// (<= 4) participate, small literal values to write into them, and --
+/// for the strict-undef sweep -- which variable index (if any) is left
+/// unwritten on a reachable path to force `SsaUseOfUndefinedVariable`.
+#[derive(Debug, Clone)]
+struct GeneratedCase {
+    shape: ShapeKind,
+    var_count: usize,
+    literals: Vec<i32>,
+    /// `Some(index)` selects a strict-undef schedule for that variable
+    /// (skips its def on one path); `None` means every variable is
+    /// defined on every path before its read (the well-defined sweep).
+    undef_var: Option<usize>,
+}
+
+fn shape_kind_strategy() -> impl Strategy<Value = ShapeKind> {
+    prop_oneof![
+        Just(ShapeKind::StraightLine),
+        Just(ShapeKind::Diamond),
+        Just(ShapeKind::Loop),
+        Just(ShapeKind::SwitchShared),
+    ]
+}
+
+/// Bounds: `var_count` in 1..=4 (brief's "<=4 int vars"); each shape below
+/// tops out at 5 blocks (switch: entry/pre/case/default/shared), well
+/// under the brief's "<=8 blocks" cap; literals are kept small (the
+/// values themselves are irrelevant to well-formedness, only their
+/// presence as distinct phi incoming operands matters).
+fn generated_case_strategy(allow_undef: bool) -> impl Strategy<Value = GeneratedCase> {
+    (
+        shape_kind_strategy(),
+        1_usize..=4,
+        prop::collection::vec(-100_i32..100, 4),
+        proptest::bool::ANY,
+    )
+        .prop_map(
+            move |(shape, var_count, literals, want_undef)| GeneratedCase {
+                shape,
+                var_count,
+                literals,
+                undef_var: if allow_undef && want_undef {
+                    Some(0)
+                } else {
+                    None
+                },
+            },
+        )
+}
+
+/// What building one [`GeneratedCase`] observed. A strict-undef schedule
+/// must hit `HitExpectedUndef` (the module is intentionally left
+/// unfinished the moment the expected error fires -- never `finish()`ed,
+/// never handed to `verify_borrowed()`, since an incomplete module is
+/// not the thing under test on that path); a well-defined schedule must
+/// hit `Finished` (the module is fully built and ready to verify).
+/// Anything else (an unexpected error propagated via `?`) fails the
+/// case outright.
+enum BuildOutcome {
+    Finished,
+    HitExpectedUndef,
+}
+
+/// Shared read-loop: reads every variable in `vars`, in order. If
+/// `case.undef_var` is set and its read fails with
+/// `SsaUseOfUndefinedVariable`, returns `HitExpectedUndef` immediately
+/// (the remaining variables are never read -- the expected error already
+/// fired). Any other error propagates via `?`. On a well-defined case
+/// every read succeeds and the collected values are returned for the
+/// caller to finish building with (e.g. feeding the last one to `ret`).
+fn read_all_vars<'m, 'ctx, B, F, R>(
+    b: &mut SsaBuilder<'m, 'ctx, B, F, llvmkit_ir::Positioned, R>,
+    vars: &[llvmkit_ir::IntVariable<'ctx, i32, B>],
+    undef_var: Option<usize>,
+) -> Result<Result<Vec<IntValue<'ctx, i32, B>>, ()>, IrError>
+where
+    B: llvmkit_ir::ModuleBrand + 'ctx,
+    F: llvmkit_ir::ir_builder::folder::IRBuilderFolder<'ctx, B> + Clone,
+    R: llvmkit_ir::marker::ReturnMarker,
+{
+    let mut reads = Vec::with_capacity(vars.len());
+    for (i, var) in vars.iter().enumerate() {
+        match (b.use_int_var(*var), undef_var == Some(i)) {
+            (Ok(v), _) => reads.push(v),
+            (Err(IrError::SsaUseOfUndefinedVariable { .. }), true) => return Ok(Err(())),
+            (Err(other), _) => return Err(other),
+        }
+    }
+    Ok(Ok(reads))
+}
+
+/// Builds (and, on the well-defined path, finishes) the `StraightLine`
+/// shape (`entry -> mid -> exit`): every variable is defined in `entry`,
+/// `mid` is a pass-through, `exit` reads every variable. With
+/// `undef_var = Some(0)`, variable 0's def in `entry` is skipped, so
+/// `exit`'s read of it chases back through `mid` to the sealed,
+/// predecessor-less function entry and must error.
+fn build_straight_line(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, IrError> {
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let mut b = SsaBuilder::for_function(m, f)?;
+    let entry = b.create_block("entry");
+    let mid = b.create_block("mid");
+    let exit = b.create_block("exit");
+
+    let vars: Vec<_> = (0..case.var_count)
+        .map(|i| b.declare_int_var::<i32, _>(format!("v{i}")))
+        .collect();
+
+    let mut b = b.switch_to_block(entry)?;
+    for (i, var) in vars.iter().enumerate() {
+        if case.undef_var != Some(i) {
+            b.def_int_var(*var, case.literals[i])?;
+        }
+    }
+    let b = b.br(mid)?;
+
+    let mut b = b.switch_to_block(mid)?;
+    b.seal_block(mid)?;
+    let b = b.br(exit)?;
+
+    let mut b = b.switch_to_block(exit)?;
+    b.seal_block(exit)?;
+    let Ok(reads) = read_all_vars(&mut b, &vars, case.undef_var)? else {
+        return Ok(BuildOutcome::HitExpectedUndef);
+    };
+    let b = b.ret(reads[0])?;
+    b.finish()?;
+    Ok(BuildOutcome::Finished)
+}
+
+/// Builds (and, on the well-defined path, finishes) the `Diamond` shape
+/// (`entry -> {left, right} -> join`): every variable gets a DIFFERENT
+/// literal on each arm (forcing a real, surviving phi at `join`, not a
+/// trivially-eliminated one). With `undef_var = Some(0)`, variable 0's
+/// def on the `right` arm is skipped, so `join`'s read chases a phi
+/// operand back through the sealed `right` block to function entry and
+/// must error.
+fn build_diamond(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, IrError> {
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let mut b = SsaBuilder::for_function(m, f)?;
+    let entry = b.create_block("entry");
+    let left = b.create_block("left");
+    let right = b.create_block("right");
+    let join = b.create_block("join");
+
+    let vars: Vec<_> = (0..case.var_count)
+        .map(|i| b.declare_int_var::<i32, _>(format!("v{i}")))
+        .collect();
+
+    let b = b.switch_to_block(entry)?;
+    let n: IntValue<i32> = f.param(0)?.try_into()?;
+    let cond = b
+        .ins()
+        .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "cond")?;
+    let mut b = b.cond_br(cond, left, right)?;
+    b.seal_block(left)?;
+    b.seal_block(right)?;
+
+    let mut b = b.switch_to_block(left)?;
+    for (i, var) in vars.iter().enumerate() {
+        b.def_int_var(*var, case.literals[i])?;
+    }
+    let b = b.br(join)?;
+
+    let mut b = b.switch_to_block(right)?;
+    for (i, var) in vars.iter().enumerate() {
+        if case.undef_var != Some(i) {
+            b.def_int_var(*var, case.literals[i].wrapping_add(1))?;
+        }
+    }
+    let b = b.br(join)?;
+
+    let mut b = b.switch_to_block(join)?;
+    b.seal_block(join)?;
+    let Ok(reads) = read_all_vars(&mut b, &vars, case.undef_var)? else {
+        return Ok(BuildOutcome::HitExpectedUndef);
+    };
+    let b = b.ret(reads[0])?;
+    b.finish()?;
+    Ok(BuildOutcome::Finished)
+}
+
+/// Builds (and, on the well-defined path, finishes) the `Loop` shape
+/// (factorial's own CFG: `entry -> {base, loop}`, `loop -> {exit, loop}`
+/// back-edge): every variable is defined in `entry` (the loop's
+/// entry-edge incoming value) and redefined in `loop` (the back-edge
+/// incoming value) before `loop`'s own back-edge is recorded, exercising
+/// Braun's incomplete-phi-on-seal path.
+///
+/// Unlike the other three shapes, `loop`'s own read happens in an
+/// UNSEALED block (its only known predecessor so far is `entry`; the
+/// self back-edge isn't recorded until this block's own terminator
+/// runs) -- Braun's `readVariableRecursive` never errors on an unsealed
+/// block, it always places an operandless "incomplete" phi instead
+/// (`read_variable_in`'s not-sealed branch). So with `undef_var =
+/// Some(0)`, variable 0's read inside `loop` itself always succeeds; the
+/// deferred error only surfaces once `loop` is SEALED (completing that
+/// phi via `add_phi_operands`, which chases the entry-edge operand back
+/// to the sealed, predecessor-less function entry) -- i.e. at
+/// `seal_block(loop_bb)`, not at `use_int_var`.
+fn build_loop(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, IrError> {
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function::<i32, _>("factorial", fn_ty, Linkage::External)?;
+    let mut b = SsaBuilder::for_function(m, f)?;
+    let entry = b.create_block("entry");
+    let base = b.create_block("base");
+    let loop_bb = b.create_block("loop");
+    let exit = b.create_block("exit");
+
+    let vars: Vec<_> = (0..case.var_count)
+        .map(|i| b.declare_int_var::<i32, _>(format!("v{i}")))
+        .collect();
+
+    let mut b = b.switch_to_block(entry)?;
+    let n: IntValue<i32> = f.param(0)?.try_into()?;
+    let is_zero = b
+        .ins()
+        .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
+    for (i, var) in vars.iter().enumerate() {
+        if case.undef_var != Some(i) {
+            b.def_int_var(*var, case.literals[i])?;
+        }
+    }
+    let mut b = b.cond_br(is_zero, base, loop_bb)?;
+    b.seal_block(base)?;
+
+    let b = b.switch_to_block(base)?;
+    let b = b.ret(1_i32)?;
+
+    // `loop_bb` is unsealed here: every read below unconditionally
+    // succeeds (operandless incomplete phi), REGARDLESS of `undef_var`.
+    let mut b = b.switch_to_block(loop_bb)?;
+    let reads: Vec<_> = vars
+        .iter()
+        .map(|var| b.use_int_var(*var))
+        .collect::<Result<_, IrError>>()?;
+    let done = b
+        .ins()
+        .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, reads[0], 0_i32, "done")?;
+    for (i, var) in vars.iter().enumerate() {
+        let next = b.ins().build_int_add(reads[i], case.literals[i], "next")?;
+        b.def_int_var(*var, next)?;
+    }
+    let mut b = b.cond_br(done, exit, loop_bb)?;
+    // The deferred undef error (if any) surfaces HERE: sealing `loop_bb`
+    // completes its incomplete phis, chasing the entry-edge operand back
+    // to the sealed, predecessor-less function entry.
+    match (b.seal_block(loop_bb), case.undef_var) {
+        (Ok(()), _) => {}
+        (Err(IrError::SsaUseOfUndefinedVariable { .. }), Some(_)) => {
+            return Ok(BuildOutcome::HitExpectedUndef);
+        }
+        (Err(other), _) => return Err(other),
+    }
+
+    let mut b = b.switch_to_block(exit)?;
+    b.seal_block(exit)?;
+    let read = b.use_int_var(vars[0])?;
+    let b = b.ret(read)?;
+    b.finish()?;
+    Ok(BuildOutcome::Finished)
+}
+
+/// Builds (and, on the well-defined path, finishes) the `SwitchShared`
+/// shape (`entry -> switch {case0 -> shared, default -> default_bb}`):
+/// mirrors `switch_records_one_edge_per_case_occurrence`'s shape, minus
+/// the duplicate-case multiplicity focus (this sweep only needs a real
+/// multi-pred join fed by a `switch` terminator, the third CFG-edge kind
+/// alongside `br`/`cond_br`). With `undef_var = Some(0)`, variable 0's
+/// def before the switch is skipped, so `shared`'s read must error.
+fn build_switch_shared(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, IrError> {
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let mut b = SsaBuilder::for_function(m, f)?;
+    let entry = b.create_block("entry");
+    let shared = b.create_block("shared");
+    let default_bb = b.create_block("default_bb");
+
+    let vars: Vec<_> = (0..case.var_count)
+        .map(|i| b.declare_int_var::<i32, _>(format!("v{i}")))
+        .collect();
+
+    let mut b = b.switch_to_block(entry)?;
+    let n: IntValue<i32> = f.param(0)?.try_into()?;
+    for (i, var) in vars.iter().enumerate() {
+        if case.undef_var != Some(i) {
+            b.def_int_var(*var, case.literals[i])?;
+        }
+    }
+    let case0 = 0_i32;
+    let mut b = b.switch(n, default_bb, [(case0, shared)])?;
+    b.seal_block(shared)?;
+    b.seal_block(default_bb)?;
+
+    let b = b.switch_to_block(default_bb)?;
+    let b = b.ret(0_i32)?;
+
+    let mut b = b.switch_to_block(shared)?;
+    let Ok(reads) = read_all_vars(&mut b, &vars, case.undef_var)? else {
+        return Ok(BuildOutcome::HitExpectedUndef);
+    };
+    let b = b.ret(reads[0])?;
+    b.finish()?;
+    Ok(BuildOutcome::Finished)
+}
+
+fn build_case(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, IrError> {
+    match case.shape {
+        ShapeKind::StraightLine => build_straight_line(m, case),
+        ShapeKind::Diamond => build_diamond(m, case),
+        ShapeKind::Loop => build_loop(m, case),
+        ShapeKind::SwitchShared => build_switch_shared(m, case),
+    }
+}
+
+proptest! {
+    /// Every well-defined (no `undef_var`) generated module -- across all
+    /// four bounded shapes, 1..=4 vars, random small literals -- passes
+    /// `verify_borrowed()`. This is the brief's "random reducible CFGs ...
+    /// every generated module passes `verify_borrowed()`" requirement.
+    #[test]
+    fn every_well_defined_generated_module_verifies(
+        case in generated_case_strategy(false)
+    ) {
+        let result = Module::with_new("prop-ssa-well-defined", |m| {
+            match build_case(&m, &case)? {
+                BuildOutcome::Finished => m.verify_borrowed(),
+                // `generated_case_strategy(false)` never sets `undef_var`,
+                // so every shape's undef arm is unreachable here.
+                BuildOutcome::HitExpectedUndef => unreachable!(
+                    "well-defined case {case:?} unexpectedly hit the undef arm"
+                ),
+            }
+        });
+        prop_assert!(
+            result.is_ok(),
+            "well-defined case {case:?} failed to build+verify: {result:?}"
+        );
+    }
+
+    /// Every generated case -- whether well-defined OR strict-undef --
+    /// either verifies successfully (well-defined) or cleanly hits
+    /// `SsaUseOfUndefinedVariable` (strict-undef) -- never any other
+    /// error, and a strict-undef case's necessarily-incomplete module is
+    /// never handed to the verifier at all (it was never `finish()`ed,
+    /// so there is no verifiable module to assert well-formedness of on
+    /// that path -- the typed error at construction time IS the
+    /// well-formedness guarantee). This is the brief's "strict-undef
+    /// schedules yield SsaUseOfUndefinedVariable, never invalid IR"
+    /// requirement: the two outcomes (`Finished` -> must verify,
+    /// `HitExpectedUndef` -> must not reach `finish()`/`verify_borrowed`
+    /// at all) are jointly exhaustive over every case this strategy can
+    /// generate.
+    #[test]
+    fn undef_schedules_only_ever_yield_typed_undefined_variable_error(
+        case in generated_case_strategy(true)
+    ) {
+        let is_undef_case = case.undef_var.is_some();
+        let result: Result<Option<Result<(), IrError>>, IrError> =
+            Module::with_new("prop-ssa-undef-sweep", |m| {
+                match build_case(&m, &case)? {
+                    BuildOutcome::Finished => Ok(Some(m.verify_borrowed())),
+                    BuildOutcome::HitExpectedUndef => Ok(None),
+                }
+            });
+        match (is_undef_case, result) {
+            (true, Ok(None)) => {}
+            (true, other) => prop_assert!(
+                false,
+                "strict-undef case {case:?} did not cleanly hit \
+                 SsaUseOfUndefinedVariable before any finish/verify \
+                 call: {other:?}"
+            ),
+            (false, Ok(Some(verify_result))) => prop_assert!(
+                verify_result.is_ok(),
+                "well-defined case {case:?} failed to verify: {verify_result:?}"
+            ),
+            (false, other) => prop_assert!(
+                false,
+                "well-defined case {case:?} failed to build: {other:?}"
+            ),
+        }
+    }
 }
