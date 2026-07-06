@@ -1,0 +1,5 @@
+error[E0451]: field `_private` of struct `SelectNarrow` is private
+  --> tests/compile_fail/select_arm_forge.rs:19:34
+   |
+19 |     let _forged = SelectNarrow { _private: core::marker::PhantomData };
+   |                                  ^^^^^^^^ private field

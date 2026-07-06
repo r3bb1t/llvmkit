@@ -18,7 +18,7 @@
 //!
 //! [`IRBuilder`]: crate::ir_builder::IRBuilder
 
-use super::block_state::{BlockSealState, Unsealed};
+use super::block_state::{BlockTerminationState, Unterminated};
 use super::function::FunctionValue;
 use super::instruction::InstructionView;
 use super::marker::{Dyn, ReturnMarker};
@@ -68,42 +68,43 @@ impl BasicBlockData {
 /// positioned inside the block can keep its compile-time `build_ret`
 /// invariant.
 ///
-/// The `Seal: BlockSealState` parameter (default [`Unsealed`])
+/// The `Term: BlockTerminationState` parameter (default [`Unterminated`])
 /// distinguishes blocks that still accept appended instructions from
-/// blocks whose terminator has been emitted. The seal marker is enforced at
-/// [`crate::IRBuilder::position_at_end`], which only accepts an [`Unsealed`]
-/// block; once a terminator-emitting `build_*` consumes the builder, the
-/// returned handle names the same block with `Seal = Sealed`. `BasicBlock`
-/// is intentionally linear (`!Copy` / `!Clone`) so retaining an old unsealed
-/// insertion capability cannot reopen a sealed construction path. Use
-/// [`BasicBlockLabel`] for copyable branch targets and PHI predecessors.
+/// blocks whose terminator has been emitted. The termination marker is
+/// enforced at [`crate::IRBuilder::position_at_end`], which only accepts
+/// an [`Unterminated`] block; once a terminator-emitting `build_*`
+/// consumes the builder, the returned handle names the same block with
+/// `Term = Terminated`. `BasicBlock` is intentionally linear (`!Copy` /
+/// `!Clone`) so retaining an old unterminated insertion capability cannot
+/// reopen a terminated construction path. Use [`BasicBlockLabel`] for
+/// copyable branch targets and PHI predecessors.
 pub struct BasicBlock<
     'ctx,
     R: ReturnMarker,
-    Seal: BlockSealState = Unsealed,
+    Term: BlockTerminationState = Unterminated,
     B: ModuleBrand = Brand<'ctx>,
 > {
     pub(super) id: ValueId,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeId,
     pub(super) _r: PhantomData<R>,
-    pub(super) _seal: PhantomData<Seal>,
+    pub(super) _term: PhantomData<Term>,
 }
 
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand> PartialEq
-    for BasicBlock<'ctx, R, Seal, B>
+impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand> PartialEq
+    for BasicBlock<'ctx, R, Term, B>
 {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
     }
 }
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand> Eq
-    for BasicBlock<'ctx, R, Seal, B>
+impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand> Eq
+    for BasicBlock<'ctx, R, Term, B>
 {
 }
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand> core::hash::Hash
-    for BasicBlock<'ctx, R, Seal, B>
+impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand> core::hash::Hash
+    for BasicBlock<'ctx, R, Term, B>
 {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
@@ -111,8 +112,8 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand> core::hash::Ha
         self.ty.hash(h);
     }
 }
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand> core::fmt::Debug
-    for BasicBlock<'ctx, R, Seal, B>
+impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand> core::fmt::Debug
+    for BasicBlock<'ctx, R, Term, B>
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("BasicBlock")
@@ -172,18 +173,18 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoBasicBlockLabel<'ctx, R, 
     }
 }
 
-impl<'ctx, R, Seal, B> block_label_sealed::Sealed for BasicBlock<'ctx, R, Seal, B>
+impl<'ctx, R, Term, B> block_label_sealed::Sealed for BasicBlock<'ctx, R, Term, B>
 where
     R: ReturnMarker,
-    Seal: BlockSealState,
+    Term: BlockTerminationState,
     B: ModuleBrand + 'ctx,
 {
 }
 
-impl<'ctx, R, Seal, B> IntoBasicBlockLabel<'ctx, R, B> for BasicBlock<'ctx, R, Seal, B>
+impl<'ctx, R, Term, B> IntoBasicBlockLabel<'ctx, R, B> for BasicBlock<'ctx, R, Term, B>
 where
     R: ReturnMarker,
-    Seal: BlockSealState,
+    Term: BlockTerminationState,
     B: ModuleBrand + 'ctx,
 {
     #[inline]
@@ -197,18 +198,18 @@ where
     }
 }
 
-impl<'ctx, R, Seal, B> block_label_sealed::Sealed for &BasicBlock<'ctx, R, Seal, B>
+impl<'ctx, R, Term, B> block_label_sealed::Sealed for &BasicBlock<'ctx, R, Term, B>
 where
     R: ReturnMarker,
-    Seal: BlockSealState,
+    Term: BlockTerminationState,
     B: ModuleBrand + 'ctx,
 {
 }
 
-impl<'ctx, R, Seal, B> IntoBasicBlockLabel<'ctx, R, B> for &BasicBlock<'ctx, R, Seal, B>
+impl<'ctx, R, Term, B> IntoBasicBlockLabel<'ctx, R, B> for &BasicBlock<'ctx, R, Term, B>
 where
     R: ReturnMarker,
-    Seal: BlockSealState,
+    Term: BlockTerminationState,
     B: ModuleBrand + 'ctx,
 {
     #[inline]
@@ -217,8 +218,22 @@ where
     }
 }
 
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
-    BasicBlock<'ctx, R, Seal, B>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand> block_label_sealed::Sealed
+    for super::ssa_builder::SsaBlock<'ctx, R, B>
+{
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoBasicBlockLabel<'ctx, R, B>
+    for super::ssa_builder::SsaBlock<'ctx, R, B>
+{
+    #[inline]
+    fn into_basic_block_label(self) -> BasicBlockLabel<'ctx, R, B> {
+        self.label()
+    }
+}
+
+impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx>
+    BasicBlock<'ctx, R, Term, B>
 {
     #[inline]
     pub(super) fn from_parts<M>(id: ValueId, module: M, ty: TypeId) -> Self
@@ -230,7 +245,7 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
             module: module.into(),
             ty,
             _r: PhantomData,
-            _seal: PhantomData,
+            _term: PhantomData,
         }
     }
 
@@ -241,7 +256,7 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
             module: self.module,
             ty: self.ty,
             _r: PhantomData,
-            _seal: PhantomData,
+            _term: PhantomData,
         }
     }
 
@@ -271,27 +286,27 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
     /// storage and printing helpers, so public code should use [`label`](Self::label)
     /// when it needs a copyable non-insertion reference.
     #[inline]
-    pub(crate) fn as_dyn(&self) -> BasicBlock<'ctx, Dyn, Seal, B> {
+    pub(crate) fn as_dyn(&self) -> BasicBlock<'ctx, Dyn, Term, B> {
         BasicBlock {
             id: self.id,
             module: self.module,
             ty: self.ty,
             _r: PhantomData,
-            _seal: PhantomData,
+            _term: PhantomData,
         }
     }
 
-    /// Re-tag the seal-state marker. Crate-internal: only the
-    /// terminator-emitting build path produces a sealed view from an
-    /// unsealed builder block.
+    /// Re-tag the termination-state marker. Crate-internal: only the
+    /// terminator-emitting build path produces a terminated view from
+    /// an unterminated builder block.
     #[inline]
-    pub(super) fn retag_seal<S2: BlockSealState>(self) -> BasicBlock<'ctx, R, S2, B> {
+    pub(super) fn retag_termination<S2: BlockTerminationState>(self) -> BasicBlock<'ctx, R, S2, B> {
         BasicBlock {
             id: self.id,
             module: self.module,
             ty: self.ty,
             _r: PhantomData,
-            _seal: PhantomData,
+            _term: PhantomData,
         }
     }
 
@@ -459,14 +474,14 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
 // Splice helpers (T1)
 // --------------------------------------------------------------------------
 
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
-    BasicBlock<'ctx, R, Seal, B>
+impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx>
+    BasicBlock<'ctx, R, Term, B>
 {
     /// Move every instruction from `self` into `dest`, appending at the
     /// end. After the call, `self` is empty and every moved instruction's
     /// `parent` field has been re-pointed at `dest`. Mirrors
     /// `BasicBlock::splice` in `lib/IR/BasicBlock.cpp`.
-    pub fn splice_into<R2: ReturnMarker, S2: BlockSealState>(
+    pub fn splice_into<R2: ReturnMarker, S2: BlockTerminationState>(
         self,
         module_token: &Module<'ctx, B, Unverified>,
         dest: BasicBlock<'ctx, R2, S2, B>,
@@ -520,7 +535,7 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
         module_token: &Module<'ctx, B, Unverified>,
         before: &InstructionView<'ctx, B>,
         name: Name,
-    ) -> IrResult<BasicBlock<'ctx, R, Unsealed, B>>
+    ) -> IrResult<BasicBlock<'ctx, R, Unterminated, B>>
     where
         Name: Into<String>,
     {
@@ -559,20 +574,20 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
     }
 }
 
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx> sealed::Sealed
-    for BasicBlock<'ctx, R, Seal, B>
+impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx> sealed::Sealed
+    for BasicBlock<'ctx, R, Term, B>
 {
 }
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx> Typed<'ctx, B>
-    for BasicBlock<'ctx, R, Seal, B>
+impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx> Typed<'ctx, B>
+    for BasicBlock<'ctx, R, Term, B>
 {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {
         self.as_value().ty()
     }
 }
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx> HasName<'ctx, B>
-    for BasicBlock<'ctx, R, Seal, B>
+impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx> HasName<'ctx, B>
+    for BasicBlock<'ctx, R, Term, B>
 {
     #[inline]
     fn name(self) -> Option<String> {
@@ -590,8 +605,8 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx> HasName
         BasicBlock::clear_name(&self, module_token);
     }
 }
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx> HasDebugLoc
-    for BasicBlock<'ctx, R, Seal, B>
+impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx> HasDebugLoc
+    for BasicBlock<'ctx, R, Term, B>
 {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
@@ -599,11 +614,11 @@ impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx> HasDebu
     }
 }
 
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx>
-    From<BasicBlock<'ctx, R, Seal, B>> for Value<'ctx, B>
+impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx>
+    From<BasicBlock<'ctx, R, Term, B>> for Value<'ctx, B>
 {
     #[inline]
-    fn from(b: BasicBlock<'ctx, R, Seal, B>) -> Self {
+    fn from(b: BasicBlock<'ctx, R, Term, B>) -> Self {
         b.as_value()
     }
 }
@@ -627,8 +642,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for BasicBlockLabel<'c
     }
 }
 
-impl<'ctx, R: ReturnMarker, Seal: BlockSealState, B: ModuleBrand + 'ctx> core::fmt::Display
-    for BasicBlock<'ctx, R, Seal, B>
+impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx> core::fmt::Display
+    for BasicBlock<'ctx, R, Term, B>
 {
     /// Print the basic block including its label and instructions.
     /// Mirrors LLVM's `BasicBlock::print`.

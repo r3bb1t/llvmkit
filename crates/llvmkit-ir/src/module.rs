@@ -872,6 +872,11 @@ pub(super) struct ModuleCore {
     metadata_as_value_cache: core::cell::RefCell<
         std::collections::HashMap<crate::metadata::MetadataId, crate::value::ValueId>,
     >,
+    /// Monotonic id source for [`crate::ssa_builder::SsaBuilder`] instances
+    /// created against this module. Mirrors the module-scoped counter shape
+    /// of [`ModuleId::fresh`], but per-module (an `SsaBuilderId` only needs
+    /// to disambiguate builders within one module, not process-globally).
+    next_ssa_builder_id: core::cell::Cell<u32>,
 }
 
 /// Linear module token carrying a generative brand `B` and verification state `S`.
@@ -909,6 +914,7 @@ impl<'ctx> ModuleCore {
             metadata: core::cell::RefCell::new(MetadataStore::default()),
             named_metadata: core::cell::RefCell::new(Vec::new()),
             metadata_as_value_cache: core::cell::RefCell::new(std::collections::HashMap::new()),
+            next_ssa_builder_id: core::cell::Cell::new(0),
         }
     }
 
@@ -947,6 +953,15 @@ impl<'ctx> ModuleCore {
     #[inline]
     pub(super) fn context(&self) -> &Context {
         &self.ctx
+    }
+
+    /// Allocate the next per-module [`crate::ssa_builder::SsaBuilderId`].
+    /// Fetch-and-increment, like the other id counters in this file.
+    #[inline]
+    pub(super) fn next_ssa_builder_id(&self) -> u32 {
+        let id = self.next_ssa_builder_id.get();
+        self.next_ssa_builder_id.set(id + 1);
+        id
     }
 
     /// Named-struct type ids in declaration order. The printer turns each
@@ -1917,6 +1932,12 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
+    /// Allocate the next per-module [`crate::ssa_builder::SsaBuilderId`].
+    #[inline]
+    pub(crate) fn next_ssa_builder_id(&self) -> u32 {
+        self.core.next_ssa_builder_id()
+    }
+
     pub fn function_builder<R, Name>(
         &self,
         name: Name,
@@ -1972,7 +1993,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     ) -> IrResult<Constant<'ctx, B>>
     where
         R: crate::ReturnMarker,
-        S: crate::BlockSealState,
+        S: crate::BlockTerminationState,
     {
         self.core.block_address::<B, R, S>(function, block)
     }
@@ -2030,6 +2051,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
+    /// Crate-internal: reconstruct an unverified module token from the
+    /// raw core storage plus an already-established brand `B`. Lossless
+    /// inverse of [`Self::core_ref`] -- `IRBuilder` only stores
+    /// `&'ctx ModuleCore` internally (see `ir_builder.rs`), so builder
+    /// methods that need to call schema methods taking
+    /// `&Module<'ctx, B, Unverified>` (e.g. [`crate::IrField::ir_type`])
+    /// use this to reconstruct the typed view the builder was
+    /// originally positioned against.
+    #[inline]
+    pub(crate) fn from_core(core: &'ctx ModuleCore) -> Self {
+        Self {
+            core,
+            _brand: PhantomData,
+            _state: PhantomData,
+        }
+    }
+
     /// `void`.
     #[inline]
     pub fn void_type(&self) -> VoidType<'ctx, B> {
@@ -2356,24 +2394,45 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         )
     }
 
-    pub fn typed_function_type<Ret, Params>(
-        &self,
-        is_var_arg: bool,
-    ) -> IrResult<FunctionType<'ctx, B>>
+    /// Fixed-arity typed function type: `Ret (Params...)`.
+    pub fn typed_function_type<Ret, Params>(&self) -> IrResult<FunctionType<'ctx, B>>
     where
         Ret: FunctionReturn,
         Params: FunctionParamList,
     {
         let ret = Ret::ir_type(self)?;
         let params = Params::ir_types(self)?;
-        Ok(self.fn_type(ret, params, is_var_arg))
+        Ok(self.fn_type(ret, params, false))
     }
 
-    pub fn typed_function_type_of<Sig>(&self, is_var_arg: bool) -> IrResult<FunctionType<'ctx, B>>
+    /// Fixed-arity typed function type from a Rust function-pointer
+    /// schema (`fn(...) -> Ret`).
+    pub fn typed_function_type_of<Sig>(&self) -> IrResult<FunctionType<'ctx, B>>
     where
         Sig: FunctionSignature,
     {
-        self.typed_function_type::<Sig::Ret, Sig::Params>(is_var_arg)
+        self.typed_function_type::<Sig::Ret, Sig::Params>()
+    }
+
+    /// Variadic typed function type: `Ret (Params..., ...)`. `Params`
+    /// describes only the fixed-prefix parameters — the trailing `...`
+    /// is not itself a schema-typed parameter.
+    pub fn typed_varargs_function_type<Ret, Params>(&self) -> IrResult<FunctionType<'ctx, B>>
+    where
+        Ret: FunctionReturn,
+        Params: FunctionParamList,
+    {
+        let ret = Ret::ir_type(self)?;
+        let params = Params::ir_types(self)?;
+        Ok(self.fn_type(ret, params, true))
+    }
+
+    /// Variadic typed function type from a Rust function-pointer schema.
+    pub fn typed_varargs_function_type_of<Sig>(&self) -> IrResult<FunctionType<'ctx, B>>
+    where
+        Sig: FunctionSignature,
+    {
+        self.typed_varargs_function_type::<Sig::Ret, Sig::Params>()
     }
 
     pub fn target_ext_type<Name, I, T, J>(
@@ -2407,7 +2466,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Params: FunctionParamList,
         Name: AsRef<str>,
     {
-        let signature = self.typed_function_type::<Ret, Params>(false)?;
+        let signature = self.typed_function_type::<Ret, Params>()?;
         let function = self.add_function::<Ret::Marker, _>(name, signature, linkage)?;
         TypedFunctionValue::<Ret, Params, B>::try_from_function(function)
     }
@@ -2421,10 +2480,51 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Sig: FunctionSignature,
         Name: AsRef<str>,
     {
-        let signature = self.typed_function_type_of::<Sig>(false)?;
+        let signature = self.typed_function_type_of::<Sig>()?;
         let function =
             self.add_function::<<Sig::Ret as FunctionReturn>::Marker, _>(name, signature, linkage)?;
         TypedFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(function)
+    }
+
+    /// Declare a variadic typed function `Ret @name(Params..., ...)`
+    /// and wrap it in a [`crate::function_signature::TypedVarArgsFunctionValue`].
+    pub fn add_typed_varargs_function<Ret, Params, Name>(
+        &self,
+        name: Name,
+        linkage: Linkage,
+    ) -> IrResult<crate::function_signature::TypedVarArgsFunctionValue<'ctx, Ret, Params, B>>
+    where
+        Ret: FunctionReturn,
+        Params: FunctionParamList,
+        Name: AsRef<str>,
+    {
+        let signature = self.typed_varargs_function_type::<Ret, Params>()?;
+        let function = self.add_function::<Ret::Marker, _>(name, signature, linkage)?;
+        crate::function_signature::TypedVarArgsFunctionValue::<Ret, Params, B>::try_from_function(
+            function,
+        )
+    }
+
+    /// Declare a variadic typed function from a Rust function-pointer
+    /// schema and wrap it in a
+    /// [`crate::function_signature::TypedVarArgsFunctionValue`].
+    pub fn add_typed_varargs_function_of<Sig, Name>(
+        &self,
+        name: Name,
+        linkage: Linkage,
+    ) -> IrResult<
+        crate::function_signature::TypedVarArgsFunctionValue<'ctx, Sig::Ret, Sig::Params, B>,
+    >
+    where
+        Sig: FunctionSignature,
+        Name: AsRef<str>,
+    {
+        let signature = self.typed_varargs_function_type_of::<Sig>()?;
+        let function =
+            self.add_function::<<Sig::Ret as FunctionReturn>::Marker, _>(name, signature, linkage)?;
+        crate::function_signature::TypedVarArgsFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(
+            function,
+        )
     }
 
     pub fn add_function<R, Name>(

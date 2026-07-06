@@ -23,7 +23,7 @@ fn main() {
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let inst = b
-            .build_call(callee, Vec::<llvmkit_ir::Value>::new(), "")
+            .build_call_dyn(callee, Vec::<llvmkit_ir::Value>::new(), "")
             .unwrap();
         // `return_int_value` is not in scope for `CallInst<'_, ()>`.
         let _ = inst.return_int_value();

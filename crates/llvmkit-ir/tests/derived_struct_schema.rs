@@ -1,4 +1,6 @@
-use llvmkit_ir::{IRBuilder, IntValue, IrError, IrStruct, Linkage, Module, NoFolder, StructFields};
+use llvmkit_ir::{
+    CallArgs, IRBuilder, IntValue, IrError, IrStruct, Linkage, Module, NoFolder, StructFields,
+};
 
 #[derive(IrStruct)]
 struct Point {
@@ -174,6 +176,26 @@ fn derive_build_accepts_fields_named_like_helper_parameters() -> Result<(), IrEr
             text.contains("ret %CollisionNames %collision.name"),
             "got:\n{text}"
         );
+        Ok(())
+    })
+}
+
+/// llvmkit-specific derive-emitted `IntoCallArg` impl; closest upstream
+/// coverage is `unittests/IR/InstructionsTest.cpp` for `CallInst` operand
+/// construction, since a derived struct value must lower through the same
+/// `CallArgs` seam as any other typed call argument.
+#[test]
+fn derive_emits_into_call_arg_for_struct_schema() -> Result<(), IrError> {
+    Module::with_new("derived_call_arg", |m| {
+        let f = m.add_typed_function::<i32, (Point,), _>("consume_point", Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let point = PointValue::build(&m, &b, 1_i32, 2_i32, "point")?;
+
+        let ids = <(_,) as CallArgs<'_, (Point,), _>>::lower((point,), (&m).into())?;
+
+        assert_eq!(ids.len(), 1, "expected one lowered call-argument id");
+        b.build_ret(0_i32)?;
         Ok(())
     })
 }

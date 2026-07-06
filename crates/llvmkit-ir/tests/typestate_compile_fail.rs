@@ -5,13 +5,26 @@
 
 /// Mirrors verifier/runtime lifecycle checks by pulling invalid construction
 /// lifecycles forward into compile-fail fixtures listed below.
+///
+/// `t.pass(...)` is registered alongside the `compile_fail` cases so that
+/// `trybuild::cargo`'s `if project.has_pass { "build" } else { "check" }`
+/// switch runs the whole harness under `cargo build` instead of `cargo
+/// check`. This is load-bearing for
+/// `extract_value_empty_indices.rs`: its `const { assert!(N > 0) }`
+/// (Doctrine D3) is a monomorphisation/codegen-time `E0080` diagnostic
+/// that a `cargo check` never reaches (verified empirically: the same
+/// fixture reports "succeeded" under `check` and fails correctly under
+/// `build`), so without a `pass` case that fixture would silently never
+/// fail to compile.
 #[test]
 fn typestate_compile_fail() {
     let t = trybuild::TestCases::new();
-    t.compile_fail("tests/compile_fail/position_at_end_sealed_block.rs");
+    // Relies on the unblessed `has_pass` workaround (dtolnay/trybuild#258); re-verify this still forces `cargo build` mode after any trybuild version bump.
+    t.pass("tests/compile_fail/extract_value_dyn_empty_slice_compiles.rs");
+    t.compile_fail("tests/compile_fail/position_at_end_terminated_block.rs");
     t.compile_fail("tests/compile_fail/add_incoming_after_finish.rs");
-    t.compile_fail("tests/compile_fail/retained_unsealed_block_cannot_reposition.rs");
-    t.compile_fail("tests/compile_fail/sealed_block_cannot_start_cursor.rs");
+    t.compile_fail("tests/compile_fail/retained_unterminated_block_cannot_reposition.rs");
+    t.compile_fail("tests/compile_fail/terminated_block_cannot_start_cursor.rs");
     t.compile_fail("tests/compile_fail/retained_open_phi_cannot_add_after_finish.rs");
     t.compile_fail("tests/compile_fail/finished_phi_cannot_reopen_through_instruction_kind.rs");
     t.compile_fail("tests/compile_fail/retained_open_switch_cannot_add_after_finish.rs");
@@ -59,4 +72,19 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/function_pass_name_not_module_pass.rs");
     t.compile_fail("tests/compile_fail/module_pipeline_step_rejects_raw_string.rs");
     t.compile_fail("tests/compile_fail/pass_pipeline_info_scope_mismatch.rs");
+    t.compile_fail("tests/compile_fail/select_arm_forge.rs");
+    t.compile_fail("tests/compile_fail/folder_typed_wrong_width.rs");
+    t.compile_fail("tests/compile_fail/typed_gep_bad_index.rs");
+    t.compile_fail("tests/compile_fail/fp_ext_equal_width.rs");
+    t.compile_fail("tests/compile_fail/extract_value_empty_indices.rs");
+    t.compile_fail("tests/compile_fail/typed_call_wrong_arity.rs");
+    t.compile_fail("tests/compile_fail/typed_call_wrong_arg_type.rs");
+    t.compile_fail("tests/compile_fail/typed_call_wrong_arg_type_lifted.rs");
+    t.compile_fail("tests/compile_fail/typed_call_void_result_use.rs");
+    t.compile_fail("tests/compile_fail/typed_call_cross_module_arg.rs");
+    t.compile_fail("tests/compile_fail/ssa_def_unpositioned.rs");
+    t.compile_fail("tests/compile_fail/ssa_use_after_terminator.rs");
+    t.compile_fail("tests/compile_fail/ssa_def_wrong_width.rs");
+    t.compile_fail("tests/compile_fail/ssa_ret_value_in_void_fn.rs");
+    t.compile_fail("tests/compile_fail/ssa_finish_positioned.rs");
 }

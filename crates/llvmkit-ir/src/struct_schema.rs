@@ -10,14 +10,17 @@ use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::float_kind::{BFloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
 use crate::function::FunctionValue;
 use crate::function_signature::{
-    FunctionParam, FunctionParamList, FunctionReturn, token::ValidatedFunctionParams,
+    CallArgs, FunctionParam, FunctionParamList, FunctionReturn, IntoCallArg,
+    token::{ValidatedCallResult, ValidatedFunctionParams},
 };
 use crate::instruction::{Instruction, state::Attached};
 use crate::int_width::{IntDyn, IntoIntValue, Width};
 use crate::marker::{Dyn, Ptr, ReturnMarker};
 use crate::module::{Brand, Module, ModuleBrand, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeData};
-use crate::value::{FloatValue, IntValue, IntoPointerValue, PointerValue, StructValue, Value};
+use crate::value::{
+    FloatValue, IntValue, IntoPointerValue, PointerValue, StructValue, Value, ValueId,
+};
 
 #[doc(hidden)]
 pub mod token {
@@ -495,6 +498,84 @@ impl_struct_into_field!(Argument<'ctx, B>);
 impl_struct_into_field!(Constant<'ctx, B>);
 impl_struct_into_field!(Instruction<'ctx, Attached, B>);
 
+macro_rules! impl_struct_into_call_arg {
+    ($source:ty) => {
+        impl<'ctx, S, B> IntoCallArg<'ctx, S, B> for $source
+        where
+            S: StructSchema,
+            B: ModuleBrand + 'ctx,
+        {
+            fn into_call_arg(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+                Ok(S::try_value_from_ir(self)?.as_struct_value().as_value())
+            }
+        }
+    };
+}
+impl_struct_into_call_arg!(Value<'ctx, B>);
+impl_struct_into_call_arg!(Argument<'ctx, B>);
+impl_struct_into_call_arg!(Constant<'ctx, B>);
+impl_struct_into_call_arg!(Instruction<'ctx, Attached, B>);
+
+/// The `I`-th top-level field schema of a field tuple. Implemented for
+/// tuple arities 1..=16, one impl per (arity, index) pair, so an
+/// out-of-range index is "no impl" -- a compile error at the
+/// `build_field_gep::<S, I>` call site.
+pub trait StructFieldAt<const I: u32> {
+    type Field: IrField;
+}
+
+/// Field schema of `S` at index `I`.
+pub type FieldOf<S, const I: u32> = <<S as StructSchema>::FieldParams as StructFieldAt<I>>::Field;
+
+// `$generics` / `$tuple` are matched as single opaque token trees (each a
+// parenthesized group, not a `$(...)+` repetition), so both can be spliced
+// verbatim any number of times inside the `$idx`/`$pick` repetition below
+// without Rust's "two independently-lengthed repetitions at the same
+// depth" restriction -- only one sequence (`$idx`/`$pick`) is ever
+// repeated in this macro arm.
+macro_rules! impl_struct_field_at_row {
+    ($generics:tt, $tuple:tt => [ $( $idx:literal : $pick:ident ),+ $(,)? ]) => {
+        $(
+            impl_struct_field_at_one!($generics, $tuple, $idx, $pick);
+        )+
+    };
+}
+
+macro_rules! impl_struct_field_at_one {
+    (($($generics:tt)*), $tuple:tt, $idx:literal, $pick:ident) => {
+        impl<$($generics)*> StructFieldAt<$idx> for $tuple {
+            type Field = $pick;
+        }
+    };
+}
+
+macro_rules! impl_struct_field_at {
+    ($( ($($f:ident),+) => $picks:tt );+ $(;)?) => {
+        $(
+            impl_struct_field_at_row!(($($f: IrField),+), ($($f,)+) => $picks);
+        )+
+    };
+}
+
+impl_struct_field_at! {
+    (F0) => [0: F0];
+    (F0, F1) => [0: F0, 1: F1];
+    (F0, F1, F2) => [0: F0, 1: F1, 2: F2];
+    (F0, F1, F2, F3) => [0: F0, 1: F1, 2: F2, 3: F3];
+    (F0, F1, F2, F3, F4) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4];
+    (F0, F1, F2, F3, F4, F5) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5];
+    (F0, F1, F2, F3, F4, F5, F6) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6];
+    (F0, F1, F2, F3, F4, F5, F6, F7) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6, 7: F7];
+    (F0, F1, F2, F3, F4, F5, F6, F7, F8) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6, 7: F7, 8: F8];
+    (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6, 7: F7, 8: F8, 9: F9];
+    (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6, 7: F7, 8: F8, 9: F9, 10: F10];
+    (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6, 7: F7, 8: F8, 9: F9, 10: F10, 11: F11];
+    (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6, 7: F7, 8: F8, 9: F9, 10: F10, 11: F11, 12: F12];
+    (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12, F13) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6, 7: F7, 8: F8, 9: F9, 10: F10, 11: F11, 12: F12, 13: F13];
+    (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12, F13, F14) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6, 7: F7, 8: F8, 9: F9, 10: F10, 11: F11, 12: F12, 13: F13, 14: F14];
+    (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12, F13, F14, F15) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6, 7: F7, 8: F8, 9: F9, 10: F10, 11: F11, 12: F12, 13: F13, 14: F14, 15: F15];
+}
+
 /// Explicit function-parameter marker that expands a schema into its top-level fields.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct StructFields<S: StructSchema>(core::marker::PhantomData<S>);
@@ -537,6 +618,17 @@ where
     }
 }
 
+impl<'ctx, B, S, A> CallArgs<'ctx, StructFields<S>, B> for A
+where
+    B: ModuleBrand + 'ctx,
+    S: StructSchema,
+    A: CallArgs<'ctx, S::FieldParams, B>,
+{
+    fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueId]>> {
+        <A as CallArgs<'ctx, S::FieldParams, B>>::lower(self, module)
+    }
+}
+
 impl<S> FunctionReturn for S
 where
     S: StructSchema,
@@ -562,6 +654,19 @@ where
     #[inline]
     fn expected_kind_label() -> TypeKindLabel {
         TypeKindLabel::Struct
+    }
+
+    type CallResult<'ctx, B: ModuleBrand + 'ctx> = S::Value<'ctx, B>;
+
+    fn call_result_from_value<'ctx, B>(
+        value: Value<'ctx, B>,
+        _validated: &ValidatedCallResult<'_>,
+    ) -> Self::CallResult<'ctx, B>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        let validated = ValidatedStructValue::new();
+        S::Value::from_struct_value(StructValue::from_value_unchecked(value), &validated)
     }
 }
 

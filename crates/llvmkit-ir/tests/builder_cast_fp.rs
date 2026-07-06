@@ -63,6 +63,37 @@ fn fptrunc_f64_to_f32() -> Result<(), IrError> {
 // `b.build_fp_trunc::<f32, f64, _>(...)` is a compile error: `f32` is not
 // `FloatWiderThan<f64>` (the source must be wider than the
 // destination).
+// `b.build_fp_ext::<Fp128, PpcFp128, _>(...)` is a compile error even
+// though both are 128-bit non-IEEE layouts: `castIsValid` requires a
+// STRICT `getScalarSizeInBits` inequality, so neither is
+// `FloatWiderThan` the other (see `compile_fail/fp_ext_equal_width.rs`).
+
+/// Non-IEEE layout coverage for `castIsValid`'s FPExt arm
+/// (`lib/IR/Instructions.cpp::CastInst::castIsValid`, the `FPExt` case:
+/// `SrcScalarBitSize < DstScalarBitSize`, no restriction on which
+/// `FloatKind` participates). `f64` (64 bits) -> `x86_fp80` (80 bits)
+/// satisfies the strict inequality, so the non-IEEE `X86Fp80` layout
+/// must be reachable through the typed `build_fp_ext` path.
+#[test]
+fn fpext_f64_to_x86_fp80() -> Result<(), IrError> {
+    Module::with_new("c", |m| {
+        let f64_ty = m.f64_type();
+        let x86_ty = m.x86_fp80_type();
+        let fn_ty = m.fn_type(x86_ty, [f64_ty.as_type()], false);
+        let f = m.add_function::<llvmkit_ir::X86Fp80, _>("ext", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<llvmkit_ir::X86Fp80>(&m).position_at_end(entry);
+        let arg: llvmkit_ir::FloatValue<f64> = f.param(0)?.try_into()?;
+        let r = b.build_fp_ext(arg, x86_ty, "y")?;
+        b.build_ret(r)?;
+        let text = format!("{m}");
+        assert!(
+            text.contains("%y = fpext double %0 to x86_fp80"),
+            "got:\n{text}"
+        );
+        Ok(())
+    })
+}
 
 /// Port of `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, CastInst)`
 /// (the `FPToSIInst` case).

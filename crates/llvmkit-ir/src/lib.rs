@@ -75,6 +75,7 @@ pub mod pass_manager;
 pub mod pass_pipeline;
 pub mod phi_state;
 pub mod sized_element;
+pub mod ssa_builder;
 pub mod struct_body_state;
 pub mod struct_schema;
 pub mod sync_scope;
@@ -82,6 +83,7 @@ pub mod target_library_info;
 pub mod term_open_state;
 pub mod r#type;
 pub mod typed_pointer_type;
+pub mod typed_pointer_value;
 pub mod r#use;
 pub mod user;
 pub mod value;
@@ -112,7 +114,7 @@ pub use attributes::{
     MemoryLocation, ModRefInfo,
 };
 pub use basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
-pub use block_state::{BlockSealState, Sealed, Unsealed};
+pub use block_state::{BlockTerminationState, Terminated, Unterminated};
 pub use calling_conv::CallingConv;
 pub use cfg::{BasicBlockEdge, FunctionCfg};
 pub use cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
@@ -166,7 +168,8 @@ pub use error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel, VerifierRu
 pub use fmf::FastMathFlags;
 pub use function::{FunctionBuilder, FunctionValue};
 pub use function_signature::{
-    FunctionParam, FunctionParamList, FunctionReturn, FunctionSignature, TypedFunctionValue,
+    CallArgs, FunctionParam, FunctionParamList, FunctionReturn, FunctionSignature, IntoCallArg,
+    TypedFunctionValue, TypedVarArgsFunctionValue,
 };
 pub use gep_no_wrap_flags::GepNoWrapFlags;
 pub use global_alias::{GlobalAlias, GlobalAliasBuilder};
@@ -178,8 +181,8 @@ pub use inst_simplify::InstSimplifyPass;
 pub use instr_types::{
     AShrFlags, AddFlags, AtomicCmpXchgConfig, AtomicLoadConfig, AtomicRMWConfig, AtomicRMWFlags,
     AtomicStoreConfig, BinaryOpcode, CallAttributeData, CmpXchgFlags, ICmpFlags, LShrFlags,
-    MulFlags, OperandBundleData, OperandBundleTag, OrFlags, SDivFlags, ShlFlags, SubFlags,
-    TailCallKind, TruncFlags, UDivFlags, UIToFpFlags, UnaryOpcode, ZExtFlags,
+    MulFlags, OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags, SDivFlags, ShlFlags,
+    SubFlags, TailCallKind, TruncFlags, UDivFlags, UIToFpFlags, UnaryOpcode, ZExtFlags,
 };
 pub use instruction::{Instruction, InstructionKind, InstructionView, TerminatorKind};
 pub use instructions::{
@@ -189,8 +192,8 @@ pub use instructions::{
     FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FpPhiInst, FreezeInst, GepInst, ICmpInst,
     IndirectBrInst, InsertElementInst, InsertValueInst, InvokeInst, LShrInst, LandingPadInst,
     LoadInst, MulInst, OrInst, PhiInst, PointerPhiInst, ResumeInst, RetInst, SDivInst, SRemInst,
-    SelectInst, ShlInst, ShuffleVectorInst, StoreInst, SubInst, SwitchInst, UDivInst, URemInst,
-    UnreachableInst, VAArgInst, XorInst,
+    SelectInst, ShlInst, ShuffleVectorInst, StoreInst, SubInst, SwitchInst, TypedCallInst,
+    UDivInst, URemInst, UnreachableInst, VAArgInst, XorInst,
 };
 pub use intrinsic_inst::{IntrinsicInst, LifetimeIntrinsic, MemIntrinsic};
 pub use intrinsics::{
@@ -201,7 +204,8 @@ pub use ir_builder::constant_folder::ConstantFolder;
 pub use ir_builder::folder::IRBuilderFolder;
 pub use ir_builder::no_folder::NoFolder;
 pub use ir_builder::{
-    CallBuilder, CallSiteConfig, IRBuilder, InsertPoint, Positioned, SelectArm, Unpositioned,
+    BuilderPositionState, CallBuilder, CallSiteConfig, IRBuilder, InsertPoint, Positioned,
+    SelectArm, SelectNarrow, Unpositioned,
 };
 pub use known_bits::KnownBits;
 pub use marker::{Dyn, Ptr, ReturnMarker};
@@ -240,14 +244,19 @@ pub use pass_pipeline::{
 };
 pub use phi_state::{Closed, Open, PhiState};
 pub use sized_element::{ArrayDyn, SizedElement};
+pub use ssa_builder::{
+    FloatVariable, IntVariable, IntoIrResult, PointerVariable, SsaBlock, SsaBuilder, SsaBuilderId,
+};
 pub use struct_body_state::{BodySet, Opaque, StructBodyDyn, StructBodyState};
 pub use struct_schema::{
-    IntoIrField, IrField, StructFields, StructSchema, StructSchemaValue, ValidatedStructValue,
+    FieldOf, IntoIrField, IrField, StructFieldAt, StructFields, StructSchema, StructSchemaValue,
+    ValidatedStructValue,
 };
 pub use sync_scope::SyncScope;
 pub use target_library_info::{LibFunc, TargetLibraryInfo};
 pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeId, TypeKind};
 pub use typed_pointer_type::TypedPointerType;
+pub use typed_pointer_value::TypedPointerValue;
 pub use unnamed_addr::UnnamedAddr;
 pub use r#use::Use;
 pub use user::User;

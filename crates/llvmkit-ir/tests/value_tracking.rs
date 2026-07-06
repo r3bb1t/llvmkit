@@ -383,7 +383,7 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
 
         let (_, invoke) = IRBuilder::with_folder(&m, NoFolder)
             .position_at_end(invoke_entry)
-            .build_invoke_with_config(
+            .build_invoke_dyn_with_config(
                 callee,
                 [i8_ty.const_int(0x3c_u8)],
                 invoke_normal_label,

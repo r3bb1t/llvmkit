@@ -1,0 +1,22 @@
+error[E0277]: the trait bound `llvmkit_ir::PpcFp128: FloatWiderThan<llvmkit_ir::Fp128>` is not satisfied
+  --> tests/compile_fail/fp_ext_equal_width.rs:22:40
+   |
+22 |         let _bad = b.build_fp_ext(arg, ppc_ty, "y")?;
+   |                      ------------      ^^^^^^ the trait `FloatWiderThan<llvmkit_ir::Fp128>` is not implemented for `llvmkit_ir::PpcFp128`
+   |                      |
+   |                      required by a bound introduced by this call
+   |
+   = help: `llvmkit_ir::PpcFp128` implements trait `FloatWiderThan<K>`:
+             FloatWiderThan<f32>
+             FloatWiderThan<f64>
+             FloatWiderThan<llvmkit_ir::BFloat>
+             FloatWiderThan<llvmkit_ir::Half>
+             FloatWiderThan<llvmkit_ir::X86Fp80>
+note: required by a bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_fp_ext`
+  --> src/ir_builder.rs
+   |
+   |     pub fn build_fp_ext<Src, Dst, Name>(
+   |            ------------ required by a bound in this associated function
+...
+   |         Dst: FloatKind + FloatWiderThan<Src>,
+   |                          ^^^^^^^^^^^^^^^^^^^ required by this bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_fp_ext`

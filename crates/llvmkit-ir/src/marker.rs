@@ -25,6 +25,7 @@
 
 use core::fmt;
 
+use crate::error::TypeKindLabel;
 use crate::float_kind::FloatKind;
 use crate::int_width::IntWidth;
 use crate::r#type::sealed;
@@ -156,5 +157,38 @@ impl<const N: u32> ReturnMarker for crate::int_width::Width<N> {
     #[inline]
     fn expected_kind() -> ExpectedRetKind {
         ExpectedRetKind::IntStatic(N)
+    }
+}
+
+/// Map a [`FloatKind::ieee_label`] LangRef keyword to its
+/// [`TypeKindLabel`] diagnostic variant. Crate-internal helper for
+/// [`marker_kind_label`].
+fn float_label_to_kind(label: &'static str) -> TypeKindLabel {
+    match label {
+        "half" => TypeKindLabel::Half,
+        "bfloat" => TypeKindLabel::BFloat,
+        "float" => TypeKindLabel::Float,
+        "double" => TypeKindLabel::Double,
+        "x86_fp80" => TypeKindLabel::X86Fp80,
+        "fp128" => TypeKindLabel::Fp128,
+        "ppc_fp128" => TypeKindLabel::PpcFp128,
+        _ => unreachable!("FloatKind::ieee_label is a closed set of LangRef keywords"),
+    }
+}
+
+/// Diagnostic label for a return marker's expected type kind. `None`
+/// for [`Dyn`], which matches every signature. Crate-internal — used
+/// to fix the expected/got duplication in `ReturnTypeMismatch` reports
+/// (the dyn call-family builders previously reported `expected` and
+/// `got` as the same value, since the marker side had no route to a
+/// `TypeKindLabel`).
+pub(crate) fn marker_kind_label<R: ReturnMarker>() -> Option<TypeKindLabel> {
+    match R::expected_kind() {
+        ExpectedRetKind::Void => Some(TypeKindLabel::Void),
+        ExpectedRetKind::Ptr => Some(TypeKindLabel::Pointer),
+        ExpectedRetKind::IntStatic(_) | ExpectedRetKind::IntDyn => Some(TypeKindLabel::Integer),
+        ExpectedRetKind::FloatStatic(label) => Some(float_label_to_kind(label)),
+        ExpectedRetKind::FloatDyn => Some(TypeKindLabel::Float),
+        ExpectedRetKind::Dyn => None,
     }
 }

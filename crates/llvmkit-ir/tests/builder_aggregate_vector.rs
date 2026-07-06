@@ -88,9 +88,13 @@ fn extract_value_nested_indices() -> Result<(), IrError> {
 }
 
 /// Mirrors `ExtractValueInst::init` (`lib/IR/Instructions.cpp`): LLVM rejects
-/// `extractvalue` with an empty index list.
+/// `extractvalue` with an empty index list. The typed `build_extract_value`
+/// upgrades this to a compile-time `const { assert!(N > 0) }` failure (see
+/// `tests/compile_fail/extract_value_empty_indices.rs`); `build_extract_value_dyn`
+/// keeps the runtime check for slice/`Vec`-driven index lists, ported from
+/// the assembler diagnostic in `test/Assembler/extractvalue-no-idx.ll`.
 #[test]
-fn extract_value_rejects_empty_indices() -> Result<(), IrError> {
+fn extract_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let i8_ty = m.i8_type();
         let i32_ty = m.i32_type();
@@ -102,13 +106,74 @@ fn extract_value_rejects_empty_indices() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let up = f.param(0)?;
         let err = b
-            .build_extract_value(up, std::iter::empty::<u32>(), "bad")
+            .build_extract_value_dyn(up, &[], "bad")
             .expect_err("empty extractvalue indices must be rejected");
         assert_eq!(
             err,
             IrError::InvalidOperation {
                 message: "extractvalue indices must not be empty",
             }
+        );
+        assert_eq!(b.insert_block().instructions().len(), 0);
+        b.build_ret_void();
+        Ok(())
+    })
+}
+
+/// Ports `test/Assembler/extractvalue-invalid-idx.ll` (PR4170):
+/// `extractvalue [0 x i32] undef, 0` is rejected because index 0 is
+/// out of range for a zero-element array. Mirrors
+/// `ExtractValueInst::getIndexedType` (`lib/IR/Instructions.cpp`),
+/// which returns null (rather than clamping) once `Index >=
+/// AT->getNumElements()`.
+#[test]
+fn extract_value_rejects_out_of_range_array_index() -> Result<(), IrError> {
+    Module::with_new("a", |m| {
+        let i32_ty = m.i32_type();
+        let void_ty = m.void_type();
+        let arr_ty = m.array_type(i32_ty, 0);
+        let fn_ty = m.fn_type(void_ty.as_type(), [arr_ty.as_type()], false);
+        let f = m.add_function::<(), _>("test", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let undef = arr_ty.as_type().get_undef();
+        let err = b
+            .build_extract_value(undef, [0u32], "")
+            .expect_err("index 0 into a 0-element array must be rejected");
+        assert_eq!(
+            err,
+            IrError::AggregateIndexOutOfRange { index: 0, count: 0 }
+        );
+        assert_eq!(b.insert_block().instructions().len(), 0);
+        b.build_ret_void();
+        Ok(())
+    })
+}
+
+/// Ports `test/Assembler/extractvalue-invalid-idx.ll` (PR4170), struct variant:
+/// `extractvalue { i8, i32 } undef, 2` is rejected because index 2 is
+/// out of range for a 2-field struct. Mirrors
+/// `ExtractValueInst::getIndexedType` (`lib/IR/Instructions.cpp`),
+/// which returns null (rather than clamping) once `Index >=
+/// ST->getNumElements()`.
+#[test]
+fn extract_value_rejects_out_of_range_struct_index() -> Result<(), IrError> {
+    Module::with_new("a", |m| {
+        let i8_ty = m.i8_type();
+        let i32_ty = m.i32_type();
+        let void_ty = m.void_type();
+        let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
+        let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
+        let f = m.add_function::<(), _>("test", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let undef = s_ty.as_type().get_undef();
+        let err = b
+            .build_extract_value(undef, [2u32], "")
+            .expect_err("index 2 into a 2-field struct must be rejected");
+        assert_eq!(
+            err,
+            IrError::AggregateIndexOutOfRange { index: 2, count: 2 }
         );
         assert_eq!(b.insert_block().instructions().len(), 0);
         b.build_ret_void();
@@ -172,9 +237,14 @@ fn insert_value_array_index_zero() -> Result<(), IrError> {
 }
 
 /// Mirrors `InsertValueInst::init` (`lib/IR/Instructions.cpp`): LLVM rejects
-/// `insertvalue` with an empty index list.
+/// `insertvalue` with an empty index list. The typed `build_insert_value`
+/// upgrades this to a compile-time `const { assert!(N > 0) }` failure (see
+/// `tests/compile_fail/extract_value_empty_indices.rs` for the shared
+/// pattern); `build_insert_value_dyn` keeps the runtime check for
+/// slice/`Vec`-driven index lists, ported from the assembler diagnostic in
+/// `test/Assembler/extractvalue-no-idx.ll`.
 #[test]
-fn insert_value_rejects_empty_indices() -> Result<(), IrError> {
+fn insert_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let i8_ty = m.i8_type();
         let i32_ty = m.i32_type();
@@ -186,7 +256,7 @@ fn insert_value_rejects_empty_indices() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let up = f.param(0)?;
         let err = b
-            .build_insert_value(up, up, std::iter::empty::<u32>(), "bad")
+            .build_insert_value_dyn(up, up, &[], "bad")
             .expect_err("empty insertvalue indices must be rejected");
         assert_eq!(
             err,

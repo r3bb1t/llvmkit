@@ -23,6 +23,7 @@ llvmkit-macros = { workspace = true, optional = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+proptest = "1"
 trybuild = "1"
 
 [[bin]]

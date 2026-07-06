@@ -487,10 +487,51 @@ pub enum IrError {
     #[error("function argument index {index} out of range (have {count})")]
     ArgumentIndexOutOfRange { index: u32, count: u32 },
 
+    /// `extractvalue` / `insertvalue` indexed past the end of an array or
+    /// struct's element list. Mirrors `ExtractValueInst::getIndexedType`
+    /// (`lib/IR/Instructions.cpp`), which rejects out-of-range indices
+    /// rather than clamping them.
+    #[error("aggregate index {index} out of range (have {count})")]
+    AggregateIndexOutOfRange { index: u32, count: u64 },
+
     /// A typed function facade was requested with a parameter tuple whose arity
     /// does not match the function signature.
     #[error("function parameter count mismatch: expected {expected}, got {got}")]
     FunctionParameterCountMismatch { expected: u32, got: u32 },
+
+    /// A call/invoke/callbr site passed a wrong number of arguments for its
+    /// callee's signature. Mirrors the `CallInst::init` /
+    /// `CallBrInst::init` `NDEBUG` assertion ("Calling a function with a
+    /// bad signature!", `lib/IR/Instructions.cpp`) and
+    /// `Verifier::visitCallBase`'s authoritative arity check: a
+    /// non-vararg callee requires an exact match, a vararg callee
+    /// requires at least as many arguments as declared parameters.
+    #[error("call argument count mismatch: expected {expected}, got {got}")]
+    CallArgumentCountMismatch { expected: u32, got: u32 },
+
+    /// A call/invoke/callbr site passed an argument whose type does not
+    /// exactly match the callee's parameter type at that position.
+    /// Mirrors the same `CallInst::init` assertion and
+    /// `Verifier::visitCallBase`'s per-argument type check.
+    #[error("call argument #{index} type mismatch: expected {expected}, got {got}")]
+    CallArgumentTypeMismatch {
+        index: u32,
+        expected: TypeKindLabel,
+        got: TypeKindLabel,
+    },
+
+    /// A typed function facade ([`crate::TypedFunctionValue`]) was requested
+    /// to wrap a raw function whose signature is variadic. The fixed-arity
+    /// facade cannot represent a `...` tail; use
+    /// [`crate::function_signature::TypedVarArgsFunctionValue`] instead.
+    #[error("typed function facade does not accept a variadic signature")]
+    UnexpectedVarArgsSignature,
+
+    /// A varargs typed function facade
+    /// ([`crate::function_signature::TypedVarArgsFunctionValue`]) was
+    /// requested to wrap a raw function whose signature is not variadic.
+    #[error("varargs typed function facade requires a variadic signature")]
+    MissingVarArgsSignature,
 
     /// `Module::add_function` saw a name already bound at module scope.
     #[error("a function named {name:?} already exists in this module")]
@@ -558,6 +599,58 @@ pub enum IrError {
         block: Option<String>,
         message: String,
     },
+
+    /// [`crate::SsaBuilder`] read a strict (non-poison) variable on a path
+    /// that reaches function entry without a preceding write. Mirrors the
+    /// "use of undefined value" outcome of Braun et al. 2013's on-the-fly
+    /// SSA construction when the caller declared the variable without
+    /// opting into poison-on-undef.
+    #[error("use of undefined SSA variable {variable:?} in block {block:?}")]
+    SsaUseOfUndefinedVariable { variable: String, block: String },
+
+    /// One of [`crate::SsaBuilder`]'s terminator methods (`br` / `cond_br`
+    /// / `switch`) recorded an incoming edge against a destination block
+    /// that was already sealed at the time the edge was added. Braun's
+    /// algorithm requires every predecessor edge to be recorded before
+    /// the block is sealed.
+    #[error("branch to already-sealed SSA block {block:?}")]
+    SsaBranchToSealedBlock { block: String },
+
+    /// [`crate::SsaBuilder::seal_block`] was called twice on the same
+    /// block.
+    #[error("SSA block {block:?} is already sealed")]
+    SsaBlockAlreadySealed { block: String },
+
+    /// An [`crate::SsaBuilder`] operation required a block that has not
+    /// yet received its terminator (still open for phi head-insertion or
+    /// further construction) but found one whose insertion capability was
+    /// already consumed by a terminator.
+    #[error("SSA block {block:?} is already filled (terminated)")]
+    SsaBlockAlreadyFilled { block: String },
+
+    /// [`crate::SsaBuilder`] required a block to be filled (terminated)
+    /// before proceeding, but the block has no terminator yet.
+    #[error("SSA block {block:?} is not yet filled (unterminated)")]
+    SsaUnfilledBlock { block: String },
+
+    /// An [`crate::ssa_builder::IntVariable`] / `FloatVariable` /
+    /// `PointerVariable` handle was used against a different
+    /// [`crate::SsaBuilder`] than the one that declared it.
+    #[error("SSA variable belongs to a different SsaBuilder")]
+    SsaForeignVariable,
+
+    /// An [`crate::ssa_builder::SsaBlock`] handle was used against a
+    /// different [`crate::SsaBuilder`] than the one that created it.
+    #[error("SSA block belongs to a different SsaBuilder")]
+    SsaForeignBlock,
+
+    /// [`crate::SsaBuilder::for_function`] /
+    /// `with_folder_for_function` was given a function that already has
+    /// a body. The layer must observe every CFG edge from birth (Braun's
+    /// algorithm needs to see every `br` as it is recorded), so grafting
+    /// onto a partially-built function is rejected.
+    #[error("SsaBuilder requires a function with no existing basic blocks")]
+    SsaFunctionHasBlocks,
 }
 
 /// Crate-wide `Result` alias.

@@ -10,6 +10,7 @@
 
 use llvmkit_ir::{
     Constant, ConstantIntValue, IRBuilder, IntDyn, IntType, IntValue, IrError, Linkage, Module,
+    TruncFlags, UIToFpFlags, ZExtFlags,
 };
 
 /// Mirrors `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, CastInst)`
@@ -155,6 +156,83 @@ fn default_constant_folder_folds_zext_to_constant() -> Result<(), IrError> {
         let result = b.build_zext(value, i64_ty, "z")?;
         let folded = ConstantIntValue::<i64>::try_from(Constant::try_from(result.as_value())?)?;
         assert_eq!(folded.ap_int().try_zext_u64(), Some(42));
+        Ok(())
+    })
+}
+
+/// Mirrors `test/Assembler/flags.ll:224-225` (`%res = zext nneg i32 %a to
+/// i64`). Typed operands, no `_dyn` erasure needed to spell the `nneg` flag.
+/// The `Dst: WiderThan<Src>` bound is the same one `build_zext` uses.
+#[test]
+fn typed_zext_nneg_prints_flag() -> Result<(), IrError> {
+    Module::with_new("z", |m| {
+        let i32_ty = m.i32_type();
+        let i64_ty = m.i64_type();
+        let fn_ty = m.fn_type(i64_ty, [i32_ty.as_type()], false);
+        let f = m.add_function::<i64, _>("widen", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
+        let arg: IntValue<i32> = f.param(0)?.try_into()?;
+        let widened = b.build_zext_with_flags(arg, i64_ty, ZExtFlags::new().nneg(), "res")?;
+        b.build_ret(widened)?;
+        let text = format!("{m}");
+        assert!(
+            text.contains("%res = zext nneg i32 %0 to i64"),
+            "got:\n{text}"
+        );
+        Ok(())
+    })
+}
+
+/// Mirrors `test/Assembler/flags.ll:254-258` (`test_trunc_both`:
+/// `%res = trunc nuw nsw i64 %a to i32`). Typed operands, no `_dyn` erasure
+/// needed to spell `nuw`/`nsw`. Upstream `IRBuilder::CreateTrunc` returns `V`
+/// unchanged (silently dropping any requested nuw/nsw) when `SrcTy ==
+/// DestTy`; llvmkit's `Src: WiderThan<Dst>` bound makes that same-type trunc
+/// unspellable, so the flag-dropping case cannot arise here (D10).
+#[test]
+fn typed_trunc_nuw_nsw_prints_flags() -> Result<(), IrError> {
+    Module::with_new("t", |m| {
+        let i32_ty = m.i32_type();
+        let i64_ty = m.i64_type();
+        let fn_ty = m.fn_type(i32_ty, [i64_ty.as_type()], false);
+        let f = m.add_function::<i32, _>("narrow", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let arg: IntValue<i64> = f.param(0)?.try_into()?;
+        let truncated =
+            b.build_trunc_with_flags(arg, i32_ty, TruncFlags::new().nuw().nsw(), "res")?;
+        b.build_ret(truncated)?;
+        let text = format!("{m}");
+        assert!(
+            text.contains("%res = trunc nuw nsw i64 %0 to i32"),
+            "got:\n{text}"
+        );
+        Ok(())
+    })
+}
+
+/// Mirrors `test/Assembler/flags.ll:230-231` (`%res = uitofp nneg i32 %a to
+/// float`). Typed operands, no `_dyn` erasure needed to spell the `nneg`
+/// flag.
+#[test]
+fn typed_uitofp_nneg_prints_flag() -> Result<(), IrError> {
+    Module::with_new("u", |m| {
+        let i32_ty = m.i32_type();
+        let f32_ty = m.f32_type();
+        let fn_ty = m.fn_type(f32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function::<f32, _>("to_float", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
+        let arg: IntValue<i32> = f.param(0)?.try_into()?;
+        let converted =
+            b.build_ui_to_fp_with_flags(arg, f32_ty, UIToFpFlags::new().nneg(), "res")?;
+        b.build_ret(converted)?;
+        let text = format!("{m}");
+        assert!(
+            text.contains("%res = uitofp nneg i32 %0 to float"),
+            "got:\n{text}"
+        );
         Ok(())
     })
 }

@@ -1,0 +1,14 @@
+error[E0599]: no method named `def_int_var` found for struct `SsaBuilder<'_, '_, Brand<'_>, ConstantFolder, Unpositioned, ()>` in the current scope
+  --> tests/compile_fail/ssa_def_unpositioned.rs:26:11
+   |
+26 |         b.def_int_var(x, 1_i32).unwrap();
+   |           ^^^^^^^^^^^
+   |
+help: there is a method `declare_int_var` with a similar name, but with different arguments
+  --> src/ssa_builder.rs
+   |
+   | /     pub fn declare_int_var<W: StaticIntWidth, Name: Into<String>>(
+   | |         &mut self,
+   | |         name: Name,
+   | |     ) -> IntVariable<'ctx, W, B> {
+   | |________________________________^

@@ -1,0 +1,24 @@
+error[E0277]: `std::string::String` cannot fill a call-argument slot of schema `Point`
+  --> tests/compile_fail/typed_call_wrong_arg_type.rs:66:39
+   |
+66 |         let _ = b.build_call(callee, (bogus, x), "bad");
+   |                   ----------          ^^^^^ wrong argument type for this parameter position
+   |                   |
+   |                   required by a bound introduced by this call
+   |
+   = help: the trait `IntoCallArg<'_, Point, Brand<'_>>` is not implemented for `std::string::String`
+   = help: the following other types implement trait `IntoCallArg<'ctx, P, B>`:
+             `PointValue<'ctx, B>` implements `IntoCallArg<'ctx, Point, B>`
+             `llvmkit_ir::Argument<'ctx, B>` implements `IntoCallArg<'ctx, S, B>`
+             `llvmkit_ir::Constant<'ctx, B>` implements `IntoCallArg<'ctx, S, B>`
+             `llvmkit_ir::Instruction<'ctx, Attached, B>` implements `IntoCallArg<'ctx, S, B>`
+             `llvmkit_ir::Value<'ctx, B>` implements `IntoCallArg<'ctx, S, B>`
+   = note: required for `(std::string::String, IntValue<'_, i32, Brand<'_>>)` to implement `CallArgs<'_, (Point, i32), Brand<'_>>`
+note: required by a bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_call`
+  --> src/ir_builder.rs
+   |
+   |     pub fn build_call<Ret, Params, A, Name>(
+   |            ---------- required by a bound in this associated function
+...
+   |         A: CallArgs<'ctx, Params, B>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_call`

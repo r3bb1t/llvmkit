@@ -133,6 +133,15 @@ use super::IrResult;
 use super::derived_types::IntType;
 use core::convert::Infallible;
 
+/// Split into (lo, hi) 64-bit halves. Invariant: mask/shift bound each
+/// half to 64 bits, so the narrowing conversions cannot fail.
+fn u128_halves(bits: u128) -> (u64, u64) {
+    let lo = u64::try_from(bits & u128::from(u64::MAX))
+        .unwrap_or_else(|_| unreachable!("masked to 64 bits"));
+    let hi = u64::try_from(bits >> 64).unwrap_or_else(|_| unreachable!("shifted to 64 bits"));
+    (lo, hi)
+}
+
 /// Trait implemented by Rust scalar types that can be lifted to a
 /// width-`W` IR integer constant. The Rust input type drives the
 /// extension scheme: `iN` impls sign-extend, `uN` impls zero-extend,
@@ -171,7 +180,7 @@ macro_rules! impl_into_constant_int_signed_exact {
                 self,
                 ty: IntType<'ctx, $rust_ty, B>,
             ) -> Result<ConstantIntValue<'ctx, $rust_ty, B>, Infallible> {
-                let raw = i64::from(self) as u64;
+                let raw = i64::from(self).cast_unsigned();
                 Ok(ty
                     .const_int_raw(raw, true)
                     .unwrap_or_else(|_| unreachable!("native signed int fits exactly")))
@@ -205,7 +214,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, i64, B> for i64 {
         self,
         ty: IntType<'ctx, i64, B>,
     ) -> Result<ConstantIntValue<'ctx, i64, B>, Infallible> {
-        let raw = self as u64;
+        let raw = self.cast_unsigned();
         Ok(ty
             .const_int_raw(raw, false)
             .unwrap_or_else(|_| unreachable!("i64 fits exactly in i64")))
@@ -223,9 +232,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, i128, B> for i128 {
         self,
         ty: IntType<'ctx, i128, B>,
     ) -> Result<ConstantIntValue<'ctx, i128, B>, Infallible> {
-        let bits = self as u128;
-        let lo = (bits & 0xffff_ffff_ffff_ffff) as u64;
-        let hi = (bits >> 64) as u64;
+        let (lo, hi) = u128_halves(self.cast_unsigned());
         Ok(ty
             .const_int_arbitrary_precision(&[lo, hi])
             .unwrap_or_else(|_| unreachable!("i128 fits in i128")))
@@ -237,8 +244,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, i128, B> for u128 {
         self,
         ty: IntType<'ctx, i128, B>,
     ) -> Result<ConstantIntValue<'ctx, i128, B>, Infallible> {
-        let lo = (self & 0xffff_ffff_ffff_ffff) as u64;
-        let hi = (self >> 64) as u64;
+        let (lo, hi) = u128_halves(self);
         Ok(ty
             .const_int_arbitrary_precision(&[lo, hi])
             .unwrap_or_else(|_| unreachable!("u128 fits in i128")))
@@ -254,7 +260,7 @@ macro_rules! impl_into_constant_int_signed_widen {
             fn into_constant_int(self, ty: IntType<'ctx, $marker, B>)
                 -> Result<ConstantIntValue<'ctx, $marker, B>, Infallible>
             {
-                let widened = i64::from(self) as u64;
+                let widened = i64::from(self).cast_unsigned();
                 Ok(ty.const_int_raw(widened, true).unwrap_or_else(|_| {
                     unreachable!("signed Rust int fits losslessly when sign-extending to wider W")
                 }))
@@ -290,9 +296,7 @@ macro_rules! impl_into_constant_int_signed_widen_b128 {
             fn into_constant_int(self, ty: IntType<'ctx, i128, B>)
                 -> Result<ConstantIntValue<'ctx, i128, B>, Infallible>
             {
-                let v = i128::from(self) as u128;
-                let lo = (v & 0xffff_ffff_ffff_ffff) as u64;
-                let hi = (v >> 64) as u64;
+                let (lo, hi) = u128_halves(i128::from(self).cast_unsigned());
                 Ok(ty.const_int_arbitrary_precision(&[lo, hi]).unwrap_or_else(|_| {
                     unreachable!("signed Rust int fits in i128")
                 }))
@@ -307,9 +311,7 @@ macro_rules! impl_into_constant_int_unsigned_widen_b128 {
             fn into_constant_int(self, ty: IntType<'ctx, i128, B>)
                 -> Result<ConstantIntValue<'ctx, i128, B>, Infallible>
             {
-                let v = u128::from(self);
-                let lo = (v & 0xffff_ffff_ffff_ffff) as u64;
-                let hi = (v >> 64) as u64;
+                let (lo, hi) = u128_halves(u128::from(self));
                 Ok(ty.const_int_arbitrary_precision(&[lo, hi]).unwrap_or_else(|_| {
                     unreachable!("unsigned Rust int fits in i128")
                 }))
@@ -364,7 +366,7 @@ macro_rules! impl_into_constant_int_width_signed {
                         ),
                     );
                 }
-                let widened = i64::from(self) as u64;
+                let widened = i64::from(self).cast_unsigned();
                 Ok(ty.const_int_raw(widened, true).unwrap_or_else(|_| {
                     unreachable!("signed Rust int fits losslessly in Width<N>")
                 }))
@@ -418,7 +420,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoConstantInt<'ctx, Width<N>, 
         const {
             assert!(N >= 64, "i64 lift to Width<N> requires N >= 64");
         }
-        let raw = self as u64;
+        let raw = self.cast_unsigned();
         Ok(ty
             .const_int_raw(raw, false)
             .unwrap_or_else(|_| unreachable!("i64 fits in Width<N>, N >= 64")))
@@ -448,9 +450,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoConstantInt<'ctx, Width<N>, 
         const {
             assert!(N >= 128, "i128 lift to Width<N> requires N >= 128");
         }
-        let bits = self as u128;
-        let lo = (bits & 0xffff_ffff_ffff_ffff) as u64;
-        let hi = (bits >> 64) as u64;
+        let (lo, hi) = u128_halves(self.cast_unsigned());
         Ok(ty
             .const_int_arbitrary_precision(&[lo, hi])
             .unwrap_or_else(|_| unreachable!("i128 fits in Width<N>, N >= 128")))
@@ -465,8 +465,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoConstantInt<'ctx, Width<N>, 
         const {
             assert!(N >= 128, "u128 lift to Width<N> requires N >= 128");
         }
-        let lo = (self & 0xffff_ffff_ffff_ffff) as u64;
-        let hi = (self >> 64) as u64;
+        let (lo, hi) = u128_halves(self);
         Ok(ty
             .const_int_arbitrary_precision(&[lo, hi])
             .unwrap_or_else(|_| unreachable!("u128 fits in Width<N>, N >= 128")))
@@ -479,7 +478,7 @@ macro_rules! impl_into_constant_int_dyn {
         impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, IntDyn, B> for $rust_ty {
             type Error = IrError;
             fn into_constant_int(self, ty: IntType<'ctx, IntDyn, B>) -> IrResult<ConstantIntValue<'ctx, IntDyn, B>> {
-                ty.const_int_raw(i64::from(self) as u64, true)
+                ty.const_int_raw(i64::from(self).cast_unsigned(), true)
             }
         }
     )+ };
@@ -500,7 +499,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, IntDyn, B> for i64 {
         self,
         ty: IntType<'ctx, IntDyn, B>,
     ) -> IrResult<ConstantIntValue<'ctx, IntDyn, B>> {
-        ty.const_int_raw(self as u64, false)
+        ty.const_int_raw(self.cast_unsigned(), false)
     }
 }
 impl_into_constant_int_dyn!(unsigned u8, u16, u32, u64);

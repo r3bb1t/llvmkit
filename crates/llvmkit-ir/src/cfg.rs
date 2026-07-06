@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use super::basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
-use super::block_state::{BlockSealState, Unsealed};
+use super::block_state::{BlockTerminationState, Unterminated};
 use super::function::FunctionValue;
 use super::instruction::{InstructionKindData, InstructionView};
 use super::marker::{Dyn, ReturnMarker};
@@ -71,7 +71,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
                 predecessors.entry(*succ_id).or_default().push(block_id);
                 edges.push(BasicBlockEdge::new(
                     block.label(),
-                    BasicBlock::<Dyn, Unsealed, B>::from_parts(*succ_id, module_ref, label_ty)
+                    BasicBlock::<Dyn, Unterminated, B>::from_parts(*succ_id, module_ref, label_ty)
                         .label(),
                 ));
             }
@@ -129,7 +129,7 @@ pub(super) fn block_successors<'ctx, R, S, B>(
 ) -> Vec<BasicBlockLabel<'ctx, Dyn, B>>
 where
     R: ReturnMarker,
-    S: BlockSealState,
+    S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
 {
     let module = block.module_ref();
@@ -145,14 +145,14 @@ fn ids_to_labels<'ctx, B: ModuleBrand + 'ctx>(
     let label_ty = module.module().label_type().as_type().id();
     ids.into_iter()
         .flat_map(|ids| ids.iter().copied())
-        .map(|id| BasicBlock::<Dyn, Unsealed, B>::from_parts(id, module, label_ty).label())
+        .map(|id| BasicBlock::<Dyn, Unterminated, B>::from_parts(id, module, label_ty).label())
         .collect()
 }
 
 pub(super) fn successor_ids<'ctx, R, S, B>(block: &BasicBlock<'ctx, R, S, B>) -> Vec<ValueId>
 where
     R: ReturnMarker,
-    S: BlockSealState,
+    S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
 {
     let Some(term) = block.terminator() else {

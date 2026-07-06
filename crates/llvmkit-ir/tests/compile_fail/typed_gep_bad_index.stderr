@@ -1,0 +1,16 @@
+error[E0277]: the trait bound `(i32, i64): StructFieldAt<7>` is not satisfied
+  --> tests/compile_fail/typed_gep_bad_index.rs:20:22
+   |
+20 |         let _bad = b.build_field_gep::<CpuState, 7, _>(cpu, "x")?;
+   |                      ^^^^^^^^^^^^^^^ the trait `StructFieldAt<7>` is not implemented for `(i32, i64)`
+   |
+   = help: the following other types implement trait `StructFieldAt<I>`:
+             (F0, F1, F2, F3, F4, F5, F6, F7)
+             (F0, F1, F2, F3, F4, F5, F6, F7, F8)
+             (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9)
+             (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10)
+             (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11)
+             (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12)
+             (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12, F13)
+             (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12, F13, F14)
+             (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12, F13, F14, F15)

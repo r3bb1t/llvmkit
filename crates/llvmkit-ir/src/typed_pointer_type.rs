@@ -8,6 +8,13 @@
 //! `(TypeId, ModuleRef<'ctx>)` with full derive on identity, accessors
 //! routed through the internal `TypeData::as_typed_pointer` projection,
 //! `From` / `TryFrom` against the erased [`Type`] handle.
+//!
+//! Unrelated to [`crate::TypedPointerValue`], which is a Rust-side-only
+//! pointee-schema overlay on top of a plain *opaque* pointer *value*
+//! (compile-time bookkeeping, no IR-level change, prints identically to
+//! the erased path). This module's [`TypedPointerType`] is the actual
+//! LLVM IR *type* kind above -- it changes printed IR and is the GPU-only
+//! typed-pointer story, not the general-purpose ergonomics overlay.
 
 use core::fmt;
 
@@ -49,7 +56,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TypedPointerType<'ctx, B> {
         let (pointee, _) = self
             .data()
             .as_typed_pointer()
-            .expect("TypedPointerType invariant: wraps TypedPointer");
+            .unwrap_or_else(|| unreachable!("TypedPointerType invariant: wraps TypedPointer"));
         Type::new(pointee, self.module)
     }
 
@@ -58,7 +65,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TypedPointerType<'ctx, B> {
         let (_, addr_space) = self
             .data()
             .as_typed_pointer()
-            .expect("TypedPointerType invariant: wraps TypedPointer");
+            .unwrap_or_else(|| unreachable!("TypedPointerType invariant: wraps TypedPointer"));
         addr_space
     }
 }

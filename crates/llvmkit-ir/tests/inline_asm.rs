@@ -161,7 +161,7 @@ fn indirect_call_rejects_wrong_return_marker() -> Result<(), IrError> {
         let callee_ptr = llvmkit_ir::PointerValue::try_from(host.param(0).expect("callee ptr"))?;
         let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let err = b
-            .build_indirect_call::<i64, _, _, _>(
+            .build_indirect_call_dyn::<i64, _, _, _>(
                 callee_ty,
                 callee_ptr,
                 Vec::<llvmkit_ir::Value>::new(),

@@ -486,7 +486,7 @@ pub(crate) struct CmpInstData {
     pub(crate) predicate: crate::cmp_predicate::IntPredicate,
     pub(crate) lhs: Cell<ValueId>,
     pub(crate) rhs: Cell<ValueId>,
-    /// `samesign` flag. LLVM 19+: asserts both operands have the same sign.
+    /// `samesign` flag. LLVM 20+: asserts both operands have the same sign.
     /// Mirrors `ICmpInst::hasSameSign` / `setSameSign`.
     pub(crate) samesign: bool,
 }
@@ -885,6 +885,61 @@ impl_exact_flags_writer!(SDivFlags);
 impl_exact_flags_writer!(LShrFlags);
 impl_exact_flags_writer!(AShrFlags);
 
+/// nuw/nsw pair for overflowing binary operators. Mirrors the flag
+/// pair on `OverflowingBinaryOperator` (`IR/Operator.h`). Public
+/// construction is chainable (`OverflowFlags::new().nuw().nsw()`),
+/// matching the sibling `decl_overflowing_flags!`-generated flag
+/// structs' (`AddFlags`, `SubFlags`, ...) `new()` convention; the
+/// bool-pair constructor is crate-internal per the no-bool-params
+/// convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct OverflowFlags {
+    nuw: bool,
+    nsw: bool,
+}
+
+impl OverflowFlags {
+    /// No wrap flags set.
+    #[inline]
+    pub const fn new() -> Self {
+        Self {
+            nuw: false,
+            nsw: false,
+        }
+    }
+
+    /// Set `nuw` (no unsigned wrap).
+    #[inline]
+    pub const fn nuw(self) -> Self {
+        Self { nuw: true, ..self }
+    }
+
+    /// Set `nsw` (no signed wrap).
+    #[inline]
+    pub const fn nsw(self) -> Self {
+        Self { nsw: true, ..self }
+    }
+
+    #[inline]
+    pub const fn has_nuw(self) -> bool {
+        self.nuw
+    }
+
+    #[inline]
+    pub const fn has_nsw(self) -> bool {
+        self.nsw
+    }
+
+    /// Crate-internal bool-pair constructor. Builder call sites that carry
+    /// runtime nuw/nsw bools (rather than the chainable public builder)
+    /// funnel through here instead of duplicating the two `.nuw()`/`.nsw()`
+    /// calls behind an `if`.
+    #[inline]
+    pub(crate) const fn from_parts(nuw: bool, nsw: bool) -> Self {
+        Self { nuw, nsw }
+    }
+}
+
 /// Flags for `or`. The `disjoint` flag asserts the two operands have no set
 /// bits in common. Mirrors `PossiblyDisjointOperator` in `Operator.h`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -991,7 +1046,7 @@ impl UIToFpFlags {
 // --------------------------------------------------------------------------
 
 /// Flags for `icmp`. The `samesign` flag asserts both operands carry the same
-/// sign. Mirrors `ICmpInst::hasSameSign` / `setSameSign` (LLVM 19+).
+/// sign. Mirrors `ICmpInst::hasSameSign` / `setSameSign` (LLVM 20+).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ICmpFlags {
     pub(crate) samesign: bool,

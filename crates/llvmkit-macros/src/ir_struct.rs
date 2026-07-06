@@ -321,6 +321,18 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             }
         }
 
+        impl<'ctx, B: #ir::ModuleBrand + 'ctx> #ir::IntoCallArg<'ctx, #ident, B>
+            for #value_ident<'ctx, B>
+        {
+            #[inline]
+            fn into_call_arg(
+                self,
+                _module: #ir::ModuleRef<'ctx, B>,
+            ) -> #ir::IrResult<#ir::Value<'ctx, B>> {
+                Ok(self.as_struct_value().as_value())
+            }
+        }
+
         impl<'ctx, B> #ir::ir_builder::IntoReturnValue<'ctx, #ir::Dyn, B> for #value_ident<'ctx, B>
         where
             B: #ir::ModuleBrand + 'ctx,

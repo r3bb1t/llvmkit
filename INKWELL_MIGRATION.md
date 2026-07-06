@@ -137,6 +137,7 @@ shapes and is distinct from `IntDyn` / `FloatDyn`.
 ||`function.append_basic_block("l")`|`f.append_basic_block(&m, "l")`|requires the matching unverified module token|
 ||`Builder::build_int_add(a, b, name)`|`b.build_int_add::<W, _, _>(lhs: IntValue<'ctx, W>, rhs: IntValue<'ctx, W>, name)?` "" `W` is inferred at the call site, mismatched widths reject at compile time.|
 ||`Builder::build_int_sub` / `_mul`|`b.build_int_sub(...)` / `b.build_int_mul(...)`|same shape as `add`|
+||`Builder::build_call(callee, &[args], name)`|`b.build_call(typed_callee, (args...), name)?` for a `TypedFunctionValue` callee, or `b.build_call_dyn(callee, [args], name)?` for a plain `FunctionValue`|typed path: wrong arity / wrong-typed argument are compile errors via `CallArgs`/`IntoCallArg`, and `call.result()` narrows to the callee's real return type with no `try_into`; dyn path: wrong arity / wrong argument type reject at build time with `IrError::CallArgumentCountMismatch` / `CallArgumentTypeMismatch` instead of reaching the verifier|
 ||`Builder::build_return(Some(v))`|`b.build_ret(value)?`|`value: impl IntoReturnValue<'ctx, R, B>`; type must match the function's return marker|
 ||`Builder::build_return(None)`|`b.build_ret_void()` (`R = ()`) or `b.build_ret_void()?` (`Dyn`)|typed `void` builders are infallible; the `Dyn` path errors if the function does not return `void`|
 ||`Builder::position_at_end(bb)`|`IRBuilder::new(&m).position_at_end(bb)`|consumes `self` and transitions `Unpositioned` → `Positioned`; `build_*` methods are only reachable in `Positioned`|
@@ -156,6 +157,8 @@ shapes and is distinct from `IntDyn` / `FloatDyn`.
 ||`Builder::build_conditional_branch(c, t, e)`|`b.build_cond_br(cond, then_bb, else_bb)?`|`cond` accepts any `IntoIntValue<'ctx, bool>`|
 ||`Builder::build_unreachable()`|`b.build_unreachable()`|infallible (no operands)|
 ||`Builder::build_phi(ty, name)` + `phi.add_incoming(&[...])`|`b.build_int_phi::<W, _, _>(ty, incoming, name)?` + `phi.add_incoming(value, block)?`|empty initial list allowed; mirrors `PHINode::addIncoming` for the loop-edge flow|
+||manual `builder.build_phi` + `phi.add_incoming` for loop-carried values|`SsaBuilder::declare_int_var::<W>` / `_float`/`_pointer` + `def_*_var`/`use_*_var`|new -- no inkwell counterpart. Braun et al. on-the-fly SSA construction: declare a typed variable once, then read/write it like a mutable local. The engine inserts, completes, and trivial-phi-eliminates the phis itself as blocks are sealed; no manual phi pre-declaration or incoming-edge patching. See the README's "Auto-SSA" section.|
+||`value.into_pointer_value()` narrowing plus manual bookkeeping of "what this pointer points to"|`ptr.with_pointee::<T>()` -> `TypedPointerValue<'ctx, T, B>`|new -- no inkwell counterpart. Rust-side-only pointee-schema overlay on an opaque pointer; `build_typed_alloca`/`build_typed_load`/`build_typed_store`/`build_field_gep::<S, I>` skip the runtime type-narrow the erased path needs. Printed IR is byte-identical to the erased path -- this is a compile-time ergonomics layer, not a new IR construct.|
 
 ## Error model
 

@@ -14,7 +14,7 @@ use llvmkit_ir::{IRBuilder, IntValue, IrError, Linkage, Module};
 /// a `Successors` API, so the structural assertion translates to
 /// inspecting the AsmWriter output.
 #[test]
-fn cond_br_terminator_seals_block() -> Result<(), IrError> {
+fn cond_br_terminator_terminates_block() -> Result<(), IrError> {
     Module::with_new("cb", |m| {
         let void_ty = m.void_type();
         let i32_ty = m.i32_type();
@@ -31,13 +31,13 @@ fn cond_br_terminator_seals_block() -> Result<(), IrError> {
             0_i32,
             "cond",
         )?;
-        let (sealed_entry, term) = b.build_cond_br(cond, &then_bb, &else_bb)?;
+        let (terminated_entry, term) = b.build_cond_br(cond, &then_bb, &else_bb)?;
 
         // Mirrors `EXPECT_EQ(BI, TI)` -- the returned terminator handle
         // matches the block's terminator.
-        let term_in_block = sealed_entry
+        let term_in_block = terminated_entry
             .terminator()
-            .expect("sealed block has a terminator");
+            .expect("terminated block has a terminator");
         assert_eq!(term.as_value(), term_in_block.as_value());
 
         // `br i1 ..., label %then, label %else` is the canonical form
@@ -85,10 +85,10 @@ fn phi_range_iterates_three_phis() -> Result<(), IrError> {
         p2.add_incoming(0_i32, bb_label)?.finish();
         p3.add_incoming(0_i32, bb_label)?.finish();
         let _sum = b.build_int_add(p1_value, p2_value, "sum")?;
-        let (sealed_bb, _) = b.build_ret(p3_value)?;
+        let (terminated_bb, _) = b.build_ret(p3_value)?;
 
         // Upstream `EXPECT_EQ(std::distance(Phis.begin(), Phis.end()), 3)`.
-        let phi_count = sealed_bb
+        let phi_count = terminated_bb
             .instructions()
             .filter(|inst| matches!(inst.kind(), Some(llvmkit_ir::InstructionKind::Phi(_))))
             .count();
@@ -97,15 +97,15 @@ fn phi_range_iterates_three_phis() -> Result<(), IrError> {
     })
 }
 
-/// llvmkit-specific (Doctrine D11): the seal-state typestate carries
+/// llvmkit-specific (Doctrine D11): the termination-state typestate carries
 /// no runtime data; verifying the cosmetic IR text still matches the
 /// pre-T2 baseline guards against accidental AsmWriter regressions
-/// when `BasicBlock<'ctx, R, Seal>` gained its phantom parameter.
+/// when `BasicBlock<'ctx, R, Term>` gained its phantom parameter.
 /// Closest upstream coverage:
 /// `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)`.
 #[test]
-fn seal_typestate_does_not_change_asm_output() -> Result<(), IrError> {
-    Module::with_new("seal_asm", |m| {
+fn termination_typestate_does_not_change_asm_output() -> Result<(), IrError> {
+    Module::with_new("termination_asm", |m| {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
@@ -117,7 +117,7 @@ fn seal_typestate_does_not_change_asm_output() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<()>(&m).position_at_end(exit);
         b.build_ret_void();
 
-        let expected = "; ModuleID = 'seal_asm'\n\
+        let expected = "; ModuleID = 'termination_asm'\n\
                         define void @g() {\n\
                         entry:\n  br label %exit\n\n\
                         exit:\n  ret void\n}\n";
