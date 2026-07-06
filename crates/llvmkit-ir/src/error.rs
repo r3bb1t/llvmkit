@@ -590,6 +590,57 @@ pub enum IrError {
         block: Option<String>,
         message: String,
     },
+
+    /// [`crate::SsaBuilder`] read a strict (non-poison) variable on a path
+    /// that reaches function entry without a preceding write. Mirrors the
+    /// "use of undefined value" outcome of Braun et al. 2013's on-the-fly
+    /// SSA construction when the caller declared the variable without
+    /// opting into poison-on-undef.
+    #[error("use of undefined SSA variable {variable:?} in block {block:?}")]
+    SsaUseOfUndefinedVariable { variable: String, block: String },
+
+    /// [`crate::SsaBuilder::seal_block`] observed a `br`/incoming-edge
+    /// recorded against a block that was already sealed at the time the
+    /// edge was added. Braun's algorithm requires every predecessor edge
+    /// to be recorded before the block is sealed.
+    #[error("branch to already-sealed SSA block {block:?}")]
+    SsaBranchToSealedBlock { block: String },
+
+    /// [`crate::SsaBuilder::seal_block`] was called twice on the same
+    /// block.
+    #[error("SSA block {block:?} is already sealed")]
+    SsaBlockAlreadySealed { block: String },
+
+    /// An [`crate::SsaBuilder`] operation required a block that has not
+    /// yet received its terminator (still open for phi head-insertion or
+    /// further construction) but found one whose insertion capability was
+    /// already consumed by a terminator.
+    #[error("SSA block {block:?} is already filled (terminated)")]
+    SsaBlockAlreadyFilled { block: String },
+
+    /// [`crate::SsaBuilder`] required a block to be filled (terminated)
+    /// before proceeding, but the block has no terminator yet.
+    #[error("SSA block {block:?} is not yet filled (unterminated)")]
+    SsaUnfilledBlock { block: String },
+
+    /// An [`crate::ssa_builder::IntVariable`] / `FloatVariable` /
+    /// `PointerVariable` handle was used against a different
+    /// [`crate::SsaBuilder`] than the one that declared it.
+    #[error("SSA variable belongs to a different SsaBuilder")]
+    SsaForeignVariable,
+
+    /// An [`crate::ssa_builder::SsaBlock`] handle was used against a
+    /// different [`crate::SsaBuilder`] than the one that created it.
+    #[error("SSA block belongs to a different SsaBuilder")]
+    SsaForeignBlock,
+
+    /// [`crate::SsaBuilder::for_function`] /
+    /// `with_folder_for_function` was given a function that already has
+    /// a body. The layer must observe every CFG edge from birth (Braun's
+    /// algorithm needs to see every `br` as it is recorded), so grafting
+    /// onto a partially-built function is rejected.
+    #[error("SsaBuilder requires a function with no existing basic blocks")]
+    SsaFunctionHasBlocks,
 }
 
 /// Crate-wide `Result` alias.

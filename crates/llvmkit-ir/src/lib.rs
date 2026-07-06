@@ -71,6 +71,7 @@ pub mod pass_instrumentation;
 pub mod pass_manager;
 pub mod phi_state;
 pub mod sized_element;
+pub mod ssa_builder;
 pub mod struct_body_state;
 pub mod struct_schema;
 pub mod sync_scope;
@@ -224,6 +225,9 @@ pub use pass_manager::{
 };
 pub use phi_state::{Closed, Open, PhiState};
 pub use sized_element::{ArrayDyn, SizedElement};
+pub use ssa_builder::{
+    FloatVariable, IntVariable, PointerVariable, SsaBlock, SsaBuilder, SsaBuilderId,
+};
 pub use struct_body_state::{BodySet, Opaque, StructBodyDyn, StructBodyState};
 pub use struct_schema::{
     FieldOf, IntoIrField, IrField, StructFieldAt, StructFields, StructSchema, StructSchemaValue,

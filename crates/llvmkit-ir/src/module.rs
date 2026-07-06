@@ -872,6 +872,11 @@ pub(super) struct ModuleCore {
     metadata_as_value_cache: core::cell::RefCell<
         std::collections::HashMap<crate::metadata::MetadataId, crate::value::ValueId>,
     >,
+    /// Monotonic id source for [`crate::ssa_builder::SsaBuilder`] instances
+    /// created against this module. Mirrors the module-scoped counter shape
+    /// of [`ModuleId::fresh`], but per-module (an `SsaBuilderId` only needs
+    /// to disambiguate builders within one module, not process-globally).
+    next_ssa_builder_id: core::cell::Cell<u32>,
 }
 
 /// Linear module token carrying a generative brand `B` and verification state `S`.
@@ -909,6 +914,7 @@ impl<'ctx> ModuleCore {
             metadata: core::cell::RefCell::new(MetadataStore::default()),
             named_metadata: core::cell::RefCell::new(Vec::new()),
             metadata_as_value_cache: core::cell::RefCell::new(std::collections::HashMap::new()),
+            next_ssa_builder_id: core::cell::Cell::new(0),
         }
     }
 
@@ -947,6 +953,15 @@ impl<'ctx> ModuleCore {
     #[inline]
     pub(super) fn context(&self) -> &Context {
         &self.ctx
+    }
+
+    /// Allocate the next per-module [`crate::ssa_builder::SsaBuilderId`].
+    /// Fetch-and-increment, like the other id counters in this file.
+    #[inline]
+    pub(super) fn next_ssa_builder_id(&self) -> u32 {
+        let id = self.next_ssa_builder_id.get();
+        self.next_ssa_builder_id.set(id + 1);
+        id
     }
 
     /// Named-struct type ids in declaration order. The printer turns each
@@ -1917,6 +1932,12 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
+    /// Allocate the next per-module [`crate::ssa_builder::SsaBuilderId`].
+    #[inline]
+    pub(crate) fn next_ssa_builder_id(&self) -> u32 {
+        self.core.next_ssa_builder_id()
+    }
+
     pub fn function_builder<R, Name>(
         &self,
         name: Name,

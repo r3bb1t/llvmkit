@@ -218,6 +218,20 @@ where
     }
 }
 
+impl<'ctx, R: ReturnMarker, B: ModuleBrand> block_label_sealed::Sealed
+    for super::ssa_builder::SsaBlock<'ctx, R, B>
+{
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoBasicBlockLabel<'ctx, R, B>
+    for super::ssa_builder::SsaBlock<'ctx, R, B>
+{
+    #[inline]
+    fn into_basic_block_label(self) -> BasicBlockLabel<'ctx, R, B> {
+        self.label()
+    }
+}
+
 impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx>
     BasicBlock<'ctx, R, Term, B>
 {
