@@ -181,7 +181,7 @@ fn invoke_result_dominates_normal_destination_but_not_unwind() -> Result<(), IrE
 
         let (_sealed, invoke) = IRBuilder::new_for::<i32>(&m)
             .position_at_end(entry)
-            .build_invoke(
+            .build_invoke_dyn(
                 callee,
                 Vec::<llvmkit_ir::Value>::new(),
                 normal_label,

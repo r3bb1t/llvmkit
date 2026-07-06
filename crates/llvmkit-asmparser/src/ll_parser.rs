@@ -7486,7 +7486,12 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     .as_value()
             }
             ParsedCallee::Indirect(callee) => b
-                .build_indirect_call::<llvmkit_ir::Dyn, _, _, _>(parsed_fn_ty, callee, args, name)
+                .build_indirect_call_dyn::<llvmkit_ir::Dyn, _, _, _>(
+                    parsed_fn_ty,
+                    callee,
+                    args,
+                    name,
+                )
                 .map_err(|e| self.builder_err("indirect call", e))?
                 .as_value(),
         };
@@ -8259,7 +8264,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let name = result_name.as_str();
         let (_, inst) = match callee {
             ParsedCallee::Function(callee) => b
-                .build_invoke_with_config(
+                .build_invoke_dyn_with_config(
                     callee,
                     args,
                     normal_bb,

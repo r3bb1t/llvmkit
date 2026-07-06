@@ -499,6 +499,40 @@ pub enum IrError {
     #[error("function parameter count mismatch: expected {expected}, got {got}")]
     FunctionParameterCountMismatch { expected: u32, got: u32 },
 
+    /// A call/invoke/callbr site passed a wrong number of arguments for its
+    /// callee's signature. Mirrors the `CallInst::init` /
+    /// `CallBrInst::init` `NDEBUG` assertion ("Calling a function with a
+    /// bad signature!", `lib/IR/Instructions.cpp`) and
+    /// `Verifier::visitCallBase`'s authoritative arity check: a
+    /// non-vararg callee requires an exact match, a vararg callee
+    /// requires at least as many arguments as declared parameters.
+    #[error("call argument count mismatch: expected {expected}, got {got}")]
+    CallArgumentCountMismatch { expected: u32, got: u32 },
+
+    /// A call/invoke/callbr site passed an argument whose type does not
+    /// exactly match the callee's parameter type at that position.
+    /// Mirrors the same `CallInst::init` assertion and
+    /// `Verifier::visitCallBase`'s per-argument type check.
+    #[error("call argument #{index} type mismatch: expected {expected}, got {got}")]
+    CallArgumentTypeMismatch {
+        index: u32,
+        expected: TypeKindLabel,
+        got: TypeKindLabel,
+    },
+
+    /// A typed function facade ([`crate::TypedFunctionValue`]) was requested
+    /// to wrap a raw function whose signature is variadic. The fixed-arity
+    /// facade cannot represent a `...` tail; use
+    /// [`crate::function_signature::TypedVarArgsFunctionValue`] instead.
+    #[error("typed function facade does not accept a variadic signature")]
+    UnexpectedVarArgsSignature,
+
+    /// A varargs typed function facade
+    /// ([`crate::function_signature::TypedVarArgsFunctionValue`]) was
+    /// requested to wrap a raw function whose signature is not variadic.
+    #[error("varargs typed function facade requires a variadic signature")]
+    MissingVarArgsSignature,
+
     /// `Module::add_function` saw a name already bound at module scope.
     #[error("a function named {name:?} already exists in this module")]
     DuplicateFunctionName { name: String },

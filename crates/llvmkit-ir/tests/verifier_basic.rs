@@ -202,7 +202,7 @@ fn intrinsic_declaration_used_as_non_callee_operand_is_rejected() -> Result<(), 
         let caller = m.add_function::<(), _>("caller", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        b.build_call(sink, [intrinsic.as_value()], "")?;
+        b.build_call_dyn(sink, [intrinsic.as_value()], "")?;
         b.build_ret_void();
 
         let err = m
@@ -447,7 +447,7 @@ fn verify_call() -> Result<(), IrError> {
         let bb = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(bb);
         let arg: IntValue<i32> = caller.param(0)?.try_into()?;
-        let inst = b.build_call(callee, [arg.as_value()], "c1")?;
+        let inst = b.build_call_dyn(callee, [arg.as_value()], "c1")?;
         let one: IntValue<i32> = inst
             .return_value()
             .expect("non-void call returns a value")
@@ -670,7 +670,7 @@ fn verify_phi_predecessors_through_invoke_passes() -> Result<(), IrError> {
 
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(entry)
-            .build_invoke(
+            .build_invoke_dyn(
                 callee,
                 Vec::<llvmkit_ir::Value>::new(),
                 join_label,
@@ -714,7 +714,7 @@ fn verify_phi_predecessors_through_invoke_rejects_wrong_block() -> Result<(), Ir
 
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(entry)
-            .build_invoke(
+            .build_invoke_dyn(
                 callee,
                 Vec::<llvmkit_ir::Value>::new(),
                 join_label,
@@ -1028,7 +1028,7 @@ fn verify_invoke_result_used_on_unwind_edge_fails() -> Result<(), IrError> {
 
         let (_sealed, invoke) = IRBuilder::new_for::<i32>(&m)
             .position_at_end(entry)
-            .build_invoke(
+            .build_invoke_dyn(
                 callee,
                 Vec::<llvmkit_ir::Value>::new(),
                 normal_label,

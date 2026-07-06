@@ -67,12 +67,12 @@ fn call_with_metadata_argument() -> Result<(), IrError> {
         let entry = host.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
 
-        let rsp = b.build_call(read, [md], "rsp")?;
+        let rsp = b.build_call_dyn(read, [md], "rsp")?;
         let rsp_val: llvmkit_ir::IntValue<i64> = rsp
             .return_value()
             .expect("read_register returns value")
             .try_into()?;
-        b.build_call(write, [md, rsp_val.as_value()], "")?;
+        b.build_call_dyn(write, [md, rsp_val.as_value()], "")?;
         b.build_ret(rsp_val)?;
 
         let text = format!("{m}");
@@ -187,7 +187,7 @@ fn metadata_string_as_value_prints_inline() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let s = m.metadata_string("rsp");
         let md = m.metadata_as_value(s);
-        b.build_call(g, [md], "")?;
+        b.build_call_dyn(g, [md], "")?;
         b.build_ret_void();
 
         let text = format!("{m}");
@@ -312,7 +312,7 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
         let call_entry = call_host.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i8>(&m).position_at_end(call_entry);
         let p: llvmkit_ir::PointerValue = call_host.param(0)?.try_into()?;
-        let call = b.build_call(callee, [p.as_value()], "v")?;
+        let call = b.build_call_dyn(callee, [p.as_value()], "v")?;
         call.as_view()
             .set_metadata(MetadataAttachmentKind::Range, range);
         b.build_ret(call.return_int_value())?;
@@ -328,7 +328,7 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
         let p: llvmkit_ir::PointerValue = invoke_host.param(0)?.try_into()?;
         let (_entry, invoke) = IRBuilder::new_for::<i8>(&m)
             .position_at_end(entry)
-            .build_invoke(callee, [p.as_value()], normal_label, unwind_label, "v")?;
+            .build_invoke_dyn(callee, [p.as_value()], normal_label, unwind_label, "v")?;
         invoke
             .as_view()
             .set_metadata(MetadataAttachmentKind::Range, range);

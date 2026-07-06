@@ -51,7 +51,10 @@ use super::error::{IrError, IrResult, TypeKindLabel};
 use super::float_kind::{FloatDyn, FloatKind, FloatWiderThan, IntoFloatValue};
 use super::fmf::FastMathFlags;
 use super::function::FunctionValue;
-use super::function_signature::{FunctionReturn, FunctionSignature};
+use super::function_signature::{
+    CallArgs, FunctionParamList, FunctionReturn, FunctionSignature, TypedFunctionValue,
+    TypedVarArgsFunctionValue,
+};
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::inline_asm::InlineAsm;
 use super::instr_types::FNegInstData;
@@ -66,7 +69,7 @@ use super::instruction::{
 use super::instructions::{
     AtomicCmpXchgInst, AtomicRMWInst, CallBrInst, CallInst, CatchPadInst, CatchSwitchInst,
     CleanupPadInst, FpPhiInst, FreezeInst, IndirectBrInst, InvokeInst, LandingPadInst, PhiInst,
-    PointerPhiInst, StoreInst, SwitchInst, VAArgInst,
+    PointerPhiInst, StoreInst, SwitchInst, TypedCallInst, VAArgInst,
 };
 use super::int_width::{IntDyn, IntWidth, IntoIntValue};
 use super::intrinsic_inst::IntrinsicInst;
@@ -109,6 +112,17 @@ pub type TerminatedBlockIndirectBr<'ctx, R, B = Brand<'ctx>> = (
 /// Pair returned by `invoke` builders.
 pub type TerminatedBlockInvoke<'ctx, R, Ret, B = Brand<'ctx>> =
     (BasicBlock<'ctx, R, Terminated, B>, InvokeInst<'ctx, Ret, B>);
+
+/// Pair returned by the TYPED `invoke` builders
+/// ([`IRBuilder::build_invoke`] / [`IRBuilder::build_invoke_with_config`]).
+/// `R` is the parent function's return marker (drives the terminated
+/// block's typestate); `Ret` is the invoke instruction's own schema —
+/// the inner [`InvokeInst`] is tagged with `Ret::Marker`, derived from
+/// the callee, matching [`TerminatedBlockInvoke`]'s shape one level up.
+pub type TerminatedBlockTypedInvoke<'ctx, R, Ret, B = Brand<'ctx>> = (
+    BasicBlock<'ctx, R, Terminated, B>,
+    InvokeInst<'ctx, <Ret as FunctionReturn>::Marker, B>,
+);
 
 /// Pair returned by `catchswitch` builders before handler insertion closes.
 pub type TerminatedBlockCatchSwitch<'ctx, R, B = Brand<'ctx>> = (
@@ -3502,13 +3516,205 @@ where
         self.build_store_inner(payload)
     }
 
+    /// Ports the `CallInst::init` / `CallBrInst::init` assertions
+    /// ("Calling a function with a bad signature!",
+    /// `lib/IR/Instructions.cpp`) and `Verifier::visitCallBase`'s
+    /// authoritative arity/type check to build time: argument count
+    /// must equal the parameter count exactly (or be at least the
+    /// parameter count for a vararg callee), and each fixed argument's
+    /// type must equal the parameter type at that position exactly.
+    /// Shared by every dyn call/invoke/callbr/inline-asm builder path.
+    fn validate_call_site_args(
+        &self,
+        fn_ty: FunctionType<'ctx, B>,
+        args: &[ValueId],
+    ) -> IrResult<()> {
+        let params: Vec<Type<'ctx, B>> = fn_ty.params().collect();
+        let expected = u32::try_from(params.len())
+            .unwrap_or_else(|_| unreachable!("parameter count bounded by u32"));
+        let got = u32::try_from(args.len())
+            .unwrap_or_else(|_| unreachable!("argument count bounded by u32"));
+        let count_ok = if fn_ty.is_var_arg() {
+            got >= expected
+        } else {
+            got == expected
+        };
+        if !count_ok {
+            return Err(IrError::CallArgumentCountMismatch { expected, got });
+        }
+        for (i, (&arg, param_ty)) in args.iter().zip(params.iter()).enumerate() {
+            let arg_ty_id = self.module.context().value_data(arg).ty;
+            if arg_ty_id != param_ty.id() {
+                let arg_ty = Type::<'ctx, B>::new(arg_ty_id, ModuleRef::<B>::new(self.module));
+                return Err(IrError::CallArgumentTypeMismatch {
+                    index: u32::try_from(i)
+                        .unwrap_or_else(|_| unreachable!("argument index bounded by u32")),
+                    expected: param_ty.kind_label(),
+                    got: arg_ty.kind_label(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     // ---- Call ----
+
+    /// TYPED flat call — the primary call-construction form. Wrong
+    /// arity, wrong argument types, and wrong result use are all
+    /// compile errors; the return marker is derived from the callee,
+    /// never caller-asserted. Mirrors `IRBuilder::CreateCall(FunctionCallee,
+    /// ArrayRef<Value*>, ...)` with the callee schema statically pinned.
+    ///
+    /// No runtime argument-count/type check is needed here (unlike the
+    /// dyn paths): [`TypedFunctionValue::try_from_function`] already
+    /// proved the callee's real declared parameter types match
+    /// `Params` exactly, and the `A: CallArgs<'ctx, Params, B>` bound
+    /// already proves `args` lowers to the same schema — the two facts
+    /// compose transitively, so the argument list is correct by
+    /// construction.
+    pub fn build_call<Ret, Params, A, Name>(
+        &self,
+        callee: TypedFunctionValue<'ctx, Ret, Params, B>,
+        args: A,
+        name: Name,
+    ) -> IrResult<TypedCallInst<'ctx, Ret, B>>
+    where
+        Ret: FunctionReturn,
+        Params: FunctionParamList,
+        A: CallArgs<'ctx, Params, B>,
+        Name: AsRef<str>,
+    {
+        let f = callee.as_function();
+        let arg_ids = args.lower(ModuleRef::new(self.module))?;
+        let payload = crate::instr_types::CallInstData::new(
+            f.as_value().id,
+            f.signature().as_type().id(),
+            arg_ids,
+            f.calling_conv(),
+            crate::instr_types::TailCallKind::None,
+        );
+        let inst = self.append_instruction(
+            f.return_type().id(),
+            InstructionKindData::Call(payload),
+            name,
+        );
+        Ok(TypedCallInst::from_call(CallInst::from_raw(
+            inst.as_value().id,
+            ModuleRef::<B>::new(self.module),
+            inst.ty().id(),
+        )))
+    }
+
+    /// Typed flat call with explicit call-site configuration
+    /// (calling convention / attributes), otherwise identical to
+    /// [`Self::build_call`].
+    pub fn build_call_with_config<Ret, Params, A>(
+        &self,
+        callee: TypedFunctionValue<'ctx, Ret, Params, B>,
+        args: A,
+        config: CallSiteConfig,
+    ) -> IrResult<TypedCallInst<'ctx, Ret, B>>
+    where
+        Ret: FunctionReturn,
+        Params: FunctionParamList,
+        A: CallArgs<'ctx, Params, B>,
+    {
+        let f = callee.as_function();
+        let arg_ids = args.lower(ModuleRef::new(self.module))?;
+        let (name, calling_conv, attrs) = config.into_parts();
+        let payload = crate::instr_types::CallInstData::new_with_attrs(
+            f.as_value().id,
+            f.signature().as_type().id(),
+            arg_ids,
+            calling_conv,
+            crate::instr_types::TailCallKind::None,
+            attrs,
+        );
+        let inst = self.append_instruction(
+            f.return_type().id(),
+            InstructionKindData::Call(payload),
+            name,
+        );
+        Ok(TypedCallInst::from_call(CallInst::from_raw(
+            inst.as_value().id,
+            ModuleRef::<B>::new(self.module),
+            inst.ty().id(),
+        )))
+    }
+
+    /// Typed chainable call builder: same schema guarantees as
+    /// [`Self::build_call`], with `tail()` / `must_tail()` / `no_tail()`
+    /// / `calling_conv(cc)` / `call_attributes(attrs)` / `name(n)`
+    /// accumulated before `.build()` emits the call.
+    pub fn typed_call_builder<Ret, Params, A>(
+        &self,
+        callee: TypedFunctionValue<'ctx, Ret, Params, B>,
+        args: A,
+    ) -> TypedCallBuilder<'_, 'm, 'ctx, B, F, R, Ret, Params, A>
+    where
+        Ret: FunctionReturn,
+        Params: FunctionParamList,
+        A: CallArgs<'ctx, Params, B>,
+    {
+        TypedCallBuilder {
+            parent: self,
+            callee,
+            args,
+            tail_kind: crate::instr_types::TailCallKind::None,
+            calling_conv: None,
+            attrs: CallAttributeData::default(),
+            name: String::new(),
+        }
+    }
+
+    /// TYPED varargs call: the fixed-prefix arguments are schema-typed
+    /// through `Params` exactly like [`Self::build_call`]; the trailing
+    /// `varargs` are erased [`IsValue`] handles, matching LLVM's own
+    /// variadic-argument contract (the `...` tail carries no static
+    /// type checking — only the fixed prefix does). Mirrors
+    /// `IRBuilder::CreateCall` against a variadic `FunctionCallee`.
+    pub fn build_varargs_call<Ret, Params, A, I, V, Name>(
+        &self,
+        callee: TypedVarArgsFunctionValue<'ctx, Ret, Params, B>,
+        fixed_args: A,
+        varargs: I,
+        name: Name,
+    ) -> IrResult<TypedCallInst<'ctx, Ret, B>>
+    where
+        Ret: FunctionReturn,
+        Params: FunctionParamList,
+        A: CallArgs<'ctx, Params, B>,
+        I: IntoIterator<Item = V>,
+        V: IsValue<'ctx, B>,
+        Name: AsRef<str>,
+    {
+        let f = callee.as_function();
+        let mut arg_ids: Vec<ValueId> = fixed_args.lower(ModuleRef::new(self.module))?.into_vec();
+        arg_ids.extend(varargs.into_iter().map(|v| v.as_value().id));
+        let payload = crate::instr_types::CallInstData::new(
+            f.as_value().id,
+            f.signature().as_type().id(),
+            arg_ids,
+            f.calling_conv(),
+            crate::instr_types::TailCallKind::None,
+        );
+        let inst = self.append_instruction(
+            f.return_type().id(),
+            InstructionKindData::Call(payload),
+            name,
+        );
+        Ok(TypedCallInst::from_call(CallInst::from_raw(
+            inst.as_value().id,
+            ModuleRef::<B>::new(self.module),
+            inst.ty().id(),
+        )))
+    }
 
     /// Flat call form: pass a [`FunctionValue`] callee, an iterable of
     /// pre-widened arguments (each one already a [`Value<'ctx, B>`]), and
     /// a name. Mirrors the simple shape of `IRBuilder::CreateCall`.
     /// Use [`Self::call_builder`] for mixed-arg-type construction.
-    pub fn build_call<R2, I, V, Name>(
+    pub fn build_call_dyn<R2, I, V, Name>(
         &self,
         callee: FunctionValue<'ctx, R2, B>,
         args: I,
@@ -3643,6 +3849,59 @@ where
         }
     }
 
+    /// TYPED indirect call through a function-pointer value: the
+    /// callee's function type is constructed from the `Sig` schema, so
+    /// it is never spelled by hand and can never drift from
+    /// `Sig::Params` / `Sig::Ret`. Mirrors `IRBuilder::CreateCall(FunctionType*,
+    /// Value* callee, args)` — the opaque-pointer form where the pointee
+    /// type is supplied separately — with the pointee type derived
+    /// instead of caller-asserted.
+    ///
+    /// Spell as: `b.build_indirect_call::<fn(i32) -> i32, _, _>(fp, (x,), "r")?`.
+    ///
+    /// No runtime argument-count/type check is needed: `fn_ty` is
+    /// constructed from `Sig::Params` in this same call, and
+    /// `A: CallArgs<'ctx, Sig::Params, B>` already proves `args` lowers
+    /// to that identical schema — the underlying function pointer's
+    /// *actual* pointee type is an indirect-call trust boundary LLVM
+    /// itself does not statically check either (mirrors
+    /// `IRBuilder::CreateCall`'s own opaque-pointer contract).
+    pub fn build_indirect_call<Sig, A, Name>(
+        &self,
+        callee: PointerValue<'ctx, B>,
+        args: A,
+        name: Name,
+    ) -> IrResult<TypedCallInst<'ctx, Sig::Ret, B>>
+    where
+        Sig: FunctionSignature,
+        A: CallArgs<'ctx, Sig::Params, B>,
+        Name: AsRef<str>,
+    {
+        let module: Module<'ctx, B, Unverified> = Module::from_core(self.module);
+        let ret = <Sig::Ret as FunctionReturn>::ir_type(&module)?;
+        let params = <Sig::Params as FunctionParamList>::ir_types(&module)?;
+        let fn_ty = module.fn_type(ret, params, false);
+        let callee_v = IsValue::as_value(callee);
+        let arg_ids = args.lower(ModuleRef::new(self.module))?;
+        let payload = crate::instr_types::CallInstData::new(
+            callee_v.id,
+            fn_ty.as_type().id(),
+            arg_ids,
+            crate::CallingConv::C,
+            crate::instr_types::TailCallKind::None,
+        );
+        let inst = self.append_instruction(
+            fn_ty.return_type().id(),
+            InstructionKindData::Call(payload),
+            name,
+        );
+        Ok(TypedCallInst::from_call(CallInst::from_raw(
+            inst.as_value().id,
+            ModuleRef::<B>::new(self.module),
+            inst.ty().id(),
+        )))
+    }
+
     /// Produce an indirect `call` through a function-pointer **value** (not a
     /// named `@function`), with the callee's function type given explicitly.
     /// Mirrors `IRBuilder::CreateCall(FunctionType*, Value* callee, args)` — the
@@ -3652,7 +3911,7 @@ where
     ///
     /// `fn_ty` is the callee's signature; `callee` is the function pointer; the
     /// caller picks the return marker `R2` to match `fn_ty`'s return type.
-    pub fn build_indirect_call<R2, I, V, Name>(
+    pub fn build_indirect_call_dyn<R2, I, V, Name>(
         &self,
         fn_ty: FunctionType<'ctx, B>,
         callee: PointerValue<'ctx, B>,
@@ -3669,7 +3928,8 @@ where
         let ret_data = self.module.context().type_data(fn_ty.return_type().id());
         if !crate::function::signature_matches_marker::<R2>(ret_data) {
             return Err(IrError::ReturnTypeMismatch {
-                expected: fn_ty.return_type().kind_label(),
+                expected: crate::marker::marker_kind_label::<R2>()
+                    .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
                 got: fn_ty.return_type().kind_label(),
             });
         }
@@ -3678,6 +3938,7 @@ where
             let v = arg.as_value();
             arg_ids.push(v.id);
         }
+        self.validate_call_site_args(fn_ty, &arg_ids)?;
         let payload = crate::instr_types::CallInstData::new(
             callee_v.id,
             fn_ty.as_type().id(),
@@ -3728,7 +3989,8 @@ where
         let ret_data = self.module.context().type_data(fn_ty.return_type().id());
         if !crate::function::signature_matches_marker::<R2>(ret_data) {
             return Err(IrError::ReturnTypeMismatch {
-                expected: fn_ty.return_type().kind_label(),
+                expected: crate::marker::marker_kind_label::<R2>()
+                    .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
                 got: fn_ty.return_type().kind_label(),
             });
         }
@@ -3737,6 +3999,7 @@ where
             let v = arg.as_value();
             arg_ids.push(v.id);
         }
+        self.validate_call_site_args(fn_ty, &arg_ids)?;
         let payload = crate::instr_types::CallInstData::new_with_attrs(
             asm_v.id,
             fn_ty.as_type().id(),
@@ -5388,9 +5651,80 @@ where
         ))
     }
 
+    /// TYPED `invoke <ret-ty> <callee>(<args>) to label %normal unwind
+    /// label %unwind`. Wrong arity / wrong argument types / wrong
+    /// result use are compile errors; the invoke's return marker is
+    /// derived from the callee. Mirrors `IRBuilder::CreateInvoke` with
+    /// the callee schema statically pinned.
+    pub fn build_invoke<Ret, Params, A, Normal, Unwind, Name>(
+        self,
+        callee: TypedFunctionValue<'ctx, Ret, Params, B>,
+        args: A,
+        normal_dest: Normal,
+        unwind_dest: Unwind,
+        name: Name,
+    ) -> IrResult<TerminatedBlockTypedInvoke<'ctx, R, Ret, B>>
+    where
+        Ret: FunctionReturn,
+        Params: FunctionParamList,
+        A: CallArgs<'ctx, Params, B>,
+        Name: AsRef<str>,
+        Normal: IntoBasicBlockLabel<'ctx, R, B>,
+        Unwind: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        self.build_invoke_with_config(
+            callee,
+            args,
+            normal_dest,
+            unwind_dest,
+            CallSiteConfig::new(name.as_ref()),
+        )
+    }
+
+    /// Produce a TYPED `invoke` with explicit call-site configuration.
+    pub fn build_invoke_with_config<Ret, Params, A, Normal, Unwind>(
+        self,
+        callee: TypedFunctionValue<'ctx, Ret, Params, B>,
+        args: A,
+        normal_dest: Normal,
+        unwind_dest: Unwind,
+        config: CallSiteConfig,
+    ) -> IrResult<TerminatedBlockTypedInvoke<'ctx, R, Ret, B>>
+    where
+        Ret: FunctionReturn,
+        Params: FunctionParamList,
+        A: CallArgs<'ctx, Params, B>,
+        Normal: IntoBasicBlockLabel<'ctx, R, B>,
+        Unwind: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let normal_dest = normal_dest.into_basic_block_label();
+        let unwind_dest = unwind_dest.into_basic_block_label();
+        let f = callee.as_function();
+        let arg_ids = args.lower(ModuleRef::new(self.module))?;
+        let (name, calling_conv, attrs) = config.into_parts();
+        let payload = crate::instr_types::InvokeInstData::new_with_attrs(
+            f.as_value().id,
+            f.signature().as_type().id(),
+            arg_ids,
+            calling_conv,
+            normal_dest.as_value().id,
+            unwind_dest.as_value().id,
+            attrs,
+        );
+        let ret_ty = f.return_type().id();
+        let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let bb = self.into_insert_block();
+        Ok((
+            bb.retag_termination::<Terminated>(),
+            InvokeInst::<Dyn, B>::from_raw(inst.as_value().id, module_ref, ret_ty)
+                .retag::<Ret::Marker>(),
+        ))
+    }
+
     /// Produce `invoke <ret-ty> <callee>(<args>) to label %normal
     /// unwind label %unwind`. Mirrors `IRBuilder::CreateInvoke`.
-    pub fn build_invoke<R2, I, V, Normal, Unwind, Name>(
+    pub fn build_invoke_dyn<R2, I, V, Normal, Unwind, Name>(
         self,
         callee: FunctionValue<'ctx, R2, B>,
         args: I,
@@ -5406,7 +5740,7 @@ where
         Normal: IntoBasicBlockLabel<'ctx, R, B>,
         Unwind: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        self.build_invoke_with_config(
+        self.build_invoke_dyn_with_config(
             callee,
             args,
             normal_dest,
@@ -5416,7 +5750,7 @@ where
     }
 
     /// Produce `invoke` with explicit call-site configuration.
-    pub fn build_invoke_with_config<R2, I, V, Normal, Unwind>(
+    pub fn build_invoke_dyn_with_config<R2, I, V, Normal, Unwind>(
         self,
         callee: FunctionValue<'ctx, R2, B>,
         args: I,
@@ -5434,13 +5768,14 @@ where
         let normal_dest = normal_dest.into_basic_block_label();
         let unwind_dest = unwind_dest.into_basic_block_label();
         let callee_v = callee.as_value();
-        let fn_ty = callee.signature().as_type().id();
+        let fn_ty = callee.signature();
         let ret_ty = callee.return_type().id();
         let (name, calling_conv, attrs) = config.into_parts();
         let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.as_value().id).collect();
+        self.validate_call_site_args(fn_ty, &arg_ids)?;
         let payload = crate::instr_types::InvokeInstData::new_with_attrs(
             callee_v.id,
-            fn_ty,
+            fn_ty.as_type().id(),
             arg_ids,
             calling_conv,
             normal_dest.as_value().id,
@@ -5506,7 +5841,8 @@ where
         let ret_data = self.module.context().type_data(ret_ty);
         if !crate::function::signature_matches_marker::<R2>(ret_data) {
             return Err(IrError::ReturnTypeMismatch {
-                expected: fn_ty.return_type().kind_label(),
+                expected: crate::marker::marker_kind_label::<R2>()
+                    .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
                 got: fn_ty.return_type().kind_label(),
             });
         }
@@ -5515,6 +5851,7 @@ where
             let v = arg.as_value();
             arg_ids.push(v.id);
         }
+        self.validate_call_site_args(fn_ty, &arg_ids)?;
         let (name, calling_conv, attrs) = config.into_parts();
         let payload = crate::instr_types::InvokeInstData::new_with_attrs(
             asm_v.id,
@@ -5581,17 +5918,18 @@ where
     {
         let default_dest = default_dest.into_basic_block_label();
         let callee_v = callee.as_value();
-        let fn_ty = callee.signature().as_type().id();
+        let fn_ty = callee.signature();
         let ret_ty = callee.return_type().id();
         let (name, calling_conv, attrs) = config.into_parts();
         let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.as_value().id).collect();
+        self.validate_call_site_args(fn_ty, &arg_ids)?;
         let indirect_ids: Vec<ValueId> = indirect_dests
             .into_iter()
             .map(|d| d.into_basic_block_label().as_value().id)
             .collect();
         let payload = crate::instr_types::CallBrInstData::new_with_attrs(
             callee_v.id,
-            fn_ty,
+            fn_ty.as_type().id(),
             arg_ids,
             calling_conv,
             default_dest.as_value().id,
@@ -5658,7 +5996,8 @@ where
         let ret_data = self.module.context().type_data(ret_ty);
         if !crate::function::signature_matches_marker::<R2>(ret_data) {
             return Err(IrError::ReturnTypeMismatch {
-                expected: fn_ty.return_type().kind_label(),
+                expected: crate::marker::marker_kind_label::<R2>()
+                    .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
                 got: fn_ty.return_type().kind_label(),
             });
         }
@@ -5667,6 +6006,7 @@ where
             let v = arg.as_value();
             arg_ids.push(v.id);
         }
+        self.validate_call_site_args(fn_ty, &arg_ids)?;
         let indirect_ids: Vec<ValueId> = indirect_dests
             .into_iter()
             .map(|d| d.into_basic_block_label().as_value().id)
@@ -6477,6 +6817,9 @@ where
     /// Emit the call instruction.
     pub fn build(self) -> IrResult<CallInst<'ctx, RC, B>> {
         self.validate_intrinsic_descriptor_args()?;
+        let fn_ty =
+            FunctionType::<'ctx, B>::new(self.fn_ty, ModuleRef::<B>::new(self.parent.module));
+        self.parent.validate_call_site_args(fn_ty, &self.args)?;
         let payload = crate::instr_types::CallInstData::new_with_attrs(
             self.callee_id,
             self.fn_ty,
@@ -6495,6 +6838,103 @@ where
             ModuleRef::<B>::new(self.parent.module),
             inst.ty().id(),
         ))
+    }
+}
+
+// --------------------------------------------------------------------------
+// TypedCallBuilder
+// --------------------------------------------------------------------------
+
+/// Chainable builder for [`crate::IRBuilder::typed_call_builder`]. Same
+/// schema guarantees as [`crate::IRBuilder::build_call`] — the callee's
+/// return marker, parameter schema, and lowered arguments are all
+/// pinned by `Ret` / `Params` / `A` — with tail-call kind / calling
+/// convention / attributes / result name accumulated via chainable
+/// methods before `.build()` emits the call.
+pub struct TypedCallBuilder<'a, 'm, 'ctx, B, F, RP, Ret, Params, A>
+where
+    B: ModuleBrand + 'ctx,
+    F: IRBuilderFolder<'ctx, B>,
+    RP: ReturnMarker,
+    Ret: FunctionReturn,
+    Params: FunctionParamList,
+    A: CallArgs<'ctx, Params, B>,
+{
+    parent: &'a IRBuilder<'m, 'ctx, B, F, Positioned, RP>,
+    callee: TypedFunctionValue<'ctx, Ret, Params, B>,
+    args: A,
+    tail_kind: crate::instr_types::TailCallKind,
+    calling_conv: Option<CallingConv>,
+    attrs: CallAttributeData,
+    name: String,
+}
+
+impl<'a, 'm, 'ctx, B, F, RP, Ret, Params, A>
+    TypedCallBuilder<'a, 'm, 'ctx, B, F, RP, Ret, Params, A>
+where
+    B: ModuleBrand + 'ctx,
+    F: IRBuilderFolder<'ctx, B>,
+    RP: ReturnMarker,
+    Ret: FunctionReturn,
+    Params: FunctionParamList,
+    A: CallArgs<'ctx, Params, B>,
+{
+    pub fn tail(mut self) -> Self {
+        self.tail_kind = crate::instr_types::TailCallKind::Tail;
+        self
+    }
+
+    pub fn must_tail(mut self) -> Self {
+        self.tail_kind = crate::instr_types::TailCallKind::MustTail;
+        self
+    }
+
+    pub fn no_tail(mut self) -> Self {
+        self.tail_kind = crate::instr_types::TailCallKind::NoTail;
+        self
+    }
+
+    pub fn calling_conv(mut self, cc: CallingConv) -> Self {
+        self.calling_conv = Some(cc);
+        self
+    }
+
+    pub fn call_attributes(mut self, attrs: CallAttributeData) -> Self {
+        self.attrs = attrs;
+        self
+    }
+
+    pub fn name<Name>(mut self, name: Name) -> Self
+    where
+        Name: AsRef<str>,
+    {
+        self.name = name.as_ref().to_owned();
+        self
+    }
+
+    /// Emit the call instruction.
+    pub fn build(self) -> IrResult<TypedCallInst<'ctx, Ret, B>> {
+        let f = self.callee.as_function();
+        let arg_ids = self.args.lower(ModuleRef::new(self.parent.module))?;
+        let calling_conv = self.calling_conv.unwrap_or_else(|| f.calling_conv());
+        let payload = crate::instr_types::CallInstData::new_with_attrs(
+            f.as_value().id,
+            f.signature().as_type().id(),
+            arg_ids,
+            calling_conv,
+            self.tail_kind,
+            self.attrs,
+        );
+        let inst = self.parent.append_instruction(
+            f.return_type().id(),
+            InstructionKindData::Call(payload),
+            self.name,
+        );
+        Ok(TypedCallInst::from_call(CallInst::from_raw(
+            inst.as_value().id,
+            ModuleRef::<B>::new(self.parent.module),
+            inst.ty().id(),
+        )))
     }
 }
 

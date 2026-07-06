@@ -2373,24 +2373,45 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         )
     }
 
-    pub fn typed_function_type<Ret, Params>(
-        &self,
-        is_var_arg: bool,
-    ) -> IrResult<FunctionType<'ctx, B>>
+    /// Fixed-arity typed function type: `Ret (Params...)`.
+    pub fn typed_function_type<Ret, Params>(&self) -> IrResult<FunctionType<'ctx, B>>
     where
         Ret: FunctionReturn,
         Params: FunctionParamList,
     {
         let ret = Ret::ir_type(self)?;
         let params = Params::ir_types(self)?;
-        Ok(self.fn_type(ret, params, is_var_arg))
+        Ok(self.fn_type(ret, params, false))
     }
 
-    pub fn typed_function_type_of<Sig>(&self, is_var_arg: bool) -> IrResult<FunctionType<'ctx, B>>
+    /// Fixed-arity typed function type from a Rust function-pointer
+    /// schema (`fn(...) -> Ret`).
+    pub fn typed_function_type_of<Sig>(&self) -> IrResult<FunctionType<'ctx, B>>
     where
         Sig: FunctionSignature,
     {
-        self.typed_function_type::<Sig::Ret, Sig::Params>(is_var_arg)
+        self.typed_function_type::<Sig::Ret, Sig::Params>()
+    }
+
+    /// Variadic typed function type: `Ret (Params..., ...)`. `Params`
+    /// describes only the fixed-prefix parameters — the trailing `...`
+    /// is not itself a schema-typed parameter.
+    pub fn typed_varargs_function_type<Ret, Params>(&self) -> IrResult<FunctionType<'ctx, B>>
+    where
+        Ret: FunctionReturn,
+        Params: FunctionParamList,
+    {
+        let ret = Ret::ir_type(self)?;
+        let params = Params::ir_types(self)?;
+        Ok(self.fn_type(ret, params, true))
+    }
+
+    /// Variadic typed function type from a Rust function-pointer schema.
+    pub fn typed_varargs_function_type_of<Sig>(&self) -> IrResult<FunctionType<'ctx, B>>
+    where
+        Sig: FunctionSignature,
+    {
+        self.typed_varargs_function_type::<Sig::Ret, Sig::Params>()
     }
 
     pub fn target_ext_type<Name, I, T, J>(
@@ -2424,7 +2445,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Params: FunctionParamList,
         Name: AsRef<str>,
     {
-        let signature = self.typed_function_type::<Ret, Params>(false)?;
+        let signature = self.typed_function_type::<Ret, Params>()?;
         let function = self.add_function::<Ret::Marker, _>(name, signature, linkage)?;
         TypedFunctionValue::<Ret, Params, B>::try_from_function(function)
     }
@@ -2438,10 +2459,51 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Sig: FunctionSignature,
         Name: AsRef<str>,
     {
-        let signature = self.typed_function_type_of::<Sig>(false)?;
+        let signature = self.typed_function_type_of::<Sig>()?;
         let function =
             self.add_function::<<Sig::Ret as FunctionReturn>::Marker, _>(name, signature, linkage)?;
         TypedFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(function)
+    }
+
+    /// Declare a variadic typed function `Ret @name(Params..., ...)`
+    /// and wrap it in a [`crate::function_signature::TypedVarArgsFunctionValue`].
+    pub fn add_typed_varargs_function<Ret, Params, Name>(
+        &self,
+        name: Name,
+        linkage: Linkage,
+    ) -> IrResult<crate::function_signature::TypedVarArgsFunctionValue<'ctx, Ret, Params, B>>
+    where
+        Ret: FunctionReturn,
+        Params: FunctionParamList,
+        Name: AsRef<str>,
+    {
+        let signature = self.typed_varargs_function_type::<Ret, Params>()?;
+        let function = self.add_function::<Ret::Marker, _>(name, signature, linkage)?;
+        crate::function_signature::TypedVarArgsFunctionValue::<Ret, Params, B>::try_from_function(
+            function,
+        )
+    }
+
+    /// Declare a variadic typed function from a Rust function-pointer
+    /// schema and wrap it in a
+    /// [`crate::function_signature::TypedVarArgsFunctionValue`].
+    pub fn add_typed_varargs_function_of<Sig, Name>(
+        &self,
+        name: Name,
+        linkage: Linkage,
+    ) -> IrResult<
+        crate::function_signature::TypedVarArgsFunctionValue<'ctx, Sig::Ret, Sig::Params, B>,
+    >
+    where
+        Sig: FunctionSignature,
+        Name: AsRef<str>,
+    {
+        let signature = self.typed_varargs_function_type_of::<Sig>()?;
+        let function =
+            self.add_function::<<Sig::Ret as FunctionReturn>::Marker, _>(name, signature, linkage)?;
+        crate::function_signature::TypedVarArgsFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(
+            function,
+        )
     }
 
     pub fn add_function<R, Name>(

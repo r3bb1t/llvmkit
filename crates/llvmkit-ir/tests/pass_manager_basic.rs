@@ -27,8 +27,8 @@ where
 
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        b.build_call(g, Vec::<llvmkit_ir::Value>::new(), "")?;
-        b.build_call(h, Vec::<llvmkit_ir::Value>::new(), "")?;
+        b.build_call_dyn(g, Vec::<llvmkit_ir::Value>::new(), "")?;
+        b.build_call_dyn(h, Vec::<llvmkit_ir::Value>::new(), "")?;
         b.build_ret_void();
 
         for function in [g, h] {

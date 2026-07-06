@@ -215,7 +215,7 @@ fn invoke_cfg_edges_are_normal_then_unwind() -> Result<(), IrError> {
 
         IRBuilder::new_for::<()>(&m)
             .position_at_end(entry)
-            .build_invoke(
+            .build_invoke_dyn(
                 callee,
                 Vec::<llvmkit_ir::Value>::new(),
                 normal_label,

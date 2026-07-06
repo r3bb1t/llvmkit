@@ -3,7 +3,7 @@
 //! Every test cites its upstream source per Doctrine D11.
 
 use llvmkit_ir::{
-    CallSiteConfig, CallingConv, IRBuilder, InlineAsmOptions, IrError, Linkage, Module,
+    CallSiteConfig, CallingConv, IRBuilder, InlineAsmOptions, IntValue, IrError, Linkage, Module,
 };
 
 // --------------------------------------------------------------------------
@@ -39,7 +39,7 @@ fn invoke_void_to_unwind() -> Result<(), IrError> {
             bb_b.build_ret_void();
         }
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        let _ = b.build_invoke_with_config(
+        let _ = b.build_invoke_dyn_with_config(
             callee,
             Vec::<llvmkit_ir::Value>::new(),
             normal_label,
@@ -50,6 +50,46 @@ fn invoke_void_to_unwind() -> Result<(), IrError> {
         assert!(
             text.contains(
                 "invoke fastcc void @f.fastcc()\n          to label %defaultdest unwind label %exc\n"
+            ),
+            "got:\n{text}"
+        );
+        Ok(())
+    })
+}
+
+/// TYPED `invoke`: the callee's return marker is derived (not
+/// caller-asserted) into the returned `InvokeInst<'_, Ret::Marker>` --
+/// `invoke.as_value()` narrows via `TryFrom` to `IntValue<i32>` without
+/// error, proving the marker is really `i32` and not `Dyn`. Prints
+/// identically to the dyn form for the same signature. Closest
+/// upstream coverage: same `IRBuilder::CreateInvoke` shape as
+/// `invoke_void_to_unwind`, exercised through the typed callee facade.
+#[test]
+fn typed_invoke_derives_return_marker_from_callee() -> Result<(), IrError> {
+    Module::with_new("a", |m| {
+        let callee = m.add_typed_function::<i32, (), _>("callee", Linkage::External)?;
+        let caller = m.add_typed_function::<i32, (i32,), _>("caller", Linkage::External)?;
+        let entry = caller.append_basic_block(&m, "entry");
+        let normal = caller.append_basic_block(&m, "normal");
+        let unwind = caller.append_basic_block(&m, "unwind");
+        let normal_label = normal.label();
+        let unwind_label = unwind.label();
+        let (x,) = caller.params();
+        {
+            let bb_b = IRBuilder::new_for::<i32>(&m).position_at_end(unwind);
+            bb_b.build_ret(x)?;
+        }
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let (_sealed, invoke) = b.build_invoke(callee, (), normal_label, unwind_label, "iv")?;
+        // The invoke's marker is already `i32` (derived from the callee),
+        // so this infallible-in-practice narrowing never errors.
+        let result: IntValue<i32> = invoke.as_value().try_into()?;
+        let bn = IRBuilder::new_for::<i32>(&m).position_at_end(normal);
+        bn.build_ret(result)?;
+        let text = format!("{m}");
+        assert!(
+            text.contains(
+                "%iv = invoke i32 @callee()\n          to label %normal unwind label %unwind\n"
             ),
             "got:\n{text}"
         );

@@ -19,7 +19,7 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 1139.
+Total `#[test]` functions: 1151.
 
 | llvmkit test | upstream reference | category |
 |---|---|---|
@@ -70,6 +70,17 @@ Total `#[test]` functions: 1139.
 | `crates/llvmkit-ir/tests/builder_call.rs::call_to_pointer_returning_function` | `unittests/IR/InstructionsTest.cpp::TEST_F(ModuleWithFunctionTest, CallInst)` | port |
 | `crates/llvmkit-ir/tests/builder_call.rs::intrinsic_call_inserts_declaration_and_emits_direct_call` | `llvm/lib/IR/IntrinsicInst.cpp`; `llvm/include/llvm/IR/Intrinsics.td::int_acos`; `llvm/lib/IR/IRBuilder.cpp::IRBuilderBase::CreateCall` | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/builder_call.rs::intrinsic_call_rejects_wrong_argument_type` | `llvm/lib/IR/Verifier.cpp::visitIntrinsicCall`; `llvm/lib/IR/Intrinsics.cpp::getIntrinsicInfoTableEntries` signature matching | mirror |
+| `crates/llvmkit-ir/tests/builder_call.rs::typed_build_call_prints_like_dyn_form` | `unittests/IR/InstructionsTest.cpp::TEST_F(ModuleWithFunctionTest, CallInst)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/builder_call.rs::typed_build_call_with_config_threads_calling_convention` | `unittests/IR/InstructionsTest.cpp::TEST_F(ModuleWithFunctionTest, CallInst)`; `llvm/lib/IR/IRBuilder.cpp::IRBuilderBase::CreateCall` calling-convention threading | llvmkit-specific |
+| `crates/llvmkit-ir/tests/builder_call.rs::typed_call_builder_chains_tail` | `unittests/IR/InstructionsTest.cpp::TEST_F(ModuleWithFunctionTest, CallInst)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/builder_call.rs::call_builder_rejects_too_few_arguments` | `llvm/lib/IR/Instructions.cpp::CallInst::init` bad-signature assertion; `llvm/lib/IR/Verifier.cpp::visitCallBase` arity check | mirror |
+| `crates/llvmkit-ir/tests/builder_call.rs::call_builder_rejects_wrong_argument_type` | `llvm/lib/IR/Instructions.cpp::CallInst::init` bad-signature assertion; `llvm/lib/IR/Verifier.cpp::visitCallBase` per-argument type check | mirror |
+| `crates/llvmkit-ir/tests/builder_call.rs::call_builder_accepts_extra_arguments_for_vararg_callee` | `llvm/lib/IR/Verifier.cpp::visitCallBase` `FTy->isVarArg()` branch | mirror |
+| `crates/llvmkit-ir/tests/builder_call.rs::typed_build_indirect_call_derives_function_type_from_schema` | `unittests/IR/IRBuilderTest.cpp` opaque-pointer indirect call construction; `llvm/lib/IR/IRBuilder.cpp::IRBuilderBase::CreateCall(FunctionType*, Value*, ...)` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/builder_call.rs::indirect_call_rejects_too_many_arguments` | `llvm/lib/IR/Instructions.cpp::CallInst::init` bad-signature assertion; `llvm/lib/IR/Verifier.cpp::visitCallBase` arity check | mirror |
+| `crates/llvmkit-ir/tests/builder_call.rs::fixed_arity_facade_rejects_variadic_function` | `llvm/include/llvm/IR/DerivedTypes.h::FunctionType::isVarArg` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/builder_call.rs::varargs_facade_rejects_non_variadic_function` | `llvm/include/llvm/IR/DerivedTypes.h::FunctionType::isVarArg` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/builder_call.rs::build_varargs_call_lowers_fixed_prefix_and_appends_erased_tail` | `llvm/lib/IR/IRBuilder.cpp::IRBuilderBase::CreateCall` against a variadic `FunctionCallee`; `test/Assembler/varargs.ll` | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/builder_cast_fp.rs::fpext_f32_to_f64` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, CastInst)` | port |
 | `crates/llvmkit-ir/tests/builder_cast_fp.rs::fptrunc_f64_to_f32` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, CastInst)` | port |
 | `crates/llvmkit-ir/tests/builder_cast_fp.rs::fptosi_f32_to_i32` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, CastInst)` | port |
@@ -408,6 +419,7 @@ Total `#[test]` functions: 1139.
 | `crates/llvmkit-ir/tests/builder_var_arity_terminators.rs::indirectbr_single_destination` | `test/Bitcode/compatibility.ll` line 1320 | mirror |
 | `crates/llvmkit-ir/tests/builder_var_arity_terminators.rs::indirectbr_multiple_destinations` | `test/Bitcode/compatibility.ll` line 1322 | mirror |
 | `crates/llvmkit-ir/tests/builder_eh_calls.rs::invoke_void_to_unwind` | `test/Bitcode/compatibility.ll` line 1325 | mirror |
+| `crates/llvmkit-ir/tests/builder_eh_calls.rs::typed_invoke_derives_return_marker_from_callee` | `llvm/lib/IR/IRBuilder.cpp::IRBuilderBase::CreateInvoke` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_eh_calls.rs::callbr_void_with_one_indirect_dest` | `test/Assembler/callbr.ll` lines 8-13 | mirror |
 | `crates/llvmkit-ir/tests/builder_eh_calls.rs::callbr_two_indirect_dests_print_form` | `test/Assembler/inline-asm-constraint-error.ll` line 65 | mirror |
 | `crates/llvmkit-ir/tests/builder_eh_data.rs::landingpad_cleanup_only` | `test/Bitcode/compatibility.ll` line 789 | mirror |

@@ -127,7 +127,7 @@ type WinApiSig = unsafe extern "system" fn(Ptr, i32, f32) -> Ptr;
 #[test]
 fn function_pointer_alias_builds_typed_function_and_params() -> Result<(), IrError> {
     Module::with_new("alias", |m| {
-        let fn_ty = m.typed_function_type_of::<AddSig>(false)?;
+        let fn_ty = m.typed_function_type_of::<AddSig>()?;
         assert_eq!(format!("{fn_ty}"), "i32 (i32, i32)");
         let f = m.add_typed_function_of::<AddSig, _>("add", Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");

@@ -253,6 +253,9 @@ where
 {
     /// Wrap an existing raw function after validating the complete schema.
     pub fn try_from_function(function: FunctionValue<'ctx, Ret::Marker, B>) -> IrResult<Self> {
+        if function.signature().is_var_arg() {
+            return Err(IrError::UnexpectedVarArgsSignature);
+        }
         let arg_count = function.arg_count();
         if arg_count != Params::ARITY {
             return Err(IrError::FunctionParameterCountMismatch {
@@ -282,6 +285,162 @@ where
     }
 
     /// Return typed parameter values in declaration order.
+    #[inline]
+    pub fn params(self) -> Params::Values<'ctx, B> {
+        let validated = ValidatedFunctionParams::new();
+        Params::values(self.function, &validated)
+    }
+
+    /// Append a basic block to this function.
+    #[inline]
+    pub fn append_basic_block<Name>(
+        self,
+        module: &Module<'ctx, B, Unverified>,
+        name: Name,
+    ) -> BasicBlock<'ctx, Ret::Marker, Unterminated, B>
+    where
+        Name: Into<String>,
+    {
+        self.function.append_basic_block(module, name)
+    }
+
+    /// Construct a builder whose return typestate matches this function.
+    #[inline]
+    pub fn builder<'m>(
+        self,
+        module: &'m Module<'ctx, B, Unverified>,
+    ) -> IRBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, Ret::Marker> {
+        IRBuilder::new_for::<Ret::Marker>(module)
+    }
+}
+
+/// Variadic twin of [`TypedFunctionValue`]: wraps a raw function whose
+/// signature is `(Params..., ...)` — the fixed-prefix parameters are
+/// statically typed via `Params`, and the `...` tail is accepted at
+/// each call site through [`crate::IRBuilder::build_varargs_call`]'s
+/// erased trailing argument list. Mirrors LLVM's variadic-function
+/// convention (`FunctionType::isVarArg`); the fixed-arity
+/// [`TypedFunctionValue`] and this facade are mutually exclusive —
+/// each requires the opposite of [`crate::derived_types::FunctionType::is_var_arg`]
+/// at construction time.
+pub struct TypedVarArgsFunctionValue<'ctx, Ret, Params, B: ModuleBrand = Brand<'ctx>>
+where
+    Ret: FunctionReturn,
+    Params: FunctionParamList,
+{
+    function: FunctionValue<'ctx, Ret::Marker, B>,
+    _ret: PhantomData<Ret>,
+    _params: PhantomData<Params>,
+}
+
+impl<'ctx, Ret, Params, B> Clone for TypedVarArgsFunctionValue<'ctx, Ret, Params, B>
+where
+    B: ModuleBrand,
+    Ret: FunctionReturn,
+    Params: FunctionParamList,
+{
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'ctx, Ret, Params, B> Copy for TypedVarArgsFunctionValue<'ctx, Ret, Params, B>
+where
+    B: ModuleBrand,
+    Ret: FunctionReturn,
+    Params: FunctionParamList,
+{
+}
+
+impl<'ctx, Ret, Params, B> PartialEq for TypedVarArgsFunctionValue<'ctx, Ret, Params, B>
+where
+    B: ModuleBrand,
+    Ret: FunctionReturn,
+    Params: FunctionParamList,
+{
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.function == other.function
+    }
+}
+
+impl<'ctx, Ret, Params, B> Eq for TypedVarArgsFunctionValue<'ctx, Ret, Params, B>
+where
+    B: ModuleBrand,
+    Ret: FunctionReturn,
+    Params: FunctionParamList,
+{
+}
+
+impl<'ctx, Ret, Params, B> Hash for TypedVarArgsFunctionValue<'ctx, Ret, Params, B>
+where
+    B: ModuleBrand,
+    Ret: FunctionReturn,
+    Params: FunctionParamList,
+{
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.function.hash(state);
+    }
+}
+
+impl<'ctx, Ret, Params, B> fmt::Debug for TypedVarArgsFunctionValue<'ctx, Ret, Params, B>
+where
+    B: ModuleBrand,
+    Ret: FunctionReturn,
+    Params: FunctionParamList,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TypedVarArgsFunctionValue")
+            .field("function", &self.function)
+            .finish()
+    }
+}
+
+impl<'ctx, Ret, Params, B> TypedVarArgsFunctionValue<'ctx, Ret, Params, B>
+where
+    B: ModuleBrand + 'ctx,
+    Ret: FunctionReturn,
+    Params: FunctionParamList,
+{
+    /// Wrap an existing raw function after validating the fixed-prefix
+    /// schema and the variadic marker.
+    pub fn try_from_function(function: FunctionValue<'ctx, Ret::Marker, B>) -> IrResult<Self> {
+        if !function.signature().is_var_arg() {
+            return Err(IrError::MissingVarArgsSignature);
+        }
+        let arg_count = function.arg_count();
+        if arg_count != Params::ARITY {
+            return Err(IrError::FunctionParameterCountMismatch {
+                expected: Params::ARITY,
+                got: arg_count,
+            });
+        }
+        let return_type = function.return_type();
+        if !Ret::matches_ir_type(return_type) {
+            return Err(IrError::ReturnTypeMismatch {
+                expected: Ret::expected_kind_label(),
+                got: return_type.kind_label(),
+            });
+        }
+        Params::validate(function)?;
+        Ok(Self {
+            function,
+            _ret: PhantomData,
+            _params: PhantomData,
+        })
+    }
+
+    /// Return the underlying return-typed function handle.
+    #[inline]
+    pub fn as_function(self) -> FunctionValue<'ctx, Ret::Marker, B> {
+        self.function
+    }
+
+    /// Return typed fixed-prefix parameter values in declaration order.
+    /// The `...` tail is not represented here — it is supplied
+    /// per-call through [`crate::IRBuilder::build_varargs_call`].
     #[inline]
     pub fn params(self) -> Params::Values<'ctx, B> {
         let validated = ValidatedFunctionParams::new();
@@ -890,10 +1049,11 @@ impl_function_signature!(
 
 /// Inputs that can fill the call-argument slot described by schema
 /// token `P` in a typed call. Mirrors the multi-source posture of
-/// [`IntoIrField`]: typed handles, constants, Rust literals,
-/// `Argument`, and erased `Value` all lift through the underlying
-/// operand traits. Cross-module rejection lives inside those traits'
-/// `into_*_value(module)` methods (D7), not at the call site.
+/// [`IntoIrField`](crate::IntoIrField): typed handles, constants, Rust
+/// literals, `Argument`, and erased `Value` all lift through the
+/// underlying operand traits. Cross-module rejection lives inside
+/// those traits' `into_*_value(module)` methods (D7), not at the call
+/// site.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot fill a call-argument slot of schema `{P}`",
     label = "wrong argument type for this parameter position"

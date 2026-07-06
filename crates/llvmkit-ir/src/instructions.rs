@@ -441,7 +441,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GepInst<'ctx, B> {
 /// `call` instruction. Mirrors `CallInst` (`Instructions.h`).
 ///
 /// The `R: ReturnMarker` parameter (default [`crate::Dyn`]) propagates
-/// the callee's return shape, so a typed [`crate::IRBuilder::build_call`] for an `i32`
+/// the callee's return shape, so a typed [`crate::IRBuilder::build_call_dyn`] for an `i32`
 /// callee returns `CallInst<'ctx, i32>` and exposes a typed
 /// `return_int_value()` accessor without a runtime
 /// [`crate::IrError::TypeMismatch`].
@@ -500,7 +500,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
-    /// Re-tag the return marker. Crate-internal: only [`build_call`]
+    /// Re-tag the return marker. Crate-internal: only [`build_call_dyn`]
     /// flows the typed marker; [`as_dyn`] erases it.
     #[inline]
     pub(super) fn retag<R2: ReturnMarker>(self) -> CallInst<'ctx, R2, B> {
@@ -662,6 +662,20 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand> fmt::Debug for TypedCallInst<'ct
 }
 
 impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> TypedCallInst<'ctx, Ret, B> {
+    /// Crate-internal: wrap a raw [`CallInst`] already known to have
+    /// been emitted against a validated [`crate::TypedFunctionValue`]
+    /// callee. Only the typed `build_call` family constructs this —
+    /// the schema-carrying guarantee comes from the callee facade's
+    /// own construction-time validation, not from anything checked
+    /// here.
+    #[inline]
+    pub(super) fn from_call(inner: CallInst<'ctx, Ret::Marker, B>) -> Self {
+        Self {
+            inner,
+            _ret: core::marker::PhantomData,
+        }
+    }
+
     /// Typed result. Infallible: the schema was validated when the
     /// typed callee facade was constructed. `()` for a void callee.
     #[inline]
@@ -2174,8 +2188,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     pub fn as_value(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
-    /// Re-tag the return marker. Crate-internal: only [`build_invoke`]
-    /// flows the typed marker.
+    /// Re-tag the return marker. Crate-internal: both
+    /// [`crate::IRBuilder::build_invoke_dyn`] (caller-asserted `R2`) and
+    /// the typed [`crate::IRBuilder::build_invoke`] (marker derived
+    /// from the callee's `Ret::Marker`) flow through this.
     #[inline]
     pub(super) fn retag<R2: ReturnMarker>(self) -> InvokeInst<'ctx, R2, B> {
         InvokeInst {
@@ -2763,7 +2779,7 @@ mod tests {
             let b = crate::IRBuilder::new_for::<i32>(&m).position_at_end(entry);
 
             let call: CallInst<'_, i32, _> =
-                b.build_call(callee, Vec::<Value<'_, _>>::new(), "call")?;
+                b.build_call_dyn(callee, Vec::<Value<'_, _>>::new(), "call")?;
             let call_id = call.as_value().id();
 
             let typed = TypedCallInst::<i32, _> {

@@ -163,7 +163,7 @@ pub use fmf::FastMathFlags;
 pub use function::{FunctionBuilder, FunctionValue};
 pub use function_signature::{
     CallArgs, FunctionParam, FunctionParamList, FunctionReturn, FunctionSignature, IntoCallArg,
-    TypedFunctionValue,
+    TypedFunctionValue, TypedVarArgsFunctionValue,
 };
 pub use gep_no_wrap_flags::GepNoWrapFlags;
 pub use global_alias::{GlobalAlias, GlobalAliasBuilder};
