@@ -762,7 +762,7 @@ where
     }
 
     /// Seal every remaining unsealed block (draining their incomplete
-    /// phis via [`Self::add_phi_operands`], exactly as
+    /// phis via the private `add_phi_operands` engine step, exactly as
     /// [`Self::seal_block`] would), then require every created block to
     /// have been filled (received a terminator). Consuming `self` on
     /// `Unpositioned` gives two static guarantees: no def/use/terminator
@@ -846,7 +846,7 @@ where
     /// `IntoIntValue<W>`, and `var` was declared via `W::ir_type`, so
     /// the two `W`s (and therefore the two types) are the same type by
     /// the type system alone; the runtime check below monomorphizes
-    /// away (see [`super::ir_builder::IRBuilder::accept_folded_int`] for
+    /// away (see the private `IRBuilder::accept_folded_int` helper for
     /// the same pattern applied to fold results). For a dyn-declared
     /// `var` (`declare_int_var_dyn`, `W = IntDyn`) the marker only
     /// proves "some integer width" -- `IntoIntValue<IntDyn>` happily
@@ -893,8 +893,8 @@ where
     /// Float twin of [`Self::def_int_var`]; see that method's doc
     /// comment for the dyn-width type-check rationale (mirrored here
     /// keyed on `K::ieee_label().is_none()` instead of
-    /// `W::static_bits().is_none()`, matching
-    /// [`super::ir_builder::IRBuilder::accept_folded_fp`]'s split).
+    /// `W::static_bits().is_none()`, matching the private
+    /// `IRBuilder::accept_folded_fp` helper's split).
     pub fn def_float_var<K: FloatKind, V>(
         &mut self,
         var: FloatVariable<'ctx, K, B>,
