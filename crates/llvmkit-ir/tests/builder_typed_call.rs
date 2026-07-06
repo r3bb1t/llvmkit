@@ -202,12 +202,14 @@ fn typed_invoke_wires_multiple_argument_operands_in_order() -> Result<(), IrErro
 /// `build_call`). Anchors: `test/Feature/varargs.ll` line 14 (`define
 /// i32 @test(i32 %X, ...)` -- the local tree's exact fixed-i32-prefix +
 /// `...` declaration shape) and `test/Bitcode/compatibility.ll` lines
-/// 2079-2087 (`declare void @vaargs_func(...)` /
-/// `invoke void (...) @vaargs_func(i32 10, i32 %x)` -- the local tree's
-/// varargs *call-site* print form, `(...)` in the callee type followed
-/// by positional argument printing). This test exercises the call form
-/// of that same shape through `build_varargs_call` rather than
-/// `invoke`, which the existing
+/// 1900-1904 (`declare void @llvm.localescape(...)` /
+/// `call void (...) @llvm.localescape(ptr %static.alloca)` -- the local
+/// tree's varargs *call-site* print form, `(...)` in the callee type
+/// followed by positional argument printing; a plain `call`, unlike the
+/// nearby `invoke`-with-operand-bundles fixture at lines 2079-2087,
+/// which uses a different instruction and syntax). This test exercises
+/// the call form of that same shape through `build_varargs_call` rather
+/// than `invoke`, which the existing
 /// `builder_call.rs::build_varargs_call_lowers_fixed_prefix_and_appends_erased_tail`
 /// test already covers for a single fixed arg; this one adds a second
 /// fixed arg plus an integer (not float) vararg tail, closer to a
