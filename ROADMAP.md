@@ -8,6 +8,9 @@ Shipped today:
 
 - Textual `.ll` lexer and constructive-subset parser.
 - Typed IR model, constants, globals, functions, basic blocks, instructions, verifier, AsmWriter.
+- Schema-typed IR construction: compile-checked calls (`build_call` +
+  `TypedCallInst`), typed pointers (`TypedPointerValue` + compile-time field
+  GEPs), typed folder hooks, and Braun-style auto-SSA (`SsaBuilder`).
 - CFG and dominator-tree queries.
 - Effect-typed module/function pass managers.
 - Built-in analyses: `DominatorTreeAnalysis`, `KnownBitsAnalysis`, and
