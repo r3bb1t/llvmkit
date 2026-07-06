@@ -1398,6 +1398,18 @@ where
                     return Ok(resolved);
                 }
                 1 => {
+                    // A revisit means the chase entered a CLOSED cycle of
+                    // sealed single-pred blocks with no def anywhere on it
+                    // -- only constructible in an unreachable region (any
+                    // cycle reachable from entry has a >=2-pred block that
+                    // breaks the chase via its operandless phi). Braun's
+                    // recursion diverges on this input too; route it to the
+                    // undefined-read handling instead of chasing forever.
+                    if chased.contains(&block) {
+                        let resolved = self.undefined_read(var, block)?;
+                        self.memoize_chase(var, &chased, resolved);
+                        return Ok(resolved);
+                    }
                     // Single-pred chase: no phi needed at `block` itself,
                     // but `block` is now part of the chain whose resolved
                     // value will be memoized once the chase terminates.
@@ -1737,11 +1749,35 @@ where
         if var.poison_on_undef {
             let poison_ty = super::r#type::Type::new(ty, module);
             let poison = poison_ty.get_poison();
-            self.state.created_phis.remove(&phi);
+            // Braun's `same == None` arm still runs `phi.replaceBy(same)`:
+            // reroute every user to the poison constant BEFORE erasing, or
+            // surviving instructions keep an operand naming an erased
+            // value. Same snapshot-users / RAUW / erase / re-check-users
+            // shape as the trivial path in `try_remove_trivial_phi`.
+            let users: Vec<ValueId> = self.phi_user_ids(phi);
             self.state.phi_var.remove(&phi);
+            let handle = self.state.created_phis.remove(&phi).unwrap_or_else(|| {
+                unreachable!(
+                    "SsaBuilder invariant: undefined_phi_replacement read this phi's block out \
+                     of created_phis a few lines above"
+                )
+            });
+            handle
+                .replace_all_uses_with(self.module, poison.as_value())
+                .unwrap_or_else(|_| {
+                    unreachable!(
+                        "SsaBuilder invariant: the poison constant is built from the phi's own \
+                         result type, so the RAUW type check cannot fail"
+                    )
+                });
             Instruction::<Attached, B>::from_parts(phi, module).erase_from_parent(self.module);
             let resolved = poison.as_value().id;
             self.state.resolved.borrow_mut().insert(phi, resolved);
+            for user in users {
+                if self.state.created_phis.contains_key(&user) {
+                    self.try_remove_trivial_phi(user)?;
+                }
+            }
             return Ok(resolved);
         }
         Err(IrError::SsaUseOfUndefinedVariable {

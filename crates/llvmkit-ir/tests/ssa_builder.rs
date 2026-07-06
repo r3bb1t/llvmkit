@@ -1486,3 +1486,172 @@ proptest! {
         }
     }
 }
+
+/// Upstream-parity review regression (Braun alg. 3): the `same == None`
+/// arm of `tryRemoveTrivialPhi` still runs `phi.replaceBy(same)` -- for a
+/// poison variable, the layer must reroute every USER of the collapsing
+/// phi to the poison constant before erasing it. The buggy path erased
+/// without RAUW, leaving `%sum = add i32 %v, 1` where `%v` no longer
+/// exists (rejected by `llvm-as` "use of undefined value" and by
+/// llvmkit's own `UseBeforeDef` verifier rule).
+#[test]
+fn dead_block_poison_read_user_is_rerouted_to_poison() -> Result<(), IrError> {
+    Module::with_new("ssa-dead-poison-user", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let mut b = SsaBuilder::for_function(&m, f)?;
+        let entry = b.create_block("entry");
+        let dead = b.create_block("dead");
+        let x = b.declare_int_var_poison::<i32, _>("x");
+
+        let b = b.switch_to_block(entry)?;
+        let b = b.ret(0_i32)?;
+
+        // `dead` is unsealed at read time, so the read seeds an incomplete
+        // phi that a REAL instruction then consumes.
+        let mut b = b.switch_to_block(dead)?;
+        let read = b.use_int_var(x)?;
+        let sum = b.ins().build_int_add(read, 1_i32, "sum")?;
+        let b = b.ret(sum)?;
+
+        // finish() seals `dead` with zero predecessors: the incomplete phi
+        // collapses through `undefined_phi_replacement`'s poison arm, which
+        // must RAUW `%sum`'s operand to poison before erasing the phi.
+        b.finish()?;
+
+        let text = format!("{m}");
+        assert!(
+            text.contains("%sum = add i32 poison, 1"),
+            "expected the phi's user to be rerouted to poison, got:\n{text}"
+        );
+        m.verify_borrowed()?;
+        Ok(())
+    })
+}
+
+/// Two-block dead-cycle variant of
+/// [`dead_block_poison_read_user_is_rerouted_to_poison`]: the poison twin
+/// of `dead_cycle_phi_names_the_actual_strict_variable_not_same_type_poison`.
+/// Sealing the cycle collapses the self-referential phi; its live user in
+/// `loop1` must end up reading poison, and the module must verify.
+#[test]
+fn dead_cycle_poison_read_with_live_user_resolves_to_poison() -> Result<(), IrError> {
+    Module::with_new("ssa-dead-cycle-poison-user", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let mut b = SsaBuilder::for_function(&m, f)?;
+        let entry = b.create_block("entry");
+        let loop1 = b.create_block("loop1");
+        let loop2 = b.create_block("loop2");
+        let x = b.declare_int_var_poison::<i32, _>("x");
+
+        let b = b.switch_to_block(entry)?;
+        let b = b.ret(0_i32)?;
+
+        let mut b = b.switch_to_block(loop1)?;
+        let read = b.use_int_var(x)?;
+        let _sum = b.ins().build_int_add(read, 1_i32, "sum")?;
+        let b = b.br(loop2)?;
+
+        let b = b.switch_to_block(loop2)?;
+        let mut b = b.br(loop1)?;
+        b.seal_block(loop2)?;
+        b.seal_block(loop1)?;
+        b.finish()?;
+
+        let text = format!("{m}");
+        assert!(
+            text.contains("%sum = add i32 poison, 1"),
+            "expected the dead-cycle phi's user to be rerouted to poison, got:\n{text}"
+        );
+        m.verify_borrowed()?;
+        Ok(())
+    })
+}
+
+/// Upstream-parity review regression: `read_variable_in`'s single-pred
+/// chase must TERMINATE on a closed cycle of sealed single-pred blocks
+/// with no def (constructible only in an unreachable region). Braun's
+/// recursion diverges on this input; the library routes it to the
+/// undefined-read handling instead. Strict variable: typed error.
+#[test]
+fn sealed_single_pred_cycle_read_errors_for_strict_variable() -> Result<(), IrError> {
+    Module::with_new("ssa-sealed-cycle-strict", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let mut b = SsaBuilder::for_function(&m, f)?;
+        let entry = b.create_block("entry");
+        let cyc_a = b.create_block("cyc_a");
+        let cyc_b = b.create_block("cyc_b");
+        let exit = b.create_block("exit");
+        let x = b.declare_int_var::<i32, _>("x");
+
+        let b = b.switch_to_block(entry)?;
+        let b = b.ret(0_i32)?;
+
+        // Dead 2-cycle with an exit edge: `exit`'s one predecessor chain
+        // is cyc_a -> cyc_b -> cyc_a -> ... with no def anywhere.
+        let b = b.switch_to_block(cyc_a)?;
+        let b = b.cond_br(true, cyc_b, exit)?;
+        let b = b.switch_to_block(cyc_b)?;
+        let mut b = b.br(cyc_a)?;
+        b.seal_block(cyc_a)?;
+        b.seal_block(cyc_b)?;
+        b.seal_block(exit)?;
+
+        let mut b = b.switch_to_block(exit)?;
+        match b.use_int_var(x) {
+            Err(IrError::SsaUseOfUndefinedVariable { variable, .. }) => {
+                assert_eq!(variable, "x");
+                Ok(())
+            }
+            Ok(_) => panic!("expected SsaUseOfUndefinedVariable, got a resolved read"),
+            Err(other) => panic!("expected SsaUseOfUndefinedVariable, got {other:?}"),
+        }
+    })
+}
+
+/// Poison twin of [`sealed_single_pred_cycle_read_errors_for_strict_variable`]:
+/// the terminating chase resolves the read to poison, the function
+/// completes, and the module verifies.
+#[test]
+fn sealed_single_pred_cycle_read_resolves_poison_variable() -> Result<(), IrError> {
+    Module::with_new("ssa-sealed-cycle-poison", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let mut b = SsaBuilder::for_function(&m, f)?;
+        let entry = b.create_block("entry");
+        let cyc_a = b.create_block("cyc_a");
+        let cyc_b = b.create_block("cyc_b");
+        let exit = b.create_block("exit");
+        let x = b.declare_int_var_poison::<i32, _>("x");
+
+        let b = b.switch_to_block(entry)?;
+        let b = b.ret(0_i32)?;
+
+        let b = b.switch_to_block(cyc_a)?;
+        let b = b.cond_br(true, cyc_b, exit)?;
+        let b = b.switch_to_block(cyc_b)?;
+        let mut b = b.br(cyc_a)?;
+        b.seal_block(cyc_a)?;
+        b.seal_block(cyc_b)?;
+        b.seal_block(exit)?;
+
+        let mut b = b.switch_to_block(exit)?;
+        let read = b.use_int_var(x)?;
+        let b = b.ret(read)?;
+        b.finish()?;
+
+        let text = format!("{m}");
+        assert!(
+            text.contains("ret i32 poison"),
+            "expected the cycle read to resolve to poison, got:\n{text}"
+        );
+        m.verify_borrowed()?;
+        Ok(())
+    })
+}
