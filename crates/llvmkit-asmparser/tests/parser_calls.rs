@@ -445,25 +445,30 @@ fn indirect_call_non_pointer_callee_rejected() {
 }
 
 /// llvmkit-specific GAP lock: upstream `test/Assembler/call-arg-is-callee.ll`
-/// `@invoke` accepts an indirect invoke (`parseInvoke` shares `parseCall`'s
-/// callee path); llvmkit has no indirect-invoke builder yet, so the parser
-/// rejects the resolved indirect callee with a deliberate diagnostic
-/// instead of the pre-port generic parse failure.
+/// Mirrors `test/Assembler/call-arg-is-callee.ll`'s `@invoke`: an invoke
+/// through a function-pointer value. `parseInvoke` shares `parseCall`'s
+/// callee path (`convertValIDToValue(PointerType)`), and an indirect invoke
+/// is valid IR. The varargs call-site type re-prints in full.
 #[test]
-fn invoke_indirect_callee_rejected() {
-    const FIXTURE: &[u8] =
-        include_bytes!("fixtures/upstream/LLParser-parseCall/invoke_indirect_callee_rejected.ll");
+fn invoke_indirect_callee_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/invoke_indirect_callee_round_trips.ll"
+    );
 
-    assert_fixture_rejected(
-        "invoke_indirect_callee_rejected",
-        FIXTURE,
-        "direct function callee for invoke",
+    let text = parse_and_render_bytes("invoke_indirect_callee_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "invoke void (...) %p(ptr %p)",
+            "to label %ok unwind label %lp",
+        ],
     );
 }
 
-/// llvmkit-specific STRICTNESS lock: upstream parses an indirect callbr but
-/// `Verifier::visitCallBrInst` rejects it ("Callbr: indirect function /
-/// invalid signature"); llvmkit rejects at parse time.
+/// A non-inline-asm callbr with an indirect callee is invalid IR upstream —
+/// `Verifier::visitCallBrInst` requires a direct callee ("Callbr: indirect
+/// function / invalid signature"). llvmkit rejects it at parse time, which
+/// reaches the same overall verdict (the module is rejected either way).
 #[test]
 fn callbr_indirect_callee_rejected() {
     const FIXTURE: &[u8] =

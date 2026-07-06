@@ -5964,6 +5964,52 @@ where
         ))
     }
 
+    /// `invoke` through a function-pointer value (D3 dyn form of
+    /// [`Self::build_invoke_dyn_with_config`]): the call-site function type
+    /// is supplied explicitly, mirroring `IRBuilder::CreateInvoke(FunctionType*,
+    /// Value* Callee, ...)`. Used by the parser for `invoke ... %fp(...)`.
+    /// Arguments are validated against the spelled `fn_ty`.
+    pub fn build_indirect_invoke_dyn_with_config<R2, I, V, Normal, Unwind>(
+        self,
+        callee: PointerValue<'ctx, B>,
+        fn_ty: FunctionType<'ctx, B>,
+        args: I,
+        normal_dest: Normal,
+        unwind_dest: Unwind,
+        config: CallSiteConfig,
+    ) -> IrResult<TerminatedBlockInvoke<'ctx, R, R2, B>>
+    where
+        R2: ReturnMarker,
+        I: IntoIterator<Item = V>,
+        V: IsValue<'ctx, B>,
+        Normal: IntoBasicBlockLabel<'ctx, R, B>,
+        Unwind: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let normal_dest = normal_dest.into_basic_block_label();
+        let unwind_dest = unwind_dest.into_basic_block_label();
+        let callee_v = IsValue::as_value(callee);
+        let ret_ty = fn_ty.return_type().id();
+        let (name, calling_conv, attrs) = config.into_parts();
+        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.as_value().id).collect();
+        self.validate_call_site_args(fn_ty, &arg_ids)?;
+        let payload = crate::instr_types::InvokeInstData::new_with_attrs(
+            callee_v.id,
+            fn_ty.as_type().id(),
+            arg_ids,
+            calling_conv,
+            normal_dest.as_value().id,
+            unwind_dest.as_value().id,
+            attrs,
+        );
+        let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let bb = self.into_insert_block();
+        Ok((
+            bb.retag_termination::<Terminated>(),
+            InvokeInst::<Dyn, B>::from_raw(inst.as_value().id, module_ref, ret_ty).retag::<R2>(),
+        ))
+    }
+
     /// Produce an `invoke` whose callee is an inline-assembly value.
     pub fn build_inline_asm_invoke<R2, I, V, Normal, Unwind, Name>(
         self,

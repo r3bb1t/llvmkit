@@ -8380,9 +8380,18 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 )
                 .map_err(|e| self.builder_err("invoke", e))?
             }
-            ParsedCallee::Indirect(_) => {
-                return Err(self.expected("direct function callee for invoke"));
-            }
+            ParsedCallee::Indirect(callee_ptr) => b
+                .build_indirect_invoke_dyn_with_config::<llvmkit_ir::Dyn, _, _, _, _>(
+                    callee_ptr,
+                    parsed_fn_ty,
+                    args,
+                    normal_bb,
+                    unwind_bb,
+                    llvmkit_ir::CallSiteConfig::new(name)
+                        .calling_conv(calling_conv)
+                        .attrs(call_attrs),
+                )
+                .map_err(|e| self.builder_err("invoke", e))?,
         };
         let ret_is_void = matches!(
             parsed_fn_ty.return_type().into_type_enum(),
@@ -8513,6 +8522,11 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 .map_err(|e| self.builder_err("callbr", e))?
             }
             ParsedCallee::Indirect(_) => {
+                // A non-inline-asm callbr with an indirect callee is invalid
+                // IR upstream too (`Verifier::visitCallBrInst` requires a
+                // direct callee — "Callbr: indirect function / invalid
+                // signature"), so rejecting it at parse reaches the same
+                // verdict.
                 return Err(self.expected("direct function callee for callbr"));
             }
         };
