@@ -2,13 +2,10 @@
 
 This document captures everything the `feature-1/irbuilder-type-safety`
 session's audits found but did not implement. Each item cites the audit
-source (design doc, source file, or upstream reference) so a later session
-can pick it up cold. Source: the approved plan's "Future-work document"
-section (`docs/superpowers/plans/2026-07-05-irbuilder-type-safety.md`'s
-originating design at
-`docs/superpowers/specs/2026-07-05-irbuilder-typed-calls-autossa-design.md`),
-transcribed faithfully, plus a "Session follow-ups" section for items
-individual tasks punted during execution.
+source (source file or upstream reference) so a later session can pick it
+up cold. Transcribed faithfully from that session's approved design and
+plan documents (kept outside the repository), plus a "Session follow-ups"
+section for items individual tasks punted during execution.
 
 ## Killer-feature designs (deferred)
 
