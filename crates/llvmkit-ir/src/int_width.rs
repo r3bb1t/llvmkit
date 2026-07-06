@@ -130,6 +130,7 @@ impl<const N: u32> IntWidth for Width<N> {
 
 use super::IrError;
 use super::IrResult;
+use super::ap_int::ApInt;
 use super::derived_types::IntType;
 use core::convert::Infallible;
 
@@ -453,10 +454,16 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoConstantInt<'ctx, Width<N>, 
         const {
             assert!(N >= 128, "i128 lift to Width<N> requires N >= 128");
         }
+        // Sign-extend above bit 128 (mirrors `ConstantInt::getSigned` /
+        // `APInt(bits, val, /*isSigned=*/true)`); the `u128` lift below
+        // zero-extends instead.
         let (lo, hi) = u128_halves(self.cast_unsigned());
+        let pattern = ApInt::from_words(128, &[lo, hi])
+            .sext(N)
+            .unwrap_or_else(|| unreachable!("N >= 128 permits sign-extension"));
         Ok(ty
-            .const_int_arbitrary_precision(&[lo, hi])
-            .unwrap_or_else(|_| unreachable!("i128 fits in Width<N>, N >= 128")))
+            .const_ap_int(&pattern)
+            .unwrap_or_else(|_| unreachable!("sign-extended i128 has width N")))
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoConstantInt<'ctx, Width<N>, B> for u128 {

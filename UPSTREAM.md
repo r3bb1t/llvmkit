@@ -404,6 +404,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/constant_int_signs.rs::int_signs_i32_propagates_sign` | `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, IntSigns)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/constant_int_signs.rs::int_signs_i1_sign_extends_to_minus_one` | `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, IntSigns)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/constant_int_signs.rs::int_signs_i64_sign_extends_into_wider_targets` | `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, IntSigns)`; `llvm/include/llvm/IR/Constants.h::ConstantInt::getSigned` (sign-extending constructor the signed i64 lifts mirror) | llvmkit-specific |
+| `crates/llvmkit-ir/tests/constant_int_signs.rs::int_signs_i128_sign_extends_into_wider_targets` | `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, IntSigns)`; `llvm/include/llvm/IR/Constants.h::ConstantInt::getSigned` (sign-extending constructor the signed i128 lift mirrors) | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_icmp_named.rs::build_icmp_eq_emits_icmp_eq` | `test/Assembler/2007-03-18-InvalidNumberedVar.ll` | mirror |
 | `crates/llvmkit-ir/tests/builder_icmp_named.rs::build_icmp_ne_emits_icmp_ne` | `test/Assembler/auto_upgrade_nvvm_intrinsics.ll` | mirror |
 | `crates/llvmkit-ir/tests/builder_icmp_named.rs::build_icmp_slt_emits_icmp_slt` | `test/Assembler/2004-02-27-SelfUseAssertError.ll` | mirror |

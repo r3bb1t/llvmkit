@@ -108,6 +108,37 @@ fn int_signs_i64_sign_extends_into_wider_targets() -> Result<(), IrError> {
     })
 }
 
+/// llvmkit-specific (Doctrine D11): a negative `i128` lifted into a WIDER
+/// `Width<N>` must sign-extend above bit 128, same signed-lift contract as
+/// the `i64` locks above (`ConstantInt::getSigned` = `get(ty, v, true)`;
+/// `APInt(bits, val, /*isSigned=*/true)` sign-fills the high words). The
+/// unsigned `u128` lift zero-extends as the control.
+#[test]
+fn int_signs_i128_sign_extends_into_wider_targets() -> Result<(), IrError> {
+    Module::with_new("s", |m| {
+        let w256 = m.int_type_n::<256>();
+
+        // Sign-extension: all 256 bits set, NOT the zero-extended 2^128 - 1
+        // (which does not even fit a signed i128 readback).
+        let neg_one = w256.const_int(-1_i128);
+        assert_eq!(neg_one.value_sext_i128(), Some(-1));
+
+        let min = w256.const_int(i128::MIN);
+        assert_eq!(min.value_sext_i128(), Some(i128::MIN));
+
+        // N == 128 stays a bit-identity lift.
+        let w128 = m.int_type_n::<128>();
+        let exact = w128.const_int(-1_i128);
+        assert_eq!(exact.value_sext_i128(), Some(-1));
+        assert_eq!(exact.value_zext_u128(), Some(u128::MAX));
+
+        // Unsigned control: u128::MAX zero-extends into the wider target.
+        let unsigned = w256.const_int(u128::MAX);
+        assert_eq!(unsigned.value_zext_u128(), Some(u128::MAX));
+        Ok(())
+    })
+}
+
 /// llvmkit-specific (Doctrine D11): exercises the `bool` (i1) edge case.
 /// Closest upstream reference: `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest,
 /// IntSigns)` (the `int1_t` corner of `getSExtValue` -- a one-bit `1`
