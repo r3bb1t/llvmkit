@@ -28,10 +28,11 @@ use std::collections::{HashMap, HashSet};
 
 use super::basic_block::{BasicBlock, BasicBlockLabel};
 use super::block_state::Unterminated;
+use super::constants::ConstantIntValue;
 use super::float_kind::{FloatKind, IntoFloatValue, StaticFloatKind};
 use super::function::FunctionValue;
 use super::instruction::{Instruction, state::Attached};
-use super::int_width::{IntWidth, IntoIntValue, StaticIntWidth};
+use super::int_width::{IntWidth, IntoConstantInt, IntoIntValue, StaticIntWidth};
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::folder::IRBuilderFolder;
 use super::ir_builder::{BuilderPositionState, IntoReturnValue, Positioned, Unpositioned};
@@ -42,6 +43,48 @@ use super::value::{
     FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Typed, Value, ValueId,
 };
 use super::{FloatType, IntType, IrError, IrResult, PointerType};
+
+/// Folds either of `IntoConstantInt`'s two possible associated `Error`
+/// types -- `Infallible` for exact-width lifts, [`IrError`] for
+/// `IntDyn`-target lifts (see `int_width.rs`) -- down to [`IrResult`]
+/// uniformly. Exists so [`SsaBuilder::switch`] can stay generic over
+/// `W: IntWidth` for both static markers and `IntDyn` in one signature
+/// rather than needing a copy per error shape.
+///
+/// A crate-wide `impl From<Infallible> for IrError` would let `?` do
+/// this instead, but it also gives `IrError: From<E>` a second solution
+/// (`E = Infallible`, alongside the reflexive `E = IrError`) everywhere
+/// a closure's error type is inferred purely from an outer
+/// `IrError: From<E>` constraint -- `examples/derived_struct_function.rs`'s
+/// `Module::with_new` closure hits exactly that ambiguity. Converting on
+/// the CONCRETE `Result<T, Infallible>` / `Result<T, IrError>` types
+/// instead of adding an impl to `IrError` itself means this cannot
+/// perturb inference anywhere else in the crate.
+///
+/// Public (not `pub(crate)`) because it appears in `switch`'s public
+/// `where` clause; `#[doc(hidden)]` on the method since callers never
+/// invoke it directly (mirrors [`function_signature::IntoCallArg`](
+/// crate::function_signature::IntoCallArg)'s public-trait/hidden-method
+/// split for the same "bound must be nameable, method is plumbing" shape).
+pub trait IntoIrResult<T> {
+    #[doc(hidden)]
+    fn into_ir_result(self) -> IrResult<T>;
+}
+impl<T> IntoIrResult<T> for Result<T, core::convert::Infallible> {
+    #[inline]
+    fn into_ir_result(self) -> IrResult<T> {
+        match self {
+            Ok(v) => Ok(v),
+            Err(never) => match never {},
+        }
+    }
+}
+impl<T> IntoIrResult<T> for IrResult<T> {
+    #[inline]
+    fn into_ir_result(self) -> IrResult<T> {
+        self
+    }
+}
 
 // --------------------------------------------------------------------------
 // Ids, typed variables, block handle
@@ -1025,23 +1068,43 @@ where
     /// what the verifier's `build_predecessors` counts phi incoming
     /// entries against ("entry-count must equal predecessor-count with
     /// multiplicity").
-    pub fn switch<W, C, V, Cases>(
+    ///
+    /// Case constants are statically bound to the SAME width `W` as
+    /// `cond` (`C: IntoConstantInt<'ctx, W, B>`) rather than accepting
+    /// any [`IsValue`] -- a mismatched-width case is a *compile* error,
+    /// not the runtime `TypeMismatch` `SwitchInst::add_case` would
+    /// otherwise raise mid-loop, after the switch terminator (with its
+    /// default target) has already been emitted. Every case is lifted
+    /// and every destination's seal state is checked in a pre-pass,
+    /// entirely BEFORE `self.inner` is taken -- so a lift failure (only
+    /// reachable for an `IntDyn` `cond` whose case literal doesn't fit
+    /// its runtime width) leaves `self` untouched and no IR emitted,
+    /// instead of dropping a half-built builder over a partially-cased
+    /// live switch.
+    pub fn switch<W, V, C, Cases>(
         mut self,
-        cond: C,
+        cond: V,
         default_dest: SsaBlock<'ctx, R, B>,
         cases: Cases,
     ) -> IrResult<SsaBuilder<'m, 'ctx, B, F, Unpositioned, R>>
     where
         W: IntWidth,
-        C: IntoIntValue<'ctx, W, B>,
-        V: IsValue<'ctx, B>,
-        Cases: IntoIterator<Item = (V, SsaBlock<'ctx, R, B>)>,
+        V: IntoIntValue<'ctx, W, B>,
+        Cases: IntoIterator<Item = (C, SsaBlock<'ctx, R, B>)>,
+        C: IntoConstantInt<'ctx, W, B>,
+        Result<ConstantIntValue<'ctx, W, B>, C::Error>: IntoIrResult<ConstantIntValue<'ctx, W, B>>,
     {
         self.check_owner_block(&default_dest)?;
-        let cases: Vec<(V, SsaBlock<'ctx, R, B>)> = cases.into_iter().collect();
-        for (_, target) in &cases {
-            self.check_owner_block(target)?;
-        }
+        let cond = cond.into_int_value(self.module_ref())?;
+        let cond_ty = cond.ty();
+        let cases: Vec<(ConstantIntValue<'ctx, W, B>, SsaBlock<'ctx, R, B>)> = cases
+            .into_iter()
+            .map(|(case_value, target)| {
+                self.check_owner_block(&target)?;
+                let lifted = case_value.into_constant_int(cond_ty).into_ir_result()?;
+                Ok((lifted, target))
+            })
+            .collect::<IrResult<Vec<_>>>()?;
         let mut dest_ids = Vec::with_capacity(cases.len() + 1);
         let default_id = label_value_id(&default_dest.label);
         dest_ids.push(default_id);
@@ -1059,11 +1122,15 @@ where
         let inner = self.inner.take().unwrap_or_else(|| {
             unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
         });
-        let cond = cond.into_int_value(self.module_ref())?;
         let (_terminated, open) = inner.build_switch(cond, default_dest.label, "")?;
         let mut open = open;
         for (case_value, target) in cases {
-            open = open.add_case(case_value, target.label)?;
+            open = open.add_case(case_value, target.label).unwrap_or_else(|_| {
+                unreachable!(
+                    "SsaBuilder invariant: case_value was lifted via cond's own IntType in \
+                     the pre-pass, so add_case's cond_ty == v.ty() check cannot fail here"
+                )
+            });
         }
         let _closed = open.finish();
         for &dest_id in &dest_ids {

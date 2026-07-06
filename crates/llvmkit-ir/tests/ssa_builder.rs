@@ -726,8 +726,8 @@ fn switch_records_one_edge_per_case_occurrence() -> Result<(), IrError> {
         let mut b = b.switch_to_block(switch_source)?;
         let n: IntValue<i32> = f.param(1)?.try_into()?;
         b.def_int_var(x, 100_i32)?;
-        let case0 = i32_ty.const_int(0_i32);
-        let case1 = i32_ty.const_int(1_i32);
+        let case0 = 0_i32;
+        let case1 = 1_i32;
         let mut b = b.switch(n, default_bb, [(case0, shared), (case1, shared)])?;
         b.seal_block(default_bb)?;
         b.seal_block(shared)?;
@@ -907,7 +907,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
         let pparam = f.param(2)?;
         b.def_float_var(fx, fparam)?;
         b.def_pointer_var(px, pparam)?;
-        let case0 = i32_ty.const_int(0_i32);
+        let case0 = 0_i32;
         let mut b = b.switch(n, unreachable_bb, [(case0, case_bb)])?;
         b.seal_block(case_bb)?;
         b.seal_block(unreachable_bb)?;
@@ -925,4 +925,50 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
     })?;
 
     Ok(())
+}
+
+/// llvmkit-specific (Doctrine D11), review follow-up: `switch`'s case
+/// constants are lifted via `IntoConstantInt<W>` in a pre-pass, BEFORE
+/// `self.inner` is taken or any IR is emitted -- including for a dyn
+/// (`IntDyn`) condition, where the lift is still a genuine runtime fit
+/// check (a dyn switch's width is only known at runtime, so this seam
+/// cannot be pushed to compile time; see D3). Here an 8-bit dyn
+/// condition paired with an out-of-range `i32` case literal must fail
+/// with `IrError::ImmediateOverflow` from the pre-pass lift, and --
+/// unlike the old `IsValue`-bounded shape, where `SwitchInst::add_case`
+/// would only catch a bad case AFTER `build_switch` had already emitted
+/// the terminator with its default target -- the printed module must
+/// show NO `switch` instruction at all: the failure happens strictly
+/// before the terminator is built.
+#[test]
+fn switch_dyn_condition_bad_width_case_rejected_before_emit() -> Result<(), IrError> {
+    Module::with_new("ssa-dyn-bad-case-preemit", |m| {
+        let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let mut b = SsaBuilder::for_function(&m, f)?;
+        let entry = b.create_block("entry");
+        let default_bb = b.create_block("default_bb");
+        let case_bb = b.create_block("case_bb");
+
+        let dyn_ty = m.custom_width_int_type(8)?;
+        let cond = dyn_ty.const_int_checked(3_i64)?;
+
+        let b = b.switch_to_block(entry)?;
+        // 1000 does not fit in the condition's actual 8-bit runtime
+        // width -- the pre-pass lift via `IntoConstantInt<IntDyn>` must
+        // reject it before `build_switch` ever runs.
+        let bad_case = 1000_i32;
+        match b.switch(cond, default_bb, [(bad_case, case_bb)]) {
+            Err(IrError::ImmediateOverflow { bits: 8, .. }) => {}
+            Ok(_) => panic!("expected ImmediateOverflow, got Ok"),
+            Err(other) => panic!("expected ImmediateOverflow, got {other:?}"),
+        }
+
+        let text = format!("{m}");
+        assert!(
+            !text.contains("switch"),
+            "no switch instruction should have been emitted, got:\n{text}"
+        );
+        Ok(())
+    })
 }
