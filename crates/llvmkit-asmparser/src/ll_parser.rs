@@ -7471,6 +7471,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             ParsedCallee::Function(callee) => {
                 let mut builder = b
                     .call_builder(callee)
+                    .call_site_type(parsed_fn_ty)
                     .calling_conv(calling_conv)
                     .call_attributes(call_attrs);
                 builder = match tail_kind {
@@ -7622,13 +7623,15 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         match parsed {
             ParsedDirectCallee::Name { name, loc } => {
                 if let Some(f) = self.module.function_by_name(&name) {
-                    if f.signature() != parsed_fn_ty {
-                        return Err(ParseError::Expected {
-                            expected: "function callee signature mismatch".into(),
-                            loc: DiagLoc::span(loc),
-                        });
-                    }
                     match resolve_intrinsic_name(&name) {
+                        // A non-intrinsic direct callee resolves to the
+                        // function regardless of whether the call-site type
+                        // matches the declaration: upstream `parseCall`
+                        // looks the callee up as a bare pointer and the call
+                        // carries its own `FunctionType` (`CallBase`), which
+                        // the build site applies via `call_site_type`. The
+                        // verifier — not the parser — owns the eventual
+                        // call-vs-declaration check.
                         IntrinsicNameResolution::NonIntrinsic => {}
                         IntrinsicNameResolution::UnknownIntrinsic => {
                             return Err(ParseError::Expected {
@@ -7637,6 +7640,19 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                             });
                         }
                         IntrinsicNameResolution::Known(_) => {
+                            // Intrinsics are the exception: a call whose type
+                            // disagrees with the intrinsic declaration is
+                            // invalid IR upstream too — `getCalledFunction`
+                            // returns null on the mismatch and
+                            // `Verifier::visitFunction` reports "Invalid user
+                            // of intrinsic instruction" — so rejecting it at
+                            // parse reaches the same verdict.
+                            if f.signature() != parsed_fn_ty {
+                                return Err(ParseError::Expected {
+                                    expected: "intrinsic signature mismatch".into(),
+                                    loc: DiagLoc::span(loc),
+                                });
+                            }
                             let descriptor = self
                                 .module
                                 .intrinsic_descriptor_from_signature(&name, parsed_fn_ty)
@@ -8296,7 +8312,8 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     unwind_bb,
                     llvmkit_ir::CallSiteConfig::new(name)
                         .calling_conv(calling_conv)
-                        .attrs(call_attrs),
+                        .attrs(call_attrs)
+                        .call_site_type(parsed_fn_ty),
                 )
                 .map_err(|e| self.builder_err("invoke", e))?,
             ParsedCallee::InlineAsm(asm) => {
@@ -8425,7 +8442,8 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     indirect,
                     llvmkit_ir::CallSiteConfig::new(name)
                         .calling_conv(calling_conv)
-                        .attrs(call_attrs),
+                        .attrs(call_attrs)
+                        .call_site_type(parsed_fn_ty),
                 )
                 .map_err(|e| self.builder_err("callbr", e))?,
             ParsedCallee::InlineAsm(asm) => {

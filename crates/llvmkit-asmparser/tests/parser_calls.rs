@@ -301,56 +301,74 @@ fn indirect_call_arg_type_mismatch_rejected() {
     );
 }
 
-/// llvmkit-specific STRICTNESS lock: upstream `parseCall` infers the
-/// call-site type from the argument list and ACCEPTS a direct call whose
-/// shape disagrees with the declaration (legal-but-UB IR under opaque
-/// pointers). llvmkit's `resolve_direct_callee` rejects it at parse time.
-/// Complements `parser_forward_refs.rs::
-/// forward_global_reference_signature_mismatch_is_rejected`, which locks
-/// the same diagnostic for return-type drift between forward references.
+/// Mirrors `LLParser::parseCall`: with no explicit call-site type, the
+/// call type is inferred from the argument list and the callee resolves
+/// as a bare pointer, so a direct call carries its own function type
+/// independent of the declaration (`CallBase`). The call-vs-declaration
+/// check belongs to the verifier, not the parser — so llvmkit parses and
+/// re-prints it in AsmWriter's short form. (Genuinely malformed calls —
+/// args not matching the call-site type itself — are still rejected; see
+/// the `*_arg_type_mismatch_rejected` and `*_too_{few,many}_args_rejected`
+/// locks below. Return-type drift between two forward *declarations* of the
+/// same symbol also still errors: `parser_forward_refs.rs::
+/// forward_global_reference_signature_mismatch_is_rejected`.)
 #[test]
-fn call_inferred_signature_arg_mismatch_rejected() {
+fn call_inferred_signature_round_trips() {
     const FIXTURE: &[u8] = include_bytes!(
-        "fixtures/upstream/LLParser-parseCall/call_inferred_signature_arg_mismatch_rejected.ll"
+        "fixtures/upstream/LLParser-parseCall/call_inferred_signature_round_trips.ll"
     );
 
-    assert_fixture_rejected(
-        "call_inferred_signature_arg_mismatch_rejected",
-        FIXTURE,
-        "function callee signature mismatch",
+    let text = parse_and_render_bytes("call_inferred_signature_round_trips", FIXTURE);
+    assert_check_lines(&text, &["call void @f(i32 1)"]);
+}
+
+/// Invoke form of [`call_inferred_signature_round_trips`]: `parseInvoke`
+/// infers the call-site type from the argument list and the callee
+/// resolves as a bare pointer, so the mismatched-declaration invoke parses
+/// and re-prints in short form.
+#[test]
+fn invoke_inferred_signature_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/invoke_inferred_signature_round_trips.ll"
+    );
+
+    let text = parse_and_render_bytes("invoke_inferred_signature_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &[
+            "invoke void @f(float 0.000000e+00)",
+            "to label %ok unwind label %lp",
+        ],
     );
 }
 
-/// llvmkit-specific STRICTNESS lock, invoke form: `parseInvoke` always
-/// infers the call-site type from the argument list (upstream accepts the
-/// mismatch; llvmkit's `resolve_direct_callee` rejects at parse time).
+/// Callbr form of [`call_inferred_signature_round_trips`]: `parseCallBr`
+/// infers the call-site type from the argument list and the callee
+/// resolves as a bare pointer, so the mismatched-declaration callbr parses
+/// and re-prints in short form.
 #[test]
-fn invoke_inferred_signature_arg_mismatch_rejected() {
+fn callbr_inferred_signature_round_trips() {
     const FIXTURE: &[u8] = include_bytes!(
-        "fixtures/upstream/LLParser-parseCall/invoke_inferred_signature_arg_mismatch_rejected.ll"
+        "fixtures/upstream/LLParser-parseCall/callbr_inferred_signature_round_trips.ll"
     );
 
-    assert_fixture_rejected(
-        "invoke_inferred_signature_arg_mismatch_rejected",
-        FIXTURE,
-        "function callee signature mismatch",
-    );
+    let text = parse_and_render_bytes("callbr_inferred_signature_round_trips", FIXTURE);
+    assert_check_lines(&text, &["callbr void @f(float 0.000000e+00)"]);
 }
 
-/// llvmkit-specific STRICTNESS lock, callbr form: `parseCallBr` always
-/// infers the call-site type from the argument list (upstream accepts the
-/// mismatch at parse time; llvmkit's `resolve_direct_callee` rejects).
+/// Mirrors `LLParser::parseCall`'s explicit-type branch: an explicitly
+/// written call-site type IS the call's function type, independent of the
+/// callee's declaration. `call i32 (i32) @f(...)` through a `void (float)`
+/// declaration parses (callee resolved as a bare pointer) and re-prints in
+/// AsmWriter's short form, `call i32 @f(i32 1)`.
 #[test]
-fn callbr_inferred_signature_arg_mismatch_rejected() {
+fn call_explicit_type_signature_round_trips() {
     const FIXTURE: &[u8] = include_bytes!(
-        "fixtures/upstream/LLParser-parseCall/callbr_inferred_signature_arg_mismatch_rejected.ll"
+        "fixtures/upstream/LLParser-parseCall/call_explicit_type_signature_round_trips.ll"
     );
 
-    assert_fixture_rejected(
-        "callbr_inferred_signature_arg_mismatch_rejected",
-        FIXTURE,
-        "function callee signature mismatch",
-    );
+    let text = parse_and_render_bytes("call_explicit_type_signature_round_trips", FIXTURE);
+    assert_check_lines(&text, &["%r = call i32 @f(i32 1)"]);
 }
 
 /// Mirrors `test/Feature/indirectcall.ll`'s `call i64 %fibfunc(...)`: a
@@ -547,19 +565,20 @@ fn callbr_explicit_type_arg_type_mismatch_rejected() {
     );
 }
 
-/// llvmkit-specific STRICTNESS lock, explicit-type invoke form: upstream
-/// accepts a written call-site type that disagrees with the declaration
-/// (opaque-pointer UB-not-error); llvmkit's `resolve_direct_callee`
-/// rejects at parse time, same doctrine as the inferred-signature locks.
+/// Mirrors `LLParser::parseInvoke`'s `resolveFunctionType`: an explicitly
+/// written call-site type IS the invoke's function type, independent of the
+/// declaration. `invoke void (i8) @f(...)` through a `void (i32)`
+/// declaration parses (callee resolved as a bare pointer) and re-prints in
+/// AsmWriter's short form.
 #[test]
-fn invoke_explicit_type_signature_mismatch_rejected() {
+fn invoke_explicit_type_signature_round_trips() {
     const FIXTURE: &[u8] = include_bytes!(
-        "fixtures/upstream/LLParser-parseCall/invoke_explicit_type_signature_mismatch_rejected.ll"
+        "fixtures/upstream/LLParser-parseCall/invoke_explicit_type_signature_round_trips.ll"
     );
 
-    assert_fixture_rejected(
-        "invoke_explicit_type_signature_mismatch_rejected",
-        FIXTURE,
-        "function callee signature mismatch",
+    let text = parse_and_render_bytes("invoke_explicit_type_signature_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["invoke void @f(i8 1)", "to label %ok unwind label %lp"],
     );
 }

@@ -98,19 +98,20 @@ fn upstream_forward_global_reference_fixture_parses() {
 
 /// llvmkit-specific regression for the forward-callee path exercised by
 /// `test/Assembler/2002-05-02-InvalidForwardRef.ll`: repeated forward
-/// references to one function must keep LLVM's single function type, not
-/// silently rewrite later calls to the first provisional signature.
+/// references to one function each keep their OWN call-site type rather
+/// than being silently rewritten to the first provisional signature. Under
+/// opaque pointers a forward-referenced `@foo` is a bare `ptr` like any
+/// other callee, so `LLParser::parseCall` lets each call carry its own
+/// function type (`CallBase`); the second call stays `i64`, not rewritten
+/// to the `i32` the first call provisionally created.
 #[test]
-fn forward_global_reference_signature_mismatch_is_rejected() {
-    let err = parse_err(
+fn forward_global_reference_calls_keep_their_own_types() {
+    let text = parse_and_render(
         "define void @test() {\nentry:\n  %a = call i32 @foo()\n  %b = call i64 @foo()\n  ret void\n}\ndeclare i32 @foo()\n",
     );
-    match err {
-        ParseError::Expected { expected, .. } => {
-            assert_eq!(expected, "function callee signature mismatch");
-        }
-        other => panic!("unexpected error variant: {other:?}"),
-    }
+    assert!(text.contains("%a = call i32 @foo()"), "{text}");
+    assert!(text.contains("%b = call i64 @foo()"), "{text}");
+    assert!(text.contains("declare i32 @foo()"), "{text}");
 }
 
 /// Mirrors `test/Assembler/2002-05-02-InvalidForwardRef.ll`: resolving a

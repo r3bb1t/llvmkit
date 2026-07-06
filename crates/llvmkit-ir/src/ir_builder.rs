@@ -177,6 +177,7 @@ pub struct CallSiteConfig {
     name: String,
     calling_conv: CallingConv,
     attrs: CallAttributeData,
+    call_site_fn_ty: Option<TypeId>,
 }
 
 impl CallSiteConfig {
@@ -188,6 +189,7 @@ impl CallSiteConfig {
             name: name.into(),
             calling_conv: CallingConv::C,
             attrs: CallAttributeData::default(),
+            call_site_fn_ty: None,
         }
     }
 
@@ -199,6 +201,25 @@ impl CallSiteConfig {
     pub fn attrs(mut self, attrs: CallAttributeData) -> Self {
         self.attrs = attrs;
         self
+    }
+
+    /// Override the call site's function type so it no longer derives from
+    /// the callee's declaration. Mirrors LLVM's `CallBase`, which carries
+    /// its own `FunctionType` independent of the callee operand: an
+    /// `invoke`/`callbr` may be spelled through a function type that differs
+    /// from the declared callee (opaque-pointer IR, checked by the verifier
+    /// against the call's own type, not the declaration). Left unset, the
+    /// call site keeps deriving its type from the callee.
+    pub fn call_site_type<'ctx, Brand: ModuleBrand + 'ctx>(
+        mut self,
+        fn_ty: FunctionType<'ctx, Brand>,
+    ) -> Self {
+        self.call_site_fn_ty = Some(fn_ty.as_type().id());
+        self
+    }
+
+    pub(super) fn call_site_fn_ty(&self) -> Option<TypeId> {
+        self.call_site_fn_ty
     }
 
     pub fn name(&self) -> &str {
@@ -5749,6 +5770,25 @@ where
         )
     }
 
+    /// The `(function_type, return_type)` a call site should carry: the
+    /// caller-spelled override from [`CallSiteConfig::call_site_type`] when
+    /// present (mirroring `CallBase`'s own `FunctionType`), else the callee's
+    /// declared signature.
+    fn resolve_call_site_type<R2: ReturnMarker>(
+        &self,
+        callee: &FunctionValue<'ctx, R2, B>,
+        config: &CallSiteConfig,
+    ) -> (FunctionType<'ctx, B>, TypeId) {
+        match config.call_site_fn_ty() {
+            Some(id) => {
+                let ft = FunctionType::<'ctx, B>::new(id, ModuleRef::<B>::new(self.module));
+                let ret = ft.return_type().id();
+                (ft, ret)
+            }
+            None => (callee.signature(), callee.return_type().id()),
+        }
+    }
+
     /// Produce `invoke` with explicit call-site configuration.
     pub fn build_invoke_dyn_with_config<R2, I, V, Normal, Unwind>(
         self,
@@ -5768,8 +5808,7 @@ where
         let normal_dest = normal_dest.into_basic_block_label();
         let unwind_dest = unwind_dest.into_basic_block_label();
         let callee_v = callee.as_value();
-        let fn_ty = callee.signature();
-        let ret_ty = callee.return_type().id();
+        let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
         let (name, calling_conv, attrs) = config.into_parts();
         let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.as_value().id).collect();
         self.validate_call_site_args(fn_ty, &arg_ids)?;
@@ -5918,8 +5957,7 @@ where
     {
         let default_dest = default_dest.into_basic_block_label();
         let callee_v = callee.as_value();
-        let fn_ty = callee.signature();
-        let ret_ty = callee.return_type().id();
+        let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
         let (name, calling_conv, attrs) = config.into_parts();
         let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.as_value().id).collect();
         self.validate_call_site_args(fn_ty, &arg_ids)?;
@@ -6838,6 +6876,28 @@ where
             ModuleRef::<B>::new(self.parent.module),
             inst.ty().id(),
         ))
+    }
+}
+
+impl<'a, 'm, 'ctx, B, F, RP> CallBuilder<'a, 'm, 'ctx, B, F, RP, Dyn>
+where
+    B: ModuleBrand + 'ctx,
+    F: IRBuilderFolder<'ctx, B>,
+    RP: ReturnMarker,
+{
+    /// Override the call site's function type so it no longer derives from
+    /// the callee's declaration. Mirrors LLVM's `CallBase`, which carries
+    /// its own `FunctionType` independent of the callee operand: a direct
+    /// `call` may be spelled through a function type that differs from the
+    /// declared callee (opaque-pointer IR — the verifier checks the call
+    /// against its own type, not the declaration; `LLParser::parseCall`
+    /// resolves the callee as a bare pointer). Offered only on the erased
+    /// (`Dyn`) builder, where overriding the result type cannot desync a
+    /// static return marker.
+    pub fn call_site_type(mut self, fn_ty: FunctionType<'ctx, B>) -> Self {
+        self.return_ty = fn_ty.return_type().id();
+        self.fn_ty = fn_ty.as_type().id();
+        self
     }
 }
 
