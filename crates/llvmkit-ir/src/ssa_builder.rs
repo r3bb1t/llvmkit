@@ -790,10 +790,25 @@ where
 
     /// Braun `readVariable` + `readVariableRecursive`, restated
     /// iteratively for the single-predecessor chase.
+    ///
+    /// D11: the paper ends EVERY `readVariableRecursive` branch with
+    /// `writeVariable(variable, block, val)` -- including the
+    /// single-predecessor case -- memoizing the resolved value at each
+    /// block the chase passed through. `chased` accumulates those
+    /// intermediate blocks (never the origin block itself, which either
+    /// already had a `current_def` hit -- nothing to write -- or is about
+    /// to receive its OWN fresh entry via `write_variable`/`add_phi_operands`
+    /// below); whichever branch below resolves the read writes the same
+    /// resolved id back to every block in `chased` before returning, so a
+    /// second read from any point on the chain is O(1) instead of
+    /// re-chasing the whole straight-line run.
     fn read_variable_in(&mut self, var: u32, mut block: ValueId) -> IrResult<ValueId> {
+        let mut chased: Vec<ValueId> = Vec::new();
         loop {
             if let Some(v) = self.state.current_def.get(&(block, var)) {
-                return Ok(self.resolve(*v));
+                let resolved = self.resolve(*v);
+                self.memoize_chase(var, &chased, resolved);
+                return Ok(resolved);
             }
             if !self.state.sealed.contains(&block) {
                 // Incomplete CFG: operandless phi at the head, completed
@@ -805,18 +820,44 @@ where
                     .or_default()
                     .push((var, phi));
                 self.write_variable(var, block, phi);
+                self.memoize_chase(var, &chased, phi);
                 return Ok(phi);
             }
             let preds = self.state.preds.get(&block).cloned().unwrap_or_default();
             match preds.len() {
-                0 => return self.undefined_read(var, block),
-                1 => block = preds[0], // single-pred chase: no phi needed
+                0 => {
+                    let resolved = self.undefined_read(var, block)?;
+                    self.memoize_chase(var, &chased, resolved);
+                    return Ok(resolved);
+                }
+                1 => {
+                    // Single-pred chase: no phi needed at `block` itself,
+                    // but `block` is now part of the chain whose resolved
+                    // value will be memoized once the chase terminates.
+                    chased.push(block);
+                    block = preds[0];
+                }
                 _ => {
                     let phi = self.emit_operandless_phi(var, block)?;
                     self.write_variable(var, block, phi); // breaks cycles
-                    return self.add_phi_operands(var, phi, block);
+                    let resolved = self.add_phi_operands(var, phi, block)?;
+                    self.memoize_chase(var, &chased, resolved);
+                    return Ok(resolved);
                 }
             }
+        }
+    }
+
+    /// Write `resolved` back into `current_def` for every block the
+    /// single-predecessor chase passed through, per `read_variable_in`'s
+    /// doc comment. `chased` never contains the block that actually
+    /// produced `resolved` (that block already has its own correct
+    /// `current_def`/`incomplete_phis` entry from the branch above), so
+    /// every write here is a genuinely new memoization rather than a
+    /// redundant overwrite.
+    fn memoize_chase(&mut self, var: u32, chased: &[ValueId], resolved: ValueId) {
+        for &block in chased {
+            self.write_variable(var, block, resolved);
         }
     }
 
@@ -1435,6 +1476,76 @@ mod tests {
             let i32_ty = m.i32_type();
             let poison_id = i32_ty.as_type().get_poison().as_value().id;
             assert_eq!(read, poison_id);
+            Ok(())
+        })
+    }
+
+    /// Review follow-up (D11): Braun et al. 2013 SS2's `readVariableRecursive`
+    /// ends EVERY branch -- including the single-predecessor chase -- with
+    /// `writeVariable(variable, block, val)`, memoizing the resolved value
+    /// at each block it passed through. Without that write-back, a repeated
+    /// read at the END of a straight-line chain re-chases the WHOLE chain
+    /// from scratch every time (O(chain length) per read, quadratic over a
+    /// long straight-line function body). This locks the postcondition
+    /// directly on `current_def`: a single `read_variable_in` at the far
+    /// end of a 4-block sealed straight-line chain (entry def x -> b1 -> b2
+    /// -> b3) must leave b1 and b2 (the blocks merely PASSED THROUGH, not
+    /// just b3 itself) with their own `current_def` entry pointing at the
+    /// resolved definition, so a second read from any point on the chain is
+    /// O(1) instead of re-chasing. No upstream C++ analogue (`SSAUpdater`
+    /// does not memoize the same way); this is a direct-from-the-paper
+    /// llvmkit-specific white-box check.
+    #[test]
+    fn read_variable_in_memoizes_single_pred_chase() -> Result<(), IrError> {
+        Module::with_new("ssa-chase-memoization", |m| {
+            let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+            let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+            let mut b = SsaBuilder::for_function(&m, f)?;
+            let entry = b.create_block("entry");
+            let entry_id = label_value_id(&entry.label);
+            let b1 = b.create_block("b1");
+            let b1_id = label_value_id(&b1.label);
+            let b2 = b.create_block("b2");
+            let b2_id = label_value_id(&b2.label);
+            let b3 = b.create_block("b3");
+            let b3_id = label_value_id(&b3.label);
+
+            // Straight-line chain: entry -> b1 -> b2 -> b3, each with a
+            // single predecessor, all sealed as soon as their one edge is
+            // known (Braun requires the full predecessor set before seal).
+            b.state.preds.entry(b1_id).or_default().push(entry_id);
+            b.seal_block(b1)?;
+            b.state.preds.entry(b2_id).or_default().push(b1_id);
+            b.seal_block(b2)?;
+            b.state.preds.entry(b3_id).or_default().push(b2_id);
+            b.seal_block(b3)?;
+
+            let var: IntVariable<i32, _> = b.declare_int_var("x");
+            let one = m.i32_type().const_int(1_i32).as_value().id;
+            b.write_variable(var.index, entry_id, one);
+
+            // Before the read: only entry has a current_def entry.
+            assert!(b.state.current_def.contains_key(&(entry_id, var.index)));
+            assert!(!b.state.current_def.contains_key(&(b1_id, var.index)));
+            assert!(!b.state.current_def.contains_key(&(b2_id, var.index)));
+
+            let read = b.read_variable_in(var.index, b3_id)?;
+            assert_eq!(read, one);
+
+            // After the read: the intermediate blocks the chase passed
+            // through (b1, b2) must now be memoized too, per the paper's
+            // writeVariable postcondition at the end of every
+            // readVariableRecursive branch.
+            assert_eq!(
+                b.state.current_def.get(&(b1_id, var.index)),
+                Some(&one),
+                "b1 should be memoized after the chase resolves through it"
+            );
+            assert_eq!(
+                b.state.current_def.get(&(b2_id, var.index)),
+                Some(&one),
+                "b2 should be memoized after the chase resolves through it"
+            );
             Ok(())
         })
     }
