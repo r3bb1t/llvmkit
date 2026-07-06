@@ -302,10 +302,19 @@ enum ParsedBlockAddressFunction<'ctx, B: ModuleBrand = Brand<'ctx>> {
 }
 
 enum ParsedDirectCallee<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    Name { name: String, loc: Span },
-    Id { id: u32, loc: Span },
+    Name {
+        name: String,
+        loc: Span,
+    },
+    Id {
+        id: u32,
+        loc: Span,
+    },
     InlineAsm(ParsedInlineAsm),
-    Value { v: llvmkit_ir::Value<'ctx, B>, loc: Span },
+    Value {
+        v: llvmkit_ir::Value<'ctx, B>,
+        loc: Span,
+    },
 }
 
 struct ParsedInlineAsm {

@@ -432,9 +432,8 @@ fn indirect_call_non_pointer_callee_rejected() {
 /// instead of the pre-port generic parse failure.
 #[test]
 fn invoke_indirect_callee_rejected() {
-    const FIXTURE: &[u8] = include_bytes!(
-        "fixtures/upstream/LLParser-parseCall/invoke_indirect_callee_rejected.ll"
-    );
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/invoke_indirect_callee_rejected.ll");
 
     assert_fixture_rejected(
         "invoke_indirect_callee_rejected",
@@ -448,9 +447,8 @@ fn invoke_indirect_callee_rejected() {
 /// invalid signature"); llvmkit rejects at parse time.
 #[test]
 fn callbr_indirect_callee_rejected() {
-    const FIXTURE: &[u8] = include_bytes!(
-        "fixtures/upstream/LLParser-parseCall/callbr_indirect_callee_rejected.ll"
-    );
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/callbr_indirect_callee_rejected.ll");
 
     assert_fixture_rejected(
         "callbr_indirect_callee_rejected",
@@ -464,9 +462,8 @@ fn callbr_indirect_callee_rejected() {
 /// list); the non-vararg invoke prints back in short form.
 #[test]
 fn invoke_explicit_type_round_trips() {
-    const FIXTURE: &[u8] = include_bytes!(
-        "fixtures/upstream/LLParser-parseCall/invoke_explicit_type_round_trips.ll"
-    );
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/invoke_explicit_type_round_trips.ll");
 
     let text = parse_and_render_bytes("invoke_explicit_type_round_trips", FIXTURE);
     assert_check_lines(
@@ -494,9 +491,8 @@ fn invoke_explicit_type_vararg_round_trips() {
 /// on callbr, rule shape is the anchor (D11).
 #[test]
 fn callbr_explicit_type_round_trips() {
-    const FIXTURE: &[u8] = include_bytes!(
-        "fixtures/upstream/LLParser-parseCall/callbr_explicit_type_round_trips.ll"
-    );
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/LLParser-parseCall/callbr_explicit_type_round_trips.ll");
 
     let text = parse_and_render_bytes("callbr_explicit_type_round_trips", FIXTURE);
     assert_check_lines(&text, &["callbr void @g(i32 1)", "to label %cont []"]);
