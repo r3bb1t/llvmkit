@@ -193,6 +193,11 @@ pub enum VerifierRule {
     /// `getelementptr` index operand is non-integer.
     /// Mirrors `Verifier::visitGetElementPtrInst`.
     GepNonIntegerIndex,
+    /// `getelementptr` indices do not index into the source element type
+    /// (out-of-range or non-i32 struct index, or walking past a
+    /// non-aggregate). Mirrors `Verifier::visitGetElementPtrInst`
+    /// ("Invalid indices for GEP pointer type!").
+    GepInvalidIndices,
     /// `alloca` allocated type is unsized (function/void/label/...).
     /// Mirrors `Verifier::visitAllocaInst`.
     AllocaUnsizedType,
@@ -370,6 +375,7 @@ impl fmt::Display for VerifierRule {
             Self::GepNonPointerBase => "getelementptr base is not a pointer",
             Self::GepUnsizedSourceType => "getelementptr source element type is unsized",
             Self::GepNonIntegerIndex => "getelementptr index operand is not an integer",
+            Self::GepInvalidIndices => "getelementptr indices are invalid for the source type",
             Self::AllocaUnsizedType => "alloca allocated type is unsized",
             Self::AllocaNonIntegerCount => "alloca num-elements operand is not an integer",
             Self::SwiftErrorAlloca => "swifterror alloca must be a non-array pointer allocation",
@@ -497,6 +503,14 @@ pub enum IrError {
     /// rather than clamping them.
     #[error("aggregate index {index} out of range (have {count})")]
     AggregateIndexOutOfRange { index: u32, count: u64 },
+
+    /// A `getelementptr` index sequence does not index into the source
+    /// element type: a struct index that is not a constant `i32` in range,
+    /// or an index that walks past a non-aggregate. Mirrors
+    /// `GetElementPtrInst::getIndexedType` returning null (`LLParser`
+    /// "invalid getelementptr indices").
+    #[error("invalid getelementptr indices for the source type")]
+    GepInvalidIndices,
 
     /// A typed function facade was requested with a parameter tuple whose arity
     /// does not match the function signature.

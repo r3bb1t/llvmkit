@@ -15,6 +15,13 @@ fn parse_and_verify(src: &str) {
     verify.expect("verify");
 }
 
+fn parse_expect_error(src: &str) -> String {
+    match parser::parse_assembly_string(src, |_module, _parsed| ()) {
+        Ok(()) => panic!("expected parse to fail, but it succeeded"),
+        Err(e) => format!("{e}"),
+    }
+}
+
 /// Mirrors `LLParser::parseRet`'s `void` arm on the smallest body shape:
 /// `define void @f() { ret void }`.
 #[test]
@@ -400,6 +407,61 @@ fn parses_array_alloca() {
     );
     assert!(
         printed.contains("%b = alloca i8, i64 5, align 8\n"),
+        "{printed}"
+    );
+}
+
+/// Ports `LLParser::parseGetElementPtr`'s `getIndexedType` rejection
+/// ("invalid getelementptr indices"): a struct field index must be a
+/// constant i32 in range. `{i32, i64}` has fields 0 and 1 only.
+#[test]
+fn gep_struct_index_out_of_range_rejected() {
+    let e = parse_expect_error(
+        "define ptr @f(ptr %p) {\nentry:\n  \
+           %r = getelementptr {i32, i64}, ptr %p, i32 0, i32 5\n  \
+           ret ptr %r\n\
+         }\n",
+    );
+    assert!(e.contains("getelementptr indices"), "{e}");
+}
+
+/// A struct field index that is not an `i32` (here `i64`) is rejected —
+/// `StructType::indexValid` requires i32.
+#[test]
+fn gep_struct_index_non_i32_rejected() {
+    let e = parse_expect_error(
+        "define ptr @f(ptr %p) {\nentry:\n  \
+           %r = getelementptr {i32, i64}, ptr %p, i32 0, i64 1\n  \
+           ret ptr %r\n\
+         }\n",
+    );
+    assert!(e.contains("getelementptr indices"), "{e}");
+}
+
+/// A non-constant struct field index is rejected.
+#[test]
+fn gep_struct_index_non_constant_rejected() {
+    let e = parse_expect_error(
+        "define ptr @f(ptr %p, i32 %n) {\nentry:\n  \
+           %r = getelementptr {i32, i64}, ptr %p, i32 0, i32 %n\n  \
+           ret ptr %r\n\
+         }\n",
+    );
+    assert!(e.contains("getelementptr indices"), "{e}");
+}
+
+/// A valid nested struct index (field 1 of `{i32, i64}`) still parses and
+/// round-trips.
+#[test]
+fn gep_valid_struct_index_round_trips() {
+    let printed = parse_and_print(
+        "define ptr @f(ptr %p) {\nentry:\n  \
+           %r = getelementptr {i32, i64}, ptr %p, i32 0, i32 1\n  \
+           ret ptr %r\n\
+         }\n",
+    );
+    assert!(
+        printed.contains("getelementptr { i32, i64 }, ptr %p, i32 0, i32 1"),
         "{printed}"
     );
 }

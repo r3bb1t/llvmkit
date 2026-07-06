@@ -1758,7 +1758,11 @@ fn constant_with_replaced_operand(
     }
 }
 
-fn advance_gep_index_type(module: &ModuleCore, current: TypeId, index: ValueId) -> Option<TypeId> {
+pub(crate) fn advance_gep_index_type(
+    module: &ModuleCore,
+    current: TypeId,
+    index: ValueId,
+) -> Option<TypeId> {
     match module.context().type_data(current) {
         TypeData::Array { elem, .. }
         | TypeData::FixedVector { elem, .. }
@@ -1770,6 +1774,35 @@ fn advance_gep_index_type(module: &ModuleCore, current: TypeId, index: ValueId) 
         }
         _ => None,
     }
+}
+
+/// Walk a `getelementptr` index list against the source element type,
+/// mirroring `GetElementPtrInst::getIndexedType`: the first index steps the
+/// pointer, each subsequent index indexes into the current aggregate.
+/// Returns the innermost indexed type, or `None` if any index is invalid —
+/// a struct index that is not a constant `i32` in range
+/// (`StructType::indexValid`), or an index that walks past a non-aggregate.
+pub(crate) fn gep_indexed_type(
+    module: &ModuleCore,
+    source_ty: TypeId,
+    indices: &[ValueId],
+) -> Option<TypeId> {
+    let mut current = source_ty;
+    for index in indices.iter().skip(1) {
+        // `StructType::indexValid` requires an i32 index; the shared walker
+        // above only checks constness/range, so enforce the width here.
+        if matches!(module.context().type_data(current), TypeData::Struct(_)) {
+            let idx_ty = module.context().value_data(*index).ty;
+            if !matches!(
+                module.context().type_data(idx_ty),
+                TypeData::Integer { bits: 32 }
+            ) {
+                return None;
+            }
+        }
+        current = advance_gep_index_type(module, current, *index)?;
+    }
+    Some(current)
 }
 
 fn validate_constant_expr_flags(data: &ConstantExprData) -> IrResult<()> {

@@ -4366,6 +4366,12 @@ where
             idx_values.push(iv.as_value());
             idx_ids.push(iv.as_value().id);
         }
+        // Reject index sequences that do not index into the source element
+        // type (`GetElementPtrInst::getIndexedType`) — the parser's
+        // build-time gate mirroring upstream's parse-time rejection (D10).
+        if crate::constants::gep_indexed_type(self.module, source_ty_id, &idx_ids).is_none() {
+            return Err(IrError::GepInvalidIndices);
+        }
         // Mirrors `GetElementPtrInst::getGEPReturnType` (`IR/Instructions.h`):
         // for the scalar (non-vector-of-pointers) case the result type is
         // exactly the base pointer's type, i.e. it lives in the SAME address

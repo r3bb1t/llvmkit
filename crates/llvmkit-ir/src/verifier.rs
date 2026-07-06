@@ -2157,6 +2157,21 @@ impl<'ctx> Verifier<'ctx> {
                 ));
             }
         }
+        // The index sequence must index into the source element type
+        // (`Verifier::visitGetElementPtrInst` checks
+        // `GetElementPtrInst::getIndexedType(SourceTy, Idxs)` is non-null).
+        let idx_ids: Vec<_> = g.indices.iter().map(|c| c.get()).collect();
+        if crate::constants::gep_indexed_type(self.module, g.source_ty, &idx_ids).is_none() {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::GepInvalidIndices,
+                format!(
+                    "getelementptr indices do not index into source type {}",
+                    self.type_label(g.source_ty)
+                ),
+            ));
+        }
         Ok(())
     }
 
