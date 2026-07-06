@@ -75,6 +75,9 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/builder_alloca.rs::alloca_plain` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, Lifetime)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_alloca.rs::alloca_array_size` | `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, Lifetime)` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_alloca.rs::alloca_aligned` | `test/Assembler/align-inst-alloca.ll` | mirror |
+| `crates/llvmkit-ir/tests/builder_default_align.rs::alloca_materialises_preferred_align` | `llvm/lib/IR/Instructions.cpp::computeAllocaDefaultAlign` (`getPrefTypeAlign`); AsmWriter always-print-align | llvmkit-specific |
+| `crates/llvmkit-ir/tests/builder_default_align.rs::load_store_materialise_abi_align` | `llvm/lib/IR/Instructions.cpp::computeLoadStoreDefaultAlign` (`getABITypeAlign`; default DataLayout i64 ABI align 4 vs preferred 8) | llvmkit-specific |
+| `crates/llvmkit-ir/tests/builder_default_align.rs::alloca_uses_datalayout_alloca_address_space` | `llvm/include/llvm/IR/IRBuilder.h::CreateAlloca` (`DataLayout::getAllocaAddrSpace`); AsmWriter AllocaInst addrspace arm | llvmkit-specific |
 | `crates/llvmkit-ir/tests/builder_call.rs::call_int_returning_function` | `unittests/IR/InstructionsTest.cpp::TEST_F(ModuleWithFunctionTest, CallInst)` | port |
 | `crates/llvmkit-ir/tests/builder_call.rs::call_void_returning_function` | `unittests/IR/InstructionsTest.cpp::TEST_F(ModuleWithFunctionTest, CallInst)` | port |
 | `crates/llvmkit-ir/tests/builder_call.rs::call_builder_mixed_arg_types` | `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, CloneCall)` | llvmkit-specific |

@@ -25,7 +25,10 @@ fn load_plain() -> Result<(), IrError> {
         let r = b.build_int_load::<i32, _, _>(p, "v")?;
         b.build_ret(r)?;
         let text = format!("{m}");
-        assert!(text.contains("%v = load i32, ptr %0\n"), "got:\n{text}");
+        assert!(
+            text.contains("%v = load i32, ptr %0, align 4\n"),
+            "got:\n{text}"
+        );
         Ok(())
     })
 }
@@ -73,7 +76,10 @@ fn store_plain() -> Result<(), IrError> {
         b.build_store(v, p)?;
         b.build_ret_void();
         let text = format!("{m}");
-        assert!(text.contains("store i32 %0, ptr %1\n"), "got:\n{text}");
+        assert!(
+            text.contains("store i32 %0, ptr %1, align 4\n"),
+            "got:\n{text}"
+        );
         Ok(())
     })
 }
@@ -124,9 +130,15 @@ fn load_add_store_round_trip() -> Result<(), IrError> {
         b.build_store(n, p)?;
         b.build_ret_void();
         let text = format!("{m}");
-        assert!(text.contains("%v = load i32, ptr %0\n"), "got:\n{text}");
+        assert!(
+            text.contains("%v = load i32, ptr %0, align 4\n"),
+            "got:\n{text}"
+        );
         assert!(text.contains("%n = add i32 %v, 1\n"), "got:\n{text}");
-        assert!(text.contains("store i32 %n, ptr %0\n"), "got:\n{text}");
+        assert!(
+            text.contains("store i32 %n, ptr %0, align 4\n"),
+            "got:\n{text}"
+        );
         Ok(())
     })
 }

@@ -255,7 +255,7 @@ fn range_metadata_on_load_verifies_and_prints() -> Result<(), IrError> {
 
         m.verify_borrowed()?;
         let text = format!("{m}");
-        assert_line(&text, "  %v = load i8, ptr %0, !range !0");
+        assert_line(&text, "  %v = load i8, ptr %0, align 1, !range !0");
         assert_line(&text, "!0 = !{i8 16, i8 32}");
         Ok(())
     })

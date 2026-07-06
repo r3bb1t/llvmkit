@@ -109,7 +109,10 @@ define i32 @f() {
 }
 "#;
     let text = parse_snippet(src);
-    assert!(text.contains("%v = load i32, ptr @g\n"), "output: {text}");
+    assert!(
+        text.contains("%v = load i32, ptr @g, align 4\n"),
+        "output: {text}"
+    );
 }
 
 /// llvmkit-specific subset: function call via global reference.

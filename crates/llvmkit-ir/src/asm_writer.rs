@@ -1463,6 +1463,11 @@ fn fmt_alloca(
     if let Some(al) = a.align.align() {
         write!(f, ", align {}", al.value())?;
     }
+    // Mirrors AsmWriter's AllocaInst arm: the address space is printed
+    // (after align) only when non-zero.
+    if a.addr_space != 0 {
+        write!(f, ", addrspace({})", a.addr_space)?;
+    }
     Ok(())
 }
 

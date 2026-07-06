@@ -378,9 +378,9 @@ fn parses_alloca_load_store() {
            ret i32 %r\n\
          }\n",
     );
-    assert!(printed.contains("%slot = alloca i32\n"));
-    assert!(printed.contains("store i32 %v, ptr %slot\n"));
-    assert!(printed.contains("%r = load i32, ptr %slot\n"));
+    assert!(printed.contains("%slot = alloca i32, align 4\n"));
+    assert!(printed.contains("store i32 %v, ptr %slot, align 4\n"));
+    assert!(printed.contains("%r = load i32, ptr %slot, align 4\n"));
 }
 
 /// Ports `LLParser::parseGetElementPtr` plain + inbounds arms.

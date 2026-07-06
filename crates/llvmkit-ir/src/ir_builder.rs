@@ -2924,14 +2924,43 @@ where
 
     // ---- Memory: alloca / load / store ----
 
+    /// The DataLayout ABI alignment of a type, materialised so load/store
+    /// carry an explicit `align` like upstream (`computeLoadStoreDefaultAlign`
+    /// = `getABITypeAlign`).
+    fn default_abi_align(&self, ty_id: TypeId) -> MaybeAlign {
+        let dl = self.module.data_layout();
+        MaybeAlign::new(dl.abi_align_of_id(self.module, ty_id))
+    }
+
+    /// The DataLayout preferred alignment of a type, materialised so alloca
+    /// carries an explicit `align` like upstream (`computeAllocaDefaultAlign`
+    /// = `getPrefTypeAlign`).
+    fn default_pref_align(&self, ty_id: TypeId) -> MaybeAlign {
+        let dl = self.module.data_layout();
+        MaybeAlign::new(dl.pref_align_of_id(self.module, ty_id))
+    }
+
+    /// The DataLayout alloca address space (`IRBuilder::CreateAlloca` uses
+    /// `getAllocaAddrSpace`).
+    fn alloca_addr_space(&self) -> u32 {
+        self.module.data_layout().alloca_addr_space()
+    }
+
     /// Produce `alloca <ty>`. Mirrors `IRBuilder::CreateAlloca`.
-    /// The result is a `ptr` in the default address space.
+    /// The result is a `ptr` in the DataLayout's alloca address space, with
+    /// the type's preferred alignment materialised.
     pub fn build_alloca<T, Name>(&self, ty: T, name: Name) -> IrResult<PointerValue<'ctx, B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
     {
-        self.build_alloca_inner(ty.as_type().id(), None, MaybeAlign::NONE, 0, name)
+        self.build_alloca_inner(
+            ty.as_type().id(),
+            None,
+            MaybeAlign::NONE,
+            self.alloca_addr_space(),
+            name,
+        )
     }
 
     /// Produce `alloca <ty>, <size-ty> <num_elements>`. Mirrors
@@ -2952,7 +2981,7 @@ where
             ty.as_type().id(),
             Some(n.as_value().id),
             MaybeAlign::NONE,
-            0,
+            self.alloca_addr_space(),
             name,
         )
     }
@@ -2969,7 +2998,13 @@ where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
     {
-        self.build_alloca_inner(ty.as_type().id(), None, MaybeAlign::new(align), 0, name)
+        self.build_alloca_inner(
+            ty.as_type().id(),
+            None,
+            MaybeAlign::new(align),
+            self.alloca_addr_space(),
+            name,
+        )
     }
 
     fn build_alloca_inner(
@@ -2980,6 +3015,14 @@ where
         addr_space: u32,
         name: impl AsRef<str>,
     ) -> IrResult<PointerValue<'ctx, B>> {
+        // Materialise the DataLayout preferred alignment when omitted, like
+        // upstream — every alloca funnels through here
+        // (`computeAllocaDefaultAlign`).
+        let align = if align.align().is_none() {
+            self.default_pref_align(allocated_ty)
+        } else {
+            align
+        };
         let payload =
             crate::instr_types::AllocaInstData::new(allocated_ty, num_elements, align, addr_space);
         let ptr_ty = self.module.ptr_type(addr_space).as_type().id();
@@ -3234,10 +3277,16 @@ where
 
     fn build_load_inner(
         &self,
-        payload: LoadInstData,
+        mut payload: LoadInstData,
         name: impl AsRef<str>,
     ) -> IrResult<Instruction<'ctx, Attached, B>> {
         let pointee_ty = payload.pointee_ty;
+        // Materialise the DataLayout default like upstream — every load
+        // (plain / volatile / atomic) funnels through here, so an omitted
+        // alignment is filled once (`computeLoadStoreDefaultAlign`).
+        if payload.align.align().is_none() {
+            payload.align = self.default_abi_align(pointee_ty);
+        }
         Ok(self.append_instruction(pointee_ty, InstructionKindData::Load(payload), name))
     }
 
@@ -3436,6 +3485,15 @@ where
     {
         let v = value.as_value();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
+        // Materialise the DataLayout default off the stored value's type,
+        // like upstream (`computeLoadStoreDefaultAlign` /
+        // `getABITypeAlign(Val->getType())`). Every store funnels through
+        // here, so an omitted alignment is filled once.
+        let align = if align.align().is_none() {
+            self.default_abi_align(v.ty().id())
+        } else {
+            align
+        };
         Ok(StoreInstData::new(
             v.id,
             IsValue::as_value(p).id,

@@ -173,15 +173,15 @@ fn range_metadata_attachment_round_trips() {
     let src = include_str!("fixtures/upstream/Analysis/ValueTracking/known-bits-from-range-md.ll");
     let (_stats, text) = parse_snippet(src);
     assert!(
-        text.contains("  %val = load i8, ptr %ptr, !range !0"),
+        text.contains("  %val = load i8, ptr %ptr, align 1, !range !0"),
         "{text}"
     );
     assert!(
-        text.contains("  %val = load i8, ptr %ptr, !range !1"),
+        text.contains("  %val = load i8, ptr %ptr, align 1, !range !1"),
         "{text}"
     );
     assert!(
-        text.contains("  %val = load i8, ptr %ptr, !range !2"),
+        text.contains("  %val = load i8, ptr %ptr, align 1, !range !2"),
         "{text}"
     );
     assert!(text.contains("!0 = !{i8 -50, i8 0}"), "{text}");

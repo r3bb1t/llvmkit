@@ -628,6 +628,19 @@ impl DataLayout {
     pub fn abi_integer_type_align(&self, bit_width: u32) -> Align {
         self.integer_alignment(bit_width, true)
     }
+
+    /// ABI alignment of a type by id (brand-free; for builder/parser paths
+    /// that hold a `&ModuleCore` and a `TypeId`). Same walk as
+    /// [`Self::abi_type_align`].
+    pub(crate) fn abi_align_of_id(&self, module: &ModuleCore, id: TypeId) -> Align {
+        self.alignment(module, id, true)
+    }
+
+    /// Preferred alignment of a type by id (brand-free). Same walk as
+    /// [`Self::pref_type_align`].
+    pub(crate) fn pref_align_of_id(&self, module: &ModuleCore, id: TypeId) -> Align {
+        self.alignment(module, id, false)
+    }
 }
 
 // --------------------------------------------------------------------------
