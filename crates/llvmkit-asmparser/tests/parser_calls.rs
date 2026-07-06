@@ -458,3 +458,112 @@ fn callbr_indirect_callee_rejected() {
         "direct function callee for callbr",
     );
 }
+
+/// Mirrors `parseInvoke`'s use of `resolveFunctionType`: a written
+/// FunctionType IS the call-site type (no inference from the argument
+/// list); the non-vararg invoke prints back in short form.
+#[test]
+fn invoke_explicit_type_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/invoke_explicit_type_round_trips.ll"
+    );
+
+    let text = parse_and_render_bytes("invoke_explicit_type_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["invoke void @f(i32 1)", "to label %ok unwind label %lp"],
+    );
+}
+
+/// Crafted against `resolveFunctionType`'s FunctionType branch reached
+/// from `parseInvoke`: vararg invokes are only expressible through the
+/// explicit call-site type (upstream shape: the vararg statepoint invoke
+/// in `test/Assembler/opaque-ptr-intrinsic-remangling.ll`).
+#[test]
+fn invoke_explicit_type_vararg_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/invoke_explicit_type_vararg_round_trips.ll"
+    );
+
+    let text = parse_and_render_bytes("invoke_explicit_type_vararg_round_trips", FIXTURE);
+    assert_check_lines(&text, &["invoke void (ptr, ...) @vf(ptr %p, i32 7)"]);
+}
+
+/// Crafted against `resolveFunctionType`'s FunctionType branch reached
+/// from `parseCallBr`; no upstream lit coverage of the explicit spelling
+/// on callbr, rule shape is the anchor (D11).
+#[test]
+fn callbr_explicit_type_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/callbr_explicit_type_round_trips.ll"
+    );
+
+    let text = parse_and_render_bytes("callbr_explicit_type_round_trips", FIXTURE);
+    assert_check_lines(&text, &["callbr void @g(i32 1)", "to label %cont []"]);
+}
+
+/// Vararg form of [`callbr_explicit_type_round_trips`]: only expressible
+/// through the explicit type, printed back in long form. Parse-level
+/// mirror; upstream's verifier additionally restricts non-asm callbr to
+/// direct intrinsic callees.
+#[test]
+fn callbr_explicit_type_vararg_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/callbr_explicit_type_vararg_round_trips.ll"
+    );
+
+    let text = parse_and_render_bytes("callbr_explicit_type_vararg_round_trips", FIXTURE);
+    assert_check_lines(&text, &["callbr void (i32, ...) @g(i32 1, i8 2)"]);
+}
+
+/// Crafted against `parseInvoke`'s argument loop ("argument is not of
+/// expected type") with an explicit call-site type; no upstream lit or
+/// unittest coverage, rule shape is the anchor (D11). llvmkit routes the
+/// check through `validate_call_site_args` in
+/// `build_invoke_dyn_with_config`.
+#[test]
+fn invoke_explicit_type_arg_type_mismatch_rejected() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/invoke_explicit_type_arg_type_mismatch_rejected.ll"
+    );
+
+    assert_fixture_rejected(
+        "invoke_explicit_type_arg_type_mismatch_rejected",
+        FIXTURE,
+        "valid invoke: call argument #0 type mismatch: expected integer, got float",
+    );
+}
+
+/// Crafted against `parseCallBr`'s argument loop with an explicit
+/// call-site type — same rule as
+/// [`invoke_explicit_type_arg_type_mismatch_rejected`], surfaced through
+/// `build_callbr_with_config`.
+#[test]
+fn callbr_explicit_type_arg_type_mismatch_rejected() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/callbr_explicit_type_arg_type_mismatch_rejected.ll"
+    );
+
+    assert_fixture_rejected(
+        "callbr_explicit_type_arg_type_mismatch_rejected",
+        FIXTURE,
+        "valid callbr: call argument #0 type mismatch: expected integer, got float",
+    );
+}
+
+/// llvmkit-specific STRICTNESS lock, explicit-type invoke form: upstream
+/// accepts a written call-site type that disagrees with the declaration
+/// (opaque-pointer UB-not-error); llvmkit's `resolve_direct_callee`
+/// rejects at parse time, same doctrine as the inferred-signature locks.
+#[test]
+fn invoke_explicit_type_signature_mismatch_rejected() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/LLParser-parseCall/invoke_explicit_type_signature_mismatch_rejected.ll"
+    );
+
+    assert_fixture_rejected(
+        "invoke_explicit_type_signature_mismatch_rejected",
+        FIXTURE,
+        "function callee signature mismatch",
+    );
+}

@@ -1991,7 +1991,19 @@ fn fmt_invoke(
     if d.attrs.return_attrs().get(AttrIndex::Return).is_some() {
         f.write_str(" ")?;
     }
-    write!(f, "{} ", inst.ty())?;
+    // LLVM prints the callee function type for varargs call sites so the
+    // fixed parameter prefix is preserved; non-varargs call sites keep the
+    // compact result-type spelling (same rule as `fmt_call`).
+    if module
+        .context()
+        .type_data(d.fn_ty)
+        .as_function()
+        .is_some_and(|(_, _, is_var_arg)| is_var_arg)
+    {
+        write!(f, "{} ", Type::new(d.fn_ty, module))?;
+    } else {
+        write!(f, "{} ", inst.ty())?;
+    }
     let callee_data = module.context().value_data(d.callee.get());
     match &callee_data.kind {
         ValueKindData::InlineAsm(data) => fmt_inline_asm(f, data)?,
@@ -2059,7 +2071,19 @@ fn fmt_callbr(
     if d.attrs.return_attrs().get(AttrIndex::Return).is_some() {
         f.write_str(" ")?;
     }
-    write!(f, "{} ", inst.ty())?;
+    // LLVM prints the callee function type for varargs call sites so the
+    // fixed parameter prefix is preserved; non-varargs call sites keep the
+    // compact result-type spelling (same rule as `fmt_call`).
+    if module
+        .context()
+        .type_data(d.fn_ty)
+        .as_function()
+        .is_some_and(|(_, _, is_var_arg)| is_var_arg)
+    {
+        write!(f, "{} ", Type::new(d.fn_ty, module))?;
+    } else {
+        write!(f, "{} ", inst.ty())?;
+    }
     let callee_data = module.context().value_data(d.callee.get());
     match &callee_data.kind {
         ValueKindData::InlineAsm(data) => fmt_inline_asm(f, data)?,
