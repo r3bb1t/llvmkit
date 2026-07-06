@@ -7481,10 +7481,24 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let mut args: Vec<llvmkit_ir::Value<'ctx, B>> = Vec::new();
         let mut arg_tys: Vec<Type<'ctx, B>> = Vec::new();
         let mut arg_attrs = Vec::new();
+        let musttail = matches!(tail_kind, llvmkit_ir::instr_types::TailCallKind::MustTail);
+        let enclosing_varargs = state.func.signature().is_var_arg();
         let mut var_args = false;
         if !matches!(self.peek(), Token::RParen) {
             loop {
                 if matches!(self.peek(), Token::DotDotDot) {
+                    // Musttail forwarding ellipsis (`LLParser::parseParameterList`):
+                    // valid only in a musttail call inside a varargs function.
+                    if !musttail {
+                        return Err(self.expected(
+                            "unexpected ellipsis in argument list for non-musttail call",
+                        ));
+                    }
+                    if !enclosing_varargs {
+                        return Err(self.expected(
+                            "unexpected ellipsis in argument list for musttail call in non-varargs function",
+                        ));
+                    }
                     self.bump()?;
                     var_args = true;
                     break;
@@ -7501,6 +7515,13 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             }
         }
         self.expect_punct(PunctKind::RParen, "')' to close call argument list")?;
+        // Reciprocal rule: a musttail call in a varargs function must forward
+        // the varargs with a trailing `...`.
+        if musttail && enclosing_varargs && !var_args {
+            return Err(self.expected(
+                "expected '...' at end of argument list for musttail call in varargs function",
+            ));
+        }
         let (function_attrs, function_attr_groups) = self.parse_optional_fn_attrs()?;
         let operand_bundles = self.parse_optional_operand_bundles(state)?;
         let call_attrs = llvmkit_ir::instr_types::CallAttributeData::new(
@@ -8303,13 +8324,17 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let mut args: Vec<llvmkit_ir::Value<'ctx, B>> = Vec::new();
         let mut arg_tys: Vec<Type<'ctx, B>> = Vec::new();
         let mut arg_attrs = Vec::new();
-        let mut var_args = false;
+        // invoke can never be varargs-forwarding (only musttail calls are).
+        let var_args = false;
         if !matches!(self.peek(), Token::RParen) {
             loop {
                 if matches!(self.peek(), Token::DotDotDot) {
-                    self.bump()?;
-                    var_args = true;
-                    break;
+                    // An invoke can never be musttail, so a forwarding
+                    // ellipsis is always invalid here (`parseParameterList`
+                    // is called with `IsMustTailCall = false`).
+                    return Err(
+                        self.expected("unexpected ellipsis in argument list for non-musttail call")
+                    );
                 }
                 let arg_ty = self.parse_type(false)?;
                 let one_arg_attrs = self.parse_optional_param_attrs()?;
@@ -8427,13 +8452,16 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let mut args: Vec<llvmkit_ir::Value<'ctx, B>> = Vec::new();
         let mut arg_tys: Vec<Type<'ctx, B>> = Vec::new();
         let mut arg_attrs = Vec::new();
-        let mut var_args = false;
+        // callbr can never be varargs-forwarding (only musttail calls are).
+        let var_args = false;
         if !matches!(self.peek(), Token::RParen) {
             loop {
                 if matches!(self.peek(), Token::DotDotDot) {
-                    self.bump()?;
-                    var_args = true;
-                    break;
+                    // A callbr can never be musttail, so a forwarding
+                    // ellipsis is always invalid here.
+                    return Err(
+                        self.expected("unexpected ellipsis in argument list for non-musttail call")
+                    );
                 }
                 let arg_ty = self.parse_type(false)?;
                 let one_arg_attrs = self.parse_optional_param_attrs()?;

@@ -1637,6 +1637,25 @@ fn fmt_call(
         }
         fmt_operand_ref(f, av, Some(slots))?;
     }
+    // A musttail call in a varargs function forwards the varargs with a
+    // trailing `...` (AsmWriter's CallInst arm:
+    // `isMustTailCall() && getParent()->getParent()->isVarArg()`).
+    if matches!(c.tail_kind, crate::instr_types::TailCallKind::MustTail) {
+        let enclosing_varargs = inst
+            .as_value()
+            .local_parent_function_id()
+            .is_some_and(|fn_id| {
+                FunctionValue::<Dyn, _>::from_parts_unchecked(fn_id, module)
+                    .signature()
+                    .is_var_arg()
+            });
+        if enclosing_varargs {
+            if !c.args.is_empty() {
+                f.write_str(", ")?;
+            }
+            f.write_str("...")?;
+        }
+    }
     f.write_str(")")?;
     fmt_attribute_set(
         f,

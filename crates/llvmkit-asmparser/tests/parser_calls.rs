@@ -141,6 +141,76 @@ entry:\n\
     );
 }
 
+/// Mirrors `test/Assembler/musttail.ll`: a musttail call in a varargs
+/// function forwards the varargs with a trailing `...`, which the printer
+/// re-emits (AsmWriter's CallInst arm).
+#[test]
+fn musttail_varargs_forwarding_round_trips() {
+    let text = parse_and_render(
+        "declare ptr @f(ptr, ...)\n\
+         define ptr @thunk(ptr %this, ...) {\n\
+         entry:\n\
+           %rv = musttail call ptr (ptr, ...) @f(ptr %this, ...)\n\
+           ret ptr %rv\n\
+         }\n",
+    );
+    assert_check_lines(
+        &text,
+        &["%rv = musttail call ptr (ptr, ...) @f(ptr %this, ...)"],
+    );
+}
+
+/// `LLParser::parseParameterList`: `...` in a non-musttail call's argument
+/// list is rejected.
+#[test]
+fn ellipsis_in_non_musttail_call_rejected() {
+    let src = "declare void @f(...)\n\
+               define void @g() {\n\
+               entry:\n\
+                 call void (...) @f(i32 1, ...)\n\
+                 ret void\n\
+               }\n";
+    assert_fixture_rejected(
+        "ellipsis_non_musttail",
+        src.as_bytes(),
+        "unexpected ellipsis in argument list for non-musttail call",
+    );
+}
+
+/// `LLParser::parseParameterList`: a musttail `...` is rejected when the
+/// enclosing function is not varargs.
+#[test]
+fn musttail_ellipsis_in_non_varargs_function_rejected() {
+    let src = "declare void @f(...)\n\
+               define void @g() {\n\
+               entry:\n\
+                 musttail call void (...) @f(...)\n\
+                 ret void\n\
+               }\n";
+    assert_fixture_rejected(
+        "musttail_non_varargs",
+        src.as_bytes(),
+        "unexpected ellipsis in argument list for musttail call in non-varargs function",
+    );
+}
+
+/// `LLParser::parseParameterList`'s reciprocal rule: a musttail call in a
+/// varargs function must forward the varargs with a trailing `...`.
+#[test]
+fn musttail_in_varargs_without_ellipsis_rejected() {
+    let src = "declare void @f(...)\n\
+               define void @g(...) {\n\
+               entry:\n\
+                 musttail call void (...) @f()\n\
+                 ret void\n\
+               }\n";
+    assert_fixture_rejected(
+        "musttail_missing_ellipsis",
+        src.as_bytes(),
+        "expected '...' at end of argument list for musttail call in varargs function",
+    );
+}
+
 /// Mirrors `llvm/test/Assembler/amdgcn-intrinsic-attributes.ll` range
 /// attribute spelling on call return values.
 #[test]
