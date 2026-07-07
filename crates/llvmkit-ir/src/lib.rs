@@ -231,9 +231,9 @@ pub use pass_context::{
 };
 pub use pass_instrumentation::{PassInstrumentationAnalysis, PassInstrumentationCallbacks};
 pub use pass_manager::{
-    FunctionPass, FunctionPassManager, ModulePass, ModulePassEffect, ModulePassManager,
-    ModuleToFunctionPassAdaptor, MutatesIr, PassPipelineInfo, PreservesVerification,
-    ReadOnlyFunctionPass, ReadOnlyModulePass,
+    EffectJoin, FunctionPass, FunctionPassManager, ModulePass, ModulePassEffect, ModulePassManager,
+    ModuleToFunctionPassAdaptor, MutatesIr, PassPipelineInfo, PreservesVerification, ProvidesToken,
+    ReadOnlyFunctionPass, ReadOnlyModulePass, TypedPassEffect,
 };
 pub use pass_pipeline::{
     BDCE, CLEANUP_LIFT, CLEANUP_MIN, CLEANUP_O1_ISH, DCE, DEFAULT_O0, DEFAULT_O1, EARLY_CSE,

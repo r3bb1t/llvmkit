@@ -222,6 +222,97 @@ where
     }
 }
 
+/// Effect extension for the typed pipeline path: the module capability a pass
+/// of this effect receives. Read-only passes get no token; transform passes
+/// get the unverified-module mutation token (D8).
+pub trait TypedPassEffect: ModulePassEffect {
+    type ModuleToken<'pm, 'ctx, B: ModuleBrand + 'ctx>: Copy
+    where
+        'ctx: 'pm;
+}
+
+impl TypedPassEffect for PreservesVerification {
+    type ModuleToken<'pm, 'ctx, B: ModuleBrand + 'ctx>
+        = ()
+    where
+        'ctx: 'pm;
+}
+
+impl TypedPassEffect for MutatesIr {
+    type ModuleToken<'pm, 'ctx, B: ModuleBrand + 'ctx>
+        = &'pm Module<'ctx, B, Unverified>
+    where
+        'ctx: 'pm;
+}
+
+/// Type-level join on the two-point effect lattice: the composed pipeline is
+/// read-only iff every member is.
+pub trait EffectJoin<Rhs: TypedPassEffect>: TypedPassEffect {
+    type Out: TypedPassEffect;
+}
+
+impl EffectJoin<PreservesVerification> for PreservesVerification {
+    type Out = PreservesVerification;
+}
+impl EffectJoin<MutatesIr> for PreservesVerification {
+    type Out = MutatesIr;
+}
+impl EffectJoin<PreservesVerification> for MutatesIr {
+    type Out = MutatesIr;
+}
+impl EffectJoin<MutatesIr> for MutatesIr {
+    type Out = MutatesIr;
+}
+
+/// Token weakening from a pipeline effect to one member's effect. The missing
+/// `PreservesVerification: ProvidesToken<MutatesIr>` impl is intentional: a
+/// read-only pipeline cannot hand a mutation token to a transform member —
+/// unrepresentable rather than checked (D1).
+pub trait ProvidesToken<Member: TypedPassEffect>: TypedPassEffect {
+    fn member_token<'pm, 'ctx, B: ModuleBrand + 'ctx>(
+        token: Self::ModuleToken<'pm, 'ctx, B>,
+    ) -> Member::ModuleToken<'pm, 'ctx, B>
+    where
+        'ctx: 'pm;
+}
+
+impl ProvidesToken<PreservesVerification> for PreservesVerification {
+    fn member_token<'pm, 'ctx, B: ModuleBrand + 'ctx>(_token: Self::ModuleToken<'pm, 'ctx, B>)
+    where
+        'ctx: 'pm,
+    {
+    }
+}
+
+impl ProvidesToken<PreservesVerification> for MutatesIr {
+    fn member_token<'pm, 'ctx, B: ModuleBrand + 'ctx>(_token: Self::ModuleToken<'pm, 'ctx, B>)
+    where
+        'ctx: 'pm,
+    {
+    }
+}
+
+impl ProvidesToken<MutatesIr> for MutatesIr {
+    fn member_token<'pm, 'ctx, B: ModuleBrand + 'ctx>(
+        token: Self::ModuleToken<'pm, 'ctx, B>,
+    ) -> Self::ModuleToken<'pm, 'ctx, B>
+    where
+        'ctx: 'pm,
+    {
+        token
+    }
+}
+
+// `join_effects!` (the right-fold of member effects through `EffectJoin` that
+// Task 5's pass-list macro will use to spell a pipeline's derived effect) is
+// deferred to Task 5, where it lands alongside its first real caller. Adding
+// it here with no consumer trips `-D unused-macros` even from the in-module
+// test (the lib target's non-test build compiles `#[cfg(test)]` out, so
+// clippy still sees it as dead) -- the same shape as `OverflowFlags::from_parts`
+// carrying from Task 4 to Task 5 and `TypedCallInst::from_call` carrying from
+// Task 14 to Task 15; both were deleted and re-added with their first caller
+// rather than kept alive with `#[allow(dead_code)]`.
+
 /// Sequence of function passes.
 pub struct FunctionPassManager<
     'ctx,
@@ -664,5 +755,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B>
 
     fn is_required(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// llvmkit-specific effect-join lock (no upstream analog: upstream pass
+    /// managers have no compile-time read-only/transform distinction at all).
+    #[test]
+    fn effect_join_is_a_lattice_join() {
+        fn assert_same<E, F>()
+        where
+            E: EffectJoin<F, Out = MutatesIr>,
+            F: TypedPassEffect,
+        {
+        }
+        fn assert_ro<E, F>()
+        where
+            E: EffectJoin<F, Out = PreservesVerification>,
+            F: TypedPassEffect,
+        {
+        }
+        assert_ro::<PreservesVerification, PreservesVerification>();
+        assert_same::<PreservesVerification, MutatesIr>();
+        assert_same::<MutatesIr, PreservesVerification>();
+        assert_same::<MutatesIr, MutatesIr>();
     }
 }
