@@ -867,12 +867,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for DominatorT
 }
 
 /// Entry in a pass's static `MinPreserves` bound naming one analysis.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct Preserve<A>(PhantomData<fn() -> A>);
 
 /// Entry in a pass's static `MinPreserves` bound naming an analysis set
 /// (e.g. [`CFGAnalyses`]).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct PreserveSet<S>(PhantomData<fn() -> S>);
 
 mod preservation_sealed {
@@ -1110,6 +1110,13 @@ impl_function_analysis_list!(8; A0: Idx0 . 0, A1: Idx1 . 1, A2: Idx2 . 2, A3: Id
 /// [`ModuleAnalysisManager`] / [`ModuleView`]. Same duplicate-member caveat as
 /// [`FunctionAnalysisList`]: a `Requires` tuple naming the same analysis twice
 /// makes [`ModuleAnalysisSelector::select`] ambiguous, which is a compile error.
+///
+/// `impl_module_analysis_list!` below does not emit its own tuple
+/// `analysis_list_sealed::Sealed` impl -- it relies on the unconstrained tuple
+/// blanket already emitted by `impl_function_analysis_list!`, which seals every
+/// tuple arity regardless of member kind. If that function-list blanket is ever
+/// narrowed (e.g. bounded on `FunctionAnalysis`) or its arity coverage reduced,
+/// this trait silently loses sealing for the arities it depends on.
 pub trait ModuleAnalysisList<'ctx, B: ModuleBrand + 'ctx>: analysis_list_sealed::Sealed {
     /// Number of required analyses.
     const LEN: usize;

@@ -532,21 +532,6 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ModulePassContext<'pm, 'ctx, B> {
         (&self.module, self.mam, self.fam)
     }
 
-    /// Splits this context into the module token, the shared module-analysis
-    /// borrow, and the mutable function-analysis borrow, mirroring
-    /// [`Self::module_and_analysis_managers_for_function_passes`] but with a
-    /// shared (not mutable) `mam` borrow for the typed blanket's collect step.
-    #[inline]
-    pub(super) fn split_for_typed(
-        &mut self,
-    ) -> (
-        &Module<'ctx, B, Unverified>,
-        &ModuleAnalysisManager<'ctx, B>,
-        &mut FunctionAnalysisManager<'ctx, B>,
-    ) {
-        (&self.module, self.mam, self.fam)
-    }
-
     #[inline]
     pub(super) fn finish(self) -> Module<'ctx, B, Unverified> {
         self.module

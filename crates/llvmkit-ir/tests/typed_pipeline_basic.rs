@@ -392,6 +392,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> TypedFunctionPass<'ctx, B> for LoggingMutator 
 /// erased) and full-module visitation (`LoggingMutator` sees both `f` and `g`,
 /// which `DcePass` alone could not distinguish since `g`'s body has nothing to
 /// delete).
+///
+/// Every module-pipeline test in this file wraps `for_each_function(...)`,
+/// which dispatches through `ForEachFunction`'s own
+/// `ModulePipelineMember<(Kinds,)>` impl and therefore never touches the
+/// module-LEAF path (`ModulePipelineMember`'s `LeafMember` impl +
+/// `run_one_typed_module_pass`) that a bare `TypedModulePass` member takes.
+/// `TypedModulePass` is sealed to `llvmkit-ir` (`typed_module_pass_sealed`),
+/// so a leaf pass cannot be defined in this integration-test crate; that
+/// coverage lives in-crate instead, at
+/// `crates/llvmkit-ir/src/pass_manager.rs::tests::read_only_module_pipeline_runs_leaf_pass_and_stays_verified`.
 #[test]
 fn module_pipeline_adapts_function_pipeline() -> Result<(), IrError> {
     Module::with_new("typed-module", |m| {

@@ -1703,7 +1703,7 @@ where
         let module = cx.module();
         P::Requires::prefetch(cx.module_analysis_manager_mut(), module)?;
         let mut pass_pa = {
-            let (token, mam, fam) = cx.split_for_typed();
+            let (token, mam, fam) = cx.module_and_analysis_managers_for_function_passes();
             let results = P::Requires::collect(mam, module)?;
             let mut typed = TypedModulePassContext::new(module, token, results, fam);
             TypedModulePass::run(self, &mut typed)?
@@ -1752,7 +1752,7 @@ where
         let module = cx.module();
         P::Requires::prefetch(cx.module_analysis_manager_mut(), module)?;
         let mut pass_pa = {
-            let (_token, mam, fam) = cx.split_for_typed();
+            let (_token, mam, fam) = cx.module_and_analysis_managers_for_function_passes();
             let results = P::Requires::collect(mam, module)?;
             let mut typed = TypedModulePassContext::new(module, (), results, fam);
             TypedModulePass::run(&mut self.0, &mut typed)?
@@ -1769,6 +1769,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use crate::dominator_tree::DominatorTreeAnalysis;
+    use crate::{IRBuilder, IrError, Linkage, Type};
 
     /// llvmkit-specific effect-join lock (no upstream analog: upstream pass
     /// managers have no compile-time read-only/transform distinction at all).
@@ -1790,5 +1795,104 @@ mod tests {
         assert_same::<PreservesVerification, MutatesIr>();
         assert_same::<MutatesIr, PreservesVerification>();
         assert_same::<MutatesIr, MutatesIr>();
+    }
+
+    /// Read-only leaf [`TypedModulePass`]. Runs through
+    /// [`ModulePipelineMember`]'s [`LeafMember`] impl and
+    /// [`run_one_typed_module_pass`] -- the module-pipeline path that
+    /// `ForEachFunction`-wrapped tests in `tests/typed_pipeline_basic.rs`
+    /// never reach, since that adaptor dispatches through its own
+    /// `ModulePipelineMember<(Kinds,)>` impl instead. [`TypedModulePass`] is
+    /// sealed to this crate (`typed_module_pass_sealed`), so this pass must
+    /// live in an in-crate test module rather than the `tests/` integration
+    /// binary.
+    struct LogModulePass {
+        ran: Rc<RefCell<bool>>,
+        saw_entry_reachable: Rc<RefCell<Option<bool>>>,
+    }
+
+    // `Sealed` is a crate-private trait (`typed_module_pass_sealed`), so this
+    // impl can only be written from inside `llvmkit-ir` itself -- exactly why
+    // this test lives here rather than in the `tests/` integration binary.
+    impl typed_module_pass_sealed::Sealed for LogModulePass {}
+
+    impl<'ctx, B: ModuleBrand + 'ctx> TypedModulePass<'ctx, B> for LogModulePass {
+        type Effect = PreservesVerification;
+        type Requires = ();
+        type MinPreserves = ();
+        const NAME: &'static str = "log-module";
+
+        fn run(
+            &mut self,
+            cx: &mut TypedModulePassContext<'_, '_, '_, 'ctx, B, (), PreservesVerification>,
+        ) -> IrResult<PreservedAnalyses> {
+            *self.ran.borrow_mut() = true;
+            // Exercise `TypedModulePassContext::module()`.
+            let module = cx.module();
+            // Exercise the fallible per-function analysis accessor: module
+            // passes have no static `Requires` naming which functions they
+            // visit, so this stays fallible by design (unlike the infallible
+            // module-level `analysis::<A, I>()`, covered structurally by
+            // `requires_prefetch_makes_analysis_access_infallible` in
+            // `tests/typed_pipeline_basic.rs` via the same generic selector
+            // machinery).
+            let mut reachable = None;
+            for function in module.iter_functions() {
+                if let Some(entry) = function.entry_block() {
+                    let dt = cx.function_analysis::<DominatorTreeAnalysis>(function)?;
+                    reachable = Some(dt.is_reachable_from_entry(entry));
+                }
+            }
+            *self.saw_entry_reachable.borrow_mut() = reachable;
+            Ok(PreservedAnalyses::all())
+        }
+    }
+
+    /// Mirrors `unittests/IR/PassManagerTest.cpp::TEST(PassManagerTest, Basic)`'s
+    /// module-pass sequencing, but through the LEAF `TypedModulePass` path
+    /// instead of a `ForEachFunction`-wrapped function pipeline: this is the
+    /// path `ModulePipelineMember`'s `LeafMember` impl and
+    /// `run_one_typed_module_pass` take, which no existing
+    /// `typed_pipeline_basic.rs` test reaches (they all wrap
+    /// `for_each_function(...)`, which routes through `ForEachFunction`'s own
+    /// `ModulePipelineMember<(Kinds,)>` impl instead and never touches the
+    /// leaf runner).
+    #[test]
+    fn read_only_module_pipeline_runs_leaf_pass_and_stays_verified() -> Result<(), IrError> {
+        Module::with_new("typed-module-leaf-ro", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+            b.build_ret(i32_ty.const_int(1_u32))?;
+            let verified = m.verify()?;
+
+            let mut mam = ModuleAnalysisManager::new();
+            let mut fam = FunctionAnalysisManager::new();
+            // `function_analysis` is deliberately fallible (no static
+            // `Requires` names which functions a module pass will visit), so
+            // -- like every other caller of this accessor in the crate,
+            // e.g. `tests/analysis_basic.rs` -- the analysis must be
+            // registered manually before the pipeline runs.
+            fam.register_pass(DominatorTreeAnalysis);
+            let ran = Rc::new(RefCell::new(false));
+            let reachable = Rc::new(RefCell::new(None));
+            let mut pipe = module_pipeline((LogModulePass {
+                ran: ran.clone(),
+                saw_entry_reachable: reachable.clone(),
+            },));
+            // The whole point: a module pipeline of one read-only leaf pass
+            // type-checks its output as Verified -- the module-level mirror
+            // of `read_only_pipeline_returns_verified_module` in
+            // `tests/typed_pipeline_basic.rs`, proving
+            // `run_one_typed_module_pass` returns through the
+            // `PreservesVerification` module token rather than downgrading.
+            let _still_verified: Module<'_, _, Verified> =
+                pipe.run(verified, &mut mam, &mut fam)?;
+            assert!(*ran.borrow(), "leaf pass must have run");
+            assert_eq!(*reachable.borrow(), Some(true));
+            Ok(())
+        })
     }
 }
