@@ -1039,7 +1039,7 @@ mod pass_list_sealed {
 /// `FunctionParamList` tuple-schema shape; sealed — arities 1..=8, nest a
 /// [`FunctionPipeline`] as a member for longer pipelines.
 ///
-/// The joined effect is the [`join_effects!`] left-fold of the members'
+/// The joined effect is the `join_effects!` left-fold of the members'
 /// effects (through [`EffectFold`]/[`JoinsAll`]), and the `ProvidesToken` chain
 /// lets the pipeline weaken its own token to each member. Folding through
 /// [`EffectFold`] rather than a flat `where`-clause is what makes naming the
@@ -1284,9 +1284,9 @@ mod typed_module_pass_sealed {
 /// A typed pass over one module. The typed counterpart of
 /// [`ModulePass`]/[`ReadOnlyModulePass`]: effect, analysis requirements, and
 /// the preservation lower bound are part of the type (D1, D8). Mirrors
-/// [`TypedFunctionPass`] at module scope. Sealed (see
-/// [`typed_module_pass_sealed`]) so the erased-manager blanket impls below can
-/// coexist with [`ModuleToFunctionPassAdaptor`]'s manual impls.
+/// [`TypedFunctionPass`] at module scope. Sealed (see the private
+/// `typed_module_pass_sealed` module) so the erased-manager blanket impls below
+/// can coexist with [`ModuleToFunctionPassAdaptor`]'s manual impls.
 pub trait TypedModulePass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>>:
     typed_module_pass_sealed::Sealed
 {
