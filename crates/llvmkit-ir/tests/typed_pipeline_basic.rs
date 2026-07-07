@@ -7,8 +7,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    CFGAnalyses, MutatesIr, NoFolder, PreserveSet, PreservedAnalyses, PreservesVerification,
-    TypedFunctionPass, TypedFunctionPassContext, function_pipeline,
+    CFGAnalyses, ModuleAnalysisManager, MutatesIr, NoFolder, PreserveSet, PreservedAnalyses,
+    PreservesVerification, TypedFunctionPass, TypedFunctionPassContext, for_each_function,
+    function_pipeline, module_pipeline,
 };
 
 /// Brand-generic mirror of `llvm/unittests/IR/PassManagerTest.cpp::TEST(PassManagerTest,
@@ -55,6 +56,23 @@ fn build_ret_i32<'ctx, B: ModuleBrand + 'ctx>(
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, Vec::<Type<'ctx, B>>::new(), false);
     let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let entry = f.append_basic_block(m, "entry");
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    b.build_ret(i32_ty.const_int(1_u32))?;
+    Ok(f.into())
+}
+
+/// Same as [`build_ret_i32`] but with a caller-chosen function name, so a
+/// single module can hold more than one `build_ret_i32`-shaped definition
+/// (`f` is already taken by [`build_dead_add_then_ret`] in the module-pipeline
+/// test below).
+fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
+    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
+    name: &str,
+) -> Result<FunctionView<'ctx, B>, IrError> {
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, Vec::<Type<'ctx, B>>::new(), false);
+    let f = m.add_function::<i32, _>(name, fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
     b.build_ret(i32_ty.const_int(1_u32))?;
@@ -354,6 +372,74 @@ fn nested_pipeline_with_inner_transform_returns_unverified_module() -> Result<()
         assert_eq!(*log.borrow(), vec!["outer", "inner-ro"]);
         let text = format!("{reverified}");
         assert!(text.contains("%dead"), "{text}");
+        Ok(())
+    })
+}
+
+/// Local `MutatesIr` transform stand-in analogous to `MutatingNoop` above, but
+/// logging the visited function's name so a module-level test can assert
+/// `ForEachFunction` actually reaches every function definition (not just
+/// one). `DcePass` is not yet a `TypedFunctionPass` (Task 7 migrates it); a
+/// real deletion assertion also needs an instruction-erase capability that is
+/// crate-private (`Instruction::erase_from_parent` takes an `Attached`
+/// instruction obtainable only via a `pub(super)` constructor), so this
+/// stand-in proves per-function visitation and the effect-join/typestate
+/// downgrade instead -- the same scope `MutatingNoop` covers at the function
+/// level.
+struct LoggingMutator {
+    visited: Rc<RefCell<Vec<String>>>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> TypedFunctionPass<'ctx, B> for LoggingMutator {
+    type Effect = MutatesIr;
+    type Requires = ();
+    type MinPreserves = ();
+    const NAME: &'static str = "logging-mutator";
+
+    fn run(
+        &mut self,
+        cx: &mut TypedFunctionPassContext<'_, '_, 'ctx, B, (), MutatesIr>,
+    ) -> Result<PreservedAnalyses, IrError> {
+        self.visited
+            .borrow_mut()
+            .push(cx.function().name().to_owned());
+        Ok(PreservedAnalyses::none())
+    }
+}
+
+/// Mirrors the `ModuleToFunctionPassAdaptor` flow of
+/// `llvm/unittests/IR/PassManagerTest.cpp::TEST(PassManagerTest, Basic)` on the
+/// typed path: a module pipeline nests a function pipeline over every defined
+/// function, and the derived module effect follows the inner join. Uses the
+/// local `LoggingMutator` transform stand-in in place of `DcePass`, which is
+/// not yet a `TypedFunctionPass`; Task 7 flips this to `DcePass` and can
+/// restore a real dead-code assertion once that lands.
+#[test]
+fn module_pipeline_adapts_function_pipeline() -> Result<(), IrError> {
+    Module::with_new("typed-module", |m| {
+        let _f = build_dead_add_then_ret(&m)?;
+        let _g = build_ret_i32_named(&m, "g")?;
+        let verified = m.verify()?;
+        let mut mam = ModuleAnalysisManager::new();
+        let mut fam = FunctionAnalysisManager::new();
+        let visited = Rc::new(RefCell::new(Vec::new()));
+        let mut pipe = module_pipeline((for_each_function(function_pipeline((LoggingMutator {
+            visited: visited.clone(),
+        },))),));
+        // The derived module effect is MutatesIr (joined from the inner
+        // function pipeline's own MutatesIr effect via ForEachFunction's
+        // MemberEffect passthrough), so run() yields Module<Unverified> --
+        // this binding only type-checks because of that join.
+        let unverified: Module<'_, _, llvmkit_ir::Unverified> =
+            pipe.run(verified, &mut mam, &mut fam)?;
+        let reverified = unverified.verify()?;
+        // ForEachFunction actually visited every function definition in
+        // module order, not just the first one.
+        assert_eq!(*visited.borrow(), vec!["f", "g"]);
+        // LoggingMutator makes no IR edits, so the dead instruction survives
+        // -- this test locks visitation/effect-join, not deletion (see the
+        // struct doc comment for why a real DCE assertion waits on Task 7).
+        assert!(format!("{reverified}").contains("%dead"));
         Ok(())
     })
 }

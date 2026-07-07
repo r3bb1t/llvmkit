@@ -10,7 +10,7 @@ use super::BasicBlock;
 use super::IrResult;
 use super::analysis::{
     AnalysisSelector, FunctionAnalysis, FunctionAnalysisList, FunctionAnalysisManager,
-    ModuleAnalysis, ModuleAnalysisManager,
+    ModuleAnalysis, ModuleAnalysisList, ModuleAnalysisManager, ModuleAnalysisSelector,
 };
 use super::block_state::Terminated;
 use super::function::FunctionValue;
@@ -611,5 +611,111 @@ where
     #[inline]
     pub fn function_mut(&self) -> FunctionBody<'ctx, B> {
         FunctionBody::new(self.function.as_function())
+    }
+}
+
+/// Context passed to a typed module pass. Module-level `Requires` results are
+/// prefetched (infallible accessor); per-function analysis queries stay
+/// fallible by design -- they are inherently dynamic, mirroring upstream's
+/// `FunctionAnalysisManagerModuleProxy` posture (there is no static `Requires`
+/// list naming which function analyses a module pass will touch, since it may
+/// visit an arbitrary subset of the module's functions).
+///
+/// Mirrors [`TypedFunctionPassContext`]'s two-lifetime split, plus one more:
+/// the module `token` (`'pm`) borrows the long-lived pipeline module, the
+/// prefetched `results` (`'r`) borrow the module analysis manager only for
+/// the pass's `run` scope (so `mam` is free again for invalidation the
+/// moment `run` returns), and `fam` (`'f`) is reborrowed at its own scope so
+/// the caller's `&mut FunctionAnalysisManager` is likewise free again for
+/// `invalidate_module` once `run` returns -- distinct from `'pm` is exactly
+/// what a same-lifetime field cannot express, since `token` is `Copy` and
+/// shrinks freely but a unique `&mut` borrow does not.
+pub struct TypedModulePassContext<
+    'pm,
+    'r,
+    'f,
+    'ctx,
+    B: ModuleBrand,
+    R: ModuleAnalysisList<'ctx, B>,
+    E: TypedPassEffect,
+> where
+    B: 'ctx,
+    'ctx: 'pm,
+    'ctx: 'r,
+    'ctx: 'f,
+{
+    module: ModuleView<'ctx, B>,
+    token: E::ModuleToken<'pm, 'ctx, B>,
+    results: R::ResultRefs<'r>,
+    fam: &'f mut FunctionAnalysisManager<'ctx, B>,
+}
+
+impl<'pm, 'r, 'f, 'ctx, B, R, E> TypedModulePassContext<'pm, 'r, 'f, 'ctx, B, R, E>
+where
+    B: ModuleBrand + 'ctx,
+    R: ModuleAnalysisList<'ctx, B>,
+    E: TypedPassEffect,
+{
+    #[inline]
+    pub(super) fn new(
+        module: ModuleView<'ctx, B>,
+        token: E::ModuleToken<'pm, 'ctx, B>,
+        results: R::ResultRefs<'r>,
+        fam: &'f mut FunctionAnalysisManager<'ctx, B>,
+    ) -> Self {
+        Self {
+            module,
+            token,
+            results,
+            fam,
+        }
+    }
+
+    /// Read-only module view.
+    #[inline]
+    pub fn module(&self) -> ModuleView<'ctx, B> {
+        self.module
+    }
+
+    /// Function views in declaration order.
+    #[inline]
+    pub fn functions(&self) -> ModuleFunctionViews<'ctx, B> {
+        ModuleFunctionViews::new(self.module)
+    }
+
+    /// Infallible access to a `Requires`-declared module analysis result. The
+    /// position index `I` is inferred; an undeclared analysis has no
+    /// [`ModuleAnalysisSelector`] impl and fails to compile.
+    #[inline]
+    pub fn analysis<A, I>(&self) -> &'r A::Result
+    where
+        A: ModuleAnalysis<'ctx, B>,
+        R: ModuleAnalysisSelector<'ctx, B, A, I>,
+    {
+        R::select(&self.results)
+    }
+
+    /// Query a function analysis for a function in this module. Deliberately
+    /// dynamic (fallible): unlike module-level `Requires`, there is no static
+    /// list of which functions a module pass will visit, so per-function
+    /// analysis access cannot be prefetched into an infallible accessor.
+    #[inline]
+    pub fn function_analysis<A>(&mut self, function: FunctionView<'ctx, B>) -> IrResult<&A::Result>
+    where
+        A: FunctionAnalysis<'ctx, B>,
+    {
+        self.fam.get_result::<A, _>(function)
+    }
+}
+
+impl<'pm, 'r, 'f, 'ctx, B, R> TypedModulePassContext<'pm, 'r, 'f, 'ctx, B, R, MutatesIr>
+where
+    B: ModuleBrand + 'ctx,
+    R: ModuleAnalysisList<'ctx, B>,
+{
+    /// Mutation-capable module token for saved-handle mutators.
+    #[inline]
+    pub fn module_mut(&self) -> &'pm Module<'ctx, B, Unverified> {
+        self.token
     }
 }
