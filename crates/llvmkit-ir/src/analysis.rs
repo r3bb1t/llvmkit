@@ -866,6 +866,70 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for DominatorT
     }
 }
 
+/// Entry in a pass's static `MinPreserves` bound naming one analysis.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Preserve<A>(PhantomData<fn() -> A>);
+
+/// Entry in a pass's static `MinPreserves` bound naming an analysis set
+/// (e.g. [`CFGAnalyses`]).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PreserveSet<S>(PhantomData<fn() -> S>);
+
+mod preservation_sealed {
+    pub trait Sealed {}
+}
+
+/// One `MinPreserves` entry. Sealed: the only entries are [`Preserve`] and
+/// [`PreserveSet`], so single analyses and set markers cannot be confused.
+pub trait PreservationEntry: preservation_sealed::Sealed + 'static {
+    fn apply(pa: &mut PreservedAnalyses);
+}
+
+impl<A: 'static> preservation_sealed::Sealed for Preserve<A> {}
+impl<A: 'static> PreservationEntry for Preserve<A> {
+    fn apply(pa: &mut PreservedAnalyses) {
+        pa.preserve::<A>();
+    }
+}
+
+impl<S: 'static> preservation_sealed::Sealed for PreserveSet<S> {}
+impl<S: 'static> PreservationEntry for PreserveSet<S> {
+    fn apply(pa: &mut PreservedAnalyses) {
+        pa.preserve_set::<S>();
+    }
+}
+
+/// A pass's static preservation lower bound: the entries are unioned into the
+/// runtime [`PreservedAnalyses`] after every run, so a pass cannot under-report
+/// its declared contract. The runtime value may still preserve more (an
+/// unchanged pass returns `all()`), mirroring upstream's dynamic refinement.
+pub trait PreservationBound: 'static {
+    fn apply(pa: &mut PreservedAnalyses);
+}
+
+impl PreservationBound for () {
+    fn apply(_pa: &mut PreservedAnalyses) {}
+}
+
+macro_rules! impl_preservation_bound {
+    ($($entry:ident),+) => {
+        impl<$($entry: PreservationEntry),+> PreservationBound for ($($entry,)+) {
+            fn apply(pa: &mut PreservedAnalyses) {
+                $($entry::apply(pa);)+
+            }
+        }
+    };
+}
+
+impl_preservation_bound!(E0);
+impl_preservation_bound!(E0, E1);
+impl_preservation_bound!(E0, E1, E2);
+impl_preservation_bound!(E0, E1, E2, E3);
+impl_preservation_bound!(E0, E1, E2, E3, E4);
+impl_preservation_bound!(E0, E1, E2, E3, E4, E5);
+impl_preservation_bound!(E0, E1, E2, E3, E4, E5, E6);
+impl_preservation_bound!(E0, E1, E2, E3, E4, E5, E6, E7);
+
 mod analysis_list_sealed {
     pub trait Sealed {}
 }
@@ -1218,5 +1282,21 @@ mod tests {
             assert_eq!(entry_view, Some(true));
             Ok(())
         })
+    }
+
+    /// llvmkit-specific static preservation-bound lock; the runtime union it
+    /// performs mirrors `PreservedAnalyses::preserve`/`preserveSet` semantics
+    /// from `llvm/include/llvm/IR/Analysis.h` (ported in this file).
+    #[test]
+    fn preservation_bound_unions_into_none() {
+        let mut pa = PreservedAnalyses::none();
+        <(PreserveSet<CFGAnalyses>,) as PreservationBound>::apply(&mut pa);
+        let checker = pa.checker::<crate::DominatorTreeAnalysis>();
+        assert!(checker.preserved_set::<CFGAnalyses>());
+        assert!(!checker.preserved());
+
+        let mut all = PreservedAnalyses::all();
+        <() as PreservationBound>::apply(&mut all);
+        assert!(all.are_all_preserved());
     }
 }
