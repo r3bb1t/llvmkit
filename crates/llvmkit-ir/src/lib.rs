@@ -228,12 +228,15 @@ pub use optimization_level::{
 pub use pass_context::{
     BasicBlockView, FunctionBody, FunctionPassContext, FunctionView, ModuleFunctionViews,
     ModulePassContext, ReadOnlyFunctionPassContext, ReadOnlyModulePassContext,
+    TypedFunctionPassContext,
 };
 pub use pass_instrumentation::{PassInstrumentationAnalysis, PassInstrumentationCallbacks};
 pub use pass_manager::{
-    EffectJoin, FunctionPass, FunctionPassManager, ModulePass, ModulePassEffect, ModulePassManager,
-    ModuleToFunctionPassAdaptor, MutatesIr, PassPipelineInfo, PreservesVerification, ProvidesToken,
-    ReadOnlyFunctionPass, ReadOnlyModulePass, TypedPassEffect,
+    EffectFold, EffectJoin, FunctionPass, FunctionPassList, FunctionPassManager, FunctionPipeline,
+    FunctionPipelineExecution, FunctionPipelineMember, JoinsAll, ModulePass, ModulePassEffect,
+    ModulePassManager, ModuleToFunctionPassAdaptor, MutatesIr, PassPipelineInfo,
+    PreservesVerification, ProvidesToken, ReadOnlyFunctionPass, ReadOnlyModulePass,
+    TypedFunctionPass, TypedPassEffect, function_pipeline,
 };
 pub use pass_pipeline::{
     BDCE, CLEANUP_LIFT, CLEANUP_MIN, CLEANUP_O1_ISH, DCE, DEFAULT_O0, DEFAULT_O1, EARLY_CSE,

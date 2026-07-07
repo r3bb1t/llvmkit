@@ -9,7 +9,8 @@ use core::marker::PhantomData;
 use super::BasicBlock;
 use super::IrResult;
 use super::analysis::{
-    FunctionAnalysis, FunctionAnalysisManager, ModuleAnalysis, ModuleAnalysisManager,
+    AnalysisSelector, FunctionAnalysis, FunctionAnalysisList, FunctionAnalysisManager,
+    ModuleAnalysis, ModuleAnalysisManager,
 };
 use super::block_state::Terminated;
 use super::function::FunctionValue;
@@ -17,6 +18,7 @@ use super::marker::{Dyn, ReturnMarker};
 use super::module::{
     Brand, Invariant, Module, ModuleBrand, ModuleRef, ModuleView, Unverified, Verified,
 };
+use super::pass_manager::{MutatesIr, TypedPassEffect};
 
 /// Read-only view of a basic block under its owning module brand.
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -520,5 +522,94 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ModulePassContext<'pm, 'ctx, B> {
     #[inline]
     pub(super) fn finish(self) -> Module<'ctx, B, Unverified> {
         self.module
+    }
+}
+
+/// Context passed to a typed function pass. Carries only what the pass
+/// declared: the per-effect module token and the prefetched `Requires`
+/// results — there is no analysis manager here, so undeclared analyses are
+/// unreachable rather than fallible (D1/D3; ad-hoc queries belong to the
+/// erased pass path).
+///
+/// The module `token` (`'pm`) and the prefetched `results` (`'r`) carry
+/// distinct lifetimes: the token borrows the long-lived pipeline module while
+/// the results borrow the analysis manager only for the pass's `run` scope, so
+/// the manager is free again for invalidation the moment `run` returns.
+pub struct TypedFunctionPassContext<
+    'pm,
+    'r,
+    'ctx,
+    B: ModuleBrand,
+    R: FunctionAnalysisList<'ctx, B>,
+    E: TypedPassEffect,
+> where
+    B: 'ctx,
+    'ctx: 'pm,
+    'ctx: 'r,
+{
+    token: E::ModuleToken<'pm, 'ctx, B>,
+    function: FunctionView<'ctx, B>,
+    results: R::ResultRefs<'r>,
+}
+
+impl<'pm, 'r, 'ctx, B, R, E> TypedFunctionPassContext<'pm, 'r, 'ctx, B, R, E>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    E: TypedPassEffect,
+{
+    #[inline]
+    pub(super) fn new(
+        token: E::ModuleToken<'pm, 'ctx, B>,
+        function: FunctionView<'ctx, B>,
+        results: R::ResultRefs<'r>,
+    ) -> Self {
+        Self {
+            token,
+            function,
+            results,
+        }
+    }
+
+    /// Read-only function view.
+    #[inline]
+    pub fn function(&self) -> FunctionView<'ctx, B> {
+        self.function
+    }
+
+    /// Owning module view.
+    #[inline]
+    pub fn module(&self) -> ModuleView<'ctx, B> {
+        self.function.module()
+    }
+
+    /// Infallible access to a `Requires`-declared analysis result. The
+    /// position index `I` is inferred; an undeclared analysis has no
+    /// [`AnalysisSelector`] impl and fails to compile.
+    #[inline]
+    pub fn analysis<A, I>(&self) -> &'r A::Result
+    where
+        A: FunctionAnalysis<'ctx, B>,
+        R: AnalysisSelector<'ctx, B, A, I>,
+    {
+        R::select(&self.results)
+    }
+}
+
+impl<'pm, 'r, 'ctx, B, R> TypedFunctionPassContext<'pm, 'r, 'ctx, B, R, MutatesIr>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+{
+    /// Mutation-capable module token for saved-handle mutators.
+    #[inline]
+    pub fn module_mut(&self) -> &'pm Module<'ctx, B, Unverified> {
+        self.token
+    }
+
+    /// Mutation-capable function-body view.
+    #[inline]
+    pub fn function_mut(&self) -> FunctionBody<'ctx, B> {
+        FunctionBody::new(self.function.as_function())
     }
 }
