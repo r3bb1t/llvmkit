@@ -19,14 +19,15 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 1336. Genuinely recounted (not incremental
-arithmetic) on 2026-07-07 at the `feature-2/typed-pass-core` tip after
-Task 8 (base commit 77f2fca; the prior 1332 header from the Task 5 point
-drifted upward as Tasks 6-7 landed `typed_pipeline_basic.rs`'s function/
-module/dyn-interop pipeline tests before Task 8's compile-fail fixtures
-closed out the phase -- the fixtures themselves are trybuild `fn main()`
-programs, not `#[test]` functions, so they do not move this count), via
-the attribute-anchored
+Total `#[test]` functions: 1337. Genuinely recounted (not incremental
+arithmetic) on 2026-07-07 at the `feature-2/typed-pass-core` tip after the
+final-review fix wave (base commit 136fbde; the prior 1332 header from the
+Task 5 point drifted upward as Tasks 6-7 landed `typed_pipeline_basic.rs`'s
+function/module/dyn-interop pipeline tests, Task 8's compile-fail fixtures
+closed out the phase, and the final-review fix wave added the in-crate
+module-leaf `TypedModulePass` test -- the compile-fail fixtures themselves
+are trybuild `fn main()` programs, not `#[test]` functions, so they do not
+move this count), via the attribute-anchored
 `grep -rEc "^\s*#\[test\]" --include="*.rs" crates/ llvmkit/ | awk -F: '{sum+=$2} END {print sum}'`
 (matches counting every attribute line, one per test). A prior count used
 the unanchored `grep -rc '#\[test\]' --include='*.rs' crates llvmkit`, which
