@@ -1,0 +1,452 @@
+use llvmkit_ir::{
+    DominatorTreeAnalysis, FunctionAnalysisManager, FunctionView, IRBuilder, IrError, Linkage,
+    Module, ModuleBrand, Type,
+};
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use llvmkit_ir::{
+    CFGAnalyses, DcePass, FunctionPassManager, ModuleAnalysisManager, MutatesIr, NoFolder,
+    PreserveSet, PreservedAnalyses, PreservesVerification, TypedFunctionPass,
+    TypedFunctionPassContext, for_each_function, function_pipeline, module_pipeline,
+};
+
+/// Brand-generic mirror of `llvm/unittests/IR/PassManagerTest.cpp::TEST(PassManagerTest,
+/// Basic)`'s analysis-registration/getResult flow: an analysis must be usable from code
+/// that is generic over the module brand, not just the default brand.
+fn domtree_via_generic_brand<'ctx, B: ModuleBrand + 'ctx>(
+    function: FunctionView<'ctx, B>,
+    fam: &mut FunctionAnalysisManager<'ctx, B>,
+) -> Result<bool, IrError> {
+    fam.ensure_registered_default::<DominatorTreeAnalysis>();
+    let entry = function.entry_block();
+    let dt = fam.get_result::<DominatorTreeAnalysis, _>(function)?;
+    // BasicBlockView implements DominatorTreeBlock (dominator_tree.rs lines 44-132),
+    // so the entry view queries reachability directly.
+    Ok(match entry {
+        Some(bb) => dt.is_reachable_from_entry(bb),
+        None => false,
+    })
+}
+
+/// Same upstream anchor; drives the generic helper through a real module.
+#[test]
+fn dominator_tree_analysis_is_brand_generic() -> Result<(), IrError> {
+    Module::with_new("brand-generic-domtree", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        b.build_ret(i32_ty.const_int(1_u32))?;
+        let _verified = m.verify()?;
+
+        let mut fam = FunctionAnalysisManager::new();
+        assert!(domtree_via_generic_brand(f.into(), &mut fam)?);
+        Ok(())
+    })
+}
+
+/// Shared IR-builder helper: a single-block `i32 @f()` whose entry returns a
+/// constant. Modelled on `tests/scalar_cleanup_passes.rs`'s ret-only fixtures.
+fn build_ret_i32<'ctx, B: ModuleBrand + 'ctx>(
+    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
+) -> Result<FunctionView<'ctx, B>, IrError> {
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, Vec::<Type<'ctx, B>>::new(), false);
+    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let entry = f.append_basic_block(m, "entry");
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    b.build_ret(i32_ty.const_int(1_u32))?;
+    Ok(f.into())
+}
+
+/// Same as [`build_ret_i32`] but with a caller-chosen function name, so a
+/// single module can hold more than one `build_ret_i32`-shaped definition
+/// (`f` is already taken by [`build_dead_add_then_ret`] in the module-pipeline
+/// test below).
+fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
+    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
+    name: &str,
+) -> Result<FunctionView<'ctx, B>, IrError> {
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, Vec::<Type<'ctx, B>>::new(), false);
+    let f = m.add_function::<i32, _>(name, fn_ty, Linkage::External)?;
+    let entry = f.append_basic_block(m, "entry");
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    b.build_ret(i32_ty.const_int(1_u32))?;
+    Ok(f.into())
+}
+
+/// Shared IR-builder helper: `i32 @f()` with one unused constant `add` named
+/// `dead` before the terminator. Uses `NoFolder` so the constant add is not
+/// folded away at construction time (matches
+/// `tests/scalar_cleanup_passes.rs`'s dead-instruction idiom).
+fn build_dead_add_then_ret<'ctx, B: ModuleBrand + 'ctx>(
+    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
+) -> Result<FunctionView<'ctx, B>, IrError> {
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, Vec::<Type<'ctx, B>>::new(), false);
+    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let entry = f.append_basic_block(m, "entry");
+    let b = IRBuilder::with_folder(m, NoFolder).position_at_end(entry);
+    let _dead = b.build_int_add::<i32, _, _, _>(
+        i32_ty.const_int(10_u32),
+        i32_ty.const_int(20_u32),
+        "dead",
+    )?;
+    b.build_ret(i32_ty.const_int(1_u32))?;
+    Ok(f.into())
+}
+
+/// Mirrors `llvm/unittests/IR/PassManagerTest.cpp::TEST(PassManagerTest, Basic)`
+/// pass-sequencing on the typed pipeline path: two passes run in order and the
+/// pipeline's aggregate PreservedAnalyses is their intersection.
+struct LogPass {
+    log: Rc<RefCell<Vec<&'static str>>>,
+    tag: &'static str,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> TypedFunctionPass<'ctx, B> for LogPass {
+    type Effect = PreservesVerification;
+    type Requires = ();
+    type MinPreserves = ();
+    const NAME: &'static str = "log";
+
+    fn run(
+        &mut self,
+        _cx: &mut TypedFunctionPassContext<'_, '_, 'ctx, B, (), PreservesVerification>,
+    ) -> Result<PreservedAnalyses, IrError> {
+        self.log.borrow_mut().push(self.tag);
+        Ok(PreservedAnalyses::all())
+    }
+}
+
+/// Same upstream anchor: a read-only pipeline of read-only passes keeps the
+/// module Verified — the effect is derived, not declared.
+#[test]
+fn read_only_pipeline_returns_verified_module() -> Result<(), IrError> {
+    Module::with_new("typed-ro", |m| {
+        let f = build_ret_i32(&m)?;
+        let verified = m.verify()?;
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut pipe = function_pipeline((
+            LogPass {
+                log: log.clone(),
+                tag: "a",
+            },
+            LogPass {
+                log: log.clone(),
+                tag: "b",
+            },
+        ));
+        let mut fam = FunctionAnalysisManager::new();
+        // The whole point: this binding type-checks as Verified.
+        let _still_verified: Module<'_, _, llvmkit_ir::Verified> =
+            pipe.run(verified, f, &mut fam)?;
+        assert_eq!(*log.borrow(), vec!["a", "b"]);
+        Ok(())
+    })
+}
+
+/// Mirrors the same PassManagerTest sequencing for a mixed pipeline: one
+/// transform member (`DcePass`, now a `TypedFunctionPass` as of Task 7) joins
+/// the pipeline effect to MutatesIr, so run() returns an Unverified module
+/// that must be re-verified (D8), and the dead instruction it erases is gone
+/// from the reverified module.
+#[test]
+fn mixed_pipeline_returns_unverified_module() -> Result<(), IrError> {
+    Module::with_new("typed-mixed", |m| {
+        let f = build_dead_add_then_ret(&m)?;
+        let verified = m.verify()?;
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut pipe = function_pipeline((
+            LogPass {
+                log: log.clone(),
+                tag: "ro",
+            },
+            DcePass,
+        ));
+        let mut fam = FunctionAnalysisManager::new();
+        // The derived effect is MutatesIr: run() yields Module<Unverified>, so
+        // this binding only type-checks because the transform member downgraded
+        // the pipeline's output typestate.
+        let unverified: Module<'_, _, llvmkit_ir::Unverified> = pipe.run(verified, f, &mut fam)?;
+        let reverified = unverified.verify()?;
+        assert_eq!(*log.borrow(), vec!["ro"]);
+        let text = format!("{reverified}");
+        assert!(!text.contains("%dead"), "{text}");
+        Ok(())
+    })
+}
+
+/// Mirrors `PassManagerTest.cpp` analysis-getResult flow with zero manual
+/// registration: `Requires` prefetch registers and computes DominatorTree, and
+/// the typed context accessor is infallible.
+struct NeedsDomTree {
+    saw_entry_reachable: Rc<RefCell<Option<bool>>>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> TypedFunctionPass<'ctx, B> for NeedsDomTree {
+    type Effect = PreservesVerification;
+    type Requires = (DominatorTreeAnalysis,);
+    type MinPreserves = ();
+    const NAME: &'static str = "needs-domtree";
+
+    fn run(
+        &mut self,
+        cx: &mut TypedFunctionPassContext<
+            '_,
+            '_,
+            'ctx,
+            B,
+            (DominatorTreeAnalysis,),
+            PreservesVerification,
+        >,
+    ) -> Result<PreservedAnalyses, IrError> {
+        let dt = cx.analysis::<DominatorTreeAnalysis, _>(); // no IrResult, no unwrap
+        let reachable = cx
+            .function()
+            .entry_block()
+            .map(|bb| dt.is_reachable_from_entry(bb));
+        *self.saw_entry_reachable.borrow_mut() = reachable;
+        Ok(PreservedAnalyses::all())
+    }
+}
+
+#[test]
+fn requires_prefetch_makes_analysis_access_infallible() -> Result<(), IrError> {
+    Module::with_new("typed-requires", |m| {
+        let f = build_ret_i32(&m)?;
+        let verified = m.verify()?;
+        let seen = Rc::new(RefCell::new(None));
+        let mut pipe = function_pipeline((NeedsDomTree {
+            saw_entry_reachable: seen.clone(),
+        },));
+        let mut fam = FunctionAnalysisManager::new(); // note: NO register_pass call
+        let _v = pipe.run(verified, f, &mut fam)?;
+        assert_eq!(*seen.borrow(), Some(true));
+        Ok(())
+    })
+}
+
+/// Mirrors the CFGAnalyses-preservation invalidation rule of
+/// `DominatorTree::invalidate` (ported in dominator_tree.rs): a pass whose
+/// MinPreserves declares PreserveSet<CFGAnalyses> keeps the cached tree alive
+/// even though its runtime return is none().
+struct UnderReportingPass;
+
+impl<'ctx, B: ModuleBrand + 'ctx> TypedFunctionPass<'ctx, B> for UnderReportingPass {
+    type Effect = PreservesVerification;
+    type Requires = (DominatorTreeAnalysis,);
+    type MinPreserves = (PreserveSet<CFGAnalyses>,);
+    const NAME: &'static str = "under-reporting";
+
+    fn run(
+        &mut self,
+        _cx: &mut TypedFunctionPassContext<
+            '_,
+            '_,
+            'ctx,
+            B,
+            (DominatorTreeAnalysis,),
+            PreservesVerification,
+        >,
+    ) -> Result<PreservedAnalyses, IrError> {
+        Ok(PreservedAnalyses::none()) // "forgets" the CFG set; the bound unions it back
+    }
+}
+
+#[test]
+fn min_preserves_bound_is_unioned_into_runtime_result() -> Result<(), IrError> {
+    Module::with_new("typed-minpreserves", |m| {
+        let f = build_ret_i32(&m)?;
+        let verified = m.verify()?;
+        let mut pipe = function_pipeline((UnderReportingPass,));
+        let mut fam = FunctionAnalysisManager::new();
+        let _v = pipe.run(verified, f, &mut fam)?;
+        // DominatorTree survives because CFGAnalyses was force-preserved.
+        assert!(
+            fam.get_cached_result::<DominatorTreeAnalysis, _>(f)
+                .is_some(),
+            "MinPreserves union must keep the CFG-set-preserved DominatorTree cached"
+        );
+        Ok(())
+    })
+}
+
+/// Mirrors the same PassManagerTest.cpp pass-sequencing flow one level deeper:
+/// a `FunctionPipeline` nested as a member of another `FunctionPipeline`
+/// (dispatched through the `NestedMember`/`LeafMember` `Kind` tag on
+/// `FunctionPipelineMember`) is itself all read-only, so the derived effect
+/// must propagate out of the inner pipeline unchanged. This is the
+/// nesting-coverage gap flagged in Task 5's review: nesting was exercised by
+/// nothing in-tree before this test, even though Tasks 6-8 depend on it.
+#[test]
+fn nested_read_only_pipeline_returns_verified_module() -> Result<(), IrError> {
+    Module::with_new("typed-nested-ro", |m| {
+        let f = build_ret_i32(&m)?;
+        let verified = m.verify()?;
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut pipe = function_pipeline((
+            LogPass {
+                log: log.clone(),
+                tag: "outer",
+            },
+            function_pipeline((
+                LogPass {
+                    log: log.clone(),
+                    tag: "inner-a",
+                },
+                LogPass {
+                    log: log.clone(),
+                    tag: "inner-b",
+                },
+            )),
+        ));
+        let mut fam = FunctionAnalysisManager::new();
+        // The whole point: this binding type-checks as Verified even though
+        // one member is itself a pipeline -- the derived effect of the inner
+        // pipeline (all read-only) joins cleanly with the outer member.
+        let _still_verified: Module<'_, _, llvmkit_ir::Verified> =
+            pipe.run(verified, f, &mut fam)?;
+        assert_eq!(*log.borrow(), vec!["outer", "inner-a", "inner-b"]);
+        Ok(())
+    })
+}
+
+/// Same nesting mechanism as `nested_read_only_pipeline_returns_verified_module`,
+/// but the transform member (`DcePass`) sits inside the INNER pipeline rather
+/// than the outer one. This proves the derived-effect join flows *out* of a
+/// nested pipeline to its parent: the inner pipeline's own effect is already
+/// `MutatesIr` (folded from its members), and that folded effect -- not the
+/// leaf members themselves -- is what the outer pipeline joins against,
+/// downgrading the whole run to `Module<Unverified>` (D8).
+#[test]
+fn nested_pipeline_with_inner_transform_returns_unverified_module() -> Result<(), IrError> {
+    Module::with_new("typed-nested-mixed", |m| {
+        let f = build_dead_add_then_ret(&m)?;
+        let verified = m.verify()?;
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut pipe = function_pipeline((
+            LogPass {
+                log: log.clone(),
+                tag: "outer",
+            },
+            function_pipeline((
+                LogPass {
+                    log: log.clone(),
+                    tag: "inner-ro",
+                },
+                DcePass,
+            )),
+        ));
+        let mut fam = FunctionAnalysisManager::new();
+        // The derived effect is MutatesIr, sourced entirely from the inner
+        // pipeline's folded effect: run() yields Module<Unverified>, so this
+        // binding only type-checks because the inner pipeline's transform
+        // member propagated its downgrade out to the outer pipeline.
+        let unverified: Module<'_, _, llvmkit_ir::Unverified> = pipe.run(verified, f, &mut fam)?;
+        let reverified = unverified.verify()?;
+        assert_eq!(*log.borrow(), vec!["outer", "inner-ro"]);
+        let text = format!("{reverified}");
+        assert!(!text.contains("%dead"), "{text}");
+        Ok(())
+    })
+}
+
+/// Local `MutatesIr` transform stand-in logging the visited function's name so
+/// a module-level test can assert `ForEachFunction` actually reaches every
+/// function definition (not just one), in addition to `DcePass`'s real
+/// deletion. Kept alongside `DcePass` (rather than replaced by it) because
+/// `DcePass` alone cannot distinguish "visited but nothing to delete" from
+/// "never visited" for `g`, whose body has no dead instruction.
+struct LoggingMutator {
+    visited: Rc<RefCell<Vec<String>>>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> TypedFunctionPass<'ctx, B> for LoggingMutator {
+    type Effect = MutatesIr;
+    type Requires = ();
+    type MinPreserves = ();
+    const NAME: &'static str = "logging-mutator";
+
+    fn run(
+        &mut self,
+        cx: &mut TypedFunctionPassContext<'_, '_, 'ctx, B, (), MutatesIr>,
+    ) -> Result<PreservedAnalyses, IrError> {
+        self.visited
+            .borrow_mut()
+            .push(cx.function().name().to_owned());
+        Ok(PreservedAnalyses::none())
+    }
+}
+
+/// Mirrors the `ModuleToFunctionPassAdaptor` flow of
+/// `llvm/unittests/IR/PassManagerTest.cpp::TEST(PassManagerTest, Basic)` on the
+/// typed path: a module pipeline nests a function pipeline over every defined
+/// function, and the derived module effect follows the inner join. Runs
+/// `DcePass` alongside `LoggingMutator` in the nested function pipeline so the
+/// test locks both real per-function deletion (the dead instruction in `f` is
+/// erased) and full-module visitation (`LoggingMutator` sees both `f` and `g`,
+/// which `DcePass` alone could not distinguish since `g`'s body has nothing to
+/// delete).
+///
+/// Every module-pipeline test in this file wraps `for_each_function(...)`,
+/// which dispatches through `ForEachFunction`'s own
+/// `ModulePipelineMember<(Kinds,)>` impl and therefore never touches the
+/// module-LEAF path (`ModulePipelineMember`'s `LeafMember` impl +
+/// `run_one_typed_module_pass`) that a bare `TypedModulePass` member takes.
+/// `TypedModulePass` is sealed to `llvmkit-ir` (`typed_module_pass_sealed`),
+/// so a leaf pass cannot be defined in this integration-test crate; that
+/// coverage lives in-crate instead, at
+/// `crates/llvmkit-ir/src/pass_manager.rs::tests::read_only_module_pipeline_runs_leaf_pass_and_stays_verified`.
+#[test]
+fn module_pipeline_adapts_function_pipeline() -> Result<(), IrError> {
+    Module::with_new("typed-module", |m| {
+        let _f = build_dead_add_then_ret(&m)?;
+        let _g = build_ret_i32_named(&m, "g")?;
+        let verified = m.verify()?;
+        let mut mam = ModuleAnalysisManager::new();
+        let mut fam = FunctionAnalysisManager::new();
+        let visited = Rc::new(RefCell::new(Vec::new()));
+        let mut pipe = module_pipeline((for_each_function(function_pipeline((
+            LoggingMutator {
+                visited: visited.clone(),
+            },
+            DcePass,
+        ))),));
+        // The derived module effect is MutatesIr (joined from the inner
+        // function pipeline's own MutatesIr effect via ForEachFunction's
+        // MemberEffect passthrough), so run() yields Module<Unverified> --
+        // this binding only type-checks because of that join.
+        let unverified: Module<'_, _, llvmkit_ir::Unverified> =
+            pipe.run(verified, &mut mam, &mut fam)?;
+        let reverified = unverified.verify()?;
+        // ForEachFunction actually visited every function definition in
+        // module order, not just the first one.
+        assert_eq!(*visited.borrow(), vec!["f", "g"]);
+        // DcePass actually erased the dead instruction in `f`.
+        let text = format!("{reverified}");
+        assert!(!text.contains("%dead"), "{text}");
+        Ok(())
+    })
+}
+
+/// Mirrors the erased-manager sequencing of scalar_cleanup_passes.rs (same
+/// upstream anchors: DCE.cpp::eliminateDeadCode) but adds the typed pass via
+/// the dyn manager's add_pipeline_pass — locking the blanket interop.
+#[test]
+fn typed_pass_runs_inside_erased_manager() -> Result<(), IrError> {
+    Module::with_new("typed-dyn-interop", |m| {
+        let f = build_dead_add_then_ret(&m)?;
+        let verified = m.verify()?;
+        let mut fpm = FunctionPassManager::<_, MutatesIr>::new_transform();
+        fpm.add_pipeline_pass(DcePass); // DcePass is now only TypedFunctionPass
+        let mut fam = FunctionAnalysisManager::new();
+        let unverified = fpm.run(verified, f, &mut fam)?;
+        assert!(!format!("{}", unverified.verify()?).contains("%dead"));
+        Ok(())
+    })
+}

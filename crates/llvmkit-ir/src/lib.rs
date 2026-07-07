@@ -94,10 +94,12 @@ pub mod verifier;
 
 pub mod unnamed_addr;
 pub use analysis::{
-    AllAnalysesOnFunction, AllAnalysesOnModule, AnalysisKeyId, AnalysisSetKeyId, CFGAnalyses,
-    FunctionAnalysis, FunctionAnalysisInvalidator, FunctionAnalysisManager,
-    FunctionAnalysisManagerModuleProxy, FunctionAnalysisResult, ModuleAnalysis,
-    ModuleAnalysisInvalidator, ModuleAnalysisManager, ModuleAnalysisResult, PreservedAnalyses,
+    AllAnalysesOnFunction, AllAnalysesOnModule, AnalysisKeyId, AnalysisSelector, AnalysisSetKeyId,
+    CFGAnalyses, FunctionAnalysis, FunctionAnalysisInvalidator, FunctionAnalysisList,
+    FunctionAnalysisManager, FunctionAnalysisManagerModuleProxy, FunctionAnalysisResult, Idx0,
+    Idx1, Idx2, Idx3, Idx4, Idx5, Idx6, Idx7, ModuleAnalysis, ModuleAnalysisInvalidator,
+    ModuleAnalysisList, ModuleAnalysisManager, ModuleAnalysisResult, ModuleAnalysisSelector,
+    PreservationBound, PreservationEntry, Preserve, PreserveSet, PreservedAnalyses,
     PreservedAnalysisChecker,
 };
 pub use ap_float::{
@@ -226,12 +228,17 @@ pub use optimization_level::{
 pub use pass_context::{
     BasicBlockView, FunctionBody, FunctionPassContext, FunctionView, ModuleFunctionViews,
     ModulePassContext, ReadOnlyFunctionPassContext, ReadOnlyModulePassContext,
+    TypedFunctionPassContext, TypedModulePassContext,
 };
 pub use pass_instrumentation::{PassInstrumentationAnalysis, PassInstrumentationCallbacks};
 pub use pass_manager::{
-    FunctionPass, FunctionPassManager, ModulePass, ModulePassEffect, ModulePassManager,
-    ModuleToFunctionPassAdaptor, MutatesIr, PassPipelineInfo, PreservesVerification,
-    ReadOnlyFunctionPass, ReadOnlyModulePass,
+    EffectFold, EffectJoin, ForEachFunction, FunctionPass, FunctionPassList, FunctionPassManager,
+    FunctionPipeline, FunctionPipelineExecution, FunctionPipelineMember, JoinsAll, ModulePass,
+    ModulePassEffect, ModulePassList, ModulePassManager, ModulePipeline, ModulePipelineExecution,
+    ModulePipelineMember, ModuleToFunctionPassAdaptor, MutatesIr, PassPipelineInfo,
+    PreservesVerification, ProvidesToken, ReadOnly, ReadOnlyFunctionPass, ReadOnlyModulePass,
+    TypedFunctionPass, TypedModulePass, TypedPassEffect, for_each_function, function_pipeline,
+    module_pipeline,
 };
 pub use pass_pipeline::{
     BDCE, CLEANUP_LIFT, CLEANUP_MIN, CLEANUP_O1_ISH, DCE, DEFAULT_O0, DEFAULT_O1, EARLY_CSE,

@@ -87,4 +87,7 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/ssa_def_wrong_width.rs");
     t.compile_fail("tests/compile_fail/ssa_ret_value_in_void_fn.rs");
     t.compile_fail("tests/compile_fail/ssa_finish_positioned.rs");
+    t.compile_fail("tests/compile_fail/typed_pipeline_transform_result_verified.rs");
+    t.compile_fail("tests/compile_fail/typed_context_undeclared_analysis.rs");
+    t.compile_fail("tests/compile_fail/typed_pipeline_cross_brand.rs");
 }
