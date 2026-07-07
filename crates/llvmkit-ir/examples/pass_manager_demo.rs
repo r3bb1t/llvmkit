@@ -15,10 +15,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    DominatorTreeAnalysis, FunctionAnalysisManager, FunctionPassManager, IRBuilder, IntPredicate,
-    IrError, Linkage, Module, ModuleAnalysisManager, ModulePassManager,
-    ModuleToFunctionPassAdaptor, PreservedAnalyses, PreservesVerification, ReadOnlyFunctionPass,
-    ReadOnlyFunctionPassContext, ReadOnlyModulePass, ReadOnlyModulePassContext,
+    DcePass, DominatorTreeAnalysis, FunctionAnalysisManager, FunctionPassManager, IRBuilder,
+    InstSimplifyPass, IntPredicate, IrError, Linkage, Module, ModuleAnalysisManager,
+    ModulePassManager, ModuleToFunctionPassAdaptor, PreservedAnalyses, PreservesVerification,
+    ReadOnlyFunctionPass, ReadOnlyFunctionPassContext, ReadOnlyModulePass,
+    ReadOnlyModulePassContext, function_pipeline,
 };
 
 struct ReportModulePass {
@@ -100,7 +101,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     Ok(())
 }
 
-pub fn run_demo(m: Module<'_>) -> Result<(String, String), IrError> {
+pub fn run_demo(m: Module<'_>) -> Result<(String, String, String), IrError> {
     let function = m
         .function_by_name("select_or_add")
         .expect("demo function is present");
@@ -112,7 +113,20 @@ pub fn run_demo(m: Module<'_>) -> Result<(String, String), IrError> {
         .find(|bb| bb.name().as_deref() == Some("merge"))
         .expect("demo function has a merge block");
 
+    // Headline: the typed pipeline. `InstSimplifyPass`/`DcePass` are
+    // `TypedFunctionPass` implementations composed with zero dyn dispatch;
+    // the pipeline's derived effect (`MutatesIr`, since both members mutate)
+    // fixes `run`'s return type to `Module<Unverified>` at compile time (D8),
+    // so the re-verify below is required by the type system, not convention.
     let mut fam = FunctionAnalysisManager::new();
+    let mut typed_pipeline = function_pipeline((InstSimplifyPass, DcePass));
+    let module = typed_pipeline.run(m.verify()?, function, &mut fam)?;
+    let module = module.verify()?;
+    let typed_module_text = format!("{module}");
+
+    // Fallback: the same reporting/analysis flow through the pre-existing
+    // erased (dyn) managers, for callers that need runtime-composed
+    // pipelines rather than a statically-typed tuple.
     fam.register_pass(DominatorTreeAnalysis);
     let dt = fam.get_result::<DominatorTreeAnalysis, _>(function)?;
 
@@ -129,24 +143,27 @@ pub fn run_demo(m: Module<'_>) -> Result<(String, String), IrError> {
     mpm.add_pass(ModuleToFunctionPassAdaptor::new(fpm));
 
     let mut mam = ModuleAnalysisManager::new();
-    let module = mpm.run(m.verify()?, &mut mam, &mut fam)?;
+    let module = mpm.run(module, &mut mam, &mut fam)?;
     let report = lines.borrow().join("\n");
     let module_text = format!("{module}");
-    Ok((report, module_text))
+    Ok((typed_module_text, report, module_text))
 }
 
 pub fn main() {
-    let (report, module_text) = match Module::with_new("pass_manager_demo", |m| {
-        build(&m)?;
-        run_demo(m)
-    }) {
-        Ok(output) => output,
-        Err(err) => {
-            eprintln!("error: {err:?}");
-            std::process::exit(1);
-        }
-    };
+    let (typed_module_text, report, module_text) =
+        match Module::with_new("pass_manager_demo", |m| {
+            build(&m)?;
+            run_demo(m)
+        }) {
+            Ok(output) => output,
+            Err(err) => {
+                eprintln!("error: {err:?}");
+                std::process::exit(1);
+            }
+        };
 
+    println!("after typed cleanup pipeline:");
+    print!("{typed_module_text}");
     println!("{report}");
     print!("{module_text}");
 }

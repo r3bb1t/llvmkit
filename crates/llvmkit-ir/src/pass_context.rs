@@ -274,6 +274,11 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ReadOnlyFunctionPassContext<'pm, 'ctx, B>
     ) -> &mut FunctionAnalysisManager<'ctx, B> {
         self.fam
     }
+
+    #[inline]
+    pub(super) fn function_analysis_manager(&self) -> &FunctionAnalysisManager<'ctx, B> {
+        self.fam
+    }
 }
 
 /// Context passed to a transform-capable function pass.
@@ -354,6 +359,14 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> FunctionPassContext<'pm, 'ctx, B> {
     /// Function analysis manager for this module brand.
     #[inline]
     pub fn analysis_manager_mut(&mut self) -> &mut FunctionAnalysisManager<'ctx, B> {
+        self.fam
+    }
+
+    /// Shared-borrow sibling of [`Self::analysis_manager_mut`], for callers
+    /// that already prefetched through the `&mut` accessor and now only need
+    /// to collect cached results.
+    #[inline]
+    pub(super) fn analysis_manager(&self) -> &FunctionAnalysisManager<'ctx, B> {
         self.fam
     }
 }
@@ -519,6 +532,21 @@ impl<'pm, 'ctx, B: ModuleBrand + 'ctx> ModulePassContext<'pm, 'ctx, B> {
         (&self.module, self.mam, self.fam)
     }
 
+    /// Splits this context into the module token, the shared module-analysis
+    /// borrow, and the mutable function-analysis borrow, mirroring
+    /// [`Self::module_and_analysis_managers_for_function_passes`] but with a
+    /// shared (not mutable) `mam` borrow for the typed blanket's collect step.
+    #[inline]
+    pub(super) fn split_for_typed(
+        &mut self,
+    ) -> (
+        &Module<'ctx, B, Unverified>,
+        &ModuleAnalysisManager<'ctx, B>,
+        &mut FunctionAnalysisManager<'ctx, B>,
+    ) {
+        (&self.module, self.mam, self.fam)
+    }
+
     #[inline]
     pub(super) fn finish(self) -> Module<'ctx, B, Unverified> {
         self.module
@@ -593,6 +621,14 @@ where
         R: AnalysisSelector<'ctx, B, A, I>,
     {
         R::select(&self.results)
+    }
+
+    /// The prefetched `Requires` results, for callers rebuilding a sibling
+    /// context over the same analyses (e.g. [`crate::pass_manager::ReadOnly`]
+    /// re-shaping its wrapped pass's context for a different effect token).
+    #[inline]
+    pub(super) fn results(&self) -> R::ResultRefs<'r> {
+        self.results
     }
 }
 

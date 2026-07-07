@@ -236,7 +236,7 @@ pub use pass_manager::{
     FunctionPipeline, FunctionPipelineExecution, FunctionPipelineMember, JoinsAll, ModulePass,
     ModulePassEffect, ModulePassList, ModulePassManager, ModulePipeline, ModulePipelineExecution,
     ModulePipelineMember, ModuleToFunctionPassAdaptor, MutatesIr, PassPipelineInfo,
-    PreservesVerification, ProvidesToken, ReadOnlyFunctionPass, ReadOnlyModulePass,
+    PreservesVerification, ProvidesToken, ReadOnly, ReadOnlyFunctionPass, ReadOnlyModulePass,
     TypedFunctionPass, TypedModulePass, TypedPassEffect, for_each_function, function_pipeline,
     module_pipeline,
 };

@@ -877,6 +877,112 @@ where
     Ok(pass_pa)
 }
 
+/// Every transform-effect typed pass is usable wherever the erased
+/// [`FunctionPass`] is accepted: the adapter prefetches `Requires` through the
+/// erased context's manager (fallible there — the erased path keeps runtime
+/// checks, D3) and delegates to the typed run.
+///
+/// Coherence guard: this is the *only* blanket impl of [`FunctionPass`] for a
+/// `P: TypedFunctionPass<...>` bound. [`ModuleToFunctionPassAdaptor`] keeps
+/// its manual, brand-concrete dyn impls (never generic over an open `B`) and
+/// must never implement [`TypedFunctionPass`]. [`ReadOnly`] does not get a
+/// second blanket-shaped `FunctionPass` impl of its own for the same reason —
+/// see its doc comment below for why, and how it rides this single blanket
+/// instead.
+impl<'ctx, B, P> FunctionPass<'ctx, B> for P
+where
+    B: ModuleBrand + 'ctx,
+    P: TypedFunctionPass<'ctx, B, Effect = MutatesIr>,
+{
+    fn run(&mut self, cx: &mut FunctionPassContext<'_, 'ctx, B>) -> IrResult<PreservedAnalyses> {
+        let function = cx.function();
+        P::Requires::prefetch(cx.analysis_manager_mut(), function)?;
+        let mut pass_pa = {
+            let results = P::Requires::collect(cx.analysis_manager(), function)?;
+            let mut typed = TypedFunctionPassContext::new(cx.module_mut(), function, results);
+            TypedFunctionPass::run(self, &mut typed)?
+        };
+        P::MinPreserves::apply(&mut pass_pa);
+        Ok(pass_pa)
+    }
+
+    fn is_required(&self) -> bool {
+        TypedFunctionPass::is_required(self)
+    }
+}
+
+impl<'ctx, B, P> ReadOnlyFunctionPass<'ctx, B> for P
+where
+    B: ModuleBrand + 'ctx,
+    P: TypedFunctionPass<'ctx, B, Effect = PreservesVerification>,
+{
+    fn run(
+        &mut self,
+        cx: &mut ReadOnlyFunctionPassContext<'_, 'ctx, B>,
+    ) -> IrResult<PreservedAnalyses> {
+        let function = cx.function();
+        P::Requires::prefetch(cx.function_analysis_manager_mut(), function)?;
+        let mut pass_pa = {
+            let results = P::Requires::collect(cx.function_analysis_manager(), function)?;
+            let mut typed = TypedFunctionPassContext::new((), function, results);
+            TypedFunctionPass::run(self, &mut typed)?
+        };
+        P::MinPreserves::apply(&mut pass_pa);
+        Ok(pass_pa)
+    }
+
+    fn is_required(&self) -> bool {
+        TypedFunctionPass::is_required(self)
+    }
+}
+
+/// Adapter running a read-only typed pass inside a transform-effect erased
+/// manager (an all-read-only *typed* pipeline needs no adapter — its derived
+/// effect already is read-only).
+///
+/// Coherence note: `ReadOnly<P>` deliberately does *not* get its own
+/// `FunctionPass`/`ModulePass` impl. A second blanket-shaped impl targeting
+/// `ReadOnly<P>` for `P: TypedFunctionPass<Effect = PreservesVerification>`
+/// would conflict (E0119) with the `Effect = MutatesIr` blanket above: both
+/// [`FunctionPass`] and [`TypedFunctionPass`] are generic over the open
+/// [`ModuleBrand`] bound, so rustc cannot prove `ReadOnly<P>` (itself generic
+/// over `P`) never *also* satisfies `TypedFunctionPass<Effect = MutatesIr>`
+/// for some other instantiation — unlike [`TypedModulePass`], `TypedFunctionPass`
+/// must stay unsealed (pass authors outside this crate implement it directly
+/// for their own leaf pass types), so the sealing fix used for the module
+/// blankets isn't available here. Instead, `ReadOnly<P>` implements
+/// [`TypedFunctionPass`] itself below (translating its wrapped read-only run
+/// into a `MutatesIr`-effect one) and rides the *same* single blanket above —
+/// no second impl of the erased trait is ever written for it.
+pub struct ReadOnly<P>(pub P);
+
+impl<'ctx, B, P> TypedFunctionPass<'ctx, B> for ReadOnly<P>
+where
+    B: ModuleBrand + 'ctx,
+    P: TypedFunctionPass<'ctx, B, Effect = PreservesVerification>,
+{
+    type Effect = MutatesIr;
+    type Requires = P::Requires;
+    type MinPreserves = P::MinPreserves;
+    const NAME: &'static str = P::NAME;
+
+    fn run(
+        &mut self,
+        cx: &mut TypedFunctionPassContext<'_, '_, 'ctx, B, Self::Requires, MutatesIr>,
+    ) -> IrResult<PreservedAnalyses> {
+        // The wrapped pass only ever reads `cx`'s prefetched results and
+        // function view; it never sees the `MutatesIr` module token, so a
+        // read-only-shaped context borrowed from the same function/results is
+        // all it needs.
+        let mut read_only = TypedFunctionPassContext::new((), cx.function(), cx.results());
+        TypedFunctionPass::run(&mut self.0, &mut read_only)
+    }
+
+    fn is_required(&self) -> bool {
+        TypedFunctionPass::is_required(&self.0)
+    }
+}
+
 /// Dispatch tag distinguishing a leaf [`TypedFunctionPass`] member from a
 /// nested [`FunctionPipeline`] member. It is an inferred type parameter on
 /// [`FunctionPipelineMember`] rather than an overlap: a leaf pass implements
@@ -1156,11 +1262,34 @@ impl FunctionPipelineExecution for MutatesIr {
     }
 }
 
+mod typed_module_pass_sealed {
+    /// Closes [`super::TypedModulePass`] to this crate. Unlike
+    /// [`super::TypedFunctionPass`] (implemented by pass authors in other
+    /// crates, e.g. test fixtures), no in-tree module pass is implemented
+    /// outside this crate today, so sealing costs nothing and buys a
+    /// compiler-enforced version of the coherence guard below: sealing is
+    /// what lets [`super::ModulePass`]/[`super::ReadOnlyModulePass`] carry an
+    /// unconstrained blanket for `P: TypedModulePass` without conflicting
+    /// with [`super::ModuleToFunctionPassAdaptor`]'s pre-existing manual
+    /// impls of those same traits, both of which are generic over the open
+    /// `ModuleBrand` bound -- without sealing, rustc cannot prove
+    /// `ModuleToFunctionPassAdaptor` will never implement `TypedModulePass`
+    /// in some future impl elsewhere in this crate, so the blanket and the
+    /// manual impl would be flagged as overlapping (E0119) even though no
+    /// such impl exists. [`super::ModuleToFunctionPassAdaptor`] must never
+    /// implement [`Sealed`] (that would reopen the same conflict).
+    pub trait Sealed {}
+}
+
 /// A typed pass over one module. The typed counterpart of
 /// [`ModulePass`]/[`ReadOnlyModulePass`]: effect, analysis requirements, and
 /// the preservation lower bound are part of the type (D1, D8). Mirrors
-/// [`TypedFunctionPass`] at module scope.
-pub trait TypedModulePass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+/// [`TypedFunctionPass`] at module scope. Sealed (see
+/// [`typed_module_pass_sealed`]) so the erased-manager blanket impls below can
+/// coexist with [`ModuleToFunctionPassAdaptor`]'s manual impls.
+pub trait TypedModulePass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>>:
+    typed_module_pass_sealed::Sealed
+{
     /// Read-only or transform; pipelines derive their effect by joining these.
     type Effect: TypedPassEffect;
     /// Analyses prefetched before `run`; the context accessor is infallible.
@@ -1552,6 +1681,88 @@ impl ModulePipelineExecution for MutatesIr {
         let view = module.as_view();
         passes.run_all(&module, view, mam, fam, instrumentation)?;
         Ok(module)
+    }
+}
+
+/// Module-level mirror of the [`TypedFunctionPass`] blankets above: every
+/// transform-effect typed module pass is usable wherever the erased
+/// [`ModulePass`] is accepted.
+///
+/// Coherence guard: [`TypedModulePass`] is sealed (see
+/// `typed_module_pass_sealed`), which is what lets this blanket coexist with
+/// [`ModuleToFunctionPassAdaptor`]'s manual dyn impls even though both are
+/// generic over the open [`ModuleBrand`] bound. [`ModuleToFunctionPassAdaptor`]
+/// must never implement [`TypedModulePass`]; [`ReadOnly`] must never implement
+/// it either. Both would reopen the conflict sealing rules out.
+impl<'ctx, B, P> ModulePass<'ctx, B> for P
+where
+    B: ModuleBrand + 'ctx,
+    P: TypedModulePass<'ctx, B, Effect = MutatesIr>,
+{
+    fn run(&mut self, cx: &mut ModulePassContext<'_, 'ctx, B>) -> IrResult<PreservedAnalyses> {
+        let module = cx.module();
+        P::Requires::prefetch(cx.module_analysis_manager_mut(), module)?;
+        let mut pass_pa = {
+            let (token, mam, fam) = cx.split_for_typed();
+            let results = P::Requires::collect(mam, module)?;
+            let mut typed = TypedModulePassContext::new(module, token, results, fam);
+            TypedModulePass::run(self, &mut typed)?
+        };
+        P::MinPreserves::apply(&mut pass_pa);
+        Ok(pass_pa)
+    }
+
+    fn is_required(&self) -> bool {
+        TypedModulePass::is_required(self)
+    }
+}
+
+impl<'ctx, B, P> ReadOnlyModulePass<'ctx, B> for P
+where
+    B: ModuleBrand + 'ctx,
+    P: TypedModulePass<'ctx, B, Effect = PreservesVerification>,
+{
+    fn run(
+        &mut self,
+        cx: &mut ReadOnlyModulePassContext<'_, 'ctx, B>,
+    ) -> IrResult<PreservedAnalyses> {
+        let module = cx.module();
+        P::Requires::prefetch(cx.module_analysis_manager_mut(), module)?;
+        let mut pass_pa = {
+            let (mam, fam) = cx.analysis_managers_for_function_passes();
+            let results = P::Requires::collect(mam, module)?;
+            let mut typed = TypedModulePassContext::new(module, (), results, fam);
+            TypedModulePass::run(self, &mut typed)?
+        };
+        P::MinPreserves::apply(&mut pass_pa);
+        Ok(pass_pa)
+    }
+
+    fn is_required(&self) -> bool {
+        TypedModulePass::is_required(self)
+    }
+}
+
+impl<'ctx, B, P> ModulePass<'ctx, B> for ReadOnly<P>
+where
+    B: ModuleBrand + 'ctx,
+    P: TypedModulePass<'ctx, B, Effect = PreservesVerification>,
+{
+    fn run(&mut self, cx: &mut ModulePassContext<'_, 'ctx, B>) -> IrResult<PreservedAnalyses> {
+        let module = cx.module();
+        P::Requires::prefetch(cx.module_analysis_manager_mut(), module)?;
+        let mut pass_pa = {
+            let (_token, mam, fam) = cx.split_for_typed();
+            let results = P::Requires::collect(mam, module)?;
+            let mut typed = TypedModulePassContext::new(module, (), results, fam);
+            TypedModulePass::run(&mut self.0, &mut typed)?
+        };
+        P::MinPreserves::apply(&mut pass_pa);
+        Ok(pass_pa)
+    }
+
+    fn is_required(&self) -> bool {
+        TypedModulePass::is_required(&self.0)
     }
 }
 

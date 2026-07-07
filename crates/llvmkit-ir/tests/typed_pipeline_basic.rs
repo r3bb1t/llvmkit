@@ -7,9 +7,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    CFGAnalyses, ModuleAnalysisManager, MutatesIr, NoFolder, PreserveSet, PreservedAnalyses,
-    PreservesVerification, TypedFunctionPass, TypedFunctionPassContext, for_each_function,
-    function_pipeline, module_pipeline,
+    CFGAnalyses, DcePass, FunctionPassManager, ModuleAnalysisManager, MutatesIr, NoFolder,
+    PreserveSet, PreservedAnalyses, PreservesVerification, TypedFunctionPass,
+    TypedFunctionPassContext, for_each_function, function_pipeline, module_pipeline,
 };
 
 /// Brand-generic mirror of `llvm/unittests/IR/PassManagerTest.cpp::TEST(PassManagerTest,
@@ -150,31 +150,11 @@ fn read_only_pipeline_returns_verified_module() -> Result<(), IrError> {
     })
 }
 
-/// Local `MutatesIr` transform stand-in for `DcePass`, which is not yet a
-/// `TypedFunctionPass` (its migration is Task 7). The typed-pipeline test only
-/// needs one transform member so the pipeline's derived effect joins to
-/// `MutatesIr`; the erase itself is exercised by the erased-path DCE tests in
-/// `tests/scalar_cleanup_passes.rs`.
-struct MutatingNoop;
-
-impl<'ctx, B: ModuleBrand + 'ctx> TypedFunctionPass<'ctx, B> for MutatingNoop {
-    type Effect = MutatesIr;
-    type Requires = ();
-    type MinPreserves = ();
-    const NAME: &'static str = "mutating-noop";
-
-    fn run(
-        &mut self,
-        _cx: &mut TypedFunctionPassContext<'_, '_, 'ctx, B, (), MutatesIr>,
-    ) -> Result<PreservedAnalyses, IrError> {
-        Ok(PreservedAnalyses::none())
-    }
-}
-
 /// Mirrors the same PassManagerTest sequencing for a mixed pipeline: one
-/// transform member joins the pipeline effect to MutatesIr, so run() returns
-/// an Unverified module that must be re-verified (D8). `DcePass` will replace
-/// `MutatingNoop` once it is migrated to `TypedFunctionPass` in Task 7.
+/// transform member (`DcePass`, now a `TypedFunctionPass` as of Task 7) joins
+/// the pipeline effect to MutatesIr, so run() returns an Unverified module
+/// that must be re-verified (D8), and the dead instruction it erases is gone
+/// from the reverified module.
 #[test]
 fn mixed_pipeline_returns_unverified_module() -> Result<(), IrError> {
     Module::with_new("typed-mixed", |m| {
@@ -186,7 +166,7 @@ fn mixed_pipeline_returns_unverified_module() -> Result<(), IrError> {
                 log: log.clone(),
                 tag: "ro",
             },
-            MutatingNoop,
+            DcePass,
         ));
         let mut fam = FunctionAnalysisManager::new();
         // The derived effect is MutatesIr: run() yields Module<Unverified>, so
@@ -196,7 +176,7 @@ fn mixed_pipeline_returns_unverified_module() -> Result<(), IrError> {
         let reverified = unverified.verify()?;
         assert_eq!(*log.borrow(), vec!["ro"]);
         let text = format!("{reverified}");
-        assert!(text.contains("%dead"), "{text}");
+        assert!(!text.contains("%dead"), "{text}");
         Ok(())
     })
 }
@@ -337,12 +317,12 @@ fn nested_read_only_pipeline_returns_verified_module() -> Result<(), IrError> {
 }
 
 /// Same nesting mechanism as `nested_read_only_pipeline_returns_verified_module`,
-/// but the transform member (`MutatingNoop`, see above) sits inside the INNER
-/// pipeline rather than the outer one. This proves the derived-effect join
-/// flows *out* of a nested pipeline to its parent: the inner pipeline's own
-/// effect is already `MutatesIr` (folded from its members), and that folded
-/// effect -- not the leaf members themselves -- is what the outer pipeline
-/// joins against, downgrading the whole run to `Module<Unverified>` (D8).
+/// but the transform member (`DcePass`) sits inside the INNER pipeline rather
+/// than the outer one. This proves the derived-effect join flows *out* of a
+/// nested pipeline to its parent: the inner pipeline's own effect is already
+/// `MutatesIr` (folded from its members), and that folded effect -- not the
+/// leaf members themselves -- is what the outer pipeline joins against,
+/// downgrading the whole run to `Module<Unverified>` (D8).
 #[test]
 fn nested_pipeline_with_inner_transform_returns_unverified_module() -> Result<(), IrError> {
     Module::with_new("typed-nested-mixed", |m| {
@@ -359,7 +339,7 @@ fn nested_pipeline_with_inner_transform_returns_unverified_module() -> Result<()
                     log: log.clone(),
                     tag: "inner-ro",
                 },
-                MutatingNoop,
+                DcePass,
             )),
         ));
         let mut fam = FunctionAnalysisManager::new();
@@ -371,21 +351,17 @@ fn nested_pipeline_with_inner_transform_returns_unverified_module() -> Result<()
         let reverified = unverified.verify()?;
         assert_eq!(*log.borrow(), vec!["outer", "inner-ro"]);
         let text = format!("{reverified}");
-        assert!(text.contains("%dead"), "{text}");
+        assert!(!text.contains("%dead"), "{text}");
         Ok(())
     })
 }
 
-/// Local `MutatesIr` transform stand-in analogous to `MutatingNoop` above, but
-/// logging the visited function's name so a module-level test can assert
-/// `ForEachFunction` actually reaches every function definition (not just
-/// one). `DcePass` is not yet a `TypedFunctionPass` (Task 7 migrates it); a
-/// real deletion assertion also needs an instruction-erase capability that is
-/// crate-private (`Instruction::erase_from_parent` takes an `Attached`
-/// instruction obtainable only via a `pub(super)` constructor), so this
-/// stand-in proves per-function visitation and the effect-join/typestate
-/// downgrade instead -- the same scope `MutatingNoop` covers at the function
-/// level.
+/// Local `MutatesIr` transform stand-in logging the visited function's name so
+/// a module-level test can assert `ForEachFunction` actually reaches every
+/// function definition (not just one), in addition to `DcePass`'s real
+/// deletion. Kept alongside `DcePass` (rather than replaced by it) because
+/// `DcePass` alone cannot distinguish "visited but nothing to delete" from
+/// "never visited" for `g`, whose body has no dead instruction.
 struct LoggingMutator {
     visited: Rc<RefCell<Vec<String>>>,
 }
@@ -410,10 +386,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> TypedFunctionPass<'ctx, B> for LoggingMutator 
 /// Mirrors the `ModuleToFunctionPassAdaptor` flow of
 /// `llvm/unittests/IR/PassManagerTest.cpp::TEST(PassManagerTest, Basic)` on the
 /// typed path: a module pipeline nests a function pipeline over every defined
-/// function, and the derived module effect follows the inner join. Uses the
-/// local `LoggingMutator` transform stand-in in place of `DcePass`, which is
-/// not yet a `TypedFunctionPass`; Task 7 flips this to `DcePass` and can
-/// restore a real dead-code assertion once that lands.
+/// function, and the derived module effect follows the inner join. Runs
+/// `DcePass` alongside `LoggingMutator` in the nested function pipeline so the
+/// test locks both real per-function deletion (the dead instruction in `f` is
+/// erased) and full-module visitation (`LoggingMutator` sees both `f` and `g`,
+/// which `DcePass` alone could not distinguish since `g`'s body has nothing to
+/// delete).
 #[test]
 fn module_pipeline_adapts_function_pipeline() -> Result<(), IrError> {
     Module::with_new("typed-module", |m| {
@@ -423,9 +401,12 @@ fn module_pipeline_adapts_function_pipeline() -> Result<(), IrError> {
         let mut mam = ModuleAnalysisManager::new();
         let mut fam = FunctionAnalysisManager::new();
         let visited = Rc::new(RefCell::new(Vec::new()));
-        let mut pipe = module_pipeline((for_each_function(function_pipeline((LoggingMutator {
-            visited: visited.clone(),
-        },))),));
+        let mut pipe = module_pipeline((for_each_function(function_pipeline((
+            LoggingMutator {
+                visited: visited.clone(),
+            },
+            DcePass,
+        ))),));
         // The derived module effect is MutatesIr (joined from the inner
         // function pipeline's own MutatesIr effect via ForEachFunction's
         // MemberEffect passthrough), so run() yields Module<Unverified> --
@@ -436,10 +417,26 @@ fn module_pipeline_adapts_function_pipeline() -> Result<(), IrError> {
         // ForEachFunction actually visited every function definition in
         // module order, not just the first one.
         assert_eq!(*visited.borrow(), vec!["f", "g"]);
-        // LoggingMutator makes no IR edits, so the dead instruction survives
-        // -- this test locks visitation/effect-join, not deletion (see the
-        // struct doc comment for why a real DCE assertion waits on Task 7).
-        assert!(format!("{reverified}").contains("%dead"));
+        // DcePass actually erased the dead instruction in `f`.
+        let text = format!("{reverified}");
+        assert!(!text.contains("%dead"), "{text}");
+        Ok(())
+    })
+}
+
+/// Mirrors the erased-manager sequencing of scalar_cleanup_passes.rs (same
+/// upstream anchors: DCE.cpp::eliminateDeadCode) but adds the typed pass via
+/// the dyn manager's add_pipeline_pass — locking the blanket interop.
+#[test]
+fn typed_pass_runs_inside_erased_manager() -> Result<(), IrError> {
+    Module::with_new("typed-dyn-interop", |m| {
+        let f = build_dead_add_then_ret(&m)?;
+        let verified = m.verify()?;
+        let mut fpm = FunctionPassManager::<_, MutatesIr>::new_transform();
+        fpm.add_pipeline_pass(DcePass); // DcePass is now only TypedFunctionPass
+        let mut fam = FunctionAnalysisManager::new();
+        let unverified = fpm.run(verified, f, &mut fam)?;
+        assert!(!format!("{}", unverified.verify()?).contains("%dead"));
         Ok(())
     })
 }

@@ -1,11 +1,11 @@
-error[E0599]: no method named `module_analysis_manager_mut` found for mutable reference `&mut FunctionPassContext<'_, 'ctx, B>` in the current scope
- --> tests/compile_fail/function_pass_no_mutable_module_manager.rs:9:20
+error[E0599]: no method named `module_analysis_manager_mut` found for mutable reference `&mut FunctionPassContext<'_, 'ctx>` in the current scope
+ --> tests/compile_fail/function_pass_no_mutable_module_manager.rs:7:20
   |
-9 |         let _ = cx.module_analysis_manager_mut();
+7 |         let _ = cx.module_analysis_manager_mut();
   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
 help: there is a method `analysis_manager_mut` with a similar name
   |
-9 -         let _ = cx.module_analysis_manager_mut();
-9 +         let _ = cx.analysis_manager_mut();
+7 -         let _ = cx.module_analysis_manager_mut();
+7 +         let _ = cx.analysis_manager_mut();
   |

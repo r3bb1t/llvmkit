@@ -6,11 +6,11 @@
 //! dead operands are removed.
 
 use super::IrResult;
-use super::analysis::{CFGAnalyses, PreservedAnalyses};
+use super::analysis::{CFGAnalyses, PreserveSet, PreservedAnalyses};
 use super::instruction::{Instruction, InstructionKind, InstructionView, state};
 use super::module::ModuleBrand;
-use super::pass_context::FunctionPassContext;
-use super::pass_manager::{FunctionPass, PassPipelineInfo};
+use super::pass_context::TypedFunctionPassContext;
+use super::pass_manager::{MutatesIr, PassPipelineInfo, TypedFunctionPass};
 use super::pass_pipeline::{DCE, FunctionPassScope, PassName};
 
 /// Function transform that erases unused side-effect-free instructions.
@@ -23,8 +23,18 @@ impl PassPipelineInfo for DcePass {
     const PIPELINE_NAME: PassName<Self::Scope> = DCE;
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for DcePass {
-    fn run(&mut self, cx: &mut FunctionPassContext<'_, 'ctx, B>) -> IrResult<PreservedAnalyses> {
+impl<'ctx, B: ModuleBrand + 'ctx> TypedFunctionPass<'ctx, B> for DcePass {
+    type Effect = MutatesIr;
+    type Requires = ();
+    // DCE never touches the CFG; declaring it makes under-reporting impossible
+    // and lets the returned PA drop the manual preserve_set (D8).
+    type MinPreserves = (PreserveSet<CFGAnalyses>,);
+    const NAME: &'static str = DCE.as_str();
+
+    fn run(
+        &mut self,
+        cx: &mut TypedFunctionPassContext<'_, '_, 'ctx, B, (), MutatesIr>,
+    ) -> IrResult<PreservedAnalyses> {
         let mut changed = false;
         loop {
             let iteration_changed = dce_iteration(cx);
@@ -35,16 +45,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for DcePass {
         }
 
         if changed {
-            let mut preserved = PreservedAnalyses::none();
-            preserved.preserve_set::<CFGAnalyses>();
-            Ok(preserved)
+            Ok(PreservedAnalyses::none())
         } else {
             Ok(PreservedAnalyses::all())
         }
     }
 }
 
-fn dce_iteration<'ctx, B: ModuleBrand + 'ctx>(cx: &mut FunctionPassContext<'_, 'ctx, B>) -> bool {
+fn dce_iteration<'ctx, B: ModuleBrand + 'ctx>(
+    cx: &mut TypedFunctionPassContext<'_, '_, 'ctx, B, (), MutatesIr>,
+) -> bool {
     let module_token = cx.module_mut();
 
     for block in cx.function_mut().basic_blocks() {

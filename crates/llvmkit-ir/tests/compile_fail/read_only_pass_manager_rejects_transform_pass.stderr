@@ -6,7 +6,7 @@ error[E0277]: the trait bound `Mutates: ReadOnlyModulePass<'_, _>` is not satisf
    |         |
    |         required by a bound introduced by this call
    |
-help: the trait `ReadOnlyModulePass<'_, _>` is not implemented for `Mutates`
+help: the trait `TypedModulePass<'_, _>` is not implemented for `Mutates`
   --> tests/compile_fail/read_only_pass_manager_rejects_transform_pass.rs:6:1
    |
  6 | struct Mutates;
@@ -17,6 +17,7 @@ help: the trait `ReadOnlyModulePass<'ctx, B>` is implemented for `ModuleToFuncti
    | / impl<'ctx, B: ModuleBrand + 'ctx> ReadOnlyModulePass<'ctx, B>
    | |     for ModuleToFunctionPassAdaptor<'ctx, B, PreservesVerification>
    | |___________________________________________________________________^
+   = note: required for `Mutates` to implement `ReadOnlyModulePass<'_, _>`
 note: required by a bound in `ModulePassManager::<'ctx, B, PreservesVerification>::add_pass`
   --> src/pass_manager.rs
    |

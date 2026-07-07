@@ -6,12 +6,12 @@
 //! can prove the replacement without materialising new IR.
 
 use super::IrResult;
-use super::analysis::{CFGAnalyses, PreservedAnalyses};
+use super::analysis::{CFGAnalyses, PreserveSet, PreservedAnalyses};
 use super::constant_folding::constant_fold_instruction;
 use super::instruction::{Instruction, state};
 use super::module::ModuleBrand;
-use super::pass_context::FunctionPassContext;
-use super::pass_manager::{FunctionPass, PassPipelineInfo};
+use super::pass_context::TypedFunctionPassContext;
+use super::pass_manager::{MutatesIr, PassPipelineInfo, TypedFunctionPass};
 use super::pass_pipeline::{FunctionPassScope, INSTSIMPLIFY, PassName};
 
 /// Function transform that folds instructions to constants already expressible
@@ -25,8 +25,18 @@ impl PassPipelineInfo for InstSimplifyPass {
     const PIPELINE_NAME: PassName<Self::Scope> = INSTSIMPLIFY;
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InstSimplifyPass {
-    fn run(&mut self, cx: &mut FunctionPassContext<'_, 'ctx, B>) -> IrResult<PreservedAnalyses> {
+impl<'ctx, B: ModuleBrand + 'ctx> TypedFunctionPass<'ctx, B> for InstSimplifyPass {
+    type Effect = MutatesIr;
+    type Requires = ();
+    // InstSimplify never touches the CFG; declaring it makes under-reporting
+    // impossible and lets the returned PA drop the manual preserve_set (D8).
+    type MinPreserves = (PreserveSet<CFGAnalyses>,);
+    const NAME: &'static str = INSTSIMPLIFY.as_str();
+
+    fn run(
+        &mut self,
+        cx: &mut TypedFunctionPassContext<'_, '_, 'ctx, B, (), MutatesIr>,
+    ) -> IrResult<PreservedAnalyses> {
         let mut changed = false;
         loop {
             let iteration_changed = inst_simplify_iteration(cx)?;
@@ -37,9 +47,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InstSimplifyPass {
         }
 
         if changed {
-            let mut preserved = PreservedAnalyses::none();
-            preserved.preserve_set::<CFGAnalyses>();
-            Ok(preserved)
+            Ok(PreservedAnalyses::none())
         } else {
             Ok(PreservedAnalyses::all())
         }
@@ -47,7 +55,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InstSimplifyPass {
 }
 
 fn inst_simplify_iteration<'ctx, B: ModuleBrand + 'ctx>(
-    cx: &mut FunctionPassContext<'_, 'ctx, B>,
+    cx: &mut TypedFunctionPassContext<'_, '_, 'ctx, B, (), MutatesIr>,
 ) -> IrResult<bool> {
     let data_layout = cx.module().data_layout().clone();
     let module_token = cx.module_mut();
