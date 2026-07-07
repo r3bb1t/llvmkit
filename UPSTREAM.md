@@ -19,17 +19,17 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 1267. Genuinely recounted (not incremental
-arithmetic) on 2026-07-06 after the parser-level negative call-site
-fixtures landed (pre-fixture baseline 1257, from the D10 sign-extension
-commit's recount), via the attribute-anchored
+Total `#[test]` functions: 1332. Genuinely recounted (not incremental
+arithmetic) on 2026-07-07 at the `feature-2/typed-pass-core` tip
+(commit 4937249; the prior 1267 header drifted across intervening
+commits since its 2026-07-06 recount), via the attribute-anchored
 `grep -rEc "^\s*#\[test\]" --include="*.rs" crates/ llvmkit/ | awk -F: '{sum+=$2} END {print sum}'`
 (matches counting every attribute line, one per test). A prior count used
 the unanchored `grep -rc '#\[test\]' --include='*.rs' crates llvmkit`, which
 also matches the literal string `#[test]` inside `//!` module-doc-comment
 PROSE (e.g. "Each `#[test]` cites its upstream source") -- 25 such prose
 mentions across the then-1256-test tree inflated that count to 1267, a
-number today's genuine total matches only by coincidence; the
+number that recount's genuine total matched only by coincidence; the
 attribute-anchored form above counts only real `#[test]` attribute lines
 and is the number to trust going forward.
 
