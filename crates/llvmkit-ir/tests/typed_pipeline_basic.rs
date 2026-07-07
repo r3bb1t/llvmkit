@@ -277,3 +277,83 @@ fn min_preserves_bound_is_unioned_into_runtime_result() -> Result<(), IrError> {
         Ok(())
     })
 }
+
+/// Mirrors the same PassManagerTest.cpp pass-sequencing flow one level deeper:
+/// a `FunctionPipeline` nested as a member of another `FunctionPipeline`
+/// (dispatched through the `NestedMember`/`LeafMember` `Kind` tag on
+/// `FunctionPipelineMember`) is itself all read-only, so the derived effect
+/// must propagate out of the inner pipeline unchanged. This is the
+/// nesting-coverage gap flagged in Task 5's review: nesting was exercised by
+/// nothing in-tree before this test, even though Tasks 6-8 depend on it.
+#[test]
+fn nested_read_only_pipeline_returns_verified_module() -> Result<(), IrError> {
+    Module::with_new("typed-nested-ro", |m| {
+        let f = build_ret_i32(&m)?;
+        let verified = m.verify()?;
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut pipe = function_pipeline((
+            LogPass {
+                log: log.clone(),
+                tag: "outer",
+            },
+            function_pipeline((
+                LogPass {
+                    log: log.clone(),
+                    tag: "inner-a",
+                },
+                LogPass {
+                    log: log.clone(),
+                    tag: "inner-b",
+                },
+            )),
+        ));
+        let mut fam = FunctionAnalysisManager::new();
+        // The whole point: this binding type-checks as Verified even though
+        // one member is itself a pipeline -- the derived effect of the inner
+        // pipeline (all read-only) joins cleanly with the outer member.
+        let _still_verified: Module<'_, _, llvmkit_ir::Verified> =
+            pipe.run(verified, f, &mut fam)?;
+        assert_eq!(*log.borrow(), vec!["outer", "inner-a", "inner-b"]);
+        Ok(())
+    })
+}
+
+/// Same nesting mechanism as `nested_read_only_pipeline_returns_verified_module`,
+/// but the transform member (`MutatingNoop`, see above) sits inside the INNER
+/// pipeline rather than the outer one. This proves the derived-effect join
+/// flows *out* of a nested pipeline to its parent: the inner pipeline's own
+/// effect is already `MutatesIr` (folded from its members), and that folded
+/// effect -- not the leaf members themselves -- is what the outer pipeline
+/// joins against, downgrading the whole run to `Module<Unverified>` (D8).
+#[test]
+fn nested_pipeline_with_inner_transform_returns_unverified_module() -> Result<(), IrError> {
+    Module::with_new("typed-nested-mixed", |m| {
+        let f = build_dead_add_then_ret(&m)?;
+        let verified = m.verify()?;
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut pipe = function_pipeline((
+            LogPass {
+                log: log.clone(),
+                tag: "outer",
+            },
+            function_pipeline((
+                LogPass {
+                    log: log.clone(),
+                    tag: "inner-ro",
+                },
+                MutatingNoop,
+            )),
+        ));
+        let mut fam = FunctionAnalysisManager::new();
+        // The derived effect is MutatesIr, sourced entirely from the inner
+        // pipeline's folded effect: run() yields Module<Unverified>, so this
+        // binding only type-checks because the inner pipeline's transform
+        // member propagated its downgrade out to the outer pipeline.
+        let unverified: Module<'_, _, llvmkit_ir::Unverified> = pipe.run(verified, f, &mut fam)?;
+        let reverified = unverified.verify()?;
+        assert_eq!(*log.borrow(), vec!["outer", "inner-ro"]);
+        let text = format!("{reverified}");
+        assert!(text.contains("%dead"), "{text}");
+        Ok(())
+    })
+}
