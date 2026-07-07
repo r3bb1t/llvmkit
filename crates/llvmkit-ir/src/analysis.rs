@@ -475,6 +475,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
         self.analyses.insert(id, runner);
     }
 
+    /// Register `A` with its `Default` value unless an instance is already registered.
+    ///
+    /// The typed pipeline runner calls this from `FunctionAnalysisList::prefetch`
+    /// so declared `Requires` entries never hit `IrError::AnalysisNotRegistered`.
+    pub fn ensure_registered_default<A>(&mut self)
+    where
+        A: FunctionAnalysis<'ctx, B> + Default,
+    {
+        if !self.analyses.contains_key(&TypeId::of::<A>()) {
+            self.register_pass(A::default());
+        }
+    }
+
     pub fn get_result<A, F>(&mut self, function: F) -> IrResult<&A::Result>
     where
         A: FunctionAnalysis<'ctx, B>,
@@ -636,6 +649,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
         self.analyses.insert(id, runner);
     }
 
+    /// Register `A` with its `Default` value unless an instance is already registered.
+    ///
+    /// The typed pipeline runner calls this from `ModuleAnalysisList::prefetch`
+    /// so declared `Requires` entries never hit `IrError::AnalysisNotRegistered`.
+    pub fn ensure_registered_default<A>(&mut self)
+    where
+        A: ModuleAnalysis<'ctx, B> + Default,
+    {
+        if !self.analyses.contains_key(&TypeId::of::<A>()) {
+            self.register_pass(A::default());
+        }
+    }
+
     pub fn get_result<A>(
         &mut self,
         module: &crate::module::Module<'ctx, B, crate::module::Verified>,
@@ -784,24 +810,24 @@ where
     result.invalidate(module, pa, &mut invalidator)
 }
 
-impl<'ctx> FunctionAnalysis<'ctx> for DominatorTreeAnalysis {
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for DominatorTreeAnalysis {
     type Result = DominatorTree;
 
     fn run(
         &self,
-        function: FunctionView<'ctx>,
-        _am: &mut FunctionAnalysisManager<'ctx>,
+        function: FunctionView<'ctx, B>,
+        _am: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<Self::Result> {
         Ok(DominatorTree::new(function.as_function()))
     }
 }
 
-impl<'ctx> FunctionAnalysisResult<'ctx> for DominatorTree {
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for DominatorTree {
     fn invalidate(
         &mut self,
-        _function: FunctionView<'ctx>,
+        _function: FunctionView<'ctx, B>,
         pa: &PreservedAnalyses,
-        _inv: &mut FunctionAnalysisInvalidator<'_, 'ctx>,
+        _inv: &mut FunctionAnalysisInvalidator<'_, 'ctx, B>,
     ) -> IrResult<bool> {
         let checker = pa.checker::<DominatorTreeAnalysis>();
         Ok(!(checker.preserved()
