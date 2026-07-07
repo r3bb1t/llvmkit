@@ -1180,14 +1180,23 @@ pub trait TypedModulePass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
     }
 }
 
-/// Instrumentation gate + prefetch + collect + run + MinPreserves union +
-/// dual-manager invalidation for a single typed module pass, mirroring one
-/// iteration of the erased managers' loop (`ModulePassManager::run` above).
-/// The prefetched results borrow `mam` only for the pass's `run` scope, and
-/// `fam` is reborrowed at that same scope, so both managers are free again
-/// for invalidation once `run` returns -- the module `token` is `Copy` and
-/// coerces down to that same scope, exactly like
-/// [`run_one_typed_function_pass`].
+/// Instrumentation gate + prefetch + collect + run + MinPreserves union for a
+/// single typed module pass, mirroring one iteration of the erased managers'
+/// loop (`ModulePassManager::run` above) minus invalidation. The prefetched
+/// results borrow `mam` only for the pass's `run` scope, and `fam` is
+/// reborrowed at that same scope, so both managers are free again once `run`
+/// returns -- the module `token` is `Copy` and coerces down to that same
+/// scope, exactly like [`run_one_typed_function_pass`].
+///
+/// Unlike [`run_one_typed_function_pass`], this runner does *not* invalidate
+/// the analysis managers itself: invalidation is owned solely by the
+/// [`ModulePassList::run_all`] loop, so that leaf passes, [`ForEachFunction`]
+/// (which runs a function pipeline and bypasses this runner entirely), and
+/// nested [`ModulePipeline`] members are all invalidated the same way, from
+/// the same place. The function level has no such bypassing member -- every
+/// function-pipeline member routes through `run_one_typed_function_pass` --
+/// so invalidation there is owned by the runner instead. Callers must still
+/// invalidate with the returned (MinPreserves-unioned) `pass_pa`.
 fn run_one_typed_module_pass<'pm, 'ctx, B, P>(
     pass: &mut P,
     token: <P::Effect as TypedPassEffect>::ModuleToken<'pm, 'ctx, B>,
@@ -1220,8 +1229,6 @@ where
     if let Some(callbacks) = instrumentation {
         callbacks.run_after_pass(P::NAME, &pass_pa);
     }
-    mam.invalidate(module, &pass_pa)?;
-    fam.invalidate_module(module, &pass_pa)?;
     Ok(pass_pa)
 }
 
@@ -1276,6 +1283,12 @@ pub fn for_each_function<P>(pipeline: FunctionPipeline<P>) -> ForEachFunction<P>
     ForEachFunction { pipeline }
 }
 
+// The `Kind` slot is `(Kinds,)` -- a 1-tuple wrapping the inner
+// `FunctionPassList` dispatch tuple -- rather than `Kinds` directly. That
+// keeps this impl's `Kind` structurally distinct from the leaf `LeafMember`
+// impl and the nested `(NestedMember, Kinds)` impl below, so coherence sees
+// three non-overlapping shapes (`LeafMember`, `(Kinds,)`, `(NestedMember,
+// Kinds)`) instead of a bare `Kinds` that could unify with either.
 impl<'ctx, B, P, Kinds> ModulePipelineMember<'ctx, B, (Kinds,)> for ForEachFunction<P>
 where
     B: ModuleBrand + 'ctx,
