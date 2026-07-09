@@ -1219,3 +1219,521 @@ impl ModulePipelineExecute for Downgrades {
         Ok(unverified)
     }
 }
+
+// ==========================================================================
+// Pass API v2 — Dyn runtime-composition pipelines (the opt-style escape hatch)
+// ==========================================================================
+//
+// Everything above composes passes STATICALLY: a source-level tuple whose length
+// and members are fixed at compile time, monomorphized, `dyn`-free. This section
+// adds the one explicitly opt-in escape hatch (Doctrine D3): a pipeline ASSEMBLED
+// AT RUNTIME — from a loop, CLI flags, or a config file — where neither the length
+// nor the members are known until the program runs. That needs boxed passes, and
+// boxing needs an object-safe (`dyn`-able) trait.
+//
+// The whole coherence saga of the old design lands here — and structurally
+// vanishes. The boxing goes through the CRATE-PRIVATE `erased::ErasedFunctionPass`
+// / `ErasedModulePass` traits below. Because those traits are private (a private
+// `mod erased`, never re-exported), NO downstream crate can name them, so their
+// single blanket `impl<P: FunctionPass> ErasedFunctionPass for P` can NEVER overlap
+// any impl a downstream crate could write — there can be none. No sealing trait, no
+// newtype wrapper, no adaptor: the blanket is coherence-trivial by construction.
+// `dyn` lives ONLY behind these private traits and the public `Dyn…` containers;
+// the tuple/single-pass path above never sees it (D8's typestate is untouched).
+//
+// Output typestate is preserved exactly as the tuple pipelines preserve it, but the
+// verdict is fixed by WHICH CONTAINER you build (chosen at runtime) rather than
+// folded from a member tuple: a transform container downgrades once and yields
+// `Module<Unverified>`; a read-only container's `push` is bounded to `Inspect` and
+// threads the original `Module<Verified>` out untouched (D8). A mutating pass simply
+// does not satisfy the read-only `push` bound, so it cannot enter a read-only
+// container — the verified/unverified split is enforced at the TYPE level, never at
+// runtime.
+
+mod erased {
+    use super::{
+        Downgrades, FnAccess, FnMemberExec, FunctionPass, ModAccess, ModMemberExec, ModulePass,
+        ProvidesToken, VerdictCarry,
+    };
+    use crate::IrResult;
+    use crate::analysis::{FunctionAnalysisManager, ModuleAnalysisManager, PreservedAnalyses};
+    use crate::module::{Module, ModuleBrand, ModuleView, Unverified};
+    use crate::pass_context::FunctionView;
+
+    /// Object-safe erasure of a [`FunctionPass`] — the boxing seam for the runtime
+    /// `Dyn…` function pipelines.
+    ///
+    /// **This trait is the payoff of the whole Pass API v2 redesign.** It is
+    /// CRATE-PRIVATE (`pub(crate)` inside a private `mod erased`, never
+    /// re-exported): no downstream crate can name it, so the single blanket impl
+    /// below — `impl<P: FunctionPass> ErasedFunctionPass for P` — is
+    /// *coherence-trivial*. It cannot overlap anything, because nothing outside
+    /// this crate can write an impl of a trait it cannot name. No sealing trait, no
+    /// wrapper newtype, no adaptor: the old "coherence saga" is structurally gone.
+    ///
+    /// `run_erased` erases only the RETURN (into `PreservedAnalyses`, never the
+    /// module typestate), so it stays object-safe; the container owns the
+    /// verified/unverified threading.
+    pub(crate) trait ErasedFunctionPass<'ctx, B: ModuleBrand + 'ctx> {
+        /// Prefetch the pass's `Requires`, build its rung context from `token`
+        /// (projected to `()` for a read-only pass, `&Module<Unverified>` for a
+        /// mutating one), run it, and invalidate `fam` from the report — the same
+        /// per-member flow the tuple pipelines use, just behind `dyn`.
+        fn run_erased(
+            &mut self,
+            token: &Module<'ctx, B, Unverified>,
+            function: FunctionView<'ctx, B>,
+            fam: &mut FunctionAnalysisManager<'ctx, B>,
+        ) -> IrResult<PreservedAnalyses>;
+
+        /// The pass's `NAME` (instrumentation-facing; object-safe accessor).
+        fn name(&self) -> &str;
+
+        /// The pass's `REQUIRED` flag (object-safe accessor).
+        fn required(&self) -> bool;
+    }
+
+    // The SINGLE blanket impl. Coherence-trivial: `ErasedFunctionPass` is private,
+    // so this can never overlap a downstream impl (there can be none). The body is
+    // exactly the tuple pipeline's per-member flow, reached through the same
+    // `FnMemberExec` rung seam and `run_function_member` prefetch/invalidate loop.
+    impl<'ctx, B, P> ErasedFunctionPass<'ctx, B> for P
+    where
+        B: ModuleBrand + 'ctx,
+        P: FunctionPass<'ctx, B>,
+        P::Access: FnMemberExec,
+        <P::Access as FnAccess>::Verdict: VerdictCarry,
+        Downgrades: ProvidesToken<<P::Access as FnAccess>::Verdict>,
+    {
+        fn run_erased(
+            &mut self,
+            token: &Module<'ctx, B, Unverified>,
+            function: FunctionView<'ctx, B>,
+            fam: &mut FunctionAnalysisManager<'ctx, B>,
+        ) -> IrResult<PreservedAnalyses> {
+            // Project the container's single downgraded token down to THIS pass's
+            // rung token: a read-only member drops it to `()`, a mutating member
+            // receives the shared `&Module<Unverified>` unchanged (`ProvidesToken`).
+            let member_token =
+                <Downgrades as ProvidesToken<<P::Access as FnAccess>::Verdict>>::member_token(
+                    token,
+                );
+            <P::Access as FnMemberExec>::run_member::<B, P::Requires, P>(
+                self,
+                member_token,
+                function,
+                fam,
+            )
+        }
+
+        fn name(&self) -> &str {
+            P::NAME
+        }
+
+        fn required(&self) -> bool {
+            P::REQUIRED
+        }
+    }
+
+    /// Object-safe erasure of a [`ModulePass`] — the module-level mirror of
+    /// [`ErasedFunctionPass`], and equally coherence-trivial for the same reason
+    /// (private trait, single blanket impl).
+    pub(crate) trait ErasedModulePass<'ctx, B: ModuleBrand + 'ctx> {
+        /// Prefetch the module `Requires`, build the rung context from `token`, run
+        /// the pass, and return the report's preservation set. The container owns
+        /// invalidation (mirrors `run_module_member`), so this does not invalidate.
+        fn run_erased(
+            &mut self,
+            token: &Module<'ctx, B, Unverified>,
+            module: ModuleView<'ctx, B>,
+            mam: &mut ModuleAnalysisManager<'ctx, B>,
+            fam: &mut FunctionAnalysisManager<'ctx, B>,
+        ) -> IrResult<PreservedAnalyses>;
+
+        /// The pass's `NAME`.
+        fn name(&self) -> &str;
+
+        /// The pass's `REQUIRED` flag.
+        fn required(&self) -> bool;
+    }
+
+    // The SINGLE blanket impl (module level). Coherence-trivial, private trait.
+    impl<'ctx, B, P> ErasedModulePass<'ctx, B> for P
+    where
+        B: ModuleBrand + 'ctx,
+        P: ModulePass<'ctx, B>,
+        P::Access: ModMemberExec,
+        <P::Access as ModAccess>::Verdict: VerdictCarry,
+        Downgrades: ProvidesToken<<P::Access as ModAccess>::Verdict>,
+    {
+        fn run_erased(
+            &mut self,
+            token: &Module<'ctx, B, Unverified>,
+            module: ModuleView<'ctx, B>,
+            mam: &mut ModuleAnalysisManager<'ctx, B>,
+            fam: &mut FunctionAnalysisManager<'ctx, B>,
+        ) -> IrResult<PreservedAnalyses> {
+            let member_token =
+                <Downgrades as ProvidesToken<<P::Access as ModAccess>::Verdict>>::member_token(
+                    token,
+                );
+            <P::Access as ModMemberExec>::run_member::<B, P::Requires, P>(
+                self,
+                member_token,
+                module,
+                mam,
+                fam,
+            )
+        }
+
+        fn name(&self) -> &str {
+            P::NAME
+        }
+
+        fn required(&self) -> bool {
+            P::REQUIRED
+        }
+    }
+}
+
+use erased::{ErasedFunctionPass, ErasedModulePass};
+
+/// A read-only function capability rung admissible in a
+/// [`DynReadOnlyFunctionPipeline`].
+///
+/// Implemented for [`Inspect`] only — the mutating rungs ([`PatchBody`],
+/// [`ReshapeCfg`]) deliberately have no impl, which is exactly what makes a
+/// mutating pass a compile error at a read-only container's `push` (D1): a
+/// read-only container's `Module<Verified>` output is guaranteed by REFUSING
+/// entry to anything that could downgrade it, not by a runtime check. Sealed
+/// through the [`FnAccess`] supertrait.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is a mutating function rung; a read-only Dyn pipeline accepts only `Inspect` passes",
+    label = "not a read-only (`Inspect`) capability rung",
+    note = "push mutating passes into `DynFunctionPipeline` (the transform container), which yields `Module<Unverified>`"
+)]
+pub trait ReadOnlyFn: FnMemberExec + FnAccess<Verdict = StaysVerified> {}
+impl ReadOnlyFn for Inspect {}
+
+/// A read-only module capability rung admissible in a
+/// [`DynReadOnlyModulePipeline`] — the module-level mirror of [`ReadOnlyFn`].
+/// Implemented for [`Inspect`] only; [`RewriteModule`] has no impl.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is a mutating module rung; a read-only Dyn pipeline accepts only `Inspect` passes",
+    label = "not a read-only (`Inspect`) capability rung",
+    note = "push mutating passes into `DynModulePipeline` (the transform container), which yields `Module<Unverified>`"
+)]
+pub trait ReadOnlyMod: ModMemberExec + ModAccess<Verdict = StaysVerified> {}
+impl ReadOnlyMod for Inspect {}
+
+// -------------------------------------------------------------------------
+// Function Dyn pipelines
+// -------------------------------------------------------------------------
+
+/// Runtime-assembled **transform** function pipeline (Doctrine D3): `push` any
+/// [`FunctionPass`] — read-only or mutating — in a loop, then `run` over one
+/// function. Because the member list is unknown until runtime, the output is
+/// unconditionally `Module<Unverified>` (the container downgrades once up front and
+/// threads the shared mutation token to every member; D8). For a compile-time tuple
+/// whose verdict is DERIVED, use [`function_pipeline`]; for a pipeline that provably
+/// only reads, use [`DynReadOnlyFunctionPipeline`].
+///
+/// Internally a `Vec<Box<dyn ErasedFunctionPass>>` over the crate-private erased
+/// trait — the only place `dyn` appears in the pass API.
+pub struct DynFunctionPipeline<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+    passes: Vec<Box<dyn ErasedFunctionPass<'ctx, B> + 'ctx>>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> DynFunctionPipeline<'ctx, B> {
+    /// A new, empty transform pipeline. Add passes with [`Self::push`].
+    pub fn new() -> Self {
+        Self { passes: Vec::new() }
+    }
+
+    /// Append a pass to the end of the pipeline. Callable in a loop, from a `match`
+    /// on CLI flags, etc. — the runtime-composition property tuples cannot express.
+    pub fn push<P>(&mut self, pass: P)
+    where
+        P: FunctionPass<'ctx, B> + 'ctx,
+        P::Access: FnMemberExec,
+        <P::Access as FnAccess>::Verdict: VerdictCarry,
+        Downgrades: ProvidesToken<<P::Access as FnAccess>::Verdict>,
+    {
+        self.passes.push(Box::new(pass));
+    }
+
+    /// Number of passes queued.
+    pub fn len(&self) -> usize {
+        self.passes.len()
+    }
+
+    /// Whether the pipeline has no passes.
+    pub fn is_empty(&self) -> bool {
+        self.passes.is_empty()
+    }
+
+    /// Names of the queued passes, in push order (instrumentation-facing; the
+    /// per-pass `NAME` surfaced through the erased boxes).
+    pub fn pass_names(&self) -> impl Iterator<Item = &str> + '_ {
+        self.passes.iter().map(|pass| pass.name())
+    }
+
+    /// Whether any queued pass is marked `REQUIRED` (would run even when
+    /// instrumentation elects to skip it — instrumentation itself is future work).
+    pub fn has_required_pass(&self) -> bool {
+        self.passes.iter().any(|pass| pass.required())
+    }
+
+    /// Run every pushed pass, in push order, over one function of `module`. Each
+    /// member prefetches its `Requires` and invalidates `fam` from its own report
+    /// before the next runs. Always returns `Module<Unverified>` (D8).
+    pub fn run<F>(
+        &mut self,
+        module: Module<'ctx, B, Verified>,
+        function: F,
+        analyses: &mut Analyses<'ctx, B>,
+    ) -> IrResult<Module<'ctx, B, Unverified>>
+    where
+        F: Into<FunctionView<'ctx, B>>,
+    {
+        let function = function.into();
+        // Downgrade once; thread the shared `&Module<Unverified>` to every member.
+        let unverified = module.unverify();
+        let fam = analyses.function_manager_mut();
+        for pass in &mut self.passes {
+            pass.run_erased(&unverified, function, fam)?;
+        }
+        Ok(unverified)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> Default for DynFunctionPipeline<'ctx, B> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Runtime-assembled **read-only** function pipeline. Its `push` is bounded to
+/// [`ReadOnlyFn`] (only [`Inspect`] passes), so it cannot hold anything that would
+/// downgrade the module; `run` therefore threads the ORIGINAL `Module<Verified>`
+/// straight through, with no mutation and no re-verification (D8). A mutating pass
+/// fails to compile at `push` — that missing impl is the type-level guarantee of
+/// the verified output.
+pub struct DynReadOnlyFunctionPipeline<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+    passes: Vec<Box<dyn ErasedFunctionPass<'ctx, B> + 'ctx>>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> DynReadOnlyFunctionPipeline<'ctx, B> {
+    /// A new, empty read-only pipeline. Add passes with [`Self::push`].
+    pub fn new() -> Self {
+        Self { passes: Vec::new() }
+    }
+
+    /// Append a READ-ONLY pass. The `P::Access: ReadOnlyFn` bound admits only
+    /// [`Inspect`] passes; a mutating pass fails to compile here — that is how the
+    /// `Module<Verified>` output is guaranteed (nothing that could downgrade it can
+    /// enter the container).
+    pub fn push<P>(&mut self, pass: P)
+    where
+        P: FunctionPass<'ctx, B> + 'ctx,
+        P::Access: ReadOnlyFn,
+    {
+        self.passes.push(Box::new(pass));
+    }
+
+    /// Number of passes queued.
+    pub fn len(&self) -> usize {
+        self.passes.len()
+    }
+
+    /// Whether the pipeline has no passes.
+    pub fn is_empty(&self) -> bool {
+        self.passes.is_empty()
+    }
+
+    /// Names of the queued passes, in push order (instrumentation-facing).
+    pub fn pass_names(&self) -> impl Iterator<Item = &str> + '_ {
+        self.passes.iter().map(|pass| pass.name())
+    }
+
+    /// Whether any queued pass is marked `REQUIRED`.
+    pub fn has_required_pass(&self) -> bool {
+        self.passes.iter().any(|pass| pass.required())
+    }
+
+    /// Run every pushed (read-only) pass over one function, threading the original
+    /// verified module straight through — no mutation, no re-verification (D8).
+    pub fn run<F>(
+        &mut self,
+        module: Module<'ctx, B, Verified>,
+        function: F,
+        analyses: &mut Analyses<'ctx, B>,
+    ) -> IrResult<Module<'ctx, B, Verified>>
+    where
+        F: Into<FunctionView<'ctx, B>>,
+    {
+        let function = function.into();
+        // A throwaway unverified alias, only to satisfy the erased signature: every
+        // member is `Inspect`, so `ProvidesToken` projects the token to `()` and it
+        // never reaches a mutator. The verified `module` is returned untouched.
+        let scratch = module.scratch_unverified();
+        let fam = analyses.function_manager_mut();
+        for pass in &mut self.passes {
+            pass.run_erased(&scratch, function, fam)?;
+        }
+        Ok(module)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> Default for DynReadOnlyFunctionPipeline<'ctx, B> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// -------------------------------------------------------------------------
+// Module Dyn pipelines
+// -------------------------------------------------------------------------
+
+/// Runtime-assembled **transform** module pipeline — the module-level mirror of
+/// [`DynFunctionPipeline`]. `push` any [`ModulePass`], `run` over the whole module;
+/// always yields `Module<Unverified>` (D8). Invalidates both managers after each
+/// member (mirrors [`ModulePassList`]).
+pub struct DynModulePipeline<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+    passes: Vec<Box<dyn ErasedModulePass<'ctx, B> + 'ctx>>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> DynModulePipeline<'ctx, B> {
+    /// A new, empty transform module pipeline. Add passes with [`Self::push`].
+    pub fn new() -> Self {
+        Self { passes: Vec::new() }
+    }
+
+    /// Append a pass to the end of the pipeline (usable in a loop).
+    pub fn push<P>(&mut self, pass: P)
+    where
+        P: ModulePass<'ctx, B> + 'ctx,
+        P::Access: ModMemberExec,
+        <P::Access as ModAccess>::Verdict: VerdictCarry,
+        Downgrades: ProvidesToken<<P::Access as ModAccess>::Verdict>,
+    {
+        self.passes.push(Box::new(pass));
+    }
+
+    /// Number of passes queued.
+    pub fn len(&self) -> usize {
+        self.passes.len()
+    }
+
+    /// Whether the pipeline has no passes.
+    pub fn is_empty(&self) -> bool {
+        self.passes.is_empty()
+    }
+
+    /// Names of the queued passes, in push order (instrumentation-facing).
+    pub fn pass_names(&self) -> impl Iterator<Item = &str> + '_ {
+        self.passes.iter().map(|pass| pass.name())
+    }
+
+    /// Whether any queued pass is marked `REQUIRED`.
+    pub fn has_required_pass(&self) -> bool {
+        self.passes.iter().any(|pass| pass.required())
+    }
+
+    /// Run every pushed pass over the whole module, in push order, invalidating
+    /// both managers from each member's report before the next runs. Always returns
+    /// `Module<Unverified>` (D8).
+    pub fn run(
+        &mut self,
+        module: Module<'ctx, B, Verified>,
+        analyses: &mut Analyses<'ctx, B>,
+    ) -> IrResult<Module<'ctx, B, Unverified>> {
+        let unverified = module.unverify();
+        let view = unverified.as_view();
+        let (mam, fam) = analyses.managers_mut();
+        for pass in &mut self.passes {
+            let pa = pass.run_erased(&unverified, view, mam, fam)?;
+            mam.invalidate(view, &pa)?;
+            fam.invalidate_module(view, &pa)?;
+        }
+        Ok(unverified)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> Default for DynModulePipeline<'ctx, B> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Runtime-assembled **read-only** module pipeline — the module-level mirror of
+/// [`DynReadOnlyFunctionPipeline`]. `push` is bounded to [`ReadOnlyMod`] (only
+/// [`Inspect`] passes), and `run` threads the original `Module<Verified>` through
+/// untouched (D8).
+pub struct DynReadOnlyModulePipeline<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+    passes: Vec<Box<dyn ErasedModulePass<'ctx, B> + 'ctx>>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> DynReadOnlyModulePipeline<'ctx, B> {
+    /// A new, empty read-only module pipeline. Add passes with [`Self::push`].
+    pub fn new() -> Self {
+        Self { passes: Vec::new() }
+    }
+
+    /// Append a READ-ONLY module pass. The `P::Access: ReadOnlyMod` bound admits
+    /// only [`Inspect`] passes; a mutating pass fails to compile here.
+    pub fn push<P>(&mut self, pass: P)
+    where
+        P: ModulePass<'ctx, B> + 'ctx,
+        P::Access: ReadOnlyMod,
+    {
+        self.passes.push(Box::new(pass));
+    }
+
+    /// Number of passes queued.
+    pub fn len(&self) -> usize {
+        self.passes.len()
+    }
+
+    /// Whether the pipeline has no passes.
+    pub fn is_empty(&self) -> bool {
+        self.passes.is_empty()
+    }
+
+    /// Names of the queued passes, in push order (instrumentation-facing).
+    pub fn pass_names(&self) -> impl Iterator<Item = &str> + '_ {
+        self.passes.iter().map(|pass| pass.name())
+    }
+
+    /// Whether any queued pass is marked `REQUIRED`.
+    pub fn has_required_pass(&self) -> bool {
+        self.passes.iter().any(|pass| pass.required())
+    }
+
+    /// Run every pushed (read-only) pass over the whole module, threading the
+    /// original verified module through untouched — no mutation, no
+    /// re-verification (D8).
+    pub fn run(
+        &mut self,
+        module: Module<'ctx, B, Verified>,
+        analyses: &mut Analyses<'ctx, B>,
+    ) -> IrResult<Module<'ctx, B, Verified>> {
+        // Throwaway unverified alias to satisfy the erased signature; every member
+        // is `Inspect`, so the token projects to `()` and never reaches a mutator.
+        let scratch = module.scratch_unverified();
+        let view = module.as_view();
+        let (mam, fam) = analyses.managers_mut();
+        for pass in &mut self.passes {
+            let pa = pass.run_erased(&scratch, view, mam, fam)?;
+            mam.invalidate(view, &pa)?;
+            fam.invalidate_module(view, &pa)?;
+        }
+        Ok(module)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> Default for DynReadOnlyModulePipeline<'ctx, B> {
+    fn default() -> Self {
+        Self::new()
+    }
+}

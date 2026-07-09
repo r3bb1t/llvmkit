@@ -236,10 +236,11 @@ pub use pass_context::{
 };
 pub use pass_instrumentation::{PassInstrumentationAnalysis, PassInstrumentationCallbacks};
 pub use pass_manager::{
+    DynFunctionPipeline, DynModulePipeline, DynReadOnlyFunctionPipeline, DynReadOnlyModulePipeline,
     ForEachFunction, FunctionPass, FunctionPassList, FunctionPipeline, FunctionPipelineExecute,
     FunctionPipelineMember, ModulePass, ModulePassList, ModulePipeline, ModulePipelineExecute,
-    ModulePipelineMember, PassExecution, ProvidesToken, VerdictCarry, for_each_function,
-    function_pipeline, module_pipeline, run_function_pass, run_module_pass,
+    ModulePipelineMember, PassExecution, ProvidesToken, ReadOnlyFn, ReadOnlyMod, VerdictCarry,
+    for_each_function, function_pipeline, module_pipeline, run_function_pass, run_module_pass,
 };
 pub use pass_pipeline::{
     BDCE, CLEANUP_LIFT, CLEANUP_MIN, CLEANUP_O1_ISH, DCE, DEFAULT_O0, DEFAULT_O1, EARLY_CSE,
