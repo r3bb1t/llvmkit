@@ -1,17 +1,54 @@
 #![forbid(unsafe_code)]
 //! LLVM IR data model in pure safe Rust.
 //!
-//! This crate mirrors the relevant `llvm/lib/IR/` and `llvm/include/llvm/IR/`
-//! surfaces from LLVM 22.1.4. The currently shipped layer includes typed IR
-//! construction, AsmWriter support, structural verification, shared CFG
-//! queries, recompute-on-demand dominance, and a capability-graded
-//! new-pass-manager-inspired analysis and pass API.
+//! `llvmkit-ir` mirrors the relevant `llvm/lib/IR/` and `llvm/include/llvm/IR/`
+//! surfaces from LLVM 22.1.4: typed IR construction, AsmWriter printing,
+//! structural verification, CFG and dominance queries, and a capability-graded,
+//! new-pass-manager-inspired analysis and pass API. It does not link `libLLVM`.
 //!
-//! The surface is intentionally incomplete: bitcode, built-in optimization
-//! transforms, and PassBuilder-style pipeline builders are still ahead. See
-//! [`crate::analysis`], [`crate::pass_manager`],
-//! [`crate::pass_instrumentation`], [`crate::cfg`], and
-//! [`crate::dominator_tree`] for the pass-readiness slice that now ships.
+//! # Writing a pass
+//!
+//! A pass is one `impl` block. Declare a capability *rung* (`type Access`) — how
+//! much of the IR it may touch — plus the analyses it needs; the driver derives
+//! preservation and whether the output module stays [`Verified`]. Over-claiming
+//! what a pass preserves is a compile error, not a stale-analysis miscompile.
+//!
+//! ```
+//! use llvmkit_ir::{function_pass, DominatorTreeAnalysis, IrResult};
+//!
+//! struct EntryReachable;
+//!
+//! #[function_pass(name = "entry-reachable", access = Inspect, requires = [DominatorTreeAnalysis])]
+//! impl EntryReachable {
+//!     fn run(&mut self, cx: FnCx<Self>) -> IrResult<FnReport> {
+//!         let dt = cx.analysis::<DominatorTreeAnalysis, _>();
+//!         if let Some(entry) = cx.function().entry_block() {
+//!             let _reachable = dt.is_reachable_from_entry(entry);
+//!         }
+//!         Ok(cx.done()) // `Inspect` has no `cx.mutate()`; the module stays Verified
+//!     }
+//! }
+//! ```
+//!
+//! Run one pass with [`run_function_pass`] / [`run_module_pass`], compose several
+//! at compile time with [`function_pipeline`] / [`module_pipeline`], or assemble
+//! one at run time with [`DynFunctionPipeline`]. **The full pass guide — the
+//! capability rungs, the three run modes, and mutating passes — is in the
+//! [`pass_manager`] module docs**; the `#[function_pass]` / `#[module_pass]`
+//! sugar is documented on [`macro@function_pass`]. Runnable end-to-end demos are
+//! in the crate's `examples/` (`pass_manager_demo.rs`, `authored_pass.rs`).
+//!
+//! # Where to look
+//!
+//! - [`Module`] + [`IRBuilder`] — build and print IR (the crate README has a
+//!   guided tour of the builder and typed-handle surface).
+//! - [`pass_manager`] — author and run passes (start here for passes).
+//! - [`pass_access`] — the capability rungs and the derived verified-state lattice.
+//! - [`pass_context`] — the pass-author contexts ([`FnCx`]/[`ModCx`]) and mutators.
+//! - [`analysis`] — built-in analyses and the bundled [`Analyses`] manager.
+//!
+//! The surface is intentionally incomplete: bitcode, a broad built-in transform
+//! library, and PassBuilder-style pipeline builders are still ahead.
 
 pub mod align;
 pub mod analysis;
@@ -69,7 +106,7 @@ pub mod module;
 pub mod named_md_node;
 pub mod operator;
 pub mod optimization_level;
-mod pass_access;
+pub mod pass_access;
 pub mod pass_context;
 pub mod pass_instrumentation;
 pub mod pass_manager;
@@ -241,6 +278,12 @@ pub use pass_manager::{
     ModulePipelineMember, PassExecution, ProvidesToken, ReadOnlyFn, ReadOnlyMod, VerdictCarry,
     for_each_function, function_pipeline, module_pipeline, run_function_pass, run_module_pass,
 };
+// Data-only textual-pipeline recipe names and AST (not yet executable — they
+// mirror LLVM's pipeline strings but construct no passes). Kept importable from
+// the crate root, but hidden from the crate-root doc listing so the runnable
+// pass-authoring surface stays findable; browse them on the [`pass_pipeline`]
+// module page instead.
+#[doc(hidden)]
 pub use pass_pipeline::{
     BDCE, CLEANUP_LIFT, CLEANUP_MIN, CLEANUP_O1_ISH, DCE, DEFAULT_O0, DEFAULT_O1, EARLY_CSE,
     FunctionPassScope, FunctionPipelineScope, FunctionPipelineStep, GVN_LITE, HasOptimizationLevel,

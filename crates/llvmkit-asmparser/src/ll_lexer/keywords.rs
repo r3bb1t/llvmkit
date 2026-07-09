@@ -21,7 +21,7 @@
 //!
 //! TODO(tablegen): the attribute keyword list is hand-mirrored from
 //! `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/include/llvm/IR/Attributes.td`
-//! (LLVM 22.1.4). Replace with a build-time tablegen port in a future session.
+//! (LLVM 22.1.4). Replace with a build-time tablegen port in a later revision.
 
 use super::{Keyword, Opcode, PrimitiveTy, Token};
 

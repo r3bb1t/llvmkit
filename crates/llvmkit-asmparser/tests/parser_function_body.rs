@@ -544,7 +544,7 @@ fn select_constant_token_arms_are_rejected_before_fold() {
     .unwrap_err();
     let msg = format!("{err}");
     assert!(
-        msg.contains("select arm category supported by this session") || msg.contains("token"),
+        msg.contains("select arm category supported by this parser") || msg.contains("token"),
         "got: {msg}"
     );
 }

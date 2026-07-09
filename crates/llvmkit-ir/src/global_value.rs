@@ -5,8 +5,8 @@
 //! [`Function`](crate::function::FunctionValue) needs from it. Every
 //! other field on the upstream `GlobalValue` (visibility, DLL storage
 //! class, thread-local mode, unnamed-addr, comdat, section,
-//! sanitizer-metadata, partition, etc.) is deferred to a session that
-//! lands proper globals.
+//! sanitizer-metadata, partition, etc.) is deferred until proper
+//! globals land.
 
 use core::fmt;
 

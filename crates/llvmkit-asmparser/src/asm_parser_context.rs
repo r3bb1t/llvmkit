@@ -278,7 +278,7 @@ mod tests {
     #[test]
     fn locmap_round_trip() {
         // Exercises the inner table directly; the typed wrapper test waits
-        // on parser integration in Session 2.
+        // on parser integration.
         llvmkit_ir::Module::with_new("locmap_round_trip", |m| {
             let i32_ty = m.i32_type();
             let g = m

@@ -6,10 +6,10 @@
 //! ship today but route every variant through structured fields so callers
 //! can match on the failure mode without string comparison.
 //!
-//! The catalogue is intentionally narrow in this session — only the
+//! The catalogue is intentionally narrow for now — only the
 //! variants that the substrate (lexer pass-through, slot-table integrity,
 //! forward-reference resolution, location registry) and the immediate
-//! follow-on parser sessions will populate. Sessions 2-3 grow the enum as
+//! follow-on parser work will populate. Later revisions grow the enum as
 //! they add real `parse*` arms; the variants ship now so the parser does
 //! not have to relitigate the public error shape later.
 
@@ -197,7 +197,7 @@ mod tests {
 
     /// Ports the `redefinition of ...` diagnostic family from
     /// `LLParser.cpp`. We assert structural identity, not string identity,
-    /// to keep wording flexibility for follow-on sessions.
+    /// to keep wording flexibility for later revisions.
     #[test]
     fn redefinition_records_symbol() {
         let err = ParseError::Redefinition {

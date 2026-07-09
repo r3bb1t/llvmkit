@@ -182,6 +182,7 @@ mod pass_execution_sealed {
 /// per-rung [`FnRungExecute`]/[`ModRungExecute`] traits below (only there is a
 /// rung's `Token` concrete); this trait owns just the output-module GAT, which
 /// the pipeline task reuses to spell a whole pipeline's return type.
+#[doc(hidden)]
 pub trait PassExecution: PipelineVerdict + pass_execution_sealed::Sealed {
     /// Module typestate produced by a run whose derived verdict is `Self`.
     type OutModule<'ctx, B: ModuleBrand + 'ctx>;
@@ -443,6 +444,7 @@ where
 /// mutating members receive (built once by the pipeline's [`FunctionPipelineExecute`]
 /// /[`ModulePipelineExecute`] when it downgrades the module). Sealed to the two
 /// verdict markers through the [`PipelineVerdict`] supertrait.
+#[doc(hidden)]
 pub trait VerdictCarry: PipelineVerdict {
     /// Carried mutation token; `()` for [`StaysVerified`],
     /// `&'pm Module<Unverified>` for [`Downgrades`].
@@ -474,6 +476,7 @@ impl VerdictCarry for Downgrades {
 /// (D1): a verified-staying pipeline cannot hand a mutation token to a mutating
 /// member — but that pairing never arises, because a mutating member folds the
 /// whole pipeline's verdict to [`Downgrades`] via [`VerdictFold`].
+#[doc(hidden)]
 pub trait ProvidesToken<Member: VerdictCarry>: VerdictCarry {
     /// Project this pipeline verdict's token to `Member`'s token.
     fn member_token<'pm, 'ctx, B: ModuleBrand + 'ctx>(
@@ -664,6 +667,7 @@ pub struct NestedMember(());
 /// [`LeafMember`] impl) or a nested [`FunctionPipeline`] (via the
 /// [`NestedMember`] impl). `Kind` is always inferred from the member type; do not
 /// implement directly — the two provided impls are the whole intended universe.
+#[doc(hidden)]
 pub trait FunctionPipelineMember<'ctx, B: ModuleBrand + 'ctx, Kind> {
     /// This member's contribution to the pipeline verdict.
     type MemberVerdict: VerdictCarry;
@@ -710,6 +714,7 @@ mod pass_list_sealed {
 /// pipelines. `run_all` runs the members in written order; each member invalidates
 /// `fam` from its own report (so member N+1 sees member N's invalidations), then
 /// the aggregate is force-preserved over [`AllAnalysesOnFunction`] for the caller.
+#[doc(hidden)]
 pub trait FunctionPassList<'ctx, B: ModuleBrand + 'ctx, Kinds>: pass_list_sealed::Sealed {
     /// Fold of every member's verdict: [`StaysVerified`] iff all members are.
     type Verdict: VerdictCarry;
@@ -860,6 +865,7 @@ where
 /// the verified module through untouched (all members read-only, carry `()`);
 /// [`Downgrades`] unverifies once up front and threads the shared
 /// `&Module<Unverified>` to the members. Implemented by the two verdict markers.
+#[doc(hidden)]
 pub trait FunctionPipelineExecute: VerdictCarry + PassExecution {
     #[doc(hidden)]
     fn execute<'ctx, B, P, Kinds>(
@@ -1009,6 +1015,7 @@ impl ModMemberExec for RewriteModule {
 /// nested [`ModulePipeline`] (via [`NestedMember`]), or a [`ForEachFunction`]
 /// adaptor (via the `(Kinds,)` tag). `Kind` is always inferred; do not implement
 /// directly. Mirrors [`FunctionPipelineMember`] at module scope.
+#[doc(hidden)]
 pub trait ModulePipelineMember<'ctx, B: ModuleBrand + 'ctx, Kind> {
     /// This member's contribution to the pipeline verdict.
     type MemberVerdict: VerdictCarry;
@@ -1114,6 +1121,7 @@ mod module_pass_list_sealed {
 /// pipelines. `run_all` invalidates both the module and function analysis managers
 /// after each member (mirroring [`run_module_pass`]), then force-preserves
 /// [`AllAnalysesOnModule`] for the caller.
+#[doc(hidden)]
 pub trait ModulePassList<'ctx, B: ModuleBrand + 'ctx, Kinds>:
     module_pass_list_sealed::Sealed
 {
@@ -1262,6 +1270,7 @@ where
 
 /// Per-verdict `run` dispatch for a module pipeline — the module-level mirror of
 /// [`FunctionPipelineExecute`]. Implemented by the two verdict markers.
+#[doc(hidden)]
 pub trait ModulePipelineExecute: VerdictCarry + PassExecution {
     #[doc(hidden)]
     fn execute<'ctx, B, P, Kinds>(
@@ -1502,6 +1511,7 @@ use erased::{ErasedFunctionPass, ErasedModulePass};
     label = "not a read-only (`Inspect`) capability rung",
     note = "push mutating passes into `DynFunctionPipeline` (the transform container), which yields `Module<Unverified>`"
 )]
+#[doc(hidden)]
 pub trait ReadOnlyFn: FnMemberExec + FnAccess<Verdict = StaysVerified> {}
 impl ReadOnlyFn for Inspect {}
 
@@ -1513,6 +1523,7 @@ impl ReadOnlyFn for Inspect {}
     label = "not a read-only (`Inspect`) capability rung",
     note = "push mutating passes into `DynModulePipeline` (the transform container), which yields `Module<Unverified>`"
 )]
+#[doc(hidden)]
 pub trait ReadOnlyMod: ModMemberExec + ModAccess<Verdict = StaysVerified> {}
 impl ReadOnlyMod for Inspect {}
 

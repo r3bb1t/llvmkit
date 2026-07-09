@@ -1,5 +1,4 @@
-//! Parser-1 victory lap. Builds two functions that exercise the
-//! Session 1 instruction set:
+//! Builds two functions that exercise the core instruction set:
 //!
 //! - `atomic_inc`: a release/acquire atomic increment of a 32-bit
 //!   counter using `fence` + `atomicrmw add` + `fence`.

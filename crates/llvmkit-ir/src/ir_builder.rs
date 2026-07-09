@@ -6777,9 +6777,9 @@ macro_rules! impl_into_return_value_int {
 }
 impl_into_return_value_int!(bool, i8, i16, i32, i64, i128, IntDyn);
 
-// Float-marker impls. Phase 2 introduces `IntoFloatValue<'ctx, K, B>`; for
-// now the typed `FloatValue<'ctx, K, B>` itself is the only direct
-// `IntoReturnValue<'ctx, K>` source. Phase 2 will replace these with
+// Float-marker impls. A later revision introduces `IntoFloatValue<'ctx, K, B>`;
+// for now the typed `FloatValue<'ctx, K, B>` itself is the only direct
+// `IntoReturnValue<'ctx, K>` source. That revision will replace these with
 // macro-expanded blanket-on-IntoFloatValue impls (matching the int
 // side).
 macro_rules! impl_into_return_value_float {

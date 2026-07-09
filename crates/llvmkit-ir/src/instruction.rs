@@ -7,7 +7,7 @@
 //! Phase E minimum: `add`, `sub`, `mul`, and `ret`. Everything else
 //! (`Br`, `CondBr`, `Switch`, `Phi`, `Load`, `Store`, `Alloca`,
 //! `Call`, `GEP`, casts, comparisons, ...) is scheduled per the
-//! foundation plan as its own focused session.
+//! foundation plan.
 //!
 //! ## Two-tier discriminator
 //!
@@ -15,7 +15,7 @@
 //!   needs.
 //! - [`TerminatorKind`] — the terminator subset (`Ret` today).
 //!
-//! Both are `#[non_exhaustive]` so future sessions can add variants
+//! Both are `#[non_exhaustive]` so later revisions can add variants
 //! without breaking external consumers. Inside the crate, every match
 //! is exhaustive — `#[non_exhaustive]` only constrains *external*
 //! pattern matching.

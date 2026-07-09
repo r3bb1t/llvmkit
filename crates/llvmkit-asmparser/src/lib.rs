@@ -20,7 +20,7 @@
 //!
 //! The substrate listed as `done` is the support layer the parser-first
 //! roadmap pulls in alongside `LLParser`; it ships before the parser core
-//! so Sessions 2-3 can wire their resolution / location pipelines against
+//! so the parser core can wire its resolution / location pipelines against
 //! a stable interface (Roadmap section 10.5 forward-reference typestate).
 
 pub mod asm_parser_context;

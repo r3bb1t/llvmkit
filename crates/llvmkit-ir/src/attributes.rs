@@ -4,7 +4,7 @@
 //! Phase B subset per the IR foundation plan: enum kind, integer attrs
 //! (`align`, `dereferenceable`), range attrs, string attrs, type attrs.
 //! The deeper attribute-set machinery (FoldingSet-keyed `AttributeSetNode`) is
-//! deferred to a later session.
+//! deferred to a later revision.
 //!
 //! Type-state shape:
 //!

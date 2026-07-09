@@ -1,7 +1,7 @@
-//! Textual `.ll` parser — module-level slice (Session 2).
+//! Textual `.ll` parser — module-level slice.
 //!
 //! Mirrors the parser entry points in `llvm/lib/AsmParser/LLParser.cpp`. The
-//! shipped surface this session is the smallest constructive subset that
+//! shipped surface is the smallest constructive subset that
 //! lets a real `.ll` module be ingested into the existing typed
 //! [`llvmkit_ir::Module`]:
 //!
@@ -105,8 +105,9 @@ pub fn describe(t: &Token<'_>) -> String {
         Token::Instruction(_) => "instruction opcode".into(),
         Token::Kw(k) => format!("keyword '{}'", keyword_text(*k)),
         // The DWARF-flavoured tokens are intentionally minimal — they only
-        // appear inside metadata, which Session 4 owns. Naming the family
-        // is sufficient for the diagnostics callers see in this session.
+        // appear inside metadata, which the parser does not yet cover.
+        // Naming the family is sufficient for the diagnostics callers
+        // currently see.
         Token::DwarfTag(_) => "DWARF tag".into(),
         Token::DwarfAttEncoding(_) => "DWARF attribute encoding".into(),
         Token::DwarfVirtuality(_) => "DWARF virtuality".into(),
@@ -128,8 +129,8 @@ pub fn describe(t: &Token<'_>) -> String {
 }
 
 fn keyword_text(k: Keyword) -> &'static str {
-    // Only the keywords this session reaches; other arms fall back to a
-    // generic label. Sessions 3+ extend the table opportunistically.
+    // Only the keywords the parser currently reaches; other arms fall back to
+    // a generic label. Later revisions extend the table opportunistically.
     match k {
         Keyword::Target => "target",
         Keyword::Triple => "triple",
@@ -166,7 +167,7 @@ fn keyword_text(k: Keyword) -> &'static str {
 /// reference to an opaque-named struct. Mirrors the
 /// `std::pair<Type *, LocTy>` entries in `LLParser`'s `NamedTypes` /
 /// `NumberedTypes` maps: we keep the type handle plus the location of the
-/// most recent forward reference so Session 3 / `validateEndOfModule` can
+/// most recent forward reference so `validateEndOfModule` can
 /// blame the right span if the definition never lands.
 #[derive(Debug, Clone, Copy)]
 struct TypeEntry<'ctx, B: ModuleBrand = Brand<'ctx>> {
@@ -2995,7 +2996,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
     // ── Globals ──────────────────────────────────────────────────────────
 
     /// Dispatch for `@name = ...` / `@N = ...`. Routes to the global form
-    /// supported in this session (constructive subset: simple `@x = global
+    /// currently supported (constructive subset: simple `@x = global
     /// TY CONST` / `@x = constant TY CONST` with optional `external`
     /// linkage). Function-level forms (`@x = ... declare ...`) are handled
     /// by [`Parser::parse_declare`] from the top-level dispatcher when the
@@ -5427,7 +5428,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
 
     /// `define RET @name(PARAMS) { ... }` — full function definition with
     /// a body. Mirrors `LLParser::parseDefine` for the constructive
-    /// instruction subset Session 3 ships (ret / unreachable / br /
+    /// instruction subset currently shipped (ret / unreachable / br /
     /// cond_br / icmp / add / sub / mul). Function linkage and
     /// unnamed-address markers are preserved when present.
     fn parse_define(&mut self) -> ParseResult<()> {
@@ -5855,7 +5856,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 _ => {}
             }
             // Non-terminator: an `%lhs = OP ...` or a void-result
-            // instruction. Session 3 ships only result-producing arms.
+            // instruction. Only result-producing arms are shipped so far.
             let result_name = self.parse_lhs_assignment()?;
             let result_loc = self.loc();
             if matches!(
@@ -6862,7 +6863,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             _ => false,
         };
         if !valid_arm_type {
-            return Err(self.expected("select arm category supported by this session (int/fp/ptr)"));
+            return Err(self.expected("select arm category supported by this parser (int/fp/ptr)"));
         }
         if let (Ok(condition), Ok(true_constant), Ok(false_constant)) = (
             Constant::try_from(cond_value),
@@ -6918,7 +6919,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             }
             _ => {
                 return Err(
-                    self.expected("select arm category supported by this session (int/fp/ptr)")
+                    self.expected("select arm category supported by this parser (int/fp/ptr)")
                 );
             }
         };

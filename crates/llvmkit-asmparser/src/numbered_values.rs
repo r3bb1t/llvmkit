@@ -6,8 +6,8 @@
 //! we surface that contract as a typed [`AddError`].
 //!
 //! The sealed [`forward_ref`] submodule ships the parser-side typestate
-//! ([`forward_ref::Unresolved`] / [`forward_ref::Resolved`]) that Sessions
-//! 1+3 of the parser-first roadmap consume to make "left a forward
+//! ([`forward_ref::Unresolved`] / [`forward_ref::Resolved`]) that the
+//! parser-first roadmap consumes to make "left a forward
 //! reference unresolved" a *compile* error rather than a late runtime
 //! failure.
 
@@ -120,10 +120,10 @@ impl<T> NumberedValues<T> {
 /// reference ([`forward_ref::Unresolved`]) or a definition
 /// ([`forward_ref::Resolved`]). The two states
 /// are distinct types so leaking an `Unresolved<T>` past
-/// `PerFunctionState::finish` (Session 3) is a *compile* error: the consume
+/// `PerFunctionState::finish` is a *compile* error: the consume
 /// site only accepts a state that has discharged every slot.
 ///
-/// The supporting types ship now so Sessions 2-3 can wire their resolution
+/// The supporting types ship now so the parser can wire its resolution
 /// pipelines against a stable interface.
 pub mod forward_ref {
     /// A forward reference to slot `id`, recorded at `first_seen`. Holding an

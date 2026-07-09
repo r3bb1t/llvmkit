@@ -24,7 +24,7 @@
 //!   verifier checks that every GEP index is integer-typed and that the
 //!   source type is sized.
 //! - Per-function attribute coherence rules (`noalias` /
-//!   `byval` / ...) are out of scope for Session 1.
+//!   `byval` / ...) are out of scope for the current verifier.
 
 use std::collections::HashMap;
 
@@ -83,7 +83,7 @@ impl<'ctx> Verifier<'ctx> {
 
     /// Verify every function in the module. Returns the first
     /// invariant violation encountered. Stops on first error to keep
-    /// `IrError` single-shot; future sessions can add a multi-error
+    /// `IrError` single-shot; a later revision can add a multi-error
     /// collecting variant if pass infrastructure needs it.
     pub(crate) fn run(&self) -> IrResult<()> {
         for g in self.module.iter_globals() {

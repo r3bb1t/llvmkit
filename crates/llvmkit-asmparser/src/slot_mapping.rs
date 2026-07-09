@@ -23,7 +23,7 @@
 //!   have to dyn-cast back to a concrete handle (Doctrine D3: erased forms
 //!   are explicitly opt-in).
 //! - The `MetadataNodes` slot is intentionally omitted until the metadata
-//!   subsystem ships in `llvmkit-ir` (parser Session 4 / metadata substrate).
+//!   subsystem ships in `llvmkit-ir`.
 //!   Adding it now would be an empty stub.
 
 use std::collections::BTreeMap;
@@ -136,7 +136,7 @@ mod tests {
     /// SlotMappingTest)` for the surface that doesn't require the parser:
     /// freshly constructed mappings expose empty registries and an
     /// `getNext() == 0` global frontier. The parser-driven part of the
-    /// upstream test waits on Session 2.
+    /// upstream test waits on the parser.
     #[test]
     fn fresh_mapping_is_empty() {
         let m: SlotMapping<'_> = SlotMapping::new();

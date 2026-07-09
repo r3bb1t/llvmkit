@@ -276,8 +276,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> ExactSizeIterator for ModuleFunctionViews<'ctx
 ///
 /// Unparameterized on purpose: the honesty guarantee comes from the consuming
 /// transition ([`FnCx::mutate`] discards the "all preserved" shortcut), not from
-/// a type tag. It is a distinct type from Task 2b's module report, so a function
-/// pass cannot return a module report by mistake.
+/// a type tag. It is a distinct type from the module report ([`ModReport`]), so a
+/// function pass cannot return a module report by mistake.
 pub struct FnReport {
     pa: PreservedAnalyses,
 }
@@ -305,9 +305,9 @@ impl FnReport {
 /// Consuming entry context handed to a function pass at capability rung `A`.
 ///
 /// Parameterized by the access marker `A` (which rung) and the `Requires` list
-/// `R` (which analyses were prefetched) rather than by a pass trait, so it
-/// compiles and tests stand alone ahead of the Task 3 pass traits. Task 3 spells
-/// its `run` signature as `FnCx<'_, '_, 'ctx, B, Self::Access, Self::Requires>`.
+/// `R` (which analyses were prefetched) rather than by a pass trait, so the
+/// context type stands alone. The `FunctionPass` trait spells its `run` signature
+/// as `FnCx<'_, '_, 'ctx, B, Self::Access, Self::Requires>`.
 ///
 /// The typestate that makes a preservation lie unspellable: to change the IR a
 /// pass must call [`FnCx::mutate`], which **consumes** the context and returns a
@@ -778,8 +778,8 @@ impl ModReport {
 /// [`FnCx`] report/mutate flow.
 ///
 /// Parameterized by the access marker `A` (which rung) and the module `Requires`
-/// list `R` rather than by a pass trait, so it compiles and tests stand alone
-/// ahead of the Task 3 pass traits. Task 3 spells its `run` signature as
+/// list `R` rather than by a pass trait, so the context type stands alone. The
+/// `ModulePass` trait spells its `run` signature as
 /// `ModCx<'_, '_, '_, 'ctx, B, Self::Access, Self::Requires>`.
 ///
 /// The typestate that makes a preservation lie unspellable: to change the module
@@ -996,7 +996,7 @@ where
     /// Visit every function *definition* in module order, handing the visitor a
     /// per-function mutator (`FnPatch`/`FnReshape`, selected by `FnA`) built from
     /// this module's mutation token. Declarations (no entry block) are skipped.
-    /// This is the load-bearing module→function visitor; Task 3's driver calls
+    /// This is the load-bearing module→function visitor; the pass driver calls
     /// `rewrite.for_each_function::<Self::FnAccess>(...)`.
     ///
     /// Per-function analysis prefetch is deliberately future work: each
@@ -1079,7 +1079,7 @@ mod tests {
 
     /// Read-only [`FnCx`] over an [`Inspect`] rung reads its prefetched analysis
     /// and reports everything preserved. (Inspect has no `.mutate()`; that its
-    /// absence fails to compile is the Task 9 lock — here we exercise the
+    /// absence fails to compile is the compile-fail lock — here we exercise the
     /// read + `done()` path.) llvmkit-specific capability-context lock (no
     /// upstream analog: LLVM pass contexts are untyped `Function&` + `FAM&`).
     #[test]
@@ -1116,7 +1116,7 @@ mod tests {
 
     /// `FnCx::mutate` on a [`PatchBody`] rung yields an [`super::FnPatch`] that
     /// erases an instruction; its `done()` reports the CFG-preserved floor (the
-    /// CFG set survives, an arbitrary analysis does not) — mirroring the Task 1
+    /// CFG set survives, an arbitrary analysis does not) — mirroring the
     /// `preserved_floor_values` checker idiom. llvmkit-specific
     /// capability-context lock (no upstream analog: LLVM pass contexts are
     /// untyped `Function&` + `FAM&`).

@@ -2767,9 +2767,9 @@ mod tests {
     ///
     /// Field-literal construction stands in for the crate-internal
     /// `TypedCallInst::from_call` minting constructor here: `from_call`
-    /// gets its typed-callee-builder caller in Task 15, per the same
-    /// defer-until-first-caller discipline `OverflowFlags::from_parts`
-    /// followed across Task 4/5 (`from_call` has no caller yet, and
+    /// gets its typed-callee-builder caller in a later revision, per the
+    /// same defer-until-first-caller discipline `OverflowFlags::from_parts`
+    /// follows (`from_call` has no caller yet, and
     /// clippy's dead-code lint fires on a `pub(super)` item even when
     /// its only caller is `#[cfg(test)]`-gated, since the non-test
     /// `(lib)` artifact `-D warnings` gates never sees `#[cfg(test)]`

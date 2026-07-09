@@ -61,6 +61,7 @@ mod verdict_sealed {
 /// A pipeline's contribution to whether the module stays verified. Sealed to the
 /// two members below; the join is the two-point lattice with [`StaysVerified`]
 /// as identity and [`Downgrades`] as the absorbing element.
+#[doc(hidden)]
 pub trait PipelineVerdict: verdict_sealed::Sealed + 'static {
     /// `Self ⊔ Rhs`. Total so a fold over abstract members type-checks without
     /// the compiler case-splitting the sealed set. [`StaysVerified`] is the
@@ -93,6 +94,7 @@ impl PipelineVerdict for Downgrades {
 /// for abstract member verdicts without the compiler having to case-split the
 /// sealed set — a flat `where`-clause fold cannot express this. The pipeline
 /// task feeds this a members' cons-list to spell a pipeline's derived verdict.
+#[doc(hidden)]
 pub trait VerdictFold<Acc: PipelineVerdict> {
     /// The joined verdict of the cons list, starting from `Acc`.
     type Out: PipelineVerdict;
@@ -114,9 +116,6 @@ where
 /// Capability rung usable over a single function body. Sealed: only the four
 /// rung ZSTs in this module implement it.
 pub trait FnAccess: access_sealed::Sealed + 'static {
-    /// Does holding this rung permit ANY mutation? (Convenience/const-eval; the
-    /// pipeline verdict uses [`Self::Verdict`], not this.)
-    const MUTATES: bool;
     /// Type-level contribution to a pipeline's verified/unverified verdict.
     type Verdict: PipelineVerdict;
     /// The module capability this rung's context holds. `()` for read-only
@@ -136,9 +135,6 @@ pub trait FnAccess: access_sealed::Sealed + 'static {
 /// Capability rung usable over a whole module. Sealed: only the rung ZSTs in
 /// this module implement it.
 pub trait ModAccess: access_sealed::Sealed + 'static {
-    /// Does holding this rung permit ANY mutation? (Convenience/const-eval; the
-    /// pipeline verdict uses [`Self::Verdict`], not this.)
-    const MUTATES: bool;
     /// Type-level contribution to a pipeline's verified/unverified verdict.
     type Verdict: PipelineVerdict;
     /// The module capability this rung's context holds. `()` for read-only
@@ -155,7 +151,6 @@ pub trait ModAccess: access_sealed::Sealed + 'static {
 }
 
 impl FnAccess for Inspect {
-    const MUTATES: bool = false;
     type Verdict = StaysVerified;
     type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>
         = ()
@@ -168,7 +163,6 @@ impl FnAccess for Inspect {
 }
 
 impl ModAccess for Inspect {
-    const MUTATES: bool = false;
     type Verdict = StaysVerified;
     type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>
         = ()
@@ -181,7 +175,6 @@ impl ModAccess for Inspect {
 }
 
 impl FnAccess for PatchBody {
-    const MUTATES: bool = true;
     type Verdict = Downgrades;
     type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>
         = &'pm Module<'ctx, B, Unverified>
@@ -194,7 +187,6 @@ impl FnAccess for PatchBody {
 }
 
 impl FnAccess for ReshapeCfg {
-    const MUTATES: bool = true;
     type Verdict = Downgrades;
     type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>
         = &'pm Module<'ctx, B, Unverified>
@@ -207,7 +199,6 @@ impl FnAccess for ReshapeCfg {
 }
 
 impl ModAccess for RewriteModule {
-    const MUTATES: bool = true;
     type Verdict = Downgrades;
     type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>
         = &'pm Module<'ctx, B, Unverified>
@@ -219,8 +210,8 @@ impl ModAccess for RewriteModule {
     }
 }
 
-/// A [`FnAccess`] rung that permits mutation. Deferred out of Task 1 so it can
-/// name the mutator types built in Task 2a. Implemented for [`PatchBody`] and
+/// A [`FnAccess`] rung that permits mutation. Split from [`FnAccess`] so it can
+/// name the mutator types defined in [`crate::pass_context`]. Implemented for [`PatchBody`] and
 /// [`ReshapeCfg`] only — [`Inspect`] deliberately has no impl, which is exactly
 /// what removes `mutate()`/`unchanged()` from a read-only context (read-only is
 /// structural, not checked; D1). Sealed through the [`FnAccess`] supertrait.
@@ -347,18 +338,6 @@ mod tests {
         let rewrite_checker = rewrite.checker::<DominatorTreeAnalysis>();
         assert!(!rewrite_checker.preserved());
         assert!(!rewrite_checker.preserved_set::<CFGAnalyses>());
-
-        // `MUTATES` mirrors each rung: read-only for `Inspect` (at both levels),
-        // mutating for the three transform rungs. Bound through a local so the
-        // check reads the associated consts rather than folding to a literal.
-        let mutates = (
-            <Inspect as FnAccess>::MUTATES,
-            <Inspect as ModAccess>::MUTATES,
-            <PatchBody as FnAccess>::MUTATES,
-            <ReshapeCfg as FnAccess>::MUTATES,
-            <RewriteModule as ModAccess>::MUTATES,
-        );
-        assert_eq!(mutates, (false, false, true, true, true));
     }
 
     /// llvmkit-specific capability-lattice lock (no upstream analog: LLVM has no

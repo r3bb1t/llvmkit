@@ -838,7 +838,7 @@ where
 
     /// Braun `writeVariable`: pure bookkeeping, no IR emitted.
     ///
-    /// D11 (`task_ff09d3e3`, Task 17 review follow-up): the engine's
+    /// D11: the engine's
     /// trivial-phi RAUW (`try_remove_trivial_phi`) assumes every value
     /// ever written for a variable shares that variable's pinned `ty`.
     /// For a statically-widthed `var` (`W::static_bits().is_some()`)
@@ -1508,7 +1508,7 @@ where
         // `VarData.ty`), or (c) a value passed to `write_variable` -- and
         // this task ships no public write path, so every current
         // `write_variable` call site (inside this same file) only ever
-        // writes a value already known same-typed. Task 18's def/use API,
+        // writes a value already known same-typed. A future public def/use API,
         // the first real external `write_variable` caller, MUST validate
         // the written value's type against the variable's declared type
         // before calling in (mirroring `PhiInst::add_incoming`'s own

@@ -5,7 +5,7 @@
 //! `ConstantPointerNull`, `ConstantArray`/`Struct`/`Vector` (under one
 //! [`ConstantAggregate`] handle), [`UndefValue`], [`PoisonValue`].
 //!
-//! Session 2 models the LLVM 22.1.4 parser-needed constant subset;
+//! This module models the LLVM 22.1.4 parser-needed constant subset;
 //! unsupported legacy `ConstantExpr` opcodes remain parser errors.
 //!
 //! Constructors live as **methods on the matching type-handle**, so

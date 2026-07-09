@@ -473,7 +473,7 @@ impl core::hash::Hash for VAArgInstData {
 /// Storage payload for `icmp`. Mirrors the operand layout of
 /// `CmpInst` (`InstrTypes.h`) restricted to integer compares.
 /// Float comparisons (`fcmp`) will land alongside the float-builder
-/// session and either generalise this struct (with a separate
+/// work and either generalise this struct (with a separate
 /// `FloatPredicate` field on a dedicated payload) or live in their
 /// own `FCmpInstData`. Today the IR builder only emits integer
 /// compares, so the storage carries an [`IntPredicate`] directly:
