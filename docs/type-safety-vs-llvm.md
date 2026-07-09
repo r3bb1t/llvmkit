@@ -684,6 +684,30 @@ compile-fail suite (`function_pass_wrong_level_access.rs`,
 mutating pass pushed into a read-only runtime pipeline is rejected the same way
 (`mutating_pass_cannot_enter_readonly_dyn.rs`).
 
+### `type Requires` (analysis deps) vs. `const REQUIRED` (a must-run pass)
+
+Two similarly-named knobs are easy to conflate, so to be explicit they are
+different things:
+
+- **`type Requires`** is the pass's *analysis dependency list* — the analyses it
+  reads (covered just above). The driver prefetches them, and
+  `cx.analysis::<A, _>()` returns them infallibly.
+- **`const REQUIRED`** marks the *pass itself* as one that must always run — a
+  pass that pass-instrumentation is not allowed to skip. It defaults to `false`
+  and is set declaratively, or with the bare `required` flag on the macro:
+  `#[function_pass(name = "...", access = ..., required)]`.
+
+LLVM expresses "always run this pass" with the `RequiredPassInfoMixin` CRTP
+marker plus a virtual `isRequired()` that the pipeline consults at run time.
+llvmkit makes it a compile-time associated constant (`const REQUIRED: bool`)
+instead — no inheritance, no virtual — which the runtime `Dyn` pipelines surface
+through `has_required_pass()`. Honest scope, since this page documents what
+actually ships: the flag and its accessor exist today, but the pass
+instrumentation that would consult them to *skip* non-required passes is not yet
+wired (see `docs/future-work.md`). So `const REQUIRED` currently records the
+author's intent at the type level; today every queued pass runs regardless,
+because nothing skips any pass yet.
+
 ## What llvmkit still verifies at runtime
 
 `llvmkit` intentionally does not pretend every LLVM rule is local enough for the
