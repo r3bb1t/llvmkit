@@ -95,13 +95,13 @@ pub mod verifier;
 
 pub mod unnamed_addr;
 pub use analysis::{
-    AllAnalysesOnFunction, AllAnalysesOnModule, AnalysisKeyId, AnalysisSelector, AnalysisSetKeyId,
-    CFGAnalyses, FunctionAnalysis, FunctionAnalysisInvalidator, FunctionAnalysisList,
-    FunctionAnalysisManager, FunctionAnalysisManagerModuleProxy, FunctionAnalysisResult, Idx0,
-    Idx1, Idx2, Idx3, Idx4, Idx5, Idx6, Idx7, ModuleAnalysis, ModuleAnalysisInvalidator,
-    ModuleAnalysisList, ModuleAnalysisManager, ModuleAnalysisResult, ModuleAnalysisSelector,
-    PreservationBound, PreservationEntry, Preserve, PreserveSet, PreservedAnalyses,
-    PreservedAnalysisChecker,
+    AllAnalysesOnFunction, AllAnalysesOnModule, Analyses, AnalysisKeyId, AnalysisSelector,
+    AnalysisSetKeyId, CFGAnalyses, FunctionAnalysis, FunctionAnalysisInvalidator,
+    FunctionAnalysisList, FunctionAnalysisManager, FunctionAnalysisManagerModuleProxy,
+    FunctionAnalysisResult, Idx0, Idx1, Idx2, Idx3, Idx4, Idx5, Idx6, Idx7, ModuleAnalysis,
+    ModuleAnalysisInvalidator, ModuleAnalysisList, ModuleAnalysisManager, ModuleAnalysisResult,
+    ModuleAnalysisSelector, PreservationBound, PreservationEntry, Preserve, PreserveSet,
+    PreservedAnalyses, PreservedAnalysisChecker,
 };
 pub use ap_float::{
     ApFloat, ApFloatCategory, ApFloatCmpResult, ApFloatNextDirection, ApFloatSemantics,

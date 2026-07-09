@@ -23,9 +23,9 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    FnCx, FnReport, FunctionAnalysisManager, FunctionPass, IRBuilder, Inspect, IrError, IrResult,
-    Linkage, ModCx, ModReport, Module, ModuleAnalysisManager, ModuleBrand, ModulePass,
-    RewriteModule, Type, Unverified, Verified, run_function_pass, run_module_pass,
+    Analyses, FnCx, FnReport, FunctionPass, IRBuilder, Inspect, IrError, IrResult, Linkage, ModCx,
+    ModReport, Module, ModuleBrand, ModulePass, RewriteModule, Type, Unverified, Verified,
+    run_function_pass, run_module_pass,
 };
 
 /// Read-only module pass: counts the module's functions and flips a shared
@@ -67,15 +67,14 @@ fn inspect_module_pass_stays_verified_and_runs() -> Result<(), IrError> {
         b.build_ret(i32_ty.const_int(1_u32))?;
 
         let verified = m.verify()?;
-        let mut mam = ModuleAnalysisManager::new();
-        let mut fam = FunctionAnalysisManager::new();
+        let mut analyses = Analyses::new();
 
         let ran = Rc::new(Cell::new(false));
         let pass = CountFunctionsPass { ran: ran.clone() };
 
         // The explicit `Verified` annotation is the compile-time half of the
         // assertion: a wrong driver verdict here fails to compile.
-        let out: Module<'_, _, Verified> = run_module_pass(pass, verified, &mut mam, &mut fam)?;
+        let out: Module<'_, _, Verified> = run_module_pass(pass, verified, &mut analyses)?;
 
         assert!(ran.get(), "Inspect ModulePass::run must actually execute");
         assert_eq!(out.as_view().iter_functions().count(), 1);
@@ -123,15 +122,14 @@ fn rewrite_module_pass_downgrades_and_mutates() -> Result<(), IrError> {
         let verified = m.verify()?;
         assert_eq!(verified.iter_globals().len(), 0);
 
-        let mut mam = ModuleAnalysisManager::new();
-        let mut fam = FunctionAnalysisManager::new();
+        let mut analyses = Analyses::new();
 
         let ran = Rc::new(Cell::new(false));
         let pass = AddGlobalPass { ran: ran.clone() };
 
         // The explicit `Unverified` annotation is the compile-time half of
         // the assertion: a wrong driver verdict here fails to compile.
-        let out: Module<'_, _, Unverified> = run_module_pass(pass, verified, &mut mam, &mut fam)?;
+        let out: Module<'_, _, Unverified> = run_module_pass(pass, verified, &mut analyses)?;
 
         assert!(
             ran.get(),
@@ -186,14 +184,14 @@ fn inspect_function_pass_stays_verified_and_runs() -> Result<(), IrError> {
         b.build_ret(i32_ty.const_int(1_u32))?;
 
         let verified = m.verify()?;
-        let mut fam = FunctionAnalysisManager::new();
+        let mut analyses = Analyses::new();
 
         let ran = Rc::new(Cell::new(false));
         let pass = InspectFnPass { ran: ran.clone() };
 
         // The explicit `Verified` annotation is the compile-time half of the
         // assertion: a wrong driver verdict here fails to compile.
-        let out: Module<'_, _, Verified> = run_function_pass(pass, verified, f, &mut fam)?;
+        let out: Module<'_, _, Verified> = run_function_pass(pass, verified, f, &mut analyses)?;
 
         assert!(ran.get(), "Inspect FunctionPass::run must actually execute");
         // A read-only pass leaves the IR untouched.

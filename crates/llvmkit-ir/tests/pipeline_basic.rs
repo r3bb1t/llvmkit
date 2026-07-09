@@ -17,10 +17,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    DcePass, DominatorTreeAnalysis, FnCx, FnReport, FunctionAnalysisManager, FunctionPass,
-    FunctionView, IRBuilder, Inspect, IrError, IrResult, Linkage, ModCx, ModReport, Module,
-    ModuleAnalysisManager, ModuleBrand, ModulePass, NoFolder, PatchBody, ReshapeCfg, RewriteModule,
-    Type, Unverified, Verified, for_each_function, function_pipeline, module_pipeline,
+    Analyses, DcePass, DominatorTreeAnalysis, FnCx, FnReport, FunctionPass, FunctionView,
+    IRBuilder, Inspect, IrError, IrResult, Linkage, ModCx, ModReport, Module, ModuleBrand,
+    ModulePass, NoFolder, PatchBody, ReshapeCfg, RewriteModule, Type, Unverified, Verified,
+    for_each_function, function_pipeline, module_pipeline,
 };
 
 // ==========================================================================
@@ -207,10 +207,10 @@ fn all_inspect_function_pipeline_stays_verified() -> Result<(), IrError> {
                 tag: "b",
             },
         ));
-        let mut fam = FunctionAnalysisManager::new();
+        let mut analyses = Analyses::new();
         // The explicit `Verified` annotation is the compile-time half: an
         // all-`Inspect` pipeline folds to `StaysVerified`.
-        let _still_verified: Module<'_, _, Verified> = pipe.run(verified, f, &mut fam)?;
+        let _still_verified: Module<'_, _, Verified> = pipe.run(verified, f, &mut analyses)?;
         assert_eq!(*log.borrow(), vec!["a", "b"]);
         Ok(())
     })
@@ -233,10 +233,10 @@ fn function_pipeline_with_mutator_downgrades() -> Result<(), IrError> {
             },
             DcePass,
         ));
-        let mut fam = FunctionAnalysisManager::new();
+        let mut analyses = Analyses::new();
         // `DcePass` is `PatchBody`, so the folded verdict is `Downgrades`: this
         // only type-checks because the mutator downgraded the output typestate.
-        let unverified: Module<'_, _, Unverified> = pipe.run(verified, f, &mut fam)?;
+        let unverified: Module<'_, _, Unverified> = pipe.run(verified, f, &mut analyses)?;
         let reverified = unverified.verify()?;
         assert_eq!(*log.borrow(), vec!["ro"]);
         assert!(!format!("{reverified}").contains("%dead"));
@@ -253,11 +253,10 @@ fn module_pipeline_all_inspect_stays_verified() -> Result<(), IrError> {
     Module::with_new("pipe-mod-ro", |m| {
         let _f = build_ret_i32_named(&m, "f")?;
         let verified = m.verify()?;
-        let mut mam = ModuleAnalysisManager::new();
-        let mut fam = FunctionAnalysisManager::new();
+        let mut analyses = Analyses::new();
         let ran = Rc::new(Cell::new(false));
         let mut pipe = module_pipeline((CountFunctionsPass { ran: ran.clone() },));
-        let _still_verified: Module<'_, _, Verified> = pipe.run(verified, &mut mam, &mut fam)?;
+        let _still_verified: Module<'_, _, Verified> = pipe.run(verified, &mut analyses)?;
         assert!(ran.get(), "Inspect module pass must run");
         Ok(())
     })
@@ -269,12 +268,11 @@ fn module_pipeline_with_rewrite_downgrades() -> Result<(), IrError> {
         let _f = build_ret_i32_named(&m, "f")?;
         let verified = m.verify()?;
         assert_eq!(verified.iter_globals().len(), 0);
-        let mut mam = ModuleAnalysisManager::new();
-        let mut fam = FunctionAnalysisManager::new();
+        let mut analyses = Analyses::new();
         let ran = Rc::new(Cell::new(false));
         let mut pipe = module_pipeline((AddGlobalPass { ran: ran.clone() },));
         // `RewriteModule` folds to `Downgrades`.
-        let unverified: Module<'_, _, Unverified> = pipe.run(verified, &mut mam, &mut fam)?;
+        let unverified: Module<'_, _, Unverified> = pipe.run(verified, &mut analyses)?;
         assert!(ran.get(), "RewriteModule pass must run");
         assert_eq!(unverified.iter_globals().len(), 1);
         unverified.verify()?;
@@ -292,8 +290,7 @@ fn for_each_function_read_only_stays_verified() -> Result<(), IrError> {
     Module::with_new("pipe-foreach-ro", |m| {
         let _f = build_ret_i32_named(&m, "f")?;
         let verified = m.verify()?;
-        let mut mam = ModuleAnalysisManager::new();
-        let mut fam = FunctionAnalysisManager::new();
+        let mut analyses = Analyses::new();
         let log = Rc::new(RefCell::new(Vec::new()));
         let mut pipe = module_pipeline((for_each_function(function_pipeline((LogFnPass {
             log: log.clone(),
@@ -301,7 +298,7 @@ fn for_each_function_read_only_stays_verified() -> Result<(), IrError> {
         },))),));
         // The wrapped function pipeline is all read-only, so its verdict
         // propagates out as `StaysVerified`.
-        let _still_verified: Module<'_, _, Verified> = pipe.run(verified, &mut mam, &mut fam)?;
+        let _still_verified: Module<'_, _, Verified> = pipe.run(verified, &mut analyses)?;
         assert_eq!(*log.borrow(), vec!["visited"]);
         Ok(())
     })
@@ -321,8 +318,7 @@ fn for_each_function_mutating_downgrades_and_visits_defs() -> Result<(), IrError
         assert_eq!(f2.entry_block().expect("def").instruction_count(), 2);
 
         let verified = m.verify()?;
-        let mut mam = ModuleAnalysisManager::new();
-        let mut fam = FunctionAnalysisManager::new();
+        let mut analyses = Analyses::new();
         let visited = Rc::new(RefCell::new(Vec::new()));
         let mut pipe = module_pipeline((for_each_function(function_pipeline((
             LoggingMutator {
@@ -332,7 +328,7 @@ fn for_each_function_mutating_downgrades_and_visits_defs() -> Result<(), IrError
         ))),));
         // The inner function pipeline mutates (`PatchBody`), so its `Downgrades`
         // verdict propagates out through `for_each_function` to the module.
-        let unverified: Module<'_, _, Unverified> = pipe.run(verified, &mut mam, &mut fam)?;
+        let unverified: Module<'_, _, Unverified> = pipe.run(verified, &mut analyses)?;
         let reverified = unverified.verify()?;
         // Both definitions were visited in module order; the declaration was not.
         assert_eq!(*visited.borrow(), vec!["f1".to_owned(), "f2".to_owned()]);
@@ -368,10 +364,10 @@ fn nested_read_only_pipeline_stays_verified() -> Result<(), IrError> {
                 },
             )),
         ));
-        let mut fam = FunctionAnalysisManager::new();
+        let mut analyses = Analyses::new();
         // A nested all-read-only pipeline folds to `StaysVerified`, and that
         // folded verdict joins cleanly with the outer member.
-        let _still_verified: Module<'_, _, Verified> = pipe.run(verified, f, &mut fam)?;
+        let _still_verified: Module<'_, _, Verified> = pipe.run(verified, f, &mut analyses)?;
         assert_eq!(*log.borrow(), vec!["outer", "inner-a", "inner-b"]);
         Ok(())
     })
@@ -396,11 +392,11 @@ fn nested_pipeline_with_inner_mutator_downgrades() -> Result<(), IrError> {
                 DcePass,
             )),
         ));
-        let mut fam = FunctionAnalysisManager::new();
+        let mut analyses = Analyses::new();
         // The inner pipeline's own folded verdict is `Downgrades`; that — not the
         // leaf members — is what the outer pipeline joins against, downgrading the
         // whole run (D8).
-        let unverified: Module<'_, _, Unverified> = pipe.run(verified, f, &mut fam)?;
+        let unverified: Module<'_, _, Unverified> = pipe.run(verified, f, &mut analyses)?;
         let reverified = unverified.verify()?;
         assert_eq!(*log.borrow(), vec!["outer", "inner-ro"]);
         assert!(!format!("{reverified}").contains("%dead"));
@@ -423,8 +419,8 @@ fn pipeline_runs_in_order_and_second_member_sees_first() -> Result<(), IrError> 
         // Member 1 (`DcePass`, PatchBody) erases the dead add; member 2
         // (`ObserveEntryCount`, Inspect) then observes the shrunken block.
         let mut pipe = function_pipeline((DcePass, ObserveEntryCount { seen: seen.clone() }));
-        let mut fam = FunctionAnalysisManager::new();
-        let unverified: Module<'_, _, Unverified> = pipe.run(verified, f, &mut fam)?;
+        let mut analyses = Analyses::new();
+        let unverified: Module<'_, _, Unverified> = pipe.run(verified, f, &mut analyses)?;
         // Member 2 saw only `ret` — proving member 1 ran first and its effect
         // was visible.
         assert_eq!(seen.get(), 1);
@@ -438,13 +434,17 @@ fn mutating_member_invalidates_and_analysis_recomputes() -> Result<(), IrError> 
     Module::with_new("pipe-invalidate", |m| {
         let f = build_ret_i32_named(&m, "f")?;
         let verified = m.verify()?;
-        let mut fam = FunctionAnalysisManager::new();
+        let mut analyses = Analyses::new();
 
         // Register and compute the dominator tree, then confirm it is cached.
-        fam.register_pass(DominatorTreeAnalysis);
-        let _dt = fam.get_result::<DominatorTreeAnalysis, _>(f)?;
+        analyses.register_function_analysis(DominatorTreeAnalysis);
+        let _dt = analyses
+            .function_manager_mut()
+            .get_result::<DominatorTreeAnalysis, _>(f)?;
         assert!(
-            fam.get_cached_result::<DominatorTreeAnalysis, _>(f)
+            analyses
+                .function_manager()
+                .get_cached_result::<DominatorTreeAnalysis, _>(f)
                 .is_some(),
             "dominator tree must be cached after computing it"
         );
@@ -452,21 +452,27 @@ fn mutating_member_invalidates_and_analysis_recomputes() -> Result<(), IrError> 
         // A `ReshapeCfg` pass reports the `none()` floor, so the pipeline
         // invalidates the (non-preserved) dominator tree.
         let mut pipe = function_pipeline((NoOpReshape,));
-        let unverified: Module<'_, _, Unverified> = pipe.run(verified, f, &mut fam)?;
+        let unverified: Module<'_, _, Unverified> = pipe.run(verified, f, &mut analyses)?;
 
         // The cached tree is gone after the mutating member's invalidation.
         assert!(
-            fam.get_cached_result::<DominatorTreeAnalysis, _>(f)
+            analyses
+                .function_manager()
+                .get_cached_result::<DominatorTreeAnalysis, _>(f)
                 .is_none(),
             "ReshapeCfg's none() floor must invalidate the cached dominator tree"
         );
 
         // The still-registered analysis recomputes on demand.
-        let dt = fam.get_result::<DominatorTreeAnalysis, _>(f)?;
+        let dt = analyses
+            .function_manager_mut()
+            .get_result::<DominatorTreeAnalysis, _>(f)?;
         let entry = f.entry_block().expect("definition has an entry block");
         assert!(dt.is_reachable_from_entry(entry));
         assert!(
-            fam.get_cached_result::<DominatorTreeAnalysis, _>(f)
+            analyses
+                .function_manager()
+                .get_cached_result::<DominatorTreeAnalysis, _>(f)
                 .is_some(),
             "dominator tree must be re-cached after recomputation"
         );

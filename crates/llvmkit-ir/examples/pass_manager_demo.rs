@@ -18,9 +18,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    Brand, DcePass, DominatorTreeAnalysis, FnCx, FnReport, FunctionAnalysisManager, FunctionPass,
-    IRBuilder, Inspect, InstSimplifyPass, IntPredicate, IrError, Linkage, ModCx, ModReport, Module,
-    ModuleAnalysisManager, ModulePass, run_function_pass, run_module_pass,
+    Analyses, Brand, DcePass, DominatorTreeAnalysis, FnCx, FnReport, FunctionPass, IRBuilder,
+    Inspect, InstSimplifyPass, IntPredicate, IrError, Linkage, ModCx, ModReport, Module,
+    ModulePass, run_function_pass, run_module_pass,
 };
 
 /// Read-only module pass: reports how many functions the module holds. Declares
@@ -132,17 +132,19 @@ pub fn run_demo(m: Module<'_>) -> Result<(String, String, String), IrError> {
     // `PatchBody` rung, so `run_function_pass` downgrades the module to
     // `Module<Unverified>` and the re-verify between them is enforced by the
     // type system (D8), not convention.
-    let mut fam = FunctionAnalysisManager::new();
-    let simplified = run_function_pass(InstSimplifyPass, m.verify()?, function, &mut fam)?;
-    let cleaned = run_function_pass(DcePass, simplified.verify()?, function, &mut fam)?;
+    let mut analyses = Analyses::new();
+    let simplified = run_function_pass(InstSimplifyPass, m.verify()?, function, &mut analyses)?;
+    let cleaned = run_function_pass(DcePass, simplified.verify()?, function, &mut analyses)?;
     let module = cleaned.verify()?;
     let cleaned_module_text = format!("{module}");
 
     // Read-only reporting/analysis flow. `DominatorTreeAnalysis` is registered
     // here for the direct query; `ReportFunctionPass` re-declares it as a
     // `Requires` so the driver prefetches it for the infallible accessor.
-    fam.register_pass(DominatorTreeAnalysis);
-    let dt = fam.get_result::<DominatorTreeAnalysis, _>(function)?;
+    analyses.register_function_analysis(DominatorTreeAnalysis);
+    let dt = analyses
+        .function_manager_mut()
+        .get_result::<DominatorTreeAnalysis, _>(function)?;
 
     let lines = Rc::new(RefCell::new(vec![format!(
         "analysis entry_dominates_merge={}",
@@ -151,18 +153,16 @@ pub fn run_demo(m: Module<'_>) -> Result<(String, String, String), IrError> {
 
     // Both passes declare the `Inspect` rung, so the driver keeps the module
     // `Verified` on the way out.
-    let mut mam = ModuleAnalysisManager::new();
     let module = run_module_pass(
         ReportModulePass { out: lines.clone() },
         module,
-        &mut mam,
-        &mut fam,
+        &mut analyses,
     )?;
     let module = run_function_pass(
         ReportFunctionPass { out: lines.clone() },
         module,
         function,
-        &mut fam,
+        &mut analyses,
     )?;
 
     let report = lines.borrow().join("\n");

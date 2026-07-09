@@ -777,6 +777,68 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for ModuleAnalysisManager<'ctx, B> {
     }
 }
 
+/// One handle bundling the module + function analysis managers a pass driver
+/// needs. Replaces threading `(&mut ModuleAnalysisManager, &mut FunctionAnalysisManager)`
+/// by hand through every `run`.
+pub struct Analyses<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    module: ModuleAnalysisManager<'ctx, B>,
+    function: FunctionAnalysisManager<'ctx, B>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> Analyses<'ctx, B> {
+    pub fn new() -> Self {
+        Self {
+            module: ModuleAnalysisManager::new(),
+            function: FunctionAnalysisManager::new(),
+        }
+    }
+
+    /// Register a function analysis (delegates to the inner FAM's `register_pass`).
+    pub fn register_function_analysis<A: FunctionAnalysis<'ctx, B>>(&mut self, analysis: A) {
+        self.function.register_pass(analysis);
+    }
+
+    /// Register a module analysis.
+    pub fn register_module_analysis<A: ModuleAnalysis<'ctx, B>>(&mut self, analysis: A) {
+        self.module.register_pass(analysis);
+    }
+
+    /// Escape hatches for advanced callers who need a manager directly.
+    pub fn function_manager(&self) -> &FunctionAnalysisManager<'ctx, B> {
+        &self.function
+    }
+
+    pub fn function_manager_mut(&mut self) -> &mut FunctionAnalysisManager<'ctx, B> {
+        &mut self.function
+    }
+
+    pub fn module_manager(&self) -> &ModuleAnalysisManager<'ctx, B> {
+        &self.module
+    }
+
+    pub fn module_manager_mut(&mut self) -> &mut ModuleAnalysisManager<'ctx, B> {
+        &mut self.module
+    }
+
+    /// KEY split-borrow the module driver needs: both managers mutably at once.
+    /// A single method returning both is how Rust lets you borrow two distinct
+    /// fields mutably together (you cannot call two separate `&mut` methods).
+    pub(crate) fn managers_mut(
+        &mut self,
+    ) -> (
+        &mut ModuleAnalysisManager<'ctx, B>,
+        &mut FunctionAnalysisManager<'ctx, B>,
+    ) {
+        (&mut self.module, &mut self.function)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> Default for Analyses<'ctx, B> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn function_key<'ctx, A, B>(function: FunctionView<'ctx, B>) -> (ModuleId, TypeId, ValueId)
 where
     A: 'static,

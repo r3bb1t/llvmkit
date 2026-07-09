@@ -1,7 +1,7 @@
 use llvmkit_ir::{
-    Align, AtomicLoadConfig, AtomicOrdering, DcePass, FunctionAnalysisManager, IRBuilder,
-    InstSimplifyPass, IntValue, IrError, Linkage, Module, NoFolder, PointerValue, SyncScope, Type,
-    Value, run_function_pass,
+    Align, Analyses, AtomicLoadConfig, AtomicOrdering, DcePass, IRBuilder, InstSimplifyPass,
+    IntValue, IrError, Linkage, Module, NoFolder, PointerValue, SyncScope, Type, Value,
+    run_function_pass,
 };
 
 /// Port of `llvm/lib/Transforms/Scalar/InstSimplifyPass.cpp::runImpl` and
@@ -23,8 +23,8 @@ fn instsimplify_pass_folds_constant_add() -> Result<(), IrError> {
         b.build_ret(sum)?;
 
         let verified = m.verify()?;
-        let mut fam = FunctionAnalysisManager::new();
-        let unverified = run_function_pass(InstSimplifyPass, verified, f, &mut fam)?;
+        let mut analyses = Analyses::new();
+        let unverified = run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?;
         let reverified = unverified.verify()?;
         let text = format!("{reverified}");
 
@@ -65,8 +65,8 @@ fn dce_pass_erases_dead_integer_chain_and_preserves_store() -> Result<(), IrErro
         b.build_ret_void();
 
         let verified = m.verify()?;
-        let mut fam = FunctionAnalysisManager::new();
-        let unverified = run_function_pass(DcePass, verified, f, &mut fam)?;
+        let mut analyses = Analyses::new();
+        let unverified = run_function_pass(DcePass, verified, f, &mut analyses)?;
         let reverified = unverified.verify()?;
         let text = format!("{reverified}");
 
@@ -106,10 +106,10 @@ fn instsimplify_and_dce_pipeline_folds_and_erases() -> Result<(), IrError> {
         b.build_ret(folded)?;
 
         let verified = m.verify()?;
-        let mut fam = FunctionAnalysisManager::new();
-        let after_instsimplify = run_function_pass(InstSimplifyPass, verified, f, &mut fam)?;
+        let mut analyses = Analyses::new();
+        let after_instsimplify = run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?;
         let reverified = after_instsimplify.verify()?;
-        let after_dce = run_function_pass(DcePass, reverified, f, &mut fam)?;
+        let after_dce = run_function_pass(DcePass, reverified, f, &mut analyses)?;
         let reverified = after_dce.verify()?;
         let text = format!("{reverified}");
 
@@ -146,8 +146,8 @@ fn instsimplify_pass_keeps_load_from_interposable_constant_global() -> Result<()
         b.build_ret(sum)?;
 
         let verified = m.verify()?;
-        let mut fam = FunctionAnalysisManager::new();
-        let unverified = run_function_pass(InstSimplifyPass, verified, f, &mut fam)?;
+        let mut analyses = Analyses::new();
+        let unverified = run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?;
         let reverified = unverified.verify()?;
         let text = format!("{reverified}");
 
@@ -188,8 +188,8 @@ fn dce_removes_unordered_atomic_load_keeps_ordered_and_volatile() -> Result<(), 
         b.build_ret_void();
 
         let verified = m.verify()?;
-        let mut fam = FunctionAnalysisManager::new();
-        let reverified = run_function_pass(DcePass, verified, f, &mut fam)?.verify()?;
+        let mut analyses = Analyses::new();
+        let reverified = run_function_pass(DcePass, verified, f, &mut analyses)?.verify()?;
         let text = format!("{reverified}");
 
         assert!(
@@ -233,8 +233,8 @@ fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
         b.build_ret_void();
 
         let verified = m.verify()?;
-        let mut fam = FunctionAnalysisManager::new();
-        let reverified = run_function_pass(DcePass, verified, f, &mut fam)?.verify()?;
+        let mut analyses = Analyses::new();
+        let reverified = run_function_pass(DcePass, verified, f, &mut analyses)?.verify()?;
         let text = format!("{reverified}");
 
         assert!(text.contains("store i32 1"), "store kept:\n{text}");
@@ -266,8 +266,9 @@ fn instsimplify_terminates_on_ordered_atomic_load_from_constant() -> Result<(), 
         b.build_ret(s)?;
 
         let verified = m.verify()?;
-        let mut fam = FunctionAnalysisManager::new();
-        let reverified = run_function_pass(InstSimplifyPass, verified, f, &mut fam)?.verify()?;
+        let mut analyses = Analyses::new();
+        let reverified =
+            run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?.verify()?;
         let text = format!("{reverified}");
 
         // The pass terminated (no hang); the side-effecting load is kept, its

@@ -19,9 +19,9 @@
 
 use crate::IrResult;
 use crate::analysis::{
-    AllAnalysesOnFunction, AllAnalysesOnModule, FunctionAnalysisList, FunctionAnalysisManager,
-    FunctionAnalysisManagerModuleProxy, ModuleAnalysisList, ModuleAnalysisManager,
-    PreservedAnalyses,
+    AllAnalysesOnFunction, AllAnalysesOnModule, Analyses, FunctionAnalysisList,
+    FunctionAnalysisManager, FunctionAnalysisManagerModuleProxy, ModuleAnalysisList,
+    ModuleAnalysisManager, PreservedAnalyses,
 };
 use crate::module::{Brand, Module, ModuleBrand, ModuleView, Unverified, Verified};
 use crate::pass_access::{
@@ -276,7 +276,7 @@ pub fn run_function_pass<'ctx, B, P, F>(
     mut pass: P,
     module: Module<'ctx, B, Verified>,
     function: F,
-    fam: &mut FunctionAnalysisManager<'ctx, B>,
+    analyses: &mut Analyses<'ctx, B>,
 ) -> IrResult<<<P::Access as FnAccess>::Verdict as PassExecution>::OutModule<'ctx, B>>
 where
     B: ModuleBrand + 'ctx,
@@ -286,6 +286,7 @@ where
     F: Into<FunctionView<'ctx, B>>,
 {
     let function = function.into();
+    let fam = analyses.function_manager_mut();
     P::Requires::prefetch(fam, function)?;
     let (report, out) = {
         // `results` borrows `*fam` only for this block; the returned report and
@@ -306,8 +307,7 @@ where
 pub fn run_module_pass<'ctx, B, P>(
     mut pass: P,
     module: Module<'ctx, B, Verified>,
-    mam: &mut ModuleAnalysisManager<'ctx, B>,
-    fam: &mut FunctionAnalysisManager<'ctx, B>,
+    analyses: &mut Analyses<'ctx, B>,
 ) -> IrResult<<<P::Access as ModAccess>::Verdict as PassExecution>::OutModule<'ctx, B>>
 where
     B: ModuleBrand + 'ctx,
@@ -315,6 +315,7 @@ where
     P::Access: ModRungExecute,
     <P::Access as ModAccess>::Verdict: PassExecution,
 {
+    let (mam, fam) = analyses.managers_mut();
     let view = module.as_view();
     P::Requires::prefetch(mam, view)?;
     let (report, out) = {
@@ -341,8 +342,9 @@ where
 // `Module<Unverified>`), never a hand-written preservation claim (D1/D8). Ported
 // from the retired effect-typed `FunctionPassList`/`ModulePassList` machinery,
 // swapping the old effect/`ModuleToken`/`ProvidesToken`/`EffectFold` for the new
-// verdict/[`VerdictCarry`]/[`ProvidesToken`]/[`VerdictFold`]. Instrumentation and
-// the `Analyses` bundle are deliberately out of scope here (later tasks).
+// verdict/[`VerdictCarry`]/[`ProvidesToken`]/[`VerdictFold`]. The public `run`
+// entry points below take a single `&mut Analyses` bundling both managers;
+// instrumentation is deliberately out of scope here (a later task).
 
 /// The module capability a pipeline (or member) of verdict `Self` threads to its
 /// members — the verdict-level mirror of the retired `TypedPassEffect::ModuleToken`.
@@ -716,7 +718,7 @@ impl<P> FunctionPipeline<P> {
         &mut self,
         module: Module<'ctx, B, Verified>,
         function: F,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
+        analyses: &mut Analyses<'ctx, B>,
     ) -> IrResult<
         <<P as FunctionPassList<'ctx, B, Kinds>>::Verdict as PassExecution>::OutModule<'ctx, B>,
     >
@@ -730,7 +732,12 @@ impl<P> FunctionPipeline<P> {
             B,
             P,
             Kinds,
-        >(&mut self.passes, module, function.into(), fam)
+        >(
+            &mut self.passes,
+            module,
+            function.into(),
+            analyses.function_manager_mut(),
+        )
     }
 }
 
@@ -1121,8 +1128,7 @@ impl<P> ModulePipeline<P> {
     pub fn run<'ctx, B, Kinds>(
         &mut self,
         module: Module<'ctx, B, Verified>,
-        mam: &mut ModuleAnalysisManager<'ctx, B>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
+        analyses: &mut Analyses<'ctx, B>,
     ) -> IrResult<
         <<P as ModulePassList<'ctx, B, Kinds>>::Verdict as PassExecution>::OutModule<'ctx, B>,
     >
@@ -1131,6 +1137,7 @@ impl<P> ModulePipeline<P> {
         P: ModulePassList<'ctx, B, Kinds>,
         <P as ModulePassList<'ctx, B, Kinds>>::Verdict: ModulePipelineExecute,
     {
+        let (mam, fam) = analyses.managers_mut();
         <<P as ModulePassList<'ctx, B, Kinds>>::Verdict as ModulePipelineExecute>::execute::<
             B,
             P,
