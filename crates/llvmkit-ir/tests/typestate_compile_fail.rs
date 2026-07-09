@@ -88,4 +88,5 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/mutating_pass_cannot_enter_readonly_dyn.rs");
     t.compile_fail("tests/compile_fail/function_pass_missing_name.rs");
     t.compile_fail("tests/compile_fail/function_pass_wrong_level_access.rs");
+    t.compile_fail("tests/compile_fail/claim_preserved_after_mutate.rs");
 }

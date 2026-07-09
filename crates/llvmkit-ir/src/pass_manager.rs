@@ -1439,7 +1439,9 @@ impl ReadOnlyMod for Inspect {}
 /// only reads, use [`DynReadOnlyFunctionPipeline`].
 ///
 /// Internally a `Vec<Box<dyn ErasedFunctionPass>>` over the crate-private erased
-/// trait — the only place `dyn` appears in the pass API.
+/// trait — the only place `dyn` appears for pass *dispatch*. (The unrelated
+/// `Box<dyn ExactSizeIterator>` in `ModuleFunctionViews` is plain std iterator
+/// type-erasure, with no bearing on pass coherence.)
 pub struct DynFunctionPipeline<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
     passes: Vec<Box<dyn ErasedFunctionPass<'ctx, B> + 'ctx>>,
 }

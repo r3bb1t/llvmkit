@@ -707,13 +707,13 @@ impl<'ctx> FunctionPass<'ctx> for SimplifyDemandedBitsPass {
     // flag drops); the CFG is never touched, so the `PatchBody` floor's
     // "CFG analyses preserved" is correct.
     type Access = PatchBody;
-    type Requires = (DemandedBitsAnalysis,);
+    // The transform recomputes `DemandedBits` from the current IR on every
+    // iteration (see `run`), so it declares no analysis dependency: nothing is
+    // read via `cx.analysis`. Keeping `Requires = ()` keeps that honest.
+    type Requires = ();
     const NAME: &'static str = "simplify-demanded-bits";
 
-    fn run(
-        &mut self,
-        cx: FnCx<'_, '_, 'ctx, Brand<'ctx>, PatchBody, (DemandedBitsAnalysis,)>,
-    ) -> IrResult<FnReport> {
+    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, Brand<'ctx>, PatchBody, ()>) -> IrResult<FnReport> {
         // The transform recomputes demanded bits from the *current* IR on every
         // iteration (each mutation invalidates them), so — unlike `DcePass` and
         // `InstSimplifyPass` — a faithful read-only "will it change?" pre-scan
@@ -919,7 +919,7 @@ fn operand_value<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 fn simplify_demanded_bits_iteration<'ctx>(
-    patch: &FnPatch<'_, '_, 'ctx, Brand<'ctx>, (DemandedBitsAnalysis,)>,
+    patch: &FnPatch<'_, '_, 'ctx, Brand<'ctx>, ()>,
 ) -> IrResult<bool> {
     let data_layout = patch.function().module().data_layout().clone();
     let mut demanded = DemandedBits::new(data_layout.clone());

@@ -1,0 +1,16 @@
+error[E0382]: use of moved value: `cx`
+  --> tests/compile_fail/claim_preserved_after_mutate.rs:35:12
+   |
+30 |     fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport> {
+   |                       -- move occurs because `cx` has type `FnCx<'_, '_, '_, B, PatchBody, ()>`, which does not implement the `Copy` trait
+...
+34 |         let _patch = cx.mutate();
+   |                         -------- `cx` moved due to this method call
+35 |         Ok(cx.unchanged())
+   |            ^^ value used here after move
+   |
+note: `FnCx::<'pm, 'r, 'ctx, B, A, R>::mutate` takes ownership of the receiver `self`, which moves `cx`
+  --> src/pass_context.rs
+   |
+   |     pub fn mutate(self) -> <A as MutatingFn>::Mutator<'pm, 'r, 'ctx, B, R> {
+   |                   ^^^^

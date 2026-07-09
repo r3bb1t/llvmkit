@@ -253,11 +253,13 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
   single-function-body and whole-module rungs only; loop-nest and
   call-graph-SCC pass rungs (upstream `LoopPassManager` / `CGSCCPassManager`)
   are unmodeled.
-- **`SimplifyDemandedBitsPass` vestigial `Requires`** -- it declares
-  `type Requires = (DemandedBitsAnalysis,)` but recomputes demanded bits
-  internally on each worklist iteration and never calls `cx.analysis()`
-  (`demanded_bits.rs` ~710-728), so the prefetch is dead work. Consider
-  narrowing it to `Requires = ()`.
+- **First-class `ModRewrite` runtime-symbol/global/ctor triple** -- the
+  `RewriteModule` mutator (`pass_context.rs` ~886-896) exposes only the raw
+  `module_mut()` token today; a sanitizer reaches the
+  function/global/constructor "triple" through it by hand. The author sugar for
+  that pattern -- `declare_runtime_fn` / `append_ctor` / `add_global` helpers
+  plus the `llvm.global_ctors` machinery -- is deferred until an in-tree
+  consumer needs it.
 - **`Module::scratch_unverified` footgun** -- the read-only `Dyn` containers
   (`pass_manager.rs`) call the `pub(crate)` `Module::scratch_unverified`
   (`module.rs` ~2977) to mint a throwaway `Unverified` alias purely to satisfy
@@ -268,6 +270,7 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
 - **Compile-fail `.stderr` canonical-rustc bless** -- the
   `typestate_compile_fail` suite carries two pre-existing `.stderr` drifts
   (`folder_typed_wrong_width`, `extract_value_empty_indices`) blessed against a
-  different (CI) rustc, plus the five new Pass API v2 fixtures blessed on the
-  local rustc. The whole set should be re-blessed on the canonical CI rustc so
-  every fixture matches on the reference toolchain.
+  different (CI) rustc, plus the six new Pass API v2 fixtures (including
+  `claim_preserved_after_mutate`) blessed on the local rustc. The whole set
+  should be re-blessed on the canonical CI rustc so every fixture matches on the
+  reference toolchain.
