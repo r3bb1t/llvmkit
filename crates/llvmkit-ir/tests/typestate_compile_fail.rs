@@ -49,29 +49,21 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/ir_struct_accessor_type_mismatch.rs");
     t.compile_fail("tests/compile_fail/ir_struct_cross_module_brand.rs");
     t.compile_fail("tests/compile_fail/ir_struct_try_from_cross_module_brand.rs");
-    t.compile_fail("tests/compile_fail/module_pass_requires_verified.rs");
     t.compile_fail("tests/compile_fail/cross_module_value_brand.rs");
     t.compile_fail("tests/compile_fail/cross_module_global_initializer_brand.rs");
     t.compile_fail("tests/compile_fail/cross_module_branch_target.rs");
     t.compile_fail("tests/compile_fail/cross_module_select_arm.rs");
     t.compile_fail("tests/compile_fail/custom_folder_wrong_brand.rs");
     t.compile_fail("tests/compile_fail/function_analysis_wrong_brand.rs");
-    t.compile_fail("tests/compile_fail/unverified_output_requires_verify.rs");
-    t.compile_fail("tests/compile_fail/function_pass_no_mutable_module_manager.rs");
-    t.compile_fail("tests/compile_fail/function_pass_requires_verified.rs");
     t.compile_fail("tests/compile_fail/module_analysis_readonly_globals.rs");
     t.compile_fail("tests/compile_fail/verified_module_core_escape.rs");
     t.compile_fail("tests/compile_fail/unverified_module_no_deref_core.rs");
     t.compile_fail("tests/compile_fail/saved_function_handle_requires_unverified_token.rs");
     t.compile_fail("tests/compile_fail/saved_global_handle_requires_unverified_token.rs");
-    t.compile_fail("tests/compile_fail/read_only_pass_manager_rejects_transform_pass.rs");
-    t.compile_fail("tests/compile_fail/transform_pass_manager_output_requires_verify.rs");
     t.compile_fail("tests/compile_fail/intrinsic_id_raw_constructor_private.rs");
     t.compile_fail("tests/compile_fail/binary_folder_rejects_non_binary_intrinsic.rs");
     t.compile_fail("tests/compile_fail/default_pipeline_o2_not_supported.rs");
-    t.compile_fail("tests/compile_fail/function_pass_name_not_module_pass.rs");
     t.compile_fail("tests/compile_fail/module_pipeline_step_rejects_raw_string.rs");
-    t.compile_fail("tests/compile_fail/pass_pipeline_info_scope_mismatch.rs");
     t.compile_fail("tests/compile_fail/select_arm_forge.rs");
     t.compile_fail("tests/compile_fail/folder_typed_wrong_width.rs");
     t.compile_fail("tests/compile_fail/typed_gep_bad_index.rs");
@@ -87,7 +79,4 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/ssa_def_wrong_width.rs");
     t.compile_fail("tests/compile_fail/ssa_ret_value_in_void_fn.rs");
     t.compile_fail("tests/compile_fail/ssa_finish_positioned.rs");
-    t.compile_fail("tests/compile_fail/typed_pipeline_transform_result_verified.rs");
-    t.compile_fail("tests/compile_fail/typed_context_undeclared_analysis.rs");
-    t.compile_fail("tests/compile_fail/typed_pipeline_cross_brand.rs");
 }

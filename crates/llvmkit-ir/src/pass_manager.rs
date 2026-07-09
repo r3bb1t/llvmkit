@@ -1,1898 +1,328 @@
-//! Minimal module/function pass managers. This mirrors LLVM's new-PM
-//! sequencing and invalidation shape without textual pipelines, loop PM,
-//! CGSCC, or transform libraries. Read-only managers preserve verification at
-//! the type level; transform managers receive mutation capability and therefore
-//! always return an unverified module that must be verified before the next
-//! verified-only pipeline.
+//! Single-pass driver for the capability-graded Pass API v2.
+//!
+//! A pass declares a capability *rung* ([`FnAccess`]/[`ModAccess`]) and its
+//! required analyses; the driver derives everything else. This module supplies
+//! the two public pass traits ([`FunctionPass`]/[`ModulePass`]), the
+//! verdict→output-module mapping ([`PassExecution`]) shared with the pipeline
+//! task, and the single-pass runners ([`run_function_pass`]/[`run_module_pass`])
+//! that prefetch a pass's `Requires`, build its entry context, run it, and honor
+//! the report's preservation set when invalidating the analysis managers.
+//!
+//! Scope: exactly one pass over one function / one module. Tuple pipelines,
+//! instrumentation, and the erased `dyn` containers are separate tasks; the
+//! [`PassExecution`] GAT here is written so the pipeline task can reuse it.
+//!
+//! The read-only path threads a verified module through untouched
+//! ([`StaysVerified`] → `Module<Verified>`); a mutating rung downgrades the
+//! module ([`Downgrades`] → `Module<Unverified>`), which must be re-verified
+//! before the next verified-only stage (D8).
 
-use core::marker::PhantomData;
-
-use super::pass_pipeline::{FunctionPassScope, ModulePassScope, PassName, PassScope};
 use crate::IrResult;
 use crate::analysis::{
-    AllAnalysesOnFunction, AllAnalysesOnModule, FunctionAnalysisList, FunctionAnalysisManager,
-    FunctionAnalysisManagerModuleProxy, ModuleAnalysisList, ModuleAnalysisManager,
-    PreservationBound, PreservedAnalyses,
+    FunctionAnalysisList, FunctionAnalysisManager, ModuleAnalysisList, ModuleAnalysisManager,
 };
-use crate::module::{Brand, Module, ModuleBrand, ModuleView, Unverified, Verified};
-use crate::pass_context::{
-    FunctionPassContext, FunctionView, ModulePassContext, ReadOnlyFunctionPassContext,
-    ReadOnlyModulePassContext, TypedFunctionPassContext, TypedModulePassContext,
+use crate::module::{Brand, Module, ModuleBrand, Unverified, Verified};
+use crate::pass_access::{
+    Downgrades, FnAccess, Inspect, ModAccess, PatchBody, PipelineVerdict, ReshapeCfg,
+    RewriteModule, StaysVerified,
 };
-use crate::pass_instrumentation::PassInstrumentationCallbacks;
+use crate::pass_context::{FnCx, FnReport, FunctionView, ModCx, ModReport};
 
-/// Pass-manager effect for pipelines that never receive mutation capability.
-pub enum PreservesVerification {}
+/// A pass over one function body at capability rung [`Self::Access`].
+///
+/// The rung fixes how much the pass may mutate; the driver derives the verdict
+/// (does the module stay verified?) and the preservation floor from it. The
+/// `run` method takes its [`FnCx`] **by value**: the consuming transition into a
+/// mutator is what makes over-claiming preservation unspellable (D1/D8).
+pub trait FunctionPass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+    /// Capability rung: how much of the function body this pass may touch.
+    type Access: FnAccess;
+    /// Analyses prefetched before `run`; the context accessor is infallible.
+    type Requires: FunctionAnalysisList<'ctx, B>;
+    /// Instrumentation-facing name (unused by the bare driver; part of the API).
+    const NAME: &'static str;
+    /// Whether the pass must always run. Replaces the old runtime `is_required()`
+    /// (only meaningful once instrumentation is wired in a later task).
+    const REQUIRED: bool = false;
 
-/// Pass-manager effect for pipelines that may mutate IR.
-pub enum MutatesIr {}
+    /// Run the pass over one function, consuming its capability context.
+    fn run(
+        &mut self,
+        cx: FnCx<'_, '_, 'ctx, B, Self::Access, Self::Requires>,
+    ) -> IrResult<FnReport>;
+}
 
-mod effect_sealed {
+/// A pass over one module at capability rung [`Self::Access`]. The module-level
+/// mirror of [`FunctionPass`]. A module pass reaches per-function bodies by
+/// calling `rewrite.for_each_function::<Rung>(...)` inline, so there is no
+/// `FnAccess`/`FnRequires` associated type here — the function rung is chosen at
+/// the call site.
+pub trait ModulePass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+    /// Capability rung: how much of the module this pass may rewrite.
+    type Access: ModAccess;
+    /// Module analyses prefetched before `run`; the context accessor is infallible.
+    type Requires: ModuleAnalysisList<'ctx, B>;
+    /// Instrumentation-facing name (unused by the bare driver; part of the API).
+    const NAME: &'static str;
+    /// Whether the pass must always run. See [`FunctionPass::REQUIRED`].
+    const REQUIRED: bool = false;
+
+    /// Run the pass over one module, consuming its capability context.
+    fn run(
+        &mut self,
+        cx: ModCx<'_, '_, '_, 'ctx, B, Self::Access, Self::Requires>,
+    ) -> IrResult<ModReport>;
+}
+
+mod pass_execution_sealed {
     pub trait Sealed {}
-
-    impl Sealed for super::PreservesVerification {}
-    impl Sealed for super::MutatesIr {}
+    impl Sealed for super::StaysVerified {}
+    impl Sealed for super::Downgrades {}
 }
 
-/// Effect marker implemented by pass-manager verification states.
-pub trait ModulePassEffect: effect_sealed::Sealed {
-    #[doc(hidden)]
-    type FunctionContext<'pm, 'ctx, B: ModuleBrand + 'ctx>
+/// Maps a pass's derived [`PipelineVerdict`] to the module typestate a run
+/// yields: [`StaysVerified`] keeps `Module<Verified>`; [`Downgrades`] hands back
+/// `Module<Unverified>` (D8). Sealed to the two verdict markers.
+///
+/// This is the verdict→output-module seam mirrored from the old
+/// `FunctionPipelineExecution`/`ModulePipelineExecution` but keyed on the
+/// verdict rather than the old effect. The token construction lives on the
+/// per-rung [`FnRungExecute`]/[`ModRungExecute`] traits below (only there is a
+/// rung's `Token` concrete); this trait owns just the output-module GAT, which
+/// the pipeline task reuses to spell a whole pipeline's return type.
+pub trait PassExecution: PipelineVerdict + pass_execution_sealed::Sealed {
+    /// Module typestate produced by a run whose derived verdict is `Self`.
+    type OutModule<'ctx, B: ModuleBrand + 'ctx>;
+}
+
+impl PassExecution for StaysVerified {
+    type OutModule<'ctx, B: ModuleBrand + 'ctx> = Module<'ctx, B, Verified>;
+}
+
+impl PassExecution for Downgrades {
+    type OutModule<'ctx, B: ModuleBrand + 'ctx> = Module<'ctx, B, Unverified>;
+}
+
+mod fn_rung_sealed {
+    pub trait Sealed {}
+    impl Sealed for super::Inspect {}
+    impl Sealed for super::PatchBody {}
+    impl Sealed for super::ReshapeCfg {}
+}
+
+/// Per-rung execution seam for [`run_function_pass`]: builds the rung's entry
+/// token, runs the pass, and returns the report plus the verdict-mapped module.
+///
+/// This lives on the rung (not on [`PassExecution`]) because only in a concrete
+/// rung impl is [`FnAccess::Token`] a nameable type: the read-only rung's token
+/// is `()` (no unverify), and the mutating rungs' token is the
+/// `&Module<Unverified>` obtained from `module.unverify()`. A verdict-keyed
+/// method could not construct that token generically. Sealed to the three
+/// function rungs; hidden plumbing.
+#[doc(hidden)]
+pub trait FnRungExecute: FnAccess + fn_rung_sealed::Sealed {
+    /// Run `pass` over `function` at this rung, given the prefetched `results`.
+    fn execute<'ctx, B, R, P>(
+        pass: &mut P,
+        module: Module<'ctx, B, Verified>,
+        function: FunctionView<'ctx, B>,
+        results: R::ResultRefs<'_>,
+    ) -> IrResult<(
+        FnReport,
+        <Self::Verdict as PassExecution>::OutModule<'ctx, B>,
+    )>
     where
-        'ctx: 'pm;
-    #[doc(hidden)]
-    type ModuleContext<'pm, 'ctx, B: ModuleBrand + 'ctx>
+        B: ModuleBrand + 'ctx,
+        R: FunctionAnalysisList<'ctx, B>,
+        P: FunctionPass<'ctx, B, Access = Self, Requires = R>,
+        Self::Verdict: PassExecution;
+}
+
+impl FnRungExecute for Inspect {
+    fn execute<'ctx, B, R, P>(
+        pass: &mut P,
+        module: Module<'ctx, B, Verified>,
+        function: FunctionView<'ctx, B>,
+        results: R::ResultRefs<'_>,
+    ) -> IrResult<(FnReport, Module<'ctx, B, Verified>)>
     where
-        'ctx: 'pm;
+        B: ModuleBrand + 'ctx,
+        R: FunctionAnalysisList<'ctx, B>,
+        P: FunctionPass<'ctx, B, Access = Inspect, Requires = R>,
+    {
+        // Read-only: no unverify, the token is `()`, the module flows out verified.
+        let cx = FnCx::new((), function, results);
+        let report = pass.run(cx)?;
+        Ok((report, module))
+    }
 }
 
-impl ModulePassEffect for PreservesVerification {
-    type FunctionContext<'pm, 'ctx, B: ModuleBrand + 'ctx>
-        = ReadOnlyFunctionPassContext<'pm, 'ctx, B>
+impl FnRungExecute for PatchBody {
+    fn execute<'ctx, B, R, P>(
+        pass: &mut P,
+        module: Module<'ctx, B, Verified>,
+        function: FunctionView<'ctx, B>,
+        results: R::ResultRefs<'_>,
+    ) -> IrResult<(FnReport, Module<'ctx, B, Unverified>)>
     where
-        'ctx: 'pm;
+        B: ModuleBrand + 'ctx,
+        R: FunctionAnalysisList<'ctx, B>,
+        P: FunctionPass<'ctx, B, Access = PatchBody, Requires = R>,
+    {
+        let unverified = module.unverify();
+        let cx = FnCx::new(&unverified, function, results);
+        let report = pass.run(cx)?;
+        Ok((report, unverified))
+    }
+}
 
-    type ModuleContext<'pm, 'ctx, B: ModuleBrand + 'ctx>
-        = ReadOnlyModulePassContext<'pm, 'ctx, B>
+impl FnRungExecute for ReshapeCfg {
+    fn execute<'ctx, B, R, P>(
+        pass: &mut P,
+        module: Module<'ctx, B, Verified>,
+        function: FunctionView<'ctx, B>,
+        results: R::ResultRefs<'_>,
+    ) -> IrResult<(FnReport, Module<'ctx, B, Unverified>)>
     where
-        'ctx: 'pm;
+        B: ModuleBrand + 'ctx,
+        R: FunctionAnalysisList<'ctx, B>,
+        P: FunctionPass<'ctx, B, Access = ReshapeCfg, Requires = R>,
+    {
+        let unverified = module.unverify();
+        let cx = FnCx::new(&unverified, function, results);
+        let report = pass.run(cx)?;
+        Ok((report, unverified))
+    }
 }
 
-impl ModulePassEffect for MutatesIr {
-    type FunctionContext<'pm, 'ctx, B: ModuleBrand + 'ctx>
-        = FunctionPassContext<'pm, 'ctx, B>
+mod mod_rung_sealed {
+    pub trait Sealed {}
+    impl Sealed for super::Inspect {}
+    impl Sealed for super::RewriteModule {}
+}
+
+/// Per-rung execution seam for [`run_module_pass`] — the module-level mirror of
+/// [`FnRungExecute`]. Sealed to the two module rungs; hidden plumbing.
+#[doc(hidden)]
+pub trait ModRungExecute: ModAccess + mod_rung_sealed::Sealed {
+    /// Run `pass` over `module` at this rung, given the prefetched `results`.
+    fn execute<'ctx, 'r, B, R, P>(
+        pass: &mut P,
+        module: Module<'ctx, B, Verified>,
+        mam: &'r ModuleAnalysisManager<'ctx, B>,
+        fam: &mut FunctionAnalysisManager<'ctx, B>,
+        results: R::ResultRefs<'r>,
+    ) -> IrResult<(
+        ModReport,
+        <Self::Verdict as PassExecution>::OutModule<'ctx, B>,
+    )>
     where
-        'ctx: 'pm;
+        B: ModuleBrand + 'ctx,
+        R: ModuleAnalysisList<'ctx, B>,
+        P: ModulePass<'ctx, B, Access = Self, Requires = R>,
+        Self::Verdict: PassExecution;
+}
 
-    type ModuleContext<'pm, 'ctx, B: ModuleBrand + 'ctx>
-        = ModulePassContext<'pm, 'ctx, B>
+impl ModRungExecute for Inspect {
+    fn execute<'ctx, 'r, B, R, P>(
+        pass: &mut P,
+        module: Module<'ctx, B, Verified>,
+        mam: &'r ModuleAnalysisManager<'ctx, B>,
+        fam: &mut FunctionAnalysisManager<'ctx, B>,
+        results: R::ResultRefs<'r>,
+    ) -> IrResult<(ModReport, Module<'ctx, B, Verified>)>
     where
-        'ctx: 'pm;
-}
-
-/// A read-only pass over one function body.
-pub trait ReadOnlyFunctionPass<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    fn run(
-        &mut self,
-        cx: &mut ReadOnlyFunctionPassContext<'_, 'ctx, B>,
-    ) -> IrResult<PreservedAnalyses>;
-
-    fn is_required(&self) -> bool {
-        false
+        B: ModuleBrand + 'ctx,
+        R: ModuleAnalysisList<'ctx, B>,
+        P: ModulePass<'ctx, B, Access = Inspect, Requires = R>,
+    {
+        let view = module.as_view();
+        let cx = ModCx::new(view, (), results, mam, fam);
+        let report = pass.run(cx)?;
+        Ok((report, module))
     }
 }
 
-/// A transform-capable pass over one function body.
-pub trait FunctionPass<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    fn run(&mut self, cx: &mut FunctionPassContext<'_, 'ctx, B>) -> IrResult<PreservedAnalyses>;
-
-    fn is_required(&self) -> bool {
-        false
+impl ModRungExecute for RewriteModule {
+    fn execute<'ctx, 'r, B, R, P>(
+        pass: &mut P,
+        module: Module<'ctx, B, Verified>,
+        mam: &'r ModuleAnalysisManager<'ctx, B>,
+        fam: &mut FunctionAnalysisManager<'ctx, B>,
+        results: R::ResultRefs<'r>,
+    ) -> IrResult<(ModReport, Module<'ctx, B, Unverified>)>
+    where
+        B: ModuleBrand + 'ctx,
+        R: ModuleAnalysisList<'ctx, B>,
+        P: ModulePass<'ctx, B, Access = RewriteModule, Requires = R>,
+    {
+        let unverified = module.unverify();
+        let view = unverified.as_view();
+        let cx = ModCx::new(view, &unverified, results, mam, fam);
+        let report = pass.run(cx)?;
+        Ok((report, unverified))
     }
 }
 
-/// A read-only pass over one module.
-pub trait ReadOnlyModulePass<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    fn run(
-        &mut self,
-        cx: &mut ReadOnlyModulePassContext<'_, 'ctx, B>,
-    ) -> IrResult<PreservedAnalyses>;
-
-    fn is_required(&self) -> bool {
-        false
-    }
-}
-
-/// A transform-capable pass over one module.
-pub trait ModulePass<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    fn run(&mut self, cx: &mut ModulePassContext<'_, 'ctx, B>) -> IrResult<PreservedAnalyses>;
-
-    fn is_required(&self) -> bool {
-        false
-    }
-}
-
-/// Static typed pipeline metadata for future in-tree pass structs.
-pub trait PassPipelineInfo {
-    /// Pass-manager scope where this pass may be inserted by pipeline name.
-    type Scope: PassScope;
-
-    /// Canonical typed pipeline name.
-    const PIPELINE_NAME: PassName<Self::Scope>;
-}
-
-trait ErasedFunctionPass<'ctx, B: ModuleBrand + 'ctx, E: ModulePassEffect> {
-    fn run(&mut self, cx: &mut E::FunctionContext<'_, 'ctx, B>) -> IrResult<PreservedAnalyses>;
-
-    fn name(&self) -> &str;
-    fn is_required(&self) -> bool;
-}
-
-struct FunctionPassModel<P> {
-    name: String,
-    pass: P,
-}
-
-impl<'ctx, B, P> ErasedFunctionPass<'ctx, B, PreservesVerification> for FunctionPassModel<P>
-where
-    B: ModuleBrand + 'ctx,
-    P: ReadOnlyFunctionPass<'ctx, B>,
-{
-    fn run(
-        &mut self,
-        cx: &mut ReadOnlyFunctionPassContext<'_, 'ctx, B>,
-    ) -> IrResult<PreservedAnalyses> {
-        self.pass.run(cx)
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn is_required(&self) -> bool {
-        self.pass.is_required()
-    }
-}
-
-impl<'ctx, B, P> ErasedFunctionPass<'ctx, B, MutatesIr> for FunctionPassModel<P>
+/// Run a single [`FunctionPass`] over one function of a verified module.
+///
+/// Prefetches the pass's `Requires`, builds its rung-specific entry context,
+/// runs it, and invalidates `fam` with the report's preservation set. Returns
+/// the verdict-mapped module: `Module<Verified>` for a read-only pass, the
+/// downgraded `Module<Unverified>` for a mutating one (D8).
+pub fn run_function_pass<'ctx, B, P, F>(
+    mut pass: P,
+    module: Module<'ctx, B, Verified>,
+    function: F,
+    fam: &mut FunctionAnalysisManager<'ctx, B>,
+) -> IrResult<<<P::Access as FnAccess>::Verdict as PassExecution>::OutModule<'ctx, B>>
 where
     B: ModuleBrand + 'ctx,
     P: FunctionPass<'ctx, B>,
+    P::Access: FnRungExecute,
+    <P::Access as FnAccess>::Verdict: PassExecution,
+    F: Into<FunctionView<'ctx, B>>,
 {
-    fn run(&mut self, cx: &mut FunctionPassContext<'_, 'ctx, B>) -> IrResult<PreservedAnalyses> {
-        self.pass.run(cx)
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn is_required(&self) -> bool {
-        self.pass.is_required()
-    }
+    let function = function.into();
+    P::Requires::prefetch(fam, function)?;
+    let (report, out) = {
+        // `results` borrows `*fam` only for this block; the returned report and
+        // module borrow nothing from it, so `fam` is free for `invalidate`.
+        let results = P::Requires::collect(&*fam, function)?;
+        <P::Access as FnRungExecute>::execute::<B, P::Requires, P>(
+            &mut pass, module, function, results,
+        )?
+    };
+    fam.invalidate(function, &report.into_pa())?;
+    Ok(out)
 }
 
-trait ErasedModulePass<'ctx, B: ModuleBrand + 'ctx, E: ModulePassEffect> {
-    fn run(&mut self, cx: &mut E::ModuleContext<'_, 'ctx, B>) -> IrResult<PreservedAnalyses>;
-
-    fn name(&self) -> &str;
-    fn is_required(&self) -> bool;
-}
-
-struct ModulePassModel<P> {
-    name: String,
-    pass: P,
-}
-
-impl<'ctx, B, P> ErasedModulePass<'ctx, B, PreservesVerification> for ModulePassModel<P>
-where
-    B: ModuleBrand + 'ctx,
-    P: ReadOnlyModulePass<'ctx, B>,
-{
-    fn run(
-        &mut self,
-        cx: &mut ReadOnlyModulePassContext<'_, 'ctx, B>,
-    ) -> IrResult<PreservedAnalyses> {
-        self.pass.run(cx)
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn is_required(&self) -> bool {
-        self.pass.is_required()
-    }
-}
-
-impl<'ctx, B, P> ErasedModulePass<'ctx, B, MutatesIr> for ModulePassModel<P>
+/// Run a single [`ModulePass`] over a verified module — the module-level mirror
+/// of [`run_function_pass`]. Prefetches module `Requires`, runs the pass, and
+/// invalidates both the module and function analysis managers with the report's
+/// preservation set (mirroring the retired `ModulePassManager::run`).
+pub fn run_module_pass<'ctx, B, P>(
+    mut pass: P,
+    module: Module<'ctx, B, Verified>,
+    mam: &mut ModuleAnalysisManager<'ctx, B>,
+    fam: &mut FunctionAnalysisManager<'ctx, B>,
+) -> IrResult<<<P::Access as ModAccess>::Verdict as PassExecution>::OutModule<'ctx, B>>
 where
     B: ModuleBrand + 'ctx,
     P: ModulePass<'ctx, B>,
+    P::Access: ModRungExecute,
+    <P::Access as ModAccess>::Verdict: PassExecution,
 {
-    fn run(&mut self, cx: &mut ModulePassContext<'_, 'ctx, B>) -> IrResult<PreservedAnalyses> {
-        self.pass.run(cx)
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn is_required(&self) -> bool {
-        self.pass.is_required()
-    }
-}
-
-/// Effect extension for the typed pipeline path: the module capability a pass
-/// of this effect receives. Read-only passes get no token; transform passes
-/// get the unverified-module mutation token (D8).
-pub trait TypedPassEffect: ModulePassEffect + JoinsAll {
-    type ModuleToken<'pm, 'ctx, B: ModuleBrand + 'ctx>: Copy
-    where
-        'ctx: 'pm;
-}
-
-/// Totality witness for the effect join: every effect joins with *every* other
-/// effect, expressed as a generic associated type so a bound `E: TypedPassEffect`
-/// implies `E ⊔ Rhs` is nameable for an arbitrary `Rhs` — including the abstract
-/// running accumulator of [`EffectFold`]. Without this, folding a pipeline's
-/// effect over abstract member effects would force the compiler to case-split
-/// the sealed effect set, which it will not do. Mirrors the same
-/// identity/absorbing lattice as [`EffectJoin`].
-pub trait JoinsAll {
-    /// `Self ⊔ Rhs`.
-    type JoinOut<Rhs: TypedPassEffect>: TypedPassEffect;
-}
-
-/// Read-only is the lattice identity: `PreservesVerification ⊔ Rhs = Rhs`.
-impl JoinsAll for PreservesVerification {
-    type JoinOut<Rhs: TypedPassEffect> = Rhs;
-}
-
-/// Transform is absorbing: `MutatesIr ⊔ Rhs = MutatesIr`.
-impl JoinsAll for MutatesIr {
-    type JoinOut<Rhs: TypedPassEffect> = MutatesIr;
-}
-
-impl TypedPassEffect for PreservesVerification {
-    type ModuleToken<'pm, 'ctx, B: ModuleBrand + 'ctx>
-        = ()
-    where
-        'ctx: 'pm;
-}
-
-impl TypedPassEffect for MutatesIr {
-    type ModuleToken<'pm, 'ctx, B: ModuleBrand + 'ctx>
-        = &'pm Module<'ctx, B, Unverified>
-    where
-        'ctx: 'pm;
-}
-
-/// Type-level join on the two-point effect lattice: the composed pipeline is
-/// read-only iff every member is. The join is *total* — every effect joins
-/// with every other — which is what lets a pipeline's derived effect be folded
-/// over abstract member effects (`P::Effect`) without the compiler having to
-/// case-split the sealed set. `PreservesVerification` is the identity (it joins
-/// to whatever it meets) and `MutatesIr` is absorbing (D8).
-pub trait EffectJoin<Rhs: TypedPassEffect> {
-    type Out: TypedPassEffect;
-}
-
-/// Read-only is the lattice identity: `PreservesVerification ⊔ Rhs = Rhs`.
-impl<Rhs: TypedPassEffect> EffectJoin<Rhs> for PreservesVerification {
-    type Out = Rhs;
-}
-
-/// Transform is absorbing: `MutatesIr ⊔ Rhs = MutatesIr`.
-impl<Rhs: TypedPassEffect> EffectJoin<Rhs> for MutatesIr {
-    type Out = MutatesIr;
-}
-
-/// Token weakening from a pipeline effect to one member's effect. The missing
-/// `PreservesVerification: ProvidesToken<MutatesIr>` impl is intentional: a
-/// read-only pipeline cannot hand a mutation token to a transform member —
-/// unrepresentable rather than checked (D1).
-pub trait ProvidesToken<Member: TypedPassEffect>: TypedPassEffect {
-    fn member_token<'pm, 'ctx, B: ModuleBrand + 'ctx>(
-        token: Self::ModuleToken<'pm, 'ctx, B>,
-    ) -> Member::ModuleToken<'pm, 'ctx, B>
-    where
-        'ctx: 'pm;
-}
-
-impl ProvidesToken<PreservesVerification> for PreservesVerification {
-    fn member_token<'pm, 'ctx, B: ModuleBrand + 'ctx>(_token: Self::ModuleToken<'pm, 'ctx, B>)
-    where
-        'ctx: 'pm,
-    {
-    }
-}
-
-impl ProvidesToken<PreservesVerification> for MutatesIr {
-    fn member_token<'pm, 'ctx, B: ModuleBrand + 'ctx>(_token: Self::ModuleToken<'pm, 'ctx, B>)
-    where
-        'ctx: 'pm,
-    {
-    }
-}
-
-impl ProvidesToken<MutatesIr> for MutatesIr {
-    fn member_token<'pm, 'ctx, B: ModuleBrand + 'ctx>(
-        token: Self::ModuleToken<'pm, 'ctx, B>,
-    ) -> Self::ModuleToken<'pm, 'ctx, B>
-    where
-        'ctx: 'pm,
-    {
-        token
-    }
-}
-
-/// Type-level left-fold of a cons list of effect markers through
-/// [`JoinsAll`], threading a running accumulator `Acc`. `()` yields the
-/// accumulator; `(Head, Tail)` joins `Head` onto `Acc` via
-/// [`JoinsAll::JoinOut`] and recurses. Because `JoinsAll` makes the join total
-/// over an arbitrary `Rhs`, each step's join is well-formed for abstract member
-/// effects without the compiler having to case-split the sealed effect set — a
-/// flat `where`-clause fold cannot express this.
-pub trait EffectFold<Acc: TypedPassEffect> {
-    /// The joined effect of the cons list, starting from `Acc`.
-    type Out: TypedPassEffect;
-}
-
-impl<Acc: TypedPassEffect> EffectFold<Acc> for () {
-    type Out = Acc;
-}
-
-impl<Acc, Head, Tail> EffectFold<Acc> for (Head, Tail)
-where
-    Acc: TypedPassEffect,
-    Head: JoinsAll,
-    Tail: EffectFold<Head::JoinOut<Acc>>,
-{
-    type Out = <Tail as EffectFold<Head::JoinOut<Acc>>>::Out;
-}
-
-/// Left-fold of a non-empty member-effect list through [`JoinsAll`] to spell a
-/// pipeline's derived effect, projected through [`EffectFold`] so the fold is
-/// well-formed one pairwise join at a time. Every extra member joins onto the
-/// running effect, so the whole pipeline is read-only iff every member is. Used
-/// by the [`FunctionPassList`] tuple impls (Task 4 deferred this macro to its
-/// first consumer here — Task 5).
-macro_rules! join_effects {
-    // Cons builder over effect types: (E0, (E1, (..., (En, ())))).
-    (@cons $only:ty) => { ($only, ()) };
-    (@cons $head:ty, $($tail:ty),+) => {
-        ($head, join_effects!(@cons $($tail),+))
+    let view = module.as_view();
+    P::Requires::prefetch(mam, view)?;
+    let (report, out) = {
+        let results = P::Requires::collect(&*mam, view)?;
+        <P::Access as ModRungExecute>::execute::<B, P::Requires, P>(
+            &mut pass, module, &*mam, fam, results,
+        )?
     };
-    ($($eff:ty),+) => {
-        <join_effects!(@cons $($eff),+) as EffectFold<PreservesVerification>>::Out
-    };
-}
-
-/// Sequence of function passes.
-pub struct FunctionPassManager<
-    'ctx,
-    B: ModuleBrand + 'ctx = Brand<'ctx>,
-    E: ModulePassEffect + 'ctx = MutatesIr,
-> {
-    passes: Vec<Box<dyn ErasedFunctionPass<'ctx, B, E> + 'ctx>>,
-    instrumentation: Option<PassInstrumentationCallbacks>,
-    _brand: PhantomData<fn(B) -> B>,
-    _effect: PhantomData<E>,
-}
-
-impl<'ctx, B, E> FunctionPassManager<'ctx, B, E>
-where
-    B: ModuleBrand + 'ctx,
-    E: ModulePassEffect + 'ctx,
-{
-    fn empty() -> Self {
-        Self {
-            passes: Vec::new(),
-            instrumentation: None,
-            _brand: PhantomData,
-            _effect: PhantomData,
-        }
-    }
-
-    pub fn set_instrumentation(&mut self, callbacks: PassInstrumentationCallbacks) {
-        self.instrumentation = Some(callbacks);
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.passes.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.passes.len()
-    }
-
-    pub fn pipeline_text(&self) -> String {
-        let mut text = String::new();
-        for pass in &self.passes {
-            if !text.is_empty() {
-                text.push(',');
-            }
-            text.push_str(pass.name());
-        }
-        text
-    }
-}
-
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPassManager<'ctx, B, PreservesVerification> {
-    pub fn new_read_only() -> Self {
-        Self::empty()
-    }
-
-    pub fn add_pass<P>(&mut self, pass: P)
-    where
-        P: ReadOnlyFunctionPass<'ctx, B> + 'ctx,
-    {
-        self.passes.push(Box::new(FunctionPassModel {
-            name: std::any::type_name::<P>().to_owned(),
-            pass,
-        }));
-    }
-
-    pub fn add_named_pass<P>(&mut self, name: PassName<FunctionPassScope>, pass: P)
-    where
-        P: ReadOnlyFunctionPass<'ctx, B> + 'ctx,
-    {
-        self.passes.push(Box::new(FunctionPassModel {
-            name: name.as_str().to_owned(),
-            pass,
-        }));
-    }
-
-    pub fn add_pipeline_pass<P>(&mut self, pass: P)
-    where
-        P: PassPipelineInfo<Scope = FunctionPassScope> + ReadOnlyFunctionPass<'ctx, B> + 'ctx,
-    {
-        self.add_named_pass(P::PIPELINE_NAME, pass);
-    }
-
-    pub fn run<F>(
-        &mut self,
-        module: Module<'ctx, B, Verified>,
-        function: F,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Verified>>
-    where
-        F: Into<FunctionView<'ctx, B>>,
-    {
-        self.run_read_only_inner(function.into(), None, fam)?;
-        Ok(module)
-    }
-
-    pub(crate) fn run_read_only_inner(
-        &mut self,
-        function: FunctionView<'ctx, B>,
-        mam: Option<&ModuleAnalysisManager<'ctx, B>>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<PreservedAnalyses> {
-        let mut preserved = PreservedAnalyses::all();
-        for pass in &mut self.passes {
-            let should_run = self.instrumentation.as_ref().is_none_or(|callbacks| {
-                callbacks.run_before_pass(pass.name(), pass.is_required()) || pass.is_required()
-            });
-            if !should_run {
-                continue;
-            }
-            let mut cx = ReadOnlyFunctionPassContext::new(function, mam, fam);
-            let pass_pa = pass.run(&mut cx)?;
-            if let Some(callbacks) = &self.instrumentation {
-                callbacks.run_after_pass(pass.name(), &pass_pa);
-            }
-            cx.function_analysis_manager_mut()
-                .invalidate(function.as_function(), &pass_pa)?;
-            preserved.intersect(pass_pa);
-        }
-        preserved.preserve_set::<AllAnalysesOnFunction>();
-        Ok(preserved)
-    }
-}
-
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPassManager<'ctx, B, MutatesIr> {
-    pub fn new_transform() -> Self {
-        Self::empty()
-    }
-
-    pub fn add_pass<P>(&mut self, pass: P)
-    where
-        P: FunctionPass<'ctx, B> + 'ctx,
-    {
-        self.passes.push(Box::new(FunctionPassModel {
-            name: std::any::type_name::<P>().to_owned(),
-            pass,
-        }));
-    }
-
-    pub fn add_named_pass<P>(&mut self, name: PassName<FunctionPassScope>, pass: P)
-    where
-        P: FunctionPass<'ctx, B> + 'ctx,
-    {
-        self.passes.push(Box::new(FunctionPassModel {
-            name: name.as_str().to_owned(),
-            pass,
-        }));
-    }
-
-    pub fn add_pipeline_pass<P>(&mut self, pass: P)
-    where
-        P: PassPipelineInfo<Scope = FunctionPassScope> + FunctionPass<'ctx, B> + 'ctx,
-    {
-        self.add_named_pass(P::PIPELINE_NAME, pass);
-    }
-
-    pub fn run<F>(
-        &mut self,
-        module: Module<'ctx, B, Verified>,
-        function: F,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Unverified>>
-    where
-        F: Into<FunctionView<'ctx, B>>,
-    {
-        let module = module.unverify();
-        self.run_transform_inner(&module, function.into(), None, fam)?;
-        Ok(module)
-    }
-
-    pub(crate) fn run_transform_inner(
-        &mut self,
-        module: &Module<'ctx, B, Unverified>,
-        function: FunctionView<'ctx, B>,
-        mam: Option<&ModuleAnalysisManager<'ctx, B>>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<PreservedAnalyses> {
-        let mut preserved = PreservedAnalyses::all();
-        for pass in &mut self.passes {
-            let should_run = self.instrumentation.as_ref().is_none_or(|callbacks| {
-                callbacks.run_before_pass(pass.name(), pass.is_required()) || pass.is_required()
-            });
-            if !should_run {
-                continue;
-            }
-            let mut cx = FunctionPassContext::new(module, function, mam, fam);
-            let pass_pa = pass.run(&mut cx)?;
-            if let Some(callbacks) = &self.instrumentation {
-                callbacks.run_after_pass(pass.name(), &pass_pa);
-            }
-            cx.analysis_manager_mut()
-                .invalidate(function.as_function(), &pass_pa)?;
-            preserved.intersect(pass_pa);
-        }
-        preserved.preserve_set::<AllAnalysesOnFunction>();
-        Ok(preserved)
-    }
-}
-
-/// Sequence of module passes.
-pub struct ModulePassManager<
-    'ctx,
-    B: ModuleBrand + 'ctx = Brand<'ctx>,
-    E: ModulePassEffect + 'ctx = MutatesIr,
-> {
-    passes: Vec<Box<dyn ErasedModulePass<'ctx, B, E> + 'ctx>>,
-    instrumentation: Option<PassInstrumentationCallbacks>,
-    _brand: PhantomData<fn(B) -> B>,
-    _effect: PhantomData<E>,
-}
-
-impl<'ctx, B, E> ModulePassManager<'ctx, B, E>
-where
-    B: ModuleBrand + 'ctx,
-    E: ModulePassEffect + 'ctx,
-{
-    fn empty() -> Self {
-        Self {
-            passes: Vec::new(),
-            instrumentation: None,
-            _brand: PhantomData,
-            _effect: PhantomData,
-        }
-    }
-
-    pub fn set_instrumentation(&mut self, callbacks: PassInstrumentationCallbacks) {
-        self.instrumentation = Some(callbacks);
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.passes.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.passes.len()
-    }
-
-    pub fn pipeline_text(&self) -> String {
-        let mut text = String::new();
-        for pass in &self.passes {
-            if !text.is_empty() {
-                text.push(',');
-            }
-            text.push_str(pass.name());
-        }
-        text
-    }
-}
-
-impl<'ctx, B: ModuleBrand + 'ctx> ModulePassManager<'ctx, B, PreservesVerification> {
-    pub fn new_read_only() -> Self {
-        Self::empty()
-    }
-
-    pub fn add_pass<P>(&mut self, pass: P)
-    where
-        P: ReadOnlyModulePass<'ctx, B> + 'ctx,
-    {
-        self.passes.push(Box::new(ModulePassModel {
-            name: std::any::type_name::<P>().to_owned(),
-            pass,
-        }));
-    }
-
-    pub fn add_named_pass<P>(&mut self, name: PassName<ModulePassScope>, pass: P)
-    where
-        P: ReadOnlyModulePass<'ctx, B> + 'ctx,
-    {
-        self.passes.push(Box::new(ModulePassModel {
-            name: name.as_str().to_owned(),
-            pass,
-        }));
-    }
-
-    pub fn add_pipeline_pass<P>(&mut self, pass: P)
-    where
-        P: PassPipelineInfo<Scope = ModulePassScope> + ReadOnlyModulePass<'ctx, B> + 'ctx,
-    {
-        self.add_named_pass(P::PIPELINE_NAME, pass);
-    }
-
-    pub fn run(
-        &mut self,
-        module: Module<'ctx, B, Verified>,
-        mam: &mut ModuleAnalysisManager<'ctx, B>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Verified>> {
-        let mut cx = ReadOnlyModulePassContext::new(&module, mam, fam);
-        let mut preserved = PreservedAnalyses::all();
-        for pass in &mut self.passes {
-            let should_run = self.instrumentation.as_ref().is_none_or(|callbacks| {
-                callbacks.run_before_pass(pass.name(), pass.is_required()) || pass.is_required()
-            });
-            if !should_run {
-                continue;
-            }
-            let pass_pa = pass.run(&mut cx)?;
-            if let Some(callbacks) = &self.instrumentation {
-                callbacks.run_after_pass(pass.name(), &pass_pa);
-            }
-            let module_view = cx.module();
-            cx.module_analysis_manager_mut()
-                .invalidate(module_view, &pass_pa)?;
-            cx.function_analysis_manager_mut()
-                .invalidate_module(module_view, &pass_pa)?;
-            preserved.intersect(pass_pa);
-        }
-        preserved.preserve_set::<AllAnalysesOnModule>();
-        Ok(module)
-    }
-}
-
-impl<'ctx, B: ModuleBrand + 'ctx> ModulePassManager<'ctx, B, MutatesIr> {
-    pub fn new_transform() -> Self {
-        Self::empty()
-    }
-
-    pub fn add_pass<P>(&mut self, pass: P)
-    where
-        P: ModulePass<'ctx, B> + 'ctx,
-    {
-        self.passes.push(Box::new(ModulePassModel {
-            name: std::any::type_name::<P>().to_owned(),
-            pass,
-        }));
-    }
-
-    pub fn add_named_pass<P>(&mut self, name: PassName<ModulePassScope>, pass: P)
-    where
-        P: ModulePass<'ctx, B> + 'ctx,
-    {
-        self.passes.push(Box::new(ModulePassModel {
-            name: name.as_str().to_owned(),
-            pass,
-        }));
-    }
-
-    pub fn add_pipeline_pass<P>(&mut self, pass: P)
-    where
-        P: PassPipelineInfo<Scope = ModulePassScope> + ModulePass<'ctx, B> + 'ctx,
-    {
-        self.add_named_pass(P::PIPELINE_NAME, pass);
-    }
-
-    pub fn run(
-        &mut self,
-        module: Module<'ctx, B, Verified>,
-        mam: &mut ModuleAnalysisManager<'ctx, B>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Unverified>> {
-        let mut cx = ModulePassContext::new(module.unverify(), mam, fam);
-        let mut preserved = PreservedAnalyses::all();
-        for pass in &mut self.passes {
-            let should_run = self.instrumentation.as_ref().is_none_or(|callbacks| {
-                callbacks.run_before_pass(pass.name(), pass.is_required()) || pass.is_required()
-            });
-            if !should_run {
-                continue;
-            }
-            let pass_pa = pass.run(&mut cx)?;
-            if let Some(callbacks) = &self.instrumentation {
-                callbacks.run_after_pass(pass.name(), &pass_pa);
-            }
-            let module_view = cx.module();
-            cx.module_analysis_manager_mut()
-                .invalidate(module_view, &pass_pa)?;
-            cx.function_analysis_manager_mut()
-                .invalidate_module(module_view, &pass_pa)?;
-            preserved.intersect(pass_pa);
-        }
-        preserved.preserve_set::<AllAnalysesOnModule>();
-        Ok(cx.finish())
-    }
-}
-
-/// Module pass that runs a function pass manager over every function
-/// definition in module order.
-pub struct ModuleToFunctionPassAdaptor<
-    'ctx,
-    B: ModuleBrand + 'ctx = Brand<'ctx>,
-    E: ModulePassEffect + 'ctx = MutatesIr,
-> {
-    fpm: FunctionPassManager<'ctx, B, E>,
-}
-
-impl<'ctx, B, E> ModuleToFunctionPassAdaptor<'ctx, B, E>
-where
-    B: ModuleBrand + 'ctx,
-    E: ModulePassEffect + 'ctx,
-{
-    pub fn new(fpm: FunctionPassManager<'ctx, B, E>) -> Self {
-        Self { fpm }
-    }
-}
-
-impl<'ctx, B: ModuleBrand + 'ctx> ReadOnlyModulePass<'ctx, B>
-    for ModuleToFunctionPassAdaptor<'ctx, B, PreservesVerification>
-{
-    fn run(
-        &mut self,
-        cx: &mut ReadOnlyModulePassContext<'_, 'ctx, B>,
-    ) -> IrResult<PreservedAnalyses> {
-        let mut preserved = PreservedAnalyses::all();
-        for function in cx.functions() {
-            if function.entry_block().is_none() {
-                continue;
-            }
-            let (mam, fam) = cx.analysis_managers_for_function_passes();
-            let function_pa = self.fpm.run_read_only_inner(function, Some(mam), fam)?;
-            preserved.intersect(function_pa);
-        }
-        preserved.preserve_set::<AllAnalysesOnFunction>();
-        preserved.preserve::<FunctionAnalysisManagerModuleProxy>();
-        Ok(preserved)
-    }
-
-    fn is_required(&self) -> bool {
-        true
-    }
-}
-
-impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B>
-    for ModuleToFunctionPassAdaptor<'ctx, B, MutatesIr>
-{
-    fn run(&mut self, cx: &mut ModulePassContext<'_, 'ctx, B>) -> IrResult<PreservedAnalyses> {
-        let mut preserved = PreservedAnalyses::all();
-        for function in cx.functions() {
-            if function.entry_block().is_none() {
-                continue;
-            }
-            let (module, mam, fam) = cx.module_and_analysis_managers_for_function_passes();
-            let function_pa = self
-                .fpm
-                .run_transform_inner(module, function, Some(mam), fam)?;
-            preserved.intersect(function_pa);
-        }
-        preserved.preserve_set::<AllAnalysesOnFunction>();
-        preserved.preserve::<FunctionAnalysisManagerModuleProxy>();
-        Ok(preserved)
-    }
-
-    fn is_required(&self) -> bool {
-        true
-    }
-}
-
-/// A typed pass over one function body. The typed counterpart of
-/// [`FunctionPass`]/[`ReadOnlyFunctionPass`]: effect, analysis requirements,
-/// and the preservation lower bound are part of the type (D1, D8).
-pub trait TypedFunctionPass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
-    /// Read-only or transform; pipelines derive their effect by joining these.
-    type Effect: TypedPassEffect;
-    /// Analyses prefetched before `run`; the context accessor is infallible.
-    type Requires: FunctionAnalysisList<'ctx, B>;
-    /// Static preservation lower bound unioned into the runtime result.
-    type MinPreserves: PreservationBound;
-    /// Instrumentation-facing name.
-    const NAME: &'static str;
-
-    fn run(
-        &mut self,
-        cx: &mut TypedFunctionPassContext<'_, '_, 'ctx, B, Self::Requires, Self::Effect>,
-    ) -> IrResult<PreservedAnalyses>;
-
-    fn is_required(&self) -> bool {
-        false
-    }
-}
-
-/// Instrumentation gate + prefetch + collect + run + MinPreserves union +
-/// invalidation for a single typed pass, mirroring one iteration of the erased
-/// managers' loop (`PassManager::run`, PassManagerImpl.h). The prefetched
-/// results borrow `fam` only for the pass's `run` scope, so `fam` is free again
-/// for [`FunctionAnalysisManager::invalidate`] once `run` returns — the module
-/// `token` is `Copy` and coerces down to that same scope.
-fn run_one_typed_function_pass<'pm, 'ctx, B, P>(
-    pass: &mut P,
-    token: <P::Effect as TypedPassEffect>::ModuleToken<'pm, 'ctx, B>,
-    function: FunctionView<'ctx, B>,
-    fam: &mut FunctionAnalysisManager<'ctx, B>,
-    instrumentation: Option<&PassInstrumentationCallbacks>,
-) -> IrResult<PreservedAnalyses>
-where
-    B: ModuleBrand + 'ctx,
-    P: TypedFunctionPass<'ctx, B>,
-{
-    let should_run = instrumentation.is_none_or(|callbacks| {
-        callbacks.run_before_pass(P::NAME, pass.is_required()) || pass.is_required()
-    });
-    if !should_run {
-        return Ok(PreservedAnalyses::all());
-    }
-    P::Requires::prefetch(fam, function)?;
-    let mut pass_pa = {
-        // The results borrow `*fam` only for this block (`'r`), while the
-        // module `token` keeps its own longer lifetime `'pm`; the two-lifetime
-        // context keeps them apart, so `*fam` is free for `invalidate` below.
-        let results = P::Requires::collect(&*fam, function)?;
-        let mut cx = TypedFunctionPassContext::new(token, function, results);
-        pass.run(&mut cx)?
-    };
-    P::MinPreserves::apply(&mut pass_pa);
-    if let Some(callbacks) = instrumentation {
-        callbacks.run_after_pass(P::NAME, &pass_pa);
-    }
-    fam.invalidate(function.as_function(), &pass_pa)?;
-    Ok(pass_pa)
-}
-
-/// Every transform-effect typed pass is usable wherever the erased
-/// [`FunctionPass`] is accepted: the adapter prefetches `Requires` through the
-/// erased context's manager (fallible there — the erased path keeps runtime
-/// checks, D3) and delegates to the typed run.
-///
-/// Coherence guard: this is the *only* blanket impl of [`FunctionPass`] for a
-/// `P: TypedFunctionPass<...>` bound. [`ModuleToFunctionPassAdaptor`] keeps
-/// its manual, brand-concrete dyn impls (never generic over an open `B`) and
-/// must never implement [`TypedFunctionPass`]. [`ReadOnly`] does not get a
-/// second blanket-shaped `FunctionPass` impl of its own for the same reason —
-/// see its doc comment below for why, and how it rides this single blanket
-/// instead.
-impl<'ctx, B, P> FunctionPass<'ctx, B> for P
-where
-    B: ModuleBrand + 'ctx,
-    P: TypedFunctionPass<'ctx, B, Effect = MutatesIr>,
-{
-    fn run(&mut self, cx: &mut FunctionPassContext<'_, 'ctx, B>) -> IrResult<PreservedAnalyses> {
-        let function = cx.function();
-        P::Requires::prefetch(cx.analysis_manager_mut(), function)?;
-        let mut pass_pa = {
-            let results = P::Requires::collect(cx.analysis_manager(), function)?;
-            let mut typed = TypedFunctionPassContext::new(cx.module_mut(), function, results);
-            TypedFunctionPass::run(self, &mut typed)?
-        };
-        P::MinPreserves::apply(&mut pass_pa);
-        Ok(pass_pa)
-    }
-
-    fn is_required(&self) -> bool {
-        TypedFunctionPass::is_required(self)
-    }
-}
-
-impl<'ctx, B, P> ReadOnlyFunctionPass<'ctx, B> for P
-where
-    B: ModuleBrand + 'ctx,
-    P: TypedFunctionPass<'ctx, B, Effect = PreservesVerification>,
-{
-    fn run(
-        &mut self,
-        cx: &mut ReadOnlyFunctionPassContext<'_, 'ctx, B>,
-    ) -> IrResult<PreservedAnalyses> {
-        let function = cx.function();
-        P::Requires::prefetch(cx.function_analysis_manager_mut(), function)?;
-        let mut pass_pa = {
-            let results = P::Requires::collect(cx.function_analysis_manager(), function)?;
-            let mut typed = TypedFunctionPassContext::new((), function, results);
-            TypedFunctionPass::run(self, &mut typed)?
-        };
-        P::MinPreserves::apply(&mut pass_pa);
-        Ok(pass_pa)
-    }
-
-    fn is_required(&self) -> bool {
-        TypedFunctionPass::is_required(self)
-    }
-}
-
-/// Adapter running a read-only typed pass inside a transform-effect erased
-/// manager (an all-read-only *typed* pipeline needs no adapter — its derived
-/// effect already is read-only).
-///
-/// Coherence note: `ReadOnly<P>` deliberately does *not* get its own
-/// `FunctionPass`/`ModulePass` impl. A second blanket-shaped impl targeting
-/// `ReadOnly<P>` for `P: TypedFunctionPass<Effect = PreservesVerification>`
-/// would conflict (E0119) with the `Effect = MutatesIr` blanket above: both
-/// [`FunctionPass`] and [`TypedFunctionPass`] are generic over the open
-/// [`ModuleBrand`] bound, so rustc cannot prove `ReadOnly<P>` (itself generic
-/// over `P`) never *also* satisfies `TypedFunctionPass<Effect = MutatesIr>`
-/// for some other instantiation — unlike [`TypedModulePass`], `TypedFunctionPass`
-/// must stay unsealed (pass authors outside this crate implement it directly
-/// for their own leaf pass types), so the sealing fix used for the module
-/// blankets isn't available here. Instead, `ReadOnly<P>` implements
-/// [`TypedFunctionPass`] itself below (translating its wrapped read-only run
-/// into a `MutatesIr`-effect one) and rides the *same* single blanket above —
-/// no second impl of the erased trait is ever written for it.
-pub struct ReadOnly<P>(pub P);
-
-impl<'ctx, B, P> TypedFunctionPass<'ctx, B> for ReadOnly<P>
-where
-    B: ModuleBrand + 'ctx,
-    P: TypedFunctionPass<'ctx, B, Effect = PreservesVerification>,
-{
-    type Effect = MutatesIr;
-    type Requires = P::Requires;
-    type MinPreserves = P::MinPreserves;
-    const NAME: &'static str = P::NAME;
-
-    fn run(
-        &mut self,
-        cx: &mut TypedFunctionPassContext<'_, '_, 'ctx, B, Self::Requires, MutatesIr>,
-    ) -> IrResult<PreservedAnalyses> {
-        // The wrapped pass only ever reads `cx`'s prefetched results and
-        // function view; it never sees the `MutatesIr` module token, so a
-        // read-only-shaped context borrowed from the same function/results is
-        // all it needs.
-        let mut read_only = TypedFunctionPassContext::new((), cx.function(), cx.results());
-        TypedFunctionPass::run(&mut self.0, &mut read_only)
-    }
-
-    fn is_required(&self) -> bool {
-        TypedFunctionPass::is_required(&self.0)
-    }
-}
-
-/// Dispatch tag distinguishing a leaf [`TypedFunctionPass`] member from a
-/// nested [`FunctionPipeline`] member. It is an inferred type parameter on
-/// [`FunctionPipelineMember`] rather than an overlap: a leaf pass implements
-/// the member trait only at [`LeafMember`], a pipeline only at
-/// [`NestedMember`], so the blanket-vs-concrete pair never collides even though
-/// nothing stops a downstream type from being both a pass and a pipeline.
-#[doc(hidden)]
-pub struct LeafMember(());
-/// Dispatch tag for a nested [`FunctionPipeline`] member. See [`LeafMember`].
-#[doc(hidden)]
-pub struct NestedMember(());
-
-/// One member of a typed function pipeline: either a [`TypedFunctionPass`]
-/// (via the [`LeafMember`] impl) or a nested [`FunctionPipeline`] (via the
-/// [`NestedMember`] impl). `Kind` is always inferred from the member type; do
-/// not implement directly — the two provided impls are the whole intended
-/// universe.
-pub trait FunctionPipelineMember<'ctx, B: ModuleBrand + 'ctx, Kind> {
-    type MemberEffect: TypedPassEffect;
-
-    #[doc(hidden)]
-    fn run_member<'pm>(
-        &mut self,
-        token: <Self::MemberEffect as TypedPassEffect>::ModuleToken<'pm, 'ctx, B>,
-        function: FunctionView<'ctx, B>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-        instrumentation: Option<&PassInstrumentationCallbacks>,
-    ) -> IrResult<PreservedAnalyses>;
-}
-
-impl<'ctx, B, T> FunctionPipelineMember<'ctx, B, LeafMember> for T
-where
-    B: ModuleBrand + 'ctx,
-    T: TypedFunctionPass<'ctx, B>,
-{
-    type MemberEffect = T::Effect;
-
-    fn run_member<'pm>(
-        &mut self,
-        token: <T::Effect as TypedPassEffect>::ModuleToken<'pm, 'ctx, B>,
-        function: FunctionView<'ctx, B>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-        instrumentation: Option<&PassInstrumentationCallbacks>,
-    ) -> IrResult<PreservedAnalyses> {
-        run_one_typed_function_pass(self, token, function, fam, instrumentation)
-    }
-}
-
-mod pass_list_sealed {
-    pub trait Sealed {}
-}
-
-/// Tuple of pipeline members with a derived joint effect. Mirrors the
-/// `FunctionParamList` tuple-schema shape; sealed — arities 1..=8, nest a
-/// [`FunctionPipeline`] as a member for longer pipelines.
-///
-/// The joined effect is the `join_effects!` left-fold of the members'
-/// effects (through [`EffectFold`]/[`JoinsAll`]), and the `ProvidesToken` chain
-/// lets the pipeline weaken its own token to each member. Folding through
-/// [`EffectFold`] rather than a flat `where`-clause is what makes naming the
-/// joined type legal without the compiler first having to case-split the sealed
-/// effect set.
-pub trait FunctionPassList<'ctx, B: ModuleBrand + 'ctx, Kinds>: pass_list_sealed::Sealed {
-    /// Join of every member's effect: read-only iff all members are.
-    type Effect: TypedPassEffect;
-
-    #[doc(hidden)]
-    fn run_all<'pm>(
-        &mut self,
-        token: <Self::Effect as TypedPassEffect>::ModuleToken<'pm, 'ctx, B>,
-        function: FunctionView<'ctx, B>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-        instrumentation: Option<&PassInstrumentationCallbacks>,
-    ) -> IrResult<PreservedAnalyses>;
-}
-
-macro_rules! impl_function_pass_list {
-    ($($member:ident . $kind:ident . $slot:tt),+) => {
-        impl<$($member),+> pass_list_sealed::Sealed for ($($member,)+) {}
-
-        impl<'ctx, B, $($member, $kind),+> FunctionPassList<'ctx, B, ($($kind,)+)>
-            for ($($member,)+)
-        where
-            B: ModuleBrand + 'ctx,
-            $($member: FunctionPipelineMember<'ctx, B, $kind>,)+
-            join_effects!($(<$member as FunctionPipelineMember<'ctx, B, $kind>>::MemberEffect),+):
-                $(ProvidesToken<
-                    <$member as FunctionPipelineMember<'ctx, B, $kind>>::MemberEffect,
-                > +)+ TypedPassEffect,
-        {
-            type Effect =
-                join_effects!(
-                    $(<$member as FunctionPipelineMember<'ctx, B, $kind>>::MemberEffect),+
-                );
-
-            fn run_all<'pm>(
-                &mut self,
-                token: <Self::Effect as TypedPassEffect>::ModuleToken<'pm, 'ctx, B>,
-                function: FunctionView<'ctx, B>,
-                fam: &mut FunctionAnalysisManager<'ctx, B>,
-                instrumentation: Option<&PassInstrumentationCallbacks>,
-            ) -> IrResult<PreservedAnalyses> {
-                let mut preserved = PreservedAnalyses::all();
-                $(
-                    let member_token = <Self::Effect as ProvidesToken<
-                        <$member as FunctionPipelineMember<'ctx, B, $kind>>::MemberEffect,
-                    >>::member_token(token);
-                    // Each member invalidates `fam` from its own result inside
-                    // `run_member` (see `run_one_typed_function_pass`), so the
-                    // next member's prefetch already sees the fresh cache.
-                    let pass_pa = FunctionPipelineMember::<'ctx, B, $kind>::run_member(
-                        &mut self.$slot,
-                        member_token,
-                        function,
-                        fam,
-                        instrumentation,
-                    )?;
-                    preserved.intersect(pass_pa);
-                )+
-                preserved.preserve_set::<AllAnalysesOnFunction>();
-                Ok(preserved)
-            }
-        }
-    };
-}
-
-impl_function_pass_list!(P0.K0.0);
-impl_function_pass_list!(P0.K0.0, P1.K1.1);
-impl_function_pass_list!(P0.K0.0, P1.K1.1, P2.K2.2);
-impl_function_pass_list!(P0.K0.0, P1.K1.1, P2.K2.2, P3.K3.3);
-impl_function_pass_list!(P0.K0.0, P1.K1.1, P2.K2.2, P3.K3.3, P4.K4.4);
-impl_function_pass_list!(P0.K0.0, P1.K1.1, P2.K2.2, P3.K3.3, P4.K4.4, P5.K5.5);
-impl_function_pass_list!(
-    P0.K0.0, P1.K1.1, P2.K2.2, P3.K3.3, P4.K4.4, P5.K5.5, P6.K6.6
-);
-impl_function_pass_list!(
-    P0.K0.0, P1.K1.1, P2.K2.2, P3.K3.3, P4.K4.4, P5.K5.5, P6.K6.6, P7.K7.7
-);
-
-/// Statically-composed function pipeline. Built with [`function_pipeline`];
-/// the read-only/transform effect and therefore `run`'s module-state
-/// signature are derived from the members (D8).
-pub struct FunctionPipeline<P> {
-    passes: P,
-    instrumentation: Option<PassInstrumentationCallbacks>,
-}
-
-/// Compose a typed function pipeline from a tuple of passes (or nested
-/// pipelines).
-pub fn function_pipeline<P>(passes: P) -> FunctionPipeline<P> {
-    FunctionPipeline {
-        passes,
-        instrumentation: None,
-    }
-}
-
-impl<P> FunctionPipeline<P> {
-    pub fn with_instrumentation(mut self, callbacks: PassInstrumentationCallbacks) -> Self {
-        self.instrumentation = Some(callbacks);
-        self
-    }
-
-    /// Run over one function. Takes a verified module; returns
-    /// `Module<Verified>` when the derived effect is read-only and
-    /// `Module<Unverified>` when any member is a transform. `Kinds` is the
-    /// inferred leaf/nested dispatch tuple for the members.
-    pub fn run<'ctx, B, F, Kinds>(
-        &mut self,
-        module: Module<'ctx, B, Verified>,
-        function: F,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<
-        <<P as FunctionPassList<'ctx, B, Kinds>>::Effect as FunctionPipelineExecution>::OutModule<
-            'ctx,
-            B,
-        >,
-    >
-    where
-        B: ModuleBrand + 'ctx,
-        P: FunctionPassList<'ctx, B, Kinds>,
-        <P as FunctionPassList<'ctx, B, Kinds>>::Effect: FunctionPipelineExecution,
-        F: Into<FunctionView<'ctx, B>>,
-    {
-        <<P as FunctionPassList<'ctx, B, Kinds>>::Effect as FunctionPipelineExecution>::execute(
-            &mut self.passes,
-            module,
-            function.into(),
-            fam,
-            self.instrumentation.as_ref(),
-        )
-    }
-}
-
-/// Nested-pipeline member: a whole pipeline runs as one member of an outer
-/// list, so the arity-8 tuple cap never binds. A pipeline threads the analysis
-/// manager to its members explicitly (unlike a leaf pass, whose `Requires` are
-/// prefetched into the typed context), so nesting goes through
-/// [`FunctionPipelineMember`] directly rather than the leaf [`TypedFunctionPass`]
-/// blanket — the two never overlap because [`FunctionPipeline`] does not
-/// implement [`TypedFunctionPass`] (its `run` needs the manager the typed
-/// context deliberately withholds).
-impl<'ctx, B, P, Kinds> FunctionPipelineMember<'ctx, B, (NestedMember, Kinds)>
-    for FunctionPipeline<P>
-where
-    B: ModuleBrand + 'ctx,
-    P: FunctionPassList<'ctx, B, Kinds>,
-{
-    type MemberEffect = <P as FunctionPassList<'ctx, B, Kinds>>::Effect;
-
-    fn run_member<'pm>(
-        &mut self,
-        token: <Self::MemberEffect as TypedPassEffect>::ModuleToken<'pm, 'ctx, B>,
-        function: FunctionView<'ctx, B>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-        instrumentation: Option<&PassInstrumentationCallbacks>,
-    ) -> IrResult<PreservedAnalyses> {
-        let instrumentation = self.instrumentation.as_ref().or(instrumentation);
-        self.passes.run_all(token, function, fam, instrumentation)
-    }
-}
-
-/// Per-effect `run` dispatch: the read-only path threads the verified module
-/// through untouched; the transform path downgrades to unverified first.
-/// Implemented by the two effect markers only.
-pub trait FunctionPipelineExecution: TypedPassEffect {
-    type OutModule<'ctx, B: ModuleBrand + 'ctx>;
-
-    #[doc(hidden)]
-    fn execute<'ctx, B, P, Kinds>(
-        passes: &mut P,
-        module: Module<'ctx, B, Verified>,
-        function: FunctionView<'ctx, B>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-        instrumentation: Option<&PassInstrumentationCallbacks>,
-    ) -> IrResult<Self::OutModule<'ctx, B>>
-    where
-        B: ModuleBrand + 'ctx,
-        P: FunctionPassList<'ctx, B, Kinds, Effect = Self>;
-}
-
-impl FunctionPipelineExecution for PreservesVerification {
-    type OutModule<'ctx, B: ModuleBrand + 'ctx> = Module<'ctx, B, Verified>;
-
-    fn execute<'ctx, B, P, Kinds>(
-        passes: &mut P,
-        module: Module<'ctx, B, Verified>,
-        function: FunctionView<'ctx, B>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-        instrumentation: Option<&PassInstrumentationCallbacks>,
-    ) -> IrResult<Self::OutModule<'ctx, B>>
-    where
-        B: ModuleBrand + 'ctx,
-        P: FunctionPassList<'ctx, B, Kinds, Effect = Self>,
-    {
-        passes.run_all((), function, fam, instrumentation)?;
-        Ok(module)
-    }
-}
-
-impl FunctionPipelineExecution for MutatesIr {
-    type OutModule<'ctx, B: ModuleBrand + 'ctx> = Module<'ctx, B, Unverified>;
-
-    fn execute<'ctx, B, P, Kinds>(
-        passes: &mut P,
-        module: Module<'ctx, B, Verified>,
-        function: FunctionView<'ctx, B>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-        instrumentation: Option<&PassInstrumentationCallbacks>,
-    ) -> IrResult<Self::OutModule<'ctx, B>>
-    where
-        B: ModuleBrand + 'ctx,
-        P: FunctionPassList<'ctx, B, Kinds, Effect = Self>,
-    {
-        let module = module.unverify();
-        passes.run_all(&module, function, fam, instrumentation)?;
-        Ok(module)
-    }
-}
-
-mod typed_module_pass_sealed {
-    /// Closes [`super::TypedModulePass`] to this crate. Unlike
-    /// [`super::TypedFunctionPass`] (implemented by pass authors in other
-    /// crates, e.g. test fixtures), no in-tree module pass is implemented
-    /// outside this crate today, so sealing costs nothing and buys a
-    /// compiler-enforced version of the coherence guard below: sealing is
-    /// what lets [`super::ModulePass`]/[`super::ReadOnlyModulePass`] carry an
-    /// unconstrained blanket for `P: TypedModulePass` without conflicting
-    /// with [`super::ModuleToFunctionPassAdaptor`]'s pre-existing manual
-    /// impls of those same traits, both of which are generic over the open
-    /// `ModuleBrand` bound -- without sealing, rustc cannot prove
-    /// `ModuleToFunctionPassAdaptor` will never implement `TypedModulePass`
-    /// in some future impl elsewhere in this crate, so the blanket and the
-    /// manual impl would be flagged as overlapping (E0119) even though no
-    /// such impl exists. [`super::ModuleToFunctionPassAdaptor`] must never
-    /// implement [`Sealed`] (that would reopen the same conflict).
-    pub trait Sealed {}
-}
-
-/// A typed pass over one module. The typed counterpart of
-/// [`ModulePass`]/[`ReadOnlyModulePass`]: effect, analysis requirements, and
-/// the preservation lower bound are part of the type (D1, D8). Mirrors
-/// [`TypedFunctionPass`] at module scope. Sealed (see the private
-/// `typed_module_pass_sealed` module) so the erased-manager blanket impls below
-/// can coexist with [`ModuleToFunctionPassAdaptor`]'s manual impls.
-pub trait TypedModulePass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>>:
-    typed_module_pass_sealed::Sealed
-{
-    /// Read-only or transform; pipelines derive their effect by joining these.
-    type Effect: TypedPassEffect;
-    /// Analyses prefetched before `run`; the context accessor is infallible.
-    type Requires: ModuleAnalysisList<'ctx, B>;
-    /// Static preservation lower bound unioned into the runtime result.
-    type MinPreserves: PreservationBound;
-    /// Instrumentation-facing name.
-    const NAME: &'static str;
-
-    fn run(
-        &mut self,
-        cx: &mut TypedModulePassContext<'_, '_, '_, 'ctx, B, Self::Requires, Self::Effect>,
-    ) -> IrResult<PreservedAnalyses>;
-
-    fn is_required(&self) -> bool {
-        false
-    }
-}
-
-/// Instrumentation gate + prefetch + collect + run + MinPreserves union for a
-/// single typed module pass, mirroring one iteration of the erased managers'
-/// loop (`ModulePassManager::run` above) minus invalidation. The prefetched
-/// results borrow `mam` only for the pass's `run` scope, and `fam` is
-/// reborrowed at that same scope, so both managers are free again once `run`
-/// returns -- the module `token` is `Copy` and coerces down to that same
-/// scope, exactly like [`run_one_typed_function_pass`].
-///
-/// Unlike [`run_one_typed_function_pass`], this runner does *not* invalidate
-/// the analysis managers itself: invalidation is owned solely by the
-/// [`ModulePassList::run_all`] loop, so that leaf passes, [`ForEachFunction`]
-/// (which runs a function pipeline and bypasses this runner entirely), and
-/// nested [`ModulePipeline`] members are all invalidated the same way, from
-/// the same place. The function level has no such bypassing member -- every
-/// function-pipeline member routes through `run_one_typed_function_pass` --
-/// so invalidation there is owned by the runner instead. Callers must still
-/// invalidate with the returned (MinPreserves-unioned) `pass_pa`.
-fn run_one_typed_module_pass<'pm, 'ctx, B, P>(
-    pass: &mut P,
-    token: <P::Effect as TypedPassEffect>::ModuleToken<'pm, 'ctx, B>,
-    module: ModuleView<'ctx, B>,
-    mam: &mut ModuleAnalysisManager<'ctx, B>,
-    fam: &mut FunctionAnalysisManager<'ctx, B>,
-    instrumentation: Option<&PassInstrumentationCallbacks>,
-) -> IrResult<PreservedAnalyses>
-where
-    B: ModuleBrand + 'ctx,
-    P: TypedModulePass<'ctx, B>,
-{
-    let should_run = instrumentation.is_none_or(|callbacks| {
-        callbacks.run_before_pass(P::NAME, pass.is_required()) || pass.is_required()
-    });
-    if !should_run {
-        return Ok(PreservedAnalyses::all());
-    }
-    P::Requires::prefetch(mam, module)?;
-    let mut pass_pa = {
-        // The results borrow `*mam` only for this block, and `&mut *fam`
-        // reborrows `fam` for that same short scope; the module `token`
-        // keeps its own longer `'pm` lifetime. Both managers are free again
-        // for `invalidate`/`invalidate_module` below.
-        let results = P::Requires::collect(&*mam, module)?;
-        let mut cx = TypedModulePassContext::new(module, token, results, &mut *fam);
-        pass.run(&mut cx)?
-    };
-    P::MinPreserves::apply(&mut pass_pa);
-    if let Some(callbacks) = instrumentation {
-        callbacks.run_after_pass(P::NAME, &pass_pa);
-    }
-    Ok(pass_pa)
-}
-
-/// One member of a typed module pipeline: either a [`TypedModulePass`] (via
-/// the [`LeafMember`] impl), a nested [`ModulePipeline`] (via the
-/// [`NestedMember`] impl), or a [`ForEachFunction`] adaptor. `Kind` is always
-/// inferred from the member type; do not implement directly. Mirrors
-/// [`FunctionPipelineMember`] at module scope.
-pub trait ModulePipelineMember<'ctx, B: ModuleBrand + 'ctx, Kind> {
-    type MemberEffect: TypedPassEffect;
-
-    #[doc(hidden)]
-    fn run_member<'pm>(
-        &mut self,
-        token: <Self::MemberEffect as TypedPassEffect>::ModuleToken<'pm, 'ctx, B>,
-        module: ModuleView<'ctx, B>,
-        mam: &mut ModuleAnalysisManager<'ctx, B>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-        instrumentation: Option<&PassInstrumentationCallbacks>,
-    ) -> IrResult<PreservedAnalyses>;
-}
-
-impl<'ctx, B, T> ModulePipelineMember<'ctx, B, LeafMember> for T
-where
-    B: ModuleBrand + 'ctx,
-    T: TypedModulePass<'ctx, B>,
-{
-    type MemberEffect = T::Effect;
-
-    fn run_member<'pm>(
-        &mut self,
-        token: <T::Effect as TypedPassEffect>::ModuleToken<'pm, 'ctx, B>,
-        module: ModuleView<'ctx, B>,
-        mam: &mut ModuleAnalysisManager<'ctx, B>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-        instrumentation: Option<&PassInstrumentationCallbacks>,
-    ) -> IrResult<PreservedAnalyses> {
-        run_one_typed_module_pass(self, token, module, mam, fam, instrumentation)
-    }
-}
-
-/// Runs a typed function pipeline over every function definition in module
-/// order. Typed counterpart of [`ModuleToFunctionPassAdaptor`]
-/// (`createModuleToFunctionPassAdaptor`, IR/PassManager.h).
-pub struct ForEachFunction<P> {
-    pipeline: FunctionPipeline<P>,
-}
-
-/// Wrap a typed function pipeline so it can run as one member of a
-/// [`ModulePipeline`], visiting every function definition in module order.
-pub fn for_each_function<P>(pipeline: FunctionPipeline<P>) -> ForEachFunction<P> {
-    ForEachFunction { pipeline }
-}
-
-// The `Kind` slot is `(Kinds,)` -- a 1-tuple wrapping the inner
-// `FunctionPassList` dispatch tuple -- rather than `Kinds` directly. That
-// keeps this impl's `Kind` structurally distinct from the leaf `LeafMember`
-// impl and the nested `(NestedMember, Kinds)` impl below, so coherence sees
-// three non-overlapping shapes (`LeafMember`, `(Kinds,)`, `(NestedMember,
-// Kinds)`) instead of a bare `Kinds` that could unify with either.
-impl<'ctx, B, P, Kinds> ModulePipelineMember<'ctx, B, (Kinds,)> for ForEachFunction<P>
-where
-    B: ModuleBrand + 'ctx,
-    P: FunctionPassList<'ctx, B, Kinds>,
-{
-    type MemberEffect = <P as FunctionPassList<'ctx, B, Kinds>>::Effect;
-
-    fn run_member<'pm>(
-        &mut self,
-        token: <Self::MemberEffect as TypedPassEffect>::ModuleToken<'pm, 'ctx, B>,
-        module: ModuleView<'ctx, B>,
-        _mam: &mut ModuleAnalysisManager<'ctx, B>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-        instrumentation: Option<&PassInstrumentationCallbacks>,
-    ) -> IrResult<PreservedAnalyses> {
-        let mut preserved = PreservedAnalyses::all();
-        for function in module.iter_functions() {
-            if function.entry_block().is_none() {
-                continue;
-            }
-            let pa = self
-                .pipeline
-                .passes
-                .run_all(token, function, fam, instrumentation)?;
-            preserved.intersect(pa);
-        }
-        preserved.preserve_set::<AllAnalysesOnFunction>();
-        preserved.preserve::<FunctionAnalysisManagerModuleProxy>();
-        Ok(preserved)
-    }
-}
-
-mod module_pass_list_sealed {
-    pub trait Sealed {}
-}
-
-/// Tuple of module-pipeline members with a derived joint effect. Mirrors
-/// [`FunctionPassList`] at module scope: sealed, arities 1..=8, nest a
-/// [`ModulePipeline`] as a member for longer pipelines. `run_all` invalidates
-/// both the module and function analysis managers after each member
-/// (mirroring the dyn [`ModulePassManager::run`] above), then force-preserves
-/// [`AllAnalysesOnModule`].
-pub trait ModulePassList<'ctx, B: ModuleBrand + 'ctx, Kinds>:
-    module_pass_list_sealed::Sealed
-{
-    /// Join of every member's effect: read-only iff all members are.
-    type Effect: TypedPassEffect;
-
-    #[doc(hidden)]
-    fn run_all<'pm>(
-        &mut self,
-        token: <Self::Effect as TypedPassEffect>::ModuleToken<'pm, 'ctx, B>,
-        module: ModuleView<'ctx, B>,
-        mam: &mut ModuleAnalysisManager<'ctx, B>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-        instrumentation: Option<&PassInstrumentationCallbacks>,
-    ) -> IrResult<PreservedAnalyses>;
-}
-
-macro_rules! impl_module_pass_list {
-    ($($member:ident . $kind:ident . $slot:tt),+) => {
-        impl<$($member),+> module_pass_list_sealed::Sealed for ($($member,)+) {}
-
-        impl<'ctx, B, $($member, $kind),+> ModulePassList<'ctx, B, ($($kind,)+)>
-            for ($($member,)+)
-        where
-            B: ModuleBrand + 'ctx,
-            $($member: ModulePipelineMember<'ctx, B, $kind>,)+
-            join_effects!($(<$member as ModulePipelineMember<'ctx, B, $kind>>::MemberEffect),+):
-                $(ProvidesToken<
-                    <$member as ModulePipelineMember<'ctx, B, $kind>>::MemberEffect,
-                > +)+ TypedPassEffect,
-        {
-            type Effect =
-                join_effects!(
-                    $(<$member as ModulePipelineMember<'ctx, B, $kind>>::MemberEffect),+
-                );
-
-            fn run_all<'pm>(
-                &mut self,
-                token: <Self::Effect as TypedPassEffect>::ModuleToken<'pm, 'ctx, B>,
-                module: ModuleView<'ctx, B>,
-                mam: &mut ModuleAnalysisManager<'ctx, B>,
-                fam: &mut FunctionAnalysisManager<'ctx, B>,
-                instrumentation: Option<&PassInstrumentationCallbacks>,
-            ) -> IrResult<PreservedAnalyses> {
-                let mut preserved = PreservedAnalyses::all();
-                $(
-                    let member_token = <Self::Effect as ProvidesToken<
-                        <$member as ModulePipelineMember<'ctx, B, $kind>>::MemberEffect,
-                    >>::member_token(token);
-                    let pass_pa = ModulePipelineMember::<'ctx, B, $kind>::run_member(
-                        &mut self.$slot,
-                        member_token,
-                        module,
-                        mam,
-                        fam,
-                        instrumentation,
-                    )?;
-                    mam.invalidate(module, &pass_pa)?;
-                    fam.invalidate_module(module, &pass_pa)?;
-                    preserved.intersect(pass_pa);
-                )+
-                preserved.preserve_set::<AllAnalysesOnModule>();
-                Ok(preserved)
-            }
-        }
-    };
-}
-
-impl_module_pass_list!(P0.K0.0);
-impl_module_pass_list!(P0.K0.0, P1.K1.1);
-impl_module_pass_list!(P0.K0.0, P1.K1.1, P2.K2.2);
-impl_module_pass_list!(P0.K0.0, P1.K1.1, P2.K2.2, P3.K3.3);
-impl_module_pass_list!(P0.K0.0, P1.K1.1, P2.K2.2, P3.K3.3, P4.K4.4);
-impl_module_pass_list!(P0.K0.0, P1.K1.1, P2.K2.2, P3.K3.3, P4.K4.4, P5.K5.5);
-impl_module_pass_list!(
-    P0.K0.0, P1.K1.1, P2.K2.2, P3.K3.3, P4.K4.4, P5.K5.5, P6.K6.6
-);
-impl_module_pass_list!(
-    P0.K0.0, P1.K1.1, P2.K2.2, P3.K3.3, P4.K4.4, P5.K5.5, P6.K6.6, P7.K7.7
-);
-
-/// Statically-composed module pipeline. Built with [`module_pipeline`]; the
-/// read-only/transform effect and therefore `run`'s module-state signature
-/// are derived from the members (D8). Mirrors [`FunctionPipeline`] at module
-/// scope.
-pub struct ModulePipeline<P> {
-    passes: P,
-    instrumentation: Option<PassInstrumentationCallbacks>,
-}
-
-/// Compose a typed module pipeline from a tuple of passes (or nested
-/// pipelines / [`ForEachFunction`] adaptors).
-pub fn module_pipeline<P>(passes: P) -> ModulePipeline<P> {
-    ModulePipeline {
-        passes,
-        instrumentation: None,
-    }
-}
-
-impl<P> ModulePipeline<P> {
-    pub fn with_instrumentation(mut self, callbacks: PassInstrumentationCallbacks) -> Self {
-        self.instrumentation = Some(callbacks);
-        self
-    }
-
-    /// Run over the whole module. Takes a verified module; returns
-    /// `Module<Verified>` when the derived effect is read-only and
-    /// `Module<Unverified>` when any member is a transform. `Kinds` is the
-    /// inferred leaf/nested/for-each dispatch tuple for the members.
-    pub fn run<'ctx, B, Kinds>(
-        &mut self,
-        module: Module<'ctx, B, Verified>,
-        mam: &mut ModuleAnalysisManager<'ctx, B>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<
-        <<P as ModulePassList<'ctx, B, Kinds>>::Effect as ModulePipelineExecution>::OutModule<
-            'ctx,
-            B,
-        >,
-    >
-    where
-        B: ModuleBrand + 'ctx,
-        P: ModulePassList<'ctx, B, Kinds>,
-        <P as ModulePassList<'ctx, B, Kinds>>::Effect: ModulePipelineExecution,
-    {
-        <<P as ModulePassList<'ctx, B, Kinds>>::Effect as ModulePipelineExecution>::execute(
-            &mut self.passes,
-            module,
-            mam,
-            fam,
-            self.instrumentation.as_ref(),
-        )
-    }
-}
-
-/// Nested-pipeline member: a whole pipeline runs as one member of an outer
-/// list, so the arity-8 tuple cap never binds. Mirrors the
-/// [`FunctionPipelineMember`] nesting impl at module scope: a pipeline
-/// threads the analysis managers to its members explicitly, so nesting goes
-/// through [`ModulePipelineMember`] directly rather than the leaf
-/// [`TypedModulePass`] blanket -- the two never overlap because
-/// [`ModulePipeline`] does not implement [`TypedModulePass`].
-impl<'ctx, B, P, Kinds> ModulePipelineMember<'ctx, B, (NestedMember, Kinds)> for ModulePipeline<P>
-where
-    B: ModuleBrand + 'ctx,
-    P: ModulePassList<'ctx, B, Kinds>,
-{
-    type MemberEffect = <P as ModulePassList<'ctx, B, Kinds>>::Effect;
-
-    fn run_member<'pm>(
-        &mut self,
-        token: <Self::MemberEffect as TypedPassEffect>::ModuleToken<'pm, 'ctx, B>,
-        module: ModuleView<'ctx, B>,
-        mam: &mut ModuleAnalysisManager<'ctx, B>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-        instrumentation: Option<&PassInstrumentationCallbacks>,
-    ) -> IrResult<PreservedAnalyses> {
-        let instrumentation = self.instrumentation.as_ref().or(instrumentation);
-        self.passes
-            .run_all(token, module, mam, fam, instrumentation)
-    }
-}
-
-/// Per-effect `run` dispatch: the read-only path threads the verified module
-/// through untouched; the transform path downgrades to unverified first.
-/// Implemented by the two effect markers only. Mirrors
-/// [`FunctionPipelineExecution`] at module scope.
-pub trait ModulePipelineExecution: TypedPassEffect {
-    type OutModule<'ctx, B: ModuleBrand + 'ctx>;
-
-    #[doc(hidden)]
-    fn execute<'ctx, B, P, Kinds>(
-        passes: &mut P,
-        module: Module<'ctx, B, Verified>,
-        mam: &mut ModuleAnalysisManager<'ctx, B>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-        instrumentation: Option<&PassInstrumentationCallbacks>,
-    ) -> IrResult<Self::OutModule<'ctx, B>>
-    where
-        B: ModuleBrand + 'ctx,
-        P: ModulePassList<'ctx, B, Kinds, Effect = Self>;
-}
-
-impl ModulePipelineExecution for PreservesVerification {
-    type OutModule<'ctx, B: ModuleBrand + 'ctx> = Module<'ctx, B, Verified>;
-
-    fn execute<'ctx, B, P, Kinds>(
-        passes: &mut P,
-        module: Module<'ctx, B, Verified>,
-        mam: &mut ModuleAnalysisManager<'ctx, B>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-        instrumentation: Option<&PassInstrumentationCallbacks>,
-    ) -> IrResult<Self::OutModule<'ctx, B>>
-    where
-        B: ModuleBrand + 'ctx,
-        P: ModulePassList<'ctx, B, Kinds, Effect = Self>,
-    {
-        let view = module.as_view();
-        passes.run_all((), view, mam, fam, instrumentation)?;
-        Ok(module)
-    }
-}
-
-impl ModulePipelineExecution for MutatesIr {
-    type OutModule<'ctx, B: ModuleBrand + 'ctx> = Module<'ctx, B, Unverified>;
-
-    fn execute<'ctx, B, P, Kinds>(
-        passes: &mut P,
-        module: Module<'ctx, B, Verified>,
-        mam: &mut ModuleAnalysisManager<'ctx, B>,
-        fam: &mut FunctionAnalysisManager<'ctx, B>,
-        instrumentation: Option<&PassInstrumentationCallbacks>,
-    ) -> IrResult<Self::OutModule<'ctx, B>>
-    where
-        B: ModuleBrand + 'ctx,
-        P: ModulePassList<'ctx, B, Kinds, Effect = Self>,
-    {
-        let module = module.unverify();
-        let view = module.as_view();
-        passes.run_all(&module, view, mam, fam, instrumentation)?;
-        Ok(module)
-    }
-}
-
-/// Module-level mirror of the [`TypedFunctionPass`] blankets above: every
-/// transform-effect typed module pass is usable wherever the erased
-/// [`ModulePass`] is accepted.
-///
-/// Coherence guard: [`TypedModulePass`] is sealed (see
-/// `typed_module_pass_sealed`), which is what lets this blanket coexist with
-/// [`ModuleToFunctionPassAdaptor`]'s manual dyn impls even though both are
-/// generic over the open [`ModuleBrand`] bound. [`ModuleToFunctionPassAdaptor`]
-/// must never implement [`TypedModulePass`]; [`ReadOnly`] must never implement
-/// it either. Both would reopen the conflict sealing rules out.
-impl<'ctx, B, P> ModulePass<'ctx, B> for P
-where
-    B: ModuleBrand + 'ctx,
-    P: TypedModulePass<'ctx, B, Effect = MutatesIr>,
-{
-    fn run(&mut self, cx: &mut ModulePassContext<'_, 'ctx, B>) -> IrResult<PreservedAnalyses> {
-        let module = cx.module();
-        P::Requires::prefetch(cx.module_analysis_manager_mut(), module)?;
-        let mut pass_pa = {
-            let (token, mam, fam) = cx.module_and_analysis_managers_for_function_passes();
-            let results = P::Requires::collect(mam, module)?;
-            let mut typed = TypedModulePassContext::new(module, token, results, fam);
-            TypedModulePass::run(self, &mut typed)?
-        };
-        P::MinPreserves::apply(&mut pass_pa);
-        Ok(pass_pa)
-    }
-
-    fn is_required(&self) -> bool {
-        TypedModulePass::is_required(self)
-    }
-}
-
-impl<'ctx, B, P> ReadOnlyModulePass<'ctx, B> for P
-where
-    B: ModuleBrand + 'ctx,
-    P: TypedModulePass<'ctx, B, Effect = PreservesVerification>,
-{
-    fn run(
-        &mut self,
-        cx: &mut ReadOnlyModulePassContext<'_, 'ctx, B>,
-    ) -> IrResult<PreservedAnalyses> {
-        let module = cx.module();
-        P::Requires::prefetch(cx.module_analysis_manager_mut(), module)?;
-        let mut pass_pa = {
-            let (mam, fam) = cx.analysis_managers_for_function_passes();
-            let results = P::Requires::collect(mam, module)?;
-            let mut typed = TypedModulePassContext::new(module, (), results, fam);
-            TypedModulePass::run(self, &mut typed)?
-        };
-        P::MinPreserves::apply(&mut pass_pa);
-        Ok(pass_pa)
-    }
-
-    fn is_required(&self) -> bool {
-        TypedModulePass::is_required(self)
-    }
-}
-
-impl<'ctx, B, P> ModulePass<'ctx, B> for ReadOnly<P>
-where
-    B: ModuleBrand + 'ctx,
-    P: TypedModulePass<'ctx, B, Effect = PreservesVerification>,
-{
-    fn run(&mut self, cx: &mut ModulePassContext<'_, 'ctx, B>) -> IrResult<PreservedAnalyses> {
-        let module = cx.module();
-        P::Requires::prefetch(cx.module_analysis_manager_mut(), module)?;
-        let mut pass_pa = {
-            let (_token, mam, fam) = cx.module_and_analysis_managers_for_function_passes();
-            let results = P::Requires::collect(mam, module)?;
-            let mut typed = TypedModulePassContext::new(module, (), results, fam);
-            TypedModulePass::run(&mut self.0, &mut typed)?
-        };
-        P::MinPreserves::apply(&mut pass_pa);
-        Ok(pass_pa)
-    }
-
-    fn is_required(&self) -> bool {
-        TypedModulePass::is_required(&self.0)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    use crate::dominator_tree::DominatorTreeAnalysis;
-    use crate::{IRBuilder, IrError, Linkage, Type};
-
-    /// llvmkit-specific effect-join lock (no upstream analog: upstream pass
-    /// managers have no compile-time read-only/transform distinction at all).
-    #[test]
-    fn effect_join_is_a_lattice_join() {
-        fn assert_same<E, F>()
-        where
-            E: EffectJoin<F, Out = MutatesIr>,
-            F: TypedPassEffect,
-        {
-        }
-        fn assert_ro<E, F>()
-        where
-            E: EffectJoin<F, Out = PreservesVerification>,
-            F: TypedPassEffect,
-        {
-        }
-        assert_ro::<PreservesVerification, PreservesVerification>();
-        assert_same::<PreservesVerification, MutatesIr>();
-        assert_same::<MutatesIr, PreservesVerification>();
-        assert_same::<MutatesIr, MutatesIr>();
-    }
-
-    /// Read-only leaf [`TypedModulePass`]. Runs through
-    /// [`ModulePipelineMember`]'s [`LeafMember`] impl and
-    /// [`run_one_typed_module_pass`] -- the module-pipeline path that
-    /// `ForEachFunction`-wrapped tests in `tests/typed_pipeline_basic.rs`
-    /// never reach, since that adaptor dispatches through its own
-    /// `ModulePipelineMember<(Kinds,)>` impl instead. [`TypedModulePass`] is
-    /// sealed to this crate (`typed_module_pass_sealed`), so this pass must
-    /// live in an in-crate test module rather than the `tests/` integration
-    /// binary.
-    struct LogModulePass {
-        ran: Rc<RefCell<bool>>,
-        saw_entry_reachable: Rc<RefCell<Option<bool>>>,
-    }
-
-    // `Sealed` is a crate-private trait (`typed_module_pass_sealed`), so this
-    // impl can only be written from inside `llvmkit-ir` itself -- exactly why
-    // this test lives here rather than in the `tests/` integration binary.
-    impl typed_module_pass_sealed::Sealed for LogModulePass {}
-
-    impl<'ctx, B: ModuleBrand + 'ctx> TypedModulePass<'ctx, B> for LogModulePass {
-        type Effect = PreservesVerification;
-        type Requires = ();
-        type MinPreserves = ();
-        const NAME: &'static str = "log-module";
-
-        fn run(
-            &mut self,
-            cx: &mut TypedModulePassContext<'_, '_, '_, 'ctx, B, (), PreservesVerification>,
-        ) -> IrResult<PreservedAnalyses> {
-            *self.ran.borrow_mut() = true;
-            // Exercise `TypedModulePassContext::module()`.
-            let module = cx.module();
-            // Exercise the fallible per-function analysis accessor: module
-            // passes have no static `Requires` naming which functions they
-            // visit, so this stays fallible by design (unlike the infallible
-            // module-level `analysis::<A, I>()`, covered structurally by
-            // `requires_prefetch_makes_analysis_access_infallible` in
-            // `tests/typed_pipeline_basic.rs` via the same generic selector
-            // machinery).
-            let mut reachable = None;
-            for function in module.iter_functions() {
-                if let Some(entry) = function.entry_block() {
-                    let dt = cx.function_analysis::<DominatorTreeAnalysis>(function)?;
-                    reachable = Some(dt.is_reachable_from_entry(entry));
-                }
-            }
-            *self.saw_entry_reachable.borrow_mut() = reachable;
-            Ok(PreservedAnalyses::all())
-        }
-    }
-
-    /// Mirrors `unittests/IR/PassManagerTest.cpp::TEST(PassManagerTest, Basic)`'s
-    /// module-pass sequencing, but through the LEAF `TypedModulePass` path
-    /// instead of a `ForEachFunction`-wrapped function pipeline: this is the
-    /// path `ModulePipelineMember`'s `LeafMember` impl and
-    /// `run_one_typed_module_pass` take, which no existing
-    /// `typed_pipeline_basic.rs` test reaches (they all wrap
-    /// `for_each_function(...)`, which routes through `ForEachFunction`'s own
-    /// `ModulePipelineMember<(Kinds,)>` impl instead and never touches the
-    /// leaf runner).
-    #[test]
-    fn read_only_module_pipeline_runs_leaf_pass_and_stays_verified() -> Result<(), IrError> {
-        Module::with_new("typed-module-leaf-ro", |m| {
-            let i32_ty = m.i32_type();
-            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
-            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
-            let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-            b.build_ret(i32_ty.const_int(1_u32))?;
-            let verified = m.verify()?;
-
-            let mut mam = ModuleAnalysisManager::new();
-            let mut fam = FunctionAnalysisManager::new();
-            // `function_analysis` is deliberately fallible (no static
-            // `Requires` names which functions a module pass will visit), so
-            // -- like every other caller of this accessor in the crate,
-            // e.g. `tests/analysis_basic.rs` -- the analysis must be
-            // registered manually before the pipeline runs.
-            fam.register_pass(DominatorTreeAnalysis);
-            let ran = Rc::new(RefCell::new(false));
-            let reachable = Rc::new(RefCell::new(None));
-            let mut pipe = module_pipeline((LogModulePass {
-                ran: ran.clone(),
-                saw_entry_reachable: reachable.clone(),
-            },));
-            // The whole point: a module pipeline of one read-only leaf pass
-            // type-checks its output as Verified -- the module-level mirror
-            // of `read_only_pipeline_returns_verified_module` in
-            // `tests/typed_pipeline_basic.rs`, proving
-            // `run_one_typed_module_pass` returns through the
-            // `PreservesVerification` module token rather than downgrading.
-            let _still_verified: Module<'_, _, Verified> =
-                pipe.run(verified, &mut mam, &mut fam)?;
-            assert!(*ran.borrow(), "leaf pass must have run");
-            assert_eq!(*reachable.borrow(), Some(true));
-            Ok(())
-        })
-    }
+    let pa = report.into_pa();
+    mam.invalidate(view, &pa)?;
+    fam.invalidate_module(view, &pa)?;
+    Ok(out)
 }

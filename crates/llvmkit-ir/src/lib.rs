@@ -231,20 +231,12 @@ pub use pass_access::{
     PipelineVerdict, ReshapeCfg, RewriteModule, StaysVerified, VerdictFold,
 };
 pub use pass_context::{
-    BasicBlockView, FnCx, FnPatch, FnReport, FnReshape, FunctionBody, FunctionPassContext,
-    FunctionView, ModCx, ModReport, ModRewrite, ModuleFunctionViews, ModulePassContext,
-    ReadOnlyFunctionPassContext, ReadOnlyModulePassContext, TypedFunctionPassContext,
-    TypedModulePassContext,
+    BasicBlockView, FnCx, FnPatch, FnReport, FnReshape, FunctionBody, FunctionView, ModCx,
+    ModReport, ModRewrite, ModuleFunctionViews,
 };
 pub use pass_instrumentation::{PassInstrumentationAnalysis, PassInstrumentationCallbacks};
 pub use pass_manager::{
-    EffectFold, EffectJoin, ForEachFunction, FunctionPass, FunctionPassList, FunctionPassManager,
-    FunctionPipeline, FunctionPipelineExecution, FunctionPipelineMember, JoinsAll, ModulePass,
-    ModulePassEffect, ModulePassList, ModulePassManager, ModulePipeline, ModulePipelineExecution,
-    ModulePipelineMember, ModuleToFunctionPassAdaptor, MutatesIr, PassPipelineInfo,
-    PreservesVerification, ProvidesToken, ReadOnly, ReadOnlyFunctionPass, ReadOnlyModulePass,
-    TypedFunctionPass, TypedModulePass, TypedPassEffect, for_each_function, function_pipeline,
-    module_pipeline,
+    FunctionPass, ModulePass, PassExecution, run_function_pass, run_module_pass,
 };
 pub use pass_pipeline::{
     BDCE, CLEANUP_LIFT, CLEANUP_MIN, CLEANUP_O1_ISH, DCE, DEFAULT_O0, DEFAULT_O1, EARLY_CSE,

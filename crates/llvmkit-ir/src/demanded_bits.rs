@@ -5,8 +5,8 @@
 //! currently modelled by llvmkit.
 
 use super::analysis::{
-    AllAnalysesOnFunction, CFGAnalyses, FunctionAnalysis, FunctionAnalysisInvalidator,
-    FunctionAnalysisManager, FunctionAnalysisResult, PreservedAnalyses,
+    AllAnalysesOnFunction, FunctionAnalysis, FunctionAnalysisInvalidator, FunctionAnalysisManager,
+    FunctionAnalysisResult, PreservedAnalyses,
 };
 use super::constant::ConstantData;
 use super::constants::ConstantIntValue;
@@ -15,8 +15,9 @@ use super::instr_types::{BinaryOpData, CallInstData, CastOpData, CastOpcode, Inv
 use super::instruction::{Instruction, InstructionData, InstructionKindData, state};
 use super::int_width::IntDyn;
 use super::intrinsics::{IntrinsicSemantic, semantic_for_callee};
-use super::module::{ModuleBrand, ModuleRef};
-use super::pass_context::{FunctionPassContext, FunctionView};
+use super::module::{Brand, ModuleBrand, ModuleRef};
+use super::pass_access::PatchBody;
+use super::pass_context::{FnCx, FnPatch, FnReport, FunctionView};
 use super::pass_manager::FunctionPass;
 use super::r#type::{Type, TypeKind};
 use super::value::{Value, ValueId, ValueKindData, ValueUse};
@@ -702,23 +703,28 @@ impl DemandedBits {
 }
 
 impl<'ctx> FunctionPass<'ctx> for SimplifyDemandedBitsPass {
-    fn run(&mut self, cx: &mut FunctionPassContext<'_, 'ctx>) -> IrResult<PreservedAnalyses> {
-        let mut changed = false;
-        loop {
-            let iteration_changed = simplify_demanded_bits_iteration(cx)?;
-            if !iteration_changed {
-                break;
-            }
-            changed = true;
-        }
+    // Instruction-level rewrites only (RAUW + erase, operand shrinking, poison
+    // flag drops); the CFG is never touched, so the `PatchBody` floor's
+    // "CFG analyses preserved" is correct.
+    type Access = PatchBody;
+    type Requires = (DemandedBitsAnalysis,);
+    const NAME: &'static str = "simplify-demanded-bits";
 
-        if changed {
-            let mut preserved = PreservedAnalyses::none();
-            preserved.preserve_set::<CFGAnalyses>();
-            Ok(preserved)
-        } else {
-            Ok(PreservedAnalyses::all())
-        }
+    fn run(
+        &mut self,
+        cx: FnCx<'_, '_, 'ctx, Brand<'ctx>, PatchBody, (DemandedBitsAnalysis,)>,
+    ) -> IrResult<FnReport> {
+        // The transform recomputes demanded bits from the *current* IR on every
+        // iteration (each mutation invalidates them), so — unlike `DcePass` and
+        // `InstSimplifyPass` — a faithful read-only "will it change?" pre-scan
+        // would have to replay the whole worklist plus every in-place rewrite.
+        // Instead it always enters the mutator and reports the CFG-preserved
+        // floor. On a no-op run this over-invalidates the non-CFG analyses
+        // relative to an ideal `all()` — a safe under-approximation that leaves
+        // the printed IR byte-identical (no test observes the difference).
+        let patch = cx.mutate();
+        while simplify_demanded_bits_iteration(&patch)? {}
+        Ok(patch.done())
     }
 }
 
@@ -913,16 +919,16 @@ fn operand_value<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 fn simplify_demanded_bits_iteration<'ctx>(
-    cx: &mut FunctionPassContext<'_, 'ctx>,
+    patch: &FnPatch<'_, '_, 'ctx, Brand<'ctx>, (DemandedBitsAnalysis,)>,
 ) -> IrResult<bool> {
-    let data_layout = cx.module().data_layout().clone();
+    let data_layout = patch.function().module().data_layout().clone();
     let mut demanded = DemandedBits::new(data_layout.clone());
-    demanded.perform_analysis(cx.function())?;
+    demanded.perform_analysis(patch.function())?;
     let query = ValueTrackingQuery::new(&data_layout);
-    let module_token = cx.module_mut();
+    let module_token = patch.module_mut();
     let mut dead_to_erase = Vec::new();
 
-    for block in cx.function_mut().basic_blocks() {
+    for block in patch.function_mut().basic_blocks() {
         let instruction_ids = block.instruction_ids();
         for id in instruction_ids {
             let inst = Instruction::<state::Attached>::from_parts(id, module_token.module_ref());

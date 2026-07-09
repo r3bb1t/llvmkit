@@ -4,12 +4,10 @@
 
 use llvmkit_ir::{
     BDCE, CLEANUP_LIFT, CLEANUP_MIN, CLEANUP_O1_ISH, DCE, DEFAULT_O0, DEFAULT_O1, EARLY_CSE,
-    FunctionPassManager, FunctionPassScope, FunctionPipelineStep, GVN_LITE, HasOptimizationLevel,
-    INSTCOMBINE, INSTSIMPLIFY, IrError, IrResult, ModulePassManager, ModulePassScope,
-    ModulePipelineStep, NoOptimizationLevel, OptLevelO0, OptLevelO1, OptLevelOs, OptimizationLevel,
-    OptimizationLevelMarker, PassName, PassPipelineInfo, PassPipelineRecipe, PassPipelineTextName,
-    PreservedAnalyses, PreservesVerification, ReadOnlyFunctionPass, ReadOnlyFunctionPassContext,
-    ReadOnlyModulePass, ReadOnlyModulePassContext, SCCP, SIMPLIFYCFG, cleanup_lift_pipeline,
+    FunctionPassScope, FunctionPipelineStep, GVN_LITE, HasOptimizationLevel, INSTCOMBINE,
+    INSTSIMPLIFY, IrError, IrResult, ModulePassScope, ModulePipelineStep, NoOptimizationLevel,
+    OptLevelO0, OptLevelO1, OptLevelOs, OptimizationLevel, OptimizationLevelMarker, PassName,
+    PassPipelineRecipe, PassPipelineTextName, SCCP, SIMPLIFYCFG, cleanup_lift_pipeline,
     cleanup_min_pipeline, cleanup_o1_ish_pipeline, default_o0_pipeline, default_o1_pipeline,
     default_pipeline, parse_pass_pipeline_text,
 };
@@ -162,78 +160,6 @@ fn pass_pipeline_parser_rejects_invalid_or_empty_pipelines() {
         Err(IrError::InvalidPassPipelineName { name }) => assert_eq!(name, ""),
         other => panic!("expected InvalidPassPipelineName for empty nested name, got {other:?}"),
     }
-}
-
-struct FnReportPass;
-
-impl<'ctx> ReadOnlyFunctionPass<'ctx> for FnReportPass {
-    fn run(
-        &mut self,
-        _cx: &mut ReadOnlyFunctionPassContext<'_, 'ctx>,
-    ) -> IrResult<PreservedAnalyses> {
-        Ok(PreservedAnalyses::all())
-    }
-}
-
-struct ModuleReportPass;
-
-impl<'ctx> ReadOnlyModulePass<'ctx> for ModuleReportPass {
-    fn run(
-        &mut self,
-        _cx: &mut ReadOnlyModulePassContext<'_, 'ctx>,
-    ) -> IrResult<PreservedAnalyses> {
-        Ok(PreservedAnalyses::all())
-    }
-}
-
-/// `llvmkit-specific subset`, anchored on
-/// `llvm/include/llvm/IR/PassManager.h::PassInfoMixin::printPipeline` and
-/// `PassManager::printPipeline`: explicitly named managers render stored names.
-#[test]
-fn pass_manager_named_pipeline_text_uses_scoped_names() -> IrResult<()> {
-    let mut fpm = FunctionPassManager::<_, PreservesVerification>::new_read_only();
-    fpm.add_named_pass(
-        PassName::<FunctionPassScope>::try_new("fn-report")?,
-        FnReportPass,
-    );
-    assert_eq!(fpm.len(), 1);
-    assert!(!fpm.is_empty());
-    assert_eq!(fpm.pipeline_text(), "fn-report");
-
-    let mut mpm = ModulePassManager::<_, PreservesVerification>::new_read_only();
-    mpm.add_named_pass(
-        PassName::<ModulePassScope>::try_new("module-report")?,
-        ModuleReportPass,
-    );
-    assert_eq!(mpm.len(), 1);
-    assert!(!mpm.is_empty());
-    assert_eq!(mpm.pipeline_text(), "module-report");
-    Ok(())
-}
-
-struct StaticFnPass;
-
-impl<'ctx> ReadOnlyFunctionPass<'ctx> for StaticFnPass {
-    fn run(
-        &mut self,
-        _cx: &mut ReadOnlyFunctionPassContext<'_, 'ctx>,
-    ) -> IrResult<PreservedAnalyses> {
-        Ok(PreservedAnalyses::all())
-    }
-}
-
-impl PassPipelineInfo for StaticFnPass {
-    type Scope = FunctionPassScope;
-    const PIPELINE_NAME: PassName<Self::Scope> = INSTSIMPLIFY;
-}
-
-/// `llvmkit-specific`: `PassPipelineInfo` carries a scoped typed name, so
-/// future in-tree pass structs cannot advertise the wrong pass-manager layer.
-#[test]
-fn pass_manager_pipeline_info_uses_scoped_constants() {
-    let mut fpm = FunctionPassManager::<_, PreservesVerification>::new_read_only();
-    fpm.add_pipeline_pass(StaticFnPass);
-    assert_eq!(fpm.pipeline_text(), "instsimplify");
 }
 
 fn assert_cleanup_recipe(

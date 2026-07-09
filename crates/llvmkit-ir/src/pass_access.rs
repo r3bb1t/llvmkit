@@ -122,8 +122,8 @@ pub trait FnAccess: access_sealed::Sealed + 'static {
     /// The module capability this rung's context holds. `()` for read-only
     /// ([`Inspect`]) — no unverify needed, the module stays `Verified`;
     /// `&Module<Unverified>` for the mutating rungs — the interior-mutability
-    /// mutation token. Mirrors the existing
-    /// [`crate::pass_manager::TypedPassEffect::ModuleToken`].
+    /// mutation token that [`crate::pass_manager::run_function_pass`] builds from
+    /// `module.unverify()`.
     type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>: Copy
     where
         'ctx: 'pm;
@@ -142,9 +142,9 @@ pub trait ModAccess: access_sealed::Sealed + 'static {
     /// Type-level contribution to a pipeline's verified/unverified verdict.
     type Verdict: PipelineVerdict;
     /// The module capability this rung's context holds. `()` for read-only
-    /// ([`Inspect`]); `&Module<Unverified>` for [`RewriteModule`]. Mirrors the
-    /// existing [`crate::pass_manager::TypedPassEffect::ModuleToken`]; consumed
-    /// by Task 2b's module-level context.
+    /// ([`Inspect`]); `&Module<Unverified>` for [`RewriteModule`], the mutation
+    /// token [`crate::pass_manager::run_module_pass`] builds from
+    /// `module.unverify()` and hands to [`crate::pass_context::ModCx`].
     type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>: Copy
     where
         'ctx: 'pm;

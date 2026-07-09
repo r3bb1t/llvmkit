@@ -6,61 +6,74 @@
 //! can prove the replacement without materialising new IR.
 
 use super::IrResult;
-use super::analysis::{CFGAnalyses, PreserveSet, PreservedAnalyses};
 use super::constant_folding::constant_fold_instruction;
+use super::data_layout::DataLayout;
 use super::instruction::{Instruction, state};
 use super::module::ModuleBrand;
-use super::pass_context::TypedFunctionPassContext;
-use super::pass_manager::{MutatesIr, PassPipelineInfo, TypedFunctionPass};
-use super::pass_pipeline::{FunctionPassScope, INSTSIMPLIFY, PassName};
+use super::pass_access::PatchBody;
+use super::pass_context::{FnCx, FnPatch, FnReport, FunctionView};
+use super::pass_manager::FunctionPass;
+use super::pass_pipeline::INSTSIMPLIFY;
 
 /// Function transform that folds instructions to constants already expressible
 /// in the existing module, then erases the original instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct InstSimplifyPass;
 
-impl PassPipelineInfo for InstSimplifyPass {
-    type Scope = FunctionPassScope;
-
-    const PIPELINE_NAME: PassName<Self::Scope> = INSTSIMPLIFY;
-}
-
-impl<'ctx, B: ModuleBrand + 'ctx> TypedFunctionPass<'ctx, B> for InstSimplifyPass {
-    type Effect = MutatesIr;
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InstSimplifyPass {
+    // Folding replaces uses and erases the folded instruction in place; the CFG
+    // is untouched, so the `PatchBody` floor is exactly right.
+    type Access = PatchBody;
     type Requires = ();
-    // InstSimplify never touches the CFG; declaring it makes under-reporting
-    // impossible and lets the returned PA drop the manual preserve_set (D8).
-    type MinPreserves = (PreserveSet<CFGAnalyses>,);
     const NAME: &'static str = INSTSIMPLIFY.as_str();
 
-    fn run(
-        &mut self,
-        cx: &mut TypedFunctionPassContext<'_, '_, 'ctx, B, (), MutatesIr>,
-    ) -> IrResult<PreservedAnalyses> {
-        let mut changed = false;
+    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport> {
+        // As in `DcePass`: a run that folds nothing reports everything preserved,
+        // a run that folds anything reports the CFG-preserved floor. Since the
+        // report can only be downgraded before `mutate()`, a read-only pre-scan
+        // decides the no-op case first. This nets to the same preservation (and
+        // the same folded/erased instructions) as the retired path.
+        let data_layout = cx.module().data_layout().clone();
+        if !has_foldable_instruction(cx.function(), &data_layout)? {
+            return Ok(cx.done());
+        }
+        let patch = cx.mutate();
         loop {
-            let iteration_changed = inst_simplify_iteration(cx)?;
+            let iteration_changed = inst_simplify_iteration(&patch)?;
             if !iteration_changed {
                 break;
             }
-            changed = true;
         }
-
-        if changed {
-            Ok(PreservedAnalyses::none())
-        } else {
-            Ok(PreservedAnalyses::all())
-        }
+        Ok(patch.done())
     }
 }
 
-fn inst_simplify_iteration<'ctx, B: ModuleBrand + 'ctx>(
-    cx: &mut TypedFunctionPassContext<'_, '_, 'ctx, B, (), MutatesIr>,
+/// Read-only pre-scan: is there a use-having instruction that folds to a
+/// constant? Mirrors the fold gate in [`inst_simplify_iteration`].
+fn has_foldable_instruction<'ctx, B: ModuleBrand + 'ctx>(
+    function: FunctionView<'ctx, B>,
+    data_layout: &DataLayout,
 ) -> IrResult<bool> {
-    let data_layout = cx.module().data_layout().clone();
-    let module_token = cx.module_mut();
+    for block in function.as_function().basic_blocks() {
+        for view in block.instructions() {
+            if !view.as_value().has_uses() {
+                continue;
+            }
+            if constant_fold_instruction(&view, data_layout, None)?.is_some() {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
 
-    for block in cx.function_mut().basic_blocks() {
+fn inst_simplify_iteration<'ctx, B: ModuleBrand + 'ctx>(
+    patch: &FnPatch<'_, '_, 'ctx, B, ()>,
+) -> IrResult<bool> {
+    let data_layout = patch.function().module().data_layout().clone();
+    let module_token = patch.module_mut();
+
+    for block in patch.function_mut().basic_blocks() {
         let instruction_ids = block.instruction_ids();
         for id in instruction_ids {
             let inst = Instruction::<state::Attached, B>::from_parts(id, module_token.module_ref());

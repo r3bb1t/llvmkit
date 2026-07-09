@@ -70,21 +70,6 @@ impl PassInstrumentationCallbacks {
             .push(Box::new(callback));
     }
 
-    pub(crate) fn run_before_pass(&self, name: &str, required: bool) -> bool {
-        let mut callbacks = self.storage.borrow_mut();
-        callbacks
-            .before_pass
-            .iter_mut()
-            .all(|callback| callback(name, required))
-    }
-
-    pub(crate) fn run_after_pass(&self, name: &str, pa: &PreservedAnalyses) {
-        let mut callbacks = self.storage.borrow_mut();
-        for callback in &mut callbacks.after_pass {
-            callback(name, pa);
-        }
-    }
-
     pub(crate) fn run_before_analysis(&self, name: &str) {
         let mut callbacks = self.storage.borrow_mut();
         for callback in &mut callbacks.before_analysis {
