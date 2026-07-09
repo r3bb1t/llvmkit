@@ -7,18 +7,23 @@
 use core::marker::PhantomData;
 
 use super::BasicBlock;
+use super::IrError;
 use super::IrResult;
 use super::analysis::{
     AnalysisSelector, FunctionAnalysis, FunctionAnalysisList, FunctionAnalysisManager,
     ModuleAnalysis, ModuleAnalysisList, ModuleAnalysisManager, ModuleAnalysisSelector,
+    PreservedAnalyses,
 };
-use super::block_state::Terminated;
+use super::block_state::{Terminated, Unterminated};
 use super::function::FunctionValue;
+use super::instruction::{Instruction, InstructionView, state};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{
     Brand, Invariant, Module, ModuleBrand, ModuleRef, ModuleView, Unverified, Verified,
 };
+use super::pass_access::{FnAccess, MutatingFn, PatchBody, ReshapeCfg};
 use super::pass_manager::{MutatesIr, TypedPassEffect};
+use super::value::IsValue;
 
 /// Read-only view of a basic block under its owning module brand.
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -738,5 +743,658 @@ where
     #[inline]
     pub fn module_mut(&self) -> &'pm Module<'ctx, B, Unverified> {
         self.token
+    }
+}
+
+// ==========================================================================
+// Pass API v2 — function report, entry context, and mutators
+// ==========================================================================
+
+/// The value a function pass returns. Wraps the driver-derived
+/// [`PreservedAnalyses`]. Its constructors are `pub(crate)`: an external author
+/// can *name* the type (it appears in a pass's `run` return) but can only
+/// *obtain* one from an [`FnCx`] or a mutator, never fabricate it. That is what
+/// makes over-claiming preservation unspellable — the report always carries the
+/// floor the consumed capability rung structurally allows, not an author's
+/// optimistic guess (D1; D8).
+///
+/// Unparameterized on purpose: the honesty guarantee comes from the consuming
+/// transition ([`FnCx::mutate`] discards the "all preserved" shortcut), not from
+/// a type tag. It is a distinct type from Task 2b's module report, so a function
+/// pass cannot return a module report by mistake.
+pub struct FnReport {
+    pa: PreservedAnalyses,
+}
+
+impl FnReport {
+    /// Wrap a driver-derived preservation set. `pub(crate)` — this is the sole
+    /// construction path, so an external author can never fabricate a report
+    /// that over-claims preservation. THE honesty guarantee.
+    #[inline]
+    pub(crate) fn from_pa(pa: PreservedAnalyses) -> Self {
+        Self { pa }
+    }
+
+    /// Consume the report and yield its preservation set. The driver-facing
+    /// seam (Task 3 reads this to drive invalidation). Public because reading
+    /// the set out of a report you already hold is not a fabrication vector —
+    /// unlike [`Self::from_pa`], it cannot mint a dishonest report.
+    #[inline]
+    pub fn into_pa(self) -> PreservedAnalyses {
+        self.pa
+    }
+}
+
+/// Consuming entry context handed to a function pass at capability rung `A`.
+///
+/// Parameterized by the access marker `A` (which rung) and the `Requires` list
+/// `R` (which analyses were prefetched) rather than by a pass trait, so it
+/// compiles and tests stand alone ahead of the Task 3 pass traits. Task 3 spells
+/// its `run` signature as `FnCx<'_, '_, 'ctx, B, Self::Access, Self::Requires>`.
+///
+/// The typestate that makes a preservation lie unspellable: to change the IR a
+/// pass must call [`FnCx::mutate`], which **consumes** the context and returns a
+/// rung-specific mutator. Before `mutate()`, [`FnCx::unchanged`] yields an
+/// all-preserved report; after it, the context is gone, so the only report left
+/// is the mutator's `done()` → the rung's derived preservation floor. This is
+/// the same consuming-handle discipline the crate already uses for terminated
+/// blocks (D1) and erased instructions (D2).
+///
+/// Like [`TypedFunctionPassContext`], the module `token` (`'pm`) and the
+/// prefetched `results` (`'r`) carry distinct lifetimes: the token borrows the
+/// long-lived pipeline module while the results borrow the analysis manager only
+/// for the pass's scope. (llvmkit-specific capability-context lock — no upstream
+/// analog: LLVM pass contexts are untyped `Function&` + `FAM&`.)
+pub struct FnCx<'pm, 'r, 'ctx, B, A, R>
+where
+    B: ModuleBrand + 'ctx,
+    A: FnAccess,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'pm,
+    'ctx: 'r,
+{
+    token: A::Token<'pm, 'ctx, B>,
+    function: FunctionView<'ctx, B>,
+    results: R::ResultRefs<'r>,
+}
+
+impl<'pm, 'r, 'ctx, B, A, R> FnCx<'pm, 'r, 'ctx, B, A, R>
+where
+    B: ModuleBrand + 'ctx,
+    A: FnAccess,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'pm,
+    'ctx: 'r,
+{
+    /// Assemble a context from the driver-prefetched parts. The driver-facing
+    /// seam: Task 3's (in-crate) driver and these tests construct contexts here.
+    /// Public so Task 2a stays standalone-green — the honesty guarantee does not
+    /// rest on this constructor (it rests on [`FnReport::from_pa`] being
+    /// non-public); Task 3 may narrow it to `pub(crate)` once its in-crate
+    /// driver is the sole caller.
+    #[inline]
+    pub fn new(
+        token: A::Token<'pm, 'ctx, B>,
+        function: FunctionView<'ctx, B>,
+        results: R::ResultRefs<'r>,
+    ) -> Self {
+        Self {
+            token,
+            function,
+            results,
+        }
+    }
+
+    /// Read-only function view.
+    #[inline]
+    pub fn function(&self) -> FunctionView<'ctx, B> {
+        self.function
+    }
+
+    /// Owning module view.
+    #[inline]
+    pub fn module(&self) -> ModuleView<'ctx, B> {
+        self.function.module()
+    }
+
+    /// Infallible access to a `Requires`-declared analysis result. The position
+    /// index `I` is inferred; an undeclared analysis has no [`AnalysisSelector`]
+    /// impl and fails to compile. Verbatim from [`TypedFunctionPassContext`].
+    #[inline]
+    pub fn analysis<A2, I>(&self) -> &'r A2::Result
+    where
+        A2: FunctionAnalysis<'ctx, B>,
+        R: AnalysisSelector<'ctx, B, A2, I>,
+    {
+        R::select(&self.results)
+    }
+
+    /// Finish without mutating: report everything preserved. Available at every
+    /// rung ("I inspected / changed nothing"). Consumes the context.
+    #[inline]
+    pub fn done(self) -> FnReport {
+        FnReport::from_pa(PreservedAnalyses::all())
+    }
+}
+
+impl<'pm, 'r, 'ctx, B, A, R> FnCx<'pm, 'r, 'ctx, B, A, R>
+where
+    B: ModuleBrand + 'ctx,
+    A: MutatingFn,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'pm,
+    'ctx: 'r,
+{
+    /// The didn't-actually-mutate shortcut: report everything preserved without
+    /// entering the mutator. Consumes the context, so it cannot be paired with a
+    /// later `mutate()`.
+    #[inline]
+    pub fn unchanged(self) -> FnReport {
+        FnReport::from_pa(PreservedAnalyses::all())
+    }
+
+    /// Transition into mutation: **consumes** the context and moves its token,
+    /// function, and prefetched results into the rung's mutator. Once called,
+    /// `unchanged()`/`done()` on the context are unspellable — the only report
+    /// left is the mutator's `done()`, which carries the rung's preservation
+    /// floor. This is the core honesty mechanism.
+    #[inline]
+    pub fn mutate(self) -> <A as MutatingFn>::Mutator<'pm, 'r, 'ctx, B, R> {
+        A::into_mutator(self.token, self.function, self.results)
+    }
+}
+
+/// Instruction-level mutator for the [`PatchBody`] rung — the workhorse. Edits
+/// instructions within existing blocks; it has **no** terminator or CFG method,
+/// which is exactly what makes its `done()` floor ("CFG analyses preserved")
+/// sound by construction. Mutation flows through the shared
+/// `&Module<Unverified>` token via interior mutability (never `&mut Module`),
+/// the same discipline `DcePass` uses.
+///
+/// Carries the prefetched analysis results, so a transform can read analyses
+/// *while* it edits (the results borrow the analysis manager; mutation borrows
+/// the module token — distinct objects, no aliasing).
+pub struct FnPatch<'m, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    module: &'m Module<'ctx, B, Unverified>,
+    function: FunctionView<'ctx, B>,
+    results: R::ResultRefs<'r>,
+}
+
+impl<'m, 'r, 'ctx, B, R> FnPatch<'m, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    #[inline]
+    pub(crate) fn new(
+        module: &'m Module<'ctx, B, Unverified>,
+        function: FunctionView<'ctx, B>,
+        results: R::ResultRefs<'r>,
+    ) -> Self {
+        Self {
+            module,
+            function,
+            results,
+        }
+    }
+
+    /// Read-only function view.
+    #[inline]
+    pub fn function(&self) -> FunctionView<'ctx, B> {
+        self.function
+    }
+
+    /// Mutation-capable function-body view.
+    #[inline]
+    pub fn function_mut(&self) -> FunctionBody<'ctx, B> {
+        FunctionBody::new(self.function.as_function())
+    }
+
+    /// Infallible access to a `Requires`-declared analysis result *during*
+    /// mutation. The results borrow the analysis manager; mutation goes through
+    /// the module token — different objects, no aliasing.
+    #[inline]
+    pub fn analysis<A2, I>(&self) -> &'r A2::Result
+    where
+        A2: FunctionAnalysis<'ctx, B>,
+        R: AnalysisSelector<'ctx, B, A2, I>,
+    {
+        R::select(&self.results)
+    }
+
+    /// Mutation-capable module token for saved-handle mutators / the IR builder.
+    #[inline]
+    pub fn module_mut(&self) -> &'m Module<'ctx, B, Unverified> {
+        self.module
+    }
+
+    /// Erase a non-terminator instruction from its parent block, deregistering
+    /// its operand uses. Mirrors `DcePass`'s erase step
+    /// ([`Instruction::erase_from_parent`]).
+    ///
+    /// Handing this a terminator is a loud bug, never silent: it returns
+    /// [`IrError::InvalidOperation`] rather than touching the CFG (a
+    /// terminator-erase would break the "CFG preserved" floor this rung rests
+    /// on). A fully structural non-terminator handle is future work.
+    #[inline]
+    pub fn erase(&mut self, view: &InstructionView<'ctx, B>) -> IrResult<()> {
+        if view.is_terminator() {
+            return Err(IrError::InvalidOperation {
+                message: "FnPatch::erase cannot erase a terminator; the PatchBody rung \
+                          preserves the CFG — use the ReshapeCfg rung for control-flow edits",
+            });
+        }
+        let id = view.as_value().id();
+        let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
+        inst.erase_from_parent(self.module);
+        Ok(())
+    }
+
+    /// Replace every use of `view`'s result with `replacement`, leaving the
+    /// instruction itself in place. Mirrors
+    /// [`Instruction::replace_all_uses_with`].
+    #[inline]
+    pub fn replace_all_uses<V>(
+        &mut self,
+        view: &InstructionView<'ctx, B>,
+        replacement: V,
+    ) -> IrResult<()>
+    where
+        V: IsValue<'ctx, B>,
+    {
+        let id = view.as_value().id();
+        let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
+        inst.replace_all_uses_with(self.module, replacement)
+    }
+
+    /// Finish: report the [`PatchBody`] preservation floor (CFG analyses
+    /// preserved). Consumes the mutator.
+    #[inline]
+    pub fn done(self) -> FnReport {
+        FnReport::from_pa(<PatchBody as FnAccess>::preserved_floor())
+    }
+}
+
+/// CFG-rewriting mutator for the [`ReshapeCfg`] rung — minimal but real. It has
+/// everything [`FnPatch`] exposes (by composition) **plus** at least one genuine
+/// control-flow operation ([`FnReshape::split_block`], wired to
+/// [`BasicBlock::split_at`]), so the rung is distinct from `FnPatch` and its
+/// `done()` floor is `none()` — nothing preserved.
+///
+/// Only the split primitive is shipped this branch (no in-tree consumer needs
+/// more). Fuller terminator surgery — rewiring branches, inserting PHIs,
+/// deleting blocks — is future work; the point here is to prove the rung and its
+/// empty floor, not to be exhaustive.
+pub struct FnReshape<'m, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    patch: FnPatch<'m, 'r, 'ctx, B, R>,
+}
+
+impl<'m, 'r, 'ctx, B, R> FnReshape<'m, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    #[inline]
+    pub(crate) fn new(
+        module: &'m Module<'ctx, B, Unverified>,
+        function: FunctionView<'ctx, B>,
+        results: R::ResultRefs<'r>,
+    ) -> Self {
+        Self {
+            patch: FnPatch::new(module, function, results),
+        }
+    }
+
+    /// Read-only function view.
+    #[inline]
+    pub fn function(&self) -> FunctionView<'ctx, B> {
+        self.patch.function()
+    }
+
+    /// Mutation-capable function-body view.
+    #[inline]
+    pub fn function_mut(&self) -> FunctionBody<'ctx, B> {
+        self.patch.function_mut()
+    }
+
+    /// Infallible access to a `Requires`-declared analysis result during
+    /// mutation. See [`FnPatch::analysis`].
+    #[inline]
+    pub fn analysis<A2, I>(&self) -> &'r A2::Result
+    where
+        A2: FunctionAnalysis<'ctx, B>,
+        R: AnalysisSelector<'ctx, B, A2, I>,
+    {
+        self.patch.analysis::<A2, I>()
+    }
+
+    /// Mutation-capable module token.
+    #[inline]
+    pub fn module_mut(&self) -> &'m Module<'ctx, B, Unverified> {
+        self.patch.module_mut()
+    }
+
+    /// Erase a non-terminator instruction. See [`FnPatch::erase`].
+    #[inline]
+    pub fn erase(&mut self, view: &InstructionView<'ctx, B>) -> IrResult<()> {
+        self.patch.erase(view)
+    }
+
+    /// Replace every use of `view`'s result. See [`FnPatch::replace_all_uses`].
+    #[inline]
+    pub fn replace_all_uses<V>(
+        &mut self,
+        view: &InstructionView<'ctx, B>,
+        replacement: V,
+    ) -> IrResult<()>
+    where
+        V: IsValue<'ctx, B>,
+    {
+        self.patch.replace_all_uses(view, replacement)
+    }
+
+    /// Split `block` before instruction `before`: `before` and everything after
+    /// it move into a fresh block (named `name`) appended to the function; the
+    /// original block keeps the prefix. The caller is responsible for adding a
+    /// terminator flowing to the new block. The genuine CFG operation that makes
+    /// this rung distinct from [`FnPatch`]; wired to [`BasicBlock::split_at`].
+    #[inline]
+    pub fn split_block<Name>(
+        &mut self,
+        block: &BasicBlockView<'ctx, B>,
+        before: &InstructionView<'ctx, B>,
+        name: Name,
+    ) -> IrResult<BasicBlock<'ctx, Dyn, Unterminated, B>>
+    where
+        Name: Into<String>,
+    {
+        block
+            .as_basic_block()
+            .split_at(self.patch.module_mut(), before, name)
+    }
+
+    /// Finish: report the [`ReshapeCfg`] preservation floor (`none()` — nothing
+    /// preserved). Consumes the mutator.
+    #[inline]
+    pub fn done(self) -> FnReport {
+        FnReport::from_pa(<ReshapeCfg as FnAccess>::preserved_floor())
+    }
+}
+
+impl MutatingFn for PatchBody {
+    type Mutator<'m, 'r, 'ctx, B, R>
+        = FnPatch<'m, 'r, 'ctx, B, R>
+    where
+        'ctx: 'm,
+        'ctx: 'r,
+        B: ModuleBrand + 'ctx,
+        R: FunctionAnalysisList<'ctx, B>;
+
+    #[inline]
+    fn into_mutator<'m, 'r, 'ctx, B, R>(
+        token: Self::Token<'m, 'ctx, B>,
+        function: FunctionView<'ctx, B>,
+        results: R::ResultRefs<'r>,
+    ) -> Self::Mutator<'m, 'r, 'ctx, B, R>
+    where
+        B: ModuleBrand + 'ctx,
+        R: FunctionAnalysisList<'ctx, B>,
+        'ctx: 'm,
+        'ctx: 'r,
+    {
+        FnPatch::new(token, function, results)
+    }
+}
+
+impl MutatingFn for ReshapeCfg {
+    type Mutator<'m, 'r, 'ctx, B, R>
+        = FnReshape<'m, 'r, 'ctx, B, R>
+    where
+        'ctx: 'm,
+        'ctx: 'r,
+        B: ModuleBrand + 'ctx,
+        R: FunctionAnalysisList<'ctx, B>;
+
+    #[inline]
+    fn into_mutator<'m, 'r, 'ctx, B, R>(
+        token: Self::Token<'m, 'ctx, B>,
+        function: FunctionView<'ctx, B>,
+        results: R::ResultRefs<'r>,
+    ) -> Self::Mutator<'m, 'r, 'ctx, B, R>
+    where
+        B: ModuleBrand + 'ctx,
+        R: FunctionAnalysisList<'ctx, B>,
+        'ctx: 'm,
+        'ctx: 'r,
+    {
+        FnReshape::new(token, function, results)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FnCx, FunctionView};
+    use crate::analysis::{CFGAnalyses, FunctionAnalysisList, FunctionAnalysisManager};
+    use crate::dominator_tree::DominatorTreeAnalysis;
+    use crate::instruction::InstructionView;
+    use crate::pass_access::{Inspect, PatchBody, ReshapeCfg};
+    use crate::{IRBuilder, IntValue, IrError, Linkage, Module, Type};
+
+    /// The `Requires` list shared by these tests: a single CFG-shaped analysis
+    /// so both the infallible accessor and the preservation floors have a
+    /// concrete member to check against.
+    type Reqs = (DominatorTreeAnalysis,);
+
+    /// Read-only [`FnCx`] over an [`Inspect`] rung reads its prefetched analysis
+    /// and reports everything preserved. (Inspect has no `.mutate()`; that its
+    /// absence fails to compile is the Task 9 lock — here we exercise the
+    /// read + `done()` path.) llvmkit-specific capability-context lock (no
+    /// upstream analog: LLVM pass contexts are untyped `Function&` + `FAM&`).
+    #[test]
+    fn inspect_cx_reads_analysis_and_reports_all() -> Result<(), IrError> {
+        Module::with_new("inspect-cx", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+            b.build_ret(i32_ty.const_int(1_u32))?;
+
+            let function = FunctionView::from(f);
+            let mut fam = FunctionAnalysisManager::new();
+            Reqs::prefetch(&mut fam, function)?;
+            let results = Reqs::collect(&fam, function)?;
+
+            let cx: FnCx<'_, '_, '_, _, Inspect, Reqs> = FnCx::new((), function, results);
+
+            // The prefetched analysis is reachable through the infallible
+            // accessor, and the entry block is reachable from itself.
+            let dt = cx.analysis::<DominatorTreeAnalysis, _>();
+            let entry_view = function
+                .entry_block()
+                .expect("definition has an entry block");
+            assert!(dt.is_reachable_from_entry(entry_view));
+
+            // An inspect context can only report "all preserved".
+            let report = cx.done();
+            assert!(report.into_pa().are_all_preserved());
+            Ok(())
+        })
+    }
+
+    /// `FnCx::mutate` on a [`PatchBody`] rung yields an [`super::FnPatch`] that
+    /// erases an instruction; its `done()` reports the CFG-preserved floor (the
+    /// CFG set survives, an arbitrary analysis does not) — mirroring the Task 1
+    /// `preserved_floor_values` checker idiom. llvmkit-specific
+    /// capability-context lock (no upstream analog: LLVM pass contexts are
+    /// untyped `Function&` + `FAM&`).
+    #[test]
+    fn patchbody_mutate_erase_reports_cfg_floor() -> Result<(), IrError> {
+        Module::with_new("patch-cx", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            // `%dead` has no uses — a non-terminator we can erase.
+            let dead = b.build_int_add(x, 1_i32, "dead")?;
+            b.build_ret(x)?;
+
+            let function = FunctionView::from(f);
+            let dead_view = InstructionView::try_from(dead.as_value())?;
+
+            let mut fam = FunctionAnalysisManager::new();
+            Reqs::prefetch(&mut fam, function)?;
+            let results = Reqs::collect(&fam, function)?;
+
+            // Before mutation: entry holds `%dead` and `ret`.
+            assert_eq!(
+                function
+                    .entry_block()
+                    .expect("definition has an entry block")
+                    .instruction_count(),
+                2
+            );
+
+            let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(&m, function, results);
+            let mut patch = cx.mutate();
+            patch.erase(&dead_view)?;
+
+            // After mutation: only `ret` remains.
+            assert_eq!(
+                function
+                    .entry_block()
+                    .expect("definition has an entry block")
+                    .instruction_count(),
+                1
+            );
+
+            let report = patch.done();
+            let pa = report.into_pa();
+            let checker = pa.checker::<DominatorTreeAnalysis>();
+            // CFG analyses survive an in-block edit; an arbitrary analysis does not.
+            assert!(checker.preserved_set::<CFGAnalyses>());
+            assert!(!checker.preserved());
+            Ok(())
+        })
+    }
+
+    /// A terminator handed to [`super::FnPatch::erase`] is a loud typed error,
+    /// never a silent CFG mutation — this is what keeps the CFG-preserved floor
+    /// sound. llvmkit-specific capability-context lock (no upstream analog).
+    #[test]
+    fn patchbody_erase_terminator_is_rejected() -> Result<(), IrError> {
+        Module::with_new("patch-term", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            b.build_ret(x)?;
+
+            let function = FunctionView::from(f);
+            let terminator = function
+                .entry_block()
+                .expect("definition has an entry block")
+                .as_basic_block()
+                .terminator()
+                .expect("block is terminated by the ret");
+
+            let mut fam = FunctionAnalysisManager::new();
+            Reqs::prefetch(&mut fam, function)?;
+            let results = Reqs::collect(&fam, function)?;
+
+            let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(&m, function, results);
+            let mut patch = cx.mutate();
+            // Erasing the terminator is refused; the `ret` stays put.
+            assert!(patch.erase(&terminator).is_err());
+            assert_eq!(
+                function
+                    .entry_block()
+                    .expect("definition has an entry block")
+                    .instruction_count(),
+                1
+            );
+            Ok(())
+        })
+    }
+
+    /// After `mutate()`, the [`super::FnPatch`] still resolves the prefetched
+    /// analysis — proving the mutator carries the results into mutation.
+    /// llvmkit-specific capability-context lock (no upstream analog).
+    #[test]
+    fn patchbody_analysis_available_during_mutation() -> Result<(), IrError> {
+        Module::with_new("patch-analysis", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            b.build_ret(x)?;
+
+            let function = FunctionView::from(f);
+            let mut fam = FunctionAnalysisManager::new();
+            Reqs::prefetch(&mut fam, function)?;
+            let results = Reqs::collect(&fam, function)?;
+
+            let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(&m, function, results);
+            let patch = cx.mutate();
+
+            // The prefetched dominator tree is still reachable mid-mutation.
+            let dt = patch.analysis::<DominatorTreeAnalysis, _>();
+            let entry_view = function
+                .entry_block()
+                .expect("definition has an entry block");
+            assert!(dt.is_reachable_from_entry(entry_view));
+            Ok(())
+        })
+    }
+
+    /// An [`super::FnReshape`] (`ReshapeCfg` rung) `done()` reports nothing
+    /// preserved — not even the CFG set. llvmkit-specific capability-context
+    /// lock (no upstream analog).
+    #[test]
+    fn reshape_cfg_floor_is_none() -> Result<(), IrError> {
+        Module::with_new("reshape-cx", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+            b.build_ret(i32_ty.const_int(0_u32))?;
+
+            let function = FunctionView::from(f);
+            let mut fam = FunctionAnalysisManager::new();
+            Reqs::prefetch(&mut fam, function)?;
+            let results = Reqs::collect(&fam, function)?;
+
+            let cx: FnCx<'_, '_, '_, _, ReshapeCfg, Reqs> = FnCx::new(&m, function, results);
+            let reshape = cx.mutate();
+            let report = reshape.done();
+            let pa = report.into_pa();
+            let checker = pa.checker::<DominatorTreeAnalysis>();
+            assert!(!checker.preserved());
+            assert!(!checker.preserved_set::<CFGAnalyses>());
+            Ok(())
+        })
     }
 }

@@ -25,7 +25,9 @@
 //! (see [`PipelineVerdict`] and [`VerdictFold`]): read-only is the identity,
 //! any mutating member is absorbing.
 
-use crate::analysis::{CFGAnalyses, PreservedAnalyses};
+use crate::analysis::{CFGAnalyses, FunctionAnalysisList, PreservedAnalyses};
+use crate::module::{Module, ModuleBrand, Unverified};
+use crate::pass_context::FunctionView;
 
 mod access_sealed {
     pub trait Sealed {}
@@ -117,6 +119,14 @@ pub trait FnAccess: access_sealed::Sealed + 'static {
     const MUTATES: bool;
     /// Type-level contribution to a pipeline's verified/unverified verdict.
     type Verdict: PipelineVerdict;
+    /// The module capability this rung's context holds. `()` for read-only
+    /// ([`Inspect`]) — no unverify needed, the module stays `Verified`;
+    /// `&Module<Unverified>` for the mutating rungs — the interior-mutability
+    /// mutation token. Mirrors the existing
+    /// [`crate::pass_manager::TypedPassEffect::ModuleToken`].
+    type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>: Copy
+    where
+        'ctx: 'pm;
     /// Preservation floor the driver applies after a mutating run at this rung.
     /// DERIVED, never author-supplied; always a SAFE under-approximation.
     #[doc(hidden)]
@@ -131,6 +141,13 @@ pub trait ModAccess: access_sealed::Sealed + 'static {
     const MUTATES: bool;
     /// Type-level contribution to a pipeline's verified/unverified verdict.
     type Verdict: PipelineVerdict;
+    /// The module capability this rung's context holds. `()` for read-only
+    /// ([`Inspect`]); `&Module<Unverified>` for [`RewriteModule`]. Mirrors the
+    /// existing [`crate::pass_manager::TypedPassEffect::ModuleToken`]; consumed
+    /// by Task 2b's module-level context.
+    type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>: Copy
+    where
+        'ctx: 'pm;
     /// Preservation floor the driver applies after a mutating run at this rung.
     /// DERIVED, never author-supplied; always a SAFE under-approximation.
     #[doc(hidden)]
@@ -140,6 +157,10 @@ pub trait ModAccess: access_sealed::Sealed + 'static {
 impl FnAccess for Inspect {
     const MUTATES: bool = false;
     type Verdict = StaysVerified;
+    type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>
+        = ()
+    where
+        'ctx: 'pm;
 
     fn preserved_floor() -> PreservedAnalyses {
         PreservedAnalyses::all()
@@ -149,6 +170,10 @@ impl FnAccess for Inspect {
 impl ModAccess for Inspect {
     const MUTATES: bool = false;
     type Verdict = StaysVerified;
+    type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>
+        = ()
+    where
+        'ctx: 'pm;
 
     fn preserved_floor() -> PreservedAnalyses {
         PreservedAnalyses::all()
@@ -158,6 +183,10 @@ impl ModAccess for Inspect {
 impl FnAccess for PatchBody {
     const MUTATES: bool = true;
     type Verdict = Downgrades;
+    type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>
+        = &'pm Module<'ctx, B, Unverified>
+    where
+        'ctx: 'pm;
 
     fn preserved_floor() -> PreservedAnalyses {
         PreservedAnalyses::all_in_set::<CFGAnalyses>()
@@ -167,6 +196,10 @@ impl FnAccess for PatchBody {
 impl FnAccess for ReshapeCfg {
     const MUTATES: bool = true;
     type Verdict = Downgrades;
+    type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>
+        = &'pm Module<'ctx, B, Unverified>
+    where
+        'ctx: 'pm;
 
     fn preserved_floor() -> PreservedAnalyses {
         PreservedAnalyses::none()
@@ -176,10 +209,49 @@ impl FnAccess for ReshapeCfg {
 impl ModAccess for RewriteModule {
     const MUTATES: bool = true;
     type Verdict = Downgrades;
+    type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>
+        = &'pm Module<'ctx, B, Unverified>
+    where
+        'ctx: 'pm;
 
     fn preserved_floor() -> PreservedAnalyses {
         PreservedAnalyses::none()
     }
+}
+
+/// A [`FnAccess`] rung that permits mutation. Deferred out of Task 1 so it can
+/// name the mutator types built in Task 2a. Implemented for [`PatchBody`] and
+/// [`ReshapeCfg`] only — [`Inspect`] deliberately has no impl, which is exactly
+/// what removes `mutate()`/`unchanged()` from a read-only context (read-only is
+/// structural, not checked; D1). Sealed through the [`FnAccess`] supertrait.
+///
+/// The mutator itself (`FnPatch`/`FnReshape`) carries the mutation token and the
+/// prefetched analysis results, so a transform can read analyses *while* it
+/// edits; see [`crate::pass_context`].
+pub trait MutatingFn: FnAccess {
+    /// The rung-specific mutator [`crate::pass_context::FnCx::mutate`] hands out
+    /// once it has consumed the entry context. `'m` borrows the module token,
+    /// `'r` borrows the prefetched results (mirrors the context's two-lifetime
+    /// split).
+    type Mutator<'m, 'r, 'ctx, B: ModuleBrand + 'ctx, R: FunctionAnalysisList<'ctx, B>>
+    where
+        'ctx: 'm,
+        'ctx: 'r;
+
+    /// Build the mutator from the consumed context's parts. Internal plumbing
+    /// for [`crate::pass_context::FnCx::mutate`]; hidden from authors (the rung
+    /// impls live next to the mutator definitions in `pass_context`).
+    #[doc(hidden)]
+    fn into_mutator<'m, 'r, 'ctx, B, R>(
+        token: Self::Token<'m, 'ctx, B>,
+        function: FunctionView<'ctx, B>,
+        results: R::ResultRefs<'r>,
+    ) -> Self::Mutator<'m, 'r, 'ctx, B, R>
+    where
+        B: ModuleBrand + 'ctx,
+        R: FunctionAnalysisList<'ctx, B>,
+        'ctx: 'm,
+        'ctx: 'r;
 }
 
 #[cfg(test)]
