@@ -271,7 +271,7 @@ impl FnReport {
 /// the same consuming-handle discipline the crate already uses for terminated
 /// blocks (D1) and erased instructions (D2).
 ///
-/// Like [`TypedFunctionPassContext`], the module `token` (`'pm`) and the
+/// The module `token` (`'pm`) and the
 /// prefetched `results` (`'r`) carry distinct lifetimes: the token borrows the
 /// long-lived pipeline module while the results borrow the analysis manager only
 /// for the pass's scope. (llvmkit-specific capability-context lock — no upstream
@@ -329,7 +329,7 @@ where
 
     /// Infallible access to a `Requires`-declared analysis result. The position
     /// index `I` is inferred; an undeclared analysis has no [`AnalysisSelector`]
-    /// impl and fails to compile. Verbatim from [`TypedFunctionPassContext`].
+    /// impl and fails to compile.
     #[inline]
     pub fn analysis<A2, I>(&self) -> &'r A2::Result
     where
@@ -693,7 +693,7 @@ impl MutatingFn for ReshapeCfg {
 
 /// The value a module pass returns. The module-level mirror of [`FnReport`]:
 /// wraps the driver-derived [`PreservedAnalyses`]. Its sole fabrication vector,
-/// [`Self::from_pa`], is `pub(crate)`, so an external author can *name* the type
+/// `Self::from_pa`, is `pub(crate)`, so an external author can *name* the type
 /// (it appears in a module pass's `run` return) but can only *obtain* one from a
 /// [`ModCx`] or a [`ModRewrite`], never mint one that over-claims preservation.
 /// That is what makes "rewrote the module but declared everything preserved"
@@ -728,8 +728,8 @@ impl ModReport {
 }
 
 /// Consuming entry context handed to a module pass at capability rung `A` — the
-/// module-level mirror of [`FnCx`], modelled on [`TypedModulePassContext`]'s
-/// four-lifetime shape plus the [`FnCx`] report/mutate flow.
+/// module-level mirror of [`FnCx`], with a four-lifetime shape plus the
+/// [`FnCx`] report/mutate flow.
 ///
 /// Parameterized by the access marker `A` (which rung) and the module `Requires`
 /// list `R` rather than by a pass trait, so it compiles and tests stand alone
@@ -741,10 +741,10 @@ impl ModReport {
 /// a [`ModRewrite`]. Before `mutate()`, [`ModCx::unchanged`] yields an
 /// all-preserved report; after it, the context is gone, so the only report left
 /// is the mutator's `done()` → the [`RewriteModule`] floor (`none()` — a module
-/// rewrite is the heaviest rung and preserves nothing by default). [`Inspect`]
+/// rewrite is the heaviest rung and preserves nothing by default). `Inspect`
 /// module passes have no `mutate()` at all.
 ///
-/// Like [`TypedModulePassContext`], the module `token` (`'pm`) borrows the
+/// The module `token` (`'pm`) borrows the
 /// long-lived pipeline module, the prefetched `results` (`'r`) borrow the module
 /// analysis manager only for the pass's scope, `mam` (`'r`) is a shared
 /// cache-peek borrow, and `fam` (`'f`) is a reborrowed `&mut` for the fallible
@@ -811,8 +811,7 @@ where
 
     /// Infallible access to a `Requires`-declared module analysis result. The
     /// position index `I` is inferred; an undeclared analysis has no
-    /// [`ModuleAnalysisSelector`] impl and fails to compile. Verbatim from
-    /// [`TypedModulePassContext`].
+    /// [`ModuleAnalysisSelector`] impl and fails to compile.
     #[inline]
     pub fn analysis<A2, I>(&self) -> &'r A2::Result
     where
@@ -825,8 +824,7 @@ where
     /// Query a function analysis for a function in this module. Deliberately
     /// dynamic (fallible): unlike module-level `Requires`, there is no static
     /// list of which functions a module pass will visit, so per-function analysis
-    /// access cannot be prefetched into an infallible accessor. Verbatim from
-    /// [`TypedModulePassContext`].
+    /// access cannot be prefetched into an infallible accessor.
     #[inline]
     pub fn function_analysis<A2>(
         &mut self,
