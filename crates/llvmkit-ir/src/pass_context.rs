@@ -21,7 +21,9 @@ use super::marker::{Dyn, ReturnMarker};
 use super::module::{
     Brand, Invariant, Module, ModuleBrand, ModuleRef, ModuleView, Unverified, Verified,
 };
-use super::pass_access::{FnAccess, MutatingFn, PatchBody, ReshapeCfg};
+use super::pass_access::{
+    FnAccess, ModAccess, MutatingFn, MutatingModule, PatchBody, ReshapeCfg, RewriteModule,
+};
 use super::pass_manager::{MutatesIr, TypedPassEffect};
 use super::value::IsValue;
 
@@ -1160,6 +1162,21 @@ impl MutatingFn for PatchBody {
     {
         FnPatch::new(token, function, results)
     }
+
+    #[inline]
+    fn mutator_over_module<'m, 'r, 'ctx, B, R>(
+        module: &'m Module<'ctx, B, Unverified>,
+        function: FunctionView<'ctx, B>,
+        results: R::ResultRefs<'r>,
+    ) -> Self::Mutator<'m, 'r, 'ctx, B, R>
+    where
+        B: ModuleBrand + 'ctx,
+        R: FunctionAnalysisList<'ctx, B>,
+        'ctx: 'm,
+        'ctx: 'r,
+    {
+        FnPatch::new(module, function, results)
+    }
 }
 
 impl MutatingFn for ReshapeCfg {
@@ -1185,15 +1202,361 @@ impl MutatingFn for ReshapeCfg {
     {
         FnReshape::new(token, function, results)
     }
+
+    #[inline]
+    fn mutator_over_module<'m, 'r, 'ctx, B, R>(
+        module: &'m Module<'ctx, B, Unverified>,
+        function: FunctionView<'ctx, B>,
+        results: R::ResultRefs<'r>,
+    ) -> Self::Mutator<'m, 'r, 'ctx, B, R>
+    where
+        B: ModuleBrand + 'ctx,
+        R: FunctionAnalysisList<'ctx, B>,
+        'ctx: 'm,
+        'ctx: 'r,
+    {
+        FnReshape::new(module, function, results)
+    }
+}
+
+// ==========================================================================
+// Pass API v2 — module report, entry context, and mutator
+// ==========================================================================
+
+/// The value a module pass returns. The module-level mirror of [`FnReport`]:
+/// wraps the driver-derived [`PreservedAnalyses`]. Its sole fabrication vector,
+/// [`Self::from_pa`], is `pub(crate)`, so an external author can *name* the type
+/// (it appears in a module pass's `run` return) but can only *obtain* one from a
+/// [`ModCx`] or a [`ModRewrite`], never mint one that over-claims preservation.
+/// That is what makes "rewrote the module but declared everything preserved"
+/// unspellable — the report always carries the floor the consumed capability
+/// rung structurally allows (D1; D8).
+///
+/// A distinct type from [`FnReport`], so a module pass cannot return a function
+/// report by mistake and vice versa.
+pub struct ModReport {
+    pa: PreservedAnalyses,
+}
+
+impl ModReport {
+    /// Wrap a driver-derived preservation set. `pub(crate)` — this is the sole
+    /// construction path, so an external author can never fabricate a report that
+    /// over-claims preservation. THE honesty guarantee (mirrors
+    /// [`FnReport::from_pa`]).
+    #[inline]
+    pub(crate) fn from_pa(pa: PreservedAnalyses) -> Self {
+        Self { pa }
+    }
+
+    /// Consume the report and yield its preservation set. The driver-facing seam
+    /// (Task 3 reads this to drive invalidation). Public because reading the set
+    /// out of a report you already hold cannot mint a dishonest report — unlike
+    /// [`Self::from_pa`].
+    #[inline]
+    pub fn into_pa(self) -> PreservedAnalyses {
+        self.pa
+    }
+}
+
+/// Consuming entry context handed to a module pass at capability rung `A` — the
+/// module-level mirror of [`FnCx`], modelled on [`TypedModulePassContext`]'s
+/// four-lifetime shape plus the [`FnCx`] report/mutate flow.
+///
+/// Parameterized by the access marker `A` (which rung) and the module `Requires`
+/// list `R` rather than by a pass trait, so it compiles and tests stand alone
+/// ahead of the Task 3 pass traits. Task 3 spells its `run` signature as
+/// `ModCx<'_, '_, '_, 'ctx, B, Self::Access, Self::Requires>`.
+///
+/// The typestate that makes a preservation lie unspellable: to change the module
+/// a pass must call [`ModCx::mutate`], which **consumes** the context and returns
+/// a [`ModRewrite`]. Before `mutate()`, [`ModCx::unchanged`] yields an
+/// all-preserved report; after it, the context is gone, so the only report left
+/// is the mutator's `done()` → the [`RewriteModule`] floor (`none()` — a module
+/// rewrite is the heaviest rung and preserves nothing by default). [`Inspect`]
+/// module passes have no `mutate()` at all.
+///
+/// Like [`TypedModulePassContext`], the module `token` (`'pm`) borrows the
+/// long-lived pipeline module, the prefetched `results` (`'r`) borrow the module
+/// analysis manager only for the pass's scope, `mam` (`'r`) is a shared
+/// cache-peek borrow, and `fam` (`'f`) is a reborrowed `&mut` for the fallible
+/// per-function queries. (llvmkit-specific capability-context lock — no upstream
+/// analog: LLVM module-pass contexts are untyped `Module&` + `MAM&`.)
+pub struct ModCx<'pm, 'r, 'f, 'ctx, B, A, R>
+where
+    B: ModuleBrand + 'ctx,
+    A: ModAccess,
+    R: ModuleAnalysisList<'ctx, B>,
+    'ctx: 'pm,
+    'ctx: 'r,
+    'ctx: 'f,
+{
+    module: ModuleView<'ctx, B>,
+    token: A::Token<'pm, 'ctx, B>,
+    results: R::ResultRefs<'r>,
+    mam: &'r ModuleAnalysisManager<'ctx, B>,
+    fam: &'f mut FunctionAnalysisManager<'ctx, B>,
+}
+
+impl<'pm, 'r, 'f, 'ctx, B, A, R> ModCx<'pm, 'r, 'f, 'ctx, B, A, R>
+where
+    B: ModuleBrand + 'ctx,
+    A: ModAccess,
+    R: ModuleAnalysisList<'ctx, B>,
+    'ctx: 'pm,
+    'ctx: 'r,
+    'ctx: 'f,
+{
+    /// Assemble a context from the driver-prefetched parts. The driver-facing
+    /// seam: Task 3's (in-crate) driver and these tests construct contexts here.
+    /// Public so Task 2b stays standalone-green — the honesty guarantee rests on
+    /// [`ModReport::from_pa`] being non-public, not on this constructor; Task 3
+    /// may narrow it to `pub(crate)` once its in-crate driver is the sole caller.
+    #[inline]
+    pub fn new(
+        module: ModuleView<'ctx, B>,
+        token: A::Token<'pm, 'ctx, B>,
+        results: R::ResultRefs<'r>,
+        mam: &'r ModuleAnalysisManager<'ctx, B>,
+        fam: &'f mut FunctionAnalysisManager<'ctx, B>,
+    ) -> Self {
+        Self {
+            module,
+            token,
+            results,
+            mam,
+            fam,
+        }
+    }
+
+    /// Read-only module view.
+    #[inline]
+    pub fn module(&self) -> ModuleView<'ctx, B> {
+        self.module
+    }
+
+    /// Function views in declaration order.
+    #[inline]
+    pub fn functions(&self) -> ModuleFunctionViews<'ctx, B> {
+        ModuleFunctionViews::new(self.module)
+    }
+
+    /// Infallible access to a `Requires`-declared module analysis result. The
+    /// position index `I` is inferred; an undeclared analysis has no
+    /// [`ModuleAnalysisSelector`] impl and fails to compile. Verbatim from
+    /// [`TypedModulePassContext`].
+    #[inline]
+    pub fn analysis<A2, I>(&self) -> &'r A2::Result
+    where
+        A2: ModuleAnalysis<'ctx, B>,
+        R: ModuleAnalysisSelector<'ctx, B, A2, I>,
+    {
+        R::select(&self.results)
+    }
+
+    /// Query a function analysis for a function in this module. Deliberately
+    /// dynamic (fallible): unlike module-level `Requires`, there is no static
+    /// list of which functions a module pass will visit, so per-function analysis
+    /// access cannot be prefetched into an infallible accessor. Verbatim from
+    /// [`TypedModulePassContext`].
+    #[inline]
+    pub fn function_analysis<A2>(
+        &mut self,
+        function: FunctionView<'ctx, B>,
+    ) -> IrResult<&A2::Result>
+    where
+        A2: FunctionAnalysis<'ctx, B>,
+    {
+        self.fam.get_result::<A2, _>(function)
+    }
+
+    /// Read a cached module analysis without computing it.
+    #[inline]
+    pub fn cached_module_analysis<A2>(&self) -> Option<&A2::Result>
+    where
+        A2: ModuleAnalysis<'ctx, B>,
+    {
+        self.mam.get_cached_result::<A2, _>(self.module)
+    }
+
+    /// Finish without mutating: report everything preserved. Available at every
+    /// rung ("I inspected / changed nothing"). Consumes the context.
+    #[inline]
+    pub fn done(self) -> ModReport {
+        ModReport::from_pa(PreservedAnalyses::all())
+    }
+}
+
+impl<'pm, 'r, 'f, 'ctx, B, A, R> ModCx<'pm, 'r, 'f, 'ctx, B, A, R>
+where
+    B: ModuleBrand + 'ctx,
+    A: MutatingModule,
+    R: ModuleAnalysisList<'ctx, B>,
+    'ctx: 'pm,
+    'ctx: 'r,
+    'ctx: 'f,
+{
+    /// The didn't-actually-mutate shortcut: report everything preserved without
+    /// entering the mutator. Consumes the context, so it cannot be paired with a
+    /// later `mutate()`.
+    #[inline]
+    pub fn unchanged(self) -> ModReport {
+        ModReport::from_pa(PreservedAnalyses::all())
+    }
+
+    /// Transition into mutation: **consumes** the context and moves its module
+    /// token and prefetched results into the rung's mutator. The `mam`/`fam`
+    /// cache-peek borrows end here — the read-only query phase is over (v1
+    /// `for_each_function` needs no per-function prefetch). Once called,
+    /// `unchanged()`/`done()` on the context are unspellable — the only report
+    /// left is the mutator's `done()`, which carries the rung's preservation
+    /// floor. This is the core honesty mechanism.
+    #[inline]
+    pub fn mutate(self) -> <A as MutatingModule>::Mutator<'pm, 'r, 'ctx, B, R> {
+        A::into_mutator(self.token, self.results)
+    }
+}
+
+/// Module-level mutator for the [`RewriteModule`] rung — the heaviest rung, so
+/// its `done()` floor is `none()` (nothing preserved). Mutation flows through the
+/// shared `&Module<Unverified>` token via interior mutability (never
+/// `&mut Module`), the same discipline [`FnPatch`] uses.
+///
+/// The token exposes the module's existing [`Module::add_global`] /
+/// [`Module::add_function`] directly through [`Self::module_mut`]; a sanitizer
+/// pass reaches the global/function/constructor "triple" through it. Author sugar
+/// for that pattern — `declare_runtime_fn`/`append_ctor`/`add_global` helpers and
+/// the `llvm.global_ctors` machinery — is deliberately future work: no in-tree
+/// consumer needs it on this branch, and building it now would be speculative.
+///
+/// Carries the prefetched module-analysis results, so a transform can read module
+/// analyses *while* it rewrites (results borrow the analysis manager; mutation
+/// borrows the module token — distinct objects, no aliasing).
+pub struct ModRewrite<'m, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: ModuleAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    token: &'m Module<'ctx, B, Unverified>,
+    results: R::ResultRefs<'r>,
+}
+
+impl<'m, 'r, 'ctx, B, R> ModRewrite<'m, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: ModuleAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    #[inline]
+    pub(crate) fn new(token: &'m Module<'ctx, B, Unverified>, results: R::ResultRefs<'r>) -> Self {
+        Self { token, results }
+    }
+
+    /// Read-only module view.
+    #[inline]
+    pub fn module(&self) -> ModuleView<'ctx, B> {
+        self.token.as_view()
+    }
+
+    /// Mutation-capable module token, exposing the module's existing
+    /// [`Module::add_global`] / [`Module::add_function`] directly.
+    #[inline]
+    pub fn module_mut(&self) -> &'m Module<'ctx, B, Unverified> {
+        self.token
+    }
+
+    /// Infallible access to a `Requires`-declared module analysis result *during*
+    /// mutation. The results borrow the analysis manager; mutation goes through
+    /// the module token — different objects, no aliasing. Mirrors
+    /// [`FnPatch::analysis`].
+    #[inline]
+    pub fn analysis<A2, I>(&self) -> &'r A2::Result
+    where
+        A2: ModuleAnalysis<'ctx, B>,
+        R: ModuleAnalysisSelector<'ctx, B, A2, I>,
+    {
+        R::select(&self.results)
+    }
+
+    /// Visit every function *definition* in module order, handing the visitor a
+    /// per-function mutator (`FnPatch`/`FnReshape`, selected by `FnA`) built from
+    /// this module's mutation token. Declarations (no entry block) are skipped.
+    /// This is the load-bearing module→function visitor; Task 3's driver calls
+    /// `rewrite.for_each_function::<Self::FnAccess>(...)`.
+    ///
+    /// Per-function analysis prefetch is deliberately future work: each
+    /// per-function mutator is built with empty results `()`, so a
+    /// `FnPatch::analysis` call inside the visitor has no members to select. A
+    /// future revision threads a per-function `Requires` list through here.
+    ///
+    /// The visitor's mutator is spelled at this mutator's own `'m`/`'r` rather
+    /// than fresh higher-ranked lifetimes: the `MutatingFn::Mutator` GAT carries
+    /// `'ctx: 'm`/`'ctx: 'r` outlives bounds that a `for<'a, 'b>` quantification
+    /// cannot satisfy universally, so a concrete binding is the standalone-green
+    /// shape (each mutator is still built fresh per function from the same
+    /// module token).
+    #[inline]
+    pub fn for_each_function<FnA>(
+        &mut self,
+        mut visitor: impl FnMut(FnA::Mutator<'m, 'r, 'ctx, B, ()>) -> IrResult<()>,
+    ) -> IrResult<()>
+    where
+        FnA: MutatingFn,
+    {
+        for function in self.module().iter_functions() {
+            if function.entry_block().is_none() {
+                continue;
+            }
+            let mutator: FnA::Mutator<'m, 'r, 'ctx, B, ()> =
+                FnA::mutator_over_module(self.token, function, ());
+            visitor(mutator)?;
+        }
+        Ok(())
+    }
+
+    /// Finish: report the [`RewriteModule`] preservation floor (`none()` —
+    /// nothing preserved). Consumes the mutator.
+    #[inline]
+    pub fn done(self) -> ModReport {
+        ModReport::from_pa(<RewriteModule as ModAccess>::preserved_floor())
+    }
+}
+
+impl MutatingModule for RewriteModule {
+    type Mutator<'m, 'r, 'ctx, B, R>
+        = ModRewrite<'m, 'r, 'ctx, B, R>
+    where
+        'ctx: 'm,
+        'ctx: 'r,
+        B: ModuleBrand + 'ctx,
+        R: ModuleAnalysisList<'ctx, B>;
+
+    #[inline]
+    fn into_mutator<'m, 'r, 'ctx, B, R>(
+        token: Self::Token<'m, 'ctx, B>,
+        results: R::ResultRefs<'r>,
+    ) -> Self::Mutator<'m, 'r, 'ctx, B, R>
+    where
+        B: ModuleBrand + 'ctx,
+        R: ModuleAnalysisList<'ctx, B>,
+        'ctx: 'm,
+        'ctx: 'r,
+    {
+        ModRewrite::new(token, results)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{FnCx, FunctionView};
-    use crate::analysis::{CFGAnalyses, FunctionAnalysisList, FunctionAnalysisManager};
+    use super::{FnCx, FunctionView, ModCx};
+    use crate::analysis::{
+        CFGAnalyses, FunctionAnalysisList, FunctionAnalysisManager, ModuleAnalysisManager,
+    };
     use crate::dominator_tree::DominatorTreeAnalysis;
     use crate::instruction::InstructionView;
-    use crate::pass_access::{Inspect, PatchBody, ReshapeCfg};
+    use crate::pass_access::{Inspect, PatchBody, ReshapeCfg, RewriteModule};
     use crate::{IRBuilder, IntValue, IrError, Linkage, Module, Type};
 
     /// The `Requires` list shared by these tests: a single CFG-shaped analysis
@@ -1394,6 +1757,166 @@ mod tests {
             let checker = pa.checker::<DominatorTreeAnalysis>();
             assert!(!checker.preserved());
             assert!(!checker.preserved_set::<CFGAnalyses>());
+            Ok(())
+        })
+    }
+
+    /// Read-only [`ModCx`] over an [`Inspect`] rung reads a per-function analysis
+    /// (empty module `Requires`, so the fallible per-function accessor is the
+    /// path, mirroring `pass_manager::tests::LogModulePass`) and reports
+    /// everything preserved. Inspect has no `.mutate()`. llvmkit-specific
+    /// capability-context lock (no upstream analog: LLVM module-pass contexts are
+    /// untyped `Module&` + `MAM&`).
+    #[test]
+    fn inspect_modcx_reads_analysis_and_reports_all() -> Result<(), IrError> {
+        Module::with_new("inspect-modcx", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+            b.build_ret(i32_ty.const_int(1_u32))?;
+
+            let module = m.as_view();
+            let function = FunctionView::from(f);
+
+            let mam = ModuleAnalysisManager::new();
+            let mut fam = FunctionAnalysisManager::new();
+            // `function_analysis` is deliberately fallible, so — like every other
+            // caller of this accessor — the analysis must be registered first.
+            fam.register_pass(DominatorTreeAnalysis);
+
+            let mut cx: ModCx<'_, '_, '_, '_, _, Inspect, ()> =
+                ModCx::new(module, (), (), &mam, &mut fam);
+
+            // The per-function analysis is reachable through the fallible
+            // accessor, and the entry block is reachable from itself.
+            let dt = cx.function_analysis::<DominatorTreeAnalysis>(function)?;
+            let entry_view = function
+                .entry_block()
+                .expect("definition has an entry block");
+            assert!(dt.is_reachable_from_entry(entry_view));
+
+            // An inspect module context can only report "all preserved".
+            let report = cx.done();
+            assert!(report.into_pa().are_all_preserved());
+            Ok(())
+        })
+    }
+
+    /// A [`RewriteModule`] [`ModCx`] transitions through `mutate()` into a
+    /// [`super::ModRewrite`], adds a global straight through the raw module token
+    /// (no sugar), and its `done()` reports the `none()` floor — nothing
+    /// preserved, not even the CFG set. llvmkit-specific capability-context lock
+    /// (no upstream analog).
+    #[test]
+    fn rewrite_module_mutate_reports_none_floor() -> Result<(), IrError> {
+        Module::with_new("rewrite-modcx", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+            b.build_ret(i32_ty.const_int(0_u32))?;
+
+            let module = m.as_view();
+            let mam = ModuleAnalysisManager::new();
+            let mut fam = FunctionAnalysisManager::new();
+
+            // No globals yet.
+            assert_eq!(module.iter_globals().len(), 0);
+
+            let cx: ModCx<'_, '_, '_, '_, _, RewriteModule, ()> =
+                ModCx::new(module, &m, (), &mam, &mut fam);
+            let r = cx.mutate();
+
+            // Reach the module's own `add_global` directly through the token.
+            r.module_mut()
+                .add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+
+            // The mutation is visible on the module.
+            assert_eq!(module.iter_globals().len(), 1);
+
+            let rep = r.done();
+            let pa = rep.into_pa();
+            let checker = pa.checker::<DominatorTreeAnalysis>();
+            // A module rewrite preserves nothing — the heaviest rung's floor.
+            assert!(!checker.preserved());
+            assert!(!checker.preserved_set::<CFGAnalyses>());
+            Ok(())
+        })
+    }
+
+    /// [`super::ModRewrite::for_each_function`] visits every function *definition*
+    /// in module order (skipping the declaration) and hands each a
+    /// [`super::FnPatch`] that erases the function's dead instruction.
+    /// llvmkit-specific capability-context lock (no upstream analog).
+    #[test]
+    fn for_each_function_visits_defs_and_can_patch() -> Result<(), IrError> {
+        Module::with_new("foreach-modcx", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+
+            // Definition `f1` with a dead `add` we can erase.
+            let f1 = m.add_function::<i32, _>("f1", fn_ty, Linkage::External)?;
+            let e1 = f1.append_basic_block(&m, "entry");
+            let b1 = IRBuilder::new_for::<i32>(&m).position_at_end(e1);
+            let x1: IntValue<i32> = f1.param(0)?.try_into()?;
+            let dead1 = b1.build_int_add(x1, 1_i32, "dead")?;
+            b1.build_ret(x1)?;
+
+            // Definition `f2`, likewise.
+            let f2 = m.add_function::<i32, _>("f2", fn_ty, Linkage::External)?;
+            let e2 = f2.append_basic_block(&m, "entry");
+            let b2 = IRBuilder::new_for::<i32>(&m).position_at_end(e2);
+            let x2: IntValue<i32> = f2.param(0)?.try_into()?;
+            let dead2 = b2.build_int_add(x2, 1_i32, "dead")?;
+            b2.build_ret(x2)?;
+
+            // A declaration (no body) — must be skipped.
+            let decl = m.add_function::<i32, _>("ext", fn_ty, Linkage::External)?;
+
+            let fv1 = FunctionView::from(f1);
+            let fv2 = FunctionView::from(f2);
+            let decl_view = FunctionView::from(decl);
+            let dead1_view = InstructionView::try_from(dead1.as_value())?;
+            let dead2_view = InstructionView::try_from(dead2.as_value())?;
+
+            // Each def starts with `dead` + `ret`.
+            assert_eq!(fv1.entry_block().expect("def").instruction_count(), 2);
+            assert_eq!(fv2.entry_block().expect("def").instruction_count(), 2);
+
+            let module = m.as_view();
+            let mam = ModuleAnalysisManager::new();
+            let mut fam = FunctionAnalysisManager::new();
+
+            let dead_by_fn = [(fv1, dead1_view), (fv2, dead2_view)];
+
+            let cx: ModCx<'_, '_, '_, '_, _, RewriteModule, ()> =
+                ModCx::new(module, &m, (), &mam, &mut fam);
+            let mut r = cx.mutate();
+
+            let mut visited: Vec<FunctionView<'_, _>> = Vec::new();
+            r.for_each_function::<PatchBody>(|mut p| {
+                let fv = p.function();
+                visited.push(fv);
+                for (f, dead) in &dead_by_fn {
+                    if *f == fv {
+                        p.erase(dead)?;
+                    }
+                }
+                Ok(())
+            })?;
+
+            // Both definitions were visited; the declaration was skipped.
+            assert_eq!(visited.len(), 2);
+            assert!(visited.contains(&fv1));
+            assert!(visited.contains(&fv2));
+            assert!(!visited.contains(&decl_view));
+
+            // Each visited def now holds only `ret` — the dead `add` is gone.
+            assert_eq!(fv1.entry_block().expect("def").instruction_count(), 1);
+            assert_eq!(fv2.entry_block().expect("def").instruction_count(), 1);
             Ok(())
         })
     }

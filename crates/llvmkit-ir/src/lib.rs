@@ -227,13 +227,14 @@ pub use optimization_level::{
     OptimizationLevelMarker, ThinOrFullLtoPhase,
 };
 pub use pass_access::{
-    Downgrades, FnAccess, Inspect, ModAccess, MutatingFn, PatchBody, PipelineVerdict, ReshapeCfg,
-    RewriteModule, StaysVerified, VerdictFold,
+    Downgrades, FnAccess, Inspect, ModAccess, MutatingFn, MutatingModule, PatchBody,
+    PipelineVerdict, ReshapeCfg, RewriteModule, StaysVerified, VerdictFold,
 };
 pub use pass_context::{
     BasicBlockView, FnCx, FnPatch, FnReport, FnReshape, FunctionBody, FunctionPassContext,
-    FunctionView, ModuleFunctionViews, ModulePassContext, ReadOnlyFunctionPassContext,
-    ReadOnlyModulePassContext, TypedFunctionPassContext, TypedModulePassContext,
+    FunctionView, ModCx, ModReport, ModRewrite, ModuleFunctionViews, ModulePassContext,
+    ReadOnlyFunctionPassContext, ReadOnlyModulePassContext, TypedFunctionPassContext,
+    TypedModulePassContext,
 };
 pub use pass_instrumentation::{PassInstrumentationAnalysis, PassInstrumentationCallbacks};
 pub use pass_manager::{

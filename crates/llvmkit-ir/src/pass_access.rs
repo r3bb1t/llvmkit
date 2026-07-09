@@ -25,7 +25,7 @@
 //! (see [`PipelineVerdict`] and [`VerdictFold`]): read-only is the identity,
 //! any mutating member is absorbing.
 
-use crate::analysis::{CFGAnalyses, FunctionAnalysisList, PreservedAnalyses};
+use crate::analysis::{CFGAnalyses, FunctionAnalysisList, ModuleAnalysisList, PreservedAnalyses};
 use crate::module::{Module, ModuleBrand, Unverified};
 use crate::pass_context::FunctionView;
 
@@ -250,6 +250,62 @@ pub trait MutatingFn: FnAccess {
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
+        'ctx: 'm,
+        'ctx: 'r;
+
+    /// Build the mutator directly from a raw `&Module<Unverified>` token.
+    ///
+    /// Every mutating function rung's [`FnAccess::Token`] *is* a
+    /// `&Module<Unverified>`, but that equality is opaque behind the associated
+    /// type when the rung is a generic `FnA`, so a module→function visitor
+    /// ([`crate::pass_context::ModRewrite::for_each_function`]) that holds a
+    /// concrete module reference cannot feed it through [`Self::into_mutator`].
+    /// This entry point accepts the raw reference instead, dispatching to the
+    /// same `FnPatch`/`FnReshape` constructors. Internal plumbing; hidden from
+    /// authors.
+    #[doc(hidden)]
+    fn mutator_over_module<'m, 'r, 'ctx, B, R>(
+        module: &'m Module<'ctx, B, Unverified>,
+        function: FunctionView<'ctx, B>,
+        results: R::ResultRefs<'r>,
+    ) -> Self::Mutator<'m, 'r, 'ctx, B, R>
+    where
+        B: ModuleBrand + 'ctx,
+        R: FunctionAnalysisList<'ctx, B>,
+        'ctx: 'm,
+        'ctx: 'r;
+}
+
+/// A [`ModAccess`] rung that permits mutation — the module-level mirror of
+/// [`MutatingFn`]. Implemented for [`RewriteModule`] only; [`Inspect`]
+/// deliberately has no impl, which is exactly what removes
+/// `mutate()`/`unchanged()` from a read-only module context (read-only is
+/// structural, not checked; D1). Sealed through the [`ModAccess`] supertrait.
+///
+/// The mutator itself (`ModRewrite`) carries the module mutation token and the
+/// prefetched module-analysis results, so a transform can read analyses *while*
+/// it rewrites the module; see [`crate::pass_context`].
+pub trait MutatingModule: ModAccess {
+    /// The rung-specific mutator [`crate::pass_context::ModCx::mutate`] hands out
+    /// once it has consumed the entry context. `'m` borrows the module token,
+    /// `'r` borrows the prefetched results (mirrors the context's lifetime
+    /// split).
+    type Mutator<'m, 'r, 'ctx, B: ModuleBrand + 'ctx, R: ModuleAnalysisList<'ctx, B>>
+    where
+        'ctx: 'm,
+        'ctx: 'r;
+
+    /// Build the mutator from the consumed context's parts. Internal plumbing for
+    /// [`crate::pass_context::ModCx::mutate`]; hidden from authors (the rung impl
+    /// lives next to the mutator definition in `pass_context`).
+    #[doc(hidden)]
+    fn into_mutator<'m, 'r, 'ctx, B, R>(
+        token: Self::Token<'m, 'ctx, B>,
+        results: R::ResultRefs<'r>,
+    ) -> Self::Mutator<'m, 'r, 'ctx, B, R>
+    where
+        B: ModuleBrand + 'ctx,
+        R: ModuleAnalysisList<'ctx, B>,
         'ctx: 'm,
         'ctx: 'r;
 }
