@@ -708,6 +708,39 @@ wired (see `docs/future-work.md`). So `const REQUIRED` currently records the
 author's intent at the type level; today every queued pass runs regardless,
 because nothing skips any pass yet.
 
+### A tuple pipeline derives its output's verified state from its members
+
+The single-pass rule (section 10: verification state is part of the module type)
+extends to a *tuple of passes*, and this is where the typestate does the most
+work. `function_pipeline((A, B, C))` / `module_pipeline((...))` run their members
+in written order, and the module type that `.run(...)` hands back is computed at
+compile time from the members' rungs: if every member is `Inspect` (read-only)
+the output is `Module<Verified>`; if any member mutates, it is
+`Module<Unverified>`. It is a type-level fold — `StaysVerified` is the identity
+and `Downgrades` (any mutating rung) is absorbing — so the verdict is a property
+of the tuple, never a value anyone writes:
+
+```rust
+// Two read-only passes → the pipeline hands back a still-verified module.
+let m: Module<'_, _, Verified> =
+    function_pipeline((CountBlocks, EntryReachable)).run(verified, f, &mut analyses)?;
+
+// Swap in one mutating (`PatchBody`) pass and the SAME `.run(...)` call now
+// returns `Module<Unverified>` — the `Verified` annotation above stops compiling.
+let m: Module<'_, _, Unverified> =
+    function_pipeline((CountBlocks, InstSimplifyPass)).run(verified, f, &mut analyses)?;
+let _ = m.verify()?; // required before the next verified-only stage
+```
+
+There is no way to pull a `Module<Verified>` out of a pipeline that contains a
+mutating pass, and no way to forget the re-verify: the return type carries the
+answer. LLVM's pipelines leave "is the IR still verified after this?" to
+convention. The runtime `Dyn` containers can't run this fold (their member list
+is only known at run time), so they commit at construction instead —
+`DynReadOnlyFunctionPipeline` accepts only `Inspect` passes and always yields
+`Module<Verified>`, while `DynFunctionPipeline` accepts any pass and always
+yields `Module<Unverified>`.
+
 ## What llvmkit still verifies at runtime
 
 `llvmkit` intentionally does not pretend every LLVM rule is local enough for the
