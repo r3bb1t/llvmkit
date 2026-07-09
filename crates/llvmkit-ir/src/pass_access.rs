@@ -25,6 +25,8 @@
 //! (see [`PipelineVerdict`] and [`VerdictFold`]): read-only is the identity,
 //! any mutating member is absorbing.
 
+#![deny(missing_docs)]
+
 use crate::analysis::{CFGAnalyses, FunctionAnalysisList, ModuleAnalysisList, PreservedAnalyses};
 use crate::module::{Module, ModuleBrand, Unverified};
 use crate::pass_context::FunctionView;

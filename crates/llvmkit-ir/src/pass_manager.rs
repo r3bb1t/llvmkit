@@ -84,6 +84,8 @@
 //! }
 //! ```
 
+#![deny(missing_docs)]
+
 use crate::IrResult;
 use crate::analysis::{
     AllAnalysesOnFunction, AllAnalysesOnModule, Analyses, FunctionAnalysisList,

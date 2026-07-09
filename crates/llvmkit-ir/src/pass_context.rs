@@ -50,6 +50,8 @@
 //! }
 //! ```
 
+#![deny(missing_docs)]
+
 use core::marker::PhantomData;
 
 use super::BasicBlock;

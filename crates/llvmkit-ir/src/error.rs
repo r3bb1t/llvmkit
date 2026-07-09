@@ -10,6 +10,8 @@
 //! (e.g. cross-Module mixing), the corresponding runtime variant is
 //! deliberately *not* present here — see the IR foundation plan, Pivot 4.
 
+#![deny(missing_docs)]
+
 use core::fmt;
 
 /// Human-readable label for a [`Type`](crate::Type) kind, embedded in
@@ -17,27 +19,49 @@ use core::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum TypeKindLabel {
+    /// The `void` type.
     Void,
+    /// The 16-bit IEEE half-precision float (`half`).
     Half,
+    /// The 16-bit brain-float (`bfloat`).
     BFloat,
+    /// The 32-bit IEEE single-precision float (`float`).
     Float,
+    /// The 64-bit IEEE double-precision float (`double`).
     Double,
+    /// The 80-bit x87 extended-precision float (`x86_fp80`).
     X86Fp80,
+    /// The 128-bit IEEE quad-precision float (`fp128`).
     Fp128,
+    /// The 128-bit PowerPC double-double float (`ppc_fp128`).
     PpcFp128,
+    /// A basic-block `label` type.
     Label,
+    /// The `metadata` type.
     Metadata,
+    /// The `token` type.
     Token,
+    /// The x86 AMX tile type (`x86_amx`).
     X86Amx,
+    /// The WebAssembly exception-reference type (`exnref`).
     WasmExnRef,
+    /// An arbitrary-width integer type (`iN`).
     Integer,
+    /// A function type.
     Function,
+    /// A pointer type.
     Pointer,
+    /// A struct type.
     Struct,
+    /// An array type.
     Array,
+    /// A fixed-length vector type.
     FixedVector,
+    /// A scalable vector type (`<vscale x N x T>`).
     ScalableVector,
+    /// A typed (non-opaque) pointer type.
     TypedPointer,
+    /// A target extension type (`target("...")`).
     TargetExt,
 }
 
@@ -77,15 +101,25 @@ impl fmt::Display for TypeKindLabel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ValueCategoryLabel {
+    /// A constant value.
     Constant,
+    /// A function argument.
     Argument,
+    /// A basic block referenced as a value.
     BasicBlock,
+    /// A function value.
     Function,
+    /// An instruction result.
     Instruction,
+    /// A global variable.
     GlobalVariable,
+    /// A global alias.
     GlobalAlias,
+    /// A global indirect function (`ifunc`).
     GlobalIFunc,
+    /// Metadata wrapped as a value.
     MetadataAsValue,
+    /// An inline-assembly value.
     InlineAsm,
 }
 
@@ -252,9 +286,6 @@ pub enum VerifierRule {
     /// Mirrors `Verifier::visitInstruction` ("Only PHI nodes may
     /// reference their own value").
     SelfReference,
-    /// In-block use-before-def: an operand whose defining instruction
-    /// follows the use in the same basic block.
-    /// Mirrors `Verifier::verifyDominatesUse`.
     /// `fneg` operand or result is not floating-point, or result type
     /// does not match operand type. Mirrors `Verifier::visitFNeg`.
     FNegTypeMismatch,
@@ -335,6 +366,9 @@ pub enum VerifierRule {
     /// Mirrors `Verifier::verifyRangeLikeMetadata`.
     RangeMetadataContiguous,
 
+    /// In-block use-before-def: an operand whose defining instruction follows
+    /// the use within the same basic block. Mirrors
+    /// `Verifier::verifyDominatesUse`.
     UseBeforeDef,
 }
 
@@ -458,51 +492,82 @@ pub enum IrError {
     /// [`MIN_INT_BITS`]: crate::MIN_INT_BITS
     /// [`MAX_INT_BITS`]: crate::MAX_INT_BITS
     #[error("integer width {bits} out of range [1, 1<<23]")]
-    InvalidIntegerWidth { bits: u32 },
+    InvalidIntegerWidth {
+        /// The rejected integer bit width.
+        bits: u32,
+    },
 
     /// A type was passed where a different kind was expected.
     #[error("type mismatch: expected {expected}, got {got}")]
     TypeMismatch {
+        /// The type kind the API required.
         expected: TypeKindLabel,
+        /// The type kind actually supplied.
         got: TypeKindLabel,
     },
 
     /// Two integer or vector operands have differing element widths or
     /// vector lengths.
     #[error("operand widths differ: lhs={lhs} rhs={rhs}")]
-    OperandWidthMismatch { lhs: u32, rhs: u32 },
+    OperandWidthMismatch {
+        /// Element width (or vector length) of the left operand.
+        lhs: u32,
+        /// Element width (or vector length) of the right operand.
+        rhs: u32,
+    },
 
     /// `set_struct_body` called twice on the same named struct.
     #[error("named struct {name:?} already has a body")]
-    StructBodyAlreadySet { name: String },
+    StructBodyAlreadySet {
+        /// Name of the named struct that already has a body.
+        name: String,
+    },
 
     /// A struct schema found an existing named struct with a different body.
     #[error("named struct {name:?} has a different body")]
-    StructBodyMismatch { name: String },
+    StructBodyMismatch {
+        /// Name of the named struct whose existing body differs.
+        name: String,
+    },
 
     /// An operation that requires a sized type was passed a type that has
     /// no statically-known size (e.g. `function`, `label`, opaque struct).
     #[error("cannot allocate value of unsized type {kind}")]
-    UnsizedType { kind: TypeKindLabel },
+    UnsizedType {
+        /// Kind of the unsized type that was rejected.
+        kind: TypeKindLabel,
+    },
 
     /// A value with the wrong category was passed where a specific kind was
     /// expected (e.g. an instruction handed to an API that needs a constant).
     #[error("value category mismatch: expected {expected}, got {got}")]
     ValueCategoryMismatch {
+        /// The value category the API required.
         expected: ValueCategoryLabel,
+        /// The value category actually supplied.
         got: ValueCategoryLabel,
     },
 
     /// A function operation referenced a parameter slot that does not exist.
     #[error("function argument index {index} out of range (have {count})")]
-    ArgumentIndexOutOfRange { index: u32, count: u32 },
+    ArgumentIndexOutOfRange {
+        /// The out-of-range parameter slot that was requested.
+        index: u32,
+        /// The number of parameters the function actually has.
+        count: u32,
+    },
 
     /// `extractvalue` / `insertvalue` indexed past the end of an array or
     /// struct's element list. Mirrors `ExtractValueInst::getIndexedType`
     /// (`lib/IR/Instructions.cpp`), which rejects out-of-range indices
     /// rather than clamping them.
     #[error("aggregate index {index} out of range (have {count})")]
-    AggregateIndexOutOfRange { index: u32, count: u64 },
+    AggregateIndexOutOfRange {
+        /// The out-of-range aggregate index that was requested.
+        index: u32,
+        /// The number of elements in the indexed array or struct.
+        count: u64,
+    },
 
     /// A `getelementptr` index sequence does not index into the source
     /// element type: a struct index that is not a constant `i32` in range,
@@ -515,7 +580,12 @@ pub enum IrError {
     /// A typed function facade was requested with a parameter tuple whose arity
     /// does not match the function signature.
     #[error("function parameter count mismatch: expected {expected}, got {got}")]
-    FunctionParameterCountMismatch { expected: u32, got: u32 },
+    FunctionParameterCountMismatch {
+        /// The arity the function signature declares.
+        expected: u32,
+        /// The arity of the parameter tuple that was supplied.
+        got: u32,
+    },
 
     /// A call/invoke/callbr site passed a wrong number of arguments for its
     /// callee's signature. Mirrors the `CallInst::init` /
@@ -525,7 +595,12 @@ pub enum IrError {
     /// non-vararg callee requires an exact match, a vararg callee
     /// requires at least as many arguments as declared parameters.
     #[error("call argument count mismatch: expected {expected}, got {got}")]
-    CallArgumentCountMismatch { expected: u32, got: u32 },
+    CallArgumentCountMismatch {
+        /// The parameter count the callee's signature declares.
+        expected: u32,
+        /// The number of arguments actually passed.
+        got: u32,
+    },
 
     /// A call/invoke/callbr site passed an argument whose type does not
     /// exactly match the callee's parameter type at that position.
@@ -537,8 +612,11 @@ pub enum IrError {
     /// "argument is not of expected type 'i32'" spells the full type.
     #[error("call argument #{index} type mismatch: expected {expected}, got {got}")]
     CallArgumentTypeMismatch {
+        /// Zero-based position of the mismatched argument.
         index: u32,
+        /// IR-textual rendering of the callee's parameter type at `index`.
         expected: String,
+        /// IR-textual rendering of the argument type actually passed.
         got: String,
     },
 
@@ -557,56 +635,96 @@ pub enum IrError {
 
     /// `Module::add_function` saw a name already bound at module scope.
     #[error("a function named {name:?} already exists in this module")]
-    DuplicateFunctionName { name: String },
+    DuplicateFunctionName {
+        /// The function name that is already bound at module scope.
+        name: String,
+    },
 
     /// A reserved `llvm.*` name is absent from the generated LLVM intrinsic table.
     #[error("unknown intrinsic `{name}`")]
-    UnknownIntrinsic { name: String },
+    UnknownIntrinsic {
+        /// The `llvm.*` name absent from the generated intrinsic table.
+        name: String,
+    },
 
     /// Ordinary function construction attempted to use a generated intrinsic name.
     #[error("intrinsic name `{name}` is reserved; use Module::get_or_insert_intrinsic_declaration")]
-    ReservedIntrinsicName { name: String },
+    ReservedIntrinsicName {
+        /// The reserved intrinsic name that ordinary construction attempted.
+        name: String,
+    },
 
     /// A known intrinsic's name, overload suffix, or function signature is invalid.
     #[error("intrinsic `{name}` signature mismatch")]
-    IntrinsicSignatureMismatch { name: String },
+    IntrinsicSignatureMismatch {
+        /// Name of the intrinsic whose signature could not be satisfied.
+        name: String,
+    },
 
     /// `IRBuilder::build_ret` was given a value whose type does not
     /// match the function's declared return type.
     #[error("return type mismatch: function returns {expected}, got {got}")]
     ReturnTypeMismatch {
+        /// The type kind the function is declared to return.
         expected: TypeKindLabel,
+        /// The type kind of the value passed to `build_ret`.
         got: TypeKindLabel,
     },
 
     /// An immediate value does not fit in the destination integer type.
     #[error("immediate {value} does not fit in {bits} bits")]
-    ImmediateOverflow { value: u128, bits: u32 },
+    ImmediateOverflow {
+        /// The immediate value that does not fit.
+        value: u128,
+        /// Bit width of the destination integer type.
+        bits: u32,
+    },
     /// A builder method was called with arguments that violate
     /// LangRef invariants the type system can't catch (e.g. `exact`
     /// flag on `add`, non-power-of-two alignment).
     #[error("invalid operation: {message}")]
-    InvalidOperation { message: &'static str },
+    InvalidOperation {
+        /// Human-readable description of the violated LangRef invariant.
+        message: &'static str,
+    },
     /// `target datalayout = "..."` directive could not be parsed.
     /// Mirrors the `Error` returns of
     /// `lib/IR/DataLayout.cpp::DataLayout::parseLayoutString`.
     #[error("invalid datalayout: {reason}")]
-    InvalidDataLayout { reason: String },
+    InvalidDataLayout {
+        /// Why the `target datalayout` string could not be parsed.
+        reason: String,
+    },
     /// A textual optimization level did not match LLVM's built-in aliases.
     #[error("invalid optimization level '{level}'")]
-    InvalidOptimizationLevel { level: String },
+    InvalidOptimizationLevel {
+        /// The unrecognized optimization-level text.
+        level: String,
+    },
     /// A textual pass or pipeline name contains invalid syntax.
     #[error("invalid pass pipeline name '{name}'")]
-    InvalidPassPipelineName { name: String },
+    InvalidPassPipelineName {
+        /// The pass or pipeline name containing invalid syntax.
+        name: String,
+    },
     /// A textual pass pipeline has invalid delimiter nesting.
     #[error("invalid pass pipeline '{pipeline}'")]
-    InvalidPassPipeline { pipeline: String },
+    InvalidPassPipeline {
+        /// The pipeline string with invalid delimiter nesting.
+        pipeline: String,
+    },
     /// An analysis result was requested before its analysis pass was registered.
     #[error("analysis {name} is not registered")]
-    AnalysisNotRegistered { name: &'static str },
+    AnalysisNotRegistered {
+        /// Type name of the analysis that was never registered.
+        name: &'static str,
+    },
     /// An invalidator asked for a cached analysis result that is absent.
     #[error("analysis {name} is not cached")]
-    AnalysisNotCached { name: &'static str },
+    AnalysisNotCached {
+        /// Type name of the analysis whose cached result is absent.
+        name: &'static str,
+    },
     /// IR validation failure detected by [`Module::verify`](crate::Module::verify) /
     /// [`Module::verify_borrowed`](crate::Module::verify_borrowed). The
     /// `rule` discriminator names the LangRef invariant that was
@@ -616,9 +734,13 @@ pub enum IrError {
     /// `llvm/lib/IR/Verifier.cpp`.
     #[error("verifier: {rule}: {message}")]
     VerifierFailure {
+        /// The LangRef invariant that was violated.
         rule: VerifierRule,
+        /// Name of the function under verification, if known.
         function: Option<String>,
+        /// Name of the offending basic block, if known.
         block: Option<String>,
+        /// Human-readable description mirroring `Verifier::CheckFailed`.
         message: String,
     },
 
@@ -628,7 +750,12 @@ pub enum IrError {
     /// SSA construction when the caller declared the variable without
     /// opting into poison-on-undef.
     #[error("use of undefined SSA variable {variable:?} in block {block:?}")]
-    SsaUseOfUndefinedVariable { variable: String, block: String },
+    SsaUseOfUndefinedVariable {
+        /// Name of the variable read on a path with no preceding write.
+        variable: String,
+        /// Name of the block where the undefined read occurred.
+        block: String,
+    },
 
     /// One of [`crate::SsaBuilder`]'s terminator methods (`br` / `cond_br`
     /// / `switch`) recorded an incoming edge against a destination block
@@ -636,24 +763,36 @@ pub enum IrError {
     /// algorithm requires every predecessor edge to be recorded before
     /// the block is sealed.
     #[error("branch to already-sealed SSA block {block:?}")]
-    SsaBranchToSealedBlock { block: String },
+    SsaBranchToSealedBlock {
+        /// Name of the destination block that was already sealed.
+        block: String,
+    },
 
     /// [`crate::SsaBuilder::seal_block`] was called twice on the same
     /// block.
     #[error("SSA block {block:?} is already sealed")]
-    SsaBlockAlreadySealed { block: String },
+    SsaBlockAlreadySealed {
+        /// Name of the block that was sealed a second time.
+        block: String,
+    },
 
     /// An [`crate::SsaBuilder`] operation required a block that has not
     /// yet received its terminator (still open for phi head-insertion or
     /// further construction) but found one whose insertion capability was
     /// already consumed by a terminator.
     #[error("SSA block {block:?} is already filled (terminated)")]
-    SsaBlockAlreadyFilled { block: String },
+    SsaBlockAlreadyFilled {
+        /// Name of the block whose insertion capability was already consumed.
+        block: String,
+    },
 
     /// [`crate::SsaBuilder`] required a block to be filled (terminated)
     /// before proceeding, but the block has no terminator yet.
     #[error("SSA block {block:?} is not yet filled (unterminated)")]
-    SsaUnfilledBlock { block: String },
+    SsaUnfilledBlock {
+        /// Name of the block that still lacks a terminator.
+        block: String,
+    },
 
     /// An [`crate::ssa_builder::IntVariable`] / `FloatVariable` /
     /// `PointerVariable` handle was used against a different

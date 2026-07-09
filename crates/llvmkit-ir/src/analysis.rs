@@ -2,6 +2,8 @@
 //! `Analysis.h` / `PassManager.h` pieces needed by llvmkit's first
 //! function and module analyses.
 
+#![deny(missing_docs)]
+
 use std::any::{Any, TypeId, type_name};
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
@@ -20,6 +22,7 @@ use crate::{IrError, IrResult};
 pub struct AnalysisKeyId(u64);
 
 impl AnalysisKeyId {
+    /// Wrap a raw 64-bit identifier as an analysis key.
     #[inline]
     pub const fn new(id: u64) -> Self {
         Self(id)
@@ -32,6 +35,7 @@ impl AnalysisKeyId {
 pub struct AnalysisSetKeyId(u64);
 
 impl AnalysisSetKeyId {
+    /// Wrap a raw 64-bit identifier as an analysis-set key.
     #[inline]
     pub const fn new(id: u64) -> Self {
         Self(id)
@@ -296,8 +300,11 @@ impl PreservedAnalysisChecker<'_> {
 
 /// A module analysis pass.
 pub trait ModuleAnalysis<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
+    /// The cached result value this analysis produces.
     type Result: ModuleAnalysisResult<'ctx, B> + 'static;
 
+    /// Compute the analysis over `module`, using `am` to fetch any analyses it
+    /// depends on.
     fn run(
         &self,
         module: ModuleView<'ctx, B>,
@@ -320,8 +327,11 @@ pub trait ModuleAnalysisResult<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
 
 /// A function analysis pass.
 pub trait FunctionAnalysis<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
+    /// The cached result value this analysis produces.
     type Result: FunctionAnalysisResult<'ctx, B> + 'static;
 
+    /// Compute the analysis over `function`, using `am` to fetch any analyses
+    /// it depends on.
     fn run(
         &self,
         function: FunctionView<'ctx, B>,
@@ -400,6 +410,10 @@ pub struct FunctionAnalysisInvalidator<'a, 'ctx, B: ModuleBrand = Brand<'ctx>> {
 }
 
 impl<'a, 'ctx, B: ModuleBrand> FunctionAnalysisInvalidator<'a, 'ctx, B> {
+    /// Report whether analysis `A`'s result for this function is being
+    /// invalidated: `true` unless `A` (or the `AllAnalysesOnFunction` set) is
+    /// preserved. Errors with [`IrError::AnalysisNotCached`] if `A` was not
+    /// cached when invalidation began.
     pub fn invalidate<A>(&mut self) -> IrResult<bool>
     where
         A: FunctionAnalysis<'ctx, B>,
@@ -423,6 +437,10 @@ pub struct ModuleAnalysisInvalidator<'a, 'ctx, B: ModuleBrand = Brand<'ctx>> {
 }
 
 impl<'a, 'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisInvalidator<'a, 'ctx, B> {
+    /// Report whether analysis `A`'s result for this module is being
+    /// invalidated: `true` unless `A` (or the `AllAnalysesOnModule` set) is
+    /// preserved. Errors with [`IrError::AnalysisNotCached`] if `A` was not
+    /// cached when invalidation began.
     pub fn invalidate<A>(&mut self) -> IrResult<bool>
     where
         A: ModuleAnalysis<'ctx, B>,
@@ -447,6 +465,7 @@ pub struct FunctionAnalysisManager<'ctx, B: ModuleBrand = Brand<'ctx>> {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
+    /// Create an empty manager: no analyses registered and no cached results.
     pub fn new() -> Self {
         Self {
             analyses: HashMap::new(),
@@ -456,10 +475,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
         }
     }
 
+    /// Attach the instrumentation callbacks fired before and after each
+    /// analysis run.
     pub fn set_instrumentation(&mut self, callbacks: PassInstrumentationCallbacks) {
         self.instrumentation = Some(callbacks);
     }
 
+    /// Register a function-analysis pass instance, keyed by its type, so its
+    /// result can be computed on demand by [`Self::get_result`].
     pub fn register_pass<A>(&mut self, analysis: A)
     where
         A: FunctionAnalysis<'ctx, B>,
@@ -488,6 +511,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
         }
     }
 
+    /// Fetch `function`'s result for analysis `A`, running the pass and caching
+    /// the result on the first request. Errors with
+    /// [`IrError::AnalysisNotRegistered`] if `A` was never registered.
     pub fn get_result<A, F>(&mut self, function: F) -> IrResult<&A::Result>
     where
         A: FunctionAnalysis<'ctx, B>,
@@ -516,6 +542,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
             })
     }
 
+    /// Return `function`'s already-cached result for `A`, or `None` if it has
+    /// not been computed. Never runs the pass.
     pub fn get_cached_result<A, F>(&self, function: F) -> Option<&A::Result>
     where
         A: FunctionAnalysis<'ctx, B>,
@@ -541,6 +569,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
             .downcast_ref::<R>()
     }
 
+    /// Drop every cached result for `function` that `pa` does not preserve,
+    /// consulting each result's own `invalidate` hook.
     pub fn invalidate<F>(&mut self, function: F, pa: &PreservedAnalyses) -> IrResult<()>
     where
         F: Into<FunctionView<'ctx, B>>,
@@ -567,6 +597,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
         Ok(())
     }
 
+    /// Propagate a module pass's preserved set `pa` down to the function
+    /// analyses: clears every cached result when the module→function proxy is
+    /// not preserved, otherwise invalidates each function's non-preserved
+    /// results (a no-op when the whole `AllAnalysesOnFunction` set survives).
     pub fn invalidate_module(
         &mut self,
         module: ModuleView<'ctx, B>,
@@ -592,10 +626,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
         Ok(())
     }
 
+    /// Drop every cached function-analysis result.
     pub fn clear(&mut self) {
         self.results.clear();
     }
 
+    /// Drop the cached result of analysis `A` for `function`, if present.
     pub fn clear_analysis<A, F>(&mut self, function: F)
     where
         A: FunctionAnalysis<'ctx, B>,
@@ -621,6 +657,7 @@ pub struct ModuleAnalysisManager<'ctx, B: ModuleBrand = Brand<'ctx>> {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
+    /// Create an empty manager: no analyses registered and no cached results.
     pub fn new() -> Self {
         Self {
             analyses: HashMap::new(),
@@ -630,10 +667,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
         }
     }
 
+    /// Attach the instrumentation callbacks fired before and after each
+    /// analysis run.
     pub fn set_instrumentation(&mut self, callbacks: PassInstrumentationCallbacks) {
         self.instrumentation = Some(callbacks);
     }
 
+    /// Register a module-analysis pass instance, keyed by its type, so its
+    /// result can be computed on demand by [`Self::get_result`].
     pub fn register_pass<A>(&mut self, analysis: A)
     where
         A: ModuleAnalysis<'ctx, B>,
@@ -662,6 +703,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
         }
     }
 
+    /// Fetch the module's result for analysis `A`, running the pass and caching
+    /// the result on the first request. Takes a verified module; errors with
+    /// [`IrError::AnalysisNotRegistered`] if `A` was never registered.
     pub fn get_result<A>(
         &mut self,
         module: &crate::module::Module<'ctx, B, crate::module::Verified>,
@@ -722,6 +766,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
             })
     }
 
+    /// Return the module's already-cached result for `A`, or `None` if it has
+    /// not been computed. Never runs the pass.
     pub fn get_cached_result<A, M>(&self, module: M) -> Option<&A::Result>
     where
         A: ModuleAnalysis<'ctx, B>,
@@ -734,6 +780,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
             .downcast_ref::<A::Result>()
     }
 
+    /// Drop every cached result for `module` that `pa` does not preserve,
+    /// consulting each result's own `invalidate` hook.
     pub fn invalidate<M>(&mut self, module: M, pa: &PreservedAnalyses) -> IrResult<()>
     where
         M: Into<ModuleView<'ctx, B>>,
@@ -757,10 +805,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
         Ok(())
     }
 
+    /// Drop every cached module-analysis result.
     pub fn clear(&mut self) {
         self.results.clear();
     }
 
+    /// Drop the cached result of analysis `A` for `module`, if present.
     pub fn clear_analysis<A, M>(&mut self, module: M)
     where
         A: ModuleAnalysis<'ctx, B>,
@@ -786,6 +836,8 @@ pub struct Analyses<'ctx, B: ModuleBrand = Brand<'ctx>> {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Analyses<'ctx, B> {
+    /// Create a bundle wrapping fresh, empty module and function analysis
+    /// managers.
     pub fn new() -> Self {
         Self {
             module: ModuleAnalysisManager::new(),
@@ -808,14 +860,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Analyses<'ctx, B> {
         &self.function
     }
 
+    /// Mutable access to the inner function analysis manager.
     pub fn function_manager_mut(&mut self) -> &mut FunctionAnalysisManager<'ctx, B> {
         &mut self.function
     }
 
+    /// Shared access to the inner module analysis manager.
     pub fn module_manager(&self) -> &ModuleAnalysisManager<'ctx, B> {
         &self.module
     }
 
+    /// Mutable access to the inner module analysis manager.
     pub fn module_manager_mut(&mut self) -> &mut ModuleAnalysisManager<'ctx, B> {
         &mut self.module
     }
@@ -994,18 +1049,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisList<'ctx, B> for () {
 /// Call sites never name them — the position is inferred from the analysis type.
 #[derive(Debug, Clone, Copy)]
 pub struct Idx0(());
+/// Index marker for the analysis at `Requires` position 1 (see [`Idx0`]).
 #[derive(Debug, Clone, Copy)]
 pub struct Idx1(());
+/// Index marker for the analysis at `Requires` position 2 (see [`Idx0`]).
 #[derive(Debug, Clone, Copy)]
 pub struct Idx2(());
+/// Index marker for the analysis at `Requires` position 3 (see [`Idx0`]).
 #[derive(Debug, Clone, Copy)]
 pub struct Idx3(());
+/// Index marker for the analysis at `Requires` position 4 (see [`Idx0`]).
 #[derive(Debug, Clone, Copy)]
 pub struct Idx4(());
+/// Index marker for the analysis at `Requires` position 5 (see [`Idx0`]).
 #[derive(Debug, Clone, Copy)]
 pub struct Idx5(());
+/// Index marker for the analysis at `Requires` position 6 (see [`Idx0`]).
 #[derive(Debug, Clone, Copy)]
 pub struct Idx6(());
+/// Index marker for the analysis at `Requires` position 7 (see [`Idx0`]).
 #[derive(Debug, Clone, Copy)]
 pub struct Idx7(());
 
