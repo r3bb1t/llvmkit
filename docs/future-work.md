@@ -224,3 +224,50 @@ deliberately deferred; each cites its upstream anchor.
   `<N x i32>` vector-index case is unreachable here because a vector-index GEP
   requires a vector base, which is rejected earlier. Revisit the check when
   vector GEP bases land.
+
+## Pass API v2 — deferred
+
+The `feature-4/pass-api-v2` branch shipped the capability-graded pass API
+(rungs, contexts/mutators, `FunctionPass`/`ModulePass`, single-pass drivers,
+static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
+`#[function_pass]`/`#[module_pass]` sugar). What it deliberately scoped out:
+
+- **Executable textual / string pipelines** -- `pass_pipeline.rs` parses
+  opt-style pipeline strings into names and recipes
+  (`parse_pass_pipeline_text`, `PassPipelineRecipe`, `PassPipelineTextName`),
+  but there is no `NAME`->pass-constructor registry, so a parsed pipeline
+  cannot yet be *run*. A registry mapping each pass's `NAME` to a boxed-pass
+  constructor would let a textual pipeline drive the `Dyn` containers.
+- **Per-function analyses in `ModRewrite::for_each_function`** -- the
+  module->function visitor (`pass_context.rs`) builds each per-function mutator
+  with empty results `()`, so a `FnPatch::analysis` call inside the visitor has
+  no members to select. A future revision threads a per-function `Requires`
+  list (prefetched per visited function) through the visitor.
+- **Instrumentation wiring** -- the `const NAME` / `const REQUIRED` pass
+  members and `PassInstrumentationCallbacks` (`pass_instrumentation.rs`) exist,
+  but the single-pass drivers and pipelines (`pass_manager.rs`) do not yet fire
+  before/after-pass instrumentation callbacks or honor skip decisions. The
+  `pass_names()` / `has_required_pass()` accessors on the `Dyn` containers are
+  the surfaced hooks awaiting a consumer.
+- **Loop and CGSCC rungs** -- the capability lattice (`pass_access.rs`) covers
+  single-function-body and whole-module rungs only; loop-nest and
+  call-graph-SCC pass rungs (upstream `LoopPassManager` / `CGSCCPassManager`)
+  are unmodeled.
+- **`SimplifyDemandedBitsPass` vestigial `Requires`** -- it declares
+  `type Requires = (DemandedBitsAnalysis,)` but recomputes demanded bits
+  internally on each worklist iteration and never calls `cx.analysis()`
+  (`demanded_bits.rs` ~710-728), so the prefetch is dead work. Consider
+  narrowing it to `Requires = ()`.
+- **`Module::scratch_unverified` footgun** -- the read-only `Dyn` containers
+  (`pass_manager.rs`) call the `pub(crate)` `Module::scratch_unverified`
+  (`module.rs` ~2977) to mint a throwaway `Unverified` alias purely to satisfy
+  the erased pass signature; every member is `Inspect`, so the token projects
+  to `()` and never reaches a mutator. It is sound today by that argument, but
+  a `pub(crate)` unverify with no caller marker is a footgun -- a sealed
+  caller-marker token would pin that only the read-only drivers can mint it.
+- **Compile-fail `.stderr` canonical-rustc bless** -- the
+  `typestate_compile_fail` suite carries two pre-existing `.stderr` drifts
+  (`folder_typed_wrong_width`, `extract_value_empty_indices`) blessed against a
+  different (CI) rustc, plus the five new Pass API v2 fixtures blessed on the
+  local rustc. The whole set should be re-blessed on the canonical CI rustc so
+  every fixture matches on the reference toolchain.

@@ -1,0 +1,7 @@
+error: missing `name = "..."`; a pass must declare its `NAME`
+  --> tests/compile_fail/function_pass_missing_name.rs:19:1
+   |
+19 | #[function_pass(access = Inspect)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the attribute macro `function_pass` (in Nightly builds, run with -Z macro-backtrace for more info)

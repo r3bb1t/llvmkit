@@ -1,0 +1,25 @@
+error[E0277]: analysis `DominatorTreeAnalysis` is not in this pass's `Requires` list `()`
+  --> tests/compile_fail/undeclared_analysis_in_pass_body.rs:28:22
+   |
+28 |         let _dt = cx.analysis::<DominatorTreeAnalysis, _>();
+   |                      ^^^^^^^^ the trait `AnalysisSelector<'_, B, DominatorTreeAnalysis, _>` is not implemented for `()`
+   |
+   = note: add the analysis marker to `type Requires` on the pass, or use the erased pass path for ad-hoc queries
+   = help: the following other types implement trait `AnalysisSelector<'ctx, B, A, I>`:
+             `(A0, A1)` implements `AnalysisSelector<'_, B, A0, Idx0>`
+             `(A0, A1)` implements `AnalysisSelector<'_, B, A1, Idx1>`
+             `(A0, A1, A2)` implements `AnalysisSelector<'_, B, A0, Idx0>`
+             `(A0, A1, A2)` implements `AnalysisSelector<'_, B, A1, Idx1>`
+             `(A0, A1, A2)` implements `AnalysisSelector<'_, B, A2, Idx2>`
+             `(A0, A1, A2, A3)` implements `AnalysisSelector<'_, B, A0, Idx0>`
+             `(A0, A1, A2, A3)` implements `AnalysisSelector<'_, B, A1, Idx1>`
+             `(A0, A1, A2, A3)` implements `AnalysisSelector<'_, B, A2, Idx2>`
+           and $N others
+note: required by a bound in `FnCx::<'pm, 'r, 'ctx, B, A, R>::analysis`
+  --> src/pass_context.rs
+   |
+   |     pub fn analysis<A2, I>(&self) -> &'r A2::Result
+   |            -------- required by a bound in this associated function
+...
+   |         R: AnalysisSelector<'ctx, B, A2, I>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `FnCx::<'pm, 'r, 'ctx, B, A, R>::analysis`

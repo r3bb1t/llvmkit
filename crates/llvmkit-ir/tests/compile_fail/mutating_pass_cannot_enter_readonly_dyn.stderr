@@ -1,0 +1,23 @@
+error[E0277]: `PatchBody` is a mutating function rung; a read-only Dyn pipeline accepts only `Inspect` passes
+  --> tests/compile_fail/mutating_pass_cannot_enter_readonly_dyn.rs:20:19
+   |
+20 |     pipeline.push(DcePass);
+   |              ---- ^^^^^^^ not a read-only (`Inspect`) capability rung
+   |              |
+   |              required by a bound introduced by this call
+   |
+   = help: the trait `ReadOnlyFn` is not implemented for `PatchBody`
+   = note: push mutating passes into `DynFunctionPipeline` (the transform container), which yields `Module<Unverified>`
+help: the trait `ReadOnlyFn` is implemented for `llvmkit_ir::Inspect`
+  --> src/pass_manager.rs
+   |
+   | impl ReadOnlyFn for Inspect {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `DynReadOnlyFunctionPipeline::<'ctx, B>::push`
+  --> src/pass_manager.rs
+   |
+   |     pub fn push<P>(&mut self, pass: P)
+   |            ---- required by a bound in this associated function
+...
+   |         P::Access: ReadOnlyFn,
+   |                    ^^^^^^^^^^ required by this bound in `DynReadOnlyFunctionPipeline::<'ctx, B>::push`

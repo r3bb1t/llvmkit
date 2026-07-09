@@ -1,0 +1,64 @@
+error[E0277]: the trait bound `RewriteModule: FnAccess` is not satisfied
+  --> tests/compile_fail/function_pass_wrong_level_access.rs:22:1
+   |
+22 | #[function_pass(name = "wrong-level", access = RewriteModule)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `FnAccess` is not implemented for `RewriteModule`
+   |
+help: the following other types implement trait `FnAccess`
+  --> src/pass_access.rs
+   |
+   | impl FnAccess for Inspect {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^ `llvmkit_ir::Inspect`
+...
+   | impl FnAccess for PatchBody {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `PatchBody`
+...
+   | impl FnAccess for ReshapeCfg {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ReshapeCfg`
+note: required by a bound in `llvmkit_ir::FunctionPass::Access`
+  --> src/pass_manager.rs
+   |
+   |     type Access: FnAccess;
+   |                  ^^^^^^^^ required by this bound in `FunctionPass::Access`
+   = note: this error originates in the attribute macro `function_pass` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `RewriteModule: FnAccess` is not satisfied
+  --> tests/compile_fail/function_pass_wrong_level_access.rs:22:1
+   |
+22 | #[function_pass(name = "wrong-level", access = RewriteModule)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `FnAccess` is not implemented for `RewriteModule`
+   |
+help: the following other types implement trait `FnAccess`
+  --> src/pass_access.rs
+   |
+   | impl FnAccess for Inspect {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^ `llvmkit_ir::Inspect`
+...
+   | impl FnAccess for PatchBody {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `PatchBody`
+...
+   | impl FnAccess for ReshapeCfg {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ReshapeCfg`
+note: required by a bound in `FnCx`
+  --> src/pass_context.rs
+   |
+   | pub struct FnCx<'pm, 'r, 'ctx, B, A, R>
+   |            ---- required by a bound in this struct
+...
+   |     A: FnAccess,
+   |        ^^^^^^^^ required by this bound in `FnCx`
+   = note: this error originates in the attribute macro `function_pass` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0599]: the method `done` exists for struct `FnCx<'_, '_, 'ctx, B, RewriteModule, ()>`, but its trait bounds were not satisfied
+  --> tests/compile_fail/function_pass_wrong_level_access.rs:28:15
+   |
+28 |         Ok(cx.done())
+   |               ^^^^ method cannot be called on `FnCx<'_, '_, 'ctx, B, RewriteModule, ()>` due to unsatisfied trait bounds
+   |
+  ::: src/pass_access.rs
+   |
+   | pub enum RewriteModule {}
+   | ---------------------- doesn't satisfy `RewriteModule: FnAccess`
+   |
+   = note: the following trait bounds were not satisfied:
+           `RewriteModule: FnAccess`

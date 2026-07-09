@@ -19,8 +19,15 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 1337. Genuinely recounted (not incremental
-arithmetic) on 2026-07-07 at the `feature-2/typed-pass-core` tip after the
+Total `#[test]` functions: 1344. Recounted on 2026-07-09 at the
+`feature-4/pass-api-v2` tip via the documented attribute-anchored grep below;
+the Pass API v2 branch added executed pass-driver, pipeline, and
+`#[function_pass]`/`#[module_pass]` authoring tests (`single_pass_driver.rs`,
+`macro_passes.rs`, and friends) that moved the total up from 1337. The five new
+Pass API v2 compile-fail fixtures are trybuild `fn main()` programs, not
+`#[test]` functions, so they do not move this count. The prior 1337 was
+genuinely recounted (not incremental arithmetic) on 2026-07-07 at the
+`feature-2/typed-pass-core` tip after the
 final-review fix wave (base commit 136fbde; the prior 1332 header from the
 Task 5 point drifted upward as Tasks 6-7 landed `typed_pipeline_basic.rs`'s
 function/module/dyn-interop pipeline tests, Task 8's compile-fail fixtures

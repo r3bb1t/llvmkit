@@ -1,0 +1,13 @@
+error[E0599]: the method `mutate` exists for struct `FnCx<'_, '_, 'ctx, B, llvmkit_ir::Inspect, ()>`, but its trait bounds were not satisfied
+  --> tests/compile_fail/inspect_pass_cannot_mutate.rs:27:24
+   |
+27 |         let patch = cx.mutate();
+   |                        ^^^^^^ method cannot be called on `FnCx<'_, '_, 'ctx, B, llvmkit_ir::Inspect, ()>` due to unsatisfied trait bounds
+   |
+  ::: src/pass_access.rs
+   |
+   | pub enum Inspect {}
+   | ---------------- doesn't satisfy `llvmkit_ir::Inspect: MutatingFn`
+   |
+   = note: the following trait bounds were not satisfied:
+           `llvmkit_ir::Inspect: MutatingFn`

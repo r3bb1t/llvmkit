@@ -4,8 +4,8 @@
 //! This crate mirrors the relevant `llvm/lib/IR/` and `llvm/include/llvm/IR/`
 //! surfaces from LLVM 22.1.4. The currently shipped layer includes typed IR
 //! construction, AsmWriter support, structural verification, shared CFG
-//! queries, recompute-on-demand dominance, and effect-typed new-pass-manager-
-//! inspired analysis / pass managers.
+//! queries, recompute-on-demand dominance, and a capability-graded
+//! new-pass-manager-inspired analysis and pass API.
 //!
 //! The surface is intentionally incomplete: bitcode, built-in optimization
 //! transforms, and PassBuilder-style pipeline builders are still ahead. See
