@@ -69,6 +69,7 @@ pub mod module;
 pub mod named_md_node;
 pub mod operator;
 pub mod optimization_level;
+mod pass_access;
 pub mod pass_context;
 pub mod pass_instrumentation;
 pub mod pass_manager;
@@ -224,6 +225,10 @@ pub use operator::OverflowingBinaryOperator;
 pub use optimization_level::{
     OptLevelO0, OptLevelO1, OptLevelO2, OptLevelO3, OptLevelOs, OptLevelOz, OptimizationLevel,
     OptimizationLevelMarker, ThinOrFullLtoPhase,
+};
+pub use pass_access::{
+    Downgrades, FnAccess, Inspect, ModAccess, PatchBody, PipelineVerdict, ReshapeCfg,
+    RewriteModule, StaysVerified, VerdictFold,
 };
 pub use pass_context::{
     BasicBlockView, FunctionBody, FunctionPassContext, FunctionView, ModuleFunctionViews,
