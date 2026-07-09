@@ -292,4 +292,4 @@ pub use value_tracking::{
 // `bool`/`i8`/`i16`/`i32`/`i64`/`i128` are std types — no re-export.
 
 #[cfg(feature = "macros")]
-pub use llvmkit_macros::IrStruct;
+pub use llvmkit_macros::{IrStruct, function_pass, module_pass};

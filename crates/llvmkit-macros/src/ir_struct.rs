@@ -436,7 +436,7 @@ fn reject_field_attrs(attrs: &[syn::Attribute]) -> Result<()> {
     Ok(())
 }
 
-fn default_crate_path() -> TokenStream2 {
+pub(crate) fn default_crate_path() -> TokenStream2 {
     match proc_macro_crate::crate_name("llvmkit-ir") {
         Ok(proc_macro_crate::FoundCrate::Itself) => quote! { ::llvmkit_ir },
         Ok(proc_macro_crate::FoundCrate::Name(name)) => {
