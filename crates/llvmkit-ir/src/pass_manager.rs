@@ -1513,7 +1513,6 @@ use erased::{ErasedFunctionPass, ErasedModulePass};
     label = "not a read-only (`Inspect`) capability rung",
     note = "push mutating passes into `DynFunctionPipeline` (the transform container), which yields `Module<Unverified>`"
 )]
-#[doc(hidden)]
 pub trait ReadOnlyFn: FnMemberExec + FnAccess<Verdict = StaysVerified> {}
 impl ReadOnlyFn for Inspect {}
 
@@ -1525,7 +1524,6 @@ impl ReadOnlyFn for Inspect {}
     label = "not a read-only (`Inspect`) capability rung",
     note = "push mutating passes into `DynModulePipeline` (the transform container), which yields `Module<Unverified>`"
 )]
-#[doc(hidden)]
 pub trait ReadOnlyMod: ModMemberExec + ModAccess<Verdict = StaysVerified> {}
 impl ReadOnlyMod for Inspect {}
 
