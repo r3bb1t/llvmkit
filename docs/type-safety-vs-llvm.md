@@ -33,6 +33,7 @@ on user-visible API failure modes; D11's test-provenance rule is tracked in
 | Pass mutates IR but reports everything preserved | D8, D1 | Pass returns a hand-written `PreservedAnalyses`; over-claiming leaves stale analyses that later passes miscompile against, caught only if a verifier/analysis-checker pass is opted in | Preservation is *derived* from the pass's capability rung, so over-claiming is a compile error: a mutating rung's `done()` floor is fixed by the rung, and `Access = Inspect` has no `mutate()` at all |
 | Declare an analysis dependency | D8, D1 | Fallible `getResult` / `getCachedResult`; querying an undeclared or uncomputed analysis returns null and is undefined behavior | `type Requires` is prefetched, then read through the infallible `cx.analysis::<A, _>()`; an undeclared analysis has no `AnalysisSelector` impl, so the access is a compile error |
 | External crate authoring a module pass | D8, D1 | `PassInfoMixin` plus manual plugin registration wiring | Implement `ModulePass` (or the `#[module_pass]` sugar), symmetric with function passes — no registration step |
+| Author a pass with the wrong rung, no name, or an undeclared analysis | D1, D8 | `PassInfoMixin` + plugin registration; a wrong rung, missing name, or typo'd pipeline entry fails at plugin-load or run time, if at all | `#[function_pass]` / `#[module_pass]` expand to the trait impl and make each slip a pinpointed compile error (a module-only rung fails the `FnAccess` bound, a missing `name` is a `syn::Error`, an undeclared analysis fails a `#[diagnostic::on_unimplemented]` bound) |
 
 ## Runtime errors, fatal verifier passes, and assertions in LLVM C++
 
@@ -654,6 +655,35 @@ through the infallible `cx.analysis::<A, _>()`. Upstream's `getResult<A>` /
 analysis was never declared or computed; here an undeclared analysis has no
 `AnalysisSelector` impl, so the access does not compile.
 
+### Authoring mistakes are compile errors too (`#[function_pass]` / `#[module_pass]`)
+
+A pass is one `impl` block plus the `#[function_pass]` / `#[module_pass]`
+attribute — no plugin entry point, no registration callback, no `PassInfoMixin`.
+The macro is zero-cost sugar (it expands to exactly the trait impl above), but it
+also turns the usual authoring slips into pinpointed compile errors instead of
+plugin-load or run-time failures. Declaring a module-only rung on a function pass
+is rejected by the rung bound:
+
+```rust
+#[function_pass(name = "oops", access = RewriteModule)]
+impl Oops {
+    fn run(&mut self, cx: FnCx<Self>) -> IrResult<FnReport> { Ok(cx.done()) }
+}
+```
+
+Result: compile error — `RewriteModule` does not implement `FnAccess`, so a
+function pass cannot even spell a module rung. In the same way, omitting `name`
+is a `syn::Error` at the attribute ("missing name; a pass must declare its
+NAME"), and reading an analysis the pass never listed in `requires` fails its
+`#[diagnostic::on_unimplemented]` bound ("analysis ... is not in this pass's
+Requires list"). Upstream, the analogous mistakes — a malformed `PassInfoMixin`,
+a typo'd pipeline name, a missing `llvmGetPassPluginInfo` registration — surface
+at plugin-load or run time, if at all. Each of these is locked in the
+compile-fail suite (`function_pass_wrong_level_access.rs`,
+`function_pass_missing_name.rs`, `undeclared_analysis_in_pass_body.rs`), and a
+mutating pass pushed into a read-only runtime pipeline is rejected the same way
+(`mutating_pass_cannot_enter_readonly_dyn.rs`).
+
 ## What llvmkit still verifies at runtime
 
 `llvmkit` intentionally does not pretend every LLVM rule is local enough for the
@@ -697,12 +727,20 @@ The compile-fail suite locks these guarantees with `trybuild`:
 #[test]
 fn typestate_compile_fail() {
     let t = trybuild::TestCases::new();
+    // Brand / typestate locks:
     t.compile_fail("tests/compile_fail/cross_module_value_brand.rs");
     t.compile_fail("tests/compile_fail/cross_module_global_initializer_brand.rs");
     t.compile_fail("tests/compile_fail/cross_module_branch_target.rs");
     t.compile_fail("tests/compile_fail/cross_module_select_arm.rs");
     t.compile_fail("tests/compile_fail/custom_folder_wrong_brand.rs");
-    /* more typestate fixtures omitted */
+    // Pass API v2 locks (section 11):
+    t.compile_fail("tests/compile_fail/inspect_pass_cannot_mutate.rs");
+    t.compile_fail("tests/compile_fail/claim_preserved_after_mutate.rs");
+    t.compile_fail("tests/compile_fail/undeclared_analysis_in_pass_body.rs");
+    t.compile_fail("tests/compile_fail/function_pass_wrong_level_access.rs");
+    t.compile_fail("tests/compile_fail/function_pass_missing_name.rs");
+    t.compile_fail("tests/compile_fail/mutating_pass_cannot_enter_readonly_dyn.rs");
+    /* more brand / typestate fixtures omitted */
 }
 ```
 
