@@ -232,7 +232,8 @@ compile down to a Rust type error rather than a runtime [`IrError`]:
 - The runtime [`IrError::ReturnTypeMismatch`] survives only on the `Dyn` path
   — every static marker enforces the invariant at compile time.
 - Verification consumes `Module<Unverified>` and yields `Module<Verified>`.
-- Read-only pass managers preserve `Module<Verified>`; transform pass managers
-  return `Module<Unverified>`.
+- A pass pipeline's output typestate is derived from its members' capability
+  rungs: an all-`Inspect` (read-only) run preserves `Module<Verified>`, while any
+  mutating pass downgrades it to `Module<Unverified>`.
 - Saved-handle mutators require `&Module<Unverified>`, so verified modules
   cannot be mutated through old handles without explicitly `unverify()`ing.

@@ -302,7 +302,7 @@ Eleven rules govern every API in `llvmkit`. They are NOT optional and are NOT gr
 5. **D5.** Operand registration is structural (one place per primitive; exhaustive `match`).
 6. **D6.** Aggregate types parameterise over element shape (`VectorType<E, N>`, etc.).
 7. **D7.** Cross-module mixing is statically rejected (`'ctx` brand + `ModuleRef` check).
-8. **D8.** Verified guarantees flow through typestate: analyses and pass managers require `Module<'ctx, B, Verified>`, read-only pass managers return verified modules, and transform managers return unverified modules until `verify()` runs again.
+8. **D8.** Verified guarantees flow through typestate: verified-only analyses require `Module<'ctx, B, Verified>`, and a pass pipeline's output module is Verified iff every member ran at the read-only (`Inspect`) rung — any mutating pass derives `Module<'ctx, B, Unverified>` until `verify()` runs again. The output typestate is derived from the passes' capability rungs, never hand-declared.
 9. **D9.** Iteration safety is structural (`BlockCursor`'s consume-on-step).
 10. **D10.** No undefined behaviour, by design (Cranelift-style; no silent bad-codegen).
 11. **D11.** Tests are ported, not invented (every `#[test]` cites upstream; registry at `UPSTREAM.md`).

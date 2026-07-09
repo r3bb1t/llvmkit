@@ -92,7 +92,7 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   exploring e-graph-based optimization ([SIGPLAN
   blog](https://blog.sigplan.org/2021/04/06/equality-saturation-with-egg/)).
   llvmkit's typed constant-fold kernels + pass infrastructure give it a
-  natural home as a `MutatesIr` pass family. Would be a genuine "LLVM 2.0"
+  natural home as a `PatchBody`/`ReshapeCfg`-rung pass family. Would be a genuine "LLVM 2.0"
   differentiator: phase-ordering-free peepholes.
 - **Alive2-style refinement checking** (L, future, visionary):
   [Alive2](https://github.com/AliveToolkit/alive2) does bounded translation

@@ -16,6 +16,73 @@
 //! ([`StaysVerified`] → `Module<Verified>`); a mutating rung downgrades the
 //! module ([`Downgrades`] → `Module<Unverified>`), which must be re-verified
 //! before the next verified-only stage (D8).
+//!
+//! # Example: author a pass, then run it three ways
+//!
+//! One `impl` block is a pass. The rung (`type Access`) is the only preservation
+//! knob, and the verified-state of every driver's output module is *derived*
+//! from the rungs that ran — an `Inspect` pass keeps it `Verified`, any mutating
+//! pass downgrades it to `Unverified`.
+//!
+//! ```
+//! use llvmkit_ir::{
+//!     Analyses, Brand, DcePass, DynReadOnlyFunctionPipeline, FnCx, FnReport, FunctionPass,
+//!     IRBuilder, Inspect, InstSimplifyPass, IrError, IrResult, Linkage, Module, Type, Unverified,
+//!     Verified, function_pipeline, run_function_pass,
+//! };
+//!
+//! // A read-only (`Inspect`) function pass — the raw trait impl the
+//! // `#[function_pass]` macro expands to. `Inspect` has no `cx.mutate()`, so the
+//! // only report it can build is all-preserved and the module stays `Verified`.
+//! struct CountBlocks;
+//!
+//! impl<'ctx> FunctionPass<'ctx> for CountBlocks {
+//!     type Access = Inspect;
+//!     type Requires = ();
+//!     const NAME: &'static str = "count-blocks";
+//!
+//!     fn run(&mut self, cx: FnCx<'_, '_, 'ctx, Brand<'ctx>, Inspect, ()>) -> IrResult<FnReport> {
+//!         let _blocks = cx.function().basic_blocks().count();
+//!         Ok(cx.done())
+//!     }
+//! }
+//!
+//! fn main() -> Result<(), IrError> {
+//!     Module::with_new("pass-doc", |m| {
+//!         // Build `i32 @f()` returning a constant.
+//!         let i32_ty = m.i32_type();
+//!         let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+//!         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+//!         let entry = f.append_basic_block(&m, "entry");
+//!         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+//!         b.build_ret(i32_ty.const_int(1_u32))?;
+//!
+//!         let verified = m.verify()?;
+//!         let mut analyses = Analyses::new();
+//!
+//!         // 1. Single-pass driver. `CountBlocks` is `Inspect`, so the module is
+//!         //    still `Verified` on the way out (the explicit binding proves it).
+//!         let verified: Module<'_, _, Verified> =
+//!             run_function_pass(CountBlocks, verified, f, &mut analyses)?;
+//!
+//!         // 2. A compile-time tuple pipeline of two `PatchBody` passes, run in
+//!         //    written order. The output typestate folds the members' rungs: any
+//!         //    mutator ⇒ `Module<Unverified>`, so re-verifying is enforced by the
+//!         //    type system, not by convention.
+//!         let cleaned: Module<'_, _, Unverified> =
+//!             function_pipeline((InstSimplifyPass, DcePass)).run(verified, f, &mut analyses)?;
+//!         let reverified = cleaned.verify()?;
+//!
+//!         // 3. A runtime-assembled read-only pipeline (opt-style CLIs). `push` is
+//!         //    bounded to `Inspect`, so a mutating pass cannot be added and the
+//!         //    module threads through `Verified`.
+//!         let mut read_only = DynReadOnlyFunctionPipeline::new();
+//!         read_only.push(CountBlocks);
+//!         let _final: Module<'_, _, Verified> = read_only.run(reverified, f, &mut analyses)?;
+//!         Ok(())
+//!     })
+//! }
+//! ```
 
 use crate::IrResult;
 use crate::analysis::{
@@ -36,6 +103,29 @@ use crate::pass_context::{FnCx, FnReport, FunctionView, ModCx, ModReport};
 /// (does the module stay verified?) and the preservation floor from it. The
 /// `run` method takes its [`FnCx`] **by value**: the consuming transition into a
 /// mutator is what makes over-claiming preservation unspellable (D1/D8).
+///
+/// The `#[function_pass]` macro is zero-cost sugar for this trait — it expands a
+/// plain inherent `impl` into exactly the impl below. `FnCx<Self>` / `FnReport`
+/// in the macro form are readability sentinels the macro rewrites, so they are
+/// not imported:
+///
+/// ```
+/// use llvmkit_ir::{function_pass, DominatorTreeAnalysis, IrResult};
+///
+/// struct EntryReachable;
+///
+/// #[function_pass(name = "entry-reachable", access = Inspect, requires = [DominatorTreeAnalysis])]
+/// impl EntryReachable {
+///     fn run(&mut self, cx: FnCx<Self>) -> IrResult<FnReport> {
+///         // `requires = [..]` was prefetched, so the accessor is infallible.
+///         let dt = cx.analysis::<DominatorTreeAnalysis, _>();
+///         if let Some(entry) = cx.function().entry_block() {
+///             let _reachable = dt.is_reachable_from_entry(entry);
+///         }
+///         Ok(cx.done()) // `Inspect` has no `cx.mutate()`; module stays Verified
+///     }
+/// }
+/// ```
 pub trait FunctionPass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
     /// Capability rung: how much of the function body this pass may touch.
     type Access: FnAccess;

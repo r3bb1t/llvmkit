@@ -1,8 +1,54 @@
 //! Pass-author context types.
 //!
-//! The pass managers pass these narrow contexts to user passes instead of raw
-//! module storage. Read-only contexts expose verified views and analysis
-//! queries; transform contexts carry an unverified module capability.
+//! The pass drivers hand these narrow contexts to a pass's `run` instead of raw
+//! module storage. A read-only ([`Inspect`]) context exposes verified views and
+//! infallible analysis queries but no `mutate()`; a mutating rung's context
+//! yields its mutator ([`FnPatch`]/[`FnReshape`]/[`ModRewrite`]) only through
+//! the *consuming* [`FnCx::mutate`]/[`ModCx::mutate`], so once a pass has begun
+//! mutating, the all-preserved report is no longer spellable (the context was
+//! moved). The mutator carries an unverified-module capability
+//! (`module_mut() -> &Module<Unverified>`) and its `done()` reports exactly the
+//! rung's preservation floor.
+//!
+//! [`Inspect`]: crate::Inspect
+//!
+//! # Example: a mutating module pass
+//!
+//! A `RewriteModule` module pass reaches the raw module token through its
+//! mutator and adds a global; because the rung mutates, the driver returns
+//! `Module<Unverified>`. The `#[module_pass]` macro expands this to the raw
+//! [`ModulePass`](crate::ModulePass) impl — `ModCx<Self>`/`ModReport` in the
+//! signature are sentinels the macro rewrites, so they are not imported.
+//!
+//! ```
+//! use llvmkit_ir::{Analyses, IrError, Module, Unverified, module_pass, run_module_pass};
+//!
+//! struct AddMarkerGlobal;
+//!
+//! #[module_pass(name = "add-marker-global", access = RewriteModule)]
+//! impl AddMarkerGlobal {
+//!     fn run(&mut self, cx: ModCx<Self>) -> IrResult<ModReport> {
+//!         let rewrite = cx.mutate(); // consumes `cx`; no all-preserved report left
+//!         let i32_ty = rewrite.module_mut().i32_type();
+//!         rewrite
+//!             .module_mut()
+//!             .add_global("marker", i32_ty.as_type(), i32_ty.const_zero())?;
+//!         Ok(rewrite.done()) // RewriteModule floor: nothing preserved
+//!     }
+//! }
+//!
+//! fn main() -> Result<(), IrError> {
+//!     Module::with_new("mod-pass-doc", |m| {
+//!         let verified = m.verify()?;
+//!         let mut analyses = Analyses::new();
+//!         let rewritten: Module<'_, _, Unverified> =
+//!             run_module_pass(AddMarkerGlobal, verified, &mut analyses)?;
+//!         assert_eq!(rewritten.iter_globals().len(), 1);
+//!         let _ = rewritten.verify()?;
+//!         Ok(())
+//!     })
+//! }
+//! ```
 
 use core::marker::PhantomData;
 

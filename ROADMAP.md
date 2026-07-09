@@ -12,7 +12,9 @@ Shipped today:
   `TypedCallInst`), typed pointers (`TypedPointerValue` + compile-time field
   GEPs), typed folder hooks, and Braun-style auto-SSA (`SsaBuilder`).
 - CFG and dominator-tree queries.
-- Effect-typed module/function pass managers.
+- Capability-graded module/function passes (Pass API v2): a pass declares a
+  capability rung and the driver derives preservation and the output module's
+  verified-state, so over-claiming what a pass preserves is a compile error.
 - Built-in analyses: `DominatorTreeAnalysis`, `KnownBitsAnalysis`, and
   `DemandedBitsAnalysis`; initial `SimplifyDemandedBitsPass`.
 - LLVM 22.1.4-style `ConstantFolder` for the modeled IR-builder surface plus
@@ -363,7 +365,7 @@ cleanup-o1-ish = cleanup-lift,early-cse,gvn-lite,dce
 - A lifted flag-heavy branch sample reduces to a short compare/branch or select.
 - Constant branch and switch targets are eliminated.
 - Repeated cleanup reaches a deterministic fixpoint.
-- `cleanup-lift` can be run from a typed `ModulePassManager<MutatesIr>` and returns `Module<Unverified>`.
+- `cleanup-lift` can be assembled as a `module_pipeline((..))` (or a runtime `DynModulePipeline`) whose mutating members downgrade the result to `Module<Unverified>`, forcing an explicit re-`verify()`.
 
 ---
 

@@ -12,10 +12,12 @@ LLVM-style function-local value-name uniquing, AsmWriter support, represented
 ConstantExpr construction/folding, the default ConstantFolder matching
 `ConstantFolder.h` for the modeled IR surface, target-independent pure-constant
 folds ported from `ConstantFold.cpp`, structural verification, shared CFG
-queries, recompute-on-demand dominance, and effect-typed new-pass-manager-
-inspired analysis / pass managers: read-only pipelines preserve
-`Module<Verified>`, while transform pipelines return `Module<Unverified>`. Raw
-`ModuleCore` storage stays crate-private; public APIs use branded `Module`
+queries, recompute-on-demand dominance, and a capability-graded
+new-pass-manager-inspired analysis / pass layer: a pass declares a capability
+*rung* and the pipeline's output typestate is derived from it — an all-read-only
+(`Inspect`) run preserves `Module<Verified>`, while any mutating pass yields
+`Module<Unverified>`, so over-claiming what a pass preserves is a compile error.
+Raw `ModuleCore` storage stays crate-private; public APIs use branded `Module`
 tokens and gate saved-handle mutators on `&Module<Unverified>`.
 
 DataLayout / TLI-dependent folds stay in the analysis-only `constant_folding`

@@ -44,11 +44,18 @@ Shipped today:
 - **CFG and dominance queries** — done. `FunctionCfg`, `BasicBlockEdge`,
   `BasicBlock::successors()`, and `DominatorTree` are available as reusable IR
   queries.
-- **Minimal new-PM-inspired pass substrate** — done, including explicit
-  analysis invalidation. `PreservedAnalyses`, `FunctionAnalysisManager`,
-  `ModuleAnalysisManager`, `FunctionPassManager`, `ModulePassManager`,
-  `ModuleToFunctionPassAdaptor`, `PassInstrumentationCallbacks`, and
-  function/module analysis cache invalidation are shipped.
+- **Capability-graded pass API (Pass API v2)** — done, including explicit
+  analysis invalidation. A pass declares a capability *rung*
+  (`Inspect` / `PatchBody` / `ReshapeCfg` / `RewriteModule`) and its required
+  analyses; the driver *derives* which analyses survive and whether the output
+  module is still verified, so over-claiming what a pass preserves is a compile
+  error rather than a stale-analysis miscompile. Ships the `FunctionPass` /
+  `ModulePass` traits, single-pass drivers (`run_function_pass` /
+  `run_module_pass`), compile-time tuple pipelines (`function_pipeline` /
+  `module_pipeline` / `for_each_function`), runtime-assembled `Dyn` containers,
+  the bundled `Analyses` manager, `PreservedAnalyses`,
+  `PassInstrumentationCallbacks`, and the `#[function_pass]` / `#[module_pass]`
+  authoring macros. See [Built-in Analyses and Custom Passes](#built-in-analyses-and-custom-passes).
 - **KnownBits / ValueTracking subset** — shipped for represented integer,
   pointer, fixed-vector, and intrinsic facts; full LLVM parity is not claimed.
   The surface includes `KnownBits`, `compute_known_bits`,
@@ -391,11 +398,29 @@ cargo run -p llvmkit-ir --example pass_manager_demo
 
 ## Built-in Analyses and Custom Passes
 
-`llvmkit-ir` ships a branded, verified-state pass layer for querying analyses
-and running LLVM-like passes over the modeled IR. Fresh modules are created
-with `Module::with_new`, whose closure carries the generative module brand;
-read-only pass pipelines preserve `Module<'ctx, B, Verified>`, while transform
-pipelines return `Module<'ctx, B, Unverified>`.
+`llvmkit-ir` ships a **capability-graded** pass layer (Pass API v2) for querying
+analyses and running LLVM-like passes over the modeled IR. A pass declares a
+capability *rung* — how much of the IR it is allowed to touch — plus the
+analyses it needs; the driver derives everything else, including which analyses
+survive the run and whether the output module is still `Verified`. There is
+**no pass-registration step**: a pass is a value you hand to a driver or drop
+into a tuple.
+
+| Rung | Level | May mutate | Analyses preserved after a run |
+|---|---|---|---|
+| `Inspect` | function or module | nothing (read-only) | all |
+| `PatchBody` | function | instructions inside existing blocks | CFG-shaped analyses |
+| `ReshapeCfg` | function | blocks, terminators, PHIs — the whole CFG | none |
+| `RewriteModule` | module | globals, functions, bodies | none |
+
+The rung is the *only* preservation knob, and it is structural: a `PatchBody`
+mutator physically has no method that edits a terminator, so "CFG analyses
+preserved" is true by construction — never a `PreservedAnalyses` value the
+author hand-writes and might get wrong. A lying `PreservedAnalyses` (mutate the
+IR, then report everything preserved, leaving stale analyses for a later pass to
+miscompile against) is the class of bug LLVM catches only with opt-in
+verification; here it is **unspellable**. See
+[Type Safety: llvmkit vs. LLVM C++](docs/type-safety-vs-llvm.md#11-passes-cannot-lie-about-what-they-preserve).
 
 Built-in analyses available today:
 
@@ -411,78 +436,177 @@ Initial built-in transforms available today:
 
 Core pass / analysis infrastructure available today:
 
-- `FunctionAnalysisManager`
-- `ModuleAnalysisManager`
-- `FunctionPassContext`
-- `ModulePassContext`
-- `FunctionPassManager`
-- `ModulePassManager`
-- `ModuleToFunctionPassAdaptor`
+- `FunctionPass` / `ModulePass` (the two authoring traits)
+- `#[function_pass]` / `#[module_pass]` (zero-cost authoring macros)
+- `Inspect` / `PatchBody` / `ReshapeCfg` / `RewriteModule` (capability rungs)
+- `run_function_pass` / `run_module_pass` (single-pass drivers)
+- `function_pipeline` / `module_pipeline` / `for_each_function` (compile-time tuple pipelines)
+- `DynFunctionPipeline` / `DynModulePipeline` / `DynReadOnlyFunctionPipeline` / `DynReadOnlyModulePipeline` (runtime-assembled)
+- `Analyses` (the bundled function + module analysis managers)
 - `PreservedAnalyses`
 - `PassInstrumentationCallbacks`
 
-Register a built-in analysis and a custom function pass:
+### Authoring a pass
+
+A pass is one `impl` block. Declare `type Access` (the rung), `type Requires`
+(a tuple of analysis markers, prefetched before the run), and `const NAME`, then
+write `fn run(cx) -> IrResult<FnReport>` (a module pass returns
+`IrResult<ModReport>`). The `#[function_pass]` / `#[module_pass]` macros are
+zero-cost sugar that expand to exactly that trait impl — `FnCx<Self>` /
+`FnReport` in the macro form are readability sentinels the macro rewrites, so
+they are not imported:
 
 ```rust
-use llvmkit_ir::{
-    DominatorTreeAnalysis, FunctionAnalysisManager, FunctionPassManager, IrResult, Module,
-    ModuleAnalysisManager, ModulePassManager, ModuleToFunctionPassAdaptor, PreservedAnalyses,
-    PreservesVerification, ReadOnlyFunctionPass, ReadOnlyFunctionPassContext,
-};
+use llvmkit_ir::{function_pass, DominatorTreeAnalysis, IrResult};
 
-struct MyFunctionPass;
+struct EntryReachable;
 
-impl<'ctx> ReadOnlyFunctionPass<'ctx> for MyFunctionPass {
-    fn run(
-        &mut self,
-        cx: &mut ReadOnlyFunctionPassContext<'_, 'ctx>,
-    ) -> IrResult<PreservedAnalyses> {
-        let function = cx.function();
-        let dt = cx.analysis::<DominatorTreeAnalysis>()?;
-        let entry = function.entry_block().expect("function body");
-        assert!(dt.is_reachable_from_entry(entry));
-        Ok(PreservedAnalyses::all())
+#[function_pass(name = "entry-reachable", access = Inspect, requires = [DominatorTreeAnalysis])]
+impl EntryReachable {
+    fn run(&mut self, cx: FnCx<Self>) -> IrResult<FnReport> {
+        // `requires = [..]` was prefetched, so the accessor is infallible.
+        let dt = cx.analysis::<DominatorTreeAnalysis, _>();
+        let entry = cx.function().entry_block().expect("definition has an entry");
+        let _reachable = dt.is_reachable_from_entry(entry);
+        // `Inspect` has no `cx.mutate()`; the only report it can build is
+        // all-preserved, and the module stays `Verified`.
+        Ok(cx.done())
     }
-}
-
-fn run_passes() -> IrResult<()> {
-    Module::with_new::<_, _, _>("passes", |m| {
-        // Build or parse functions into `m` here.
-        let mut fam = FunctionAnalysisManager::new();
-        fam.register_pass(DominatorTreeAnalysis);
-
-        let mut fpm = FunctionPassManager::<_, PreservesVerification>::new_read_only();
-        fpm.add_pass(MyFunctionPass);
-
-        let mut mpm = ModulePassManager::<_, PreservesVerification>::new_read_only();
-        mpm.add_pass(ModuleToFunctionPassAdaptor::new(fpm));
-
-        let mut mam = ModuleAnalysisManager::new();
-        let _verified = mpm.run(m.verify()?, &mut mam, &mut fam)?;
-        Ok(())
-    })
 }
 ```
 
-For a runnable end-to-end version, see
-`crates/llvmkit-ir/examples/pass_manager_demo.rs`.
+A mutating rung reaches its mutator through the **consuming** `cx.mutate()`;
+once you call it, the context is moved, so the all-preserved `cx.done()` is
+gone — a pass that touches the IR cannot then claim it preserved everything.
+The mutator's own `done()` reports exactly the rung's floor:
+
+```rust
+use llvmkit_ir::{function_pass, IrResult};
+
+struct EraseDeadInstruction;
+
+#[function_pass(name = "erase-dead", access = PatchBody)]
+impl EraseDeadInstruction {
+    fn run(&mut self, cx: FnCx<Self>) -> IrResult<FnReport> {
+        let mut patch = cx.mutate();     // consumes `cx` — no all-preserved report left
+        // ... locate a dead InstructionView `dead` and: patch.erase(&dead)?;
+        Ok(patch.done())                 // floor = CFG analyses preserved (PatchBody rung)
+    }
+}
+```
+
+The equivalent raw `impl FunctionPass for ..` form (what the macro expands to) is
+shown end-to-end in `crates/llvmkit-ir/examples/pass_manager_demo.rs`, and
+`crates/llvmkit-ir/examples/authored_pass.rs` runs both a macro-authored
+function pass and module pass.
+
+### The `#[function_pass]` / `#[module_pass]` macros
+
+Both macros take the same attribute grammar and turn a plain inherent `impl`
+into the raw trait impl — no registration, no boilerplate header, and **zero
+runtime cost** (the expansion *is* the impl you would have written):
+
+| Attribute | Required? | Becomes | Notes |
+|---|---|---|---|
+| `name = "..."` | yes | `const NAME` | the instrumentation-facing pass name |
+| `access = <Rung>` | yes | `type Access` | `Inspect` / `PatchBody` / `ReshapeCfg` for `#[function_pass]`; `Inspect` / `RewriteModule` for `#[module_pass]`. A wrong-level rung fails the `FnAccess` / `ModAccess` bound at compile time |
+| `requires = [A, B]` | no (default `[]`) | `type Requires = (A, B,)` | analyses prefetched before `run`, read infallibly via `cx.analysis::<A, _>()` |
+| `required` | no (bare flag) | `const REQUIRED: bool = true` | marks a pass that must always run |
+
+So this macro form:
+
+```rust
+#[function_pass(name = "entry-reachable", access = Inspect, requires = [DominatorTreeAnalysis])]
+impl EntryReachable {
+    fn run(&mut self, cx: FnCx<Self>) -> IrResult<FnReport> { /* body */ }
+}
+```
+
+expands to exactly this hand-written impl — the `<'ctx, B>` header, the
+associated-item block, and the `run` lifetimes are all supplied for you:
+
+```rust
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for EntryReachable {
+    type Access = Inspect;
+    type Requires = (DominatorTreeAnalysis,);
+    const NAME: &'static str = "entry-reachable";
+
+    fn run(
+        &mut self,
+        cx: FnCx<'_, '_, 'ctx, B, Inspect, (DominatorTreeAnalysis,)>,
+    ) -> IrResult<FnReport> { /* body */ }
+}
+```
+
+Misuse is caught at the offending token, not deep inside the expansion: a
+missing `name`/`access`, an unknown key, a trait impl instead of an inherent
+one, or a generic impl each produce a pinpointed `compile_error!`, and a
+function pass that declares a module-only rung fails with
+`RewriteModule: FnAccess` unsatisfied (all locked in the compile-fail suite).
+The written `FnCx<Self>` / `FnReport` are readability sentinels the macro
+rewrites, so they are never imported.
+
+### The three run modes
+
+Every mode threads one `&mut Analyses`. The verified-state of the returned
+module is *derived* — any mutating pass downgrades it to `Module<Unverified>`,
+forcing an explicit re-`verify()` before the next verified-only stage (D8):
+
+```rust
+use llvmkit_ir::{
+    Analyses, Brand, DcePass, FunctionView, InstSimplifyPass, IrResult, Module, Unverified,
+    Verified, function_pipeline, run_function_pass,
+};
+
+fn cleanup<'ctx>(
+    verified: Module<'ctx, Brand<'ctx>, Verified>,
+    f: FunctionView<'ctx>,
+) -> IrResult<()> {
+    let mut analyses = Analyses::new();
+
+    // 1. A single pass. `InstSimplifyPass` is `PatchBody`, so the driver
+    //    returns `Module<Unverified>` and the re-verify is enforced by the type.
+    let simplified: Module<'_, _, Unverified> =
+        run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?;
+
+    // 2. A compile-time tuple pipeline, run in written order. The output
+    //    typestate folds the members' rungs: any mutator ⇒ Unverified.
+    let cleaned = function_pipeline((InstSimplifyPass, DcePass))
+        .run(simplified.verify()?, f, &mut analyses)?;
+    let _reverified = cleaned.verify()?;
+    Ok(())
+}
+```
+
+The third mode is runtime assembly, for opt-style CLIs where the pass list is
+not known until run time: `DynFunctionPipeline` / `DynModulePipeline` (transform;
+always `Unverified` out) and `DynReadOnlyFunctionPipeline` /
+`DynReadOnlyModulePipeline` (read-only; `push` is bounded to `Inspect`, so a
+mutating pass *cannot* be added and the module threads through `Verified`).
+
+For runnable end-to-end versions, see
+`crates/llvmkit-ir/examples/pass_manager_demo.rs` and
+`crates/llvmkit-ir/examples/authored_pass.rs`.
 
 | LLVM new PM concept | llvmkit API |
 |---|---|
-| `FunctionPass::run(Function &, FunctionAnalysisManager &)` | `FunctionPass::run(&mut FunctionPassContext)` |
-| `ModulePass::run(Module &, ModuleAnalysisManager &)` | `ModulePass::run(&mut ModulePassContext)` |
-| `PreservedAnalyses::all()` / `none()` | same names |
-| `FAM.getResult<A>(F)` | `cx.analysis::<A>()` inside a function pass, `fam.get_result::<A, _>(FunctionView)` outside |
-| `ModuleToFunctionPassAdaptor` | same name; function passes read cached module analyses only |
-| mutating a module pass | use a `MutatesIr` manager, call `cx.module_mut()`, receive `Module<'ctx, B, Unverified>` |
+| `FunctionPass::run(Function &, FunctionAnalysisManager &)` | `FunctionPass::run(cx: FnCx<..>)` — one consuming context |
+| `ModulePass::run(Module &, ModuleAnalysisManager &)` | `ModulePass::run(cx: ModCx<..>)` |
+| `PreservedAnalyses::all()` / `none()` hand-written by the pass | derived from the pass's `type Access` rung — never hand-written |
+| `FAM.getResult<A>(F)` (fallible, null on undeclared) | `cx.analysis::<A, _>()` — infallible; declared in `type Requires`, prefetched |
+| `ModuleToFunctionPassAdaptor` | `for_each_function(function_pipeline((..)))` as a module-pipeline member |
+| mutating IR in a pass | declare a mutating rung, call the consuming `cx.mutate()`, receive a mutator; the driver returns `Module<'ctx, B, Unverified>` |
+| plugin registration (`llvmGetPassPluginInfo`) | none — a pass is a plain value; no registration step |
 
-Important boundary: the crate currently ships **pass infrastructure, built-in
-analyses, initial scalar cleanup transforms (`SimplifyDemandedBitsPass`,
+Important boundary: the crate currently ships **the capability-graded pass API,
+built-in analyses, initial scalar cleanup transforms (`SimplifyDemandedBitsPass`,
 `InstSimplifyPass`, `DcePass`), optimization-level markers, scoped pass /
 pipeline names, and data-only pass-pipeline recipe types**, not a full
 optimization pipeline. There is no public LLVM-compatible `PassBuilder`, no
-runnable `default<O1>` optimizer, no loop / CGSCC / legacy manager, and no
-broad transform library yet.
+runnable `default<O1>` optimizer, no loop / CGSCC / legacy manager, no
+instrumentation-driven skipping, and no broad transform library yet. See
+[`docs/future-work.md`](docs/future-work.md) (the "Pass API v2 — deferred"
+section) for the scoped-out items.
 
 ## Project Structure
 
@@ -542,10 +666,11 @@ locks.
   closure cannot be passed to another module's builders or mutators. This is a
   type error, not a runtime same-module check.
 - **D8. Verified guarantees are explicit.** Verification consumes an
-  unverified token and produces `Module<'ctx, B, Verified>`. Read-only pass
-  managers preserve that verified state at the type level; transform managers
-  return `Module<'ctx, B, Unverified>`, so their output must be verified again
-  before another verified-only pipeline can consume it.
+  unverified token and produces `Module<'ctx, B, Verified>`. A pass pipeline's
+  output typestate is *derived* from its members' capability rungs: an
+  all-read-only (`Inspect`) run preserves that verified state at the type level,
+  while any mutating pass returns `Module<'ctx, B, Unverified>`, so their output
+  must be verified again before another verified-only pipeline can consume it.
 - **D9. Iteration safety is structural.** Mutating-while-iterating uses
   dedicated cursor APIs rather than relying on caller discipline.
 - **D10. No undefined behavior, by design.** Legal API calls must produce

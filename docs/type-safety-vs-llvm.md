@@ -29,7 +29,7 @@ on user-visible API failure modes; D11's test-provenance rule is tracked in
 | Use an instruction handle after erase | D2 | Raw pointer discipline | Lifecycle methods consume a non-`Copy`, non-`Clone` `Instruction` handle |
 | Recover lifecycle authority from a copyable value, block, or use-list | D2, D9 | Any retained `Instruction *` can be reused for mutation | Copyable rediscovery APIs return `InstructionView`; only builder output, `BlockCursor`, and detached reinsertion produce `Instruction<Attached>` |
 | Add more incoming edges or destinations after a variable-arity instruction is finalized | D1, D2 | Caller discipline plus verifier | `PhiInst<Open>` / `SwitchInst<Open>` / `IndirectBrInst<Open>` / `LandingPadInst<Open>` / `CatchSwitchInst<Open>` are linear; `finish()` returns closed views without mutators |
-| Run verified-only analyses after a transform | D8 | Verifier pass convention | Transform managers return `Module<Unverified>` until `verify()` succeeds |
+| Run verified-only analyses after a transform | D8 | Verifier pass convention | A pass pipeline's output is `Module<Unverified>` whenever any member mutates (derived from the members' rungs), so verified-only analyses require an explicit `verify()` first |
 | Pass mutates IR but reports everything preserved | D8, D1 | Pass returns a hand-written `PreservedAnalyses`; over-claiming leaves stale analyses that later passes miscompile against, caught only if a verifier/analysis-checker pass is opted in | Preservation is *derived* from the pass's capability rung, so over-claiming is a compile error: a mutating rung's `done()` floor is fixed by the rung, and `Access = Inspect` has no `mutate()` at all |
 | Declare an analysis dependency | D8, D1 | Fallible `getResult` / `getCachedResult`; querying an undeclared or uncomputed analysis returns null and is undefined behavior | `type Requires` is prefetched, then read through the infallible `cx.analysis::<A, _>()`; an undeclared analysis has no `AnalysisSelector` impl, so the access is a compile error |
 | External crate authoring a module pass | D8, D1 | `PassInfoMixin` plus manual plugin registration wiring | Implement `ModulePass` (or the `#[module_pass]` sugar), symmetric with function passes — no registration step |
@@ -551,12 +551,108 @@ Module<'ctx, B, Verified>
 ```
 
 Verification consumes mutation capability and returns a verified token on
-success. Read-only pass managers preserve `Verified`; transform pass managers
-return `Unverified`, forcing an explicit re-verification before verified-only
-analyses or pass pipelines can consume the result.
+success. A pass pipeline's output typestate is *derived* from its members'
+capability rungs: an all-read-only (`Inspect`) run preserves `Verified`, while
+any mutating pass returns `Unverified`, forcing an explicit re-verification
+before verified-only analyses or pass pipelines can consume the result (see
+section 11).
 
 This does not remove the verifier. It makes the verifier's result impossible to
 forget in typed APIs.
+
+## 11. Passes cannot lie about what they preserve
+
+This is `llvmkit`'s pass-authoring headline, and it has no upstream equivalent.
+
+In LLVM's new pass manager a pass hand-writes what it preserved, and the manager
+trusts it:
+
+```cpp
+PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM) {
+  // ... mutate F ...
+  return PreservedAnalyses::all();   // a lie: F changed, nothing is invalidated
+}
+```
+
+A wrong `PreservedAnalyses` is the highest-impact pass bug there is: the manager
+keeps a now-stale cached analysis and a later pass miscompiles against it. LLVM
+catches it only if you opt into verification instrumentation (`-verify-each`);
+the type system offers no defense, because `run` can mutate `F` and still return
+`all()`.
+
+`llvmkit` removes the hand-written claim entirely. A pass declares a *capability
+rung* — how much it may mutate — and the driver *derives* the preservation set
+from that rung. The author never writes a `PreservedAnalyses` value:
+
+```rust
+pub trait FunctionPass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+    type Access: FnAccess; // Inspect | PatchBody | ReshapeCfg
+    type Requires: FunctionAnalysisList<'ctx, B>;
+    const NAME: &'static str;
+    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, Self::Access, Self::Requires>)
+        -> IrResult<FnReport>;
+}
+```
+
+Two structural facts make over-claiming unspellable.
+
+**(a) A read-only rung has no mutation door.** `Inspect` deliberately does not
+implement `MutatingFn`, and `FnCx::mutate` exists only where `A: MutatingFn`. So
+an `Inspect` context has no `mutate()` method at all — a pass declared read-only
+cannot mutate, whatever its body attempts:
+
+```rust
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InspectMutates {
+    type Access = Inspect;
+    type Requires = ();
+    const NAME: &'static str = "inspect-mutates";
+
+    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport> {
+        let patch = cx.mutate(); // no such method on an Inspect context
+        Ok(patch.done())
+    }
+}
+```
+
+Result: compile error `error[E0599]: the method mutate exists ... but its trait
+bounds were not satisfied: Inspect: MutatingFn`.
+
+**(b) Reaching a mutator consumes the all-preserved report.** `FnCx::mutate`
+takes `self` **by value**. Once a mutating pass has stepped into its mutator the
+context is moved, so the all-preserved `cx.unchanged()` / `cx.done()` is gone.
+The only report left is the mutator's own `done()`, which carries the rung's
+derived floor. "Mutated, then claimed everything preserved" has no spelling:
+
+```rust
+    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport> {
+        let _patch = cx.mutate(); // moves `cx` into the mutator
+        Ok(cx.unchanged())        // use of moved value
+    }
+```
+
+Result: compile error `error[E0382]: use of moved value: cx`.
+
+The floor is always a safe under-approximation: under-claiming only costs a
+recompute, while over-claiming is the miscompile — and over-claiming is exactly
+what has no representation. The rung ladder:
+
+| Rung | May mutate | Derived floor |
+| --- | --- | --- |
+| `Inspect` | nothing (read-only) | all preserved |
+| `PatchBody` | instructions inside existing blocks | CFG-shaped analyses preserved |
+| `ReshapeCfg` | the whole CFG | nothing preserved |
+| `RewriteModule` (module level) | globals, functions, bodies | nothing preserved |
+
+Both bad programs are locked in the compile-fail suite
+(`tests/compile_fail/inspect_pass_cannot_mutate.rs`,
+`tests/compile_fail/claim_preserved_after_mutate.rs`).
+
+Analysis dependencies are the same story from the read side: a pass lists what
+it needs in `type Requires`, the driver prefetches it, and the pass reads it
+through the infallible `cx.analysis::<A, _>()`. Upstream's `getResult<A>` /
+`getCachedResult<A>` are fallible and return null (undefined behavior) when the
+analysis was never declared or computed; here an undeclared analysis has no
+`AnalysisSelector` impl, so the access does not compile.
 
 ## What llvmkit still verifies at runtime
 
