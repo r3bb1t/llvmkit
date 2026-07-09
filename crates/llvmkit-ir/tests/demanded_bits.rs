@@ -1,8 +1,7 @@
 use llvmkit_ir::{
-    ApInt, DemandedBitsAnalysis, Dyn, FunctionAnalysisManager, FunctionPassManager, IRBuilder,
-    IntValue, IrError, KnownBits, Linkage, Module, ModuleAnalysisManager, ModulePassManager,
-    ModuleToFunctionPassAdaptor, MutatesIr, NoFolder, SimplifyDemandedBitsPass, Type,
-    ValueTrackingQuery, Width, ZExtFlags, simplify_demanded_bits,
+    Analyses, ApInt, DemandedBitsAnalysis, Dyn, FunctionAnalysisManager, IRBuilder, IntValue,
+    IrError, KnownBits, Linkage, Module, NoFolder, SimplifyDemandedBitsPass, Type,
+    ValueTrackingQuery, Width, ZExtFlags, run_function_pass, simplify_demanded_bits,
 };
 
 fn bits(value: ApInt) -> String {
@@ -594,13 +593,8 @@ fn simplify_demanded_bits_pass_folds_known_demanded_low_bits() -> Result<(), IrE
         b.build_ret(lo)?;
 
         let verified = m.verify()?;
-        let mut fpm = FunctionPassManager::<_, MutatesIr>::new_transform();
-        fpm.add_pass(SimplifyDemandedBitsPass);
-        let mut mpm = ModulePassManager::<_, MutatesIr>::new_transform();
-        mpm.add_pass(ModuleToFunctionPassAdaptor::new(fpm));
-        let mut mam = ModuleAnalysisManager::new();
-        let mut fam = FunctionAnalysisManager::new();
-        let unverified = mpm.run(verified, &mut mam, &mut fam)?;
+        let mut analyses = Analyses::new();
+        let unverified = run_function_pass(SimplifyDemandedBitsPass, verified, f, &mut analyses)?;
         let reverified = unverified.verify()?;
         let text = format!("{reverified}");
 
@@ -636,13 +630,8 @@ fn simplify_demanded_bits_pass_ports_and_zext_and() -> Result<(), IrError> {
         assert!(before.contains("%op2 = and i5 %cast, 14"), "{before}");
 
         let verified = m.verify()?;
-        let mut fpm = FunctionPassManager::<_, MutatesIr>::new_transform();
-        fpm.add_pass(SimplifyDemandedBitsPass);
-        let mut mpm = ModulePassManager::<_, MutatesIr>::new_transform();
-        mpm.add_pass(ModuleToFunctionPassAdaptor::new(fpm));
-        let mut mam = ModuleAnalysisManager::new();
-        let mut fam = FunctionAnalysisManager::new();
-        let unverified = mpm.run(verified, &mut mam, &mut fam)?;
+        let mut analyses = Analyses::new();
+        let unverified = run_function_pass(SimplifyDemandedBitsPass, verified, f, &mut analyses)?;
         let reverified = unverified.verify()?;
         let text = format!("{reverified}");
 
@@ -729,13 +718,18 @@ fn simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement()
         );
 
         let verified = m.verify()?;
-        let mut fpm = FunctionPassManager::<_, MutatesIr>::new_transform();
-        fpm.add_pass(SimplifyDemandedBitsPass);
-        let mut mpm = ModulePassManager::<_, MutatesIr>::new_transform();
-        mpm.add_pass(ModuleToFunctionPassAdaptor::new(fpm));
-        let mut mam = ModuleAnalysisManager::new();
-        let mut fam = FunctionAnalysisManager::new();
-        let unverified = mpm.run(verified, &mut mam, &mut fam)?;
+        // The module has two definitions; the retired adaptor visited both, so
+        // the single-pass driver runs over each in module order, re-verifying
+        // between (a mutating pass downgrades the module).
+        let mut analyses = Analyses::new();
+        let after_f = run_function_pass(SimplifyDemandedBitsPass, verified, f, &mut analyses)?;
+        let reverified_f = after_f.verify()?;
+        let unverified = run_function_pass(
+            SimplifyDemandedBitsPass,
+            reverified_f,
+            mutate_f,
+            &mut analyses,
+        )?;
         let reverified = unverified.verify()?;
         let text = format!("{reverified}");
 
@@ -765,13 +759,8 @@ fn simplify_demanded_bits_pass_erases_dead_integer_chain() -> Result<(), IrError
         b.build_ret(i32_ty.const_int(0_u32))?;
 
         let verified = m.verify()?;
-        let mut fpm = FunctionPassManager::<_, MutatesIr>::new_transform();
-        fpm.add_pass(SimplifyDemandedBitsPass);
-        let mut mpm = ModulePassManager::<_, MutatesIr>::new_transform();
-        mpm.add_pass(ModuleToFunctionPassAdaptor::new(fpm));
-        let mut mam = ModuleAnalysisManager::new();
-        let mut fam = FunctionAnalysisManager::new();
-        let unverified = mpm.run(verified, &mut mam, &mut fam)?;
+        let mut analyses = Analyses::new();
+        let unverified = run_function_pass(SimplifyDemandedBitsPass, verified, f, &mut analyses)?;
         let reverified = unverified.verify()?;
         let text = format!("{reverified}");
 
@@ -809,13 +798,8 @@ fn variable_lshr_demands_source_bits_that_can_reach_low_result() -> Result<(), I
         );
 
         let verified = m.verify()?;
-        let mut fpm = FunctionPassManager::<_, MutatesIr>::new_transform();
-        fpm.add_pass(SimplifyDemandedBitsPass);
-        let mut mpm = ModulePassManager::<_, MutatesIr>::new_transform();
-        mpm.add_pass(ModuleToFunctionPassAdaptor::new(fpm));
-        let mut mam = ModuleAnalysisManager::new();
-        let mut fam = FunctionAnalysisManager::new();
-        let unverified = mpm.run(verified, &mut mam, &mut fam)?;
+        let mut analyses = Analyses::new();
+        let unverified = run_function_pass(SimplifyDemandedBitsPass, verified, f, &mut analyses)?;
         let reverified = unverified.verify()?;
         let text = format!("{reverified}");
 

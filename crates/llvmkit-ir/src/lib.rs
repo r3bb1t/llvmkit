@@ -4,8 +4,8 @@
 //! This crate mirrors the relevant `llvm/lib/IR/` and `llvm/include/llvm/IR/`
 //! surfaces from LLVM 22.1.4. The currently shipped layer includes typed IR
 //! construction, AsmWriter support, structural verification, shared CFG
-//! queries, recompute-on-demand dominance, and effect-typed new-pass-manager-
-//! inspired analysis / pass managers.
+//! queries, recompute-on-demand dominance, and a capability-graded
+//! new-pass-manager-inspired analysis and pass API.
 //!
 //! The surface is intentionally incomplete: bitcode, built-in optimization
 //! transforms, and PassBuilder-style pipeline builders are still ahead. See
@@ -69,6 +69,7 @@ pub mod module;
 pub mod named_md_node;
 pub mod operator;
 pub mod optimization_level;
+mod pass_access;
 pub mod pass_context;
 pub mod pass_instrumentation;
 pub mod pass_manager;
@@ -94,13 +95,12 @@ pub mod verifier;
 
 pub mod unnamed_addr;
 pub use analysis::{
-    AllAnalysesOnFunction, AllAnalysesOnModule, AnalysisKeyId, AnalysisSelector, AnalysisSetKeyId,
-    CFGAnalyses, FunctionAnalysis, FunctionAnalysisInvalidator, FunctionAnalysisList,
-    FunctionAnalysisManager, FunctionAnalysisManagerModuleProxy, FunctionAnalysisResult, Idx0,
-    Idx1, Idx2, Idx3, Idx4, Idx5, Idx6, Idx7, ModuleAnalysis, ModuleAnalysisInvalidator,
-    ModuleAnalysisList, ModuleAnalysisManager, ModuleAnalysisResult, ModuleAnalysisSelector,
-    PreservationBound, PreservationEntry, Preserve, PreserveSet, PreservedAnalyses,
-    PreservedAnalysisChecker,
+    AllAnalysesOnFunction, AllAnalysesOnModule, Analyses, AnalysisKeyId, AnalysisSelector,
+    AnalysisSetKeyId, CFGAnalyses, FunctionAnalysis, FunctionAnalysisInvalidator,
+    FunctionAnalysisList, FunctionAnalysisManager, FunctionAnalysisManagerModuleProxy,
+    FunctionAnalysisResult, Idx0, Idx1, Idx2, Idx3, Idx4, Idx5, Idx6, Idx7, ModuleAnalysis,
+    ModuleAnalysisInvalidator, ModuleAnalysisList, ModuleAnalysisManager, ModuleAnalysisResult,
+    ModuleAnalysisSelector, PreservedAnalyses, PreservedAnalysisChecker,
 };
 pub use ap_float::{
     ApFloat, ApFloatCategory, ApFloatCmpResult, ApFloatNextDirection, ApFloatSemantics,
@@ -225,20 +225,21 @@ pub use optimization_level::{
     OptLevelO0, OptLevelO1, OptLevelO2, OptLevelO3, OptLevelOs, OptLevelOz, OptimizationLevel,
     OptimizationLevelMarker, ThinOrFullLtoPhase,
 };
+pub use pass_access::{
+    Downgrades, FnAccess, Inspect, ModAccess, MutatingFn, MutatingModule, PatchBody,
+    PipelineVerdict, ReshapeCfg, RewriteModule, StaysVerified, VerdictFold,
+};
 pub use pass_context::{
-    BasicBlockView, FunctionBody, FunctionPassContext, FunctionView, ModuleFunctionViews,
-    ModulePassContext, ReadOnlyFunctionPassContext, ReadOnlyModulePassContext,
-    TypedFunctionPassContext, TypedModulePassContext,
+    BasicBlockView, FnCx, FnPatch, FnReport, FnReshape, FunctionBody, FunctionView, ModCx,
+    ModReport, ModRewrite, ModuleFunctionViews,
 };
 pub use pass_instrumentation::{PassInstrumentationAnalysis, PassInstrumentationCallbacks};
 pub use pass_manager::{
-    EffectFold, EffectJoin, ForEachFunction, FunctionPass, FunctionPassList, FunctionPassManager,
-    FunctionPipeline, FunctionPipelineExecution, FunctionPipelineMember, JoinsAll, ModulePass,
-    ModulePassEffect, ModulePassList, ModulePassManager, ModulePipeline, ModulePipelineExecution,
-    ModulePipelineMember, ModuleToFunctionPassAdaptor, MutatesIr, PassPipelineInfo,
-    PreservesVerification, ProvidesToken, ReadOnly, ReadOnlyFunctionPass, ReadOnlyModulePass,
-    TypedFunctionPass, TypedModulePass, TypedPassEffect, for_each_function, function_pipeline,
-    module_pipeline,
+    DynFunctionPipeline, DynModulePipeline, DynReadOnlyFunctionPipeline, DynReadOnlyModulePipeline,
+    ForEachFunction, FunctionPass, FunctionPassList, FunctionPipeline, FunctionPipelineExecute,
+    FunctionPipelineMember, ModulePass, ModulePassList, ModulePipeline, ModulePipelineExecute,
+    ModulePipelineMember, PassExecution, ProvidesToken, ReadOnlyFn, ReadOnlyMod, VerdictCarry,
+    for_each_function, function_pipeline, module_pipeline, run_function_pass, run_module_pass,
 };
 pub use pass_pipeline::{
     BDCE, CLEANUP_LIFT, CLEANUP_MIN, CLEANUP_O1_ISH, DCE, DEFAULT_O0, DEFAULT_O1, EARLY_CSE,
@@ -290,4 +291,4 @@ pub use value_tracking::{
 // `bool`/`i8`/`i16`/`i32`/`i64`/`i128` are std types — no re-export.
 
 #[cfg(feature = "macros")]
-pub use llvmkit_macros::IrStruct;
+pub use llvmkit_macros::{IrStruct, function_pass, module_pass};

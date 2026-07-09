@@ -2960,6 +2960,27 @@ impl<'ctx, B: ModuleBrand> Module<'ctx, B, Verified> {
             _state: PhantomData,
         }
     }
+
+    /// Reborrow this verified module as an *unverified* capability token
+    /// **without consuming it**.
+    ///
+    /// Crate-internal plumbing for the read-only `Dyn…` pass pipelines
+    /// (`crate::pass_manager`): a boxed pass runs behind an erased trait whose
+    /// entry point is typed to take a `&Module<Unverified>` mutation token, but a
+    /// read-only container holds only `Inspect` passes — whose rung token is `()`,
+    /// so the reference is projected away and never reaches a mutator. The
+    /// container therefore hands over this throwaway alias purely to satisfy the
+    /// erased signature, then threads the *original* verified module out untouched
+    /// (no re-verification; D8). It is `pub(crate)` and used only there, where the
+    /// container's `push` bound (`Inspect`-only) makes the no-mutation invariant
+    /// structural rather than assumed.
+    pub(crate) fn scratch_unverified(&self) -> Module<'ctx, B, Unverified> {
+        Module {
+            core: self.core,
+            _brand: PhantomData,
+            _state: PhantomData,
+        }
+    }
 }
 
 // `&'ctx TypeData` borrows are *not* mutated; they point into a
