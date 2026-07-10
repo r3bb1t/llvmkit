@@ -34,6 +34,7 @@ use super::cmp_predicate::{FloatPredicate, IntPredicate};
 use super::derived_types::FunctionType;
 use super::float_kind::{FloatKind, IntoFloatValue};
 use super::fmf::FastMathFlags;
+use super::function::FunctionValue;
 use super::function_signature::{FunctionReturn, token::ValidatedCallResult};
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::instr_types::TailCallKind;
@@ -308,11 +309,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> LoadInst<'ctx, B> {
     pub fn loaded_ty(self) -> Type<'ctx, B> {
         Type::new(self.ty, self.module)
     }
-    pub fn pointer(self) -> Value<'ctx, B> {
+    /// Pointer operand. Statically a pointer for this opcode, so returned
+    /// as [`PointerValue`] rather than the erased [`Value`].
+    pub fn pointer(self) -> PointerValue<'ctx, B> {
         let id = self.payload().ptr.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
-        Value::from_parts(id, self.module, data.ty)
+        PointerValue::from_value_unchecked(Value::from_parts(id, self.module, data.ty))
     }
     pub fn align(self) -> Option<Align> {
         self.payload().align.align()
@@ -370,11 +373,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> StoreInst<'ctx, B> {
         let data = module.context().value_data(id);
         Value::from_parts(id, self.module, data.ty)
     }
-    pub fn pointer(self) -> Value<'ctx, B> {
+    /// Pointer operand. Statically a pointer for this opcode, so returned
+    /// as [`PointerValue`] rather than the erased [`Value`].
+    pub fn pointer(self) -> PointerValue<'ctx, B> {
         let id = self.payload().ptr.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
-        Value::from_parts(id, self.module, data.ty)
+        PointerValue::from_value_unchecked(Value::from_parts(id, self.module, data.ty))
     }
     pub fn align(self) -> Option<Align> {
         self.payload().align.align()
@@ -425,11 +430,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> GepInst<'ctx, B> {
     pub fn source_element_type(self) -> Type<'ctx, B> {
         Type::new(self.payload().source_ty, self.module)
     }
-    pub fn pointer(self) -> Value<'ctx, B> {
+    /// Pointer operand. Statically a pointer for this opcode, so returned
+    /// as [`PointerValue`] rather than the erased [`Value`].
+    pub fn pointer(self) -> PointerValue<'ctx, B> {
         let id = self.payload().ptr.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
-        Value::from_parts(id, self.module, data.ty)
+        PointerValue::from_value_unchecked(Value::from_parts(id, self.module, data.ty))
     }
     pub fn indices(self) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + 'ctx {
         let module = self.module.module();
@@ -442,6 +449,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> GepInst<'ctx, B> {
     pub fn flags(self) -> GepNoWrapFlags {
         self.payload().flags
     }
+}
+
+/// The called operand of a call, split into the direct/indirect cases.
+/// Returned by [`CallInst::classify_callee`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Callee<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    /// A direct call to a known function global.
+    Direct(FunctionValue<'ctx, Dyn, B>),
+    /// An indirect call through a function pointer.
+    Indirect(PointerValue<'ctx, B>),
 }
 
 /// `call` instruction. Mirrors `CallInst` (`Instructions.h`).
@@ -535,12 +552,26 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
             _ => unreachable!("CallInst invariant: kind is Instruction"),
         }
     }
-    /// pointer value also fits here).
+    /// The called operand, erased to [`Value`] (a function global for a
+    /// direct call, a function pointer for an indirect one). Use
+    /// [`Self::classify_callee`] to recover which.
     pub fn callee(self) -> Value<'ctx, B> {
         let id = self.payload().callee.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
         Value::from_parts(id, self.module, data.ty)
+    }
+
+    /// Split the callee into a direct call to a known [`FunctionValue`] or
+    /// an indirect call through a [`PointerValue`]. Mirrors the common
+    /// `CallBase::getCalledFunction()` "is this direct?" question, but the
+    /// answer is a typed enum instead of a nullable pointer.
+    pub fn classify_callee(self) -> Callee<'ctx, B> {
+        let callee = self.callee();
+        match FunctionValue::try_from(callee) {
+            Ok(function) => Callee::Direct(function),
+            Err(_) => Callee::Indirect(PointerValue::from_value_unchecked(callee)),
+        }
     }
     /// Function-type of the call (`FunctionType<'ctx, B>`).
     pub fn function_type(self) -> FunctionType<'ctx, B> {
@@ -1663,11 +1694,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> VAArgInst<'ctx, B> {
         }
     }
     /// `va_list` pointer operand.
-    pub fn pointer(self) -> Value<'ctx, B> {
+    /// Pointer operand (the `va_list`). Statically a pointer, so returned
+    /// as [`PointerValue`] rather than the erased [`Value`].
+    pub fn pointer(self) -> PointerValue<'ctx, B> {
         let id = self.payload().src.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
-        Value::from_parts(id, self.module, data.ty)
+        PointerValue::from_value_unchecked(Value::from_parts(id, self.module, data.ty))
     }
     /// Destination type (the second `, T` in `va_arg ptr %vl, T`).
     pub fn result_type(self) -> Type<'ctx, B> {
@@ -1936,11 +1969,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicCmpXchgInst<'ctx, B> {
             _ => unreachable!("AtomicCmpXchgInst invariant: kind is Instruction"),
         }
     }
-    pub fn pointer(self) -> Value<'ctx, B> {
+    /// Pointer operand. Statically a pointer for this opcode, so returned
+    /// as [`PointerValue`] rather than the erased [`Value`].
+    pub fn pointer(self) -> PointerValue<'ctx, B> {
         let id = self.payload().ptr.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
-        Value::from_parts(id, self.module, data.ty)
+        PointerValue::from_value_unchecked(Value::from_parts(id, self.module, data.ty))
     }
     pub fn compare_value(self) -> Value<'ctx, B> {
         let id = self.payload().cmp.get();
@@ -1999,11 +2034,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
     pub fn operation(self) -> AtomicRMWBinOp {
         self.payload().op
     }
-    pub fn pointer(self) -> Value<'ctx, B> {
+    /// Pointer operand. Statically a pointer for this opcode, so returned
+    /// as [`PointerValue`] rather than the erased [`Value`].
+    pub fn pointer(self) -> PointerValue<'ctx, B> {
         let id = self.payload().ptr.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
-        Value::from_parts(id, self.module, data.ty)
+        PointerValue::from_value_unchecked(Value::from_parts(id, self.module, data.ty))
     }
     pub fn value_operand(self) -> Value<'ctx, B> {
         let id = self.payload().value.get();
