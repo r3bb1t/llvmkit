@@ -2225,7 +2225,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
         Value::from_parts(id, self.module, data.ty)
     }
     /// Replace the value operand in place. Requires an `Unverified`
-    /// module token: like [`Instruction::replace_all_uses_with`], this
+    /// module token: like [`crate::Instruction::replace_all_uses_with`], this
     /// mutates the IR and must not be reachable without proof of
     /// mutation capability. `module_token` is the capability witness; the
     /// interior-mutable slot is reached through the handle's own

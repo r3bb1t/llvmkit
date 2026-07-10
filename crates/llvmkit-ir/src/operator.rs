@@ -27,7 +27,7 @@ pub trait OverflowingBinaryOperator<'ctx> {
 /// [`SDivInst`], [`LShrInst`], and [`AShrInst`].
 pub trait PossiblyExactOperator<'ctx> {
     /// `exact` flag.
-    fn is_exact(self) -> bool;
+    fn is_exact(&self) -> bool;
 }
 
 impl<'ctx> OverflowingBinaryOperator<'ctx> for AddInst<'ctx> {
@@ -76,25 +76,25 @@ impl<'ctx> OverflowingBinaryOperator<'ctx> for ShlInst<'ctx> {
 
 impl<'ctx> PossiblyExactOperator<'ctx> for UDivInst<'ctx> {
     #[inline]
-    fn is_exact(self) -> bool {
-        UDivInst::is_exact(self)
+    fn is_exact(&self) -> bool {
+        UDivInst::is_exact(*self)
     }
 }
 impl<'ctx> PossiblyExactOperator<'ctx> for SDivInst<'ctx> {
     #[inline]
-    fn is_exact(self) -> bool {
-        SDivInst::is_exact(self)
+    fn is_exact(&self) -> bool {
+        SDivInst::is_exact(*self)
     }
 }
 impl<'ctx> PossiblyExactOperator<'ctx> for LShrInst<'ctx> {
     #[inline]
-    fn is_exact(self) -> bool {
-        LShrInst::is_exact(self)
+    fn is_exact(&self) -> bool {
+        LShrInst::is_exact(*self)
     }
 }
 impl<'ctx> PossiblyExactOperator<'ctx> for AShrInst<'ctx> {
     #[inline]
-    fn is_exact(self) -> bool {
-        AShrInst::is_exact(self)
+    fn is_exact(&self) -> bool {
+        AShrInst::is_exact(*self)
     }
 }
