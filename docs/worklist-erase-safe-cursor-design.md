@@ -2,7 +2,7 @@
 
 Date: 2026-07-10. Target: `crates/llvmkit-ir` (`worklist.rs` new, `pass_context.rs`,
 `dce.rs`, `inst_simplify.rs`). Branch flow: `feature-N/*` → `dev`. This is the
-Package 3 deferred perf item from `docs/pass-facing-type-safety-v3.md` (items 1–2)
+Package 3 deferred perf item from `docs/pass-facing-type-safety.md` (items 1–2)
 and `docs/future-work.md`, now designed in detail.
 
 ## Context
@@ -25,7 +25,7 @@ a general **erase-safe cursor** over terminated function bodies — as reusable
 pass-authoring API (not a one-off DCE speedup) — while keeping the pass output
 **byte-identical** on the existing `scalar_cleanup` corpus.
 
-**Doctrine alignment** (from the v3 spec): *unrepresentable > witnessed > tested,
+**Doctrine alignment** (from the pass-facing type-safety spec): *unrepresentable > witnessed > tested,
 never trusted*. The worklist is kept consistent structurally (every mutation flows
 through `FnPatch`, which maintains it), not by author discipline.
 

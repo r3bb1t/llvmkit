@@ -1,4 +1,4 @@
-# Pass-Facing Type Safety v3 — Design Spec
+# Pass-Facing Type Safety — Design
 
 Date: 2026-07-10. Target: `llvmkit` workspace (`crates/llvmkit-ir`, `crates/llvmkit-macros`), branch flow `feature-N/*` → `dev`.
 
@@ -88,7 +88,7 @@ Ok(reshape.done())
 
 llvmkit's `InstructionKind` enum already beats C++ `isa`/`dyn_cast` at the opcode level, but the pass-facing story degrades one operand deep: accessors return erased `Value` where types are provable, casts/phis collapse into single variants (the phi one produces a semantically wrong `as_int_value()` on fp/ptr phis), variable-arity terminators expose counts but no readers, and there are no grouping abstractions. Surveying the original C++ passes (`orig_cpp/llvm-project-llvmorg-22.1.4`) showed the real pass-facing interface there is `PatternMatch.h` (2,105 `match()` sites in InstCombine; 898 `m_OneUse`) plus a pass skeleton (erase-safe iteration, worklists, mid-pass IRBuilder, `PreservedAnalyses`). llvmkit's own two passes (`dce.rs`, `inst_simplify.rs`) hand-roll clone-the-id-list + restart-scan-on-first-change (O(n²)), duplicate their match logic in read-only pre-scans forced by consuming `mutate()`, and cannot create IR mid-pass.
 
-Goal: make the instruction surface fully honest ("more strongly typed enum") and give pass authors the C++-proven ergonomics — under a strict safety doctrine, with breaking changes explicitly accepted (pre-1.0, v0.0.4).
+Goal: make the instruction surface fully honest ("more strongly typed enum") and give pass authors the C++-proven ergonomics — under a strict safety doctrine, with breaking changes explicitly accepted (pre-1.0).
 
 **Doctrine (goes verbatim into the spec/docs):** every guarantee is tiered *unrepresentable* (compiler rejects) > *witnessed* (framework observes the runtime fact; no author assertions) > *tested* (in-crate algorithms, property-tested once) — and **nothing runs on trust**. Author-claimed analysis preservation (C++/MLIR model) is explicitly rejected. Human judgment remains only in: (1) transformation semantics (future complement: the Alive2-style `refines` item already in `docs/future-work.md`), (2) in-crate algorithms + their test oracles, (3) downstream custom analyses' own hooks (blast radius contained to their consumers).
 
