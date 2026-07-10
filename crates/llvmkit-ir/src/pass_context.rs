@@ -57,9 +57,9 @@ use core::marker::PhantomData;
 use super::BasicBlock;
 use super::IrResult;
 use super::analysis::{
-    AnalysisSelector, FunctionAnalysis, FunctionAnalysisList, FunctionAnalysisManager,
-    ModuleAnalysis, ModuleAnalysisList, ModuleAnalysisManager, ModuleAnalysisSelector,
-    PreservedAnalyses,
+    AnalysisSelector, CfgIncremental, FunctionAnalysis, FunctionAnalysisList,
+    FunctionAnalysisManager, ModuleAnalysis, ModuleAnalysisList, ModuleAnalysisManager,
+    ModuleAnalysisSelector, PreservedAnalyses, RepairOutcome,
 };
 use super::block_state::{Terminated, Unterminated};
 use super::cfg_update::CfgUpdate;
@@ -593,6 +593,15 @@ where
     /// edit methods append through a shared `&self` while IR mutation flows
     /// through the interior-mutable module token.
     cfg_updates: core::cell::RefCell<Vec<CfgUpdate>>,
+    /// Graveyard of freshly-repaired/recomputed analysis results produced by
+    /// [`Self::analysis_repaired`]. Each mid-pass repair pushes its owned result
+    /// here and hands back a borrow into it whose lifetime is tied to the
+    /// `&mut self` receiver — so holding a repaired CFG-analysis reference across
+    /// a later structural edit is a *compile error*, and the stale-read footgun
+    /// is unrepresentable rather than merely discouraged. Grows by one entry per
+    /// `analysis_repaired` call for the mutator's lifetime (a pass runs finitely
+    /// many repairs).
+    repaired: Vec<Box<dyn core::any::Any>>,
 }
 
 impl<'m, 'r, 'ctx, B, R> FnReshape<'m, 'r, 'ctx, B, R>
@@ -611,6 +620,7 @@ where
         Self {
             patch: FnPatch::new(module, function, results),
             cfg_updates: core::cell::RefCell::new(Vec::new()),
+            repaired: Vec::new(),
         }
     }
 
@@ -625,9 +635,109 @@ where
         self.cfg_updates.borrow().clone()
     }
 
-    // `function`, `function_mut`, `analysis`, `module_mut`, `erase`, and
-    // `replace_all_uses` are inherited from `FnPatch` via `Deref` (below), so
-    // the read + in-block-edit surface need not be re-delegated by hand.
+    // The in-block-edit surface below is delegated to the inner `FnPatch` by
+    // hand rather than through `Deref`. `Deref<Target = FnPatch>` would also
+    // expose `FnPatch::analysis` — whose `&'r`-borrowed reference outlives a
+    // reshape edit — so a pass could read a CFG analysis, split a block, then
+    // read the now-stale cached reference. Withholding that method (and offering
+    // only [`Self::analysis_repaired`], whose result is tied to `&mut self`) is
+    // what makes the mid-reshape stale-read *unrepresentable*. `erase`/
+    // `replace_all_uses` are safe to expose: an in-block edit preserves the CFG,
+    // so it cannot invalidate a CFG analysis.
+
+    /// Read-only function view. Delegated from the inner [`FnPatch`].
+    #[inline]
+    pub fn function(&self) -> FunctionView<'ctx, B> {
+        self.patch.function()
+    }
+
+    /// Mutation-capable function-body view. Delegated from the inner [`FnPatch`].
+    #[inline]
+    pub fn function_mut(&self) -> FunctionBody<'ctx, B> {
+        self.patch.function_mut()
+    }
+
+    /// Whether any mutation has been performed through this mutator (including
+    /// its inner [`FnPatch`] surface). Delegated from the inner [`FnPatch`].
+    #[inline]
+    pub fn is_dirty(&self) -> bool {
+        self.patch.is_dirty()
+    }
+
+    /// Mutation-capable module token. Delegated from the inner [`FnPatch`].
+    #[inline]
+    pub fn module_mut(&self) -> &'m Module<'ctx, B, Unverified> {
+        self.patch.module_mut()
+    }
+
+    /// Erase a non-terminator instruction. Delegated from the inner [`FnPatch`];
+    /// an in-block erase preserves the CFG, so it records no [`CfgUpdate`].
+    #[inline]
+    pub fn erase(&self, target: &NonTerminator<'ctx, B>) {
+        self.patch.erase(target);
+    }
+
+    /// Replace every use of `view`'s result with `replacement`. Delegated from
+    /// the inner [`FnPatch`]; preserves the CFG.
+    #[inline]
+    pub fn replace_all_uses<V>(
+        &self,
+        view: &InstructionView<'ctx, B>,
+        replacement: V,
+    ) -> IrResult<()>
+    where
+        V: IsValue<'ctx, B>,
+    {
+        self.patch.replace_all_uses(view, replacement)
+    }
+
+    /// Read a `Requires`-declared **CFG analysis** mid-reshape, brought up to
+    /// date with every structural edit recorded so far.
+    ///
+    /// This is the *only* way to read a CFG analysis on a reshape mutator, and
+    /// it is what makes the stale-read footgun unrepresentable. The returned
+    /// reference borrows `&mut self`, so the borrow checker forbids holding it
+    /// across any later mutator call (a structural edit, another repair, even an
+    /// erase): a stale read cannot be written down. To read again after an edit,
+    /// call this again — it re-derives from the freshly recorded edits.
+    ///
+    /// Mechanism: the recorded [`CfgUpdate`]s are drained and offered to a
+    /// working copy of the cached result through
+    /// [`CfgIncremental::apply_updates`]. If the analysis absorbs them
+    /// ([`RepairOutcome::Repaired`]) that copy is used; otherwise
+    /// ([`RepairOutcome::PreferRecompute`] — always, in Phase 1) the result is
+    /// recomputed from scratch. Either way the fresh result is stored in the
+    /// mutator and a borrow into it is returned. The framework *witnesses* the
+    /// repair; the author never claims it.
+    ///
+    /// The bound `A::Result: CfgIncremental` is precisely the "this is a CFG
+    /// analysis" marker: value analyses (which a reshape edit cannot make stale)
+    /// have no such hook and are not read through here.
+    #[inline]
+    pub fn analysis_repaired<A, I>(&mut self) -> &A::Result
+    where
+        A: FunctionAnalysis<'ctx, B>,
+        A::Result: CfgIncremental<'ctx, B> + Clone,
+        R: AnalysisSelector<'ctx, B, A, I>,
+    {
+        let updates: Vec<CfgUpdate> = core::mem::take(self.cfg_updates.get_mut());
+        let function = self.patch.function();
+        // Offer the recorded edits to a working copy of the cached result; fall
+        // back to a from-scratch recompute when the analysis declines them.
+        let mut working = R::select(&self.patch.results).clone();
+        let fresh = match working.apply_updates(&updates, function) {
+            RepairOutcome::Repaired => working,
+            RepairOutcome::PreferRecompute => {
+                <A::Result as CfgIncremental<'ctx, B>>::recompute(function)
+            }
+        };
+        self.repaired.push(Box::new(fresh));
+        self.repaired
+            .last()
+            .expect("just pushed a result")
+            .downcast_ref::<A::Result>()
+            .expect("pushed value is A::Result")
+    }
 
     /// Split `block` before instruction `before`: `before` and everything after
     /// it move into a fresh block (named `name`) appended to the function; the
@@ -683,24 +793,12 @@ where
     }
 }
 
-/// A `ReshapeCfg` mutator *is* a `PatchBody` mutator plus CFG surgery, so it
-/// inherits the whole in-block-edit surface (`function`/`function_mut`/
-/// `analysis`/`module_mut`/`erase`/`replace_all_uses`/`is_dirty`) via `Deref`
-/// instead of re-delegating each by hand. `FnReshape`'s own `done()` (the
-/// `ReshapeCfg` floor) is inherent, so it shadows the derefed `FnPatch::done`.
-impl<'m, 'r, 'ctx, B, R> core::ops::Deref for FnReshape<'m, 'r, 'ctx, B, R>
-where
-    B: ModuleBrand + 'ctx,
-    R: FunctionAnalysisList<'ctx, B>,
-    'ctx: 'm,
-    'ctx: 'r,
-{
-    type Target = FnPatch<'m, 'r, 'ctx, B, R>;
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.patch
-    }
-}
+// NB: `FnReshape` deliberately does *not* `Deref` to `FnPatch`. A blanket
+// `Deref` would re-expose `FnPatch::analysis`, whose `&'r`-borrowed reference
+// outlives a reshape edit and so would reintroduce the mid-reshape stale-read
+// footgun this rung exists to eliminate. The in-block-edit surface is delegated
+// by hand above; CFG analyses are read only through the `&mut self`-tied
+// [`FnReshape::analysis_repaired`].
 
 impl MutatingFn for PatchBody {
     type Mutator<'m, 'r, 'ctx, B, R>
@@ -1425,6 +1523,66 @@ mod tests {
                     CfgUpdate::insert(new_id, next_id),
                 ],
             );
+            Ok(())
+        })
+    }
+
+    /// [`super::FnReshape::analysis_repaired`] returns a CFG analysis rebuilt
+    /// from the *current* (post-edit) CFG, not the stale cached one. Splitting
+    /// the entry before its terminator moves the `entry → next` edge into a
+    /// fresh block that nothing yet flows into, so `next` becomes unreachable —
+    /// a fact the pre-edit cached tree still records as reachable, and the
+    /// repaired tree correctly reflects. llvmkit-specific witnessed-preservation
+    /// plumbing (no upstream analog).
+    #[test]
+    fn analysis_repaired_reflects_the_edit() -> Result<(), IrError> {
+        Module::with_new("reshape-repaired", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let next = f.append_basic_block(&m, "next");
+            let next_label = next.label();
+
+            // entry: %x = add 1, 2 ; br label %next    next: ret 0
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let _x = b.build_int_add::<i32, _, _, _>(
+                i32_ty.const_int(1_u32),
+                i32_ty.const_int(2_u32),
+                "x",
+            )?;
+            b.build_br(next.label())?;
+            let b2 = IRBuilder::new_for::<i32>(&m).position_at_end(next);
+            b2.build_ret(i32_ty.const_int(0_u32))?;
+
+            let function = FunctionView::from(f);
+            let mut fam = FunctionAnalysisManager::new();
+            Reqs::prefetch(&mut fam, function)?;
+
+            // Pre-edit cached tree: `next` is reachable (entry → next).
+            assert!(
+                fam.get_cached_result::<DominatorTreeAnalysis, _>(function)
+                    .expect("dom tree was prefetched")
+                    .is_reachable_from_entry(next_label)
+            );
+
+            let results = Reqs::collect(&fam, function)?;
+            let cx: FnCx<'_, '_, '_, _, ReshapeCfg, Reqs> = FnCx::new(&m, function, results);
+            let mut reshape = cx.mutate();
+
+            let entry_view = function
+                .entry_block()
+                .expect("definition has an entry block");
+            let terminator = entry_view
+                .as_basic_block()
+                .terminator()
+                .expect("entry is terminated by the br");
+            let _new = reshape.split_block(&entry_view, &terminator, "entry.split")?;
+
+            // The repaired tree recomputed from the current CFG, in which `next`
+            // is no longer reachable — proving it is not the stale cache.
+            let dt = reshape.analysis_repaired::<DominatorTreeAnalysis, _>();
+            assert!(!dt.is_reachable_from_entry(next_label));
             Ok(())
         })
     }

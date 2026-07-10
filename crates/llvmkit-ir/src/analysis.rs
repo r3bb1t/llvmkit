@@ -382,17 +382,28 @@ pub enum RepairOutcome {
 /// No upstream analog in this shape: LLVM hand-feeds `DomTreeUpdater` its edits
 /// and trusts the author to keep them complete and ordered; here the edits are
 /// framework-recorded and the analysis only ever *reacts* to them.
-pub trait CfgIncremental<'ctx, B: ModuleBrand = Brand<'ctx>> {
+///
+/// [`Sized`] because [`Self::recompute`] returns `Self`: this is only ever
+/// implemented on concrete analysis-result types.
+pub trait CfgIncremental<'ctx, B: ModuleBrand = Brand<'ctx>>: Sized {
     /// Fold the recorded `updates` (in the order they were performed over
     /// `function`) into this cached result. Return [`RepairOutcome::Repaired`]
     /// only if the result is now fully consistent with the edited CFG;
     /// otherwise return [`RepairOutcome::PreferRecompute`] and the framework
-    /// recomputes or evicts.
+    /// recomputes (via [`Self::recompute`]) or evicts.
     fn apply_updates(
         &mut self,
         updates: &[CfgUpdate],
         function: FunctionView<'ctx, B>,
     ) -> RepairOutcome;
+
+    /// Recompute this analysis from scratch over `function`'s current CFG. The
+    /// framework calls this whenever [`Self::apply_updates`] returns
+    /// [`RepairOutcome::PreferRecompute`] (always, in Phase 1), so a mid-pass
+    /// read of a CFG analysis after a reshape edit still yields a *correct*
+    /// result rather than a stale cached one. Must equal a fresh construction
+    /// of the analysis.
+    fn recompute(function: FunctionView<'ctx, B>) -> Self;
 }
 
 type FunctionRunner<'ctx, B> = Rc<
@@ -1041,6 +1052,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> CfgIncremental<'ctx, B> for DominatorTree {
         _function: FunctionView<'ctx, B>,
     ) -> RepairOutcome {
         RepairOutcome::PreferRecompute
+    }
+
+    #[inline]
+    fn recompute(function: FunctionView<'ctx, B>) -> Self {
+        DominatorTree::new(function.as_function())
     }
 }
 

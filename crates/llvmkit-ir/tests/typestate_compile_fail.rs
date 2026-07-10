@@ -38,6 +38,7 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/per_opcode_handle_cannot_mint_instruction.rs");
     t.compile_fail("tests/compile_fail/value_cannot_mint_instruction_lifecycle.rs");
     t.compile_fail("tests/compile_fail/block_terminator_view_cannot_erase.rs");
+    t.compile_fail("tests/compile_fail/reshape_stale_cfg_analysis_across_edit.rs");
     t.compile_fail("tests/compile_fail/atomicrmw_set_value_requires_token.rs");
     t.compile_fail("tests/compile_fail/patchbody_cannot_erase_terminator.rs");
     t.compile_fail("tests/compile_fail/call_void_no_return_accessor.rs");
