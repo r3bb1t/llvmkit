@@ -274,3 +274,46 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
   `claim_preserved_after_mutate`) blessed on the local rustc. The whole set
   should be re-blessed on the canonical CI rustc so every fixture matches on the
   reference toolchain.
+
+## Package 4 (analysis preservation) — deferred
+
+The `feature-8/analysis-plumbing` branch shipped Phase 1 of framework-witnessed
+analysis preservation: the `CfgUpdate` recording vocabulary (`cfg_update.rs`),
+the `CfgIncremental` hook (`RepairOutcome` + `apply_updates`/`recompute`), the
+reshape mutator's witnessed edit log, and the *unrepresentable* mid-reshape
+stale CFG-analysis read (`FnReshape::analysis_repaired`, no `Deref`, compile-fail
+fixture). What it deliberately scoped out:
+
+- **Phase 2 — real incremental repair.** `DominatorTree::apply_updates` returns
+  `PreferRecompute`, so a mid-pass read recomputes from scratch (correct, not
+  yet incremental). Phase 2 (its own spec) makes `apply_updates` fold the
+  recorded `CfgUpdate`s into the cached tree, property-tested to agree with a
+  from-scratch recompute over random edit sequences, with a debug-build
+  recompute-compare at every flush.
+- **`done()`-flush witnessing loop** (spec 3a). At end-of-pass the driver could
+  drain the reshape mutator's `CfgUpdate` log, offer it to each cached CFG
+  analysis, and mark preserved only what it watched repair. In Phase 1 every
+  hooked analysis returns `PreferRecompute`, so this marks nothing beyond the
+  existing rung floor -- "eviction at end" is already today's behavior. Wiring
+  the loop is deferred until Phase 2 gives it something to witness (a `Repaired`
+  outcome); it also needs `FnReport`/the driver to thread the log out of the
+  consumed mutator.
+- **`Requires` without `Default`** (spec item 5). The function/module
+  analysis-list macros bound every member `+ Default` so `prefetch` can
+  auto-register via `ensure_registered_default`. Dropping that to allow a
+  parameterized / non-`Default` analysis in a `Requires` list needs either
+  nightly specialization or a new breaking `PrefetchableAnalysis` trait that
+  every analysis implements (Default ones delegate to
+  `ensure_registered_default`; others no-op, assuming pre-registration). Zero
+  in-tree consumers today (the one function analysis is `Default`), and it is a
+  flexibility feature rather than a safety one, so it is deferred until a
+  non-`Default` analysis actually exists.
+- **Value-analysis update vocabulary.** `CfgUpdate` is CFG-shaped only.
+  Instruction-level events for value analyses (KnownBits/DemandedBits) are a
+  possible extension, not designed here -- every mutating rung's floor already
+  evicts them.
+- **New `.stderr` under the canonical-rustc bless caveat.**
+  `reshape_stale_cfg_analysis_across_edit` is blessed on the local rustc like
+  the Pass API v2 fixtures above; its `E0502` borrow-error wording is stable
+  across toolchains, but it joins the set that should be re-blessed on the
+  reference rustc.
