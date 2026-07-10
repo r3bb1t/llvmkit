@@ -2,12 +2,87 @@
 
 Date: 2026-07-10. Target: `llvmkit` workspace (`crates/llvmkit-ir`, `crates/llvmkit-macros`), branch flow `feature-N/*` → `dev`.
 
-## Status
+## Status — all four packages SHIPPED and merged to `dev`
+
+A concrete, code-first tour of the shipped surface is in [API at a glance](#api-at-a-glance-shipped) just below; the prose that follows it is the original per-package design rationale.
 
 - **Package 1 — instruction taxonomy: shipped** (branch `feature-5/instruction-taxonomy`). Delivered total `classify()` over `Classified { Inst, Term }`; exhaustive `InstructionKind`/`TerminatorKind`; the `CastKind` (14 per-opcode handles) and `PhiKind { Int, Fp, Ptr, Other }` sub-enums; `PointerValue`-typed pointer operands and `CallInst::classify_callee()`; readers for switch/indirectbr/landingpad/catchswitch entries; `as_binary_op()`/`as_cmp()` groupings plus `OverflowingBinaryOperator`(+`shl`)/`PossiblyExactOperator`; and the `AtomicRMWInst::set_value_operand` token fix. All breaking; recorded per-commit (repo has no CHANGELOG).
 - **Package 2 — pattern DSL: shipped** (branch `feature-6/pattern-matchers`). A `PatternMatch.h`-style combinator module (`matchers.rs`) whose matchers **return** their bindings as a flat tuple (composed type-level via `Combine`), so a failed match is `None` — never a half-filled slot. Delivers `m_value`/`m_specific`, constant predicates (`m_zero`/`m_one`/`m_all_ones`/`m_power2`/`m_negative`/`m_non_negative`, `m_ap_int`, `m_specific_int`), `m_one_use`, per-opcode binops (`m_add`..`m_frem`) with commutative `m_c_*` variants, sugar (`m_not`/`m_neg`), `m_combine_or`/`m_combine_and`, and `m_load`/`m_gep`. Backed by new `Value::has_one_use()`/`as_const_int()`. Scalar constants only (vector-splat and poison-lane awareness deferred); in-pattern `m_deferred`-style unification is out of scope (use two `match_view` calls with `m_specific`, mirroring InstCombine's cross-`match()` reuse). Cast/`m_icmp`/`m_fcmp`/`m_intrinsic` matchers deferred. Tests transliterate real InstCombine folds.
-- **Package 3 — pass ergonomics: part 1 shipped** (branch `feature-7/pass-ergonomics`). The witnessed dirty-bit: `FnPatch`/`FnReshape` track whether any mutation actually happened (a `Cell<bool>` set by `erase`/`replace_all_uses`/`split_block`), and `done()` reports everything-preserved when clean, the rung floor when dirty — so a no-op mutating pass no longer needlessly invalidates cached analyses. This deleted the duplicated read-only pre-scans in `dce.rs`/`inst_simplify.rs` (both rewritten to route mutation through the mutator so the flag is witnessed; output byte-identical). Plus the small fix `BasicBlockView::instructions()`. **Part 2 shipped the `NonTerminator` compile-safe erase:** `FnPatch::erase` now accepts only a `NonTerminator` (obtained from `InstructionView::as_non_terminator`, which returns `None` for a terminator), so a terminator-erase — which would break the `PatchBody` "CFG preserved" floor — is a *compile* error (pinned by the `patchbody_cannot_erase_terminator` trybuild fixture) rather than the old runtime rejection. `erase` is now infallible. **Part 3 (not started):** the erase-safe cursor + worklist (kill the O(n²) restart-scan while keeping DCE's cascade equivalence — coupled, so deferred as one unit), the in-pass `IRBuilder` accessors, and the remaining small fixes (`FnReshape: Deref<FnPatch>`, `DataLayout` cached on the mutator). `ModRewrite`'s dirty-bit is deferred (its mutations go through the raw `module_mut()` token; no in-tree module pass needs it, and reporting the floor is conservative/safe).
-- **Package 4 — analysis system (Option C): not started.**
+- **Package 3 — pass ergonomics: part 1 shipped** (branch `feature-7/pass-ergonomics`). The witnessed dirty-bit: `FnPatch`/`FnReshape` track whether any mutation actually happened (a `Cell<bool>` set by `erase`/`replace_all_uses`/`split_block`), and `done()` reports everything-preserved when clean, the rung floor when dirty — so a no-op mutating pass no longer needlessly invalidates cached analyses. This deleted the duplicated read-only pre-scans in `dce.rs`/`inst_simplify.rs` (both rewritten to route mutation through the mutator so the flag is witnessed; output byte-identical). Plus the small fix `BasicBlockView::instructions()`. **Part 2 shipped the `NonTerminator` compile-safe erase:** `FnPatch::erase` now accepts only a `NonTerminator` (obtained from `InstructionView::as_non_terminator`, which returns `None` for a terminator), so a terminator-erase — which would break the `PatchBody` "CFG preserved" floor — is a *compile* error (pinned by the `patchbody_cannot_erase_terminator` trybuild fixture) rather than the old runtime rejection. `erase` is now infallible. **Part 3 shipped** (`feature-10/worklist-cursor`, own spec [`docs/worklist-erase-safe-cursor-design.md`](worklist-erase-safe-cursor-design.md)): the erase-safe `body_instructions()` cursor + a **mutation-driven worklist** killed the O(n²) restart-scan in `dce.rs`/`inst_simplify.rs` while keeping the output byte-identical. Cascade direction is intrinsic to the *mutation* — `FnPatch::erase` pushes the erased instruction's operand-defs and self-removes, `replace_all_uses` pushes former users — so there is no per-pass knob and the inactive path stays zero-cost. `FnReshape: Deref<FnPatch>` shipped in Part 3 but was then deliberately **removed** in Package 4 (the blanket `Deref` re-exposed a mid-reshape stale-read footgun). Still deferred (YAGNI / marginal): in-pass `IRBuilder` accessors, `DataLayout` cache, and `ModRewrite`'s dirty-bit (its mutations go through the raw `module_mut()` token; reporting the floor is conservative/safe).
+- **Package 4 — analysis system (Option C): shipped** (`feature-8/analysis-plumbing` + `feature-9/analysis-preservation-phase2`). Framework-witnessed preservation, no author-claims API: `CfgUpdate` recording on `FnReshape`, the `CfgIncremental` hook (`apply_updates`/`recompute`, `RepairOutcome`), the **unrepresentable** mid-reshape stale CFG-analysis read (`FnReshape::analysis_repaired`, and the `Deref` removal that makes it so), the `done()`-flush that keeps a reshape pass's dominator tree by *witnessing* its repair (marked preserved only because the framework watched `apply_updates` succeed), and `Requires`-without-`Default` via the `PrefetchableAnalysis` trait. Deferred to a follow-up: sub-linear incremental dominator repair (perf only — `apply_updates` correctly repairs by recompute today); `PrefetchableModuleAnalysis`; the `for_each_function` reshape flush.
+
+## API at a glance (shipped)
+
+Concrete usage of each package's shipped surface — the doctrine in code.
+
+**Package 1 — total, honest classification.** No overloaded `None`; the enum is exhaustive (a new opcode breaks the match, on purpose), and operands are typed where the IR grammar guarantees it.
+
+```rust
+use llvmkit_ir::{Classified, InstructionKind, TerminatorKind, CastKind, PhiKind, Callee};
+
+match view.classify() {                       // total: Inst | Term, no is_terminator() dance
+    Classified::Inst(InstructionKind::Cast(CastKind::PtrToInt(c))) => {
+        let src: PointerValue = c.src();      // ptrtoint's source is a pointer, by construction
+    }
+    Classified::Inst(InstructionKind::Phi(PhiKind::Fp(phi))) => { /* fp-typed phi handle */ }
+    Classified::Term(TerminatorKind::Switch(sw)) => {
+        for (case_val, dest) in sw.cases() { /* real reader over stored cases */ }
+    }
+    _ => {}                                   // exhaustive — this arm must be spelled
+}
+
+let ptr: PointerValue = load.pointer();       // Load/Store/Gep/VAArg/Atomic* pointer() is typed
+match call.classify_callee() {                // Callee { Direct(FunctionValue), Indirect(PointerValue) }
+    Callee::Direct(f)   => { /* direct call */ }
+    Callee::Indirect(p) => { /* through a function pointer */ }
+}
+```
+
+**Package 2 — pattern matchers that return their bindings.** A partial match is `None`, never a half-filled out-param.
+
+```rust
+use llvmkit_ir::matchers::*;
+
+// (x - y) & -1  →  binds (x, y) only on a full match:
+if let Some((x, y)) = m_add(m_one_use(m_sub(m_value(), m_value())), m_all_ones())
+        .match_view(&view) {
+    // use x, y
+}
+// commutative + constant capture: tries (a, k) then (k, a), binds the ApInt:
+let _ = m_c_add(m_specific(a), m_ap_int()).match_view(&view);
+```
+
+**Package 3 — a worklist pass with witnessed preservation.** Seed once, drain to fixpoint; mutations cascade automatically; terminator-erase is a *compile* error.
+
+```rust
+let patch = cx.mutate();
+let scope = patch.worklist();                 // seeds every non-terminator; RAII, rejects nesting
+while let Some(inst) = scope.next() {          // NonTerminator, erase-safe
+    if is_trivially_dead(&inst.as_view()) {
+        patch.erase(inst);                     // auto-pushes operand-defs + self-removes (cascade)
+    }
+}
+drop(scope);
+Ok(patch.done())      // clean run → all-preserved; any mutation → the rung floor (both *witnessed*)
+// patch.erase(terminator) does not compile: erase takes only NonTerminator.
+```
+
+**Package 4 — CFG reshape with framework-witnessed analysis preservation.** The mutator records edits; the driver keeps an analysis only by watching it repair.
+
+```rust
+let mut reshape = cx.mutate();
+let new_bb = reshape.split_block(&block, &before, "split")?;   // records the CfgUpdate decomposition
+
+// Mid-pass, read the dominator tree *repaired* to the current CFG. Holding a plain cached
+// CFG-analysis ref across the edit is a COMPILE error — this is the only sound way to read it:
+let dt = reshape.analysis_repaired::<DominatorTreeAnalysis, _>();
+let _ = dt.is_reachable_from_entry(new_bb.label());
+
+Ok(reshape.done())
+// At done(), the driver offers the recorded edits to each cached CFG analysis; the dominator
+// tree repairs and is marked preserved — because the framework *witnessed* it, never a claim.
+// (A `Requires` list no longer needs `Default`: register a configured instance instead.)
+```
 
 ## Context
 
@@ -75,14 +150,16 @@ Framework-witnessed preservation; **no author claims API anywhere** (rejected Op
 
 **No work happens on `dev` directly.** First step before any change: `git checkout -b feature-5/instruction-taxonomy` off current `dev`. This spec doc is the first commit on that branch.
 
-One branch per package, each cut from `dev` after the previous merges (per the established feature-N → dev workflow, push at task boundaries):
+One branch per package, each cut from `dev` after the previous merges (per the established feature-N → dev workflow, push at task boundaries). **As executed and merged:**
 
-1. `feature-5/instruction-taxonomy` — spec doc + Package 1
-2. `feature-6/pattern-matchers` — Package 2 (needs P1's typed accessors/macros)
-3. `feature-7/pass-ergonomics` — Package 3
-4. `feature-8/analysis-plumbing` — Package 4 (P3/P4 touch mostly disjoint files; may overlap if convenient)
+1. `feature-5/instruction-taxonomy` — spec doc + Package 1 ✅
+2. `feature-6/pattern-matchers` — Package 2 ✅
+3. `feature-7/pass-ergonomics` — Package 3 dirty-bit + `NonTerminator` erase ✅
+4. `feature-8/analysis-plumbing` — Package 4 Phase 1 (recording + hook + `analysis_repaired`) ✅
+5. `feature-9/analysis-preservation-phase2` — Package 4 remainder (`done()`-flush, `PrefetchableAnalysis`) ✅
+6. `feature-10/worklist-cursor` — Package 3's deferred perf: erase-safe cursor + worklist ✅ (own spec)
 
-Version stays 0.0.x; each package notes its breaking changes in CHANGELOG. CI runs on `master`+`dev`; each merge to `dev` must be green first.
+Version stays 0.0.x; breaking changes are recorded per-commit (no CHANGELOG in-repo). CI runs on `master`+`dev`; every merge to `dev` was green first (modulo two pre-existing environmental `.stderr` mismatches that pass on CI's canonical rustc).
 
 ## Out of scope (recorded as considered/deferred with reasons)
 
