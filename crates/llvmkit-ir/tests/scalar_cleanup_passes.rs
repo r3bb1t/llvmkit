@@ -43,6 +43,57 @@ fn instsimplify_pass_folds_constant_add() -> Result<(), IrError> {
     })
 }
 
+/// Worklist user-cascade lock (design spec `docs/worklist-erase-safe-cursor-design.md`,
+/// Testing → Cascade-tests). InstSimplify seeds the worklist in program order and
+/// drains it LIFO, so a dependent user is popped *before* its def: here `%b` pops
+/// first and cannot fold (its operand `%a` is not yet constant), then `%a` folds to
+/// `3`. The only reason `%b` gets a second, fold-succeeding visit is that
+/// `FnPatch::replace_all_uses` re-queues `%a`'s former users (`%b`) after the RAUW.
+/// Mirrors `InstSimplifyPass::runImpl`'s use-list-driven re-simplification: folding
+/// one instruction must revisit its users so a dependent chain reaches the fixpoint.
+/// Without that user push the pass stops one fold short (`%b = add i32 3, 10`),
+/// diverging from the restart-scan fixpoint — this test locks the push.
+#[test]
+fn instsimplify_user_cascade_folds_dependent_add_chain() -> Result<(), IrError> {
+    Module::with_new("instsimplify-user-cascade", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        // %a = add i32 1, 2  (used only by %b)
+        let a =
+            b.build_int_add::<i32, _, _, _>(i32_ty.const_int(1_u32), i32_ty.const_int(2_u32), "a")?;
+        // %b = add i32 %a, 10  (used only by the return) — depends on %a.
+        let bb = b.build_int_add::<i32, _, _, _>(a, i32_ty.const_int(10_u32), "b")?;
+        b.build_ret(bb)?;
+
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        let unverified = run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?;
+        let reverified = unverified.verify()?;
+        let text = format!("{reverified}");
+
+        // The whole chain collapses to the single folded constant.
+        assert_eq!(
+            text,
+            concat!(
+                "; ModuleID = 'instsimplify-user-cascade'\n",
+                "define i32 @f() {\n",
+                "entry:\n",
+                "  ret i32 13\n",
+                "}\n",
+            )
+        );
+        // No add survives: %b must have been revisited and folded, not left as
+        // `add i32 3, 10` (the fixpoint-short output when the user push is absent).
+        assert!(!text.contains("add"), "{text}");
+        assert!(!text.contains("%a"), "{text}");
+        assert!(!text.contains("%b"), "{text}");
+        Ok(())
+    })
+}
+
 /// Port of `llvm/lib/Transforms/Scalar/DCE.cpp::DCEInstruction` and
 /// `llvm/lib/Transforms/Scalar/DCE.cpp::eliminateDeadCode`: recursively dead
 /// side-effect-free instructions are erased while stores remain live.

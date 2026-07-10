@@ -131,6 +131,7 @@ pub mod value_symbol_table;
 pub mod value_tracking;
 pub mod vector_element;
 pub mod verifier;
+pub mod worklist;
 
 pub mod unnamed_addr;
 pub use analysis::{
@@ -325,6 +326,7 @@ pub use value::{
     IsValue, PointerValue, StructValue, Typed, Value, ValueCategory, ValueId, VectorValue,
 };
 pub use vector_element::{VectorDyn, VectorElement};
+pub use worklist::Worklist;
 
 pub use align::{Align, MaybeAlign};
 pub use float_kind::{

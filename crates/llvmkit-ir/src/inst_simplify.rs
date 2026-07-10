@@ -7,10 +7,9 @@
 
 use super::IrResult;
 use super::constant_folding::constant_fold_instruction;
-use super::instruction::InstructionView;
 use super::module::ModuleBrand;
 use super::pass_access::PatchBody;
-use super::pass_context::{FnCx, FnPatch, FnReport};
+use super::pass_context::{FnCx, FnReport};
 use super::pass_manager::FunctionPass;
 use super::pass_pipeline::INSTSIMPLIFY;
 
@@ -31,53 +30,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InstSimplifyPass {
         // `FnPatch::done` reports everything-preserved if nothing changed (the
         // dirty flag witnesses it) and the CFG-preserved floor otherwise.
         let patch = cx.mutate();
-        while inst_simplify_iteration(&patch)? {}
-        Ok(patch.done())
-    }
-}
-
-fn inst_simplify_iteration<'ctx, B: ModuleBrand + 'ctx>(
-    patch: &FnPatch<'_, '_, 'ctx, B, ()>,
-) -> IrResult<bool> {
-    let data_layout = patch.function().module().data_layout().clone();
-    let module_ref = patch.module_mut().module_ref();
-
-    for block in patch.function_mut().basic_blocks() {
-        let instruction_ids = block.instruction_ids();
-        for id in instruction_ids {
-            let view = InstructionView::from_parts(id, module_ref);
-            // Upstream `InstSimplifyPass::runImpl` only simplifies instructions
-            // with uses (`!I.use_empty()`) and never re-queues a
-            // simplified-but-live instruction. This restart-scan loop would
-            // otherwise re-fold a folded-but-not-erased instruction (e.g. an
-            // ordered atomic load from a constant global, kept by the
-            // trivially-dead gate below) forever. Skipping use-empty
-            // instructions makes the loop terminate: a folded instruction
-            // has its uses replaced, so on the next scan it is use-empty and
-            // skipped here (dead-code removal is DCE's job, not this pass's).
+        let data_layout = patch.function().module().data_layout().clone();
+        let scope = patch.worklist();
+        while let Some(inst) = scope.next() {
+            let view = inst.as_view();
+            // Upstream runImpl only simplifies instructions with uses (!use_empty);
+            // this also makes the ordered-atomic-load-from-constant-global case
+            // terminate (folded once, kept, then use-empty on any re-visit).
             if !view.as_value().has_uses() {
                 continue;
             }
-            let Some(replacement) = constant_fold_instruction(&view, &data_layout, None)? else {
-                continue;
-            };
-            // Route the RAUW + erase through the mutator so the dirty flag is set.
-            patch.replace_all_uses(&view, replacement)?;
-            // Upstream `InstSimplifyPass::runImpl` erases the simplified
-            // instruction only when it is trivially dead ("a call can get
-            // simplified, but it may not be trivially dead"). Everything the
-            // folder simplifies here is side-effect-free, so after RAUW it is
-            // always trivially dead — but gate on it to match upstream and
-            // stay correct if the folder ever grows a call path.
-            if crate::dce::is_trivially_dead(&view) {
-                let dead = view
-                    .as_non_terminator()
-                    .expect("a trivially-dead instruction is not a terminator");
-                patch.erase(&dead);
+            if let Some(replacement) = constant_fold_instruction(&view, &data_layout, None)? {
+                patch.replace_all_uses(&view, replacement)?; // auto-pushes users
+                if crate::dce::is_trivially_dead(&view) {
+                    patch.erase(&inst);
+                }
             }
-            return Ok(true);
         }
+        drop(scope);
+        Ok(patch.done())
     }
-
-    Ok(false)
 }

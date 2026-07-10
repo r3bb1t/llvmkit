@@ -70,7 +70,8 @@ use super::module::{Brand, Invariant, Module, ModuleBrand, ModuleRef, ModuleView
 use super::pass_access::{
     FnAccess, ModAccess, MutatingFn, MutatingModule, PatchBody, ReshapeCfg, RewriteModule,
 };
-use super::value::IsValue;
+use super::value::{IsValue, ValueId};
+use super::worklist::Worklist;
 
 /// Read-only view of a basic block under its owning module brand.
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -476,6 +477,11 @@ where
     /// so mutating methods can flip it through a shared `&self` (mutation
     /// itself flows through the interior-mutable module token).
     dirty: core::cell::Cell<bool>,
+    /// Opt-in instruction worklist. When `Some`, [`Self::erase`] /
+    /// [`Self::replace_all_uses`] maintain it (push cascade + self-remove), so a
+    /// worklist pass reaches a fixpoint without a restart-scan. `None` (the
+    /// default) is exactly today's behavior — no overhead, no behavior change.
+    worklist: core::cell::RefCell<Option<Worklist>>,
 }
 
 impl<'m, 'r, 'ctx, B, R> FnPatch<'m, 'r, 'ctx, B, R>
@@ -496,6 +502,7 @@ where
             function,
             results,
             dirty: core::cell::Cell::new(false),
+            worklist: core::cell::RefCell::new(None),
         }
     }
 
@@ -548,8 +555,35 @@ where
     pub fn erase(&self, target: &NonTerminator<'ctx, B>) {
         let id = target.as_value().id();
         let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
+        // Capture operand ids before erasing (erase drops their uses). Push them
+        // all unconditionally — `Worklist::pop` is panic-safe and skips any id that
+        // is not an instruction (constant/param operands), so no filter is needed
+        // here. Then remove `id` itself so the erased instruction never surfaces.
+        if let Some(wl) = self.worklist.borrow_mut().as_mut() {
+            for op_id in inst.as_view().operand_ids() {
+                wl.push(op_id);
+            }
+            wl.remove(id);
+        }
         inst.erase_from_parent(self.module);
         self.dirty.set(true);
+    }
+
+    /// Early-increment walk over every non-terminator of the function body, in
+    /// program order. Each block's instruction ids are snapshotted up front and
+    /// walked by index, so erasing the *yielded* instruction does not disturb the
+    /// walk (its successor is already fixed — LLVM's `make_early_inc_range`
+    /// idiom). Yields [`NonTerminator`] (so [`Self::erase`] takes it directly) and
+    /// never yields a terminator. Cascades (erasing instructions *ahead* of the
+    /// cursor) are a worklist's job, not the cursor's.
+    #[inline]
+    pub fn body_instructions(&self) -> impl Iterator<Item = NonTerminator<'ctx, B>> + '_ {
+        let module = self.module.module_ref();
+        self.function
+            .as_function()
+            .basic_blocks()
+            .flat_map(move |block| block.instruction_ids())
+            .filter_map(move |id| InstructionView::from_parts(id, module).as_non_terminator())
     }
 
     /// Replace every use of `view`'s result with `replacement`, leaving the
@@ -565,10 +599,52 @@ where
         V: IsValue<'ctx, B>,
     {
         let id = view.as_value().id();
+        // Capture the former users only when a worklist is active — the
+        // inactive path must stay allocation-free (the field's zero-overhead
+        // promise). The `borrow()` is a let-RHS temporary, released before the
+        // later `borrow_mut()`. Users must be captured *before* the RAUW rewires
+        // them.
+        let users: Vec<ValueId> = if self.worklist.borrow().is_some() {
+            view.as_value().users().map(|u| u.as_value().id).collect()
+        } else {
+            Vec::new()
+        };
         let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
         inst.replace_all_uses_with(self.module, replacement)?;
+        if let Some(wl) = self.worklist.borrow_mut().as_mut() {
+            for user_id in users {
+                wl.push(user_id);
+            }
+        }
         self.dirty.set(true);
         Ok(())
+    }
+
+    /// Begin a worklist-driven fixpoint transform: activate a [`Worklist`] on this
+    /// mutator, seeded with every non-terminator of the function body in program
+    /// order. Drive it with `while let Some(inst) = scope.next() { ... }`, mutating
+    /// through `self` (`erase`/`replace_all_uses`) — those mutations maintain the
+    /// worklist automatically (cascade + self-remove). The worklist deactivates
+    /// when the returned scope drops.
+    ///
+    /// Only one [`WorklistScope`] may be active on a given `FnPatch` at a time;
+    /// creating a second while one is live panics.
+    pub fn worklist(&self) -> WorklistScope<'_, 'm, 'r, 'ctx, B, R> {
+        // Reject re-entry: the shared slot holds one worklist, and either
+        // scope's `Drop` resets it to `None`, so a nested scope would silently
+        // reseed and leave the outer scope inert. Fail loudly instead. The
+        // `borrow()` is a temporary released before the `borrow_mut()` below;
+        // `body_instructions()` does not touch `self.worklist`, so no overlap.
+        assert!(
+            self.worklist.borrow().is_none(),
+            "a WorklistScope is already active on this FnPatch; nested worklist scopes are not supported"
+        );
+        let mut wl = Worklist::new();
+        for inst in self.body_instructions() {
+            wl.push(inst.as_value().id());
+        }
+        *self.worklist.borrow_mut() = Some(wl);
+        WorklistScope { patch: self }
     }
 
     /// Finish: report the [`PatchBody`] preservation floor (CFG analyses
@@ -582,6 +658,52 @@ where
         } else {
             FnReport::from_pa(PreservedAnalyses::all())
         }
+    }
+}
+
+/// RAII handle activating a [`Worklist`] on an [`FnPatch`] for the duration of
+/// a fixpoint transform. Created by [`FnPatch::worklist`]: it seeds the
+/// worklist with every non-terminator of the function body and, on drop,
+/// deactivates it. [`Self::next`] pops the next instruction to process; the
+/// pass mutates through the `FnPatch` directly, and those mutations maintain
+/// the worklist (push cascade, self-remove) automatically.
+pub struct WorklistScope<'p, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    patch: &'p FnPatch<'m, 'r, 'ctx, B, R>,
+}
+
+impl<'p, 'm, 'r, 'ctx, B, R> WorklistScope<'p, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    /// Pop the next instruction to process, or `None` when the fixpoint is
+    /// reached. Skips terminators and erased ids (the latter never surface —
+    /// `erase` removes them).
+    #[inline]
+    pub fn next(&self) -> Option<NonTerminator<'ctx, B>> {
+        let module = self.patch.module.module_ref();
+        self.patch.worklist.borrow_mut().as_mut()?.pop(module)
+    }
+}
+
+impl<'p, 'm, 'r, 'ctx, B, R> Drop for WorklistScope<'p, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    #[inline]
+    fn drop(&mut self) {
+        *self.patch.worklist.borrow_mut() = None;
     }
 }
 
@@ -1416,6 +1538,48 @@ mod tests {
         })
     }
 
+    /// `body_instructions()` yields every non-terminator once in program order,
+    /// never the terminator, and erasing the yielded instruction mid-iteration
+    /// does not disturb the walk (early-increment). llvmkit-specific pass-authoring
+    /// primitive (no upstream analog: LLVM's make_early_inc_range is untyped).
+    #[test]
+    fn body_instructions_early_inc_erase_of_yielded() -> Result<(), IrError> {
+        Module::with_new("body-cursor", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let _d1 = b.build_int_add(x, 1_i32, "d1")?;
+            let _d2 = b.build_int_add(x, 2_i32, "d2")?;
+            b.build_ret(x)?;
+
+            let function = FunctionView::from(f);
+            let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
+            let patch = cx.mutate();
+
+            // Two non-terminators visited; the ret is never yielded. Erase each as
+            // it is yielded — early-inc means the walk is unperturbed.
+            let mut count = 0;
+            let names: Vec<_> = patch
+                .body_instructions()
+                .map(|nt| {
+                    count += 1;
+                    let name = nt.as_view().as_value().name();
+                    patch.erase(&nt); // erase the yielded instruction
+                    name
+                })
+                .collect();
+            assert_eq!(count, 2);
+            assert_eq!(names.len(), 2);
+            // Both dead adds gone; only ret remains.
+            assert_eq!(function.entry_block().expect("def").instruction_count(), 1);
+            let _ = patch.done();
+            Ok(())
+        })
+    }
+
     /// An [`super::FnReshape`] (`ReshapeCfg` rung) `done()` reports nothing
     /// preserved — not even the CFG set — *once it has actually mutated* (the
     /// dirty flag is set). llvmkit-specific capability-context lock (no upstream
@@ -1776,5 +1940,136 @@ mod tests {
             assert_eq!(fv2.entry_block().expect("def").instruction_count(), 1);
             Ok(())
         })
+    }
+
+    /// A straight-line chain `a -> b -> c` of dead instructions (each only used
+    /// by the next) drains to the transitive-dead fixpoint in ONE seed+drain,
+    /// with no restart scan: the pre-seeded LIFO visits uses before defs, so
+    /// erasing each dead instruction as it surfaces clears the whole chain in a
+    /// single pass. (The operand-push cascade is exercised directly by
+    /// `erase_pushes_operands_onto_active_worklist`; here the point is the
+    /// fixpoint-in-one-drain, not the re-push.) llvmkit-specific pass-authoring
+    /// primitive (no upstream analog).
+    #[test]
+    fn worklist_operand_cascade_reaches_fixpoint() -> Result<(), IrError> {
+        Module::with_new("wl-cascade", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            // a = x+1 (used by b), b = a+1 (used by c), c = b+1 (unused/dead).
+            let a = b.build_int_add(x, 1_i32, "a")?;
+            let bb = b.build_int_add(a, 1_i32, "b")?;
+            let _c = b.build_int_add(bb, 1_i32, "c")?;
+            b.build_ret(x)?;
+
+            let function = FunctionView::from(f);
+            let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
+            let patch = cx.mutate();
+
+            // Seed + drain once: only `c` is dead initially, but erasing it makes
+            // `b` dead, then `a`. One drain removes all three.
+            let scope = patch.worklist();
+            while let Some(inst) = scope.next() {
+                if crate::dce::is_trivially_dead(&inst.as_view()) {
+                    patch.erase(&inst);
+                }
+            }
+            drop(scope);
+            // Only the ret survives.
+            assert_eq!(function.entry_block().expect("def").instruction_count(), 1);
+            let _ = patch.done();
+            Ok(())
+        })
+    }
+
+    /// `erase` on an active worklist re-pushes the erased instruction's
+    /// operand-defining instructions — the cascade's engine. Directly
+    /// discriminating: with the seed already fully drained, the erased `%b`'s
+    /// instruction operand `%a` resurfaces ONLY because `erase` re-pushed it (a
+    /// non-instruction operand — the constant `1` — is skipped by the
+    /// panic-safe pop). Deleting the push loop in `erase` makes the final
+    /// `scope.next()` return `None` and this test fail. llvmkit-specific
+    /// pass-authoring primitive (no upstream analog).
+    #[test]
+    fn erase_pushes_operands_onto_active_worklist() -> Result<(), IrError> {
+        Module::with_new("wl-erase-push", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            // a = x+1 ; b = a+1 (so b's operand `a` IS an instruction) ; ret x.
+            let a = b.build_int_add(x, 1_i32, "a")?;
+            let bb = b.build_int_add(a, 1_i32, "b")?;
+            b.build_ret(x)?;
+            let a_id = a.as_value().id;
+            let b_id = bb.as_value().id;
+
+            let function = FunctionView::from(f);
+            let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
+            let patch = cx.mutate();
+
+            // Seed [a, b]; drain the seed WITHOUT erasing, saving `b`'s handle.
+            // LIFO pops `b` first, then `a`; then the worklist is empty and both
+            // instructions are still attached.
+            let scope = patch.worklist();
+            let first = scope.next().expect("seed pops b first (LIFO)");
+            assert_eq!(first.as_value().id, b_id, "LIFO seed order: b before a");
+            let second = scope.next().expect("seed pops a second");
+            assert_eq!(second.as_value().id, a_id);
+            assert!(scope.next().is_none(), "seed fully drained");
+
+            // Erase `b` through the active worklist: this must push `b`'s
+            // operand defs, including the instruction `%a` (the constant `1` is
+            // skipped by the panic-safe pop).
+            patch.erase(&first);
+
+            // `%a` resurfaces ONLY because `erase` re-pushed it. Without the
+            // push loop this is `None`.
+            let resurfaced = scope.next();
+            assert_eq!(
+                resurfaced
+                    .expect("a re-pushed by erase's operand cascade")
+                    .as_value()
+                    .id,
+                a_id,
+            );
+            drop(scope);
+            let _ = patch.done();
+            Ok(())
+        })
+    }
+
+    /// A second [`super::FnPatch::worklist`] call while an earlier
+    /// [`super::WorklistScope`] is still live panics rather than silently
+    /// clobbering the shared slot (which would leave the outer scope inert and
+    /// its `Drop` reset the inner's worklist). llvmkit-specific pass-authoring
+    /// guardrail (no upstream analog).
+    #[test]
+    #[should_panic(expected = "already active")]
+    fn nested_worklist_scopes_panic() {
+        Module::with_new("wl-nested", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let _a = b.build_int_add(x, 1_i32, "a")?;
+            b.build_ret(x)?;
+
+            let function = FunctionView::from(f);
+            let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
+            let patch = cx.mutate();
+
+            let _s1 = patch.worklist();
+            let _s2 = patch.worklist(); // must panic: a scope is already active
+            Ok::<(), IrError>(())
+        })
+        .expect("unreachable: the second worklist() call panics first");
     }
 }
