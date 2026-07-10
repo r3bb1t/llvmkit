@@ -9,7 +9,7 @@ use super::IrResult;
 use super::instruction::{InstructionKind, InstructionView};
 use super::module::ModuleBrand;
 use super::pass_access::PatchBody;
-use super::pass_context::{FnCx, FnPatch, FnReport};
+use super::pass_context::{FnCx, FnReport};
 use super::pass_manager::FunctionPass;
 use super::pass_pipeline::DCE;
 
@@ -30,32 +30,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for DcePass {
         // nothing was erased (the mutator's dirty flag *witnesses* that), and
         // the rung's CFG-preserved floor otherwise.
         let patch = cx.mutate();
-        while dce_iteration(&patch) {}
+        let scope = patch.worklist();
+        while let Some(inst) = scope.next() {
+            if is_trivially_dead(&inst.as_view()) {
+                patch.erase(&inst); // auto-pushes operand-defs, self-removes
+            }
+        }
+        drop(scope);
         Ok(patch.done())
     }
-}
-
-fn dce_iteration<'ctx, B: ModuleBrand + 'ctx>(patch: &FnPatch<'_, '_, 'ctx, B, ()>) -> bool {
-    let module_ref = patch.module_mut().module_ref();
-
-    for block in patch.function_mut().basic_blocks() {
-        let instruction_ids = block.instruction_ids();
-        for id in instruction_ids {
-            let view = InstructionView::from_parts(id, module_ref);
-            if !is_trivially_dead(&view) {
-                continue;
-            }
-            // `is_trivially_dead` already excludes terminators, so the narrow
-            // succeeds; erase through the mutator so the dirty flag is set.
-            let dead = view
-                .as_non_terminator()
-                .expect("a trivially-dead instruction is not a terminator");
-            patch.erase(&dead);
-            return true;
-        }
-    }
-
-    false
 }
 
 pub(crate) fn is_trivially_dead<'ctx, B: ModuleBrand + 'ctx>(
