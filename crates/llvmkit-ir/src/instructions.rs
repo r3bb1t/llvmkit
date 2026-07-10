@@ -2198,6 +2198,29 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> SwitchInst<'ctx, P, B> {
         let len = self.payload().cases.borrow().len();
         u32::try_from(len).unwrap_or_else(|_| unreachable!("switch has more than u32::MAX cases"))
     }
+    /// Iterate the `(case_value, target_block)` entries in declaration
+    /// order. Mirrors walking `SwitchInst::cases()`.
+    pub fn cases(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> + 'ctx {
+        let module = self.module.module();
+        let label_ty = module.label_type().as_type().id();
+        let module_ref = self.module;
+        let entries: Vec<(ValueId, ValueId)> = self
+            .payload()
+            .cases
+            .borrow()
+            .iter()
+            .map(|(v, b)| (v.get(), *b))
+            .collect();
+        entries.into_iter().map(move |(vid, bid)| {
+            let v_data = module.context().value_data(vid);
+            let value = Value::from_parts(vid, module_ref, v_data.ty);
+            let block =
+                BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label();
+            (value, block)
+        })
+    }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> SwitchInst<'ctx, TermOpen, B> {
@@ -2319,6 +2342,18 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
         let len = self.payload().destinations.borrow().len();
         u32::try_from(len)
             .unwrap_or_else(|_| unreachable!("indirectbr has more than u32::MAX destinations"))
+    }
+    /// Iterate the destination blocks in declaration order. Mirrors
+    /// walking `IndirectBrInst::successors()`.
+    pub fn destinations(
+        &self,
+    ) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>> + 'ctx {
+        let label_ty = self.module.module().label_type().as_type().id();
+        let module_ref = self.module;
+        let ids: Vec<ValueId> = self.payload().destinations.borrow().clone();
+        ids.into_iter().map(move |bid| {
+            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label()
+        })
     }
 }
 
@@ -2620,6 +2655,26 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, P, B> {
         let len = self.payload().clauses.borrow().len();
         u32::try_from(len)
             .unwrap_or_else(|_| unreachable!("landingpad has more than u32::MAX clauses"))
+    }
+    /// Iterate the `(kind, type_info)` clauses in declaration order, where
+    /// `kind` distinguishes `catch` from `filter`. Mirrors walking
+    /// `LandingPadInst::clauses()` + `isCatch`/`isFilter`.
+    pub fn clauses(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (LandingPadClauseKind, Value<'ctx, B>)> + 'ctx {
+        let module = self.module.module();
+        let module_ref = self.module;
+        let entries: Vec<(LandingPadClauseKind, ValueId)> = self
+            .payload()
+            .clauses
+            .borrow()
+            .iter()
+            .map(|(k, v)| (*k, v.get()))
+            .collect();
+        entries.into_iter().map(move |(kind, vid)| {
+            let v_data = module.context().value_data(vid);
+            (kind, Value::from_parts(vid, module_ref, v_data.ty))
+        })
     }
 }
 
@@ -2939,6 +2994,18 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
         let len = self.payload().handlers.borrow().len();
         u32::try_from(len)
             .unwrap_or_else(|_| unreachable!("catchswitch has more than u32::MAX handlers"))
+    }
+    /// Iterate the handler blocks in declaration order. Mirrors walking
+    /// `CatchSwitchInst::handlers()`.
+    pub fn handlers(
+        &self,
+    ) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>> + 'ctx {
+        let label_ty = self.module.module().label_type().as_type().id();
+        let module_ref = self.module;
+        let ids: Vec<ValueId> = self.payload().handlers.borrow().clone();
+        ids.into_iter().map(move |bid| {
+            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label()
+        })
     }
 }
 

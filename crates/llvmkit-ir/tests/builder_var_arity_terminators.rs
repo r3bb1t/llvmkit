@@ -2,7 +2,7 @@
 //!
 //! Every test cites its upstream source per Doctrine D11.
 
-use llvmkit_ir::{IRBuilder, IntValue, IrError, Linkage, Module, PointerValue};
+use llvmkit_ir::{IRBuilder, IntValue, IrError, IsValue, Linkage, Module, PointerValue};
 
 // --------------------------------------------------------------------------
 // switch
@@ -60,6 +60,48 @@ fn switch_three_cases_print_form() -> Result<(), IrError> {
             "got:\n{text}"
         );
         assert!(text.contains("\n  ]\n"), "got:\n{text}");
+        Ok(())
+    })
+}
+
+/// The `cases()` reader round-trips the `(case_value, target)` entries
+/// added via `add_case`, in declaration order, on a finished switch.
+#[test]
+fn switch_cases_reader_round_trips() -> Result<(), IrError> {
+    Module::with_new("switch_cases", |m| {
+        let i8_ty = m.i8_type();
+        let void_ty = m.void_type();
+        let fn_ty = m.fn_type(void_ty.as_type(), [i8_ty.as_type()], false);
+        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let default_bb = f.append_basic_block(&m, "default");
+        let a = f.append_basic_block(&m, "a");
+        let bb = f.append_basic_block(&m, "b");
+        let default_label = default_bb.label();
+        let a_label = a.label();
+        let b_label = bb.label();
+        for block in [default_bb, a, bb] {
+            IRBuilder::new_for::<()>(&m)
+                .position_at_end(block)
+                .build_ret_void();
+        }
+        let val: IntValue<i8> = f.param(0)?.try_into()?;
+        let builder = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let (_sealed, switch) = builder.build_switch(val, default_label, "")?;
+        let closed = switch
+            .add_case(i8_ty.const_int(10_i8), a_label)?
+            .add_case(i8_ty.const_int(20_i8), b_label)?
+            .finish();
+
+        assert_eq!(closed.cases().len(), 2);
+        let cases: Vec<_> = closed.cases().collect();
+        // Case values round-trip, in order (constants are interned, so the
+        // rediscovered value ids equal freshly-built ones).
+        assert_eq!(cases[0].0.as_value(), i8_ty.const_int(10_i8).as_value());
+        assert_eq!(cases[1].0.as_value(), i8_ty.const_int(20_i8).as_value());
+        // Targets round-trip too.
+        assert_eq!(cases[0].1.as_value(), a_label.as_value());
+        assert_eq!(cases[1].1.as_value(), b_label.as_value());
         Ok(())
     })
 }
