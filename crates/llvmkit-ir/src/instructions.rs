@@ -783,40 +783,136 @@ impl<'ctx, B: ModuleBrand + 'ctx> RetInst<'ctx, B> {
 }
 
 /// Cast instruction (`trunc`, `zext`, `sext`, `bitcast`, ...).
-/// Mirrors `CastInst` in `InstrTypes.h`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CastInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
-    pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
-}
-
-decl_handle_scaffold!(CastInst);
-
-impl<'ctx, B: ModuleBrand + 'ctx> CastInst<'ctx, B> {
-    fn payload(self) -> &'ctx CastOpData {
-        let module = self.module.module();
-        match &module.context().value_data(self.id).kind {
-            ValueKindData::Instruction(i) => match &i.kind {
-                InstructionKindData::Cast(c) => c,
-                _ => unreachable!("CastInst invariant: kind is Cast"),
-            },
-            _ => unreachable!("CastInst invariant: kind is Instruction"),
+/// Per-opcode cast handles. Replaces the single erased `CastInst`: each of
+/// LLVM's 14 cast opcodes gets its own handle so a `match` over
+/// [`CastKind`](crate::CastKind) names the exact opcode (mirroring LLVM's
+/// `TruncInst`/`ZExtInst`/... classes) instead of branching on a runtime
+/// `CastOpcode`. Handles whose source operand is statically a pointer
+/// (`ptrtoint`, `ptrtoaddr`, `addrspacecast`) return
+/// [`PointerValue`] from `src()`; the rest return the erased [`Value`]
+/// because their source category is not fixed by the IR grammar (e.g.
+/// `bitcast`) or is not a pointer.
+macro_rules! decl_cast_handle {
+    (@struct $(#[$attr:meta])* $name:ident, $opcode:ident) => {
+        $(#[$attr])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub struct $name<'ctx, B: ModuleBrand = Brand<'ctx>> {
+            pub(super) id: ValueId,
+            pub(super) module: ModuleRef<'ctx, B>,
+            pub(super) ty: TypeId,
         }
-    }
-    /// Cast opcode (`Trunc`, `ZExt`, ...).
-    #[inline]
-    pub fn opcode(self) -> CastOpcode {
-        self.payload().kind
-    }
-    /// Source operand of the cast.
-    pub fn src(self) -> Value<'ctx, B> {
-        let id = self.payload().src.get();
-        let module = self.module.module();
-        let data = module.context().value_data(id);
-        Value::from_parts(id, self.module, data.ty)
-    }
+
+        decl_handle_scaffold!($name);
+
+        impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
+            fn payload(self) -> &'ctx CastOpData {
+                let module = self.module.module();
+                match &module.context().value_data(self.id).kind {
+                    ValueKindData::Instruction(i) => match &i.kind {
+                        InstructionKindData::Cast(c) => c,
+                        _ => unreachable!(
+                            concat!(stringify!($name), " invariant: kind is Cast")
+                        ),
+                    },
+                    _ => unreachable!(
+                        concat!(stringify!($name), " invariant: kind is Instruction")
+                    ),
+                }
+            }
+
+            /// The cast opcode this handle represents. Fixed by the type.
+            #[inline]
+            pub const fn opcode(self) -> CastOpcode {
+                CastOpcode::$opcode
+            }
+        }
+    };
+    // Erased-source variant.
+    ($(#[$attr:meta])* $name:ident, $opcode:ident) => {
+        decl_cast_handle!(@struct $(#[$attr])* $name, $opcode);
+        impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
+            /// Source operand of the cast.
+            pub fn src(self) -> Value<'ctx, B> {
+                let id = self.payload().src.get();
+                let module = self.module.module();
+                let data = module.context().value_data(id);
+                Value::from_parts(id, self.module, data.ty)
+            }
+        }
+    };
+    // Pointer-source variant (`src()` is statically a pointer).
+    ($(#[$attr:meta])* $name:ident, $opcode:ident, ptr_src) => {
+        decl_cast_handle!(@struct $(#[$attr])* $name, $opcode);
+        impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
+            /// Source operand of the cast. Statically a pointer for this
+            /// opcode, so returned as [`PointerValue`] rather than the
+            /// erased [`Value`].
+            pub fn src(self) -> PointerValue<'ctx, B> {
+                let id = self.payload().src.get();
+                let module = self.module.module();
+                let data = module.context().value_data(id);
+                PointerValue::from_value_unchecked(Value::from_parts(id, self.module, data.ty))
+            }
+        }
+    };
 }
+
+decl_cast_handle!(
+    /// `trunc .. to ..` — narrow an integer.
+    TruncInst, Trunc
+);
+decl_cast_handle!(
+    /// `zext .. to ..` — zero-extend an integer.
+    ZExtInst, ZExt
+);
+decl_cast_handle!(
+    /// `sext .. to ..` — sign-extend an integer.
+    SExtInst, SExt
+);
+decl_cast_handle!(
+    /// `fptrunc .. to ..` — narrow a float.
+    FpTruncInst, FpTrunc
+);
+decl_cast_handle!(
+    /// `fpext .. to ..` — widen a float.
+    FpExtInst, FpExt
+);
+decl_cast_handle!(
+    /// `fptoui .. to ..` — float to unsigned integer.
+    FpToUIInst, FpToUI
+);
+decl_cast_handle!(
+    /// `fptosi .. to ..` — float to signed integer.
+    FpToSIInst, FpToSI
+);
+decl_cast_handle!(
+    /// `uitofp .. to ..` — unsigned integer to float.
+    UIToFpInst, UIToFp
+);
+decl_cast_handle!(
+    /// `sitofp .. to ..` — signed integer to float.
+    SIToFpInst, SIToFp
+);
+decl_cast_handle!(
+    /// `ptrtoaddr .. to ..` — pointer to integer address bits.
+    PtrToAddrInst, PtrToAddr, ptr_src
+);
+decl_cast_handle!(
+    /// `ptrtoint .. to ..` — pointer to integer.
+    PtrToIntInst, PtrToInt, ptr_src
+);
+decl_cast_handle!(
+    /// `inttoptr .. to ..` — integer to pointer.
+    IntToPtrInst, IntToPtr
+);
+decl_cast_handle!(
+    /// `bitcast .. to ..` — same-size bit reinterpretation.
+    BitCastInst, BitCast
+);
+decl_cast_handle!(
+    /// `addrspacecast .. to ..` — address-space change on a pointer.
+    AddrSpaceCastInst, AddrSpaceCast, ptr_src
+);
 
 // --------------------------------------------------------------------------
 // Comparison instructions

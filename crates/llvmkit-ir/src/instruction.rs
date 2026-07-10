@@ -25,18 +25,19 @@ use super::basic_block::{BasicBlock, BasicBlockLabel};
 use super::block_state::Unterminated;
 use super::function::FunctionValue;
 use super::instr_types::{
-    BinaryOpData, BranchInstData, BranchKind, CastOpData, CmpInstData, FCmpInstData, PhiData,
-    ReturnOpData, UnreachableInstData,
+    BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData, FCmpInstData,
+    PhiData, ReturnOpData, UnreachableInstData,
 };
 use super::instructions::{
-    AShrInst, AddInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst, BranchInst,
-    CallBrInst, CallInst, CastInst, CatchPadInst, CatchReturnInst, CatchSwitchInst, CleanupPadInst,
-    CleanupReturnInst, ExtractElementInst, ExtractValueInst, FAddInst, FCmpInst, FDivInst,
-    FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FreezeInst, GepInst, ICmpInst,
-    IndirectBrInst, InsertElementInst, InsertValueInst, InvokeInst, LShrInst, LandingPadInst,
-    LoadInst, MulInst, OrInst, PhiInst, ResumeInst, RetInst, SDivInst, SRemInst, SelectInst,
-    ShlInst, ShuffleVectorInst, StoreInst, SubInst, SwitchInst, UDivInst, URemInst,
-    UnreachableInst, VAArgInst, XorInst,
+    AShrInst, AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst,
+    BitCastInst, BranchInst, CallBrInst, CallInst, CatchPadInst, CatchReturnInst, CatchSwitchInst,
+    CleanupPadInst, CleanupReturnInst, ExtractElementInst, ExtractValueInst, FAddInst, FCmpInst,
+    FDivInst, FMulInst, FNegInst, FRemInst, FSubInst, FpExtInst, FpToSIInst, FpToUIInst,
+    FpTruncInst, FenceInst, FreezeInst, GepInst, ICmpInst, IndirectBrInst, InsertElementInst,
+    InsertValueInst, IntToPtrInst, InvokeInst, LShrInst, LandingPadInst, LoadInst, MulInst, OrInst,
+    PhiInst, PtrToAddrInst, PtrToIntInst, ResumeInst, RetInst, SDivInst, SExtInst, SIToFpInst,
+    SRemInst, SelectInst, ShlInst, ShuffleVectorInst, StoreInst, SubInst, SwitchInst, TruncInst,
+    UDivInst, UIToFpInst, URemInst, UnreachableInst, VAArgInst, XorInst, ZExtInst,
 };
 use super::int_width::IntDyn;
 use super::marker::{Dyn, ReturnMarker};
@@ -641,8 +642,36 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
             InstructionKindData::Gep(_) => {
                 Some(InstructionKind::Gep(GepInst::from_raw(id, module, ty)))
             }
-            InstructionKindData::Cast(_) => {
-                Some(InstructionKind::Cast(CastInst::from_raw(id, module, ty)))
+            InstructionKindData::Cast(c) => {
+                let cast = match c.kind {
+                    CastOpcode::Trunc => CastKind::Trunc(TruncInst::from_raw(id, module, ty)),
+                    CastOpcode::ZExt => CastKind::ZExt(ZExtInst::from_raw(id, module, ty)),
+                    CastOpcode::SExt => CastKind::SExt(SExtInst::from_raw(id, module, ty)),
+                    CastOpcode::FpTrunc => {
+                        CastKind::FpTrunc(FpTruncInst::from_raw(id, module, ty))
+                    }
+                    CastOpcode::FpExt => CastKind::FpExt(FpExtInst::from_raw(id, module, ty)),
+                    CastOpcode::FpToUI => CastKind::FpToUI(FpToUIInst::from_raw(id, module, ty)),
+                    CastOpcode::FpToSI => CastKind::FpToSI(FpToSIInst::from_raw(id, module, ty)),
+                    CastOpcode::UIToFp => CastKind::UIToFp(UIToFpInst::from_raw(id, module, ty)),
+                    CastOpcode::SIToFp => CastKind::SIToFp(SIToFpInst::from_raw(id, module, ty)),
+                    CastOpcode::PtrToAddr => {
+                        CastKind::PtrToAddr(PtrToAddrInst::from_raw(id, module, ty))
+                    }
+                    CastOpcode::PtrToInt => {
+                        CastKind::PtrToInt(PtrToIntInst::from_raw(id, module, ty))
+                    }
+                    CastOpcode::IntToPtr => {
+                        CastKind::IntToPtr(IntToPtrInst::from_raw(id, module, ty))
+                    }
+                    CastOpcode::BitCast => {
+                        CastKind::BitCast(BitCastInst::from_raw(id, module, ty))
+                    }
+                    CastOpcode::AddrSpaceCast => {
+                        CastKind::AddrSpaceCast(AddrSpaceCastInst::from_raw(id, module, ty))
+                    }
+                };
+                Some(InstructionKind::Cast(cast))
             }
             InstructionKindData::ICmp(_) => {
                 Some(InstructionKind::ICmp(ICmpInst::from_raw(id, module, ty)))
@@ -1465,6 +1494,115 @@ impl<'ctx, B: ModuleBrand + 'ctx> From<Instruction<'ctx, state::Attached, B>> fo
 // Analysis enums
 // --------------------------------------------------------------------------
 
+/// Per-opcode discriminator for the `cast` family, nested inside
+/// [`InstructionKind::Cast`]. Mirrors LLVM's `CastInst` subclass hierarchy
+/// (`TruncInst`, `ZExtInst`, ...): a `match` over `CastKind` names the exact
+/// opcode instead of branching on a runtime [`CastOpcode`], and each handle
+/// exposes the source type the IR grammar guarantees (pointer-source casts
+/// return [`PointerValue`](crate::PointerValue) from `src()`).
+///
+/// Deliberately **exhaustive** for the same reason as [`InstructionKind`].
+#[derive(Debug)]
+pub enum CastKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    Trunc(TruncInst<'ctx, B>),
+    ZExt(ZExtInst<'ctx, B>),
+    SExt(SExtInst<'ctx, B>),
+    FpTrunc(FpTruncInst<'ctx, B>),
+    FpExt(FpExtInst<'ctx, B>),
+    FpToUI(FpToUIInst<'ctx, B>),
+    FpToSI(FpToSIInst<'ctx, B>),
+    UIToFp(UIToFpInst<'ctx, B>),
+    SIToFp(SIToFpInst<'ctx, B>),
+    PtrToAddr(PtrToAddrInst<'ctx, B>),
+    PtrToInt(PtrToIntInst<'ctx, B>),
+    IntToPtr(IntToPtrInst<'ctx, B>),
+    BitCast(BitCastInst<'ctx, B>),
+    AddrSpaceCast(AddrSpaceCastInst<'ctx, B>),
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> CastKind<'ctx, B> {
+    /// The cast opcode, recovered from the active variant.
+    pub fn opcode(&self) -> CastOpcode {
+        match self {
+            Self::Trunc(_) => CastOpcode::Trunc,
+            Self::ZExt(_) => CastOpcode::ZExt,
+            Self::SExt(_) => CastOpcode::SExt,
+            Self::FpTrunc(_) => CastOpcode::FpTrunc,
+            Self::FpExt(_) => CastOpcode::FpExt,
+            Self::FpToUI(_) => CastOpcode::FpToUI,
+            Self::FpToSI(_) => CastOpcode::FpToSI,
+            Self::UIToFp(_) => CastOpcode::UIToFp,
+            Self::SIToFp(_) => CastOpcode::SIToFp,
+            Self::PtrToAddr(_) => CastOpcode::PtrToAddr,
+            Self::PtrToInt(_) => CastOpcode::PtrToInt,
+            Self::IntToPtr(_) => CastOpcode::IntToPtr,
+            Self::BitCast(_) => CastOpcode::BitCast,
+            Self::AddrSpaceCast(_) => CastOpcode::AddrSpaceCast,
+        }
+    }
+
+    /// The source operand, erased to [`Value`]. Use the concrete handle
+    /// inside a variant arm for the pointer-typed `src()` where available.
+    pub fn src(&self) -> Value<'ctx, B> {
+        match self {
+            Self::Trunc(i) => i.src(),
+            Self::ZExt(i) => i.src(),
+            Self::SExt(i) => i.src(),
+            Self::FpTrunc(i) => i.src(),
+            Self::FpExt(i) => i.src(),
+            Self::FpToUI(i) => i.src(),
+            Self::FpToSI(i) => i.src(),
+            Self::UIToFp(i) => i.src(),
+            Self::SIToFp(i) => i.src(),
+            Self::PtrToAddr(i) => i.src().as_value(),
+            Self::PtrToInt(i) => i.src().as_value(),
+            Self::IntToPtr(i) => i.src(),
+            Self::BitCast(i) => i.src(),
+            Self::AddrSpaceCast(i) => i.src().as_value(),
+        }
+    }
+
+    /// Read-only erased instruction view for this cast.
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        match self {
+            Self::Trunc(i) => i.as_view(),
+            Self::ZExt(i) => i.as_view(),
+            Self::SExt(i) => i.as_view(),
+            Self::FpTrunc(i) => i.as_view(),
+            Self::FpExt(i) => i.as_view(),
+            Self::FpToUI(i) => i.as_view(),
+            Self::FpToSI(i) => i.as_view(),
+            Self::UIToFp(i) => i.as_view(),
+            Self::SIToFp(i) => i.as_view(),
+            Self::PtrToAddr(i) => i.as_view(),
+            Self::PtrToInt(i) => i.as_view(),
+            Self::IntToPtr(i) => i.as_view(),
+            Self::BitCast(i) => i.as_view(),
+            Self::AddrSpaceCast(i) => i.as_view(),
+        }
+    }
+
+    /// Widen to the erased [`Value`] handle (the cast's result).
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        match self {
+            Self::Trunc(i) => i.as_value(),
+            Self::ZExt(i) => i.as_value(),
+            Self::SExt(i) => i.as_value(),
+            Self::FpTrunc(i) => i.as_value(),
+            Self::FpExt(i) => i.as_value(),
+            Self::FpToUI(i) => i.as_value(),
+            Self::FpToSI(i) => i.as_value(),
+            Self::UIToFp(i) => i.as_value(),
+            Self::SIToFp(i) => i.as_value(),
+            Self::PtrToAddr(i) => i.as_value(),
+            Self::PtrToInt(i) => i.as_value(),
+            Self::IntToPtr(i) => i.as_value(),
+            Self::BitCast(i) => i.as_value(),
+            Self::AddrSpaceCast(i) => i.as_value(),
+        }
+    }
+}
+
 /// Read-only opcode discriminator for non-terminator opcodes.
 ///
 /// Deliberately **exhaustive**: a downstream `match` over this enum must
@@ -1499,7 +1637,7 @@ pub enum InstructionKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
     Gep(GepInst<'ctx, B>),
     Call(CallInst<'ctx, Dyn, B>),
     Select(SelectInst<'ctx, B>),
-    Cast(CastInst<'ctx, B>),
+    Cast(CastKind<'ctx, B>),
     ICmp(ICmpInst<'ctx, B>),
     FNeg(FNegInst<'ctx, B>),
     Freeze(FreezeInst<'ctx, B>),
