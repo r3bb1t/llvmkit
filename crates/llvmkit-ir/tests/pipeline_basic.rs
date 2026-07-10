@@ -144,6 +144,31 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for NoOpReshape {
     }
 }
 
+/// A `ReshapeCfg` pass that actually mutates: it erases every dead
+/// (use-less, non-terminator) instruction, so the mutator's dirty flag is
+/// set and `done()` reports the `none()` floor (invalidating everything).
+struct MutatingReshape;
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for MutatingReshape {
+    type Access = ReshapeCfg;
+    type Requires = ();
+    const NAME: &'static str = "mutating-reshape";
+
+    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+        let reshape = cx.mutate();
+        let dead: Vec<_> = reshape
+            .function()
+            .basic_blocks()
+            .flat_map(|block| block.instructions().collect::<Vec<_>>())
+            .filter(|view| !view.is_terminator() && !view.as_value().has_uses())
+            .collect();
+        for view in &dead {
+            reshape.erase(view)?;
+        }
+        Ok(reshape.done())
+    }
+}
+
 /// Read-only [`Inspect`] module pass that flips a flag once it has seen the
 /// module's functions.
 struct CountFunctionsPass {
@@ -432,7 +457,7 @@ fn pipeline_runs_in_order_and_second_member_sees_first() -> Result<(), IrError> 
 #[test]
 fn mutating_member_invalidates_and_analysis_recomputes() -> Result<(), IrError> {
     Module::with_new("pipe-invalidate", |m| {
-        let f = build_ret_i32_named(&m, "f")?;
+        let f = build_dead_add_named(&m, "f")?;
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
 
@@ -449,10 +474,25 @@ fn mutating_member_invalidates_and_analysis_recomputes() -> Result<(), IrError> 
             "dominator tree must be cached after computing it"
         );
 
-        // A `ReshapeCfg` pass reports the `none()` floor, so the pipeline
-        // invalidates the (non-preserved) dominator tree.
-        let mut pipe = function_pipeline((NoOpReshape,));
-        let unverified: Module<'_, _, Unverified> = pipe.run(verified, f, &mut analyses)?;
+        // A witnessed no-op `ReshapeCfg` run preserves everything: its dirty
+        // flag saw no mutation, so `done()` reports all-preserved and the
+        // cached dominator tree survives — no needless invalidation.
+        let mut noop = function_pipeline((NoOpReshape,));
+        let after_noop: Module<'_, _, Unverified> = noop.run(verified, f, &mut analyses)?;
+        assert!(
+            analyses
+                .function_manager()
+                .get_cached_result::<DominatorTreeAnalysis, _>(f)
+                .is_some(),
+            "a witnessed no-op ReshapeCfg run must preserve the cached dominator tree"
+        );
+
+        // A `ReshapeCfg` pass that actually erases an instruction sets the
+        // dirty flag, so its `done()` reports the `none()` floor and the
+        // pipeline invalidates the (non-preserved) dominator tree.
+        let reverified = after_noop.verify()?;
+        let mut pipe = function_pipeline((MutatingReshape,));
+        let unverified: Module<'_, _, Unverified> = pipe.run(reverified, f, &mut analyses)?;
 
         // The cached tree is gone after the mutating member's invalidation.
         assert!(
@@ -460,7 +500,7 @@ fn mutating_member_invalidates_and_analysis_recomputes() -> Result<(), IrError> 
                 .function_manager()
                 .get_cached_result::<DominatorTreeAnalysis, _>(f)
                 .is_none(),
-            "ReshapeCfg's none() floor must invalidate the cached dominator tree"
+            "a mutating ReshapeCfg run's none() floor must invalidate the cached dominator tree"
         );
 
         // The still-registered analysis recomputes on demand.
