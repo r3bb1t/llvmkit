@@ -277,41 +277,42 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
 
 ## Package 4 (analysis preservation) — deferred
 
-The `feature-8/analysis-plumbing` branch shipped Phase 1 of framework-witnessed
-analysis preservation: the `CfgUpdate` recording vocabulary (`cfg_update.rs`),
-the `CfgIncremental` hook (`RepairOutcome` + `apply_updates`/`recompute`), the
-reshape mutator's witnessed edit log, and the *unrepresentable* mid-reshape
-stale CFG-analysis read (`FnReshape::analysis_repaired`, no `Deref`, compile-fail
-fixture). What it deliberately scoped out:
+Framework-witnessed analysis preservation shipped across `feature-8`
+(Phase 1) and `feature-9` (the remainder): the `CfgUpdate` recording vocabulary
+(`cfg_update.rs`), the `CfgIncremental` hook (`RepairOutcome` +
+`apply_updates`/`recompute`), the reshape mutator's witnessed edit log, the
+*unrepresentable* mid-reshape stale CFG-analysis read
+(`FnReshape::analysis_repaired`, no `Deref`, compile-fail fixture),
+`Requires`-without-`Default` (`PrefetchableAnalysis`), and the `done()`-flush
+witnessing loop that keeps a reshape pass's dominator tree
+(`DominatorTree::apply_updates` repairs correct-by-recompute → `Repaired`; the
+driver marks preserved exactly what it watched repair). What remains deferred:
 
-- **Phase 2 — real incremental repair.** `DominatorTree::apply_updates` returns
-  `PreferRecompute`, so a mid-pass read recomputes from scratch (correct, not
-  yet incremental). Phase 2 (its own spec) makes `apply_updates` fold the
-  recorded `CfgUpdate`s into the cached tree, property-tested to agree with a
-  from-scratch recompute over random edit sequences, with a debug-build
-  recompute-compare at every flush.
-- **`done()`-flush witnessing loop** (spec 3a). At end-of-pass the driver could
-  drain the reshape mutator's `CfgUpdate` log, offer it to each cached CFG
-  analysis, and mark preserved only what it watched repair. In Phase 1 every
-  hooked analysis returns `PreferRecompute`, so this marks nothing beyond the
-  existing rung floor -- "eviction at end" is already today's behavior. Wiring
-  the loop is deferred until Phase 2 gives it something to witness (a `Repaired`
-  outcome); it also needs `FnReport`/the driver to thread the log out of the
-  consumed mutator.
-- **`Requires` without `Default`** (spec item 5). The function/module
-  analysis-list macros bound every member `+ Default` so `prefetch` can
-  auto-register via `ensure_registered_default`. Dropping that to allow a
-  parameterized / non-`Default` analysis in a `Requires` list needs either
-  nightly specialization or a new breaking `PrefetchableAnalysis` trait that
-  every analysis implements (Default ones delegate to
-  `ensure_registered_default`; others no-op, assuming pre-registration). Zero
-  in-tree consumers today (the one function analysis is `Default`), and it is a
-  flexibility feature rather than a safety one, so it is deferred until a
-  non-`Default` analysis actually exists.
+- **Sub-linear incremental dominator repair (perf).** `DominatorTree::apply_updates`
+  is *correct* but repairs by full recompute — it does not yet use the recorded
+  edge insert/delete list to do sub-linear work. A genuine incremental update
+  (LLVM SemiNCA-style, driven by `updates`) is the perf follow-up. When it lands,
+  a `debug_assert` comparing the incrementally-repaired tree to a from-scratch
+  recompute (`repaired ≡ recomputed`) should guard every flush; the
+  `dominator_tree_repairs_to_match_recompute` test is the seed of that property.
+  Needs random-edit-sequence property tests (proptest). No behavior change vs.
+  today when it lands (only speed), so low urgency without a large-function
+  workload.
+- **`PrefetchableModuleAnalysis` (module `Requires` without `Default`).** The
+  function side dropped the `Default` bound via `PrefetchableAnalysis`; the
+  module analysis-list macros still bound `+ Default`. There are no concrete
+  module analyses yet, so a mirror trait would be untestable dead machinery —
+  introduce it (same shape) with the first non-`Default` module analysis.
 - **Value-analysis update vocabulary.** `CfgUpdate` is CFG-shaped only.
   Instruction-level events for value analyses (KnownBits/DemandedBits) are a
   possible extension, not designed here -- every mutating rung's floor already
   evicts them.
+- **`ModRewrite::for_each_function` reshape flush.** The module→function visitor
+  builds `FnReshape` mutators whose `done()` (and thus `CfgUpdate` log) the
+  visitor never surfaces, so those reshapes do not run the witnessed flush. This
+  is sound today: the enclosing `RewriteModule` floor is `none()`, which evicts
+  every CFG analysis anyway. Wire the flush through the visitor if per-function
+  analyses are ever threaded into `for_each_function`.
 - **New `.stderr` under the canonical-rustc bless caveat.**
   `reshape_stale_cfg_analysis_across_edit` is blessed on the local rustc like
   the Pass API v2 fixtures above; its `E0502` borrow-error wording is stable

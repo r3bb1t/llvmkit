@@ -5,7 +5,7 @@
 use crate::align::Align;
 use crate::analysis::{
     AllAnalysesOnFunction, CFGAnalyses, FunctionAnalysis, FunctionAnalysisInvalidator,
-    FunctionAnalysisManager, FunctionAnalysisResult, PreservedAnalyses,
+    FunctionAnalysisManager, FunctionAnalysisResult, PrefetchableAnalysis, PreservedAnalyses,
 };
 use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
 use crate::cmp_predicate::IntPredicate;
@@ -167,6 +167,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for KnownBitsAnalysi
             dominator_tree,
             cache: RefCell::new(HashMap::new()),
         })
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> PrefetchableAnalysis<'ctx, B> for KnownBitsAnalysis {
+    #[inline]
+    fn ensure_registered(fam: &mut FunctionAnalysisManager<'ctx, B>) {
+        fam.ensure_registered_default::<Self>();
     }
 }
 

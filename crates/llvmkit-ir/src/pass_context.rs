@@ -290,25 +290,44 @@ impl<'ctx, B: ModuleBrand + 'ctx> ExactSizeIterator for ModuleFunctionViews<'ctx
 /// function pass cannot return a module report by mistake.
 pub struct FnReport {
     pa: PreservedAnalyses,
+    /// The reshape mutator's witnessed [`CfgUpdate`] log, carried out to the
+    /// driver so its `done()`-flush can offer these edits to cached CFG
+    /// analyses (and mark preserved those that repair). Empty for a non-reshape
+    /// report. Not a preservation *claim* — the driver still witnesses each
+    /// analysis repair before preserving it.
+    cfg_updates: Vec<CfgUpdate>,
 }
 
 impl FnReport {
-    /// Wrap a driver-derived preservation set. `pub(crate)` — this is the sole
-    /// construction path, so an external author can never fabricate a report
-    /// that over-claims preservation. THE honesty guarantee.
+    /// Wrap a driver-derived preservation set (no CFG-edit log). `pub(crate)` —
+    /// this is a sole construction path, so an external author can never
+    /// fabricate a report that over-claims preservation. THE honesty guarantee.
     #[inline]
     pub(crate) fn from_pa(pa: PreservedAnalyses) -> Self {
-        Self { pa }
+        Self {
+            pa,
+            cfg_updates: Vec::new(),
+        }
     }
 
-    /// Consume the report and yield its preservation set. The driver-facing
-    /// seam ([`crate::pass_manager::run_function_pass`] reads this to drive
-    /// invalidation). `pub(crate)`: the single-pass driver is its sole caller,
-    /// and reading the set out of a report cannot mint a dishonest one — unlike
-    /// [`Self::from_pa`].
+    /// Wrap a preservation set together with the reshape mutator's recorded
+    /// [`CfgUpdate`] log. `pub(crate)` — same honesty guarantee as
+    /// [`Self::from_pa`]; the log is witnessed, not author-claimed.
     #[inline]
-    pub(crate) fn into_pa(self) -> PreservedAnalyses {
-        self.pa
+    pub(crate) fn from_pa_with_cfg_updates(
+        pa: PreservedAnalyses,
+        cfg_updates: Vec<CfgUpdate>,
+    ) -> Self {
+        Self { pa, cfg_updates }
+    }
+
+    /// Consume the report into its preservation set and recorded CFG-edit log.
+    /// The function drivers read both: the log drives the `done()`-flush, then
+    /// the (possibly-augmented) set drives invalidation. Tests that only want
+    /// the set take `.into_parts().0`.
+    #[inline]
+    pub(crate) fn into_parts(self) -> (PreservedAnalyses, Vec<CfgUpdate>) {
+        (self.pa, self.cfg_updates)
     }
 }
 
@@ -720,7 +739,11 @@ where
         A::Result: CfgIncremental<'ctx, B> + Clone,
         R: AnalysisSelector<'ctx, B, A, I>,
     {
-        let updates: Vec<CfgUpdate> = core::mem::take(self.cfg_updates.get_mut());
+        // Snapshot (do NOT drain) the recorded edits: the log must survive for
+        // the driver's `done()`-flush, which repairs the FAM-cached result the
+        // same way. Recompute-based repair makes reading a snapshot each time
+        // correct regardless of call order.
+        let updates: Vec<CfgUpdate> = self.cfg_updates.get_mut().clone();
         let function = self.patch.function();
         // Offer the recorded edits to a working copy of the cached result; fall
         // back to a from-scratch recompute when the analysis declines them.
@@ -783,13 +806,21 @@ where
     /// preserved) if anything was mutated, or everything-preserved if the run
     /// was a no-op. Consumes the mutator; the no-op case is witnessed by the
     /// dirty flag.
+    ///
+    /// The recorded [`CfgUpdate`] log rides out with the report so the driver's
+    /// `done()`-flush can offer it to cached CFG analyses — a floor of `none()`
+    /// is the *starting* point, and the framework then adds back exactly the
+    /// analyses it witnesses repair (never an author claim).
     #[inline]
     pub fn done(self) -> FnReport {
-        if self.patch.is_dirty() {
-            FnReport::from_pa(<ReshapeCfg as FnAccess>::preserved_floor())
+        let dirty = self.patch.is_dirty();
+        let updates = self.cfg_updates.into_inner();
+        let pa = if dirty {
+            <ReshapeCfg as FnAccess>::preserved_floor()
         } else {
-            FnReport::from_pa(PreservedAnalyses::all())
-        }
+            PreservedAnalyses::all()
+        };
+        FnReport::from_pa_with_cfg_updates(pa, updates)
     }
 }
 
@@ -1256,7 +1287,7 @@ mod tests {
 
             // An inspect context can only report "all preserved".
             let report = cx.done();
-            assert!(report.into_pa().are_all_preserved());
+            assert!(report.into_parts().0.are_all_preserved());
             Ok(())
         })
     }
@@ -1314,7 +1345,7 @@ mod tests {
             );
 
             let report = patch.done();
-            let pa = report.into_pa();
+            let pa = report.into_parts().0;
             let checker = pa.checker::<DominatorTreeAnalysis>();
             // CFG analyses survive an in-block edit; an arbitrary analysis does not.
             assert!(checker.preserved_set::<CFGAnalyses>());
@@ -1420,7 +1451,7 @@ mod tests {
                     .expect("dead add is a non-terminator"),
             );
             let report = reshape.done();
-            let pa = report.into_pa();
+            let pa = report.into_parts().0;
             let checker = pa.checker::<DominatorTreeAnalysis>();
             assert!(!checker.preserved());
             assert!(!checker.preserved_set::<CFGAnalyses>());
@@ -1448,7 +1479,7 @@ mod tests {
 
             let cx: FnCx<'_, '_, '_, _, ReshapeCfg, Reqs> = FnCx::new(&m, function, results);
             let report = cx.mutate().done();
-            let pa = report.into_pa();
+            let pa = report.into_parts().0;
             assert!(pa.checker::<DominatorTreeAnalysis>().preserved());
             assert!(
                 pa.checker::<DominatorTreeAnalysis>()

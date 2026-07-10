@@ -389,7 +389,14 @@ where
             &mut pass, module, function, results,
         )?
     };
-    fam.invalidate(function, &report.into_pa())?;
+    // Framework-witnessed preservation: offer any recorded reshape edits to the
+    // cached CFG analyses; those that repair are added back to the report before
+    // invalidation, so they survive instead of being evicted by the rung floor.
+    let (mut pa, cfg_updates) = report.into_parts();
+    if !cfg_updates.is_empty() {
+        fam.flush_cfg_updates(function, &cfg_updates, &mut pa);
+    }
+    fam.invalidate(function, &pa)?;
     Ok(out)
 }
 
@@ -566,7 +573,13 @@ where
         let cx = FnCx::new(token, function, results);
         pass.run(cx)?
     };
-    let pa = report.into_pa();
+    // Witnessed preservation (see `run_function_pass`): repair cached CFG
+    // analyses from the recorded reshape edits before invalidating, so a
+    // repaired analysis is kept for the next pipeline member instead of evicted.
+    let (mut pa, cfg_updates) = report.into_parts();
+    if !cfg_updates.is_empty() {
+        fam.flush_cfg_updates(function, &cfg_updates, &mut pa);
+    }
     fam.invalidate(function, &pa)?;
     Ok(pa)
 }
