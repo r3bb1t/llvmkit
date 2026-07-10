@@ -16,7 +16,9 @@ Shipped today:
   capability rung and the driver derives preservation and the output module's
   verified-state, so over-claiming what a pass preserves is a compile error.
 - Built-in analyses: `DominatorTreeAnalysis`, `KnownBitsAnalysis`, and
-  `DemandedBitsAnalysis`; initial `SimplifyDemandedBitsPass`.
+  `DemandedBitsAnalysis`.
+- Built-in transform passes: worklist-driven `DcePass` and `InstSimplifyPass`
+  (fold-to-constant), plus `SimplifyDemandedBitsPass`.
 - LLVM 22.1.4-style `ConstantFolder` for the modeled IR-builder surface plus
   target-independent pure-constant `ConstantFold.cpp` folds for represented
   `ConstantExpr`, integer/float, cast, compare, select, GEP, vector, and
@@ -31,7 +33,9 @@ Hard gaps for replacing more LLVM/Inkwell workflows:
 - KnownBits / ValueTracking is still a represented integer, pointer,
   fixed-vector, and intrinsic-fact subset; LLVM ValueTracking parity remains
   incomplete.
-- No pass-builder/textual-pipeline surface.
+- No pass-builder or pipeline *execution* engine yet: the named recipes and a
+  text parser ship (`pass_pipeline.rs`), but running a parsed pipeline still
+  needs a NAME→pass-constructor registry.
 - No loop PM / CGSCC PM.
 - No alias analysis, MemorySSA, ScalarEvolution, LazyValueInfo, or post-dominance.
 - No bitcode reader/writer.
@@ -315,6 +319,11 @@ Provide enough optimization to replace common LLVM `O1` cleanup for lifted or ge
 
 ### Passes to implement first
 
+> Partly shipped already: a fold-to-constant `InstSimplifyPass` (item 1's
+> constant-folding slice) and a worklist-driven `DcePass` (item 3) are in-tree
+> and tested (`scalar_cleanup_passes.rs`). The list below is the fuller target
+> set — the algebraic/InstCombine depth and the CFG/SCCP/CSE/GVN passes remain.
+
 1. **InstSimplify**
    - Local algebraic simplifications that do not create new instructions.
    - Uses constant folder and KnownBits.
@@ -525,6 +534,13 @@ let mut mpm = pb.parse_module_pipeline("cleanup-lift,instcombine,simplifycfg")?;
 let unverified = mpm.run(module.verify()?, &mut mam, &mut fam)?;
 let verified = unverified.verify()?;
 ```
+
+> Partly shipped: the named recipes (`cleanup-min`/`cleanup-lift`/`cleanup-o1-ish`,
+> `llvmkit-default<O0/O1>`) and a recursive-descent parser for the `name(a,b)`
+> syntax already ship as typed data (`pass_pipeline.rs`, tested in
+> `pass_pipeline_data.rs`). What remains is the `PassBuilder` and an execution
+> engine — a NAME→pass-constructor registry that turns a parsed recipe into a
+> runnable pipeline.
 
 Named pipelines:
 

@@ -19,7 +19,7 @@ Shipped today:
   allocating only when escape decoding actually changes bytes.
 - **`.ll` parser** — done for the constructive subset. Parses module-level
   directives (target datalayout/triple, module asm, type definitions, globals,
-  function declarations and definitions), all 42 instruction opcodes, metadata
+  function declarations and definitions), all instruction opcodes, metadata
   (standalone numbered nodes, named metadata, instruction trailing attachments),
   and value forms (integer/float literals, undef, poison, null,
   zeroinitializer, global/function references, and represented `ConstantExpr`
@@ -419,7 +419,12 @@ preserved" is true by construction — never a `PreservedAnalyses` value the
 author hand-writes and might get wrong. A lying `PreservedAnalyses` (mutate the
 IR, then report everything preserved, leaving stale analyses for a later pass to
 miscompile against) is the class of bug LLVM catches only with opt-in
-verification; here it is **unspellable**. See
+verification; here it is **unspellable**. The `none` for `ReshapeCfg` /
+`RewriteModule` is the structural *floor*: a `ReshapeCfg` pass can still keep a
+specific CFG analysis (e.g. the dominator tree) by opting into a witnessed
+incremental-repair hook (`CfgIncremental` / `FnReshape::analysis_repaired`) —
+the driver marks it preserved only after watching it repair, never on the
+author's say-so. See
 [Type Safety: llvmkit vs. LLVM C++](docs/type-safety-vs-llvm.md#11-passes-cannot-lie-about-what-they-preserve).
 
 Built-in analyses available today:
@@ -445,6 +450,9 @@ Core pass / analysis infrastructure available today:
 - `Analyses` (the bundled function + module analysis managers)
 - `PreservedAnalyses`
 - `PassInstrumentationCallbacks`
+- `matchers` — a `PatternMatch.h`-style combinator DSL (`m_add` / `m_c_add` / `m_one_use` / `m_all_ones` / …); matchers *return* their bindings, so a partial match is `None` rather than a half-filled slot
+- `InstructionView::classify()` → exhaustive `Classified { Inst, Term }` with `CastKind` / `PhiKind` sub-enums and grammar-typed operands (`load.pointer() -> PointerValue`, `CallInst::classify_callee() -> Callee`)
+- `CfgIncremental` / `FnReshape::analysis_repaired` — witnessed CFG-analysis preservation across a `ReshapeCfg` pass
 
 ### Authoring a pass
 

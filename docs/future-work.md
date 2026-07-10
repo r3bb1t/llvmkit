@@ -254,7 +254,7 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
   call-graph-SCC pass rungs (upstream `LoopPassManager` / `CGSCCPassManager`)
   are unmodeled.
 - **First-class `ModRewrite` runtime-symbol/global/ctor triple** -- the
-  `RewriteModule` mutator (`pass_context.rs` ~886-896) exposes only the raw
+  `RewriteModule` mutator (`ModRewrite`, `pass_context.rs` ~1247) exposes only the raw
   `module_mut()` token today; a sanitizer reaches the
   function/global/constructor "triple" through it by hand. The author sugar for
   that pattern -- `declare_runtime_fn` / `append_ctor` / `add_global` helpers
