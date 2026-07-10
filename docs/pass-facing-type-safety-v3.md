@@ -2,6 +2,13 @@
 
 Date: 2026-07-10. Target: `llvmkit` workspace (`crates/llvmkit-ir`, `crates/llvmkit-macros`), branch flow `feature-N/*` → `dev`.
 
+## Status
+
+- **Package 1 — instruction taxonomy: shipped** (branch `feature-5/instruction-taxonomy`). Delivered total `classify()` over `Classified { Inst, Term }`; exhaustive `InstructionKind`/`TerminatorKind`; the `CastKind` (14 per-opcode handles) and `PhiKind { Int, Fp, Ptr, Other }` sub-enums; `PointerValue`-typed pointer operands and `CallInst::classify_callee()`; readers for switch/indirectbr/landingpad/catchswitch entries; `as_binary_op()`/`as_cmp()` groupings plus `OverflowingBinaryOperator`(+`shl`)/`PossiblyExactOperator`; and the `AtomicRMWInst::set_value_operand` token fix. All breaking; recorded per-commit (repo has no CHANGELOG).
+- **Package 2 — pattern DSL: not started.**
+- **Package 3 — pass ergonomics: not started.**
+- **Package 4 — analysis system (Option C): not started.**
+
 ## Context
 
 llvmkit's `InstructionKind` enum already beats C++ `isa`/`dyn_cast` at the opcode level, but the pass-facing story degrades one operand deep: accessors return erased `Value` where types are provable, casts/phis collapse into single variants (the phi one produces a semantically wrong `as_int_value()` on fp/ptr phis), variable-arity terminators expose counts but no readers, and there are no grouping abstractions. Surveying the original C++ passes (`orig_cpp/llvm-project-llvmorg-22.1.4`) showed the real pass-facing interface there is `PatternMatch.h` (2,105 `match()` sites in InstCombine; 898 `m_OneUse`) plus a pass skeleton (erase-safe iteration, worklists, mid-pass IRBuilder, `PreservedAnalyses`). llvmkit's own two passes (`dce.rs`, `inst_simplify.rs`) hand-roll clone-the-id-list + restart-scan-on-first-change (O(n²)), duplicate their match logic in read-only pre-scans forced by consuming `mutate()`, and cannot create IR mid-pass.
