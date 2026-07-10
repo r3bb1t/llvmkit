@@ -5,8 +5,8 @@
 //! callee classifies as [`Callee::Direct`] carrying a [`FunctionValue`].
 
 use llvmkit_ir::{
-    Callee, IRBuilder, InstructionKind, InstructionView, IntValue, IrError, Linkage, Module,
-    PointerValue, Value,
+    Callee, Classified, IRBuilder, InstructionKind, InstructionView, IntValue, IrError, Linkage,
+    Module, PointerValue, TerminatorKind, Value,
 };
 use llvmkit_ir::cmp_predicate::{CmpPredicate, IntPredicate};
 use llvmkit_ir::instr_types::BinaryOpcode;
@@ -53,6 +53,43 @@ fn direct_call_callee_is_direct() -> Result<(), IrError> {
             Callee::Direct(function) => assert_eq!(function.as_value(), callee.as_value()),
             Callee::Indirect(_) => panic!("expected a direct call to classify as Direct"),
         }
+        Ok(())
+    })
+}
+
+/// `classify()` is total: a non-terminator lands in `Inst`, a terminator
+/// in `Term`, with no overloaded `None` to forget.
+#[test]
+fn classify_is_total() -> Result<(), IrError> {
+    Module::with_new("classify_total", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let x: IntValue<i32> = f.param(0)?.try_into()?;
+        let y: IntValue<i32> = f.param(1)?.try_into()?;
+        let sum = b.build_int_add::<i32, _, _, _>(x, y, "s")?;
+        b.build_ret(sum)?;
+
+        let sum_view = InstructionView::try_from(sum.as_value())?;
+        assert!(matches!(
+            sum_view.classify(),
+            Classified::Inst(InstructionKind::Add(_))
+        ));
+
+        // The block terminator classifies as Term(Ret) — the case the
+        // split kind()/terminator_kind() pair makes easy to miss.
+        let term = f
+            .basic_blocks()
+            .next()
+            .unwrap()
+            .terminator()
+            .expect("entry has a terminator");
+        assert!(matches!(
+            term.classify(),
+            Classified::Term(TerminatorKind::Ret(_))
+        ));
         Ok(())
     })
 }

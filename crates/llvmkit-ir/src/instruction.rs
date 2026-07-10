@@ -460,6 +460,12 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
         self.as_view().terminator_kind()
     }
 
+    /// Total opcode classification. See [`InstructionView::classify`].
+    #[inline]
+    pub fn classify(&self) -> Classified<'ctx, B> {
+        self.as_view().classify()
+    }
+
     /// `true` if this instruction is a terminator (`ret`, `br`, ...).
     #[inline]
     pub fn is_terminator(&self) -> bool {
@@ -802,6 +808,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     #[inline]
     pub fn is_terminator(&self) -> bool {
         self.data().kind.is_terminator()
+    }
+
+    /// Total opcode classification. Always names the category — a
+    /// non-terminator [`InstructionKind`] or a terminator
+    /// [`TerminatorKind`] — so there is no overloaded `None` to forget.
+    /// Prefer this over [`Self::kind`] / [`Self::terminator_kind`] when a
+    /// `match` should handle both kinds of instruction.
+    pub fn classify(&self) -> Classified<'ctx, B> {
+        if let Some(kind) = self.kind() {
+            Classified::Inst(kind)
+        } else if let Some(term) = self.terminator_kind() {
+            Classified::Term(term)
+        } else {
+            unreachable!("every instruction is a non-terminator or a terminator")
+        }
     }
 
     /// Operand value-ids in declaration order. Crate-internal helper
@@ -1786,6 +1807,21 @@ pub enum TerminatorKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
     CatchSwitch(CatchSwitchInst<'ctx, TermClosed, B>),
     CallBr(CallBrInst<'ctx, B>),
     Unreachable(UnreachableInst<'ctx, B>),
+}
+
+/// Total classification of an instruction: every instruction is either a
+/// non-terminator ([`InstructionKind`]) or a terminator
+/// ([`TerminatorKind`]). Unlike [`InstructionView::kind`] /
+/// [`InstructionView::terminator_kind`] — which each return `None` for the
+/// other category and so require the caller to remember which to call —
+/// [`InstructionView::classify`] is total: it always names the category, so
+/// a forgotten `is_terminator()` guard cannot mis-handle a terminator.
+#[derive(Debug)]
+pub enum Classified<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    /// A non-terminator instruction.
+    Inst(InstructionKind<'ctx, B>),
+    /// A block terminator.
+    Term(TerminatorKind<'ctx, B>),
 }
 
 /// Crate-internal helper: create a `ValueData` for an instruction with
