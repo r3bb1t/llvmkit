@@ -599,8 +599,16 @@ where
         V: IsValue<'ctx, B>,
     {
         let id = view.as_value().id();
-        // Capture users before the RAUW rewires them.
-        let users: Vec<ValueId> = view.as_value().users().map(|u| u.as_value().id).collect();
+        // Capture the former users only when a worklist is active — the
+        // inactive path must stay allocation-free (the field's zero-overhead
+        // promise). The `borrow()` is a let-RHS temporary, released before the
+        // later `borrow_mut()`. Users must be captured *before* the RAUW rewires
+        // them.
+        let users: Vec<ValueId> = if self.worklist.borrow().is_some() {
+            view.as_value().users().map(|u| u.as_value().id).collect()
+        } else {
+            Vec::new()
+        };
         let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
         inst.replace_all_uses_with(self.module, replacement)?;
         if let Some(wl) = self.worklist.borrow_mut().as_mut() {
@@ -1922,10 +1930,14 @@ mod tests {
         })
     }
 
-    /// The worklist reaches the transitive-dead fixpoint in ONE drain: a chain
-    /// `a -> b -> c` of dead instructions (each only used by the next) is fully
-    /// erased by seeding + operand-cascade, no restart scan. llvmkit-specific
-    /// pass-authoring primitive (no upstream analog).
+    /// A straight-line chain `a -> b -> c` of dead instructions (each only used
+    /// by the next) drains to the transitive-dead fixpoint in ONE seed+drain,
+    /// with no restart scan: the pre-seeded LIFO visits uses before defs, so
+    /// erasing each dead instruction as it surfaces clears the whole chain in a
+    /// single pass. (The operand-push cascade is exercised directly by
+    /// `erase_pushes_operands_onto_active_worklist`; here the point is the
+    /// fixpoint-in-one-drain, not the re-push.) llvmkit-specific pass-authoring
+    /// primitive (no upstream analog).
     #[test]
     fn worklist_operand_cascade_reaches_fixpoint() -> Result<(), IrError> {
         Module::with_new("wl-cascade", |m| {
@@ -1956,6 +1968,65 @@ mod tests {
             drop(scope);
             // Only the ret survives.
             assert_eq!(function.entry_block().expect("def").instruction_count(), 1);
+            let _ = patch.done();
+            Ok(())
+        })
+    }
+
+    /// `erase` on an active worklist re-pushes the erased instruction's
+    /// operand-defining instructions — the cascade's engine. Directly
+    /// discriminating: with the seed already fully drained, the erased `%b`'s
+    /// instruction operand `%a` resurfaces ONLY because `erase` re-pushed it (a
+    /// non-instruction operand — the constant `1` — is skipped by the
+    /// panic-safe pop). Deleting the push loop in `erase` makes the final
+    /// `scope.next()` return `None` and this test fail. llvmkit-specific
+    /// pass-authoring primitive (no upstream analog).
+    #[test]
+    fn erase_pushes_operands_onto_active_worklist() -> Result<(), IrError> {
+        Module::with_new("wl-erase-push", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            // a = x+1 ; b = a+1 (so b's operand `a` IS an instruction) ; ret x.
+            let a = b.build_int_add(x, 1_i32, "a")?;
+            let bb = b.build_int_add(a, 1_i32, "b")?;
+            b.build_ret(x)?;
+            let a_id = a.as_value().id;
+            let b_id = bb.as_value().id;
+
+            let function = FunctionView::from(f);
+            let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
+            let patch = cx.mutate();
+
+            // Seed [a, b]; drain the seed WITHOUT erasing, saving `b`'s handle.
+            // LIFO pops `b` first, then `a`; then the worklist is empty and both
+            // instructions are still attached.
+            let scope = patch.worklist();
+            let first = scope.next().expect("seed pops b first (LIFO)");
+            assert_eq!(first.as_value().id, b_id, "LIFO seed order: b before a");
+            let second = scope.next().expect("seed pops a second");
+            assert_eq!(second.as_value().id, a_id);
+            assert!(scope.next().is_none(), "seed fully drained");
+
+            // Erase `b` through the active worklist: this must push `b`'s
+            // operand defs, including the instruction `%a` (the constant `1` is
+            // skipped by the panic-safe pop).
+            patch.erase(&first);
+
+            // `%a` resurfaces ONLY because `erase` re-pushed it. Without the
+            // push loop this is `None`.
+            let resurfaced = scope.next();
+            assert_eq!(
+                resurfaced
+                    .expect("a re-pushed by erase's operand cascade")
+                    .as_value()
+                    .id,
+                a_id,
+            );
+            drop(scope);
             let _ = patch.done();
             Ok(())
         })
