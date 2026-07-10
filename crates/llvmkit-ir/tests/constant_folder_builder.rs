@@ -6,10 +6,11 @@
 
 use llvmkit_ir::instr_types::CastOpcode;
 use llvmkit_ir::{
-    BinaryIntrinsic, BinaryOpcode, Constant, ConstantFloatValue, ConstantFolder, ConstantIntValue,
-    GepNoWrapFlags, IRBuilder, IRBuilderFolder, InstructionKind, InstructionView, IntDyn,
-    IntPredicate, IntValue, IrError, IrResult, Linkage, Module, MulFlags, NoFolder, OverflowFlags,
-    PointerValue, ShlFlags, Type, UDivFlags, Value, constant_fold_binary_instruction,
+    BinaryIntrinsic, BinaryOpcode, CastKind, Constant, ConstantFloatValue, ConstantFolder,
+    ConstantIntValue, GepNoWrapFlags, IRBuilder, IRBuilderFolder, InstructionKind, InstructionView,
+    IntDyn, IntPredicate, IntValue, IrError, IrResult, Linkage, Module, MulFlags, NoFolder,
+    OverflowFlags, PointerValue, ShlFlags, Type, UDivFlags, Value,
+    constant_fold_binary_instruction,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -689,12 +690,15 @@ fn no_folder_emits_ptrtoaddr_instruction_with_address_type() -> Result<(), IrErr
 
         let result = b.build_ptr_to_addr(ptr, "addr")?;
         let instruction = InstructionView::try_from(result.as_value())?;
-        let Some(InstructionKind::Cast(cast)) = instruction.kind() else {
+        // Match the exact cast opcode through the nested `CastKind`; the
+        // `PtrToAddr` handle exposes a statically pointer-typed `src()`.
+        let Some(InstructionKind::Cast(CastKind::PtrToAddr(cast))) = instruction.kind() else {
             panic!("expected ptrtoaddr cast instruction");
         };
 
         assert_eq!(cast.opcode(), CastOpcode::PtrToAddr);
-        assert_eq!(cast.src(), ptr.as_value());
+        let src: PointerValue = cast.src();
+        assert_eq!(src.as_value(), ptr.as_value());
         let typed_result: IntValue<IntDyn> = result;
         assert_eq!(typed_result.ty().bit_width(), 32);
         assert_eq!(typed_result.as_value().name().as_deref(), Some("addr"));

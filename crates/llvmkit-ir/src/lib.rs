@@ -223,16 +223,21 @@ pub use instr_types::{
     LShrFlags, MulFlags, OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags, SDivFlags,
     ShlFlags, SubFlags, TailCallKind, TruncFlags, UDivFlags, UIToFpFlags, UnaryOpcode, ZExtFlags,
 };
-pub use instruction::{Instruction, InstructionKind, InstructionView, TerminatorKind};
+pub use instruction::{
+    CastKind, Classified, Instruction, InstructionKind, InstructionView, PhiKind, TerminatorKind,
+};
 pub use instructions::{
-    AShrInst, AddInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst, BranchInst,
-    CallBrInst, CallInst, CastInst, CatchPadInst, CatchReturnInst, CatchSwitchInst, CleanupPadInst,
-    CleanupReturnInst, ExtractElementInst, ExtractValueInst, FAddInst, FCmpInst, FDivInst,
-    FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FpPhiInst, FreezeInst, GepInst, ICmpInst,
-    IndirectBrInst, InsertElementInst, InsertValueInst, InvokeInst, LShrInst, LandingPadInst,
-    LoadInst, MulInst, OrInst, PhiInst, PointerPhiInst, ResumeInst, RetInst, SDivInst, SRemInst,
-    SelectInst, ShlInst, ShuffleVectorInst, StoreInst, SubInst, SwitchInst, TypedCallInst,
-    UDivInst, URemInst, UnreachableInst, VAArgInst, XorInst,
+    AShrInst, AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst,
+    BinaryOp, BitCastInst, BranchInst, CallBrInst, CallInst, Callee, CatchPadInst, CatchReturnInst,
+    CatchSwitchInst, Cmp,
+    CleanupPadInst, CleanupReturnInst, ExtractElementInst, ExtractValueInst, FAddInst, FCmpInst,
+    FDivInst, FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FpExtInst, FpPhiInst, FpToSIInst,
+    FpToUIInst, FpTruncInst, FreezeInst, GepInst, ICmpInst, IndirectBrInst, InsertElementInst,
+    InsertValueInst, IntToPtrInst, InvokeInst, LShrInst, LandingPadInst, LoadInst, MulInst, OrInst,
+    OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst, ResumeInst, RetInst,
+    SDivInst, SExtInst, SIToFpInst, SRemInst, SelectInst, ShlInst, ShuffleVectorInst, StoreInst,
+    SubInst, SwitchInst, TruncInst, TypedCallInst, UDivInst, UIToFpInst, URemInst, UnreachableInst,
+    VAArgInst, XorInst, ZExtInst,
 };
 pub use intrinsic_inst::{IntrinsicInst, LifetimeIntrinsic, MemIntrinsic};
 pub use intrinsics::{
@@ -257,7 +262,7 @@ pub use module::{
     ModuleId, ModuleRef, ModuleView, Unverified, UseListOrderBBRecord, UseListOrderRecord,
     Verified,
 };
-pub use operator::OverflowingBinaryOperator;
+pub use operator::{OverflowingBinaryOperator, PossiblyExactOperator};
 pub use optimization_level::{
     OptLevelO0, OptLevelO1, OptLevelO2, OptLevelO3, OptLevelOs, OptLevelOz, OptimizationLevel,
     OptimizationLevelMarker, ThinOrFullLtoPhase,

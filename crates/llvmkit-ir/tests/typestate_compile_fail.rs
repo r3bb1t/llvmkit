@@ -38,6 +38,7 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/per_opcode_handle_cannot_mint_instruction.rs");
     t.compile_fail("tests/compile_fail/value_cannot_mint_instruction_lifecycle.rs");
     t.compile_fail("tests/compile_fail/block_terminator_view_cannot_erase.rs");
+    t.compile_fail("tests/compile_fail/atomicrmw_set_value_requires_token.rs");
     t.compile_fail("tests/compile_fail/call_void_no_return_accessor.rs");
     t.compile_fail("tests/compile_fail/typed_function_params_reject_wrong_binding.rs");
     t.compile_fail("tests/compile_fail/typed_function_params_require_facade.rs");
