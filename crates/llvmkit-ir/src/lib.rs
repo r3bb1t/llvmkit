@@ -101,6 +101,7 @@ pub mod iter;
 pub mod known_bits;
 pub(crate) mod llvm_context;
 pub mod marker;
+pub mod matchers;
 pub mod metadata;
 pub mod module;
 pub mod named_md_node;
