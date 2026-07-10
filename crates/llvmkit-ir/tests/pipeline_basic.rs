@@ -163,7 +163,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for MutatingReshape {
             .filter(|view| !view.is_terminator() && !view.as_value().has_uses())
             .collect();
         for view in &dead {
-            reshape.erase(view)?;
+            reshape.erase(
+                &view
+                    .as_non_terminator()
+                    .expect("filtered to non-terminators"),
+            );
         }
         Ok(reshape.done())
     }

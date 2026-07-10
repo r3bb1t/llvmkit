@@ -820,6 +820,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
         }
     }
 
+    /// Narrow to a [`NonTerminator`] if this instruction is not a
+    /// terminator. The narrowed handle is the only thing pass mutators
+    /// accept for erasure, so a terminator can never be handed to `erase`.
+    #[inline]
+    pub fn as_non_terminator(self) -> Option<NonTerminator<'ctx, B>> {
+        (!self.is_terminator()).then(|| NonTerminator::from_view_unchecked(self))
+    }
+
     /// Operand value-ids in declaration order. Crate-internal helper
     /// used by the use-list machinery.
     pub(super) fn operand_ids(&self) -> Vec<ValueId> {
@@ -1817,6 +1825,37 @@ pub enum Classified<'ctx, B: ModuleBrand = Brand<'ctx>> {
     Inst(InstructionKind<'ctx, B>),
     /// A block terminator.
     Term(TerminatorKind<'ctx, B>),
+}
+
+/// An instruction view statically known **not** to be a terminator. The
+/// only way to build one is [`InstructionView::as_non_terminator`], which
+/// checks once; pass mutators (`FnPatch::erase`) then accept only this, so
+/// erasing a terminator is a *compile* error rather than a runtime
+/// rejection — a terminator-erase that would break a `PatchBody` pass's
+/// "CFG preserved" floor is unrepresentable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NonTerminator<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    view: InstructionView<'ctx, B>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> NonTerminator<'ctx, B> {
+    /// The underlying read-only instruction view.
+    #[inline]
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        self.view
+    }
+
+    /// Widen to the erased [`Value`] handle (the instruction's result).
+    #[inline]
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        self.view.as_value()
+    }
+
+    /// Crate-internal: wrap a view already known to be a non-terminator.
+    #[inline]
+    pub(crate) fn from_view_unchecked(view: InstructionView<'ctx, B>) -> Self {
+        Self { view }
+    }
 }
 
 /// Crate-internal helper: create a `ValueData` for an instruction with

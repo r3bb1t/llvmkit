@@ -70,7 +70,10 @@ fn inst_simplify_iteration<'ctx, B: ModuleBrand + 'ctx>(
             // always trivially dead — but gate on it to match upstream and
             // stay correct if the folder ever grows a call path.
             if crate::dce::is_trivially_dead(&view) {
-                patch.erase(&view)?;
+                let dead = view
+                    .as_non_terminator()
+                    .expect("a trivially-dead instruction is not a terminator");
+                patch.erase(&dead);
             }
             return Ok(true);
         }

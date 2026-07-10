@@ -225,7 +225,8 @@ pub use instr_types::{
     ShlFlags, SubFlags, TailCallKind, TruncFlags, UDivFlags, UIToFpFlags, UnaryOpcode, ZExtFlags,
 };
 pub use instruction::{
-    CastKind, Classified, Instruction, InstructionKind, InstructionView, PhiKind, TerminatorKind,
+    CastKind, Classified, Instruction, InstructionKind, InstructionView, NonTerminator, PhiKind,
+    TerminatorKind,
 };
 pub use instructions::{
     AShrInst, AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst,

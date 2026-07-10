@@ -55,7 +55,6 @@
 use core::marker::PhantomData;
 
 use super::BasicBlock;
-use super::IrError;
 use super::IrResult;
 use super::analysis::{
     AnalysisSelector, FunctionAnalysis, FunctionAnalysisList, FunctionAnalysisManager,
@@ -64,7 +63,7 @@ use super::analysis::{
 };
 use super::block_state::{Terminated, Unterminated};
 use super::function::FunctionValue;
-use super::instruction::{Instruction, InstructionView, state};
+use super::instruction::{Instruction, InstructionView, NonTerminator, state};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, Invariant, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::pass_access::{
@@ -520,23 +519,17 @@ where
     /// its operand uses. Mirrors `DcePass`'s erase step
     /// ([`Instruction::erase_from_parent`]).
     ///
-    /// Handing this a terminator is a loud bug, never silent: it returns
-    /// [`IrError::InvalidOperation`] rather than touching the CFG (a
-    /// terminator-erase would break the "CFG preserved" floor this rung rests
-    /// on). A fully structural non-terminator handle is future work.
+    /// Accepts only a [`NonTerminator`] — obtained from
+    /// [`InstructionView::as_non_terminator`] — so a terminator-erase (which
+    /// would break the "CFG preserved" floor this rung rests on) is a compile
+    /// error, not a runtime rejection. Infallible: erasing a non-terminator
+    /// cannot fail.
     #[inline]
-    pub fn erase(&self, view: &InstructionView<'ctx, B>) -> IrResult<()> {
-        if view.is_terminator() {
-            return Err(IrError::InvalidOperation {
-                message: "FnPatch::erase cannot erase a terminator; the PatchBody rung \
-                          preserves the CFG — use the ReshapeCfg rung for control-flow edits",
-            });
-        }
-        let id = view.as_value().id();
+    pub fn erase(&self, target: &NonTerminator<'ctx, B>) {
+        let id = target.as_value().id();
         let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
         inst.erase_from_parent(self.module);
         self.dirty.set(true);
-        Ok(())
     }
 
     /// Replace every use of `view`'s result with `replacement`, leaving the
@@ -641,8 +634,8 @@ where
 
     /// Erase a non-terminator instruction. See [`FnPatch::erase`].
     #[inline]
-    pub fn erase(&self, view: &InstructionView<'ctx, B>) -> IrResult<()> {
-        self.patch.erase(view)
+    pub fn erase(&self, target: &NonTerminator<'ctx, B>) {
+        self.patch.erase(target);
     }
 
     /// Replace every use of `view`'s result. See [`FnPatch::replace_all_uses`].
@@ -1192,7 +1185,11 @@ mod tests {
 
             let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(&m, function, results);
             let patch = cx.mutate();
-            patch.erase(&dead_view)?;
+            patch.erase(
+                &dead_view
+                    .as_non_terminator()
+                    .expect("dead add is a non-terminator"),
+            );
 
             // After mutation: only `ret` remains.
             assert_eq!(
@@ -1213,11 +1210,13 @@ mod tests {
         })
     }
 
-    /// A terminator handed to [`super::FnPatch::erase`] is a loud typed error,
-    /// never a silent CFG mutation — this is what keeps the CFG-preserved floor
-    /// sound. llvmkit-specific capability-context lock (no upstream analog).
+    /// A terminator cannot be narrowed to a [`NonTerminator`], which is the
+    /// only thing [`super::FnPatch::erase`] accepts — so a terminator-erase is
+    /// unrepresentable (a compile error, pinned by the `patchbody_cannot_erase_terminator`
+    /// trybuild fixture) rather than a runtime rejection. This is what keeps the
+    /// CFG-preserved floor sound. llvmkit-specific capability-context lock.
     #[test]
-    fn patchbody_erase_terminator_is_rejected() -> Result<(), IrError> {
+    fn terminator_does_not_narrow_to_non_terminator() -> Result<(), IrError> {
         Module::with_new("patch-term", |m| {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
@@ -1235,21 +1234,8 @@ mod tests {
                 .terminator()
                 .expect("block is terminated by the ret");
 
-            let mut fam = FunctionAnalysisManager::new();
-            Reqs::prefetch(&mut fam, function)?;
-            let results = Reqs::collect(&fam, function)?;
-
-            let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(&m, function, results);
-            let patch = cx.mutate();
-            // Erasing the terminator is refused; the `ret` stays put.
-            assert!(patch.erase(&terminator).is_err());
-            assert_eq!(
-                function
-                    .entry_block()
-                    .expect("definition has an entry block")
-                    .instruction_count(),
-                1
-            );
+            // The `ret` refuses to narrow, so it can never reach `erase`.
+            assert!(terminator.as_non_terminator().is_none());
             Ok(())
         })
     }
@@ -1315,7 +1301,11 @@ mod tests {
             // Erase the dead instruction so the dirty flag is set; only then
             // does `done()` report the ReshapeCfg floor.
             let dead_view = InstructionView::try_from(dead.as_value())?;
-            reshape.erase(&dead_view)?;
+            reshape.erase(
+                &dead_view
+                    .as_non_terminator()
+                    .expect("dead add is a non-terminator"),
+            );
             let report = reshape.done();
             let pa = report.into_pa();
             let checker = pa.checker::<DominatorTreeAnalysis>();
@@ -1496,7 +1486,7 @@ mod tests {
                 visited.push(fv);
                 for (f, dead) in &dead_by_fn {
                     if *f == fv {
-                        p.erase(dead)?;
+                        p.erase(&dead.as_non_terminator().expect("dead is a non-terminator"));
                     }
                 }
                 Ok(())

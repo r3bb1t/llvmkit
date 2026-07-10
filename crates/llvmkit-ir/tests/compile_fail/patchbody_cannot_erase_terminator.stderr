@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+  --> tests/compile_fail/patchbody_cannot_erase_terminator.rs:30:21
+   |
+30 |         patch.erase(&terminator);
+   |               ----- ^^^^^^^^^^^ expected `&NonTerminator<'_, B>`, found `&InstructionView<'_, B>`
+   |               |
+   |               arguments to this method are incorrect
+   |
+   = note: expected reference `&NonTerminator<'_, B>`
+              found reference `&InstructionView<'_, B>`
+note: method defined here
+  --> src/pass_context.rs
+   |
+   |     pub fn erase(&self, target: &NonTerminator<'ctx, B>) {
+   |            ^^^^^

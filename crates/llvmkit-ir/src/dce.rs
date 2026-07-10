@@ -30,14 +30,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for DcePass {
         // nothing was erased (the mutator's dirty flag *witnesses* that), and
         // the rung's CFG-preserved floor otherwise.
         let patch = cx.mutate();
-        while dce_iteration(&patch)? {}
+        while dce_iteration(&patch) {}
         Ok(patch.done())
     }
 }
 
-fn dce_iteration<'ctx, B: ModuleBrand + 'ctx>(
-    patch: &FnPatch<'_, '_, 'ctx, B, ()>,
-) -> IrResult<bool> {
+fn dce_iteration<'ctx, B: ModuleBrand + 'ctx>(patch: &FnPatch<'_, '_, 'ctx, B, ()>) -> bool {
     let module_ref = patch.module_mut().module_ref();
 
     for block in patch.function_mut().basic_blocks() {
@@ -47,13 +45,17 @@ fn dce_iteration<'ctx, B: ModuleBrand + 'ctx>(
             if !is_trivially_dead(&view) {
                 continue;
             }
-            // Erase through the mutator so the dirty flag is set.
-            patch.erase(&view)?;
-            return Ok(true);
+            // `is_trivially_dead` already excludes terminators, so the narrow
+            // succeeds; erase through the mutator so the dirty flag is set.
+            let dead = view
+                .as_non_terminator()
+                .expect("a trivially-dead instruction is not a terminator");
+            patch.erase(&dead);
+            return true;
         }
     }
 
-    Ok(false)
+    false
 }
 
 pub(crate) fn is_trivially_dead<'ctx, B: ModuleBrand + 'ctx>(
