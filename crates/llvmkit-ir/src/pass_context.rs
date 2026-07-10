@@ -626,7 +626,19 @@ where
     /// through `self` (`erase`/`replace_all_uses`) — those mutations maintain the
     /// worklist automatically (cascade + self-remove). The worklist deactivates
     /// when the returned scope drops.
+    ///
+    /// Only one [`WorklistScope`] may be active on a given `FnPatch` at a time;
+    /// creating a second while one is live panics.
     pub fn worklist(&self) -> WorklistScope<'_, 'm, 'r, 'ctx, B, R> {
+        // Reject re-entry: the shared slot holds one worklist, and either
+        // scope's `Drop` resets it to `None`, so a nested scope would silently
+        // reseed and leave the outer scope inert. Fail loudly instead. The
+        // `borrow()` is a temporary released before the `borrow_mut()` below;
+        // `body_instructions()` does not touch `self.worklist`, so no overlap.
+        assert!(
+            self.worklist.borrow().is_none(),
+            "a WorklistScope is already active on this FnPatch; nested worklist scopes are not supported"
+        );
         let mut wl = Worklist::new();
         for inst in self.body_instructions() {
             wl.push(inst.as_value().id());
@@ -2030,5 +2042,34 @@ mod tests {
             let _ = patch.done();
             Ok(())
         })
+    }
+
+    /// A second [`super::FnPatch::worklist`] call while an earlier
+    /// [`super::WorklistScope`] is still live panics rather than silently
+    /// clobbering the shared slot (which would leave the outer scope inert and
+    /// its `Drop` reset the inner's worklist). llvmkit-specific pass-authoring
+    /// guardrail (no upstream analog).
+    #[test]
+    #[should_panic(expected = "already active")]
+    fn nested_worklist_scopes_panic() {
+        Module::with_new("wl-nested", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let _a = b.build_int_add(x, 1_i32, "a")?;
+            b.build_ret(x)?;
+
+            let function = FunctionView::from(f);
+            let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
+            let patch = cx.mutate();
+
+            let _s1 = patch.worklist();
+            let _s2 = patch.worklist(); // must panic: a scope is already active
+            Ok::<(), IrError>(())
+        })
+        .expect("unreachable: the second worklist() call panics first");
     }
 }
