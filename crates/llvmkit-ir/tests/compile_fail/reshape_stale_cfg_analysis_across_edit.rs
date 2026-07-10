@@ -1,4 +1,4 @@
-//! llvmkit-specific Pass API v2 lock (Doctrine D1 — make invalid states
+//! llvmkit-specific capability-graded pass API lock (Doctrine D1 — make invalid states
 //! unrepresentable), Package 4.
 //!
 //! On a `ReshapeCfg` mutator a CFG analysis can be read only through

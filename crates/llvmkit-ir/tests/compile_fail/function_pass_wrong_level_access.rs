@@ -1,4 +1,4 @@
-//! llvmkit-specific Pass API v2 lock (Doctrine D1/D8), not a 1:1 LLVM port.
+//! llvmkit-specific capability-graded pass API lock (Doctrine D1/D8), not a 1:1 LLVM port.
 //!
 //! The capability rungs are split across two levels: `FnAccess` names the rungs
 //! usable over a single function body (`Inspect`/`PatchBody`/`ReshapeCfg`), while

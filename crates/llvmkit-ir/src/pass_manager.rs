@@ -1,4 +1,4 @@
-//! Single-pass driver for the capability-graded Pass API v2.
+//! Single-pass driver for the capability-graded pass API.
 //!
 //! A pass declares a capability *rung* ([`FnAccess`]/[`ModAccess`]) and its
 //! required analyses; the driver derives everything else. This module supplies
@@ -431,7 +431,7 @@ where
 }
 
 // ==========================================================================
-// Pass API v2 — typed tuple pipelines (verdict-derived verification)
+// capability-graded pass API — typed tuple pipelines (verdict-derived verification)
 // ==========================================================================
 //
 // A pipeline composes several passes (and/or nested pipelines) and runs them in
@@ -1335,7 +1335,7 @@ impl ModulePipelineExecute for Downgrades {
 }
 
 // ==========================================================================
-// Pass API v2 — Dyn runtime-composition pipelines (the opt-style escape hatch)
+// capability-graded pass API — Dyn runtime-composition pipelines (the opt-style escape hatch)
 // ==========================================================================
 //
 // Everything above composes passes STATICALLY: a source-level tuple whose length
@@ -1377,7 +1377,7 @@ mod erased {
     /// Object-safe erasure of a [`FunctionPass`] — the boxing seam for the runtime
     /// `Dyn…` function pipelines.
     ///
-    /// **This trait is the payoff of the whole Pass API v2 redesign.** It is
+    /// **This trait is the payoff of the whole capability-graded pass API redesign.** It is
     /// CRATE-PRIVATE (`pub(crate)` inside a private `mod erased`, never
     /// re-exported): no downstream crate can name it, so the single blanket impl
     /// below — `impl<P: FunctionPass> ErasedFunctionPass for P` — is

@@ -1,4 +1,4 @@
-//! llvmkit-specific Pass API v2 lock (Doctrine D1/D7), not a 1:1 LLVM port.
+//! llvmkit-specific capability-graded pass API lock (Doctrine D1/D7), not a 1:1 LLVM port.
 //!
 //! A pass's analysis access is tied to its own `type Requires` tuple: the
 //! infallible `FnCx::analysis::<A, _>()` accessor (`pass_context.rs`) is bounded
@@ -11,7 +11,7 @@
 //! registered" null-deref UB LLVM's `AnalysisManager::getResult` risks.
 //!
 //! (Re-expresses the deleted old-API `typed_context_undeclared_analysis.rs` for
-//! the capability-graded Pass API v2.)
+//! the capability-graded pass API.)
 
 use llvmkit_ir::{DominatorTreeAnalysis, FnCx, FnReport, FunctionPass, Inspect, IrResult, ModuleBrand};
 

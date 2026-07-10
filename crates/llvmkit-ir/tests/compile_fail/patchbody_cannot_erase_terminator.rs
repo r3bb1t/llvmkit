@@ -1,4 +1,4 @@
-//! llvmkit-specific Pass API v2 lock (Doctrine D1 — make invalid states
+//! llvmkit-specific capability-graded pass API lock (Doctrine D1 — make invalid states
 //! unrepresentable).
 //!
 //! `FnPatch::erase` accepts only a `NonTerminator`, obtained from

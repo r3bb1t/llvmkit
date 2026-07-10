@@ -1,4 +1,4 @@
-//! Capability-rung lattice foundations for the Pass API v2.
+//! Capability-rung lattice foundations for the capability-graded pass API.
 //!
 //! A pass declares a *capability rung* — how much of the IR it may mutate — and
 //! the driver *derives* the rest: whether the run keeps the module verified and

@@ -274,7 +274,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ExactSizeIterator for ModuleFunctionViews<'ctx
 }
 
 // ==========================================================================
-// Pass API v2 — function report, entry context, and mutators
+// capability-graded pass API — function report, entry context, and mutators
 // ==========================================================================
 
 /// The value a function pass returns. Wraps the driver-derived
@@ -1034,7 +1034,7 @@ impl MutatingFn for ReshapeCfg {
 }
 
 // ==========================================================================
-// Pass API v2 — module report, entry context, and mutator
+// capability-graded pass API — module report, entry context, and mutator
 // ==========================================================================
 
 /// The value a module pass returns. The module-level mirror of [`FnReport`]:

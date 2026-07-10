@@ -82,7 +82,7 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/ssa_def_wrong_width.rs");
     t.compile_fail("tests/compile_fail/ssa_ret_value_in_void_fn.rs");
     t.compile_fail("tests/compile_fail/ssa_finish_positioned.rs");
-    // Pass API v2 capability-rung locks (Task 9). Each proves a v2 guarantee
+    // capability-graded pass API capability-rung locks (Task 9). Each proves a rung guarantee
     // whose primary error is one of OUR OWN stable messages (an `E0599`
     // absent-method, a `#[diagnostic::on_unimplemented]`, or a `syn::Error`),
     // which do not drift across rustc versions.
