@@ -603,53 +603,9 @@ where
         }
     }
 
-    /// Read-only function view.
-    #[inline]
-    pub fn function(&self) -> FunctionView<'ctx, B> {
-        self.patch.function()
-    }
-
-    /// Mutation-capable function-body view.
-    #[inline]
-    pub fn function_mut(&self) -> FunctionBody<'ctx, B> {
-        self.patch.function_mut()
-    }
-
-    /// Infallible access to a `Requires`-declared analysis result during
-    /// mutation. See [`FnPatch::analysis`].
-    #[inline]
-    pub fn analysis<A2, I>(&self) -> &'r A2::Result
-    where
-        A2: FunctionAnalysis<'ctx, B>,
-        R: AnalysisSelector<'ctx, B, A2, I>,
-    {
-        self.patch.analysis::<A2, I>()
-    }
-
-    /// Mutation-capable module token.
-    #[inline]
-    pub fn module_mut(&self) -> &'m Module<'ctx, B, Unverified> {
-        self.patch.module_mut()
-    }
-
-    /// Erase a non-terminator instruction. See [`FnPatch::erase`].
-    #[inline]
-    pub fn erase(&self, target: &NonTerminator<'ctx, B>) {
-        self.patch.erase(target);
-    }
-
-    /// Replace every use of `view`'s result. See [`FnPatch::replace_all_uses`].
-    #[inline]
-    pub fn replace_all_uses<V>(
-        &self,
-        view: &InstructionView<'ctx, B>,
-        replacement: V,
-    ) -> IrResult<()>
-    where
-        V: IsValue<'ctx, B>,
-    {
-        self.patch.replace_all_uses(view, replacement)
-    }
+    // `function`, `function_mut`, `analysis`, `module_mut`, `erase`, and
+    // `replace_all_uses` are inherited from `FnPatch` via `Deref` (below), so
+    // the read + in-block-edit surface need not be re-delegated by hand.
 
     /// Split `block` before instruction `before`: `before` and everything after
     /// it move into a fresh block (named `name`) appended to the function; the
@@ -684,6 +640,25 @@ where
         } else {
             FnReport::from_pa(PreservedAnalyses::all())
         }
+    }
+}
+
+/// A `ReshapeCfg` mutator *is* a `PatchBody` mutator plus CFG surgery, so it
+/// inherits the whole in-block-edit surface (`function`/`function_mut`/
+/// `analysis`/`module_mut`/`erase`/`replace_all_uses`/`is_dirty`) via `Deref`
+/// instead of re-delegating each by hand. `FnReshape`'s own `done()` (the
+/// `ReshapeCfg` floor) is inherent, so it shadows the derefed `FnPatch::done`.
+impl<'m, 'r, 'ctx, B, R> core::ops::Deref for FnReshape<'m, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    type Target = FnPatch<'m, 'r, 'ctx, B, R>;
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.patch
     }
 }
 
