@@ -6,7 +6,7 @@
 
 use super::analysis::{
     AllAnalysesOnFunction, FunctionAnalysis, FunctionAnalysisInvalidator, FunctionAnalysisManager,
-    FunctionAnalysisResult, PreservedAnalyses,
+    FunctionAnalysisResult, PrefetchableAnalysis, PreservedAnalyses,
 };
 use super::constant::ConstantData;
 use super::constants::ConstantIntValue;
@@ -739,6 +739,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for DemandedBitsAnal
         let mut result = DemandedBits::new(function.module().data_layout().clone());
         result.perform_analysis(function)?;
         Ok(result)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> PrefetchableAnalysis<'ctx, B> for DemandedBitsAnalysis {
+    #[inline]
+    fn ensure_registered(fam: &mut FunctionAnalysisManager<'ctx, B>) {
+        fam.ensure_registered_default::<Self>();
     }
 }
 

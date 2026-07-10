@@ -340,6 +340,32 @@ pub trait FunctionAnalysis<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
     ) -> IrResult<Self::Result>;
 }
 
+/// How a function analysis registers itself for prefetching, so a typed
+/// `Requires` list need not bound its members `Default`. A `Default` analysis
+/// auto-registers (delegating to
+/// [`FunctionAnalysisManager::ensure_registered_default`]); a parameterized /
+/// non-`Default` analysis declares its own strategy — typically a no-op that
+/// assumes the caller pre-registered an instance via
+/// [`FunctionAnalysisManager::register_pass`].
+///
+/// Every analysis usable in a typed `Requires` list must implement this. There
+/// is deliberately no blanket `impl<A: Default>`: a blanket plus a manual impl
+/// for a non-`Default` analysis would overlap under coherence (Rust does no
+/// negative reasoning over `Default`), which is exactly the case this trait
+/// exists to support. The explicit one-line impls are the cost of dropping the
+/// `Default` straitjacket — and they double as the seam where a CFG analysis can
+/// opt into incremental preservation (see `register_cfg_analysis`).
+///
+/// No upstream analog: LLVM registers analyses by runtime
+/// `AnalysisManager::registerPass` calls with no compile-time `Requires` list.
+pub trait PrefetchableAnalysis<'ctx, B: ModuleBrand = Brand<'ctx>>:
+    FunctionAnalysis<'ctx, B>
+{
+    /// Ensure this analysis is registered in `fam`, so a following `get_result`
+    /// cannot fail with [`IrError::AnalysisNotRegistered`].
+    fn ensure_registered(fam: &mut FunctionAnalysisManager<'ctx, B>);
+}
+
 /// Cached function-analysis result.
 pub trait FunctionAnalysisResult<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
     /// Return `true` when this result should be invalidated.
@@ -1023,6 +1049,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for DominatorTreeAna
     }
 }
 
+impl<'ctx, B: ModuleBrand + 'ctx> PrefetchableAnalysis<'ctx, B> for DominatorTreeAnalysis {
+    #[inline]
+    fn ensure_registered(fam: &mut FunctionAnalysisManager<'ctx, B>) {
+        fam.ensure_registered_default::<Self>();
+    }
+}
+
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for DominatorTree {
     fn invalidate(
         &mut self,
@@ -1177,7 +1210,7 @@ macro_rules! impl_function_analysis_list {
         impl<'ctx, B, $($member),+> FunctionAnalysisList<'ctx, B> for ($($member,)+)
         where
             B: ModuleBrand + 'ctx,
-            $($member: FunctionAnalysis<'ctx, B> + Default,)+
+            $($member: PrefetchableAnalysis<'ctx, B>,)+
         {
             const LEN: usize = $len;
             type ResultRefs<'r>
@@ -1190,7 +1223,7 @@ macro_rules! impl_function_analysis_list {
                 function: FunctionView<'ctx, B>,
             ) -> IrResult<()> {
                 $(
-                    fam.ensure_registered_default::<$member>();
+                    <$member as PrefetchableAnalysis<'ctx, B>>::ensure_registered(fam);
                     fam.get_result::<$member, _>(function)?;
                 )+
                 Ok(())
@@ -1219,7 +1252,7 @@ macro_rules! impl_function_analysis_selectors {
             for ($($all,)+)
         where
             B: ModuleBrand + 'ctx,
-            $($all: FunctionAnalysis<'ctx, B> + Default,)+
+            $($all: PrefetchableAnalysis<'ctx, B>,)+
         {
             fn select<'r>(refs: &Self::ResultRefs<'r>) -> &'r $head::Result
             where
@@ -1318,6 +1351,11 @@ pub trait ModuleAnalysisSelector<'ctx, B: ModuleBrand + 'ctx, A: ModuleAnalysis<
 // See `impl_function_analysis_selectors` above for why the selector impls are
 // peeled off one at a time by recursion instead of a single `$(...)+ ` over
 // all of them.
+// NB: module `Requires` members still bound `+ Default` (auto-registered). The
+// function side dropped this via `PrefetchableAnalysis` because it has real
+// non-`Default` analyses; there are no concrete module analyses yet, so a
+// mirror `PrefetchableModuleAnalysis` would be untestable dead machinery.
+// Introduce it (same shape) when the first non-`Default` module analysis lands.
 macro_rules! impl_module_analysis_list {
     ($len:literal; $($member:ident: $idx:ident . $slot:tt),+) => {
         impl<'ctx, B, $($member),+> ModuleAnalysisList<'ctx, B> for ($($member,)+)
@@ -1460,6 +1498,76 @@ mod tests {
                 dt.apply_updates(&updates, function),
                 RepairOutcome::PreferRecompute
             );
+            Ok(())
+        })
+    }
+
+    /// A deliberately NON-`Default` function analysis: it carries configuration,
+    /// so a result can only come from a pre-registered instance. Used to prove a
+    /// `Requires` list no longer bounds its members `Default`.
+    #[derive(Clone, Copy)]
+    struct ThresholdAnalysis {
+        threshold: u32,
+    }
+    struct ThresholdResult {
+        threshold: u32,
+    }
+    impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for ThresholdResult {}
+    impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for ThresholdAnalysis {
+        type Result = ThresholdResult;
+        fn run(
+            &self,
+            _function: FunctionView<'ctx, B>,
+            _am: &mut FunctionAnalysisManager<'ctx, B>,
+        ) -> IrResult<Self::Result> {
+            Ok(ThresholdResult {
+                threshold: self.threshold,
+            })
+        }
+    }
+    impl<'ctx, B: ModuleBrand + 'ctx> PrefetchableAnalysis<'ctx, B> for ThresholdAnalysis {
+        fn ensure_registered(_fam: &mut FunctionAnalysisManager<'ctx, B>) {
+            // No-op: a non-`Default` analysis must be pre-registered by the
+            // caller (there is nothing to auto-construct).
+        }
+    }
+
+    /// A `Requires` list member need not be `Default`: a parameterized analysis
+    /// works as long as the caller pre-registered a configured instance, and the
+    /// prefetched result reflects THAT instance's config. Without the
+    /// pre-registration the prefetch reports `AnalysisNotRegistered` — proving
+    /// the `PrefetchableAnalysis` no-op does not silently auto-construct.
+    /// llvmkit-specific type-machinery lock (no upstream analog).
+    #[test]
+    fn requires_without_default_uses_registered_instance() -> IrResult<()> {
+        Module::with_new("requires-no-default", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+            b.build_ret(i32_ty.const_int(0_u32))?;
+
+            let function: FunctionView<'_> = f.into();
+            type Reqs = (ThresholdAnalysis,);
+
+            // Without pre-registration, prefetch fails: the no-op
+            // `ensure_registered` does not auto-construct a non-`Default` analysis.
+            let mut empty = FunctionAnalysisManager::new();
+            assert!(matches!(
+                <Reqs as FunctionAnalysisList<'_, _>>::prefetch(&mut empty, function),
+                Err(IrError::AnalysisNotRegistered { .. })
+            ));
+
+            // With a configured instance pre-registered, the Requires list
+            // prefetches/collects/selects it and the result carries the config.
+            let mut fam = FunctionAnalysisManager::new();
+            fam.register_pass(ThresholdAnalysis { threshold: 42 });
+            <Reqs as FunctionAnalysisList<'_, _>>::prefetch(&mut fam, function)?;
+            let refs = <Reqs as FunctionAnalysisList<'_, _>>::collect(&fam, function)?;
+            let result: &ThresholdResult =
+                <Reqs as AnalysisSelector<'_, Brand<'_>, ThresholdAnalysis, Idx0>>::select(&refs);
+            assert_eq!(result.threshold, 42);
             Ok(())
         })
     }
