@@ -107,7 +107,7 @@ impl Worklist {
 #[cfg(test)]
 mod tests {
     use super::Worklist;
-    use crate::{IRBuilder, IntValue, IrError, Linkage, Module, NoFolder};
+    use crate::{FunctionView, IRBuilder, IntValue, IrError, Linkage, Module, NoFolder};
 
     // Build `f(i32 %x)` with three dead adds; return their ids + the module ref.
     // Helper closes over `m` so tests can pop against a live module.
@@ -214,6 +214,50 @@ mod tests {
             wl.push(param_id);
             assert_eq!(wl.pop(module).unwrap().as_value().id, a_id);
             assert!(wl.pop(module).is_none());
+            Ok(())
+        })
+    }
+
+    // A terminator *is* an instruction, so it passes the `TryFrom<Value>` check
+    // and reaches the distinct `as_non_terminator() -> None` branch. It must
+    // never surface from `pop` as a `NonTerminator` (mutators erase only
+    // non-terminators) and must not panic. This is a different skip path from
+    // the non-instruction case above.
+    #[test]
+    fn pop_skips_terminator_id() -> Result<(), IrError> {
+        Module::with_new("wl-term", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let a = b.build_int_add(x, 1_i32, "a")?;
+            b.build_ret(x)?;
+
+            let a_id = a.as_value().id;
+            // The `ret` terminator is the block's last instruction; reach it the
+            // same way `pass_context`'s tests do, then take its ValueId.
+            let ret_id = FunctionView::from(f)
+                .entry_block()
+                .expect("definition has an entry block")
+                .as_basic_block()
+                .terminator()
+                .expect("block is terminated by the ret")
+                .as_value()
+                .id;
+            let module = m.module_ref();
+
+            let mut wl = Worklist::new();
+            // Push the instruction first, terminator last: LIFO pops the
+            // terminator first (it must be skipped), then yields the add. If
+            // `pop` ever returned terminators, this `assert_eq!` would see
+            // `ret_id` instead of `a_id` and fail.
+            wl.push(a_id);
+            wl.push(ret_id);
+            assert_eq!(wl.pop(module).unwrap().as_value().id, a_id);
+            assert!(wl.pop(module).is_none());
+            assert!(wl.is_empty());
             Ok(())
         })
     }
