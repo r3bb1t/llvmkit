@@ -73,10 +73,14 @@ impl Worklist {
     }
 
     /// Pop the next queued id and return it as a [`NonTerminator`], skipping any
-    /// id that no longer resolves to a non-terminator instruction (a terminator
-    /// pushed as a user, or a defensively-stale slot). Releases the popped id
-    /// from the dedup set so a later [`Self::push`] can re-queue it — required
-    /// for the cascade. `None` when drained.
+    /// id that no longer resolves to a non-terminator instruction — a
+    /// terminator pushed as a user, a non-instruction operand (a constant or
+    /// parameter pushed by the erase cascade), or a defensively-stale slot. The
+    /// narrowing goes through [`InstructionView`]'s non-panicking `TryFrom`, so
+    /// a non-instruction id is *skipped*, never fed to the `unreachable!` kind
+    /// check on the instruction payload. Releases the popped id from the dedup
+    /// set so a later [`Self::push`] can re-queue it — required for the cascade.
+    /// `None` when drained.
     #[inline]
     pub fn pop<'ctx, B: ModuleBrand + 'ctx>(
         &mut self,
@@ -84,7 +88,15 @@ impl Worklist {
     ) -> Option<NonTerminator<'ctx, B>> {
         while let Some(id) = self.stack.pop() {
             self.queued.remove(&id);
-            if let Some(nt) = InstructionView::from_parts(id, module).as_non_terminator() {
+            // `from_parts` only reads the value's `ty`, sound for any value id;
+            // the `TryFrom` then confirms it is really an instruction before we
+            // touch the instruction payload, so a constant/parameter id is
+            // skipped rather than hitting the `unreachable!` kind check.
+            let value = InstructionView::from_parts(id, module).as_value();
+            if let Some(nt) = InstructionView::try_from(value)
+                .ok()
+                .and_then(InstructionView::as_non_terminator)
+            {
                 return Some(nt);
             }
         }
@@ -157,6 +169,50 @@ mod tests {
             assert!(!wl.contains(a_id));
             // Only c remains.
             assert_eq!(wl.pop(module).unwrap().as_value().id, c_id);
+            assert!(wl.pop(module).is_none());
+            Ok(())
+        })
+    }
+
+    // The erase cascade (slice 3) pushes an erased instruction's *operand* ids,
+    // which are frequently constants or parameters — not instructions. `pop`
+    // must skip such an id, not panic on the instruction-payload kind check.
+    #[test]
+    fn pop_skips_non_instruction_id_without_panicking() -> Result<(), IrError> {
+        Module::with_new("wl-non-inst", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let a = b.build_int_add(x, 1_i32, "a")?;
+            b.build_ret(x)?;
+
+            // A constant operand id — the kind of id the erase cascade pushes.
+            let const_id = i32_ty.const_int(1_i32).as_value().id;
+            // A parameter id — likewise not an instruction (`x` is param 0).
+            let param_id = x.as_value().id;
+            let a_id = a.as_value().id;
+            let module = m.module_ref();
+
+            let mut wl = Worklist::new();
+            wl.push(const_id);
+            wl.push(param_id);
+            // The only instruction id, pushed first so it pops last.
+            wl.push(a_id);
+            wl.remove(a_id);
+            // Nothing instruction-like remains: pop drains the two non-inst ids
+            // without panicking and yields None.
+            assert!(wl.pop(module).is_none());
+            assert!(wl.is_empty());
+
+            // And with a real instruction underneath, the non-inst ids are
+            // skipped over to reach it.
+            wl.push(const_id);
+            wl.push(a_id);
+            wl.push(param_id);
+            assert_eq!(wl.pop(module).unwrap().as_value().id, a_id);
             assert!(wl.pop(module).is_none());
             Ok(())
         })
