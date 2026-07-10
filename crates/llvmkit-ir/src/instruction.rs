@@ -1465,10 +1465,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> From<Instruction<'ctx, state::Attached, B>> fo
 // Analysis enums
 // --------------------------------------------------------------------------
 
-/// Read-only opcode discriminator for non-terminator opcodes. Variants
-/// are added incrementally per the foundation plan.
+/// Read-only opcode discriminator for non-terminator opcodes.
+///
+/// Deliberately **exhaustive**: a downstream `match` over this enum must
+/// name every opcode. Adding an opcode is a breaking change that fails to
+/// compile in every pass that has not considered it — that compile error
+/// is the safety feature (a silent `_` fallthrough would let a new opcode
+/// take whatever behavior the wildcard happens to have).
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum InstructionKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
     Add(AddInst<'ctx, B>),
     Sub(SubInst<'ctx, B>),
@@ -1515,8 +1519,10 @@ pub enum InstructionKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
 }
 
 /// Read-only opcode discriminator for terminators.
+///
+/// Deliberately **exhaustive** for the same reason as [`InstructionKind`]:
+/// a new terminator opcode must break every downstream `match`.
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum TerminatorKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
     Ret(RetInst<'ctx, B>),
     Br(BranchInst<'ctx, B>),

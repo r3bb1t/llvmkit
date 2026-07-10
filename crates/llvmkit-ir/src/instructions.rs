@@ -44,7 +44,7 @@ use super::instr_types::{
 use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::{IntDyn, IntWidth, IntoIntValue};
 use super::marker::{Dyn, Ptr, ReturnMarker};
-use super::module::{Brand, ModuleBrand, ModuleRef};
+use super::module::{Brand, Module, ModuleBrand, ModuleRef, Unverified};
 use super::phi_state::{Closed, Open, PhiState};
 use super::sync_scope::SyncScope;
 use super::term_open_state::{Closed as TermClosed, Open as TermOpen, TermOpenState};
@@ -1852,7 +1852,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
         let data = module.context().value_data(id);
         Value::from_parts(id, self.module, data.ty)
     }
-    pub fn set_value_operand(self, value: Value<'ctx, B>) -> IrResult<()> {
+    /// Replace the value operand in place. Requires an `Unverified`
+    /// module token: like [`Instruction::replace_all_uses_with`], this
+    /// mutates the IR and must not be reachable without proof of
+    /// mutation capability. `module_token` is the capability witness; the
+    /// interior-mutable slot is reached through the handle's own
+    /// `ModuleRef`.
+    pub fn set_value_operand(
+        self,
+        module_token: &Module<'ctx, B, Unverified>,
+        value: Value<'ctx, B>,
+    ) -> IrResult<()> {
+        let _ = module_token;
         let module = self.module.module();
         let expected = Type::new(self.ty, self.module);
         let got = value.ty();
