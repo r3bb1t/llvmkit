@@ -3,10 +3,11 @@
 //!
 //! The full file is ~700 lines of class hierarchy
 //! (`OverflowingBinaryOperator`, `PossiblyExactOperator`,
-//! `FPMathOperator`, `GEPOperator`, `BitCastOperator`, ...). Phase E
-//! ships only the slice we need today: a thin view for
-//! [`OverflowingBinaryOperator`] over the binary operators that carry
-//! `nuw` / `nsw`. The rest land as their consumers do.
+//! `FPMathOperator`, `GEPOperator`, `BitCastOperator`, ...). This module
+//! ships thin views for [`OverflowingBinaryOperator`] (`nuw`/`nsw` on
+//! `add`/`sub`/`mul`/`shl`) and [`PossiblyExactOperator`] (`exact` on
+//! `udiv`/`sdiv`/`lshr`/`ashr`). The remaining operator classes land as
+//! their consumers do.
 
 use crate::instructions::{
     AShrInst, AddInst, LShrInst, MulInst, SDivInst, ShlInst, SubInst, UDivInst,

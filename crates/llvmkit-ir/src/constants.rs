@@ -1,7 +1,7 @@
 //! Per-kind constant refinement handles plus their constructors.
 //! Mirrors a slice of `llvm/include/llvm/IR/Constants.h`.
 //!
-//! Phase B continued: `ConstantInt`, `ConstantFP`,
+//! Covers `ConstantInt`, `ConstantFP`,
 //! `ConstantPointerNull`, `ConstantArray`/`Struct`/`Vector` (under one
 //! [`ConstantAggregate`] handle), [`UndefValue`], [`PoisonValue`].
 //!

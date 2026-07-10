@@ -2,7 +2,8 @@
 //! LLVM IR data model in pure safe Rust.
 //!
 //! `llvmkit-ir` mirrors the relevant `llvm/lib/IR/` and `llvm/include/llvm/IR/`
-//! surfaces from LLVM 22.1.4: typed IR construction, AsmWriter printing,
+//! surfaces from LLVM 22.1.4: typed IR construction, SSA construction, an
+//! instruction taxonomy with a pattern-matcher DSL, AsmWriter printing,
 //! structural verification, CFG and dominance queries, and a capability-graded,
 //! new-pass-manager-inspired analysis and pass API. It does not link `libLLVM`.
 //!
@@ -47,8 +48,11 @@
 //! - [`pass_context`] — the pass-author contexts ([`FnCx`]/[`ModCx`]) and mutators.
 //! - [`analysis`] — built-in analyses and the bundled [`Analyses`] manager.
 //!
-//! The surface is intentionally incomplete: bitcode, a broad built-in transform
-//! library, and PassBuilder-style pipeline builders are still ahead.
+//! A few transform passes ship today (`DcePass`, `InstSimplifyPass`,
+//! `SimplifyDemandedBitsPass`), and pipeline recipes plus a textual-pipeline
+//! parser are in [`pass_pipeline`]. The surface is still intentionally
+//! incomplete: a broad built-in transform library, bitcode, and a
+//! pipeline-*execution* engine (running a parsed pipeline) are ahead.
 
 pub mod align;
 pub mod analysis;

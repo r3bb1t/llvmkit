@@ -366,7 +366,7 @@ pub trait FunctionAnalysis<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
 /// negative reasoning over `Default`), which is exactly the case this trait
 /// exists to support. The explicit one-line impls are the cost of dropping the
 /// `Default` straitjacket — and they double as the seam where a CFG analysis can
-/// opt into incremental preservation (see `register_cfg_analysis`).
+/// opt into incremental preservation (see `register_cfg_pass`).
 ///
 /// No upstream analog: LLVM registers analyses by runtime
 /// `AnalysisManager::registerPass` calls with no compile-time `Requires` list.
@@ -437,10 +437,9 @@ pub trait CfgIncremental<'ctx, B: ModuleBrand = Brand<'ctx>>: Sized {
 
     /// Recompute this analysis from scratch over `function`'s current CFG. The
     /// framework calls this whenever [`Self::apply_updates`] returns
-    /// [`RepairOutcome::PreferRecompute`] (always, in Phase 1), so a mid-pass
-    /// read of a CFG analysis after a reshape edit still yields a *correct*
-    /// result rather than a stale cached one. Must equal a fresh construction
-    /// of the analysis.
+    /// [`RepairOutcome::PreferRecompute`], so a mid-pass read of a CFG analysis
+    /// after a reshape edit still yields a *correct* result rather than a stale
+    /// cached one. Must equal a fresh construction of the analysis.
     fn recompute(function: FunctionView<'ctx, B>) -> Self;
 }
 

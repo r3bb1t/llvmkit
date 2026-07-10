@@ -4,9 +4,9 @@
 //! The upstream `InstrTypes.h` is a grab-bag of base classes
 //! (`UnaryInstruction`, `BinaryOperator`, `CastInst`, `CallBase`, ...)
 //! that lift shared layout out of [`Instructions.h`](crate::instructions).
-//! Phase E of the foundation only ships the binary-operator shape and
-//! the return-instruction shape; `CastInst`, `CallBase`, etc. are
-//! follow-up.
+//! The payloads here cover the full opcode set the crate models: binary
+//! operators, casts, memory ops, calls, comparisons, `phi`,
+//! vector/aggregate ops, atomics, and the EH/funclet family.
 //!
 //! The structs here are **storage payloads**, not public handles. They
 //! are stored inside the per-instruction storage record
@@ -471,13 +471,11 @@ impl core::hash::Hash for VAArgInstData {
 // --------------------------------------------------------------------------
 
 /// Storage payload for `icmp`. Mirrors the operand layout of
-/// `CmpInst` (`InstrTypes.h`) restricted to integer compares.
-/// Float comparisons (`fcmp`) will land alongside the float-builder
-/// work and either generalise this struct (with a separate
-/// `FloatPredicate` field on a dedicated payload) or live in their
-/// own `FCmpInstData`. Today the IR builder only emits integer
-/// compares, so the storage carries an [`IntPredicate`] directly:
-/// no enum envelope means no `match` arms going stale.
+/// `CmpInst` (`InstrTypes.h`) restricted to integer compares. Float
+/// comparisons (`fcmp`) live in their own `FCmpInstData`. Keeping the
+/// two payloads separate means this one carries an [`IntPredicate`]
+/// directly — no predicate-enum envelope, so no `match` arms going
+/// stale.
 ///
 /// The host [`crate::value::ValueData::ty`] is `i1` (or `<N x i1>`
 /// once vector compares ship).
@@ -2467,7 +2465,7 @@ pub enum LandingPadClauseKind {
 ///
 /// The result type lives in the host `ValueData::ty`. The clause list
 /// is mutable through the [`crate::term_open_state::Open`]-typestate
-/// handle's `add_clause` method.
+/// handle's `add_catch_clause` / `add_filter_clause` methods.
 #[derive(Debug)]
 pub(crate) struct LandingPadInstData {
     pub(crate) cleanup: core::cell::Cell<bool>,

@@ -351,7 +351,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     }
 
     /// Read the optional debug-location attached to this value.
-    /// Currently always `None` (Phase F wires this in).
+    /// Currently always `None` (debug-location wiring is future work).
     #[inline]
     pub fn debug_loc(self) -> Option<DebugLoc> {
         self.data().debug_loc

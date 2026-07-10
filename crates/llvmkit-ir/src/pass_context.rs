@@ -846,8 +846,8 @@ where
     /// working copy of the cached result through
     /// [`CfgIncremental::apply_updates`]. If the analysis absorbs them
     /// ([`RepairOutcome::Repaired`]) that copy is used; otherwise
-    /// ([`RepairOutcome::PreferRecompute`] — always, in Phase 1) the result is
-    /// recomputed from scratch. Either way the fresh result is stored in the
+    /// ([`RepairOutcome::PreferRecompute`]) the result is recomputed from
+    /// scratch. Either way the fresh result is stored in the
     /// mutator and a borrow into it is returned. The framework *witnesses* the
     /// repair; the author never claims it.
     ///
@@ -1218,7 +1218,7 @@ where
 
     /// Transition into mutation: **consumes** the context and moves its module
     /// token and prefetched results into the rung's mutator. The `mam`/`fam`
-    /// cache-peek borrows end here — the read-only query phase is over (v1
+    /// cache-peek borrows end here — the read-only query phase is over (today's
     /// `for_each_function` needs no per-function prefetch). Once called,
     /// `unchanged()`/`done()` on the context are unspellable — the only report
     /// left is the mutator's `done()`, which carries the rung's preservation

@@ -2,23 +2,21 @@
 //! enums. Mirrors `llvm/include/llvm/IR/Instruction.h` and
 //! `llvm/lib/IR/Instruction.cpp`.
 //!
-//! ## What's shipped
-//!
-//! Phase E minimum: `add`, `sub`, `mul`, and `ret`. Everything else
-//! (`Br`, `CondBr`, `Switch`, `Phi`, `Load`, `Store`, `Alloca`,
-//! `Call`, `GEP`, casts, comparisons, ...) is scheduled per the
-//! foundation plan.
-//!
 //! ## Two-tier discriminator
 //!
-//! - [`InstructionKind`] — every non-terminator opcode the slice
-//!   needs.
-//! - [`TerminatorKind`] — the terminator subset (`Ret` today).
+//! - [`InstructionKind`] — every non-terminator opcode: binary ops,
+//!   casts (via [`CastKind`]), `phi` (via [`PhiKind`]), memory ops,
+//!   `call`, `getelementptr`, comparisons, `select`, vector/aggregate
+//!   ops, and atomics.
+//! - [`TerminatorKind`] — every terminator opcode (`ret`, `br`,
+//!   `switch`, `indirectbr`, `invoke`, `callbr`, `resume`, `catchret`,
+//!   `cleanupret`, `catchswitch`, `unreachable`).
 //!
-//! Both are `#[non_exhaustive]` so later revisions can add variants
-//! without breaking external consumers. Inside the crate, every match
-//! is exhaustive — `#[non_exhaustive]` only constrains *external*
-//! pattern matching.
+//! Both are deliberately **exhaustive** — no `#[non_exhaustive]`. A
+//! downstream `match` must name every opcode, so adding one is a
+//! breaking change that fails to compile in every un-updated `match`
+//! rather than silently slipping through a wildcard. Exhaustiveness is
+//! the safety feature, not an oversight.
 
 use super::asm_writer::{SlotTracker, fmt_instruction};
 use super::basic_block::{BasicBlock, BasicBlockLabel};
