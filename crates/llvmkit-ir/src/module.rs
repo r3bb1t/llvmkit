@@ -1,9 +1,11 @@
 //! Top-level IR container. Mirrors `llvm/include/llvm/IR/Module.h` and
 //! `llvm/lib/IR/Module.cpp`.
 //!
-//! Phase A surface: name + every type constructor required by
-//! `IRBuilder` and the `.ll` parser. Functions, globals, named metadata,
-//! and the data-layout subsystem land in Phase D.
+//! Top-level container: module identity/name, source filename, data
+//! layout, target triple, and module-level asm; the full type-constructor
+//! surface required by `IRBuilder` and the `.ll` parser; and functions,
+//! globals, aliases, ifuncs, comdats, named metadata, and
+//! use-list-order records.
 //!
 //! ## Identity and verification model
 //!

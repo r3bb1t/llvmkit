@@ -134,7 +134,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "llvmkit"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "llvmkit-asmparser",
  "llvmkit-ir",
@@ -143,7 +143,7 @@ dependencies = [
 
 [[package]]
 name = "llvmkit-asmparser"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "llvmkit-ir",
  "llvmkit-support",
@@ -152,7 +152,7 @@ dependencies = [
 
 [[package]]
 name = "llvmkit-ir"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "bitflags",
  "boxcar",
@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "llvmkit-macros"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "llvmkit-support"
-version = "0.0.3"
+version = "0.0.4"
 
 [[package]]
 name = "memchr"

@@ -38,6 +38,9 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/per_opcode_handle_cannot_mint_instruction.rs");
     t.compile_fail("tests/compile_fail/value_cannot_mint_instruction_lifecycle.rs");
     t.compile_fail("tests/compile_fail/block_terminator_view_cannot_erase.rs");
+    t.compile_fail("tests/compile_fail/reshape_stale_cfg_analysis_across_edit.rs");
+    t.compile_fail("tests/compile_fail/atomicrmw_set_value_requires_token.rs");
+    t.compile_fail("tests/compile_fail/patchbody_cannot_erase_terminator.rs");
     t.compile_fail("tests/compile_fail/call_void_no_return_accessor.rs");
     t.compile_fail("tests/compile_fail/typed_function_params_reject_wrong_binding.rs");
     t.compile_fail("tests/compile_fail/typed_function_params_require_facade.rs");
@@ -79,7 +82,7 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/ssa_def_wrong_width.rs");
     t.compile_fail("tests/compile_fail/ssa_ret_value_in_void_fn.rs");
     t.compile_fail("tests/compile_fail/ssa_finish_positioned.rs");
-    // Pass API v2 capability-rung locks (Task 9). Each proves a v2 guarantee
+    // capability-graded pass API capability-rung locks (Task 9). Each proves a rung guarantee
     // whose primary error is one of OUR OWN stable messages (an `E0599`
     // absent-method, a `#[diagnostic::on_unimplemented]`, or a `syn::Error`),
     // which do not drift across rustc versions.

@@ -1,4 +1,4 @@
-//! Single-pass driver for the capability-graded Pass API v2.
+//! Single-pass driver for the capability-graded pass API.
 //!
 //! A pass declares a capability *rung* ([`FnAccess`]/[`ModAccess`]) and its
 //! required analyses; the driver derives everything else. This module supplies
@@ -178,9 +178,8 @@ mod pass_execution_sealed {
 /// yields: [`StaysVerified`] keeps `Module<Verified>`; [`Downgrades`] hands back
 /// `Module<Unverified>` (D8). Sealed to the two verdict markers.
 ///
-/// This is the verdict→output-module seam mirrored from the old
-/// `FunctionPipelineExecution`/`ModulePipelineExecution` but keyed on the
-/// verdict rather than the old effect. The token construction lives on the
+/// This is the verdict→output-module seam, keyed on the pipeline
+/// verdict. The token construction lives on the
 /// per-rung [`FnRungExecute`]/[`ModRungExecute`] traits below (only there is a
 /// rung's `Token` concrete); this trait owns just the output-module GAT, which
 /// the pipeline task reuses to spell a whole pipeline's return type.
@@ -389,14 +388,21 @@ where
             &mut pass, module, function, results,
         )?
     };
-    fam.invalidate(function, &report.into_pa())?;
+    // Framework-witnessed preservation: offer any recorded reshape edits to the
+    // cached CFG analyses; those that repair are added back to the report before
+    // invalidation, so they survive instead of being evicted by the rung floor.
+    let (mut pa, cfg_updates) = report.into_parts();
+    if !cfg_updates.is_empty() {
+        fam.flush_cfg_updates(function, &cfg_updates, &mut pa);
+    }
+    fam.invalidate(function, &pa)?;
     Ok(out)
 }
 
 /// Run a single [`ModulePass`] over a verified module — the module-level mirror
 /// of [`run_function_pass`]. Prefetches module `Requires`, runs the pass, and
 /// invalidates both the module and function analysis managers with the report's
-/// preservation set (mirroring the retired `ModulePassManager::run`).
+/// preservation set.
 pub fn run_module_pass<'ctx, B, P>(
     mut pass: P,
     module: Module<'ctx, B, Verified>,
@@ -424,7 +430,7 @@ where
 }
 
 // ==========================================================================
-// Pass API v2 — typed tuple pipelines (verdict-derived verification)
+// capability-graded pass API — typed tuple pipelines (verdict-derived verification)
 // ==========================================================================
 //
 // A pipeline composes several passes (and/or nested pipelines) and runs them in
@@ -440,7 +446,7 @@ where
 // instrumentation is deliberately out of scope here (a later task).
 
 /// The module capability a pipeline (or member) of verdict `Self` threads to its
-/// members — the verdict-level mirror of the retired `TypedPassEffect::ModuleToken`.
+/// members.
 /// [`StaysVerified`] carries nothing (`()`, all members are read-only);
 /// [`Downgrades`] carries the shared `&Module<Unverified>` mutation token that
 /// mutating members receive (built once by the pipeline's [`FunctionPipelineExecute`]
@@ -469,8 +475,8 @@ impl VerdictCarry for Downgrades {
         'ctx: 'pm;
 }
 
-/// Weakens a pipeline verdict's carried token down to one member's verdict token
-/// — the new analog of the retired `ProvidesToken`. A read-only member drops the
+/// Weakens a pipeline verdict's carried token down to one member's verdict
+/// token. A read-only member drops the
 /// token (`_ -> ()`); a mutating member inside a downgraded pipeline receives it
 /// unchanged (`&M -> &M`).
 ///
@@ -519,7 +525,7 @@ impl ProvidesToken<Downgrades> for Downgrades {
 /// starting from [`StaysVerified`], to spell a pipeline's derived verdict. Folding
 /// one pairwise join at a time (rather than a flat `where`-clause) is what makes
 /// naming the folded type legal without the compiler first case-splitting the
-/// sealed verdict set. Mirrors the retired `join_effects!`.
+/// sealed verdict set.
 macro_rules! fold_verdicts {
     (@cons $only:ty) => { ($only, ()) };
     (@cons $head:ty, $($tail:ty),+) => {
@@ -566,7 +572,13 @@ where
         let cx = FnCx::new(token, function, results);
         pass.run(cx)?
     };
-    let pa = report.into_pa();
+    // Witnessed preservation (see `run_function_pass`): repair cached CFG
+    // analyses from the recorded reshape edits before invalidating, so a
+    // repaired analysis is kept for the next pipeline member instead of evicted.
+    let (mut pa, cfg_updates) = report.into_parts();
+    if !cfg_updates.is_empty() {
+        fam.flush_cfg_updates(function, &cfg_updates, &mut pa);
+    }
     fam.invalidate(function, &pa)?;
     Ok(pa)
 }
@@ -657,8 +669,8 @@ impl FnMemberExec for ReshapeCfg {
 /// [`FunctionPipelineMember`]/[`ModulePipelineMember`] rather than an overlap: a
 /// leaf pass implements the member trait only at [`LeafMember`], a pipeline only
 /// at [`NestedMember`], so the blanket-vs-concrete pair never collides even
-/// though nothing stops a downstream type from being both. Reused verbatim from
-/// the retired machinery — the tag pattern is coherence-safe.
+/// though nothing stops a downstream type from being both. The tag pattern is
+/// coherence-safe.
 #[doc(hidden)]
 pub struct LeafMember(());
 /// Dispatch tag for a nested pipeline member. See [`LeafMember`].
@@ -1322,7 +1334,7 @@ impl ModulePipelineExecute for Downgrades {
 }
 
 // ==========================================================================
-// Pass API v2 — Dyn runtime-composition pipelines (the opt-style escape hatch)
+// capability-graded pass API — Dyn runtime-composition pipelines (the opt-style escape hatch)
 // ==========================================================================
 //
 // Everything above composes passes STATICALLY: a source-level tuple whose length
@@ -1364,7 +1376,7 @@ mod erased {
     /// Object-safe erasure of a [`FunctionPass`] — the boxing seam for the runtime
     /// `Dyn…` function pipelines.
     ///
-    /// **This trait is the payoff of the whole Pass API v2 redesign.** It is
+    /// **This trait is the payoff of the whole capability-graded pass API redesign.** It is
     /// CRATE-PRIVATE (`pub(crate)` inside a private `mod erased`, never
     /// re-exported): no downstream crate can name it, so the single blanket impl
     /// below — `impl<P: FunctionPass> ErasedFunctionPass for P` — is

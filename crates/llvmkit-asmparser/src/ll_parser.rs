@@ -9174,7 +9174,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                     })?
                 }
             };
-            deferred.inst.set_value_operand(val).map_err(|e| {
+            deferred.inst.set_value_operand(module, val).map_err(|e| {
                 crate::parse_error::ParseError::Expected {
                     expected: format!("valid atomicrmw forward value: {e}"),
                     loc: DiagLoc::span(deferred.loc),

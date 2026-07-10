@@ -1,4 +1,4 @@
-//! llvmkit-specific Pass API v2 lock (Doctrine D1), not a 1:1 LLVM port.
+//! llvmkit-specific capability-graded pass API lock (Doctrine D1), not a 1:1 LLVM port.
 //!
 //! The `#[function_pass]` attribute macro maps `name = "..."` onto the trait's
 //! `const NAME`. A pass with no name has no instrumentation identity, so the

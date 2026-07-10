@@ -1,14 +1,5 @@
-error[E0599]: no method named `add_incoming` found for struct `PhiInst<'_, IntDyn, llvmkit_ir::Closed, Brand<'_>>` in the current scope
-  --> tests/compile_fail/finished_phi_cannot_reopen_through_instruction_kind.rs:28:30
+error[E0599]: no method named `add_incoming` found for enum `PhiKind<'ctx, B>` in the current scope
+  --> tests/compile_fail/finished_phi_cannot_reopen_through_instruction_kind.rs:29:30
    |
-28 |             let _ = reopened.add_incoming(2_i32, other_label);
-   |                              ^^^^^^^^^^^^
-   |
-help: there is a method `incoming` with a similar name, but with different arguments
-  --> src/instructions.rs
-   |
-   | /     pub fn incoming(
-   | |         &self,
-   | |         index: u32,
-   | |     ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
-   | |__________________________________________________________________^
+29 |             let _ = reopened.add_incoming(2_i32, other_label);
+   |                              ^^^^^^^^^^^^ method not found in `PhiKind<'_, Brand<'_>>`

@@ -1,4 +1,4 @@
-//! llvmkit-specific Pass API v2 lock (Doctrine D1/D8), not a 1:1 LLVM port.
+//! llvmkit-specific capability-graded pass API lock (Doctrine D1/D8), not a 1:1 LLVM port.
 //!
 //! A `DynReadOnlyFunctionPipeline` guarantees a `Module<Verified>` output by
 //! REFUSING entry to anything that could downgrade it: its `push` is bounded to

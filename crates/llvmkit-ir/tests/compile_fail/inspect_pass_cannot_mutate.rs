@@ -1,4 +1,4 @@
-//! llvmkit-specific Pass API v2 lock (Doctrine D1/D8), not a 1:1 LLVM port.
+//! llvmkit-specific capability-graded pass API lock (Doctrine D1/D8), not a 1:1 LLVM port.
 //!
 //! The capability rung a `FunctionPass` declares via `type Access` fixes how
 //! much of the IR it may touch. `Inspect` is the read-only rung: it deliberately

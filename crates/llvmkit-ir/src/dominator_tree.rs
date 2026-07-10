@@ -1,7 +1,10 @@
 //! Recompute-on-demand dominance queries. Mirrors the observable
-//! `llvm::DominatorTree` behavior needed by the verifier and the first
-//! analysis/pass-manager substrate, while deliberately deferring
-//! incremental update APIs.
+//! `llvm::DominatorTree` behavior needed by the verifier and the
+//! analysis/pass-manager substrate. It implements the [`CfgIncremental`]
+//! preservation hook by rebuilding from scratch (correct-by-recompute);
+//! a genuinely sub-linear incremental update algorithm is deferred.
+//!
+//! [`CfgIncremental`]: crate::analysis::CfgIncremental
 
 use std::collections::{HashMap, HashSet, VecDeque};
 

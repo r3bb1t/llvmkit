@@ -1,5 +1,7 @@
 //! Pass and analysis instrumentation callbacks. This is the minimal
-//! callback surface needed by the first module/function pass managers.
+//! callback surface the analysis managers fire (`before_analysis` /
+//! `after_analysis`); pass-level (`before_pass` / `after_pass`) firing
+//! is registerable but not yet wired into the pass drivers.
 
 use std::cell::RefCell;
 use std::rc::Rc;

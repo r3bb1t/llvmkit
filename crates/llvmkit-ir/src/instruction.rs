@@ -2,41 +2,42 @@
 //! enums. Mirrors `llvm/include/llvm/IR/Instruction.h` and
 //! `llvm/lib/IR/Instruction.cpp`.
 //!
-//! ## What's shipped
-//!
-//! Phase E minimum: `add`, `sub`, `mul`, and `ret`. Everything else
-//! (`Br`, `CondBr`, `Switch`, `Phi`, `Load`, `Store`, `Alloca`,
-//! `Call`, `GEP`, casts, comparisons, ...) is scheduled per the
-//! foundation plan.
-//!
 //! ## Two-tier discriminator
 //!
-//! - [`InstructionKind`] — every non-terminator opcode the slice
-//!   needs.
-//! - [`TerminatorKind`] — the terminator subset (`Ret` today).
+//! - [`InstructionKind`] — every non-terminator opcode: binary ops,
+//!   casts (via [`CastKind`]), `phi` (via [`PhiKind`]), memory ops,
+//!   `call`, `getelementptr`, comparisons, `select`, vector/aggregate
+//!   ops, and atomics.
+//! - [`TerminatorKind`] — every terminator opcode (`ret`, `br`,
+//!   `switch`, `indirectbr`, `invoke`, `callbr`, `resume`, `catchret`,
+//!   `cleanupret`, `catchswitch`, `unreachable`).
 //!
-//! Both are `#[non_exhaustive]` so later revisions can add variants
-//! without breaking external consumers. Inside the crate, every match
-//! is exhaustive — `#[non_exhaustive]` only constrains *external*
-//! pattern matching.
+//! Both are deliberately **exhaustive** — no `#[non_exhaustive]`. A
+//! downstream `match` must name every opcode, so adding one is a
+//! breaking change that fails to compile in every un-updated `match`
+//! rather than silently slipping through a wildcard. Exhaustiveness is
+//! the safety feature, not an oversight.
 
 use super::asm_writer::{SlotTracker, fmt_instruction};
 use super::basic_block::{BasicBlock, BasicBlockLabel};
 use super::block_state::Unterminated;
+use super::float_kind::FloatDyn;
 use super::function::FunctionValue;
 use super::instr_types::{
-    BinaryOpData, BranchInstData, BranchKind, CastOpData, CmpInstData, FCmpInstData, PhiData,
-    ReturnOpData, UnreachableInstData,
+    BinaryOpData, BinaryOpcode, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
+    FCmpInstData, PhiData, ReturnOpData, UnreachableInstData,
 };
 use super::instructions::{
-    AShrInst, AddInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst, BranchInst,
-    CallBrInst, CallInst, CastInst, CatchPadInst, CatchReturnInst, CatchSwitchInst, CleanupPadInst,
-    CleanupReturnInst, ExtractElementInst, ExtractValueInst, FAddInst, FCmpInst, FDivInst,
-    FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FreezeInst, GepInst, ICmpInst,
-    IndirectBrInst, InsertElementInst, InsertValueInst, InvokeInst, LShrInst, LandingPadInst,
-    LoadInst, MulInst, OrInst, PhiInst, ResumeInst, RetInst, SDivInst, SRemInst, SelectInst,
-    ShlInst, ShuffleVectorInst, StoreInst, SubInst, SwitchInst, UDivInst, URemInst,
-    UnreachableInst, VAArgInst, XorInst,
+    AShrInst, AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst,
+    BinaryOp, BitCastInst, BranchInst, CallBrInst, CallInst, CatchPadInst, CatchReturnInst,
+    CatchSwitchInst, CleanupPadInst, CleanupReturnInst, Cmp, ExtractElementInst, ExtractValueInst,
+    FAddInst, FCmpInst, FDivInst, FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FpExtInst,
+    FpPhiInst, FpToSIInst, FpToUIInst, FpTruncInst, FreezeInst, GepInst, ICmpInst, IndirectBrInst,
+    InsertElementInst, InsertValueInst, IntToPtrInst, InvokeInst, LShrInst, LandingPadInst,
+    LoadInst, MulInst, OrInst, OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst,
+    ResumeInst, RetInst, SDivInst, SExtInst, SIToFpInst, SRemInst, SelectInst, ShlInst,
+    ShuffleVectorInst, StoreInst, SubInst, SwitchInst, TruncInst, UDivInst, UIToFpInst, URemInst,
+    UnreachableInst, VAArgInst, XorInst, ZExtInst,
 };
 use super::int_width::IntDyn;
 use super::marker::{Dyn, ReturnMarker};
@@ -51,7 +52,7 @@ use super::value::{
     HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueId, ValueKindData, ValueUse,
     sealed,
 };
-use super::{DebugLoc, IrError, IrResult, Type};
+use super::{DebugLoc, IrError, IrResult, Type, TypeKind};
 
 // --------------------------------------------------------------------------
 // Storage payload
@@ -456,6 +457,12 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
         self.as_view().terminator_kind()
     }
 
+    /// Total opcode classification. See [`InstructionView::classify`].
+    #[inline]
+    pub fn classify(&self) -> Classified<'ctx, B> {
+        self.as_view().classify()
+    }
+
     /// `true` if this instruction is a terminator (`ret`, `br`, ...).
     #[inline]
     pub fn is_terminator(&self) -> bool {
@@ -641,14 +648,55 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
             InstructionKindData::Gep(_) => {
                 Some(InstructionKind::Gep(GepInst::from_raw(id, module, ty)))
             }
-            InstructionKindData::Cast(_) => {
-                Some(InstructionKind::Cast(CastInst::from_raw(id, module, ty)))
+            InstructionKindData::Cast(c) => {
+                let cast = match c.kind {
+                    CastOpcode::Trunc => CastKind::Trunc(TruncInst::from_raw(id, module, ty)),
+                    CastOpcode::ZExt => CastKind::ZExt(ZExtInst::from_raw(id, module, ty)),
+                    CastOpcode::SExt => CastKind::SExt(SExtInst::from_raw(id, module, ty)),
+                    CastOpcode::FpTrunc => CastKind::FpTrunc(FpTruncInst::from_raw(id, module, ty)),
+                    CastOpcode::FpExt => CastKind::FpExt(FpExtInst::from_raw(id, module, ty)),
+                    CastOpcode::FpToUI => CastKind::FpToUI(FpToUIInst::from_raw(id, module, ty)),
+                    CastOpcode::FpToSI => CastKind::FpToSI(FpToSIInst::from_raw(id, module, ty)),
+                    CastOpcode::UIToFp => CastKind::UIToFp(UIToFpInst::from_raw(id, module, ty)),
+                    CastOpcode::SIToFp => CastKind::SIToFp(SIToFpInst::from_raw(id, module, ty)),
+                    CastOpcode::PtrToAddr => {
+                        CastKind::PtrToAddr(PtrToAddrInst::from_raw(id, module, ty))
+                    }
+                    CastOpcode::PtrToInt => {
+                        CastKind::PtrToInt(PtrToIntInst::from_raw(id, module, ty))
+                    }
+                    CastOpcode::IntToPtr => {
+                        CastKind::IntToPtr(IntToPtrInst::from_raw(id, module, ty))
+                    }
+                    CastOpcode::BitCast => CastKind::BitCast(BitCastInst::from_raw(id, module, ty)),
+                    CastOpcode::AddrSpaceCast => {
+                        CastKind::AddrSpaceCast(AddrSpaceCastInst::from_raw(id, module, ty))
+                    }
+                };
+                Some(InstructionKind::Cast(cast))
             }
             InstructionKindData::ICmp(_) => {
                 Some(InstructionKind::ICmp(ICmpInst::from_raw(id, module, ty)))
             }
             InstructionKindData::Phi(_) => {
-                Some(InstructionKind::Phi(PhiInst::from_raw(id, module, ty)))
+                // Choose the handle from the phi's result type so the
+                // narrowing accessor (`as_int_value`/`as_float_value`/
+                // `as_pointer_value`) is always sound.
+                let phi = match Type::new(ty, module).kind() {
+                    TypeKind::Integer { .. } => PhiKind::Int(PhiInst::from_raw(id, module, ty)),
+                    TypeKind::Half
+                    | TypeKind::BFloat
+                    | TypeKind::Float
+                    | TypeKind::Double
+                    | TypeKind::X86Fp80
+                    | TypeKind::Fp128
+                    | TypeKind::PpcFp128 => PhiKind::Fp(FpPhiInst::from_raw(id, module, ty)),
+                    TypeKind::Pointer { .. } => {
+                        PhiKind::Ptr(PointerPhiInst::from_raw(id, module, ty))
+                    }
+                    _ => PhiKind::Other(OtherPhiInst::from_raw(id, module, ty)),
+                };
+                Some(InstructionKind::Phi(phi))
             }
             InstructionKindData::FNeg(_) => {
                 Some(InstructionKind::FNeg(FNegInst::from_raw(id, module, ty)))
@@ -753,6 +801,29 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     #[inline]
     pub fn is_terminator(&self) -> bool {
         self.data().kind.is_terminator()
+    }
+
+    /// Total opcode classification. Always names the category — a
+    /// non-terminator [`InstructionKind`] or a terminator
+    /// [`TerminatorKind`] — so there is no overloaded `None` to forget.
+    /// Prefer this over [`Self::kind`] / [`Self::terminator_kind`] when a
+    /// `match` should handle both kinds of instruction.
+    pub fn classify(&self) -> Classified<'ctx, B> {
+        if let Some(kind) = self.kind() {
+            Classified::Inst(kind)
+        } else if let Some(term) = self.terminator_kind() {
+            Classified::Term(term)
+        } else {
+            unreachable!("every instruction is a non-terminator or a terminator")
+        }
+    }
+
+    /// Narrow to a [`NonTerminator`] if this instruction is not a
+    /// terminator. The narrowed handle is the only thing pass mutators
+    /// accept for erasure, so a terminator can never be handed to `erase`.
+    #[inline]
+    pub fn as_non_terminator(self) -> Option<NonTerminator<'ctx, B>> {
+        (!self.is_terminator()).then(|| NonTerminator::from_view_unchecked(self))
     }
 
     /// Operand value-ids in declaration order. Crate-internal helper
@@ -1465,10 +1536,174 @@ impl<'ctx, B: ModuleBrand + 'ctx> From<Instruction<'ctx, state::Attached, B>> fo
 // Analysis enums
 // --------------------------------------------------------------------------
 
-/// Read-only opcode discriminator for non-terminator opcodes. Variants
-/// are added incrementally per the foundation plan.
+/// Per-opcode discriminator for the `cast` family, nested inside
+/// [`InstructionKind::Cast`]. Mirrors LLVM's `CastInst` subclass hierarchy
+/// (`TruncInst`, `ZExtInst`, ...): a `match` over `CastKind` names the exact
+/// opcode instead of branching on a runtime [`CastOpcode`], and each handle
+/// exposes the source type the IR grammar guarantees (pointer-source casts
+/// return [`PointerValue`](crate::PointerValue) from `src()`).
+///
+/// Deliberately **exhaustive** for the same reason as [`InstructionKind`].
 #[derive(Debug)]
-#[non_exhaustive]
+pub enum CastKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    Trunc(TruncInst<'ctx, B>),
+    ZExt(ZExtInst<'ctx, B>),
+    SExt(SExtInst<'ctx, B>),
+    FpTrunc(FpTruncInst<'ctx, B>),
+    FpExt(FpExtInst<'ctx, B>),
+    FpToUI(FpToUIInst<'ctx, B>),
+    FpToSI(FpToSIInst<'ctx, B>),
+    UIToFp(UIToFpInst<'ctx, B>),
+    SIToFp(SIToFpInst<'ctx, B>),
+    PtrToAddr(PtrToAddrInst<'ctx, B>),
+    PtrToInt(PtrToIntInst<'ctx, B>),
+    IntToPtr(IntToPtrInst<'ctx, B>),
+    BitCast(BitCastInst<'ctx, B>),
+    AddrSpaceCast(AddrSpaceCastInst<'ctx, B>),
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> CastKind<'ctx, B> {
+    /// The cast opcode, recovered from the active variant.
+    pub fn opcode(&self) -> CastOpcode {
+        match self {
+            Self::Trunc(_) => CastOpcode::Trunc,
+            Self::ZExt(_) => CastOpcode::ZExt,
+            Self::SExt(_) => CastOpcode::SExt,
+            Self::FpTrunc(_) => CastOpcode::FpTrunc,
+            Self::FpExt(_) => CastOpcode::FpExt,
+            Self::FpToUI(_) => CastOpcode::FpToUI,
+            Self::FpToSI(_) => CastOpcode::FpToSI,
+            Self::UIToFp(_) => CastOpcode::UIToFp,
+            Self::SIToFp(_) => CastOpcode::SIToFp,
+            Self::PtrToAddr(_) => CastOpcode::PtrToAddr,
+            Self::PtrToInt(_) => CastOpcode::PtrToInt,
+            Self::IntToPtr(_) => CastOpcode::IntToPtr,
+            Self::BitCast(_) => CastOpcode::BitCast,
+            Self::AddrSpaceCast(_) => CastOpcode::AddrSpaceCast,
+        }
+    }
+
+    /// The source operand, erased to [`Value`]. Use the concrete handle
+    /// inside a variant arm for the pointer-typed `src()` where available.
+    pub fn src(&self) -> Value<'ctx, B> {
+        match self {
+            Self::Trunc(i) => i.src(),
+            Self::ZExt(i) => i.src(),
+            Self::SExt(i) => i.src(),
+            Self::FpTrunc(i) => i.src(),
+            Self::FpExt(i) => i.src(),
+            Self::FpToUI(i) => i.src(),
+            Self::FpToSI(i) => i.src(),
+            Self::UIToFp(i) => i.src(),
+            Self::SIToFp(i) => i.src(),
+            Self::PtrToAddr(i) => i.src().as_value(),
+            Self::PtrToInt(i) => i.src().as_value(),
+            Self::IntToPtr(i) => i.src(),
+            Self::BitCast(i) => i.src(),
+            Self::AddrSpaceCast(i) => i.src().as_value(),
+        }
+    }
+
+    /// Read-only erased instruction view for this cast.
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        match self {
+            Self::Trunc(i) => i.as_view(),
+            Self::ZExt(i) => i.as_view(),
+            Self::SExt(i) => i.as_view(),
+            Self::FpTrunc(i) => i.as_view(),
+            Self::FpExt(i) => i.as_view(),
+            Self::FpToUI(i) => i.as_view(),
+            Self::FpToSI(i) => i.as_view(),
+            Self::UIToFp(i) => i.as_view(),
+            Self::SIToFp(i) => i.as_view(),
+            Self::PtrToAddr(i) => i.as_view(),
+            Self::PtrToInt(i) => i.as_view(),
+            Self::IntToPtr(i) => i.as_view(),
+            Self::BitCast(i) => i.as_view(),
+            Self::AddrSpaceCast(i) => i.as_view(),
+        }
+    }
+
+    /// Widen to the erased [`Value`] handle (the cast's result).
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        match self {
+            Self::Trunc(i) => i.as_value(),
+            Self::ZExt(i) => i.as_value(),
+            Self::SExt(i) => i.as_value(),
+            Self::FpTrunc(i) => i.as_value(),
+            Self::FpExt(i) => i.as_value(),
+            Self::FpToUI(i) => i.as_value(),
+            Self::FpToSI(i) => i.as_value(),
+            Self::UIToFp(i) => i.as_value(),
+            Self::SIToFp(i) => i.as_value(),
+            Self::PtrToAddr(i) => i.as_value(),
+            Self::PtrToInt(i) => i.as_value(),
+            Self::IntToPtr(i) => i.as_value(),
+            Self::BitCast(i) => i.as_value(),
+            Self::AddrSpaceCast(i) => i.as_value(),
+        }
+    }
+}
+
+/// Result-type discriminator for `phi` nodes, nested inside
+/// [`InstructionKind::Phi`]. The active variant is chosen from the phi's
+/// result type at classification time, so the handle you get back narrows
+/// correctly: an integer phi yields [`PhiInst`] (with `as_int_value`), a
+/// float phi yields [`FpPhiInst`] (`as_float_value`), a pointer phi yields
+/// [`PointerPhiInst`] (`as_pointer_value`), and everything else (vector,
+/// array, struct) yields the erased [`OtherPhiInst`]. This removes the old
+/// bug where every rediscovered phi came back integer-flavored and
+/// `as_int_value()` lied on `f64`/pointer phis.
+///
+/// Deliberately **exhaustive** for the same reason as [`InstructionKind`].
+#[derive(Debug)]
+pub enum PhiKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    Int(PhiInst<'ctx, IntDyn, PhiClosed, B>),
+    Fp(FpPhiInst<'ctx, FloatDyn, PhiClosed, B>),
+    Ptr(PointerPhiInst<'ctx, PhiClosed, B>),
+    Other(OtherPhiInst<'ctx, B>),
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> PhiKind<'ctx, B> {
+    /// Number of incoming `(value, block)` edges, independent of variant.
+    pub fn incoming_count(&self) -> u32 {
+        match self {
+            Self::Int(p) => p.incoming_count(),
+            Self::Fp(p) => p.incoming_count(),
+            Self::Ptr(p) => p.incoming_count(),
+            Self::Other(p) => p.incoming_count(),
+        }
+    }
+
+    /// Read-only erased instruction view for this phi.
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        match self {
+            Self::Int(p) => p.as_view(),
+            Self::Fp(p) => p.as_view(),
+            Self::Ptr(p) => p.as_view(),
+            Self::Other(p) => p.as_view(),
+        }
+    }
+
+    /// Widen to the erased [`Value`] handle (the phi's result).
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        match self {
+            Self::Int(p) => p.as_value(),
+            Self::Fp(p) => p.as_value(),
+            Self::Ptr(p) => p.as_value(),
+            Self::Other(p) => p.as_value(),
+        }
+    }
+}
+
+/// Read-only opcode discriminator for non-terminator opcodes.
+///
+/// Deliberately **exhaustive**: a downstream `match` over this enum must
+/// name every opcode. Adding an opcode is a breaking change that fails to
+/// compile in every pass that has not considered it — that compile error
+/// is the safety feature (a silent `_` fallthrough would let a new opcode
+/// take whatever behavior the wildcard happens to have).
+#[derive(Debug)]
 pub enum InstructionKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
     Add(AddInst<'ctx, B>),
     Sub(SubInst<'ctx, B>),
@@ -1495,7 +1730,7 @@ pub enum InstructionKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
     Gep(GepInst<'ctx, B>),
     Call(CallInst<'ctx, Dyn, B>),
     Select(SelectInst<'ctx, B>),
-    Cast(CastInst<'ctx, B>),
+    Cast(CastKind<'ctx, B>),
     ICmp(ICmpInst<'ctx, B>),
     FNeg(FNegInst<'ctx, B>),
     Freeze(FreezeInst<'ctx, B>),
@@ -1511,12 +1746,56 @@ pub enum InstructionKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
     CleanupPad(CleanupPadInst<'ctx, B>),
     CatchPad(CatchPadInst<'ctx, B>),
     AtomicRMW(AtomicRMWInst<'ctx, B>),
-    Phi(PhiInst<'ctx, IntDyn, PhiClosed, B>),
+    Phi(PhiKind<'ctx, B>),
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> InstructionKind<'ctx, B> {
+    /// If this is a binary operator (`add`..`frem`), a grouped [`BinaryOp`]
+    /// view exposing `lhs`/`rhs`/`opcode`/flags uniformly, so generic
+    /// arithmetic code need not match all eighteen opcodes. Mirrors
+    /// `dyn_cast<BinaryOperator>`.
+    pub fn as_binary_op(&self) -> Option<BinaryOp<'ctx, B>> {
+        let (value, opcode) = match self {
+            Self::Add(h) => (h.as_value(), BinaryOpcode::Add),
+            Self::Sub(h) => (h.as_value(), BinaryOpcode::Sub),
+            Self::Mul(h) => (h.as_value(), BinaryOpcode::Mul),
+            Self::UDiv(h) => (h.as_value(), BinaryOpcode::UDiv),
+            Self::SDiv(h) => (h.as_value(), BinaryOpcode::SDiv),
+            Self::URem(h) => (h.as_value(), BinaryOpcode::URem),
+            Self::SRem(h) => (h.as_value(), BinaryOpcode::SRem),
+            Self::Shl(h) => (h.as_value(), BinaryOpcode::Shl),
+            Self::LShr(h) => (h.as_value(), BinaryOpcode::LShr),
+            Self::AShr(h) => (h.as_value(), BinaryOpcode::AShr),
+            Self::And(h) => (h.as_value(), BinaryOpcode::And),
+            Self::Or(h) => (h.as_value(), BinaryOpcode::Or),
+            Self::Xor(h) => (h.as_value(), BinaryOpcode::Xor),
+            Self::FAdd(h) => (h.as_value(), BinaryOpcode::FAdd),
+            Self::FSub(h) => (h.as_value(), BinaryOpcode::FSub),
+            Self::FMul(h) => (h.as_value(), BinaryOpcode::FMul),
+            Self::FDiv(h) => (h.as_value(), BinaryOpcode::FDiv),
+            Self::FRem(h) => (h.as_value(), BinaryOpcode::FRem),
+            _ => return None,
+        };
+        Some(BinaryOp::from_value(value, opcode))
+    }
+
+    /// If this is a comparison (`icmp`/`fcmp`), a grouped [`Cmp`] view
+    /// exposing `lhs`/`rhs` and a unified `CmpPredicate`. Mirrors
+    /// `dyn_cast<CmpInst>`.
+    pub fn as_cmp(&self) -> Option<Cmp<'ctx, B>> {
+        match self {
+            Self::ICmp(h) => Some(Cmp::from_value(h.as_value())),
+            Self::FCmp(h) => Some(Cmp::from_value(h.as_value())),
+            _ => None,
+        }
+    }
 }
 
 /// Read-only opcode discriminator for terminators.
+///
+/// Deliberately **exhaustive** for the same reason as [`InstructionKind`]:
+/// a new terminator opcode must break every downstream `match`.
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum TerminatorKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
     Ret(RetInst<'ctx, B>),
     Br(BranchInst<'ctx, B>),
@@ -1529,6 +1808,52 @@ pub enum TerminatorKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
     CatchSwitch(CatchSwitchInst<'ctx, TermClosed, B>),
     CallBr(CallBrInst<'ctx, B>),
     Unreachable(UnreachableInst<'ctx, B>),
+}
+
+/// Total classification of an instruction: every instruction is either a
+/// non-terminator ([`InstructionKind`]) or a terminator
+/// ([`TerminatorKind`]). Unlike [`InstructionView::kind`] /
+/// [`InstructionView::terminator_kind`] — which each return `None` for the
+/// other category and so require the caller to remember which to call —
+/// [`InstructionView::classify`] is total: it always names the category, so
+/// a forgotten `is_terminator()` guard cannot mis-handle a terminator.
+#[derive(Debug)]
+pub enum Classified<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    /// A non-terminator instruction.
+    Inst(InstructionKind<'ctx, B>),
+    /// A block terminator.
+    Term(TerminatorKind<'ctx, B>),
+}
+
+/// An instruction view statically known **not** to be a terminator. The
+/// only way to build one is [`InstructionView::as_non_terminator`], which
+/// checks once; pass mutators (`FnPatch::erase`) then accept only this, so
+/// erasing a terminator is a *compile* error rather than a runtime
+/// rejection — a terminator-erase that would break a `PatchBody` pass's
+/// "CFG preserved" floor is unrepresentable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NonTerminator<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    view: InstructionView<'ctx, B>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> NonTerminator<'ctx, B> {
+    /// The underlying read-only instruction view.
+    #[inline]
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        self.view
+    }
+
+    /// Widen to the erased [`Value`] handle (the instruction's result).
+    #[inline]
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        self.view.as_value()
+    }
+
+    /// Crate-internal: wrap a view already known to be a non-terminator.
+    #[inline]
+    pub(crate) fn from_view_unchecked(view: InstructionView<'ctx, B>) -> Self {
+        Self { view }
+    }
 }
 
 /// Crate-internal helper: create a `ValueData` for an instruction with

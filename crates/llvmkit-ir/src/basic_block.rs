@@ -9,7 +9,7 @@
 //! and other future helpers via interior mutability so the same
 //! `&'ctx Module<'ctx>` borrow can be passed around freely.
 //!
-//! ## Return-marker propagation (Phase A3)
+//! ## Return-marker propagation
 //!
 //! [`BasicBlock<'ctx, R>`] inherits its parent function's
 //! [`ReturnMarker`]. When the IRBuilder positions itself inside a

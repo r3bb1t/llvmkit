@@ -2,8 +2,8 @@
 //! `Predicate` enum in `llvm/include/llvm/IR/InstrTypes.h` (`InstrTypes.h`:
 //! 670-710).
 //!
-//! Per the IR foundation plan (Pivot 4), `IntPredicate` and `FloatPredicate`
-//! are distinct Rust types so passing `FloatPredicate::OEQ` to a method that
+//! `IntPredicate` and `FloatPredicate` are distinct Rust types, so passing
+//! `FloatPredicate::OEQ` to a method that
 //! expects an integer predicate is a compile error. The raw discriminants
 //! match the upstream `CmpInst::Predicate` enum so a downstream parser /
 //! AsmWriter port can round-trip via `as u8` / `from_raw`.

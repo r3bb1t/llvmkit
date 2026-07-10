@@ -114,7 +114,7 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
 - `Width<M>`/`Width<N>` `WiderThan` relations blocked on stable
   const-generics (documented at `int_width.rs` ~105-116); revisit when
   `generic_const_exprs` stabilizes.
-- Aggregate variable categories for auto-SSA (v1 ships int/float/pointer
+- Aggregate variable categories for auto-SSA (currently ships int/float/pointer
   only).
 - Address-space-typed pointers (`PointerValue` currently erases address
   space; audit item from infra report).
@@ -149,10 +149,10 @@ deferred it.
   varargs invoke -- all mechanical extensions of the shipped `CallArgs`/
   `IntoCallArg` machinery.
 - **Auto-SSA aggregate variables + invoke/EH terminators** -- `ssa_builder.rs`
-  v1 ships int/float/pointer variables and `br`/`cond_br`/`switch`/`ret`/
+  currently ships int/float/pointer variables and `br`/`cond_br`/`switch`/`ret`/
   `ret_void`/`unreachable` terminators only. Aggregate variable categories
   (per-field fan-out through `StructSchema`) and `invoke`/`callbr`/EH
-  terminators are the documented v2 scope in the module's own doc comment.
+  terminators are the documented future scope in the module's own doc comment.
 - **`IrField::ir_type` accepting `ModuleRef`** -- `IrField::ir_type` and
   `StructSchema::ir_type` currently demand `&Module<'ctx, B, Unverified>`.
   `build_field_gep` (`ir_builder.rs`) has to construct a temporary
@@ -225,7 +225,7 @@ deliberately deferred; each cites its upstream anchor.
   requires a vector base, which is rejected earlier. Revisit the check when
   vector GEP bases land.
 
-## Pass API v2 — deferred
+## Pass API — deferred
 
 The `feature-4/pass-api-v2` branch shipped the capability-graded pass API
 (rungs, contexts/mutators, `FunctionPass`/`ModulePass`, single-pass drivers,
@@ -254,7 +254,7 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
   call-graph-SCC pass rungs (upstream `LoopPassManager` / `CGSCCPassManager`)
   are unmodeled.
 - **First-class `ModRewrite` runtime-symbol/global/ctor triple** -- the
-  `RewriteModule` mutator (`pass_context.rs` ~886-896) exposes only the raw
+  `RewriteModule` mutator (`ModRewrite`, `pass_context.rs` ~1247) exposes only the raw
   `module_mut()` token today; a sanitizer reaches the
   function/global/constructor "triple" through it by hand. The author sugar for
   that pattern -- `declare_runtime_fn` / `append_ctor` / `add_global` helpers
@@ -270,7 +270,51 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
 - **Compile-fail `.stderr` canonical-rustc bless** -- the
   `typestate_compile_fail` suite carries two pre-existing `.stderr` drifts
   (`folder_typed_wrong_width`, `extract_value_empty_indices`) blessed against a
-  different (CI) rustc, plus the six new Pass API v2 fixtures (including
+  different (CI) rustc, plus the six new pass-API fixtures (including
   `claim_preserved_after_mutate`) blessed on the local rustc. The whole set
   should be re-blessed on the canonical CI rustc so every fixture matches on the
   reference toolchain.
+
+## Package 4 (analysis preservation) — deferred
+
+Framework-witnessed analysis preservation shipped across `feature-8`
+(Phase 1) and `feature-9` (the remainder): the `CfgUpdate` recording vocabulary
+(`cfg_update.rs`), the `CfgIncremental` hook (`RepairOutcome` +
+`apply_updates`/`recompute`), the reshape mutator's witnessed edit log, the
+*unrepresentable* mid-reshape stale CFG-analysis read
+(`FnReshape::analysis_repaired`, no `Deref`, compile-fail fixture),
+`Requires`-without-`Default` (`PrefetchableAnalysis`), and the `done()`-flush
+witnessing loop that keeps a reshape pass's dominator tree
+(`DominatorTree::apply_updates` repairs correct-by-recompute → `Repaired`; the
+driver marks preserved exactly what it watched repair). What remains deferred:
+
+- **Sub-linear incremental dominator repair (perf).** `DominatorTree::apply_updates`
+  is *correct* but repairs by full recompute — it does not yet use the recorded
+  edge insert/delete list to do sub-linear work. A genuine incremental update
+  (LLVM SemiNCA-style, driven by `updates`) is the perf follow-up. When it lands,
+  a `debug_assert` comparing the incrementally-repaired tree to a from-scratch
+  recompute (`repaired ≡ recomputed`) should guard every flush; the
+  `dominator_tree_repairs_to_match_recompute` test is the seed of that property.
+  Needs random-edit-sequence property tests (proptest). No behavior change vs.
+  today when it lands (only speed), so low urgency without a large-function
+  workload.
+- **`PrefetchableModuleAnalysis` (module `Requires` without `Default`).** The
+  function side dropped the `Default` bound via `PrefetchableAnalysis`; the
+  module analysis-list macros still bound `+ Default`. There are no concrete
+  module analyses yet, so a mirror trait would be untestable dead machinery —
+  introduce it (same shape) with the first non-`Default` module analysis.
+- **Value-analysis update vocabulary.** `CfgUpdate` is CFG-shaped only.
+  Instruction-level events for value analyses (KnownBits/DemandedBits) are a
+  possible extension, not designed here -- every mutating rung's floor already
+  evicts them.
+- **`ModRewrite::for_each_function` reshape flush.** The module→function visitor
+  builds `FnReshape` mutators whose `done()` (and thus `CfgUpdate` log) the
+  visitor never surfaces, so those reshapes do not run the witnessed flush. This
+  is sound today: the enclosing `RewriteModule` floor is `none()`, which evicts
+  every CFG analysis anyway. Wire the flush through the visitor if per-function
+  analyses are ever threaded into `for_each_function`.
+- **New `.stderr` under the canonical-rustc bless caveat.**
+  `reshape_stale_cfg_analysis_across_edit` is blessed on the local rustc like
+  the pass-API fixtures above; its `E0502` borrow-error wording is stable
+  across toolchains, but it joins the set that should be re-blessed on the
+  reference rustc.

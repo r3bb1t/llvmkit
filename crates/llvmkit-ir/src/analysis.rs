@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::rc::Rc;
 
+use crate::cfg_update::CfgUpdate;
 use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
 use crate::module::{Brand, ModuleBrand, ModuleId, ModuleView};
 use crate::pass_context::FunctionView;
@@ -126,6 +127,18 @@ impl PreservedAnalyses {
     /// Mark one concrete analysis as preserved.
     pub fn preserve<A: 'static>(&mut self) -> &mut Self {
         let id = TypeId::of::<A>();
+        self.abandoned.remove(&id);
+        if !self.all {
+            self.preserved.insert(id);
+        }
+        self
+    }
+
+    /// Mark one concrete analysis as preserved by its already-resolved
+    /// [`TypeId`]. The type-erased twin of [`Self::preserve`], used by the
+    /// reshape `done()`-flush ([`FunctionAnalysisManager::flush_cfg_updates`]),
+    /// which iterates cached results by key and cannot name each analysis type.
+    pub(crate) fn preserve_type_id(&mut self, id: TypeId) -> &mut Self {
         self.abandoned.remove(&id);
         if !self.all {
             self.preserved.insert(id);
@@ -339,6 +352,32 @@ pub trait FunctionAnalysis<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
     ) -> IrResult<Self::Result>;
 }
 
+/// How a function analysis registers itself for prefetching, so a typed
+/// `Requires` list need not bound its members `Default`. A `Default` analysis
+/// auto-registers (delegating to
+/// [`FunctionAnalysisManager::ensure_registered_default`]); a parameterized /
+/// non-`Default` analysis declares its own strategy — typically a no-op that
+/// assumes the caller pre-registered an instance via
+/// [`FunctionAnalysisManager::register_pass`].
+///
+/// Every analysis usable in a typed `Requires` list must implement this. There
+/// is deliberately no blanket `impl<A: Default>`: a blanket plus a manual impl
+/// for a non-`Default` analysis would overlap under coherence (Rust does no
+/// negative reasoning over `Default`), which is exactly the case this trait
+/// exists to support. The explicit one-line impls are the cost of dropping the
+/// `Default` straitjacket — and they double as the seam where a CFG analysis can
+/// opt into incremental preservation (see `register_cfg_pass`).
+///
+/// No upstream analog: LLVM registers analyses by runtime
+/// `AnalysisManager::registerPass` calls with no compile-time `Requires` list.
+pub trait PrefetchableAnalysis<'ctx, B: ModuleBrand = Brand<'ctx>>:
+    FunctionAnalysis<'ctx, B>
+{
+    /// Ensure this analysis is registered in `fam`, so a following `get_result`
+    /// cannot fail with [`IrError::AnalysisNotRegistered`].
+    fn ensure_registered(fam: &mut FunctionAnalysisManager<'ctx, B>);
+}
+
 /// Cached function-analysis result.
 pub trait FunctionAnalysisResult<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
     /// Return `true` when this result should be invalidated.
@@ -350,6 +389,58 @@ pub trait FunctionAnalysisResult<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
     ) -> IrResult<bool> {
         Ok(true)
     }
+}
+
+/// What a cached CFG-shaped analysis result did with a batch of recorded
+/// [`CfgUpdate`]s. Returned by [`CfgIncremental::apply_updates`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepairOutcome {
+    /// The result absorbed every update and is now consistent with the edited
+    /// CFG — the framework may keep it and mark it preserved.
+    Repaired,
+    /// The result declined incremental repair; the framework must recompute or
+    /// evict it. This is the degenerate default — exactly today's behavior, in
+    /// which every mutating rung's floor evicts CFG analyses wholesale.
+    PreferRecompute,
+}
+
+/// A cached analysis result that can *attempt* to repair itself in place after a
+/// batch of CFG edits, instead of being evicted wholesale. This is the
+/// framework-witnessed half of Package 4's preservation story: the reshape
+/// mutator records [`CfgUpdate`]s as it edits (`cfg_update.rs`), and the driver
+/// offers them here — an analysis is only ever marked preserved because the
+/// framework *watched* it return [`RepairOutcome::Repaired`], never because an
+/// author claimed preservation.
+///
+/// Implementing this hook is entirely optional: an analysis that does not (or
+/// returns [`RepairOutcome::PreferRecompute`]) simply falls back to the existing
+/// floor eviction. The update vocabulary is deliberately CFG-shaped; value-level
+/// analyses are out of scope (their mutating floor already evicts them).
+///
+/// No upstream analog in this shape: LLVM hand-feeds `DomTreeUpdater` its edits
+/// and trusts the author to keep them complete and ordered; here the edits are
+/// framework-recorded and the analysis only ever *reacts* to them.
+///
+/// [`Sized`] because [`Self::recompute`] returns `Self`: this is only ever
+/// implemented on concrete analysis-result types.
+pub trait CfgIncremental<'ctx, B: ModuleBrand = Brand<'ctx>>: Sized {
+    /// Fold the recorded `updates` (in the order they were performed over
+    /// `function`) into this cached result. Return [`RepairOutcome::Repaired`]
+    /// only if the result is now fully consistent with the edited CFG;
+    /// otherwise return [`RepairOutcome::PreferRecompute`] and the framework
+    /// recomputes (via [`Self::recompute`]) or evicts.
+    fn apply_updates(
+        &mut self,
+        updates: &[CfgUpdate],
+        function: FunctionView<'ctx, B>,
+    ) -> RepairOutcome;
+
+    /// Recompute this analysis from scratch over `function`'s current CFG. The
+    /// framework calls this whenever [`Self::apply_updates`] returns
+    /// [`RepairOutcome::PreferRecompute`], so a mid-pass read of a CFG analysis
+    /// after a reshape edit still yields a *correct* result rather than a stale
+    /// cached one. Must equal a fresh construction of the analysis.
+    fn recompute(function: FunctionView<'ctx, B>) -> Self;
 }
 
 type FunctionRunner<'ctx, B> = Rc<
@@ -382,9 +473,20 @@ type ModuleInvalidator<'ctx, B> = fn(
     &ModuleAnalysisSnapshot,
 ) -> IrResult<bool>;
 
+/// Type-erased CFG-incremental repair hook stored on a cached result whose
+/// analysis opted in (its `A::Result: CfgIncremental`, registered via
+/// [`FunctionAnalysisManager::ensure_cfg_registered_default`]). The driver calls
+/// it at the reshape `done()`-flush to offer the recorded edits;
+/// [`RepairOutcome::Repaired`] means the result updated itself in place and may
+/// be kept preserved.
+type CfgApplyFn<'ctx, B> = fn(&mut dyn Any, &[CfgUpdate], FunctionView<'ctx, B>) -> RepairOutcome;
+
 struct CachedFunctionResult<'ctx, B: ModuleBrand> {
     result: Box<dyn Any>,
     invalidate: FunctionInvalidator<'ctx, B>,
+    /// `Some` iff this analysis's result implements [`CfgIncremental`]; the
+    /// framework-witnessed preservation hook (`None` for value analyses).
+    cfg_apply: Option<CfgApplyFn<'ctx, B>>,
 }
 
 struct CachedModuleResult<'ctx, B: ModuleBrand> {
@@ -493,6 +595,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
             Ok(CachedFunctionResult {
                 result: Box::new(result),
                 invalidate: invalidate_function_result::<B, A>,
+                cfg_apply: None,
+            })
+        });
+        self.analyses.insert(id, runner);
+    }
+
+    /// Register a function-analysis pass whose result is CFG-incremental, keyed
+    /// by its type. Identical to [`Self::register_pass`] except the cached result
+    /// carries the [`CfgIncremental`] repair hook, so the reshape `done()`-flush
+    /// can offer it recorded edits instead of evicting it wholesale.
+    pub fn register_cfg_pass<A>(&mut self, analysis: A)
+    where
+        A: FunctionAnalysis<'ctx, B>,
+        A::Result: CfgIncremental<'ctx, B>,
+    {
+        let id = TypeId::of::<A>();
+        let runner: FunctionRunner<'ctx, B> = Rc::new(move |function, am| {
+            let result = analysis.run(function, am)?;
+            Ok(CachedFunctionResult {
+                result: Box::new(result),
+                invalidate: invalidate_function_result::<B, A>,
+                cfg_apply: Some(cfg_apply_result::<B, A::Result>),
             })
         });
         self.analyses.insert(id, runner);
@@ -508,6 +632,49 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
     {
         if !self.analyses.contains_key(&TypeId::of::<A>()) {
             self.register_pass(A::default());
+        }
+    }
+
+    /// [`Self::ensure_registered_default`] for a CFG-incremental analysis: uses
+    /// [`Self::register_cfg_pass`] so the cached result carries its
+    /// [`CfgIncremental`] repair hook. A CFG analysis's
+    /// [`PrefetchableAnalysis::ensure_registered`] calls this so that, once
+    /// prefetched, it participates in framework-witnessed preservation.
+    pub fn ensure_cfg_registered_default<A>(&mut self)
+    where
+        A: FunctionAnalysis<'ctx, B> + Default,
+        A::Result: CfgIncremental<'ctx, B>,
+    {
+        if !self.analyses.contains_key(&TypeId::of::<A>()) {
+            self.register_cfg_pass(A::default());
+        }
+    }
+
+    /// Offer the recorded reshape `updates` to every cached CFG-incremental
+    /// result for `function`, marking preserved in `pa` exactly those that
+    /// repaired ([`RepairOutcome::Repaired`]) — the *witnessed* preservation
+    /// step. A result that declines ([`RepairOutcome::PreferRecompute`], or has
+    /// no hook) is left for `pa`'s floor to evict. Only the driver calls this,
+    /// after a reshape pass and before [`Self::invalidate`].
+    pub(crate) fn flush_cfg_updates(
+        &mut self,
+        function: FunctionView<'ctx, B>,
+        updates: &[CfgUpdate],
+        pa: &mut PreservedAnalyses,
+    ) {
+        let handle = function.as_function();
+        let module_id = handle.as_value().module().id();
+        let function_id = handle.as_value().id;
+        for (key, cached) in &mut self.results {
+            if key.0 != module_id || key.2 != function_id {
+                continue;
+            }
+            let Some(apply) = cached.cfg_apply else {
+                continue;
+            };
+            if apply(&mut *cached.result, updates, function) == RepairOutcome::Repaired {
+                pa.preserve_type_id(key.1);
+            }
         }
     }
 
@@ -936,6 +1103,25 @@ where
     result.invalidate(function, pa, &mut invalidator)
 }
 
+/// Type-erased trampoline stored as a cached result's [`CfgApplyFn`]: downcast to
+/// the concrete CFG-incremental result and offer it the recorded edits. Monotone
+/// per analysis result type `R`; a downcast miss (never expected — the hook is
+/// keyed to `R`) degrades safely to [`RepairOutcome::PreferRecompute`].
+fn cfg_apply_result<'ctx, B, R>(
+    result: &mut dyn Any,
+    updates: &[CfgUpdate],
+    function: FunctionView<'ctx, B>,
+) -> RepairOutcome
+where
+    B: ModuleBrand + 'ctx,
+    R: CfgIncremental<'ctx, B> + 'static,
+{
+    match result.downcast_mut::<R>() {
+        Some(r) => r.apply_updates(updates, function),
+        None => RepairOutcome::PreferRecompute,
+    }
+}
+
 fn invalidate_module_result<'ctx, B, A>(
     result: &mut dyn Any,
     module: ModuleView<'ctx, B>,
@@ -969,6 +1155,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for DominatorTreeAna
     }
 }
 
+impl<'ctx, B: ModuleBrand + 'ctx> PrefetchableAnalysis<'ctx, B> for DominatorTreeAnalysis {
+    #[inline]
+    fn ensure_registered(fam: &mut FunctionAnalysisManager<'ctx, B>) {
+        // CFG-incremental: register WITH the repair hook so a prefetched dom
+        // tree can be witnessed-preserved across a reshape instead of evicted.
+        fam.ensure_cfg_registered_default::<Self>();
+    }
+}
+
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for DominatorTree {
     fn invalidate(
         &mut self,
@@ -980,6 +1175,35 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for DominatorT
         Ok(!(checker.preserved()
             || checker.preserved_set::<AllAnalysesOnFunction>()
             || checker.preserved_set::<CFGAnalyses>()))
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> CfgIncremental<'ctx, B> for DominatorTree {
+    /// Repair the dominator tree after a batch of reshape edits. The repair is
+    /// **correct-by-recompute**: it rebuilds the tree from the current (edited)
+    /// CFG, which is trivially consistent with it, so the framework may keep the
+    /// result — [`RepairOutcome::Repaired`]. This is what makes a reshape pass's
+    /// dominator tree framework-*preserved* instead of evicted.
+    ///
+    /// The recorded `updates` are not yet used to do sub-linear work: a genuine
+    /// incremental dominator update (LLVM SemiNCA-style, driven by the edge
+    /// insert/delete list) is the documented perf follow-up in `future-work.md`.
+    /// When it lands, a `debug_assert` comparing the incrementally-repaired tree
+    /// to a from-scratch recompute (the property `repaired ≡ recomputed`) guards
+    /// every flush; today the two are identical by construction.
+    #[inline]
+    fn apply_updates(
+        &mut self,
+        _updates: &[CfgUpdate],
+        function: FunctionView<'ctx, B>,
+    ) -> RepairOutcome {
+        *self = DominatorTree::new(function.as_function());
+        RepairOutcome::Repaired
+    }
+
+    #[inline]
+    fn recompute(function: FunctionView<'ctx, B>) -> Self {
+        DominatorTree::new(function.as_function())
     }
 }
 
@@ -1100,7 +1324,7 @@ macro_rules! impl_function_analysis_list {
         impl<'ctx, B, $($member),+> FunctionAnalysisList<'ctx, B> for ($($member,)+)
         where
             B: ModuleBrand + 'ctx,
-            $($member: FunctionAnalysis<'ctx, B> + Default,)+
+            $($member: PrefetchableAnalysis<'ctx, B>,)+
         {
             const LEN: usize = $len;
             type ResultRefs<'r>
@@ -1113,7 +1337,7 @@ macro_rules! impl_function_analysis_list {
                 function: FunctionView<'ctx, B>,
             ) -> IrResult<()> {
                 $(
-                    fam.ensure_registered_default::<$member>();
+                    <$member as PrefetchableAnalysis<'ctx, B>>::ensure_registered(fam);
                     fam.get_result::<$member, _>(function)?;
                 )+
                 Ok(())
@@ -1142,7 +1366,7 @@ macro_rules! impl_function_analysis_selectors {
             for ($($all,)+)
         where
             B: ModuleBrand + 'ctx,
-            $($all: FunctionAnalysis<'ctx, B> + Default,)+
+            $($all: PrefetchableAnalysis<'ctx, B>,)+
         {
             fn select<'r>(refs: &Self::ResultRefs<'r>) -> &'r $head::Result
             where
@@ -1241,6 +1465,11 @@ pub trait ModuleAnalysisSelector<'ctx, B: ModuleBrand + 'ctx, A: ModuleAnalysis<
 // See `impl_function_analysis_selectors` above for why the selector impls are
 // peeled off one at a time by recursion instead of a single `$(...)+ ` over
 // all of them.
+// NB: module `Requires` members still bound `+ Default` (auto-registered). The
+// function side dropped this via `PrefetchableAnalysis` because it has real
+// non-`Default` analyses; there are no concrete module analyses yet, so a
+// mirror `PrefetchableModuleAnalysis` would be untestable dead machinery.
+// Introduce it (same shape) when the first non-`Default` module analysis lands.
 macro_rules! impl_module_analysis_list {
     ($len:literal; $($member:ident: $idx:ident . $slot:tt),+) => {
         impl<'ctx, B, $($member),+> ModuleAnalysisList<'ctx, B> for ($($member,)+)
@@ -1347,6 +1576,135 @@ mod tests {
                 .entry_block()
                 .map(|bb| dt.is_reachable_from_entry(bb));
             assert_eq!(entry_view, Some(true));
+            Ok(())
+        })
+    }
+
+    /// The dominator tree's [`CfgIncremental`] hook repairs the tree after a
+    /// reshape edit (correct-by-recompute) and returns [`RepairOutcome::Repaired`]
+    /// so the framework keeps it. Property: a stale cached tree, offered the
+    /// edits via `apply_updates`, answers reachability EXACTLY like a
+    /// from-scratch recompute of the edited CFG. llvmkit-specific
+    /// witnessed-preservation plumbing (no upstream analog: LLVM hand-feeds
+    /// `DomTreeUpdater` and trusts author-supplied edits).
+    #[test]
+    fn dominator_tree_repairs_to_match_recompute() -> IrResult<()> {
+        use crate::CfgUpdate;
+        Module::with_new("domtree-repair", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let next = f.append_basic_block(&m, "next");
+            let entry_id = entry.as_value().id;
+            let next_id = next.as_value().id;
+            let next_label = next.label();
+
+            // entry: br next    next: ret 0
+            let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+            b.build_br(next.label())?;
+            let b2 = IRBuilder::new_for::<i32>(&m).position_at_end(next);
+            b2.build_ret(i32_ty.const_int(0_u32))?;
+
+            let function: FunctionView<'_> = f.into();
+
+            // Cache a dom tree while `next` is still reachable.
+            let mut dt = DominatorTree::new(function.as_function());
+            assert!(dt.is_reachable_from_entry(next_label));
+
+            // Edit the CFG: split the entry before its terminator, moving the
+            // `br next` (and the only edge into `next`) into a fresh block that
+            // nothing reaches — so `next` is now unreachable.
+            let entry_bb = function.entry_block().expect("definition").as_basic_block();
+            let terminator = entry_bb.terminator().expect("terminated");
+            let new_bb = entry_bb.split_at(&m, &terminator, "entry.split")?;
+            let updates = [
+                CfgUpdate::delete(entry_id, next_id),
+                CfgUpdate::insert(new_bb.as_value().id, next_id),
+            ];
+
+            // Repairing the stale cached tree returns Repaired and yields the
+            // same answer as a fresh recompute: `next` unreachable.
+            assert_eq!(
+                dt.apply_updates(&updates, function),
+                RepairOutcome::Repaired
+            );
+            let fresh = DominatorTree::new(function.as_function());
+            assert_eq!(
+                dt.is_reachable_from_entry(next_label),
+                fresh.is_reachable_from_entry(next_label)
+            );
+            assert!(!dt.is_reachable_from_entry(next_label));
+            Ok(())
+        })
+    }
+
+    /// A deliberately NON-`Default` function analysis: it carries configuration,
+    /// so a result can only come from a pre-registered instance. Used to prove a
+    /// `Requires` list no longer bounds its members `Default`.
+    #[derive(Clone, Copy)]
+    struct ThresholdAnalysis {
+        threshold: u32,
+    }
+    struct ThresholdResult {
+        threshold: u32,
+    }
+    impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for ThresholdResult {}
+    impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for ThresholdAnalysis {
+        type Result = ThresholdResult;
+        fn run(
+            &self,
+            _function: FunctionView<'ctx, B>,
+            _am: &mut FunctionAnalysisManager<'ctx, B>,
+        ) -> IrResult<Self::Result> {
+            Ok(ThresholdResult {
+                threshold: self.threshold,
+            })
+        }
+    }
+    impl<'ctx, B: ModuleBrand + 'ctx> PrefetchableAnalysis<'ctx, B> for ThresholdAnalysis {
+        fn ensure_registered(_fam: &mut FunctionAnalysisManager<'ctx, B>) {
+            // No-op: a non-`Default` analysis must be pre-registered by the
+            // caller (there is nothing to auto-construct).
+        }
+    }
+
+    /// A `Requires` list member need not be `Default`: a parameterized analysis
+    /// works as long as the caller pre-registered a configured instance, and the
+    /// prefetched result reflects THAT instance's config. Without the
+    /// pre-registration the prefetch reports `AnalysisNotRegistered` — proving
+    /// the `PrefetchableAnalysis` no-op does not silently auto-construct.
+    /// llvmkit-specific type-machinery lock (no upstream analog).
+    #[test]
+    fn requires_without_default_uses_registered_instance() -> IrResult<()> {
+        Module::with_new("requires-no-default", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+            b.build_ret(i32_ty.const_int(0_u32))?;
+
+            let function: FunctionView<'_> = f.into();
+            type Reqs = (ThresholdAnalysis,);
+
+            // Without pre-registration, prefetch fails: the no-op
+            // `ensure_registered` does not auto-construct a non-`Default` analysis.
+            let mut empty = FunctionAnalysisManager::new();
+            assert!(matches!(
+                <Reqs as FunctionAnalysisList<'_, _>>::prefetch(&mut empty, function),
+                Err(IrError::AnalysisNotRegistered { .. })
+            ));
+
+            // With a configured instance pre-registered, the Requires list
+            // prefetches/collects/selects it and the result carries the config.
+            let mut fam = FunctionAnalysisManager::new();
+            fam.register_pass(ThresholdAnalysis { threshold: 42 });
+            <Reqs as FunctionAnalysisList<'_, _>>::prefetch(&mut fam, function)?;
+            let refs = <Reqs as FunctionAnalysisList<'_, _>>::collect(&fam, function)?;
+            let result: &ThresholdResult =
+                <Reqs as AnalysisSelector<'_, Brand<'_>, ThresholdAnalysis, Idx0>>::select(&refs);
+            assert_eq!(result.threshold, 42);
             Ok(())
         })
     }

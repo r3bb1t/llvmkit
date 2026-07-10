@@ -78,7 +78,11 @@ fn erase_dead_instructions<'ctx, B: ModuleBrand + 'ctx>(
         }
     }
     for view in &dead {
-        patch.erase(view)?;
+        patch.erase(
+            &view
+                .as_non_terminator()
+                .expect("filtered to non-terminators"),
+        );
     }
     Ok(())
 }

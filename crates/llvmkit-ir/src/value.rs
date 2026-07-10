@@ -351,7 +351,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     }
 
     /// Read the optional debug-location attached to this value.
-    /// Currently always `None` (Phase F wires this in).
+    /// Currently always `None` (debug-location wiring is future work).
     #[inline]
     pub fn debug_loc(self) -> Option<DebugLoc> {
         self.data().debug_loc
@@ -410,10 +410,29 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
         !self.data().use_list.borrow().is_empty()
     }
 
+    /// `true` when exactly one use references this value. Mirrors
+    /// `Value::hasOneUse` — the gate peephole rewrites use (via
+    /// `m_one_use`) to avoid duplicating a shared sub-expression.
+    #[inline]
+    pub fn has_one_use(self) -> bool {
+        self.data().use_list.borrow().len() == 1
+    }
+
     /// Number of currently-registered structural uses. Mirrors `Value::getNumUses`.
     #[inline]
     pub fn num_uses(self) -> usize {
         self.data().use_list.borrow().len()
+    }
+
+    /// If this value is a constant integer, its arbitrary-precision value.
+    /// Mirrors reading a `ConstantInt`'s `getValue()`; backs the matcher
+    /// constant predicates (`m_zero`, `m_all_ones`, `m_ap_int`, ...).
+    /// Scalar only — vector splats are not unwrapped here.
+    pub fn as_const_int(self) -> Option<crate::ap_int::ApInt> {
+        let constant = Constant::try_from(self).ok()?;
+        let int: crate::constants::ConstantIntValue<'_, crate::int_width::IntDyn, B> =
+            crate::constants::ConstantIntValue::try_from(constant).ok()?;
+        Some(int.ap_int())
     }
 }
 

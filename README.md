@@ -19,7 +19,7 @@ Shipped today:
   allocating only when escape decoding actually changes bytes.
 - **`.ll` parser** — done for the constructive subset. Parses module-level
   directives (target datalayout/triple, module asm, type definitions, globals,
-  function declarations and definitions), all 42 instruction opcodes, metadata
+  function declarations and definitions), all instruction opcodes, metadata
   (standalone numbered nodes, named metadata, instruction trailing attachments),
   and value forms (integer/float literals, undef, poison, null,
   zeroinitializer, global/function references, and represented `ConstantExpr`
@@ -44,7 +44,7 @@ Shipped today:
 - **CFG and dominance queries** — done. `FunctionCfg`, `BasicBlockEdge`,
   `BasicBlock::successors()`, and `DominatorTree` are available as reusable IR
   queries.
-- **Capability-graded pass API (Pass API v2)** — done, including explicit
+- **Capability-graded pass API** — done, including explicit
   analysis invalidation. A pass declares a capability *rung*
   (`Inspect` / `PatchBody` / `ReshapeCfg` / `RewriteModule`) and its required
   analyses; the driver *derives* which analyses survive and whether the output
@@ -326,11 +326,11 @@ fully known" (Braun sealing) and "read/write before the builder is
 positioned" into typed errors rather than caller discipline: `create_block`
 auto-seals the entry block, `seal_block` completes a block's incomplete
 phis, and `finish()` is the always-correct seal-everything fallback that
-also rejects any created-but-never-filled block. v1 covers int / float /
+also rejects any created-but-never-filled block. It currently covers int / float /
 pointer variables and the `br` / `cond_br` / `switch` / `ret` / `ret_void` /
 `unreachable` terminators; mixing in manual phis via `b.ins()` for anything
 outside that scope is legal and verifier-checked. See
-[`docs/future-work.md`](docs/future-work.md) for the v2 scope (aggregate
+[`docs/future-work.md`](docs/future-work.md) for the planned scope (aggregate
 variables, invoke/EH terminators).
 
 ### Why llvmkit instead of inkwell
@@ -398,7 +398,7 @@ cargo run -p llvmkit-ir --example pass_manager_demo
 
 ## Built-in Analyses and Custom Passes
 
-`llvmkit-ir` ships a **capability-graded** pass layer (Pass API v2) for querying
+`llvmkit-ir` ships a **capability-graded** pass layer for querying
 analyses and running LLVM-like passes over the modeled IR. A pass declares a
 capability *rung* — how much of the IR it is allowed to touch — plus the
 analyses it needs; the driver derives everything else, including which analyses
@@ -419,7 +419,12 @@ preserved" is true by construction — never a `PreservedAnalyses` value the
 author hand-writes and might get wrong. A lying `PreservedAnalyses` (mutate the
 IR, then report everything preserved, leaving stale analyses for a later pass to
 miscompile against) is the class of bug LLVM catches only with opt-in
-verification; here it is **unspellable**. See
+verification; here it is **unspellable**. The `none` for `ReshapeCfg` /
+`RewriteModule` is the structural *floor*: a `ReshapeCfg` pass can still keep a
+specific CFG analysis (e.g. the dominator tree) by opting into a witnessed
+incremental-repair hook (`CfgIncremental` / `FnReshape::analysis_repaired`) —
+the driver marks it preserved only after watching it repair, never on the
+author's say-so. See
 [Type Safety: llvmkit vs. LLVM C++](docs/type-safety-vs-llvm.md#11-passes-cannot-lie-about-what-they-preserve).
 
 Built-in analyses available today:
@@ -445,6 +450,9 @@ Core pass / analysis infrastructure available today:
 - `Analyses` (the bundled function + module analysis managers)
 - `PreservedAnalyses`
 - `PassInstrumentationCallbacks`
+- `matchers` — a `PatternMatch.h`-style combinator DSL (`m_add` / `m_c_add` / `m_one_use` / `m_all_ones` / …); matchers *return* their bindings, so a partial match is `None` rather than a half-filled slot
+- `InstructionView::classify()` → exhaustive `Classified { Inst, Term }` with `CastKind` / `PhiKind` sub-enums and grammar-typed operands (`load.pointer() -> PointerValue`, `CallInst::classify_callee() -> Callee`)
+- `CfgIncremental` / `FnReshape::analysis_repaired` — witnessed CFG-analysis preservation across a `ReshapeCfg` pass
 
 ### Authoring a pass
 
@@ -605,7 +613,7 @@ pipeline names, and data-only pass-pipeline recipe types**, not a full
 optimization pipeline. There is no public LLVM-compatible `PassBuilder`, no
 runnable `default<O1>` optimizer, no loop / CGSCC / legacy manager, no
 instrumentation-driven skipping, and no broad transform library yet. See
-[`docs/future-work.md`](docs/future-work.md) (the "Pass API v2 — deferred"
+[`docs/future-work.md`](docs/future-work.md) (the "Pass API — deferred"
 section) for the scoped-out items.
 
 ## Project Structure

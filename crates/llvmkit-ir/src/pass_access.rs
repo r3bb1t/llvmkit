@@ -1,4 +1,4 @@
-//! Capability-rung lattice foundations for the Pass API v2.
+//! Capability-rung lattice foundations for the capability-graded pass API.
 //!
 //! A pass declares a *capability rung* — how much of the IR it may mutate — and
 //! the driver *derives* the rest: whether the run keeps the module verified and
@@ -17,7 +17,7 @@
 //!   [`Inspect`] (read-only), [`PatchBody`] (edit instructions, no CFG change),
 //!   [`ReshapeCfg`] (rewire the CFG, add/remove/split blocks, new PHIs).
 //! - [`ModAccess`] — capabilities usable over a whole module: [`Inspect`]
-//!   (read-only) and [`RewriteModule`] (globals, functions, ctors, bodies).
+//!   (read-only) and [`RewriteModule`] (globals, functions, bodies).
 //!
 //! [`Inspect`] is the only rung valid at *both* levels, and the only one whose
 //! verdict is [`StaysVerified`]; every mutating rung derives [`Downgrades`].
@@ -47,8 +47,8 @@ pub enum PatchBody {}
 /// Reshapes the CFG, so nothing is preserved by default.
 pub enum ReshapeCfg {}
 
-/// Module rung: rewrite globals, functions, constructors, and per-function
-/// bodies. Nothing is preserved by default.
+/// Module rung: rewrite globals, functions, and per-function bodies.
+/// Nothing is preserved by default.
 pub enum RewriteModule {}
 
 impl access_sealed::Sealed for Inspect {}

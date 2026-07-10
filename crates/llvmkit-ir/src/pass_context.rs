@@ -55,22 +55,23 @@
 use core::marker::PhantomData;
 
 use super::BasicBlock;
-use super::IrError;
 use super::IrResult;
 use super::analysis::{
-    AnalysisSelector, FunctionAnalysis, FunctionAnalysisList, FunctionAnalysisManager,
-    ModuleAnalysis, ModuleAnalysisList, ModuleAnalysisManager, ModuleAnalysisSelector,
-    PreservedAnalyses,
+    AnalysisSelector, CfgIncremental, FunctionAnalysis, FunctionAnalysisList,
+    FunctionAnalysisManager, ModuleAnalysis, ModuleAnalysisList, ModuleAnalysisManager,
+    ModuleAnalysisSelector, PreservedAnalyses, RepairOutcome,
 };
 use super::block_state::{Terminated, Unterminated};
+use super::cfg_update::CfgUpdate;
 use super::function::FunctionValue;
-use super::instruction::{Instruction, InstructionView, state};
+use super::instruction::{Instruction, InstructionView, NonTerminator, state};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, Invariant, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::pass_access::{
     FnAccess, ModAccess, MutatingFn, MutatingModule, PatchBody, ReshapeCfg, RewriteModule,
 };
-use super::value::IsValue;
+use super::value::{IsValue, ValueId};
+use super::worklist::Worklist;
 
 /// Read-only view of a basic block under its owning module brand.
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -124,6 +125,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
     #[inline]
     pub fn instruction_count(&self) -> usize {
         self.block.instructions().len()
+    }
+
+    /// Read-only instruction views in program order. Lets an `Inspect`-rung
+    /// pass walk a block's instructions without escaping to the underlying
+    /// function handle.
+    #[inline]
+    pub fn instructions(&self) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>> {
+        self.block.instructions()
     }
 
     /// `true` if the block currently has no instructions.
@@ -265,7 +274,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ExactSizeIterator for ModuleFunctionViews<'ctx
 }
 
 // ==========================================================================
-// Pass API v2 — function report, entry context, and mutators
+// capability-graded pass API — function report, entry context, and mutators
 // ==========================================================================
 
 /// The value a function pass returns. Wraps the driver-derived
@@ -282,25 +291,44 @@ impl<'ctx, B: ModuleBrand + 'ctx> ExactSizeIterator for ModuleFunctionViews<'ctx
 /// function pass cannot return a module report by mistake.
 pub struct FnReport {
     pa: PreservedAnalyses,
+    /// The reshape mutator's witnessed [`CfgUpdate`] log, carried out to the
+    /// driver so its `done()`-flush can offer these edits to cached CFG
+    /// analyses (and mark preserved those that repair). Empty for a non-reshape
+    /// report. Not a preservation *claim* — the driver still witnesses each
+    /// analysis repair before preserving it.
+    cfg_updates: Vec<CfgUpdate>,
 }
 
 impl FnReport {
-    /// Wrap a driver-derived preservation set. `pub(crate)` — this is the sole
-    /// construction path, so an external author can never fabricate a report
-    /// that over-claims preservation. THE honesty guarantee.
+    /// Wrap a driver-derived preservation set (no CFG-edit log). `pub(crate)` —
+    /// this is a sole construction path, so an external author can never
+    /// fabricate a report that over-claims preservation. THE honesty guarantee.
     #[inline]
     pub(crate) fn from_pa(pa: PreservedAnalyses) -> Self {
-        Self { pa }
+        Self {
+            pa,
+            cfg_updates: Vec::new(),
+        }
     }
 
-    /// Consume the report and yield its preservation set. The driver-facing
-    /// seam ([`crate::pass_manager::run_function_pass`] reads this to drive
-    /// invalidation). `pub(crate)`: the single-pass driver is its sole caller,
-    /// and reading the set out of a report cannot mint a dishonest one — unlike
-    /// [`Self::from_pa`].
+    /// Wrap a preservation set together with the reshape mutator's recorded
+    /// [`CfgUpdate`] log. `pub(crate)` — same honesty guarantee as
+    /// [`Self::from_pa`]; the log is witnessed, not author-claimed.
     #[inline]
-    pub(crate) fn into_pa(self) -> PreservedAnalyses {
-        self.pa
+    pub(crate) fn from_pa_with_cfg_updates(
+        pa: PreservedAnalyses,
+        cfg_updates: Vec<CfgUpdate>,
+    ) -> Self {
+        Self { pa, cfg_updates }
+    }
+
+    /// Consume the report into its preservation set and recorded CFG-edit log.
+    /// The function drivers read both: the log drives the `done()`-flush, then
+    /// the (possibly-augmented) set drives invalidation. Tests that only want
+    /// the set take `.into_parts().0`.
+    #[inline]
+    pub(crate) fn into_parts(self) -> (PreservedAnalyses, Vec<CfgUpdate>) {
+        (self.pa, self.cfg_updates)
     }
 }
 
@@ -442,6 +470,18 @@ where
     module: &'m Module<'ctx, B, Unverified>,
     function: FunctionView<'ctx, B>,
     results: R::ResultRefs<'r>,
+    /// Witnessed dirty flag: set by every mutating method, read by
+    /// [`Self::done`]. A run that touches nothing reports everything
+    /// preserved; a run that mutates reports the rung floor. This is a
+    /// *fact the mutator observes*, not a claim the author makes — a `Cell`
+    /// so mutating methods can flip it through a shared `&self` (mutation
+    /// itself flows through the interior-mutable module token).
+    dirty: core::cell::Cell<bool>,
+    /// Opt-in instruction worklist. When `Some`, [`Self::erase`] /
+    /// [`Self::replace_all_uses`] maintain it (push cascade + self-remove), so a
+    /// worklist pass reaches a fixpoint without a restart-scan. `None` (the
+    /// default) is exactly today's behavior — no overhead, no behavior change.
+    worklist: core::cell::RefCell<Option<Worklist>>,
 }
 
 impl<'m, 'r, 'ctx, B, R> FnPatch<'m, 'r, 'ctx, B, R>
@@ -461,7 +501,15 @@ where
             module,
             function,
             results,
+            dirty: core::cell::Cell::new(false),
+            worklist: core::cell::RefCell::new(None),
         }
+    }
+
+    /// Whether any mutation has been performed through this mutator.
+    #[inline]
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.get()
     }
 
     /// Read-only function view.
@@ -498,22 +546,44 @@ where
     /// its operand uses. Mirrors `DcePass`'s erase step
     /// ([`Instruction::erase_from_parent`]).
     ///
-    /// Handing this a terminator is a loud bug, never silent: it returns
-    /// [`IrError::InvalidOperation`] rather than touching the CFG (a
-    /// terminator-erase would break the "CFG preserved" floor this rung rests
-    /// on). A fully structural non-terminator handle is future work.
+    /// Accepts only a [`NonTerminator`] — obtained from
+    /// [`InstructionView::as_non_terminator`] — so a terminator-erase (which
+    /// would break the "CFG preserved" floor this rung rests on) is a compile
+    /// error, not a runtime rejection. Infallible: erasing a non-terminator
+    /// cannot fail.
     #[inline]
-    pub fn erase(&mut self, view: &InstructionView<'ctx, B>) -> IrResult<()> {
-        if view.is_terminator() {
-            return Err(IrError::InvalidOperation {
-                message: "FnPatch::erase cannot erase a terminator; the PatchBody rung \
-                          preserves the CFG — use the ReshapeCfg rung for control-flow edits",
-            });
-        }
-        let id = view.as_value().id();
+    pub fn erase(&self, target: &NonTerminator<'ctx, B>) {
+        let id = target.as_value().id();
         let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
+        // Capture operand ids before erasing (erase drops their uses). Push them
+        // all unconditionally — `Worklist::pop` is panic-safe and skips any id that
+        // is not an instruction (constant/param operands), so no filter is needed
+        // here. Then remove `id` itself so the erased instruction never surfaces.
+        if let Some(wl) = self.worklist.borrow_mut().as_mut() {
+            for op_id in inst.as_view().operand_ids() {
+                wl.push(op_id);
+            }
+            wl.remove(id);
+        }
         inst.erase_from_parent(self.module);
-        Ok(())
+        self.dirty.set(true);
+    }
+
+    /// Early-increment walk over every non-terminator of the function body, in
+    /// program order. Each block's instruction ids are snapshotted up front and
+    /// walked by index, so erasing the *yielded* instruction does not disturb the
+    /// walk (its successor is already fixed — LLVM's `make_early_inc_range`
+    /// idiom). Yields [`NonTerminator`] (so [`Self::erase`] takes it directly) and
+    /// never yields a terminator. Cascades (erasing instructions *ahead* of the
+    /// cursor) are a worklist's job, not the cursor's.
+    #[inline]
+    pub fn body_instructions(&self) -> impl Iterator<Item = NonTerminator<'ctx, B>> + '_ {
+        let module = self.module.module_ref();
+        self.function
+            .as_function()
+            .basic_blocks()
+            .flat_map(move |block| block.instruction_ids())
+            .filter_map(move |id| InstructionView::from_parts(id, module).as_non_terminator())
     }
 
     /// Replace every use of `view`'s result with `replacement`, leaving the
@@ -521,7 +591,7 @@ where
     /// [`Instruction::replace_all_uses_with`].
     #[inline]
     pub fn replace_all_uses<V>(
-        &mut self,
+        &self,
         view: &InstructionView<'ctx, B>,
         replacement: V,
     ) -> IrResult<()>
@@ -529,15 +599,111 @@ where
         V: IsValue<'ctx, B>,
     {
         let id = view.as_value().id();
+        // Capture the former users only when a worklist is active — the
+        // inactive path must stay allocation-free (the field's zero-overhead
+        // promise). The `borrow()` is a let-RHS temporary, released before the
+        // later `borrow_mut()`. Users must be captured *before* the RAUW rewires
+        // them.
+        let users: Vec<ValueId> = if self.worklist.borrow().is_some() {
+            view.as_value().users().map(|u| u.as_value().id).collect()
+        } else {
+            Vec::new()
+        };
         let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
-        inst.replace_all_uses_with(self.module, replacement)
+        inst.replace_all_uses_with(self.module, replacement)?;
+        if let Some(wl) = self.worklist.borrow_mut().as_mut() {
+            for user_id in users {
+                wl.push(user_id);
+            }
+        }
+        self.dirty.set(true);
+        Ok(())
+    }
+
+    /// Begin a worklist-driven fixpoint transform: activate a [`Worklist`] on this
+    /// mutator, seeded with every non-terminator of the function body in program
+    /// order. Drive it with `while let Some(inst) = scope.next() { ... }`, mutating
+    /// through `self` (`erase`/`replace_all_uses`) — those mutations maintain the
+    /// worklist automatically (cascade + self-remove). The worklist deactivates
+    /// when the returned scope drops.
+    ///
+    /// Only one [`WorklistScope`] may be active on a given `FnPatch` at a time;
+    /// creating a second while one is live panics.
+    pub fn worklist(&self) -> WorklistScope<'_, 'm, 'r, 'ctx, B, R> {
+        // Reject re-entry: the shared slot holds one worklist, and either
+        // scope's `Drop` resets it to `None`, so a nested scope would silently
+        // reseed and leave the outer scope inert. Fail loudly instead. The
+        // `borrow()` is a temporary released before the `borrow_mut()` below;
+        // `body_instructions()` does not touch `self.worklist`, so no overlap.
+        assert!(
+            self.worklist.borrow().is_none(),
+            "a WorklistScope is already active on this FnPatch; nested worklist scopes are not supported"
+        );
+        let mut wl = Worklist::new();
+        for inst in self.body_instructions() {
+            wl.push(inst.as_value().id());
+        }
+        *self.worklist.borrow_mut() = Some(wl);
+        WorklistScope { patch: self }
     }
 
     /// Finish: report the [`PatchBody`] preservation floor (CFG analyses
-    /// preserved). Consumes the mutator.
+    /// preserved) if anything was mutated, or everything-preserved if the
+    /// run was a no-op. Consumes the mutator. The all-preserved case is
+    /// *witnessed* by the dirty flag, so it needs no read-only pre-scan.
     #[inline]
     pub fn done(self) -> FnReport {
-        FnReport::from_pa(<PatchBody as FnAccess>::preserved_floor())
+        if self.dirty.get() {
+            FnReport::from_pa(<PatchBody as FnAccess>::preserved_floor())
+        } else {
+            FnReport::from_pa(PreservedAnalyses::all())
+        }
+    }
+}
+
+/// RAII handle activating a [`Worklist`] on an [`FnPatch`] for the duration of
+/// a fixpoint transform. Created by [`FnPatch::worklist`]: it seeds the
+/// worklist with every non-terminator of the function body and, on drop,
+/// deactivates it. [`Self::next`] pops the next instruction to process; the
+/// pass mutates through the `FnPatch` directly, and those mutations maintain
+/// the worklist (push cascade, self-remove) automatically.
+pub struct WorklistScope<'p, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    patch: &'p FnPatch<'m, 'r, 'ctx, B, R>,
+}
+
+impl<'p, 'm, 'r, 'ctx, B, R> WorklistScope<'p, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    /// Pop the next instruction to process, or `None` when the fixpoint is
+    /// reached. Skips terminators and erased ids (the latter never surface —
+    /// `erase` removes them).
+    #[inline]
+    pub fn next(&self) -> Option<NonTerminator<'ctx, B>> {
+        let module = self.patch.module.module_ref();
+        self.patch.worklist.borrow_mut().as_mut()?.pop(module)
+    }
+}
+
+impl<'p, 'm, 'r, 'ctx, B, R> Drop for WorklistScope<'p, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    #[inline]
+    fn drop(&mut self) {
+        *self.patch.worklist.borrow_mut() = None;
     }
 }
 
@@ -559,6 +725,24 @@ where
     'ctx: 'r,
 {
     patch: FnPatch<'m, 'r, 'ctx, B, R>,
+    /// Witnessed CFG-edit log: every structural edit method appends its own
+    /// [`CfgUpdate`] decomposition here as it runs. The driver drains this at
+    /// `done()` (and a future mid-pass repair reads it) to offer each cached
+    /// CFG analysis exactly the edits it must absorb — so preservation is
+    /// *observed*, never author-claimed. A [`RefCell`](core::cell::RefCell) for
+    /// the same reason [`FnPatch`]'s `dirty` flag is a `Cell`: the recording
+    /// edit methods append through a shared `&self` while IR mutation flows
+    /// through the interior-mutable module token.
+    cfg_updates: core::cell::RefCell<Vec<CfgUpdate>>,
+    /// Graveyard of freshly-repaired/recomputed analysis results produced by
+    /// [`Self::analysis_repaired`]. Each mid-pass repair pushes its owned result
+    /// here and hands back a borrow into it whose lifetime is tied to the
+    /// `&mut self` receiver — so holding a repaired CFG-analysis reference across
+    /// a later structural edit is a *compile error*, and the stale-read footgun
+    /// is unrepresentable rather than merely discouraged. Grows by one entry per
+    /// `analysis_repaired` call for the mutator's lifetime (a pass runs finitely
+    /// many repairs).
+    repaired: Vec<Box<dyn core::any::Any>>,
 }
 
 impl<'m, 'r, 'ctx, B, R> FnReshape<'m, 'r, 'ctx, B, R>
@@ -576,48 +760,69 @@ where
     ) -> Self {
         Self {
             patch: FnPatch::new(module, function, results),
+            cfg_updates: core::cell::RefCell::new(Vec::new()),
+            repaired: Vec::new(),
         }
     }
 
-    /// Read-only function view.
+    /// The CFG edits recorded by structural edit methods so far, in the order
+    /// they were performed. Each [`CfgUpdate`] was minted by the mutator itself
+    /// as it edited — the log is a *witnessed* fact, not an author claim. The
+    /// driver drains this to decide which cached CFG analyses it can mark
+    /// preserved (via the [`CfgIncremental`](crate::analysis) hook); exposed
+    /// here so tests and the driver can inspect it.
+    #[inline]
+    pub fn pending_cfg_updates(&self) -> Vec<CfgUpdate> {
+        self.cfg_updates.borrow().clone()
+    }
+
+    // The in-block-edit surface below is delegated to the inner `FnPatch` by
+    // hand rather than through `Deref`. `Deref<Target = FnPatch>` would also
+    // expose `FnPatch::analysis` — whose `&'r`-borrowed reference outlives a
+    // reshape edit — so a pass could read a CFG analysis, split a block, then
+    // read the now-stale cached reference. Withholding that method (and offering
+    // only [`Self::analysis_repaired`], whose result is tied to `&mut self`) is
+    // what makes the mid-reshape stale-read *unrepresentable*. `erase`/
+    // `replace_all_uses` are safe to expose: an in-block edit preserves the CFG,
+    // so it cannot invalidate a CFG analysis.
+
+    /// Read-only function view. Delegated from the inner [`FnPatch`].
     #[inline]
     pub fn function(&self) -> FunctionView<'ctx, B> {
         self.patch.function()
     }
 
-    /// Mutation-capable function-body view.
+    /// Mutation-capable function-body view. Delegated from the inner [`FnPatch`].
     #[inline]
     pub fn function_mut(&self) -> FunctionBody<'ctx, B> {
         self.patch.function_mut()
     }
 
-    /// Infallible access to a `Requires`-declared analysis result during
-    /// mutation. See [`FnPatch::analysis`].
+    /// Whether any mutation has been performed through this mutator (including
+    /// its inner [`FnPatch`] surface). Delegated from the inner [`FnPatch`].
     #[inline]
-    pub fn analysis<A2, I>(&self) -> &'r A2::Result
-    where
-        A2: FunctionAnalysis<'ctx, B>,
-        R: AnalysisSelector<'ctx, B, A2, I>,
-    {
-        self.patch.analysis::<A2, I>()
+    pub fn is_dirty(&self) -> bool {
+        self.patch.is_dirty()
     }
 
-    /// Mutation-capable module token.
+    /// Mutation-capable module token. Delegated from the inner [`FnPatch`].
     #[inline]
     pub fn module_mut(&self) -> &'m Module<'ctx, B, Unverified> {
         self.patch.module_mut()
     }
 
-    /// Erase a non-terminator instruction. See [`FnPatch::erase`].
+    /// Erase a non-terminator instruction. Delegated from the inner [`FnPatch`];
+    /// an in-block erase preserves the CFG, so it records no [`CfgUpdate`].
     #[inline]
-    pub fn erase(&mut self, view: &InstructionView<'ctx, B>) -> IrResult<()> {
-        self.patch.erase(view)
+    pub fn erase(&self, target: &NonTerminator<'ctx, B>) {
+        self.patch.erase(target);
     }
 
-    /// Replace every use of `view`'s result. See [`FnPatch::replace_all_uses`].
+    /// Replace every use of `view`'s result with `replacement`. Delegated from
+    /// the inner [`FnPatch`]; preserves the CFG.
     #[inline]
     pub fn replace_all_uses<V>(
-        &mut self,
+        &self,
         view: &InstructionView<'ctx, B>,
         replacement: V,
     ) -> IrResult<()>
@@ -627,6 +832,58 @@ where
         self.patch.replace_all_uses(view, replacement)
     }
 
+    /// Read a `Requires`-declared **CFG analysis** mid-reshape, brought up to
+    /// date with every structural edit recorded so far.
+    ///
+    /// This is the *only* way to read a CFG analysis on a reshape mutator, and
+    /// it is what makes the stale-read footgun unrepresentable. The returned
+    /// reference borrows `&mut self`, so the borrow checker forbids holding it
+    /// across any later mutator call (a structural edit, another repair, even an
+    /// erase): a stale read cannot be written down. To read again after an edit,
+    /// call this again — it re-derives from the freshly recorded edits.
+    ///
+    /// Mechanism: the recorded [`CfgUpdate`]s are drained and offered to a
+    /// working copy of the cached result through
+    /// [`CfgIncremental::apply_updates`]. If the analysis absorbs them
+    /// ([`RepairOutcome::Repaired`]) that copy is used; otherwise
+    /// ([`RepairOutcome::PreferRecompute`]) the result is recomputed from
+    /// scratch. Either way the fresh result is stored in the
+    /// mutator and a borrow into it is returned. The framework *witnesses* the
+    /// repair; the author never claims it.
+    ///
+    /// The bound `A::Result: CfgIncremental` is precisely the "this is a CFG
+    /// analysis" marker: value analyses (which a reshape edit cannot make stale)
+    /// have no such hook and are not read through here.
+    #[inline]
+    pub fn analysis_repaired<A, I>(&mut self) -> &A::Result
+    where
+        A: FunctionAnalysis<'ctx, B>,
+        A::Result: CfgIncremental<'ctx, B> + Clone,
+        R: AnalysisSelector<'ctx, B, A, I>,
+    {
+        // Snapshot (do NOT drain) the recorded edits: the log must survive for
+        // the driver's `done()`-flush, which repairs the FAM-cached result the
+        // same way. Recompute-based repair makes reading a snapshot each time
+        // correct regardless of call order.
+        let updates: Vec<CfgUpdate> = self.cfg_updates.get_mut().clone();
+        let function = self.patch.function();
+        // Offer the recorded edits to a working copy of the cached result; fall
+        // back to a from-scratch recompute when the analysis declines them.
+        let mut working = R::select(&self.patch.results).clone();
+        let fresh = match working.apply_updates(&updates, function) {
+            RepairOutcome::Repaired => working,
+            RepairOutcome::PreferRecompute => {
+                <A::Result as CfgIncremental<'ctx, B>>::recompute(function)
+            }
+        };
+        self.repaired.push(Box::new(fresh));
+        self.repaired
+            .last()
+            .expect("just pushed a result")
+            .downcast_ref::<A::Result>()
+            .expect("pushed value is A::Result")
+    }
+
     /// Split `block` before instruction `before`: `before` and everything after
     /// it move into a fresh block (named `name`) appended to the function; the
     /// original block keeps the prefix. The caller is responsible for adding a
@@ -634,7 +891,7 @@ where
     /// this rung distinct from [`FnPatch`]; wired to [`BasicBlock::split_at`].
     #[inline]
     pub fn split_block<Name>(
-        &mut self,
+        &self,
         block: &BasicBlockView<'ctx, B>,
         before: &InstructionView<'ctx, B>,
         name: Name,
@@ -642,18 +899,59 @@ where
     where
         Name: Into<String>,
     {
-        block
-            .as_basic_block()
-            .split_at(self.patch.module_mut(), before, name)
+        // Capture the successors of `block`'s terminator *before* the split
+        // moves that terminator into the new block — afterwards `block` is
+        // unterminated and has none. The split's own effect on the CFG is
+        // purely this rewiring: each edge `block → s` becomes `new_block → s`
+        // (the caller wires the fresh `block → new_block` edge later, through
+        // its own terminator, so that edge is not this method's to record).
+        let source = block.as_basic_block();
+        let source_id = source.as_value().id;
+        let successors = crate::cfg::block_successors(&source);
+
+        let new_block = source.split_at(self.patch.module_mut(), before, name)?;
+        let new_id = new_block.as_value().id;
+
+        if !successors.is_empty() {
+            let mut log = self.cfg_updates.borrow_mut();
+            for succ in &successors {
+                let succ_id = succ.as_value().id;
+                log.push(CfgUpdate::delete(source_id, succ_id));
+                log.push(CfgUpdate::insert(new_id, succ_id));
+            }
+        }
+        self.patch.dirty.set(true);
+        Ok(new_block)
     }
 
     /// Finish: report the [`ReshapeCfg`] preservation floor (`none()` — nothing
-    /// preserved). Consumes the mutator.
+    /// preserved) if anything was mutated, or everything-preserved if the run
+    /// was a no-op. Consumes the mutator; the no-op case is witnessed by the
+    /// dirty flag.
+    ///
+    /// The recorded [`CfgUpdate`] log rides out with the report so the driver's
+    /// `done()`-flush can offer it to cached CFG analyses — a floor of `none()`
+    /// is the *starting* point, and the framework then adds back exactly the
+    /// analyses it witnesses repair (never an author claim).
     #[inline]
     pub fn done(self) -> FnReport {
-        FnReport::from_pa(<ReshapeCfg as FnAccess>::preserved_floor())
+        let dirty = self.patch.is_dirty();
+        let updates = self.cfg_updates.into_inner();
+        let pa = if dirty {
+            <ReshapeCfg as FnAccess>::preserved_floor()
+        } else {
+            PreservedAnalyses::all()
+        };
+        FnReport::from_pa_with_cfg_updates(pa, updates)
     }
 }
+
+// NB: `FnReshape` deliberately does *not* `Deref` to `FnPatch`. A blanket
+// `Deref` would re-expose `FnPatch::analysis`, whose `&'r`-borrowed reference
+// outlives a reshape edit and so would reintroduce the mid-reshape stale-read
+// footgun this rung exists to eliminate. The in-block-edit surface is delegated
+// by hand above; CFG analyses are read only through the `&mut self`-tied
+// [`FnReshape::analysis_repaired`].
 
 impl MutatingFn for PatchBody {
     type Mutator<'m, 'r, 'ctx, B, R>
@@ -736,7 +1034,7 @@ impl MutatingFn for ReshapeCfg {
 }
 
 // ==========================================================================
-// Pass API v2 — module report, entry context, and mutator
+// capability-graded pass API — module report, entry context, and mutator
 // ==========================================================================
 
 /// The value a module pass returns. The module-level mirror of [`FnReport`]:
@@ -920,7 +1218,7 @@ where
 
     /// Transition into mutation: **consumes** the context and moves its module
     /// token and prefetched results into the rung's mutator. The `mam`/`fam`
-    /// cache-peek borrows end here — the read-only query phase is over (v1
+    /// cache-peek borrows end here — the read-only query phase is over (today's
     /// `for_each_function` needs no per-function prefetch). Once called,
     /// `unchanged()`/`done()` on the context are unspellable — the only report
     /// left is the mutator's `done()`, which carries the rung's preservation
@@ -1072,7 +1370,7 @@ mod tests {
     use crate::dominator_tree::DominatorTreeAnalysis;
     use crate::instruction::InstructionView;
     use crate::pass_access::{Inspect, PatchBody, ReshapeCfg, RewriteModule};
-    use crate::{IRBuilder, IntValue, IrError, Linkage, Module, Type};
+    use crate::{IRBuilder, IntValue, IrError, Linkage, Module, NoFolder, Type};
 
     /// The `Requires` list shared by these tests: a single CFG-shaped analysis
     /// so both the infallible accessor and the preservation floors have a
@@ -1111,7 +1409,7 @@ mod tests {
 
             // An inspect context can only report "all preserved".
             let report = cx.done();
-            assert!(report.into_pa().are_all_preserved());
+            assert!(report.into_parts().0.are_all_preserved());
             Ok(())
         })
     }
@@ -1152,8 +1450,12 @@ mod tests {
             );
 
             let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(&m, function, results);
-            let mut patch = cx.mutate();
-            patch.erase(&dead_view)?;
+            let patch = cx.mutate();
+            patch.erase(
+                &dead_view
+                    .as_non_terminator()
+                    .expect("dead add is a non-terminator"),
+            );
 
             // After mutation: only `ret` remains.
             assert_eq!(
@@ -1165,7 +1467,7 @@ mod tests {
             );
 
             let report = patch.done();
-            let pa = report.into_pa();
+            let pa = report.into_parts().0;
             let checker = pa.checker::<DominatorTreeAnalysis>();
             // CFG analyses survive an in-block edit; an arbitrary analysis does not.
             assert!(checker.preserved_set::<CFGAnalyses>());
@@ -1174,11 +1476,13 @@ mod tests {
         })
     }
 
-    /// A terminator handed to [`super::FnPatch::erase`] is a loud typed error,
-    /// never a silent CFG mutation — this is what keeps the CFG-preserved floor
-    /// sound. llvmkit-specific capability-context lock (no upstream analog).
+    /// A terminator cannot be narrowed to a [`NonTerminator`], which is the
+    /// only thing [`super::FnPatch::erase`] accepts — so a terminator-erase is
+    /// unrepresentable (a compile error, pinned by the `patchbody_cannot_erase_terminator`
+    /// trybuild fixture) rather than a runtime rejection. This is what keeps the
+    /// CFG-preserved floor sound. llvmkit-specific capability-context lock.
     #[test]
-    fn patchbody_erase_terminator_is_rejected() -> Result<(), IrError> {
+    fn terminator_does_not_narrow_to_non_terminator() -> Result<(), IrError> {
         Module::with_new("patch-term", |m| {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
@@ -1196,21 +1500,8 @@ mod tests {
                 .terminator()
                 .expect("block is terminated by the ret");
 
-            let mut fam = FunctionAnalysisManager::new();
-            Reqs::prefetch(&mut fam, function)?;
-            let results = Reqs::collect(&fam, function)?;
-
-            let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(&m, function, results);
-            let mut patch = cx.mutate();
-            // Erasing the terminator is refused; the `ret` stays put.
-            assert!(patch.erase(&terminator).is_err());
-            assert_eq!(
-                function
-                    .entry_block()
-                    .expect("definition has an entry block")
-                    .instruction_count(),
-                1
-            );
+            // The `ret` refuses to narrow, so it can never reach `erase`.
+            assert!(terminator.as_non_terminator().is_none());
             Ok(())
         })
     }
@@ -1247,12 +1538,97 @@ mod tests {
         })
     }
 
+    /// `body_instructions()` yields every non-terminator once in program order,
+    /// never the terminator, and erasing the yielded instruction mid-iteration
+    /// does not disturb the walk (early-increment). llvmkit-specific pass-authoring
+    /// primitive (no upstream analog: LLVM's make_early_inc_range is untyped).
+    #[test]
+    fn body_instructions_early_inc_erase_of_yielded() -> Result<(), IrError> {
+        Module::with_new("body-cursor", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let _d1 = b.build_int_add(x, 1_i32, "d1")?;
+            let _d2 = b.build_int_add(x, 2_i32, "d2")?;
+            b.build_ret(x)?;
+
+            let function = FunctionView::from(f);
+            let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
+            let patch = cx.mutate();
+
+            // Two non-terminators visited; the ret is never yielded. Erase each as
+            // it is yielded — early-inc means the walk is unperturbed.
+            let mut count = 0;
+            let names: Vec<_> = patch
+                .body_instructions()
+                .map(|nt| {
+                    count += 1;
+                    let name = nt.as_view().as_value().name();
+                    patch.erase(&nt); // erase the yielded instruction
+                    name
+                })
+                .collect();
+            assert_eq!(count, 2);
+            assert_eq!(names.len(), 2);
+            // Both dead adds gone; only ret remains.
+            assert_eq!(function.entry_block().expect("def").instruction_count(), 1);
+            let _ = patch.done();
+            Ok(())
+        })
+    }
+
     /// An [`super::FnReshape`] (`ReshapeCfg` rung) `done()` reports nothing
-    /// preserved — not even the CFG set. llvmkit-specific capability-context
-    /// lock (no upstream analog).
+    /// preserved — not even the CFG set — *once it has actually mutated* (the
+    /// dirty flag is set). llvmkit-specific capability-context lock (no upstream
+    /// analog).
     #[test]
     fn reshape_cfg_floor_is_none() -> Result<(), IrError> {
         Module::with_new("reshape-cx", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let dead = b.build_int_add::<i32, _, _, _>(
+                i32_ty.const_int(1_u32),
+                i32_ty.const_int(2_u32),
+                "dead",
+            )?;
+            b.build_ret(i32_ty.const_int(0_u32))?;
+
+            let function = FunctionView::from(f);
+            let mut fam = FunctionAnalysisManager::new();
+            Reqs::prefetch(&mut fam, function)?;
+            let results = Reqs::collect(&fam, function)?;
+
+            let cx: FnCx<'_, '_, '_, _, ReshapeCfg, Reqs> = FnCx::new(&m, function, results);
+            let reshape = cx.mutate();
+            // Erase the dead instruction so the dirty flag is set; only then
+            // does `done()` report the ReshapeCfg floor.
+            let dead_view = InstructionView::try_from(dead.as_value())?;
+            reshape.erase(
+                &dead_view
+                    .as_non_terminator()
+                    .expect("dead add is a non-terminator"),
+            );
+            let report = reshape.done();
+            let pa = report.into_parts().0;
+            let checker = pa.checker::<DominatorTreeAnalysis>();
+            assert!(!checker.preserved());
+            assert!(!checker.preserved_set::<CFGAnalyses>());
+            Ok(())
+        })
+    }
+
+    /// A witnessed no-op `ReshapeCfg` run — `mutate()` then `done()` with no
+    /// edit — reports everything preserved (the dirty flag saw nothing), so the
+    /// mutating rung's floor is *not* forced on a run that changed nothing.
+    #[test]
+    fn reshape_cfg_noop_preserves_everything() -> Result<(), IrError> {
+        Module::with_new("reshape-noop", |m| {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
             let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
@@ -1266,12 +1642,142 @@ mod tests {
             let results = Reqs::collect(&fam, function)?;
 
             let cx: FnCx<'_, '_, '_, _, ReshapeCfg, Reqs> = FnCx::new(&m, function, results);
+            let report = cx.mutate().done();
+            let pa = report.into_parts().0;
+            assert!(pa.checker::<DominatorTreeAnalysis>().preserved());
+            assert!(
+                pa.checker::<DominatorTreeAnalysis>()
+                    .preserved_set::<CFGAnalyses>()
+            );
+            Ok(())
+        })
+    }
+
+    /// `split_block` records its own CFG-edge decomposition as witnessed
+    /// [`CfgUpdate`](crate::CfgUpdate)s: the split moves the block's terminator
+    /// — and thus every out-edge — into the fresh block, so each `block → succ`
+    /// edge is logged as a delete paired with a `new_block → succ` insert. The
+    /// `block → new_block` edge is the caller's to wire (through a new
+    /// terminator), so it is deliberately absent from this method's log.
+    /// llvmkit-specific witnessed-preservation plumbing (no upstream analog:
+    /// LLVM's `DomTreeUpdater` is hand-fed its updates).
+    #[test]
+    fn split_block_records_edge_decomposition() -> Result<(), IrError> {
+        use crate::CfgUpdate;
+        Module::with_new("reshape-cfgupdate", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let next = f.append_basic_block(&m, "next");
+            // Ids captured up front — the block handles are consumed by the
+            // builders below.
+            let entry_id = entry.as_value().id;
+            let next_id = next.as_value().id;
+
+            // entry: %x = add 1, 2 ; br label %next
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let _x = b.build_int_add::<i32, _, _, _>(
+                i32_ty.const_int(1_u32),
+                i32_ty.const_int(2_u32),
+                "x",
+            )?;
+            b.build_br(next.label())?;
+            // next: ret 0
+            let b2 = IRBuilder::new_for::<i32>(&m).position_at_end(next);
+            b2.build_ret(i32_ty.const_int(0_u32))?;
+
+            let function = FunctionView::from(f);
+            let mut fam = FunctionAnalysisManager::new();
+            Reqs::prefetch(&mut fam, function)?;
+            let results = Reqs::collect(&fam, function)?;
+
+            let cx: FnCx<'_, '_, '_, _, ReshapeCfg, Reqs> = FnCx::new(&m, function, results);
             let reshape = cx.mutate();
-            let report = reshape.done();
-            let pa = report.into_pa();
-            let checker = pa.checker::<DominatorTreeAnalysis>();
-            assert!(!checker.preserved());
-            assert!(!checker.preserved_set::<CFGAnalyses>());
+
+            // Nothing recorded before any structural edit.
+            assert!(reshape.pending_cfg_updates().is_empty());
+
+            // Split the entry before its terminator: `br next` (with its
+            // out-edge) moves into the fresh block.
+            let entry_view = function
+                .entry_block()
+                .expect("definition has an entry block");
+            let terminator = entry_view
+                .as_basic_block()
+                .terminator()
+                .expect("entry is terminated by the br");
+            let new_block = reshape.split_block(&entry_view, &terminator, "entry.split")?;
+            let new_id = new_block.as_value().id;
+
+            // Exactly the rewiring: entry loses `→ next`, the new block gains it.
+            assert_eq!(
+                reshape.pending_cfg_updates(),
+                vec![
+                    CfgUpdate::delete(entry_id, next_id),
+                    CfgUpdate::insert(new_id, next_id),
+                ],
+            );
+            Ok(())
+        })
+    }
+
+    /// [`super::FnReshape::analysis_repaired`] returns a CFG analysis rebuilt
+    /// from the *current* (post-edit) CFG, not the stale cached one. Splitting
+    /// the entry before its terminator moves the `entry → next` edge into a
+    /// fresh block that nothing yet flows into, so `next` becomes unreachable —
+    /// a fact the pre-edit cached tree still records as reachable, and the
+    /// repaired tree correctly reflects. llvmkit-specific witnessed-preservation
+    /// plumbing (no upstream analog).
+    #[test]
+    fn analysis_repaired_reflects_the_edit() -> Result<(), IrError> {
+        Module::with_new("reshape-repaired", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let next = f.append_basic_block(&m, "next");
+            let next_label = next.label();
+
+            // entry: %x = add 1, 2 ; br label %next    next: ret 0
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let _x = b.build_int_add::<i32, _, _, _>(
+                i32_ty.const_int(1_u32),
+                i32_ty.const_int(2_u32),
+                "x",
+            )?;
+            b.build_br(next.label())?;
+            let b2 = IRBuilder::new_for::<i32>(&m).position_at_end(next);
+            b2.build_ret(i32_ty.const_int(0_u32))?;
+
+            let function = FunctionView::from(f);
+            let mut fam = FunctionAnalysisManager::new();
+            Reqs::prefetch(&mut fam, function)?;
+
+            // Pre-edit cached tree: `next` is reachable (entry → next).
+            assert!(
+                fam.get_cached_result::<DominatorTreeAnalysis, _>(function)
+                    .expect("dom tree was prefetched")
+                    .is_reachable_from_entry(next_label)
+            );
+
+            let results = Reqs::collect(&fam, function)?;
+            let cx: FnCx<'_, '_, '_, _, ReshapeCfg, Reqs> = FnCx::new(&m, function, results);
+            let mut reshape = cx.mutate();
+
+            let entry_view = function
+                .entry_block()
+                .expect("definition has an entry block");
+            let terminator = entry_view
+                .as_basic_block()
+                .terminator()
+                .expect("entry is terminated by the br");
+            let _new = reshape.split_block(&entry_view, &terminator, "entry.split")?;
+
+            // The repaired tree recomputed from the current CFG, in which `next`
+            // is no longer reachable — proving it is not the stale cache.
+            let dt = reshape.analysis_repaired::<DominatorTreeAnalysis, _>();
+            assert!(!dt.is_reachable_from_entry(next_label));
             Ok(())
         })
     }
@@ -1412,12 +1918,12 @@ mod tests {
             let mut r = cx.mutate();
 
             let mut visited: Vec<FunctionView<'_, _>> = Vec::new();
-            r.for_each_function::<PatchBody>(|mut p| {
+            r.for_each_function::<PatchBody>(|p| {
                 let fv = p.function();
                 visited.push(fv);
                 for (f, dead) in &dead_by_fn {
                     if *f == fv {
-                        p.erase(dead)?;
+                        p.erase(&dead.as_non_terminator().expect("dead is a non-terminator"));
                     }
                 }
                 Ok(())
@@ -1434,5 +1940,136 @@ mod tests {
             assert_eq!(fv2.entry_block().expect("def").instruction_count(), 1);
             Ok(())
         })
+    }
+
+    /// A straight-line chain `a -> b -> c` of dead instructions (each only used
+    /// by the next) drains to the transitive-dead fixpoint in ONE seed+drain,
+    /// with no restart scan: the pre-seeded LIFO visits uses before defs, so
+    /// erasing each dead instruction as it surfaces clears the whole chain in a
+    /// single pass. (The operand-push cascade is exercised directly by
+    /// `erase_pushes_operands_onto_active_worklist`; here the point is the
+    /// fixpoint-in-one-drain, not the re-push.) llvmkit-specific pass-authoring
+    /// primitive (no upstream analog).
+    #[test]
+    fn worklist_operand_cascade_reaches_fixpoint() -> Result<(), IrError> {
+        Module::with_new("wl-cascade", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            // a = x+1 (used by b), b = a+1 (used by c), c = b+1 (unused/dead).
+            let a = b.build_int_add(x, 1_i32, "a")?;
+            let bb = b.build_int_add(a, 1_i32, "b")?;
+            let _c = b.build_int_add(bb, 1_i32, "c")?;
+            b.build_ret(x)?;
+
+            let function = FunctionView::from(f);
+            let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
+            let patch = cx.mutate();
+
+            // Seed + drain once: only `c` is dead initially, but erasing it makes
+            // `b` dead, then `a`. One drain removes all three.
+            let scope = patch.worklist();
+            while let Some(inst) = scope.next() {
+                if crate::dce::is_trivially_dead(&inst.as_view()) {
+                    patch.erase(&inst);
+                }
+            }
+            drop(scope);
+            // Only the ret survives.
+            assert_eq!(function.entry_block().expect("def").instruction_count(), 1);
+            let _ = patch.done();
+            Ok(())
+        })
+    }
+
+    /// `erase` on an active worklist re-pushes the erased instruction's
+    /// operand-defining instructions — the cascade's engine. Directly
+    /// discriminating: with the seed already fully drained, the erased `%b`'s
+    /// instruction operand `%a` resurfaces ONLY because `erase` re-pushed it (a
+    /// non-instruction operand — the constant `1` — is skipped by the
+    /// panic-safe pop). Deleting the push loop in `erase` makes the final
+    /// `scope.next()` return `None` and this test fail. llvmkit-specific
+    /// pass-authoring primitive (no upstream analog).
+    #[test]
+    fn erase_pushes_operands_onto_active_worklist() -> Result<(), IrError> {
+        Module::with_new("wl-erase-push", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            // a = x+1 ; b = a+1 (so b's operand `a` IS an instruction) ; ret x.
+            let a = b.build_int_add(x, 1_i32, "a")?;
+            let bb = b.build_int_add(a, 1_i32, "b")?;
+            b.build_ret(x)?;
+            let a_id = a.as_value().id;
+            let b_id = bb.as_value().id;
+
+            let function = FunctionView::from(f);
+            let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
+            let patch = cx.mutate();
+
+            // Seed [a, b]; drain the seed WITHOUT erasing, saving `b`'s handle.
+            // LIFO pops `b` first, then `a`; then the worklist is empty and both
+            // instructions are still attached.
+            let scope = patch.worklist();
+            let first = scope.next().expect("seed pops b first (LIFO)");
+            assert_eq!(first.as_value().id, b_id, "LIFO seed order: b before a");
+            let second = scope.next().expect("seed pops a second");
+            assert_eq!(second.as_value().id, a_id);
+            assert!(scope.next().is_none(), "seed fully drained");
+
+            // Erase `b` through the active worklist: this must push `b`'s
+            // operand defs, including the instruction `%a` (the constant `1` is
+            // skipped by the panic-safe pop).
+            patch.erase(&first);
+
+            // `%a` resurfaces ONLY because `erase` re-pushed it. Without the
+            // push loop this is `None`.
+            let resurfaced = scope.next();
+            assert_eq!(
+                resurfaced
+                    .expect("a re-pushed by erase's operand cascade")
+                    .as_value()
+                    .id,
+                a_id,
+            );
+            drop(scope);
+            let _ = patch.done();
+            Ok(())
+        })
+    }
+
+    /// A second [`super::FnPatch::worklist`] call while an earlier
+    /// [`super::WorklistScope`] is still live panics rather than silently
+    /// clobbering the shared slot (which would leave the outer scope inert and
+    /// its `Drop` reset the inner's worklist). llvmkit-specific pass-authoring
+    /// guardrail (no upstream analog).
+    #[test]
+    #[should_panic(expected = "already active")]
+    fn nested_worklist_scopes_panic() {
+        Module::with_new("wl-nested", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let _a = b.build_int_add(x, 1_i32, "a")?;
+            b.build_ret(x)?;
+
+            let function = FunctionView::from(f);
+            let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
+            let patch = cx.mutate();
+
+            let _s1 = patch.worklist();
+            let _s2 = patch.worklist(); // must panic: a scope is already active
+            Ok::<(), IrError>(())
+        })
+        .expect("unreachable: the second worklist() call panics first");
     }
 }

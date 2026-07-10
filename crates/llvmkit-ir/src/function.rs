@@ -1,9 +1,7 @@
 //! Function value. Mirrors `llvm/include/llvm/IR/Function.h` and
 //! `llvm/lib/IR/Function.cpp`.
 //!
-//! ## What's shipped
-//!
-//! Phase D minimum: enough to model `define <ret> @name(<params>) { ... }`
+//! Models `define <ret> @name(<params>) { ... }`
 //! with `Linkage`, visibility, DLL storage class, DSO locality, calling
 //! convention, [`UnnamedAddr`], address space, section/partition, comdat,
 //! alignment, GC, prefix/prologue/personality data, metadata attachments, and
@@ -19,7 +17,7 @@
 //! - Basic blocks live in a `RefCell<Vec<ValueId>>` so the IRBuilder
 //!   can append while holding a `&'ctx ModuleCore` borrow.
 //!
-//! ## Return-type safety (Phase A3)
+//! ## Return-type safety
 //!
 //! [`FunctionValue<'ctx, R>`] carries a [`ReturnMarker`] generic. A
 //! function known to return `i32` is spelled

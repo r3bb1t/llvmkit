@@ -7,8 +7,9 @@
 //! `#[llvmkit(name = "...")]`, `#[llvmkit(packed)]`, and
 //! `#[llvmkit(crate = path::to::ir)]`.
 //!
-//! `#[function_pass]` / `#[module_pass]` are ergonomics sugar for the Pass API
-//! v2: each expands an inherent `impl Pass { fn run(..) }` block into exactly the
+//! `#[function_pass]` / `#[module_pass]` are ergonomics sugar for the
+//! capability-graded pass API: each expands an inherent
+//! `impl Pass { fn run(..) }` block into exactly the
 //! raw `FunctionPass`/`ModulePass` trait impl a user could hand-write, hiding the
 //! `impl<'ctx, B: ModuleBrand + 'ctx> … for` header, the associated-item block,
 //! and the `run` lifetimes. Zero runtime cost — the output is the same impl.

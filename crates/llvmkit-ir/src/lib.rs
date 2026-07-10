@@ -2,7 +2,8 @@
 //! LLVM IR data model in pure safe Rust.
 //!
 //! `llvmkit-ir` mirrors the relevant `llvm/lib/IR/` and `llvm/include/llvm/IR/`
-//! surfaces from LLVM 22.1.4: typed IR construction, AsmWriter printing,
+//! surfaces from LLVM 22.1.4: typed IR construction, SSA construction, an
+//! instruction taxonomy with a pattern-matcher DSL, AsmWriter printing,
 //! structural verification, CFG and dominance queries, and a capability-graded,
 //! new-pass-manager-inspired analysis and pass API. It does not link `libLLVM`.
 //!
@@ -47,8 +48,11 @@
 //! - [`pass_context`] — the pass-author contexts ([`FnCx`]/[`ModCx`]) and mutators.
 //! - [`analysis`] — built-in analyses and the bundled [`Analyses`] manager.
 //!
-//! The surface is intentionally incomplete: bitcode, a broad built-in transform
-//! library, and PassBuilder-style pipeline builders are still ahead.
+//! A few transform passes ship today (`DcePass`, `InstSimplifyPass`,
+//! `SimplifyDemandedBitsPass`), and pipeline recipes plus a textual-pipeline
+//! parser are in [`pass_pipeline`]. The surface is still intentionally
+//! incomplete: a broad built-in transform library, bitcode, and a
+//! pipeline-*execution* engine (running a parsed pipeline) are ahead.
 
 pub mod align;
 pub mod analysis;
@@ -64,6 +68,7 @@ pub mod basic_block;
 pub mod block_state;
 pub mod calling_conv;
 pub mod cfg;
+pub mod cfg_update;
 pub mod cmp_predicate;
 pub mod comdat;
 pub mod constant;
@@ -101,6 +106,7 @@ pub mod iter;
 pub mod known_bits;
 pub(crate) mod llvm_context;
 pub mod marker;
+pub mod matchers;
 pub mod metadata;
 pub mod module;
 pub mod named_md_node;
@@ -129,15 +135,17 @@ pub mod value_symbol_table;
 pub mod value_tracking;
 pub mod vector_element;
 pub mod verifier;
+pub mod worklist;
 
 pub mod unnamed_addr;
 pub use analysis::{
     AllAnalysesOnFunction, AllAnalysesOnModule, Analyses, AnalysisKeyId, AnalysisSelector,
-    AnalysisSetKeyId, CFGAnalyses, FunctionAnalysis, FunctionAnalysisInvalidator,
+    AnalysisSetKeyId, CFGAnalyses, CfgIncremental, FunctionAnalysis, FunctionAnalysisInvalidator,
     FunctionAnalysisList, FunctionAnalysisManager, FunctionAnalysisManagerModuleProxy,
     FunctionAnalysisResult, Idx0, Idx1, Idx2, Idx3, Idx4, Idx5, Idx6, Idx7, ModuleAnalysis,
     ModuleAnalysisInvalidator, ModuleAnalysisList, ModuleAnalysisManager, ModuleAnalysisResult,
-    ModuleAnalysisSelector, PreservedAnalyses, PreservedAnalysisChecker,
+    ModuleAnalysisSelector, PrefetchableAnalysis, PreservedAnalyses, PreservedAnalysisChecker,
+    RepairOutcome,
 };
 pub use ap_float::{
     ApFloat, ApFloatCategory, ApFloatCmpResult, ApFloatNextDirection, ApFloatSemantics,
@@ -156,6 +164,7 @@ pub use basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
 pub use block_state::{BlockTerminationState, Terminated, Unterminated};
 pub use calling_conv::CallingConv;
 pub use cfg::{BasicBlockEdge, FunctionCfg};
+pub use cfg_update::{CfgEdge, CfgUpdate};
 pub use cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 pub use comdat::{ComdatRef, SelectionKind};
 pub use constant::{
@@ -223,16 +232,21 @@ pub use instr_types::{
     LShrFlags, MulFlags, OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags, SDivFlags,
     ShlFlags, SubFlags, TailCallKind, TruncFlags, UDivFlags, UIToFpFlags, UnaryOpcode, ZExtFlags,
 };
-pub use instruction::{Instruction, InstructionKind, InstructionView, TerminatorKind};
+pub use instruction::{
+    CastKind, Classified, Instruction, InstructionKind, InstructionView, NonTerminator, PhiKind,
+    TerminatorKind,
+};
 pub use instructions::{
-    AShrInst, AddInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst, BranchInst,
-    CallBrInst, CallInst, CastInst, CatchPadInst, CatchReturnInst, CatchSwitchInst, CleanupPadInst,
-    CleanupReturnInst, ExtractElementInst, ExtractValueInst, FAddInst, FCmpInst, FDivInst,
-    FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FpPhiInst, FreezeInst, GepInst, ICmpInst,
-    IndirectBrInst, InsertElementInst, InsertValueInst, InvokeInst, LShrInst, LandingPadInst,
-    LoadInst, MulInst, OrInst, PhiInst, PointerPhiInst, ResumeInst, RetInst, SDivInst, SRemInst,
-    SelectInst, ShlInst, ShuffleVectorInst, StoreInst, SubInst, SwitchInst, TypedCallInst,
-    UDivInst, URemInst, UnreachableInst, VAArgInst, XorInst,
+    AShrInst, AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst,
+    BinaryOp, BitCastInst, BranchInst, CallBrInst, CallInst, Callee, CatchPadInst, CatchReturnInst,
+    CatchSwitchInst, CleanupPadInst, CleanupReturnInst, Cmp, ExtractElementInst, ExtractValueInst,
+    FAddInst, FCmpInst, FDivInst, FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FpExtInst,
+    FpPhiInst, FpToSIInst, FpToUIInst, FpTruncInst, FreezeInst, GepInst, ICmpInst, IndirectBrInst,
+    InsertElementInst, InsertValueInst, IntToPtrInst, InvokeInst, LShrInst, LandingPadInst,
+    LoadInst, MulInst, OrInst, OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst,
+    ResumeInst, RetInst, SDivInst, SExtInst, SIToFpInst, SRemInst, SelectInst, ShlInst,
+    ShuffleVectorInst, StoreInst, SubInst, SwitchInst, TruncInst, TypedCallInst, UDivInst,
+    UIToFpInst, URemInst, UnreachableInst, VAArgInst, XorInst, ZExtInst,
 };
 pub use intrinsic_inst::{IntrinsicInst, LifetimeIntrinsic, MemIntrinsic};
 pub use intrinsics::{
@@ -257,7 +271,7 @@ pub use module::{
     ModuleId, ModuleRef, ModuleView, Unverified, UseListOrderBBRecord, UseListOrderRecord,
     Verified,
 };
-pub use operator::OverflowingBinaryOperator;
+pub use operator::{OverflowingBinaryOperator, PossiblyExactOperator};
 pub use optimization_level::{
     OptLevelO0, OptLevelO1, OptLevelO2, OptLevelO3, OptLevelOs, OptLevelOz, OptimizationLevel,
     OptimizationLevelMarker, ThinOrFullLtoPhase,
@@ -316,6 +330,7 @@ pub use value::{
     IsValue, PointerValue, StructValue, Typed, Value, ValueCategory, ValueId, VectorValue,
 };
 pub use vector_element::{VectorDyn, VectorElement};
+pub use worklist::Worklist;
 
 pub use align::{Align, MaybeAlign};
 pub use float_kind::{

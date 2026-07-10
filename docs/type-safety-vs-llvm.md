@@ -539,6 +539,12 @@ open/closed pattern is used for `switch`, `indirectbr`, `landingpad`, and
 `TerminatorKind` also returns closed variants, so it cannot reopen a finalized
 variable-arity instruction.
 
+The closed views are still fully inspectable: each variable-arity terminator
+exposes a reader for its entries — `SwitchInst::cases()` yields
+`(case_value, target)` pairs, and `IndirectBrInst::destinations()`,
+`LandingPadInst::clauses()`, and `CatchSwitchInst::handlers()` yield their
+respective lists. Reading the entries never risks reopening the instruction.
+
 ## 10. Verification state is part of module type
 
 LLVM C++ verification is a convention: a caller chooses whether to run
@@ -741,6 +747,55 @@ is only known at run time), so they commit at construction instead —
 `Module<Verified>`, while `DynFunctionPipeline` accepts any pass and always
 yields `Module<Unverified>`.
 
+## 12. Instruction inspection is exhaustive and precisely typed
+
+In LLVM C++ a pass inspects an instruction with `isa`/`dyn_cast` plus
+`getOpcode()`, and operand accessors hand back `Value *`:
+
+```cpp
+if (auto *LI = dyn_cast<LoadInst>(&I)) {
+  Value *Ptr = LI->getPointerOperand();   // Value*, re-check the type yourself
+}
+switch (cast<CastInst>(&I)->getOpcode()) { /* runtime opcode dispatch */ }
+```
+
+`llvmkit` makes the same inspection a `match` over an exhaustive enum, and it
+carries the types the IR grammar already guarantees:
+
+```rust
+match view.classify() {
+    // Total: every instruction is a non-terminator or a terminator, so there
+    // is no overloaded `None` to forget an `is_terminator()` guard for.
+    Classified::Inst(InstructionKind::Load(load)) => {
+        let ptr: PointerValue = load.pointer();     // typed, not an erased Value
+    }
+    Classified::Inst(InstructionKind::Cast(CastKind::PtrToInt(c))) => {
+        let src: PointerValue = c.src();            // one handle per cast opcode
+    }
+    Classified::Term(TerminatorKind::Switch(sw)) => {
+        for (case_value, target) in sw.cases() { /* ... */ }
+    }
+    _ => {}
+}
+```
+
+`InstructionKind` and `TerminatorKind` are `#[non_exhaustive]`-free on purpose:
+a new opcode is a compile error in every `match` that has not considered it,
+which is the point — a silent `_` fallthrough would let a new opcode inherit
+whatever the wildcard does. Casts split into `CastKind` (one handle per opcode,
+mirroring LLVM's `TruncInst`/`ZExtInst`/… classes), and phis into
+`PhiKind { Int, Fp, Ptr, Other }` chosen from the phi's *result type* — so the
+narrowing accessor is always sound and there is no integer-flavored handle whose
+`as_int_value()` would lie on an `f64` or pointer phi.
+
+Where a single-opcode `match` is too fine, grouped views recover the C++
+`dyn_cast<BinaryOperator>` / `dyn_cast<CmpInst>` ergonomics without losing the
+opcode: `InstructionKind::as_binary_op()` exposes `lhs`/`rhs`/`opcode`/`nuw`/
+`nsw`/`exact`/`is_commutative` across all eighteen arithmetic opcodes, and
+`as_cmp()` exposes `lhs`/`rhs` and a unified `CmpPredicate` over `icmp`/`fcmp`.
+The flag overlays `OverflowingBinaryOperator` (add/sub/mul/shl) and
+`PossiblyExactOperator` (udiv/sdiv/lshr/ashr) mirror LLVM's `Operator.h` split.
+
 ## What llvmkit still verifies at runtime
 
 `llvmkit` intentionally does not pretend every LLVM rule is local enough for the
@@ -790,7 +845,7 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/cross_module_branch_target.rs");
     t.compile_fail("tests/compile_fail/cross_module_select_arm.rs");
     t.compile_fail("tests/compile_fail/custom_folder_wrong_brand.rs");
-    // Pass API v2 locks (section 11):
+    // Capability-graded pass API locks (section 11):
     t.compile_fail("tests/compile_fail/inspect_pass_cannot_mutate.rs");
     t.compile_fail("tests/compile_fail/claim_preserved_after_mutate.rs");
     t.compile_fail("tests/compile_fail/undeclared_analysis_in_pass_body.rs");

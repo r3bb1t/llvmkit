@@ -30,21 +30,22 @@ use super::atomicrmw_binop::AtomicRMWBinOp;
 use super::basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
 use super::block_state::Unterminated;
 use super::calling_conv::CallingConv;
-use super::cmp_predicate::{FloatPredicate, IntPredicate};
+use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 use super::derived_types::FunctionType;
 use super::float_kind::{FloatKind, IntoFloatValue};
 use super::fmf::FastMathFlags;
+use super::function::FunctionValue;
 use super::function_signature::{FunctionReturn, token::ValidatedCallResult};
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::instr_types::TailCallKind;
 use super::instr_types::{
-    BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
+    BinaryOpData, BinaryOpcode, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
     LandingPadClauseKind, PhiData, ReturnOpData,
 };
 use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::{IntDyn, IntWidth, IntoIntValue};
 use super::marker::{Dyn, Ptr, ReturnMarker};
-use super::module::{Brand, ModuleBrand, ModuleRef};
+use super::module::{Brand, Module, ModuleBrand, ModuleRef, Unverified};
 use super::phi_state::{Closed, Open, PhiState};
 use super::sync_scope::SyncScope;
 use super::term_open_state::{Closed as TermClosed, Open as TermOpen, TermOpenState};
@@ -208,6 +209,190 @@ decl_binop_handle!(
     FRemInst, FRem
 );
 
+/// Grouped view over any binary operator (`add`..`frem`). Lets a pass read
+/// `lhs`/`rhs`/`opcode`/flags without matching all eighteen opcodes —
+/// mirrors matching LLVM's `BinaryOperator` base then reading
+/// `getOpcode()`. Obtain one via
+/// [`InstructionKind::as_binary_op`](crate::InstructionKind::as_binary_op).
+#[derive(Debug, Clone, Copy)]
+pub struct BinaryOp<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) ty: TypeId,
+    pub(super) opcode: BinaryOpcode,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> BinaryOp<'ctx, B> {
+    pub(super) fn from_value(v: Value<'ctx, B>, opcode: BinaryOpcode) -> Self {
+        Self {
+            id: v.id,
+            module: v.module,
+            ty: v.ty,
+            opcode,
+        }
+    }
+
+    fn payload(&self) -> &'ctx BinaryOpData {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::Add(b)
+                | InstructionKindData::Sub(b)
+                | InstructionKindData::Mul(b)
+                | InstructionKindData::UDiv(b)
+                | InstructionKindData::SDiv(b)
+                | InstructionKindData::URem(b)
+                | InstructionKindData::SRem(b)
+                | InstructionKindData::Shl(b)
+                | InstructionKindData::LShr(b)
+                | InstructionKindData::AShr(b)
+                | InstructionKindData::And(b)
+                | InstructionKindData::Or(b)
+                | InstructionKindData::Xor(b)
+                | InstructionKindData::FAdd(b)
+                | InstructionKindData::FSub(b)
+                | InstructionKindData::FMul(b)
+                | InstructionKindData::FDiv(b)
+                | InstructionKindData::FRem(b) => b,
+                _ => unreachable!("BinaryOp invariant: kind is a binary operator"),
+            },
+            _ => unreachable!("BinaryOp invariant: kind is Instruction"),
+        }
+    }
+
+    /// The binary opcode.
+    #[inline]
+    pub const fn opcode(self) -> BinaryOpcode {
+        self.opcode
+    }
+    /// Left-hand operand. Mirrors `getOperand(0)`.
+    pub fn lhs(self) -> Value<'ctx, B> {
+        let id = self.payload().lhs.get();
+        let module = self.module.module();
+        let data = module.context().value_data(id);
+        Value::from_parts(id, self.module, data.ty)
+    }
+    /// Right-hand operand. Mirrors `getOperand(1)`.
+    pub fn rhs(self) -> Value<'ctx, B> {
+        let id = self.payload().rhs.get();
+        let module = self.module.module();
+        let data = module.context().value_data(id);
+        Value::from_parts(id, self.module, data.ty)
+    }
+    /// `nuw` flag (meaningful only for the overflowing operators).
+    #[inline]
+    pub fn has_no_unsigned_wrap(self) -> bool {
+        self.payload().no_unsigned_wrap
+    }
+    /// `nsw` flag (meaningful only for the overflowing operators).
+    #[inline]
+    pub fn has_no_signed_wrap(self) -> bool {
+        self.payload().no_signed_wrap
+    }
+    /// `exact` flag (meaningful only for the exact-capable operators).
+    #[inline]
+    pub fn is_exact(self) -> bool {
+        self.payload().is_exact
+    }
+    /// Whether operands may be swapped without changing the result.
+    #[inline]
+    pub fn is_commutative(self) -> bool {
+        self.opcode.is_commutative()
+    }
+    /// Read-only erased instruction view.
+    #[inline]
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        InstructionView::from_parts(self.id, self.module)
+    }
+    /// Widen to the erased [`Value`] handle (the result).
+    #[inline]
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        Value::from_parts(self.id, self.module, self.ty)
+    }
+}
+
+/// Grouped view over `icmp`/`fcmp`. Lets a pass read `lhs`/`rhs` and a
+/// unified [`CmpPredicate`] without caring which comparison it is —
+/// mirrors matching LLVM's `CmpInst` base then reading `getPredicate()`.
+/// Obtain one via
+/// [`InstructionKind::as_cmp`](crate::InstructionKind::as_cmp).
+#[derive(Debug, Clone, Copy)]
+pub struct Cmp<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) ty: TypeId,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> Cmp<'ctx, B> {
+    pub(super) fn from_value(v: Value<'ctx, B>) -> Self {
+        Self {
+            id: v.id,
+            module: v.module,
+            ty: v.ty,
+        }
+    }
+
+    /// The comparison predicate, tagged integer or float.
+    pub fn predicate(self) -> CmpPredicate {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::ICmp(c) => CmpPredicate::Int(c.predicate),
+                InstructionKindData::FCmp(c) => CmpPredicate::Float(c.predicate),
+                _ => unreachable!("Cmp invariant: kind is ICmp or FCmp"),
+            },
+            _ => unreachable!("Cmp invariant: kind is Instruction"),
+        }
+    }
+    /// `true` for `icmp`, `false` for `fcmp`.
+    pub fn is_integer(self) -> bool {
+        matches!(self.predicate(), CmpPredicate::Int(_))
+    }
+    /// Left-hand operand.
+    pub fn lhs(self) -> Value<'ctx, B> {
+        self.operand(true)
+    }
+    /// Right-hand operand.
+    pub fn rhs(self) -> Value<'ctx, B> {
+        self.operand(false)
+    }
+    fn operand(self, left: bool) -> Value<'ctx, B> {
+        let module = self.module.module();
+        let id = match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::ICmp(c) => {
+                    if left {
+                        c.lhs.get()
+                    } else {
+                        c.rhs.get()
+                    }
+                }
+                InstructionKindData::FCmp(c) => {
+                    if left {
+                        c.lhs.get()
+                    } else {
+                        c.rhs.get()
+                    }
+                }
+                _ => unreachable!("Cmp invariant: kind is ICmp or FCmp"),
+            },
+            _ => unreachable!("Cmp invariant: kind is Instruction"),
+        };
+        let data = module.context().value_data(id);
+        Value::from_parts(id, self.module, data.ty)
+    }
+    /// Read-only erased instruction view.
+    #[inline]
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        InstructionView::from_parts(self.id, self.module)
+    }
+    /// Widen to the erased [`Value`] handle (the `i1`/vector result).
+    #[inline]
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        Value::from_parts(self.id, self.module, self.ty)
+    }
+}
+
 /// Common scaffolding used by every non-macro handle.
 macro_rules! decl_handle_scaffold {
     ($name:ident) => {
@@ -308,11 +493,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> LoadInst<'ctx, B> {
     pub fn loaded_ty(self) -> Type<'ctx, B> {
         Type::new(self.ty, self.module)
     }
-    pub fn pointer(self) -> Value<'ctx, B> {
+    /// Pointer operand. Statically a pointer for this opcode, so returned
+    /// as [`PointerValue`] rather than the erased [`Value`].
+    pub fn pointer(self) -> PointerValue<'ctx, B> {
         let id = self.payload().ptr.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
-        Value::from_parts(id, self.module, data.ty)
+        PointerValue::from_value_unchecked(Value::from_parts(id, self.module, data.ty))
     }
     pub fn align(self) -> Option<Align> {
         self.payload().align.align()
@@ -370,11 +557,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> StoreInst<'ctx, B> {
         let data = module.context().value_data(id);
         Value::from_parts(id, self.module, data.ty)
     }
-    pub fn pointer(self) -> Value<'ctx, B> {
+    /// Pointer operand. Statically a pointer for this opcode, so returned
+    /// as [`PointerValue`] rather than the erased [`Value`].
+    pub fn pointer(self) -> PointerValue<'ctx, B> {
         let id = self.payload().ptr.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
-        Value::from_parts(id, self.module, data.ty)
+        PointerValue::from_value_unchecked(Value::from_parts(id, self.module, data.ty))
     }
     pub fn align(self) -> Option<Align> {
         self.payload().align.align()
@@ -425,11 +614,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> GepInst<'ctx, B> {
     pub fn source_element_type(self) -> Type<'ctx, B> {
         Type::new(self.payload().source_ty, self.module)
     }
-    pub fn pointer(self) -> Value<'ctx, B> {
+    /// Pointer operand. Statically a pointer for this opcode, so returned
+    /// as [`PointerValue`] rather than the erased [`Value`].
+    pub fn pointer(self) -> PointerValue<'ctx, B> {
         let id = self.payload().ptr.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
-        Value::from_parts(id, self.module, data.ty)
+        PointerValue::from_value_unchecked(Value::from_parts(id, self.module, data.ty))
     }
     pub fn indices(self) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + 'ctx {
         let module = self.module.module();
@@ -442,6 +633,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> GepInst<'ctx, B> {
     pub fn flags(self) -> GepNoWrapFlags {
         self.payload().flags
     }
+}
+
+/// The called operand of a call, split into the direct/indirect cases.
+/// Returned by [`CallInst::classify_callee`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Callee<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    /// A direct call to a known function global.
+    Direct(FunctionValue<'ctx, Dyn, B>),
+    /// An indirect call through a function pointer.
+    Indirect(PointerValue<'ctx, B>),
 }
 
 /// `call` instruction. Mirrors `CallInst` (`Instructions.h`).
@@ -535,12 +736,26 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
             _ => unreachable!("CallInst invariant: kind is Instruction"),
         }
     }
-    /// pointer value also fits here).
+    /// The called operand, erased to [`Value`] (a function global for a
+    /// direct call, a function pointer for an indirect one). Use
+    /// [`Self::classify_callee`] to recover which.
     pub fn callee(self) -> Value<'ctx, B> {
         let id = self.payload().callee.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
         Value::from_parts(id, self.module, data.ty)
+    }
+
+    /// Split the callee into a direct call to a known [`FunctionValue`] or
+    /// an indirect call through a [`PointerValue`]. Mirrors the common
+    /// `CallBase::getCalledFunction()` "is this direct?" question, but the
+    /// answer is a typed enum instead of a nullable pointer.
+    pub fn classify_callee(self) -> Callee<'ctx, B> {
+        let callee = self.callee();
+        match FunctionValue::try_from(callee) {
+            Ok(function) => Callee::Direct(function),
+            Err(_) => Callee::Indirect(PointerValue::from_value_unchecked(callee)),
+        }
     }
     /// Function-type of the call (`FunctionType<'ctx, B>`).
     pub fn function_type(self) -> FunctionType<'ctx, B> {
@@ -783,40 +998,136 @@ impl<'ctx, B: ModuleBrand + 'ctx> RetInst<'ctx, B> {
 }
 
 /// Cast instruction (`trunc`, `zext`, `sext`, `bitcast`, ...).
-/// Mirrors `CastInst` in `InstrTypes.h`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CastInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
-    pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
-}
-
-decl_handle_scaffold!(CastInst);
-
-impl<'ctx, B: ModuleBrand + 'ctx> CastInst<'ctx, B> {
-    fn payload(self) -> &'ctx CastOpData {
-        let module = self.module.module();
-        match &module.context().value_data(self.id).kind {
-            ValueKindData::Instruction(i) => match &i.kind {
-                InstructionKindData::Cast(c) => c,
-                _ => unreachable!("CastInst invariant: kind is Cast"),
-            },
-            _ => unreachable!("CastInst invariant: kind is Instruction"),
+/// Per-opcode cast handles. Replaces the single erased `CastInst`: each of
+/// LLVM's 14 cast opcodes gets its own handle so a `match` over
+/// [`CastKind`](crate::CastKind) names the exact opcode (mirroring LLVM's
+/// `TruncInst`/`ZExtInst`/... classes) instead of branching on a runtime
+/// `CastOpcode`. Handles whose source operand is statically a pointer
+/// (`ptrtoint`, `ptrtoaddr`, `addrspacecast`) return
+/// [`PointerValue`] from `src()`; the rest return the erased [`Value`]
+/// because their source category is not fixed by the IR grammar (e.g.
+/// `bitcast`) or is not a pointer.
+macro_rules! decl_cast_handle {
+    (@struct $(#[$attr:meta])* $name:ident, $opcode:ident) => {
+        $(#[$attr])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub struct $name<'ctx, B: ModuleBrand = Brand<'ctx>> {
+            pub(super) id: ValueId,
+            pub(super) module: ModuleRef<'ctx, B>,
+            pub(super) ty: TypeId,
         }
-    }
-    /// Cast opcode (`Trunc`, `ZExt`, ...).
-    #[inline]
-    pub fn opcode(self) -> CastOpcode {
-        self.payload().kind
-    }
-    /// Source operand of the cast.
-    pub fn src(self) -> Value<'ctx, B> {
-        let id = self.payload().src.get();
-        let module = self.module.module();
-        let data = module.context().value_data(id);
-        Value::from_parts(id, self.module, data.ty)
-    }
+
+        decl_handle_scaffold!($name);
+
+        impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
+            fn payload(self) -> &'ctx CastOpData {
+                let module = self.module.module();
+                match &module.context().value_data(self.id).kind {
+                    ValueKindData::Instruction(i) => match &i.kind {
+                        InstructionKindData::Cast(c) => c,
+                        _ => unreachable!(
+                            concat!(stringify!($name), " invariant: kind is Cast")
+                        ),
+                    },
+                    _ => unreachable!(
+                        concat!(stringify!($name), " invariant: kind is Instruction")
+                    ),
+                }
+            }
+
+            /// The cast opcode this handle represents. Fixed by the type.
+            #[inline]
+            pub const fn opcode(self) -> CastOpcode {
+                CastOpcode::$opcode
+            }
+        }
+    };
+    // Erased-source variant.
+    ($(#[$attr:meta])* $name:ident, $opcode:ident) => {
+        decl_cast_handle!(@struct $(#[$attr])* $name, $opcode);
+        impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
+            /// Source operand of the cast.
+            pub fn src(self) -> Value<'ctx, B> {
+                let id = self.payload().src.get();
+                let module = self.module.module();
+                let data = module.context().value_data(id);
+                Value::from_parts(id, self.module, data.ty)
+            }
+        }
+    };
+    // Pointer-source variant (`src()` is statically a pointer).
+    ($(#[$attr:meta])* $name:ident, $opcode:ident, ptr_src) => {
+        decl_cast_handle!(@struct $(#[$attr])* $name, $opcode);
+        impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
+            /// Source operand of the cast. Statically a pointer for this
+            /// opcode, so returned as [`PointerValue`] rather than the
+            /// erased [`Value`].
+            pub fn src(self) -> PointerValue<'ctx, B> {
+                let id = self.payload().src.get();
+                let module = self.module.module();
+                let data = module.context().value_data(id);
+                PointerValue::from_value_unchecked(Value::from_parts(id, self.module, data.ty))
+            }
+        }
+    };
 }
+
+decl_cast_handle!(
+    /// `trunc .. to ..` — narrow an integer.
+    TruncInst, Trunc
+);
+decl_cast_handle!(
+    /// `zext .. to ..` — zero-extend an integer.
+    ZExtInst, ZExt
+);
+decl_cast_handle!(
+    /// `sext .. to ..` — sign-extend an integer.
+    SExtInst, SExt
+);
+decl_cast_handle!(
+    /// `fptrunc .. to ..` — narrow a float.
+    FpTruncInst, FpTrunc
+);
+decl_cast_handle!(
+    /// `fpext .. to ..` — widen a float.
+    FpExtInst, FpExt
+);
+decl_cast_handle!(
+    /// `fptoui .. to ..` — float to unsigned integer.
+    FpToUIInst, FpToUI
+);
+decl_cast_handle!(
+    /// `fptosi .. to ..` — float to signed integer.
+    FpToSIInst, FpToSI
+);
+decl_cast_handle!(
+    /// `uitofp .. to ..` — unsigned integer to float.
+    UIToFpInst, UIToFp
+);
+decl_cast_handle!(
+    /// `sitofp .. to ..` — signed integer to float.
+    SIToFpInst, SIToFp
+);
+decl_cast_handle!(
+    /// `ptrtoaddr .. to ..` — pointer to integer address bits.
+    PtrToAddrInst, PtrToAddr, ptr_src
+);
+decl_cast_handle!(
+    /// `ptrtoint .. to ..` — pointer to integer.
+    PtrToIntInst, PtrToInt, ptr_src
+);
+decl_cast_handle!(
+    /// `inttoptr .. to ..` — integer to pointer.
+    IntToPtrInst, IntToPtr
+);
+decl_cast_handle!(
+    /// `bitcast .. to ..` — same-size bit reinterpretation.
+    BitCastInst, BitCast
+);
+decl_cast_handle!(
+    /// `addrspacecast .. to ..` — address-space change on a pointer.
+    AddrSpaceCastInst, AddrSpaceCast, ptr_src
+);
 
 // --------------------------------------------------------------------------
 // Comparison instructions
@@ -1410,6 +1721,69 @@ impl<'ctx, P: PhiState> core::hash::Hash for PointerPhiInst<'ctx, P> {
 }
 
 // --------------------------------------------------------------------------
+// OtherPhiInst<'ctx> -- vector/aggregate phi handle (fully erased)
+// --------------------------------------------------------------------------
+
+/// `phi` node whose result type is neither integer, float, nor pointer
+/// (a vector, array, or struct). Rediscovery yields this handle so that
+/// [`PhiKind::Other`](crate::PhiKind) exposes only the erased read surface
+/// — there is no lying `as_int_value()` narrowing (the bug the split
+/// [`PhiKind`](crate::PhiKind) exists to remove).
+#[derive(Debug, Clone, Copy)]
+pub struct OtherPhiInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) ty: TypeId,
+}
+
+decl_handle_scaffold!(OtherPhiInst);
+
+impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
+    fn payload(&self) -> &'ctx PhiData {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::Phi(p) => p,
+                _ => unreachable!("OtherPhiInst invariant: kind is Phi"),
+            },
+            _ => unreachable!("OtherPhiInst invariant: kind is Instruction"),
+        }
+    }
+
+    /// Number of incoming `(value, block)` edges.
+    pub fn incoming_count(&self) -> u32 {
+        let len = self.payload().incoming.borrow().len();
+        u32::try_from(len).unwrap_or_else(|_| unreachable!("phi has more than u32::MAX incoming"))
+    }
+
+    /// Read the `(value, block label)` pair at `index`.
+    pub fn incoming(
+        &self,
+        index: u32,
+    ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
+        let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
+        let module = self.module.module();
+        let pair = self
+            .payload()
+            .incoming
+            .borrow()
+            .get(slot)
+            .map(|(v, b)| (v.get(), *b))
+            .ok_or(crate::IrError::ArgumentIndexOutOfRange {
+                index,
+                count: self.incoming_count(),
+            })?;
+        let (vid, bid) = pair;
+        let v_data = module.context().value_data(vid);
+        let value = Value::from_parts(vid, self.module, v_data.ty);
+        let label_ty = module.label_type().as_type().id();
+        let block =
+            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, self.module, label_ty).label();
+        Ok((value, block))
+    }
+}
+
+// --------------------------------------------------------------------------
 // Unary ops: fneg / freeze / va_arg
 // --------------------------------------------------------------------------
 
@@ -1504,11 +1878,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> VAArgInst<'ctx, B> {
         }
     }
     /// `va_list` pointer operand.
-    pub fn pointer(self) -> Value<'ctx, B> {
+    /// Pointer operand (the `va_list`). Statically a pointer, so returned
+    /// as [`PointerValue`] rather than the erased [`Value`].
+    pub fn pointer(self) -> PointerValue<'ctx, B> {
         let id = self.payload().src.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
-        Value::from_parts(id, self.module, data.ty)
+        PointerValue::from_value_unchecked(Value::from_parts(id, self.module, data.ty))
     }
     /// Destination type (the second `, T` in `va_arg ptr %vl, T`).
     pub fn result_type(self) -> Type<'ctx, B> {
@@ -1777,11 +2153,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicCmpXchgInst<'ctx, B> {
             _ => unreachable!("AtomicCmpXchgInst invariant: kind is Instruction"),
         }
     }
-    pub fn pointer(self) -> Value<'ctx, B> {
+    /// Pointer operand. Statically a pointer for this opcode, so returned
+    /// as [`PointerValue`] rather than the erased [`Value`].
+    pub fn pointer(self) -> PointerValue<'ctx, B> {
         let id = self.payload().ptr.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
-        Value::from_parts(id, self.module, data.ty)
+        PointerValue::from_value_unchecked(Value::from_parts(id, self.module, data.ty))
     }
     pub fn compare_value(self) -> Value<'ctx, B> {
         let id = self.payload().cmp.get();
@@ -1840,11 +2218,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
     pub fn operation(self) -> AtomicRMWBinOp {
         self.payload().op
     }
-    pub fn pointer(self) -> Value<'ctx, B> {
+    /// Pointer operand. Statically a pointer for this opcode, so returned
+    /// as [`PointerValue`] rather than the erased [`Value`].
+    pub fn pointer(self) -> PointerValue<'ctx, B> {
         let id = self.payload().ptr.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
-        Value::from_parts(id, self.module, data.ty)
+        PointerValue::from_value_unchecked(Value::from_parts(id, self.module, data.ty))
     }
     pub fn value_operand(self) -> Value<'ctx, B> {
         let id = self.payload().value.get();
@@ -1852,7 +2232,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
         let data = module.context().value_data(id);
         Value::from_parts(id, self.module, data.ty)
     }
-    pub fn set_value_operand(self, value: Value<'ctx, B>) -> IrResult<()> {
+    /// Replace the value operand in place. Requires an `Unverified`
+    /// module token: like [`crate::Instruction::replace_all_uses_with`], this
+    /// mutates the IR and must not be reachable without proof of
+    /// mutation capability. `module_token` is the capability witness; the
+    /// interior-mutable slot is reached through the handle's own
+    /// `ModuleRef`.
+    pub fn set_value_operand(
+        self,
+        module_token: &Module<'ctx, B, Unverified>,
+        value: Value<'ctx, B>,
+    ) -> IrResult<()> {
+        let _ = module_token;
         let module = self.module.module();
         let expected = Type::new(self.ty, self.module);
         let got = value.ty();
@@ -1991,6 +2382,29 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> SwitchInst<'ctx, P, B> {
         let len = self.payload().cases.borrow().len();
         u32::try_from(len).unwrap_or_else(|_| unreachable!("switch has more than u32::MAX cases"))
     }
+    /// Iterate the `(case_value, target_block)` entries in declaration
+    /// order. Mirrors walking `SwitchInst::cases()`.
+    pub fn cases(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> + 'ctx {
+        let module = self.module.module();
+        let label_ty = module.label_type().as_type().id();
+        let module_ref = self.module;
+        let entries: Vec<(ValueId, ValueId)> = self
+            .payload()
+            .cases
+            .borrow()
+            .iter()
+            .map(|(v, b)| (v.get(), *b))
+            .collect();
+        entries.into_iter().map(move |(vid, bid)| {
+            let v_data = module.context().value_data(vid);
+            let value = Value::from_parts(vid, module_ref, v_data.ty);
+            let block =
+                BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label();
+            (value, block)
+        })
+    }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> SwitchInst<'ctx, TermOpen, B> {
@@ -2112,6 +2526,18 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
         let len = self.payload().destinations.borrow().len();
         u32::try_from(len)
             .unwrap_or_else(|_| unreachable!("indirectbr has more than u32::MAX destinations"))
+    }
+    /// Iterate the destination blocks in declaration order. Mirrors
+    /// walking `IndirectBrInst::successors()`.
+    pub fn destinations(
+        &self,
+    ) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>> + 'ctx {
+        let label_ty = self.module.module().label_type().as_type().id();
+        let module_ref = self.module;
+        let ids: Vec<ValueId> = self.payload().destinations.borrow().clone();
+        ids.into_iter().map(move |bid| {
+            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label()
+        })
     }
 }
 
@@ -2413,6 +2839,26 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, P, B> {
         let len = self.payload().clauses.borrow().len();
         u32::try_from(len)
             .unwrap_or_else(|_| unreachable!("landingpad has more than u32::MAX clauses"))
+    }
+    /// Iterate the `(kind, type_info)` clauses in declaration order, where
+    /// `kind` distinguishes `catch` from `filter`. Mirrors walking
+    /// `LandingPadInst::clauses()` + `isCatch`/`isFilter`.
+    pub fn clauses(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (LandingPadClauseKind, Value<'ctx, B>)> + 'ctx {
+        let module = self.module.module();
+        let module_ref = self.module;
+        let entries: Vec<(LandingPadClauseKind, ValueId)> = self
+            .payload()
+            .clauses
+            .borrow()
+            .iter()
+            .map(|(k, v)| (*k, v.get()))
+            .collect();
+        entries.into_iter().map(move |(kind, vid)| {
+            let v_data = module.context().value_data(vid);
+            (kind, Value::from_parts(vid, module_ref, v_data.ty))
+        })
     }
 }
 
@@ -2732,6 +3178,16 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
         let len = self.payload().handlers.borrow().len();
         u32::try_from(len)
             .unwrap_or_else(|_| unreachable!("catchswitch has more than u32::MAX handlers"))
+    }
+    /// Iterate the handler blocks in declaration order. Mirrors walking
+    /// `CatchSwitchInst::handlers()`.
+    pub fn handlers(&self) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>> + 'ctx {
+        let label_ty = self.module.module().label_type().as_type().id();
+        let module_ref = self.module;
+        let ids: Vec<ValueId> = self.payload().handlers.borrow().clone();
+        ids.into_iter().map(move |bid| {
+            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label()
+        })
     }
 }
 
