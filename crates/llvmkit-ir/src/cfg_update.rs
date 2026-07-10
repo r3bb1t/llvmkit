@@ -22,7 +22,7 @@
 //! documented possible extension, not designed here.
 //!
 //! [`split_block`]: crate::pass_context::FnReshape::split_block
-//! [`CfgIncremental`]: crate::analysis
+//! [`CfgIncremental`]: crate::analysis::CfgIncremental
 
 #![deny(missing_docs)]
 
@@ -38,7 +38,7 @@ use crate::value::ValueId;
 ///
 /// Fields are private: an edge — and therefore a [`CfgUpdate`] — can only be
 /// constructed inside the crate. Downstream analyses implementing
-/// [`CfgIncremental`](crate::analysis) read the endpoints through [`Self::from`]
+/// [`CfgIncremental`](crate::analysis::CfgIncremental) read the endpoints through [`Self::from`]
 /// / [`Self::to`] but cannot fabricate one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CfgEdge {
@@ -67,7 +67,7 @@ impl CfgEdge {
 
 /// One structural change to a function's CFG, in the LLVM `DomTreeUpdater`
 /// vocabulary. The reshape mutator records these as it edits; a
-/// [`CfgIncremental`](crate::analysis) analysis consumes a slice of them to
+/// [`CfgIncremental`](crate::analysis::CfgIncremental) analysis consumes a slice of them to
 /// repair its cached result.
 ///
 /// Exhaustive by design (no `#[non_exhaustive]`): a future update kind must
