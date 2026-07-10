@@ -25,12 +25,13 @@ use super::basic_block::{BasicBlock, BasicBlockLabel};
 use super::block_state::Unterminated;
 use super::function::FunctionValue;
 use super::instr_types::{
-    BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData, FCmpInstData,
-    PhiData, ReturnOpData, UnreachableInstData,
+    BinaryOpData, BinaryOpcode, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
+    FCmpInstData, PhiData, ReturnOpData, UnreachableInstData,
 };
 use super::instructions::{
     AShrInst, AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst,
-    BitCastInst, BranchInst, CallBrInst, CallInst, CatchPadInst, CatchReturnInst, CatchSwitchInst,
+    BinaryOp, BitCastInst, BranchInst, CallBrInst, CallInst, Cmp, CatchPadInst, CatchReturnInst,
+    CatchSwitchInst,
     CleanupPadInst, CleanupReturnInst, ExtractElementInst, ExtractValueInst, FAddInst, FCmpInst,
     FDivInst, FMulInst, FNegInst, FRemInst, FSubInst, FpExtInst, FpPhiInst, FpToSIInst, FpToUIInst,
     FpTruncInst, FenceInst, FreezeInst, GepInst, ICmpInst, IndirectBrInst, InsertElementInst,
@@ -1724,6 +1725,48 @@ pub enum InstructionKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
     CatchPad(CatchPadInst<'ctx, B>),
     AtomicRMW(AtomicRMWInst<'ctx, B>),
     Phi(PhiKind<'ctx, B>),
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> InstructionKind<'ctx, B> {
+    /// If this is a binary operator (`add`..`frem`), a grouped [`BinaryOp`]
+    /// view exposing `lhs`/`rhs`/`opcode`/flags uniformly, so generic
+    /// arithmetic code need not match all eighteen opcodes. Mirrors
+    /// `dyn_cast<BinaryOperator>`.
+    pub fn as_binary_op(&self) -> Option<BinaryOp<'ctx, B>> {
+        let (value, opcode) = match self {
+            Self::Add(h) => (h.as_value(), BinaryOpcode::Add),
+            Self::Sub(h) => (h.as_value(), BinaryOpcode::Sub),
+            Self::Mul(h) => (h.as_value(), BinaryOpcode::Mul),
+            Self::UDiv(h) => (h.as_value(), BinaryOpcode::UDiv),
+            Self::SDiv(h) => (h.as_value(), BinaryOpcode::SDiv),
+            Self::URem(h) => (h.as_value(), BinaryOpcode::URem),
+            Self::SRem(h) => (h.as_value(), BinaryOpcode::SRem),
+            Self::Shl(h) => (h.as_value(), BinaryOpcode::Shl),
+            Self::LShr(h) => (h.as_value(), BinaryOpcode::LShr),
+            Self::AShr(h) => (h.as_value(), BinaryOpcode::AShr),
+            Self::And(h) => (h.as_value(), BinaryOpcode::And),
+            Self::Or(h) => (h.as_value(), BinaryOpcode::Or),
+            Self::Xor(h) => (h.as_value(), BinaryOpcode::Xor),
+            Self::FAdd(h) => (h.as_value(), BinaryOpcode::FAdd),
+            Self::FSub(h) => (h.as_value(), BinaryOpcode::FSub),
+            Self::FMul(h) => (h.as_value(), BinaryOpcode::FMul),
+            Self::FDiv(h) => (h.as_value(), BinaryOpcode::FDiv),
+            Self::FRem(h) => (h.as_value(), BinaryOpcode::FRem),
+            _ => return None,
+        };
+        Some(BinaryOp::from_value(value, opcode))
+    }
+
+    /// If this is a comparison (`icmp`/`fcmp`), a grouped [`Cmp`] view
+    /// exposing `lhs`/`rhs` and a unified `CmpPredicate`. Mirrors
+    /// `dyn_cast<CmpInst>`.
+    pub fn as_cmp(&self) -> Option<Cmp<'ctx, B>> {
+        match self {
+            Self::ICmp(h) => Some(Cmp::from_value(h.as_value())),
+            Self::FCmp(h) => Some(Cmp::from_value(h.as_value())),
+            _ => None,
+        }
+    }
 }
 
 /// Read-only opcode discriminator for terminators.

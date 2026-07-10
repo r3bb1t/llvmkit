@@ -228,8 +228,8 @@ pub use instruction::{
 };
 pub use instructions::{
     AShrInst, AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst,
-    BitCastInst, BranchInst, CallBrInst, CallInst, Callee, CatchPadInst, CatchReturnInst,
-    CatchSwitchInst,
+    BinaryOp, BitCastInst, BranchInst, CallBrInst, CallInst, Callee, CatchPadInst, CatchReturnInst,
+    CatchSwitchInst, Cmp,
     CleanupPadInst, CleanupReturnInst, ExtractElementInst, ExtractValueInst, FAddInst, FCmpInst,
     FDivInst, FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FpExtInst, FpPhiInst, FpToSIInst,
     FpToUIInst, FpTruncInst, FreezeInst, GepInst, ICmpInst, IndirectBrInst, InsertElementInst,
@@ -262,7 +262,7 @@ pub use module::{
     ModuleId, ModuleRef, ModuleView, Unverified, UseListOrderBBRecord, UseListOrderRecord,
     Verified,
 };
-pub use operator::OverflowingBinaryOperator;
+pub use operator::{OverflowingBinaryOperator, PossiblyExactOperator};
 pub use optimization_level::{
     OptLevelO0, OptLevelO1, OptLevelO2, OptLevelO3, OptLevelOs, OptLevelOz, OptimizationLevel,
     OptimizationLevelMarker, ThinOrFullLtoPhase,

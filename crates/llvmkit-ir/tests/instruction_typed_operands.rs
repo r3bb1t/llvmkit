@@ -8,6 +8,8 @@ use llvmkit_ir::{
     Callee, IRBuilder, InstructionKind, InstructionView, IntValue, IrError, Linkage, Module,
     PointerValue, Value,
 };
+use llvmkit_ir::cmp_predicate::{CmpPredicate, IntPredicate};
+use llvmkit_ir::instr_types::BinaryOpcode;
 
 /// A rediscovered `load`'s pointer operand is statically a `PointerValue`.
 #[test]
@@ -51,6 +53,44 @@ fn direct_call_callee_is_direct() -> Result<(), IrError> {
             Callee::Direct(function) => assert_eq!(function.as_value(), callee.as_value()),
             Callee::Indirect(_) => panic!("expected a direct call to classify as Direct"),
         }
+        Ok(())
+    })
+}
+
+/// `as_binary_op` groups any arithmetic opcode, and `as_cmp` groups
+/// `icmp`/`fcmp` behind a unified predicate.
+#[test]
+fn binop_and_cmp_groupings() -> Result<(), IrError> {
+    Module::with_new("groupings", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        // Non-constant operands so the folder leaves real instructions.
+        let x: IntValue<i32> = f.param(0)?.try_into()?;
+        let y: IntValue<i32> = f.param(1)?.try_into()?;
+        let sum = b.build_int_add::<i32, _, _, _>(x, y, "s")?;
+        let cmp = b.build_icmp_slt::<i32, _, _, _>(x, y, "c")?;
+
+        let sum_view = InstructionView::try_from(sum.as_value())?;
+        let bop = sum_view
+            .kind()
+            .and_then(|k| k.as_binary_op())
+            .expect("add classifies as a binary op");
+        assert_eq!(bop.opcode(), BinaryOpcode::Add);
+        assert!(bop.is_commutative());
+        assert_eq!(bop.lhs(), x.as_value());
+        assert_eq!(bop.rhs(), y.as_value());
+
+        let cmp_view = InstructionView::try_from(cmp.as_value())?;
+        let cv = cmp_view
+            .kind()
+            .and_then(|k| k.as_cmp())
+            .expect("icmp classifies as a cmp");
+        assert_eq!(cv.predicate(), CmpPredicate::Int(IntPredicate::Slt));
+        assert!(cv.is_integer());
+        assert_eq!(cv.lhs(), x.as_value());
         Ok(())
     })
 }

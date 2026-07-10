@@ -30,7 +30,7 @@ use super::atomicrmw_binop::AtomicRMWBinOp;
 use super::basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
 use super::block_state::Unterminated;
 use super::calling_conv::CallingConv;
-use super::cmp_predicate::{FloatPredicate, IntPredicate};
+use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 use super::derived_types::FunctionType;
 use super::float_kind::{FloatKind, IntoFloatValue};
 use super::fmf::FastMathFlags;
@@ -39,7 +39,7 @@ use super::function_signature::{FunctionReturn, token::ValidatedCallResult};
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::instr_types::TailCallKind;
 use super::instr_types::{
-    BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
+    BinaryOpData, BinaryOpcode, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
     LandingPadClauseKind, PhiData, ReturnOpData,
 };
 use super::instruction::{InstructionKindData, InstructionView};
@@ -208,6 +208,182 @@ decl_binop_handle!(
     /// `frem` floating-point remainder.
     FRemInst, FRem
 );
+
+/// Grouped view over any binary operator (`add`..`frem`). Lets a pass read
+/// `lhs`/`rhs`/`opcode`/flags without matching all eighteen opcodes —
+/// mirrors matching LLVM's `BinaryOperator` base then reading
+/// `getOpcode()`. Obtain one via
+/// [`InstructionKind::as_binary_op`](crate::InstructionKind::as_binary_op).
+#[derive(Debug, Clone, Copy)]
+pub struct BinaryOp<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) ty: TypeId,
+    pub(super) opcode: BinaryOpcode,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> BinaryOp<'ctx, B> {
+    pub(super) fn from_value(v: Value<'ctx, B>, opcode: BinaryOpcode) -> Self {
+        Self {
+            id: v.id,
+            module: v.module,
+            ty: v.ty,
+            opcode,
+        }
+    }
+
+    fn payload(&self) -> &'ctx BinaryOpData {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::Add(b)
+                | InstructionKindData::Sub(b)
+                | InstructionKindData::Mul(b)
+                | InstructionKindData::UDiv(b)
+                | InstructionKindData::SDiv(b)
+                | InstructionKindData::URem(b)
+                | InstructionKindData::SRem(b)
+                | InstructionKindData::Shl(b)
+                | InstructionKindData::LShr(b)
+                | InstructionKindData::AShr(b)
+                | InstructionKindData::And(b)
+                | InstructionKindData::Or(b)
+                | InstructionKindData::Xor(b)
+                | InstructionKindData::FAdd(b)
+                | InstructionKindData::FSub(b)
+                | InstructionKindData::FMul(b)
+                | InstructionKindData::FDiv(b)
+                | InstructionKindData::FRem(b) => b,
+                _ => unreachable!("BinaryOp invariant: kind is a binary operator"),
+            },
+            _ => unreachable!("BinaryOp invariant: kind is Instruction"),
+        }
+    }
+
+    /// The binary opcode.
+    #[inline]
+    pub const fn opcode(self) -> BinaryOpcode {
+        self.opcode
+    }
+    /// Left-hand operand. Mirrors `getOperand(0)`.
+    pub fn lhs(self) -> Value<'ctx, B> {
+        let id = self.payload().lhs.get();
+        let module = self.module.module();
+        let data = module.context().value_data(id);
+        Value::from_parts(id, self.module, data.ty)
+    }
+    /// Right-hand operand. Mirrors `getOperand(1)`.
+    pub fn rhs(self) -> Value<'ctx, B> {
+        let id = self.payload().rhs.get();
+        let module = self.module.module();
+        let data = module.context().value_data(id);
+        Value::from_parts(id, self.module, data.ty)
+    }
+    /// `nuw` flag (meaningful only for the overflowing operators).
+    #[inline]
+    pub fn has_no_unsigned_wrap(self) -> bool {
+        self.payload().no_unsigned_wrap
+    }
+    /// `nsw` flag (meaningful only for the overflowing operators).
+    #[inline]
+    pub fn has_no_signed_wrap(self) -> bool {
+        self.payload().no_signed_wrap
+    }
+    /// `exact` flag (meaningful only for the exact-capable operators).
+    #[inline]
+    pub fn is_exact(self) -> bool {
+        self.payload().is_exact
+    }
+    /// Whether operands may be swapped without changing the result.
+    #[inline]
+    pub fn is_commutative(self) -> bool {
+        self.opcode.is_commutative()
+    }
+    /// Read-only erased instruction view.
+    #[inline]
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        InstructionView::from_parts(self.id, self.module)
+    }
+    /// Widen to the erased [`Value`] handle (the result).
+    #[inline]
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        Value::from_parts(self.id, self.module, self.ty)
+    }
+}
+
+/// Grouped view over `icmp`/`fcmp`. Lets a pass read `lhs`/`rhs` and a
+/// unified [`CmpPredicate`] without caring which comparison it is —
+/// mirrors matching LLVM's `CmpInst` base then reading `getPredicate()`.
+/// Obtain one via
+/// [`InstructionKind::as_cmp`](crate::InstructionKind::as_cmp).
+#[derive(Debug, Clone, Copy)]
+pub struct Cmp<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) ty: TypeId,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> Cmp<'ctx, B> {
+    pub(super) fn from_value(v: Value<'ctx, B>) -> Self {
+        Self {
+            id: v.id,
+            module: v.module,
+            ty: v.ty,
+        }
+    }
+
+    /// The comparison predicate, tagged integer or float.
+    pub fn predicate(self) -> CmpPredicate {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::ICmp(c) => CmpPredicate::Int(c.predicate),
+                InstructionKindData::FCmp(c) => CmpPredicate::Float(c.predicate),
+                _ => unreachable!("Cmp invariant: kind is ICmp or FCmp"),
+            },
+            _ => unreachable!("Cmp invariant: kind is Instruction"),
+        }
+    }
+    /// `true` for `icmp`, `false` for `fcmp`.
+    pub fn is_integer(self) -> bool {
+        matches!(self.predicate(), CmpPredicate::Int(_))
+    }
+    /// Left-hand operand.
+    pub fn lhs(self) -> Value<'ctx, B> {
+        self.operand(true)
+    }
+    /// Right-hand operand.
+    pub fn rhs(self) -> Value<'ctx, B> {
+        self.operand(false)
+    }
+    fn operand(self, left: bool) -> Value<'ctx, B> {
+        let module = self.module.module();
+        let id = match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::ICmp(c) => {
+                    if left { c.lhs.get() } else { c.rhs.get() }
+                }
+                InstructionKindData::FCmp(c) => {
+                    if left { c.lhs.get() } else { c.rhs.get() }
+                }
+                _ => unreachable!("Cmp invariant: kind is ICmp or FCmp"),
+            },
+            _ => unreachable!("Cmp invariant: kind is Instruction"),
+        };
+        let data = module.context().value_data(id);
+        Value::from_parts(id, self.module, data.ty)
+    }
+    /// Read-only erased instruction view.
+    #[inline]
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        InstructionView::from_parts(self.id, self.module)
+    }
+    /// Widen to the erased [`Value`] handle (the `i1`/vector result).
+    #[inline]
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        Value::from_parts(self.id, self.module, self.ty)
+    }
+}
 
 /// Common scaffolding used by every non-macro handle.
 macro_rules! decl_handle_scaffold {
