@@ -70,7 +70,8 @@ use super::module::{Brand, Invariant, Module, ModuleBrand, ModuleRef, ModuleView
 use super::pass_access::{
     FnAccess, ModAccess, MutatingFn, MutatingModule, PatchBody, ReshapeCfg, RewriteModule,
 };
-use super::value::IsValue;
+use super::value::{IsValue, ValueId};
+use super::worklist::Worklist;
 
 /// Read-only view of a basic block under its owning module brand.
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -476,6 +477,11 @@ where
     /// so mutating methods can flip it through a shared `&self` (mutation
     /// itself flows through the interior-mutable module token).
     dirty: core::cell::Cell<bool>,
+    /// Opt-in instruction worklist. When `Some`, [`Self::erase`] /
+    /// [`Self::replace_all_uses`] maintain it (push cascade + self-remove), so a
+    /// worklist pass reaches a fixpoint without a restart-scan. `None` (the
+    /// default) is exactly today's behavior — no overhead, no behavior change.
+    worklist: core::cell::RefCell<Option<Worklist>>,
 }
 
 impl<'m, 'r, 'ctx, B, R> FnPatch<'m, 'r, 'ctx, B, R>
@@ -496,6 +502,7 @@ where
             function,
             results,
             dirty: core::cell::Cell::new(false),
+            worklist: core::cell::RefCell::new(None),
         }
     }
 
@@ -548,6 +555,16 @@ where
     pub fn erase(&self, target: &NonTerminator<'ctx, B>) {
         let id = target.as_value().id();
         let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
+        // Capture operand ids before erasing (erase drops their uses). Push them
+        // all unconditionally — `Worklist::pop` is panic-safe and skips any id that
+        // is not an instruction (constant/param operands), so no filter is needed
+        // here. Then remove `id` itself so the erased instruction never surfaces.
+        if let Some(wl) = self.worklist.borrow_mut().as_mut() {
+            for op_id in inst.as_view().operand_ids() {
+                wl.push(op_id);
+            }
+            wl.remove(id);
+        }
         inst.erase_from_parent(self.module);
         self.dirty.set(true);
     }
@@ -582,10 +599,32 @@ where
         V: IsValue<'ctx, B>,
     {
         let id = view.as_value().id();
+        // Capture users before the RAUW rewires them.
+        let users: Vec<ValueId> = view.as_value().users().map(|u| u.as_value().id).collect();
         let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
         inst.replace_all_uses_with(self.module, replacement)?;
+        if let Some(wl) = self.worklist.borrow_mut().as_mut() {
+            for user_id in users {
+                wl.push(user_id);
+            }
+        }
         self.dirty.set(true);
         Ok(())
+    }
+
+    /// Begin a worklist-driven fixpoint transform: activate a [`Worklist`] on this
+    /// mutator, seeded with every non-terminator of the function body in program
+    /// order. Drive it with `while let Some(inst) = scope.next() { ... }`, mutating
+    /// through `self` (`erase`/`replace_all_uses`) — those mutations maintain the
+    /// worklist automatically (cascade + self-remove). The worklist deactivates
+    /// when the returned scope drops.
+    pub fn worklist(&self) -> WorklistScope<'_, 'm, 'r, 'ctx, B, R> {
+        let mut wl = Worklist::new();
+        for inst in self.body_instructions() {
+            wl.push(inst.as_value().id());
+        }
+        *self.worklist.borrow_mut() = Some(wl);
+        WorklistScope { patch: self }
     }
 
     /// Finish: report the [`PatchBody`] preservation floor (CFG analyses
@@ -599,6 +638,52 @@ where
         } else {
             FnReport::from_pa(PreservedAnalyses::all())
         }
+    }
+}
+
+/// RAII handle activating a [`Worklist`] on an [`FnPatch`] for the duration of
+/// a fixpoint transform. Created by [`FnPatch::worklist`]: it seeds the
+/// worklist with every non-terminator of the function body and, on drop,
+/// deactivates it. [`Self::next`] pops the next instruction to process; the
+/// pass mutates through the `FnPatch` directly, and those mutations maintain
+/// the worklist (push cascade, self-remove) automatically.
+pub struct WorklistScope<'p, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    patch: &'p FnPatch<'m, 'r, 'ctx, B, R>,
+}
+
+impl<'p, 'm, 'r, 'ctx, B, R> WorklistScope<'p, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    /// Pop the next instruction to process, or `None` when the fixpoint is
+    /// reached. Skips terminators and erased ids (the latter never surface —
+    /// `erase` removes them).
+    #[inline]
+    pub fn next(&self) -> Option<NonTerminator<'ctx, B>> {
+        let module = self.patch.module.module_ref();
+        self.patch.worklist.borrow_mut().as_mut()?.pop(module)
+    }
+}
+
+impl<'p, 'm, 'r, 'ctx, B, R> Drop for WorklistScope<'p, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    #[inline]
+    fn drop(&mut self) {
+        *self.patch.worklist.borrow_mut() = None;
     }
 }
 
@@ -1833,6 +1918,45 @@ mod tests {
             // Each visited def now holds only `ret` — the dead `add` is gone.
             assert_eq!(fv1.entry_block().expect("def").instruction_count(), 1);
             assert_eq!(fv2.entry_block().expect("def").instruction_count(), 1);
+            Ok(())
+        })
+    }
+
+    /// The worklist reaches the transitive-dead fixpoint in ONE drain: a chain
+    /// `a -> b -> c` of dead instructions (each only used by the next) is fully
+    /// erased by seeding + operand-cascade, no restart scan. llvmkit-specific
+    /// pass-authoring primitive (no upstream analog).
+    #[test]
+    fn worklist_operand_cascade_reaches_fixpoint() -> Result<(), IrError> {
+        Module::with_new("wl-cascade", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            // a = x+1 (used by b), b = a+1 (used by c), c = b+1 (unused/dead).
+            let a = b.build_int_add(x, 1_i32, "a")?;
+            let bb = b.build_int_add(a, 1_i32, "b")?;
+            let _c = b.build_int_add(bb, 1_i32, "c")?;
+            b.build_ret(x)?;
+
+            let function = FunctionView::from(f);
+            let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
+            let patch = cx.mutate();
+
+            // Seed + drain once: only `c` is dead initially, but erasing it makes
+            // `b` dead, then `a`. One drain removes all three.
+            let scope = patch.worklist();
+            while let Some(inst) = scope.next() {
+                if crate::dce::is_trivially_dead(&inst.as_view()) {
+                    patch.erase(&inst);
+                }
+            }
+            drop(scope);
+            // Only the ret survives.
+            assert_eq!(function.entry_block().expect("def").instruction_count(), 1);
+            let _ = patch.done();
             Ok(())
         })
     }
