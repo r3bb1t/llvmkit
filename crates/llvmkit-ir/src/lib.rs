@@ -229,15 +229,14 @@ pub use instruction::{
 pub use instructions::{
     AShrInst, AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst,
     BinaryOp, BitCastInst, BranchInst, CallBrInst, CallInst, Callee, CatchPadInst, CatchReturnInst,
-    CatchSwitchInst, Cmp,
-    CleanupPadInst, CleanupReturnInst, ExtractElementInst, ExtractValueInst, FAddInst, FCmpInst,
-    FDivInst, FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FpExtInst, FpPhiInst, FpToSIInst,
-    FpToUIInst, FpTruncInst, FreezeInst, GepInst, ICmpInst, IndirectBrInst, InsertElementInst,
-    InsertValueInst, IntToPtrInst, InvokeInst, LShrInst, LandingPadInst, LoadInst, MulInst, OrInst,
-    OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst, ResumeInst, RetInst,
-    SDivInst, SExtInst, SIToFpInst, SRemInst, SelectInst, ShlInst, ShuffleVectorInst, StoreInst,
-    SubInst, SwitchInst, TruncInst, TypedCallInst, UDivInst, UIToFpInst, URemInst, UnreachableInst,
-    VAArgInst, XorInst, ZExtInst,
+    CatchSwitchInst, CleanupPadInst, CleanupReturnInst, Cmp, ExtractElementInst, ExtractValueInst,
+    FAddInst, FCmpInst, FDivInst, FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FpExtInst,
+    FpPhiInst, FpToSIInst, FpToUIInst, FpTruncInst, FreezeInst, GepInst, ICmpInst, IndirectBrInst,
+    InsertElementInst, InsertValueInst, IntToPtrInst, InvokeInst, LShrInst, LandingPadInst,
+    LoadInst, MulInst, OrInst, OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst,
+    ResumeInst, RetInst, SDivInst, SExtInst, SIToFpInst, SRemInst, SelectInst, ShlInst,
+    ShuffleVectorInst, StoreInst, SubInst, SwitchInst, TruncInst, TypedCallInst, UDivInst,
+    UIToFpInst, URemInst, UnreachableInst, VAArgInst, XorInst, ZExtInst,
 };
 pub use intrinsic_inst::{IntrinsicInst, LifetimeIntrinsic, MemIntrinsic};
 pub use intrinsics::{

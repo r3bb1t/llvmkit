@@ -361,10 +361,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Cmp<'ctx, B> {
         let id = match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
                 InstructionKindData::ICmp(c) => {
-                    if left { c.lhs.get() } else { c.rhs.get() }
+                    if left {
+                        c.lhs.get()
+                    } else {
+                        c.rhs.get()
+                    }
                 }
                 InstructionKindData::FCmp(c) => {
-                    if left { c.lhs.get() } else { c.rhs.get() }
+                    if left {
+                        c.lhs.get()
+                    } else {
+                        c.rhs.get()
+                    }
                 }
                 _ => unreachable!("Cmp invariant: kind is ICmp or FCmp"),
             },
@@ -3173,9 +3181,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
     }
     /// Iterate the handler blocks in declaration order. Mirrors walking
     /// `CatchSwitchInst::handlers()`.
-    pub fn handlers(
-        &self,
-    ) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>> + 'ctx {
+    pub fn handlers(&self) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>> + 'ctx {
         let label_ty = self.module.module().label_type().as_type().id();
         let module_ref = self.module;
         let ids: Vec<ValueId> = self.payload().handlers.borrow().clone();

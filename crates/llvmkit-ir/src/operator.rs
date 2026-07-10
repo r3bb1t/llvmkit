@@ -8,7 +8,9 @@
 //! [`OverflowingBinaryOperator`] over the binary operators that carry
 //! `nuw` / `nsw`. The rest land as their consumers do.
 
-use crate::instructions::{AShrInst, AddInst, LShrInst, MulInst, SDivInst, ShlInst, SubInst, UDivInst};
+use crate::instructions::{
+    AShrInst, AddInst, LShrInst, MulInst, SDivInst, ShlInst, SubInst, UDivInst,
+};
 
 /// Common interface for the binary operators that carry `nuw`/`nsw`
 /// flags. Mirrors `OverflowingBinaryOperator`.

@@ -4,12 +4,12 @@
 //! [`PointerValue`] rather than the erased `Value`, and a direct call's
 //! callee classifies as [`Callee::Direct`] carrying a [`FunctionValue`].
 
+use llvmkit_ir::cmp_predicate::{CmpPredicate, IntPredicate};
+use llvmkit_ir::instr_types::BinaryOpcode;
 use llvmkit_ir::{
     Callee, Classified, IRBuilder, InstructionKind, InstructionView, IntValue, IrError, Linkage,
     Module, PointerValue, TerminatorKind, Value,
 };
-use llvmkit_ir::cmp_predicate::{CmpPredicate, IntPredicate};
-use llvmkit_ir::instr_types::BinaryOpcode;
 
 /// A rediscovered `load`'s pointer operand is statically a `PointerValue`.
 #[test]
@@ -146,12 +146,8 @@ fn indirect_call_callee_is_indirect() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let fp: PointerValue = caller.param(0)?.try_into()?;
         let callee_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let call = b.build_indirect_call_dyn::<i32, _, Value, _>(
-            callee_ty,
-            fp,
-            Vec::<Value>::new(),
-            "r",
-        )?;
+        let call =
+            b.build_indirect_call_dyn::<i32, _, Value, _>(callee_ty, fp, Vec::<Value>::new(), "r")?;
 
         match call.classify_callee() {
             Callee::Indirect(pointer) => assert_eq!(pointer.as_value(), fp.as_value()),

@@ -23,6 +23,7 @@
 use super::asm_writer::{SlotTracker, fmt_instruction};
 use super::basic_block::{BasicBlock, BasicBlockLabel};
 use super::block_state::Unterminated;
+use super::float_kind::FloatDyn;
 use super::function::FunctionValue;
 use super::instr_types::{
     BinaryOpData, BinaryOpcode, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
@@ -30,18 +31,16 @@ use super::instr_types::{
 };
 use super::instructions::{
     AShrInst, AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst,
-    BinaryOp, BitCastInst, BranchInst, CallBrInst, CallInst, Cmp, CatchPadInst, CatchReturnInst,
-    CatchSwitchInst,
-    CleanupPadInst, CleanupReturnInst, ExtractElementInst, ExtractValueInst, FAddInst, FCmpInst,
-    FDivInst, FMulInst, FNegInst, FRemInst, FSubInst, FpExtInst, FpPhiInst, FpToSIInst, FpToUIInst,
-    FpTruncInst, FenceInst, FreezeInst, GepInst, ICmpInst, IndirectBrInst, InsertElementInst,
-    InsertValueInst, IntToPtrInst, InvokeInst, LShrInst, LandingPadInst, LoadInst, MulInst, OrInst,
-    OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst, ResumeInst, RetInst,
-    SDivInst, SExtInst, SIToFpInst, SRemInst, SelectInst, ShlInst, ShuffleVectorInst, StoreInst,
-    SubInst, SwitchInst, TruncInst, UDivInst, UIToFpInst, URemInst, UnreachableInst, VAArgInst,
-    XorInst, ZExtInst,
+    BinaryOp, BitCastInst, BranchInst, CallBrInst, CallInst, CatchPadInst, CatchReturnInst,
+    CatchSwitchInst, CleanupPadInst, CleanupReturnInst, Cmp, ExtractElementInst, ExtractValueInst,
+    FAddInst, FCmpInst, FDivInst, FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FpExtInst,
+    FpPhiInst, FpToSIInst, FpToUIInst, FpTruncInst, FreezeInst, GepInst, ICmpInst, IndirectBrInst,
+    InsertElementInst, InsertValueInst, IntToPtrInst, InvokeInst, LShrInst, LandingPadInst,
+    LoadInst, MulInst, OrInst, OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst,
+    ResumeInst, RetInst, SDivInst, SExtInst, SIToFpInst, SRemInst, SelectInst, ShlInst,
+    ShuffleVectorInst, StoreInst, SubInst, SwitchInst, TruncInst, UDivInst, UIToFpInst, URemInst,
+    UnreachableInst, VAArgInst, XorInst, ZExtInst,
 };
-use super::float_kind::FloatDyn;
 use super::int_width::IntDyn;
 use super::marker::{Dyn, ReturnMarker};
 use super::metadata::{DebugRecord, MetadataAttachmentKind, MetadataAttachmentSet, MetadataId};
@@ -656,9 +655,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
                     CastOpcode::Trunc => CastKind::Trunc(TruncInst::from_raw(id, module, ty)),
                     CastOpcode::ZExt => CastKind::ZExt(ZExtInst::from_raw(id, module, ty)),
                     CastOpcode::SExt => CastKind::SExt(SExtInst::from_raw(id, module, ty)),
-                    CastOpcode::FpTrunc => {
-                        CastKind::FpTrunc(FpTruncInst::from_raw(id, module, ty))
-                    }
+                    CastOpcode::FpTrunc => CastKind::FpTrunc(FpTruncInst::from_raw(id, module, ty)),
                     CastOpcode::FpExt => CastKind::FpExt(FpExtInst::from_raw(id, module, ty)),
                     CastOpcode::FpToUI => CastKind::FpToUI(FpToUIInst::from_raw(id, module, ty)),
                     CastOpcode::FpToSI => CastKind::FpToSI(FpToSIInst::from_raw(id, module, ty)),
@@ -673,9 +670,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
                     CastOpcode::IntToPtr => {
                         CastKind::IntToPtr(IntToPtrInst::from_raw(id, module, ty))
                     }
-                    CastOpcode::BitCast => {
-                        CastKind::BitCast(BitCastInst::from_raw(id, module, ty))
-                    }
+                    CastOpcode::BitCast => CastKind::BitCast(BitCastInst::from_raw(id, module, ty)),
                     CastOpcode::AddrSpaceCast => {
                         CastKind::AddrSpaceCast(AddrSpaceCastInst::from_raw(id, module, ty))
                     }
