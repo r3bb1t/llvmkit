@@ -114,7 +114,7 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
 - `Width<M>`/`Width<N>` `WiderThan` relations blocked on stable
   const-generics (documented at `int_width.rs` ~105-116); revisit when
   `generic_const_exprs` stabilizes.
-- Aggregate variable categories for auto-SSA (v1 ships int/float/pointer
+- Aggregate variable categories for auto-SSA (currently ships int/float/pointer
   only).
 - Address-space-typed pointers (`PointerValue` currently erases address
   space; audit item from infra report).
@@ -149,10 +149,10 @@ deferred it.
   varargs invoke -- all mechanical extensions of the shipped `CallArgs`/
   `IntoCallArg` machinery.
 - **Auto-SSA aggregate variables + invoke/EH terminators** -- `ssa_builder.rs`
-  v1 ships int/float/pointer variables and `br`/`cond_br`/`switch`/`ret`/
+  currently ships int/float/pointer variables and `br`/`cond_br`/`switch`/`ret`/
   `ret_void`/`unreachable` terminators only. Aggregate variable categories
   (per-field fan-out through `StructSchema`) and `invoke`/`callbr`/EH
-  terminators are the documented v2 scope in the module's own doc comment.
+  terminators are the documented future scope in the module's own doc comment.
 - **`IrField::ir_type` accepting `ModuleRef`** -- `IrField::ir_type` and
   `StructSchema::ir_type` currently demand `&Module<'ctx, B, Unverified>`.
   `build_field_gep` (`ir_builder.rs`) has to construct a temporary
@@ -225,7 +225,7 @@ deliberately deferred; each cites its upstream anchor.
   requires a vector base, which is rejected earlier. Revisit the check when
   vector GEP bases land.
 
-## Pass API v2 — deferred
+## Pass API — deferred
 
 The `feature-4/pass-api-v2` branch shipped the capability-graded pass API
 (rungs, contexts/mutators, `FunctionPass`/`ModulePass`, single-pass drivers,
@@ -270,7 +270,7 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
 - **Compile-fail `.stderr` canonical-rustc bless** -- the
   `typestate_compile_fail` suite carries two pre-existing `.stderr` drifts
   (`folder_typed_wrong_width`, `extract_value_empty_indices`) blessed against a
-  different (CI) rustc, plus the six new Pass API v2 fixtures (including
+  different (CI) rustc, plus the six new pass-API fixtures (including
   `claim_preserved_after_mutate`) blessed on the local rustc. The whole set
   should be re-blessed on the canonical CI rustc so every fixture matches on the
   reference toolchain.
@@ -315,6 +315,6 @@ driver marks preserved exactly what it watched repair). What remains deferred:
   analyses are ever threaded into `for_each_function`.
 - **New `.stderr` under the canonical-rustc bless caveat.**
   `reshape_stale_cfg_analysis_across_edit` is blessed on the local rustc like
-  the Pass API v2 fixtures above; its `E0502` borrow-error wording is stable
+  the pass-API fixtures above; its `E0502` borrow-error wording is stable
   across toolchains, but it joins the set that should be re-blessed on the
   reference rustc.

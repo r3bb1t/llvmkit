@@ -12,7 +12,7 @@ Shipped today:
   `TypedCallInst`), typed pointers (`TypedPointerValue` + compile-time field
   GEPs), typed folder hooks, and Braun-style auto-SSA (`SsaBuilder`).
 - CFG and dominator-tree queries.
-- Capability-graded module/function passes (Pass API v2): a pass declares a
+- Capability-graded module/function passes: a pass declares a
   capability rung and the driver derives preservation and the output module's
   verified-state, so over-claiming what a pass preserves is a compile error.
 - Built-in analyses: `DominatorTreeAnalysis`, `KnownBitsAnalysis`, and

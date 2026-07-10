@@ -845,7 +845,7 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/cross_module_branch_target.rs");
     t.compile_fail("tests/compile_fail/cross_module_select_arm.rs");
     t.compile_fail("tests/compile_fail/custom_folder_wrong_brand.rs");
-    // Pass API v2 locks (section 11):
+    // Capability-graded pass API locks (section 11):
     t.compile_fail("tests/compile_fail/inspect_pass_cannot_mutate.rs");
     t.compile_fail("tests/compile_fail/claim_preserved_after_mutate.rs");
     t.compile_fail("tests/compile_fail/undeclared_analysis_in_pass_body.rs");

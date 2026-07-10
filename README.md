@@ -44,7 +44,7 @@ Shipped today:
 - **CFG and dominance queries** — done. `FunctionCfg`, `BasicBlockEdge`,
   `BasicBlock::successors()`, and `DominatorTree` are available as reusable IR
   queries.
-- **Capability-graded pass API (Pass API v2)** — done, including explicit
+- **Capability-graded pass API** — done, including explicit
   analysis invalidation. A pass declares a capability *rung*
   (`Inspect` / `PatchBody` / `ReshapeCfg` / `RewriteModule`) and its required
   analyses; the driver *derives* which analyses survive and whether the output
@@ -326,11 +326,11 @@ fully known" (Braun sealing) and "read/write before the builder is
 positioned" into typed errors rather than caller discipline: `create_block`
 auto-seals the entry block, `seal_block` completes a block's incomplete
 phis, and `finish()` is the always-correct seal-everything fallback that
-also rejects any created-but-never-filled block. v1 covers int / float /
+also rejects any created-but-never-filled block. It currently covers int / float /
 pointer variables and the `br` / `cond_br` / `switch` / `ret` / `ret_void` /
 `unreachable` terminators; mixing in manual phis via `b.ins()` for anything
 outside that scope is legal and verifier-checked. See
-[`docs/future-work.md`](docs/future-work.md) for the v2 scope (aggregate
+[`docs/future-work.md`](docs/future-work.md) for the planned scope (aggregate
 variables, invoke/EH terminators).
 
 ### Why llvmkit instead of inkwell
@@ -398,7 +398,7 @@ cargo run -p llvmkit-ir --example pass_manager_demo
 
 ## Built-in Analyses and Custom Passes
 
-`llvmkit-ir` ships a **capability-graded** pass layer (Pass API v2) for querying
+`llvmkit-ir` ships a **capability-graded** pass layer for querying
 analyses and running LLVM-like passes over the modeled IR. A pass declares a
 capability *rung* — how much of the IR it is allowed to touch — plus the
 analyses it needs; the driver derives everything else, including which analyses
@@ -605,7 +605,7 @@ pipeline names, and data-only pass-pipeline recipe types**, not a full
 optimization pipeline. There is no public LLVM-compatible `PassBuilder`, no
 runnable `default<O1>` optimizer, no loop / CGSCC / legacy manager, no
 instrumentation-driven skipping, and no broad transform library yet. See
-[`docs/future-work.md`](docs/future-work.md) (the "Pass API v2 — deferred"
+[`docs/future-work.md`](docs/future-work.md) (the "Pass API — deferred"
 section) for the scoped-out items.
 
 ## Project Structure
