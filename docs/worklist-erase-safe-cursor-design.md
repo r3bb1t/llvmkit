@@ -55,15 +55,21 @@ A SetVector mirroring LLVM's `InstructionWorklist`:
 
 - Backing store: `Vec<ValueId>` (LIFO stack) + `HashSet<ValueId>` (dedup).
 - `push(id)` — no-op if already queued.
-- `pop(&mut self, module) -> Option<NonTerminator>` — pops ids until one is a
-  **live non-terminator instruction**, reconstructs and returns its `NonTerminator`
-  handle; `None` when drained. **`pop` releases the id from the dedup set** (not
-  just the stack), so a later `push` can re-queue it — this is required for the
-  cascade: an operand becomes dead only after its *last* user is erased, which may
-  happen after that operand was already popped-and-found-live. The liveness skip is
-  belt-and-suspenders over remove-on-erase (and guards against a reused id).
-- `remove(id)` — pulls an id from both stack and set (called when it is erased).
+- `pop(&mut self, module) -> Option<NonTerminator>` — pops the next id, reconstructs
+  its `NonTerminator`, and returns it; skips any id that no longer resolves to a
+  non-terminator **instruction** (a cheap O(1) value-kind check, not an O(block)
+  "is it still in its block" scan). `None` when drained. **`pop` releases the id
+  from the dedup set** (not just the stack), so a later `push` can re-queue it —
+  required for the cascade: an operand becomes dead only after its *last* user is
+  erased, which may happen after that operand was already popped-and-found-live.
+- `remove(id)` — pulls an id from both stack and set.
 - `contains(id)`, `is_empty()`.
+
+**Correctness against erased ids comes from remove-on-erase, not a liveness scan:**
+`FnPatch::erase` calls `worklist.remove(id)` (Component 2), so an erased id never
+surfaces from `pop`. The O(1) kind-check on `pop` is only a defensive guard against
+a reused slot; a full "still in its block" scan would reintroduce O(n²) at seed
+time and is deliberately avoided.
 
 Stores bare `ValueId`s, so it is lifetime-free and unit-testable in isolation.
 Drain order is LIFO but **irrelevant to output**: DCE's transitive-dead closure and
@@ -96,11 +102,14 @@ goes through `FnPatch`, a worklist pass cannot bypass maintenance (the MLIR
 
 ```rust
 impl FnPatch {
-    /// Erase-safe walk over every non-terminator of the function body, in
+    /// Early-increment walk over every non-terminator of the function body, in
     /// program order. Snapshots each block's instruction ids up front and walks
-    /// by index, skipping any id erased behind its back (id-liveness check).
+    /// by index, so erasing the *yielded* instruction does not disturb the walk
+    /// (its successor is already fixed — LLVM's `make_early_inc_range` idiom).
     /// Yields `NonTerminator` (so `erase` takes it directly); never yields a
-    /// terminator.
+    /// terminator. Cascades (erasing instructions *ahead* of the cursor) are the
+    /// worklist's job, not the cursor's — a bare-cursor pass that needs them
+    /// should drive a worklist instead.
     pub fn body_instructions(&self) -> impl Iterator<Item = NonTerminator<'ctx, B>> + '_;
 }
 ```
@@ -175,8 +184,9 @@ preservation/verification behavior is identical.
   reaches fixpoint in one drain, not N restarts); an InstSimplify chain where folding
   `a` re-queues its user `b` (user cascade); the InstSimplify ordered-atomic-load
   termination case (folded once, kept, not re-folded — the `!has_uses` guard).
-- **Cursor test:** `body_instructions()` mid-iteration erase of an instruction
-  *ahead* of the cursor is skipped (id-liveness), never yielded stale.
+- **Cursor test:** `body_instructions()` yields each non-terminator once, and
+  erasing the *yielded* instruction mid-iteration does not disturb the walk (the
+  early-increment property); it never yields the terminator.
 - All five CI gates: `cargo fmt -- --check`, `cargo clippy --workspace --all-targets
   --all-features -- -D warnings`, `RUSTDOCFLAGS=-D warnings cargo doc --no-deps
   --all-features -p llvmkit-ir`, `cargo test --workspace --all-features`, `cargo audit`.
