@@ -64,6 +64,7 @@ pub mod basic_block;
 pub mod block_state;
 pub mod calling_conv;
 pub mod cfg;
+pub mod cfg_update;
 pub mod cmp_predicate;
 pub mod comdat;
 pub mod constant;
@@ -134,11 +135,11 @@ pub mod verifier;
 pub mod unnamed_addr;
 pub use analysis::{
     AllAnalysesOnFunction, AllAnalysesOnModule, Analyses, AnalysisKeyId, AnalysisSelector,
-    AnalysisSetKeyId, CFGAnalyses, FunctionAnalysis, FunctionAnalysisInvalidator,
+    AnalysisSetKeyId, CFGAnalyses, CfgIncremental, FunctionAnalysis, FunctionAnalysisInvalidator,
     FunctionAnalysisList, FunctionAnalysisManager, FunctionAnalysisManagerModuleProxy,
     FunctionAnalysisResult, Idx0, Idx1, Idx2, Idx3, Idx4, Idx5, Idx6, Idx7, ModuleAnalysis,
     ModuleAnalysisInvalidator, ModuleAnalysisList, ModuleAnalysisManager, ModuleAnalysisResult,
-    ModuleAnalysisSelector, PreservedAnalyses, PreservedAnalysisChecker,
+    ModuleAnalysisSelector, PreservedAnalyses, PreservedAnalysisChecker, RepairOutcome,
 };
 pub use ap_float::{
     ApFloat, ApFloatCategory, ApFloatCmpResult, ApFloatNextDirection, ApFloatSemantics,
@@ -157,6 +158,7 @@ pub use basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
 pub use block_state::{BlockTerminationState, Terminated, Unterminated};
 pub use calling_conv::CallingConv;
 pub use cfg::{BasicBlockEdge, FunctionCfg};
+pub use cfg_update::{CfgEdge, CfgUpdate};
 pub use cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 pub use comdat::{ComdatRef, SelectionKind};
 pub use constant::{

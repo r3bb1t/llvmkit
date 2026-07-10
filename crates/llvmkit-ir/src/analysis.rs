@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::rc::Rc;
 
+use crate::cfg_update::CfgUpdate;
 use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
 use crate::module::{Brand, ModuleBrand, ModuleId, ModuleView};
 use crate::pass_context::FunctionView;
@@ -350,6 +351,59 @@ pub trait FunctionAnalysisResult<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
     ) -> IrResult<bool> {
         Ok(true)
     }
+}
+
+/// What a cached CFG-shaped analysis result did with a batch of recorded
+/// [`CfgUpdate`]s. Returned by [`CfgIncremental::apply_updates`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepairOutcome {
+    /// The result absorbed every update and is now consistent with the edited
+    /// CFG — the framework may keep it and mark it preserved.
+    Repaired,
+    /// The result declined incremental repair; the framework must recompute or
+    /// evict it. This is the degenerate default — exactly today's behavior, in
+    /// which every mutating rung's floor evicts CFG analyses wholesale.
+    PreferRecompute,
+}
+
+/// A cached analysis result that can *attempt* to repair itself in place after a
+/// batch of CFG edits, instead of being evicted wholesale. This is the
+/// framework-witnessed half of Package 4's preservation story: the reshape
+/// mutator records [`CfgUpdate`]s as it edits (`cfg_update.rs`), and the driver
+/// offers them here — an analysis is only ever marked preserved because the
+/// framework *watched* it return [`RepairOutcome::Repaired`], never because an
+/// author claimed preservation.
+///
+/// Implementing this hook is entirely optional: an analysis that does not (or
+/// returns [`RepairOutcome::PreferRecompute`]) simply falls back to the existing
+/// floor eviction. The update vocabulary is deliberately CFG-shaped; value-level
+/// analyses are out of scope (their mutating floor already evicts them).
+///
+/// No upstream analog in this shape: LLVM hand-feeds `DomTreeUpdater` its edits
+/// and trusts the author to keep them complete and ordered; here the edits are
+/// framework-recorded and the analysis only ever *reacts* to them.
+///
+/// [`Sized`] because [`Self::recompute`] returns `Self`: this is only ever
+/// implemented on concrete analysis-result types.
+pub trait CfgIncremental<'ctx, B: ModuleBrand = Brand<'ctx>>: Sized {
+    /// Fold the recorded `updates` (in the order they were performed over
+    /// `function`) into this cached result. Return [`RepairOutcome::Repaired`]
+    /// only if the result is now fully consistent with the edited CFG;
+    /// otherwise return [`RepairOutcome::PreferRecompute`] and the framework
+    /// recomputes (via [`Self::recompute`]) or evicts.
+    fn apply_updates(
+        &mut self,
+        updates: &[CfgUpdate],
+        function: FunctionView<'ctx, B>,
+    ) -> RepairOutcome;
+
+    /// Recompute this analysis from scratch over `function`'s current CFG. The
+    /// framework calls this whenever [`Self::apply_updates`] returns
+    /// [`RepairOutcome::PreferRecompute`] (always, in Phase 1), so a mid-pass
+    /// read of a CFG analysis after a reshape edit still yields a *correct*
+    /// result rather than a stale cached one. Must equal a fresh construction
+    /// of the analysis.
+    fn recompute(function: FunctionView<'ctx, B>) -> Self;
 }
 
 type FunctionRunner<'ctx, B> = Rc<
@@ -983,6 +1037,29 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for DominatorT
     }
 }
 
+impl<'ctx, B: ModuleBrand + 'ctx> CfgIncremental<'ctx, B> for DominatorTree {
+    /// Phase 1 ships plumbing only: the dominator tree declines incremental
+    /// repair and asks the framework to recompute. This is a *behavior-preserving*
+    /// default — a full recompute is exactly the fresh result today's eviction
+    /// path already produces, so wiring this hook up changes nothing observable
+    /// yet. Phase 2 (a separate follow-up spec) replaces the body with real
+    /// incremental repair driven by `updates`, property-tested to agree with a
+    /// from-scratch recompute over random edit sequences.
+    #[inline]
+    fn apply_updates(
+        &mut self,
+        _updates: &[CfgUpdate],
+        _function: FunctionView<'ctx, B>,
+    ) -> RepairOutcome {
+        RepairOutcome::PreferRecompute
+    }
+
+    #[inline]
+    fn recompute(function: FunctionView<'ctx, B>) -> Self {
+        DominatorTree::new(function.as_function())
+    }
+}
+
 mod analysis_list_sealed {
     pub trait Sealed {}
 }
@@ -1347,6 +1424,42 @@ mod tests {
                 .entry_block()
                 .map(|bb| dt.is_reachable_from_entry(bb));
             assert_eq!(entry_view, Some(true));
+            Ok(())
+        })
+    }
+
+    /// The dominator tree's Phase-1 [`CfgIncremental`] hook declines incremental
+    /// repair and asks the framework to recompute — a behavior-preserving
+    /// default, since a full recompute equals the fresh result today's eviction
+    /// path already produces. Proves the hook is wired; real incremental repair
+    /// is Phase 2. llvmkit-specific witnessed-preservation plumbing (no upstream
+    /// analog: LLVM hand-feeds `DomTreeUpdater` and trusts author-supplied
+    /// edits).
+    #[test]
+    fn dominator_tree_prefers_recompute_on_cfg_updates() -> IrResult<()> {
+        Module::with_new("domtree-cfgincr", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let entry_id = entry.as_value().id;
+            let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+            b.build_ret(i32_ty.const_int(0_u32))?;
+
+            let function: FunctionView<'_> = f.into();
+            let mut dt = DominatorTree::new(function.as_function());
+
+            // No updates, and an arbitrary recorded update, both yield
+            // PreferRecompute from the Phase-1 dom tree.
+            assert_eq!(
+                dt.apply_updates(&[], function),
+                RepairOutcome::PreferRecompute
+            );
+            let updates = [CfgUpdate::insert(entry_id, entry_id)];
+            assert_eq!(
+                dt.apply_updates(&updates, function),
+                RepairOutcome::PreferRecompute
+            );
             Ok(())
         })
     }
