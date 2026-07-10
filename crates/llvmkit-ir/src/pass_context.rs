@@ -126,6 +126,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
         self.block.instructions().len()
     }
 
+    /// Read-only instruction views in program order. Lets an `Inspect`-rung
+    /// pass walk a block's instructions without escaping to the underlying
+    /// function handle.
+    #[inline]
+    pub fn instructions(&self) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>> {
+        self.block.instructions()
+    }
+
     /// `true` if the block currently has no instructions.
     #[inline]
     pub fn is_empty(&self) -> bool {
@@ -442,6 +450,13 @@ where
     module: &'m Module<'ctx, B, Unverified>,
     function: FunctionView<'ctx, B>,
     results: R::ResultRefs<'r>,
+    /// Witnessed dirty flag: set by every mutating method, read by
+    /// [`Self::done`]. A run that touches nothing reports everything
+    /// preserved; a run that mutates reports the rung floor. This is a
+    /// *fact the mutator observes*, not a claim the author makes — a `Cell`
+    /// so mutating methods can flip it through a shared `&self` (mutation
+    /// itself flows through the interior-mutable module token).
+    dirty: core::cell::Cell<bool>,
 }
 
 impl<'m, 'r, 'ctx, B, R> FnPatch<'m, 'r, 'ctx, B, R>
@@ -461,7 +476,14 @@ where
             module,
             function,
             results,
+            dirty: core::cell::Cell::new(false),
         }
+    }
+
+    /// Whether any mutation has been performed through this mutator.
+    #[inline]
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.get()
     }
 
     /// Read-only function view.
@@ -503,7 +525,7 @@ where
     /// terminator-erase would break the "CFG preserved" floor this rung rests
     /// on). A fully structural non-terminator handle is future work.
     #[inline]
-    pub fn erase(&mut self, view: &InstructionView<'ctx, B>) -> IrResult<()> {
+    pub fn erase(&self, view: &InstructionView<'ctx, B>) -> IrResult<()> {
         if view.is_terminator() {
             return Err(IrError::InvalidOperation {
                 message: "FnPatch::erase cannot erase a terminator; the PatchBody rung \
@@ -513,6 +535,7 @@ where
         let id = view.as_value().id();
         let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
         inst.erase_from_parent(self.module);
+        self.dirty.set(true);
         Ok(())
     }
 
@@ -521,7 +544,7 @@ where
     /// [`Instruction::replace_all_uses_with`].
     #[inline]
     pub fn replace_all_uses<V>(
-        &mut self,
+        &self,
         view: &InstructionView<'ctx, B>,
         replacement: V,
     ) -> IrResult<()>
@@ -530,14 +553,22 @@ where
     {
         let id = view.as_value().id();
         let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
-        inst.replace_all_uses_with(self.module, replacement)
+        inst.replace_all_uses_with(self.module, replacement)?;
+        self.dirty.set(true);
+        Ok(())
     }
 
     /// Finish: report the [`PatchBody`] preservation floor (CFG analyses
-    /// preserved). Consumes the mutator.
+    /// preserved) if anything was mutated, or everything-preserved if the
+    /// run was a no-op. Consumes the mutator. The all-preserved case is
+    /// *witnessed* by the dirty flag, so it needs no read-only pre-scan.
     #[inline]
     pub fn done(self) -> FnReport {
-        FnReport::from_pa(<PatchBody as FnAccess>::preserved_floor())
+        if self.dirty.get() {
+            FnReport::from_pa(<PatchBody as FnAccess>::preserved_floor())
+        } else {
+            FnReport::from_pa(PreservedAnalyses::all())
+        }
     }
 }
 
@@ -610,14 +641,14 @@ where
 
     /// Erase a non-terminator instruction. See [`FnPatch::erase`].
     #[inline]
-    pub fn erase(&mut self, view: &InstructionView<'ctx, B>) -> IrResult<()> {
+    pub fn erase(&self, view: &InstructionView<'ctx, B>) -> IrResult<()> {
         self.patch.erase(view)
     }
 
     /// Replace every use of `view`'s result. See [`FnPatch::replace_all_uses`].
     #[inline]
     pub fn replace_all_uses<V>(
-        &mut self,
+        &self,
         view: &InstructionView<'ctx, B>,
         replacement: V,
     ) -> IrResult<()>
@@ -634,7 +665,7 @@ where
     /// this rung distinct from [`FnPatch`]; wired to [`BasicBlock::split_at`].
     #[inline]
     pub fn split_block<Name>(
-        &mut self,
+        &self,
         block: &BasicBlockView<'ctx, B>,
         before: &InstructionView<'ctx, B>,
         name: Name,
@@ -642,16 +673,24 @@ where
     where
         Name: Into<String>,
     {
-        block
+        let new_block = block
             .as_basic_block()
-            .split_at(self.patch.module_mut(), before, name)
+            .split_at(self.patch.module_mut(), before, name)?;
+        self.patch.dirty.set(true);
+        Ok(new_block)
     }
 
     /// Finish: report the [`ReshapeCfg`] preservation floor (`none()` — nothing
-    /// preserved). Consumes the mutator.
+    /// preserved) if anything was mutated, or everything-preserved if the run
+    /// was a no-op. Consumes the mutator; the no-op case is witnessed by the
+    /// dirty flag.
     #[inline]
     pub fn done(self) -> FnReport {
-        FnReport::from_pa(<ReshapeCfg as FnAccess>::preserved_floor())
+        if self.patch.is_dirty() {
+            FnReport::from_pa(<ReshapeCfg as FnAccess>::preserved_floor())
+        } else {
+            FnReport::from_pa(PreservedAnalyses::all())
+        }
     }
 }
 
@@ -1072,7 +1111,7 @@ mod tests {
     use crate::dominator_tree::DominatorTreeAnalysis;
     use crate::instruction::InstructionView;
     use crate::pass_access::{Inspect, PatchBody, ReshapeCfg, RewriteModule};
-    use crate::{IRBuilder, IntValue, IrError, Linkage, Module, Type};
+    use crate::{IRBuilder, IntValue, IrError, Linkage, Module, NoFolder, Type};
 
     /// The `Requires` list shared by these tests: a single CFG-shaped analysis
     /// so both the infallible accessor and the preservation floors have a
@@ -1152,7 +1191,7 @@ mod tests {
             );
 
             let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(&m, function, results);
-            let mut patch = cx.mutate();
+            let patch = cx.mutate();
             patch.erase(&dead_view)?;
 
             // After mutation: only `ret` remains.
@@ -1201,7 +1240,7 @@ mod tests {
             let results = Reqs::collect(&fam, function)?;
 
             let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(&m, function, results);
-            let mut patch = cx.mutate();
+            let patch = cx.mutate();
             // Erasing the terminator is refused; the `ret` stays put.
             assert!(patch.erase(&terminator).is_err());
             assert_eq!(
@@ -1248,11 +1287,50 @@ mod tests {
     }
 
     /// An [`super::FnReshape`] (`ReshapeCfg` rung) `done()` reports nothing
-    /// preserved — not even the CFG set. llvmkit-specific capability-context
-    /// lock (no upstream analog).
+    /// preserved — not even the CFG set — *once it has actually mutated* (the
+    /// dirty flag is set). llvmkit-specific capability-context lock (no upstream
+    /// analog).
     #[test]
     fn reshape_cfg_floor_is_none() -> Result<(), IrError> {
         Module::with_new("reshape-cx", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let dead = b.build_int_add::<i32, _, _, _>(
+                i32_ty.const_int(1_u32),
+                i32_ty.const_int(2_u32),
+                "dead",
+            )?;
+            b.build_ret(i32_ty.const_int(0_u32))?;
+
+            let function = FunctionView::from(f);
+            let mut fam = FunctionAnalysisManager::new();
+            Reqs::prefetch(&mut fam, function)?;
+            let results = Reqs::collect(&fam, function)?;
+
+            let cx: FnCx<'_, '_, '_, _, ReshapeCfg, Reqs> = FnCx::new(&m, function, results);
+            let reshape = cx.mutate();
+            // Erase the dead instruction so the dirty flag is set; only then
+            // does `done()` report the ReshapeCfg floor.
+            let dead_view = InstructionView::try_from(dead.as_value())?;
+            reshape.erase(&dead_view)?;
+            let report = reshape.done();
+            let pa = report.into_pa();
+            let checker = pa.checker::<DominatorTreeAnalysis>();
+            assert!(!checker.preserved());
+            assert!(!checker.preserved_set::<CFGAnalyses>());
+            Ok(())
+        })
+    }
+
+    /// A witnessed no-op `ReshapeCfg` run — `mutate()` then `done()` with no
+    /// edit — reports everything preserved (the dirty flag saw nothing), so the
+    /// mutating rung's floor is *not* forced on a run that changed nothing.
+    #[test]
+    fn reshape_cfg_noop_preserves_everything() -> Result<(), IrError> {
+        Module::with_new("reshape-noop", |m| {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
             let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
@@ -1266,12 +1344,13 @@ mod tests {
             let results = Reqs::collect(&fam, function)?;
 
             let cx: FnCx<'_, '_, '_, _, ReshapeCfg, Reqs> = FnCx::new(&m, function, results);
-            let reshape = cx.mutate();
-            let report = reshape.done();
+            let report = cx.mutate().done();
             let pa = report.into_pa();
-            let checker = pa.checker::<DominatorTreeAnalysis>();
-            assert!(!checker.preserved());
-            assert!(!checker.preserved_set::<CFGAnalyses>());
+            assert!(pa.checker::<DominatorTreeAnalysis>().preserved());
+            assert!(
+                pa.checker::<DominatorTreeAnalysis>()
+                    .preserved_set::<CFGAnalyses>()
+            );
             Ok(())
         })
     }
@@ -1412,7 +1491,7 @@ mod tests {
             let mut r = cx.mutate();
 
             let mut visited: Vec<FunctionView<'_, _>> = Vec::new();
-            r.for_each_function::<PatchBody>(|mut p| {
+            r.for_each_function::<PatchBody>(|p| {
                 let fv = p.function();
                 visited.push(fv);
                 for (f, dead) in &dead_by_fn {

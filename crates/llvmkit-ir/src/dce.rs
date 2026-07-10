@@ -6,10 +6,10 @@
 //! dead operands are removed.
 
 use super::IrResult;
-use super::instruction::{Instruction, InstructionKind, InstructionView, state};
+use super::instruction::{InstructionKind, InstructionView};
 use super::module::ModuleBrand;
 use super::pass_access::PatchBody;
-use super::pass_context::{FnCx, FnPatch, FnReport, FunctionView};
+use super::pass_context::{FnCx, FnPatch, FnReport};
 use super::pass_manager::FunctionPass;
 use super::pass_pipeline::DCE;
 
@@ -25,47 +25,35 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for DcePass {
     const NAME: &'static str = DCE.as_str();
 
     fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport> {
-        // A run that erases nothing reports everything preserved; a run that
-        // erases even one instruction reports the rung's CFG-preserved floor via
-        // `FnPatch::done`. This nets to the same preservation (and the same
-        // erased instructions) as the retired `none()` + `MinPreserves` path —
-        // but the report can only be downgraded *before* `mutate()`, so the
-        // all-live case is decided by a read-only pre-scan first.
-        if !has_trivially_dead_instruction(cx.function()) {
-            return Ok(cx.done());
-        }
+        // Enter the mutator and erase dead instructions. No read-only
+        // pre-scan is needed: `FnPatch::done` reports everything-preserved if
+        // nothing was erased (the mutator's dirty flag *witnesses* that), and
+        // the rung's CFG-preserved floor otherwise.
         let patch = cx.mutate();
-        while dce_iteration(&patch) {}
+        while dce_iteration(&patch)? {}
         Ok(patch.done())
     }
 }
 
-/// Read-only pre-scan: does the function contain any trivially-dead instruction?
-fn has_trivially_dead_instruction<'ctx, B: ModuleBrand + 'ctx>(
-    function: FunctionView<'ctx, B>,
-) -> bool {
-    function
-        .as_function()
-        .basic_blocks()
-        .any(|block| block.instructions().any(|inst| is_trivially_dead(&inst)))
-}
-
-fn dce_iteration<'ctx, B: ModuleBrand + 'ctx>(patch: &FnPatch<'_, '_, 'ctx, B, ()>) -> bool {
-    let module_token = patch.module_mut();
+fn dce_iteration<'ctx, B: ModuleBrand + 'ctx>(
+    patch: &FnPatch<'_, '_, 'ctx, B, ()>,
+) -> IrResult<bool> {
+    let module_ref = patch.module_mut().module_ref();
 
     for block in patch.function_mut().basic_blocks() {
         let instruction_ids = block.instruction_ids();
         for id in instruction_ids {
-            let inst = Instruction::<state::Attached, B>::from_parts(id, module_token.module_ref());
-            if !is_trivially_dead(&inst.as_view()) {
+            let view = InstructionView::from_parts(id, module_ref);
+            if !is_trivially_dead(&view) {
                 continue;
             }
-            inst.erase_from_parent(module_token);
-            return true;
+            // Erase through the mutator so the dirty flag is set.
+            patch.erase(&view)?;
+            return Ok(true);
         }
     }
 
-    false
+    Ok(false)
 }
 
 pub(crate) fn is_trivially_dead<'ctx, B: ModuleBrand + 'ctx>(
