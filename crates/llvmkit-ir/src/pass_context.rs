@@ -552,6 +552,23 @@ where
         self.dirty.set(true);
     }
 
+    /// Early-increment walk over every non-terminator of the function body, in
+    /// program order. Each block's instruction ids are snapshotted up front and
+    /// walked by index, so erasing the *yielded* instruction does not disturb the
+    /// walk (its successor is already fixed — LLVM's `make_early_inc_range`
+    /// idiom). Yields [`NonTerminator`] (so [`Self::erase`] takes it directly) and
+    /// never yields a terminator. Cascades (erasing instructions *ahead* of the
+    /// cursor) are a worklist's job, not the cursor's.
+    #[inline]
+    pub fn body_instructions(&self) -> impl Iterator<Item = NonTerminator<'ctx, B>> + '_ {
+        let module = self.module.module_ref();
+        self.function
+            .as_function()
+            .basic_blocks()
+            .flat_map(move |block| block.instruction_ids())
+            .filter_map(move |id| InstructionView::from_parts(id, module).as_non_terminator())
+    }
+
     /// Replace every use of `view`'s result with `replacement`, leaving the
     /// instruction itself in place. Mirrors
     /// [`Instruction::replace_all_uses_with`].
@@ -1412,6 +1429,48 @@ mod tests {
                 .entry_block()
                 .expect("definition has an entry block");
             assert!(dt.is_reachable_from_entry(entry_view));
+            Ok(())
+        })
+    }
+
+    /// `body_instructions()` yields every non-terminator once in program order,
+    /// never the terminator, and erasing the yielded instruction mid-iteration
+    /// does not disturb the walk (early-increment). llvmkit-specific pass-authoring
+    /// primitive (no upstream analog: LLVM's make_early_inc_range is untyped).
+    #[test]
+    fn body_instructions_early_inc_erase_of_yielded() -> Result<(), IrError> {
+        Module::with_new("body-cursor", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let _d1 = b.build_int_add(x, 1_i32, "d1")?;
+            let _d2 = b.build_int_add(x, 2_i32, "d2")?;
+            b.build_ret(x)?;
+
+            let function = FunctionView::from(f);
+            let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
+            let patch = cx.mutate();
+
+            // Two non-terminators visited; the ret is never yielded. Erase each as
+            // it is yielded — early-inc means the walk is unperturbed.
+            let mut count = 0;
+            let names: Vec<_> = patch
+                .body_instructions()
+                .map(|nt| {
+                    count += 1;
+                    let name = nt.as_view().as_value().name();
+                    patch.erase(&nt); // erase the yielded instruction
+                    name
+                })
+                .collect();
+            assert_eq!(count, 2);
+            assert_eq!(names.len(), 2);
+            // Both dead adds gone; only ret remains.
+            assert_eq!(function.entry_block().expect("def").instruction_count(), 1);
+            let _ = patch.done();
             Ok(())
         })
     }
