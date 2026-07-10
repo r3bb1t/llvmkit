@@ -64,6 +64,7 @@ pub mod basic_block;
 pub mod block_state;
 pub mod calling_conv;
 pub mod cfg;
+pub mod cfg_update;
 pub mod cmp_predicate;
 pub mod comdat;
 pub mod constant;
@@ -157,6 +158,7 @@ pub use basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
 pub use block_state::{BlockTerminationState, Terminated, Unterminated};
 pub use calling_conv::CallingConv;
 pub use cfg::{BasicBlockEdge, FunctionCfg};
+pub use cfg_update::{CfgEdge, CfgUpdate};
 pub use cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 pub use comdat::{ComdatRef, SelectionKind};
 pub use constant::{

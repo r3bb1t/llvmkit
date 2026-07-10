@@ -62,6 +62,7 @@ use super::analysis::{
     PreservedAnalyses,
 };
 use super::block_state::{Terminated, Unterminated};
+use super::cfg_update::CfgUpdate;
 use super::function::FunctionValue;
 use super::instruction::{Instruction, InstructionView, NonTerminator, state};
 use super::marker::{Dyn, ReturnMarker};
@@ -583,6 +584,15 @@ where
     'ctx: 'r,
 {
     patch: FnPatch<'m, 'r, 'ctx, B, R>,
+    /// Witnessed CFG-edit log: every structural edit method appends its own
+    /// [`CfgUpdate`] decomposition here as it runs. The driver drains this at
+    /// `done()` (and a future mid-pass repair reads it) to offer each cached
+    /// CFG analysis exactly the edits it must absorb — so preservation is
+    /// *observed*, never author-claimed. A [`RefCell`](core::cell::RefCell) for
+    /// the same reason [`FnPatch`]'s `dirty` flag is a `Cell`: the recording
+    /// edit methods append through a shared `&self` while IR mutation flows
+    /// through the interior-mutable module token.
+    cfg_updates: core::cell::RefCell<Vec<CfgUpdate>>,
 }
 
 impl<'m, 'r, 'ctx, B, R> FnReshape<'m, 'r, 'ctx, B, R>
@@ -600,7 +610,19 @@ where
     ) -> Self {
         Self {
             patch: FnPatch::new(module, function, results),
+            cfg_updates: core::cell::RefCell::new(Vec::new()),
         }
+    }
+
+    /// The CFG edits recorded by structural edit methods so far, in the order
+    /// they were performed. Each [`CfgUpdate`] was minted by the mutator itself
+    /// as it edited — the log is a *witnessed* fact, not an author claim. The
+    /// driver drains this to decide which cached CFG analyses it can mark
+    /// preserved (via the [`CfgIncremental`](crate::analysis) hook); exposed
+    /// here so tests and the driver can inspect it.
+    #[inline]
+    pub fn pending_cfg_updates(&self) -> Vec<CfgUpdate> {
+        self.cfg_updates.borrow().clone()
     }
 
     // `function`, `function_mut`, `analysis`, `module_mut`, `erase`, and
@@ -622,9 +644,27 @@ where
     where
         Name: Into<String>,
     {
-        let new_block = block
-            .as_basic_block()
-            .split_at(self.patch.module_mut(), before, name)?;
+        // Capture the successors of `block`'s terminator *before* the split
+        // moves that terminator into the new block — afterwards `block` is
+        // unterminated and has none. The split's own effect on the CFG is
+        // purely this rewiring: each edge `block → s` becomes `new_block → s`
+        // (the caller wires the fresh `block → new_block` edge later, through
+        // its own terminator, so that edge is not this method's to record).
+        let source = block.as_basic_block();
+        let source_id = source.as_value().id;
+        let successors = crate::cfg::block_successors(&source);
+
+        let new_block = source.split_at(self.patch.module_mut(), before, name)?;
+        let new_id = new_block.as_value().id;
+
+        if !successors.is_empty() {
+            let mut log = self.cfg_updates.borrow_mut();
+            for succ in &successors {
+                let succ_id = succ.as_value().id;
+                log.push(CfgUpdate::delete(source_id, succ_id));
+                log.push(CfgUpdate::insert(new_id, succ_id));
+            }
+        }
         self.patch.dirty.set(true);
         Ok(new_block)
     }
@@ -1315,6 +1355,75 @@ mod tests {
             assert!(
                 pa.checker::<DominatorTreeAnalysis>()
                     .preserved_set::<CFGAnalyses>()
+            );
+            Ok(())
+        })
+    }
+
+    /// `split_block` records its own CFG-edge decomposition as witnessed
+    /// [`CfgUpdate`](crate::CfgUpdate)s: the split moves the block's terminator
+    /// — and thus every out-edge — into the fresh block, so each `block → succ`
+    /// edge is logged as a delete paired with a `new_block → succ` insert. The
+    /// `block → new_block` edge is the caller's to wire (through a new
+    /// terminator), so it is deliberately absent from this method's log.
+    /// llvmkit-specific witnessed-preservation plumbing (no upstream analog:
+    /// LLVM's `DomTreeUpdater` is hand-fed its updates).
+    #[test]
+    fn split_block_records_edge_decomposition() -> Result<(), IrError> {
+        use crate::CfgUpdate;
+        Module::with_new("reshape-cfgupdate", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let next = f.append_basic_block(&m, "next");
+            // Ids captured up front — the block handles are consumed by the
+            // builders below.
+            let entry_id = entry.as_value().id;
+            let next_id = next.as_value().id;
+
+            // entry: %x = add 1, 2 ; br label %next
+            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+            let _x = b.build_int_add::<i32, _, _, _>(
+                i32_ty.const_int(1_u32),
+                i32_ty.const_int(2_u32),
+                "x",
+            )?;
+            b.build_br(next.label())?;
+            // next: ret 0
+            let b2 = IRBuilder::new_for::<i32>(&m).position_at_end(next);
+            b2.build_ret(i32_ty.const_int(0_u32))?;
+
+            let function = FunctionView::from(f);
+            let mut fam = FunctionAnalysisManager::new();
+            Reqs::prefetch(&mut fam, function)?;
+            let results = Reqs::collect(&fam, function)?;
+
+            let cx: FnCx<'_, '_, '_, _, ReshapeCfg, Reqs> = FnCx::new(&m, function, results);
+            let reshape = cx.mutate();
+
+            // Nothing recorded before any structural edit.
+            assert!(reshape.pending_cfg_updates().is_empty());
+
+            // Split the entry before its terminator: `br next` (with its
+            // out-edge) moves into the fresh block.
+            let entry_view = function
+                .entry_block()
+                .expect("definition has an entry block");
+            let terminator = entry_view
+                .as_basic_block()
+                .terminator()
+                .expect("entry is terminated by the br");
+            let new_block = reshape.split_block(&entry_view, &terminator, "entry.split")?;
+            let new_id = new_block.as_value().id;
+
+            // Exactly the rewiring: entry loses `→ next`, the new block gains it.
+            assert_eq!(
+                reshape.pending_cfg_updates(),
+                vec![
+                    CfgUpdate::delete(entry_id, next_id),
+                    CfgUpdate::insert(new_id, next_id),
+                ],
             );
             Ok(())
         })
