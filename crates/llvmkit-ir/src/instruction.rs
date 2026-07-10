@@ -32,13 +32,15 @@ use super::instructions::{
     AShrInst, AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst,
     BitCastInst, BranchInst, CallBrInst, CallInst, CatchPadInst, CatchReturnInst, CatchSwitchInst,
     CleanupPadInst, CleanupReturnInst, ExtractElementInst, ExtractValueInst, FAddInst, FCmpInst,
-    FDivInst, FMulInst, FNegInst, FRemInst, FSubInst, FpExtInst, FpToSIInst, FpToUIInst,
+    FDivInst, FMulInst, FNegInst, FRemInst, FSubInst, FpExtInst, FpPhiInst, FpToSIInst, FpToUIInst,
     FpTruncInst, FenceInst, FreezeInst, GepInst, ICmpInst, IndirectBrInst, InsertElementInst,
     InsertValueInst, IntToPtrInst, InvokeInst, LShrInst, LandingPadInst, LoadInst, MulInst, OrInst,
-    PhiInst, PtrToAddrInst, PtrToIntInst, ResumeInst, RetInst, SDivInst, SExtInst, SIToFpInst,
-    SRemInst, SelectInst, ShlInst, ShuffleVectorInst, StoreInst, SubInst, SwitchInst, TruncInst,
-    UDivInst, UIToFpInst, URemInst, UnreachableInst, VAArgInst, XorInst, ZExtInst,
+    OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst, ResumeInst, RetInst,
+    SDivInst, SExtInst, SIToFpInst, SRemInst, SelectInst, ShlInst, ShuffleVectorInst, StoreInst,
+    SubInst, SwitchInst, TruncInst, UDivInst, UIToFpInst, URemInst, UnreachableInst, VAArgInst,
+    XorInst, ZExtInst,
 };
+use super::float_kind::FloatDyn;
 use super::int_width::IntDyn;
 use super::marker::{Dyn, ReturnMarker};
 use super::metadata::{DebugRecord, MetadataAttachmentKind, MetadataAttachmentSet, MetadataId};
@@ -52,7 +54,7 @@ use super::value::{
     HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueId, ValueKindData, ValueUse,
     sealed,
 };
-use super::{DebugLoc, IrError, IrResult, Type};
+use super::{DebugLoc, IrError, IrResult, Type, TypeKind};
 
 // --------------------------------------------------------------------------
 // Storage payload
@@ -677,7 +679,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
                 Some(InstructionKind::ICmp(ICmpInst::from_raw(id, module, ty)))
             }
             InstructionKindData::Phi(_) => {
-                Some(InstructionKind::Phi(PhiInst::from_raw(id, module, ty)))
+                // Choose the handle from the phi's result type so the
+                // narrowing accessor (`as_int_value`/`as_float_value`/
+                // `as_pointer_value`) is always sound.
+                let phi = match Type::new(ty, module).kind() {
+                    TypeKind::Integer { .. } => PhiKind::Int(PhiInst::from_raw(id, module, ty)),
+                    TypeKind::Half
+                    | TypeKind::BFloat
+                    | TypeKind::Float
+                    | TypeKind::Double
+                    | TypeKind::X86Fp80
+                    | TypeKind::Fp128
+                    | TypeKind::PpcFp128 => PhiKind::Fp(FpPhiInst::from_raw(id, module, ty)),
+                    TypeKind::Pointer { .. } => {
+                        PhiKind::Ptr(PointerPhiInst::from_raw(id, module, ty))
+                    }
+                    _ => PhiKind::Other(OtherPhiInst::from_raw(id, module, ty)),
+                };
+                Some(InstructionKind::Phi(phi))
             }
             InstructionKindData::FNeg(_) => {
                 Some(InstructionKind::FNeg(FNegInst::from_raw(id, module, ty)))
@@ -1603,6 +1622,57 @@ impl<'ctx, B: ModuleBrand + 'ctx> CastKind<'ctx, B> {
     }
 }
 
+/// Result-type discriminator for `phi` nodes, nested inside
+/// [`InstructionKind::Phi`]. The active variant is chosen from the phi's
+/// result type at classification time, so the handle you get back narrows
+/// correctly: an integer phi yields [`PhiInst`] (with `as_int_value`), a
+/// float phi yields [`FpPhiInst`] (`as_float_value`), a pointer phi yields
+/// [`PointerPhiInst`] (`as_pointer_value`), and everything else (vector,
+/// array, struct) yields the erased [`OtherPhiInst`]. This removes the old
+/// bug where every rediscovered phi came back integer-flavored and
+/// `as_int_value()` lied on `f64`/pointer phis.
+///
+/// Deliberately **exhaustive** for the same reason as [`InstructionKind`].
+#[derive(Debug)]
+pub enum PhiKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    Int(PhiInst<'ctx, IntDyn, PhiClosed, B>),
+    Fp(FpPhiInst<'ctx, FloatDyn, PhiClosed, B>),
+    Ptr(PointerPhiInst<'ctx, PhiClosed, B>),
+    Other(OtherPhiInst<'ctx, B>),
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> PhiKind<'ctx, B> {
+    /// Number of incoming `(value, block)` edges, independent of variant.
+    pub fn incoming_count(&self) -> u32 {
+        match self {
+            Self::Int(p) => p.incoming_count(),
+            Self::Fp(p) => p.incoming_count(),
+            Self::Ptr(p) => p.incoming_count(),
+            Self::Other(p) => p.incoming_count(),
+        }
+    }
+
+    /// Read-only erased instruction view for this phi.
+    pub fn as_view(&self) -> InstructionView<'ctx, B> {
+        match self {
+            Self::Int(p) => p.as_view(),
+            Self::Fp(p) => p.as_view(),
+            Self::Ptr(p) => p.as_view(),
+            Self::Other(p) => p.as_view(),
+        }
+    }
+
+    /// Widen to the erased [`Value`] handle (the phi's result).
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        match self {
+            Self::Int(p) => p.as_value(),
+            Self::Fp(p) => p.as_value(),
+            Self::Ptr(p) => p.as_value(),
+            Self::Other(p) => p.as_value(),
+        }
+    }
+}
+
 /// Read-only opcode discriminator for non-terminator opcodes.
 ///
 /// Deliberately **exhaustive**: a downstream `match` over this enum must
@@ -1653,7 +1723,7 @@ pub enum InstructionKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
     CleanupPad(CleanupPadInst<'ctx, B>),
     CatchPad(CatchPadInst<'ctx, B>),
     AtomicRMW(AtomicRMWInst<'ctx, B>),
-    Phi(PhiInst<'ctx, IntDyn, PhiClosed, B>),
+    Phi(PhiKind<'ctx, B>),
 }
 
 /// Read-only opcode discriminator for terminators.

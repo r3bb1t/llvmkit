@@ -1,7 +1,8 @@
 //! llvmkit typestate compile-fail (Doctrine D1).
 //!
 //! `Instruction::kind` is a read-only discriminator. Re-discovering a finished
-//! phi through it must not mint a fresh `Open` phi handle.
+//! phi through it yields a `PhiKind`, which exposes no `add_incoming` at all —
+//! reopening a finished phi through the discriminator is unrepresentable.
 
 use llvmkit_ir::{IRBuilder, InstructionKind, Linkage, Module};
 

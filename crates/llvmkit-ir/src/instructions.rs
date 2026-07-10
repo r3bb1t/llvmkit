@@ -1506,6 +1506,69 @@ impl<'ctx, P: PhiState> core::hash::Hash for PointerPhiInst<'ctx, P> {
 }
 
 // --------------------------------------------------------------------------
+// OtherPhiInst<'ctx> -- vector/aggregate phi handle (fully erased)
+// --------------------------------------------------------------------------
+
+/// `phi` node whose result type is neither integer, float, nor pointer
+/// (a vector, array, or struct). Rediscovery yields this handle so that
+/// [`PhiKind::Other`](crate::PhiKind) exposes only the erased read surface
+/// — there is no lying `as_int_value()` narrowing (the bug the split
+/// [`PhiKind`](crate::PhiKind) exists to remove).
+#[derive(Debug, Clone, Copy)]
+pub struct OtherPhiInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) ty: TypeId,
+}
+
+decl_handle_scaffold!(OtherPhiInst);
+
+impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
+    fn payload(&self) -> &'ctx PhiData {
+        let module = self.module.module();
+        match &module.context().value_data(self.id).kind {
+            ValueKindData::Instruction(i) => match &i.kind {
+                InstructionKindData::Phi(p) => p,
+                _ => unreachable!("OtherPhiInst invariant: kind is Phi"),
+            },
+            _ => unreachable!("OtherPhiInst invariant: kind is Instruction"),
+        }
+    }
+
+    /// Number of incoming `(value, block)` edges.
+    pub fn incoming_count(&self) -> u32 {
+        let len = self.payload().incoming.borrow().len();
+        u32::try_from(len).unwrap_or_else(|_| unreachable!("phi has more than u32::MAX incoming"))
+    }
+
+    /// Read the `(value, block label)` pair at `index`.
+    pub fn incoming(
+        &self,
+        index: u32,
+    ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
+        let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
+        let module = self.module.module();
+        let pair = self
+            .payload()
+            .incoming
+            .borrow()
+            .get(slot)
+            .map(|(v, b)| (v.get(), *b))
+            .ok_or(crate::IrError::ArgumentIndexOutOfRange {
+                index,
+                count: self.incoming_count(),
+            })?;
+        let (vid, bid) = pair;
+        let v_data = module.context().value_data(vid);
+        let value = Value::from_parts(vid, self.module, v_data.ty);
+        let label_ty = module.label_type().as_type().id();
+        let block =
+            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, self.module, label_ty).label();
+        Ok((value, block))
+    }
+}
+
+// --------------------------------------------------------------------------
 // Unary ops: fneg / freeze / va_arg
 // --------------------------------------------------------------------------
 

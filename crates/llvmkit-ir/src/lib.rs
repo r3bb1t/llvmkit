@@ -224,7 +224,7 @@ pub use instr_types::{
     ShlFlags, SubFlags, TailCallKind, TruncFlags, UDivFlags, UIToFpFlags, UnaryOpcode, ZExtFlags,
 };
 pub use instruction::{
-    CastKind, Instruction, InstructionKind, InstructionView, TerminatorKind,
+    CastKind, Instruction, InstructionKind, InstructionView, PhiKind, TerminatorKind,
 };
 pub use instructions::{
     AShrInst, AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst,
@@ -233,10 +233,10 @@ pub use instructions::{
     FDivInst, FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FpExtInst, FpPhiInst, FpToSIInst,
     FpToUIInst, FpTruncInst, FreezeInst, GepInst, ICmpInst, IndirectBrInst, InsertElementInst,
     InsertValueInst, IntToPtrInst, InvokeInst, LShrInst, LandingPadInst, LoadInst, MulInst, OrInst,
-    PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst, ResumeInst, RetInst, SDivInst, SExtInst,
-    SIToFpInst, SRemInst, SelectInst, ShlInst, ShuffleVectorInst, StoreInst, SubInst, SwitchInst,
-    TruncInst, TypedCallInst, UDivInst, UIToFpInst, URemInst, UnreachableInst, VAArgInst, XorInst,
-    ZExtInst,
+    OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst, ResumeInst, RetInst,
+    SDivInst, SExtInst, SIToFpInst, SRemInst, SelectInst, ShlInst, ShuffleVectorInst, StoreInst,
+    SubInst, SwitchInst, TruncInst, TypedCallInst, UDivInst, UIToFpInst, URemInst, UnreachableInst,
+    VAArgInst, XorInst, ZExtInst,
 };
 pub use intrinsic_inst::{IntrinsicInst, LifetimeIntrinsic, MemIntrinsic};
 pub use intrinsics::{
