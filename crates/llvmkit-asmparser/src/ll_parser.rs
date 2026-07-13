@@ -7343,7 +7343,21 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     .map_err(|e| self.builder_err("phi", e))?;
                 phi.as_value()
             }
-            _ => return Err(self.expected("phi result type must be int, float, or pointer")),
+            // Any other first-class type (vector / array / struct) is a
+            // legal phi result type. Route it through the erased
+            // `build_phi_dyn`; the type-checked incoming-add path is
+            // unchanged. Non-first-class types (function / opaque struct;
+            // `void` is already rejected by `parse_type`) are not valid phi
+            // result types.
+            _ => {
+                if !ty.is_first_class() {
+                    return Err(self.expected("phi result type must be a first-class type"));
+                }
+                let phi = b
+                    .build_phi_dyn(ty, name)
+                    .map_err(|e| self.builder_err("phi", e))?;
+                phi.as_value()
+            }
         };
         // Record the phi's source location, keyed by its arena id, so the
         // end-of-function coherence check can anchor a diagnostic here — a

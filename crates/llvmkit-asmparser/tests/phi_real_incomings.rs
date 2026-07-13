@@ -222,6 +222,74 @@ define i32 @f(i32 %a, i1 %c) {
     );
 }
 
+/// A vector-typed phi (`<4 x i32>`) is a valid first-class phi result type.
+/// The incoming value is a function parameter of the matching vector type,
+/// flowing from a terminated predecessor (the merge-block shape). Previously
+/// the parser rejected any non-int/float/pointer phi result type at
+/// `ll_parser.rs:7328` ("phi result type must be int, float, or pointer").
+#[test]
+fn vector_phi_result_type_parses_and_verifies() {
+    let src = "\
+define <4 x i32> @f(<4 x i32> %a) {
+entry:
+  br label %merge
+merge:
+  %p = phi <4 x i32> [ %a, %entry ]
+  ret <4 x i32> %p
+}
+";
+    let rendered = parse_verify_render(src);
+    assert!(
+        rendered.contains("phi <4 x i32> [ %a, %entry ]"),
+        "vector phi must round-trip, got:\n{rendered}"
+    );
+}
+
+/// An aggregate (literal struct) phi result type `{i32, i8}` is likewise a
+/// valid first-class phi type. Same merge-block shape with a struct-typed
+/// function parameter as the incoming value.
+#[test]
+fn aggregate_struct_phi_result_type_parses_and_verifies() {
+    let src = "\
+define { i32, i8 } @g({ i32, i8 } %agg) {
+entry:
+  br label %merge
+merge:
+  %q = phi { i32, i8 } [ %agg, %entry ]
+  ret { i32, i8 } %q
+}
+";
+    let rendered = parse_verify_render(src);
+    assert!(
+        rendered.contains("phi { i32, i8 } [ %agg, %entry ]"),
+        "aggregate struct phi must round-trip, got:\n{rendered}"
+    );
+}
+
+/// A phi whose result type is not first-class (here a function type
+/// `i32 (i32)`) is still rejected — widening the result-type gate accepts
+/// every first-class type but must not admit function/void/opaque-struct
+/// types. (`void` alone is caught earlier by `parse_type`; a function type
+/// reaches the widened result-type gate.)
+#[test]
+fn non_first_class_phi_result_type_is_a_parse_error() {
+    let src = "\
+define void @f() {
+entry:
+  br label %merge
+merge:
+  %p = phi i32 (i32)
+  ret void
+}
+";
+    let err = parse_err(src);
+    let msg = err.to_string();
+    assert!(
+        msg.contains("phi") && msg.contains("first-class"),
+        "expected a non-first-class phi result-type parse error, got: {msg}"
+    );
+}
+
 /// A zero-input (dead) phi still parses — the pre-existing behavior is not
 /// regressed by widening predecessor resolution.
 #[test]

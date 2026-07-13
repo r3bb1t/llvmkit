@@ -68,8 +68,8 @@ use super::instruction::{
 };
 use super::instructions::{
     AtomicCmpXchgInst, AtomicRMWInst, CallBrInst, CallInst, CatchPadInst, CatchSwitchInst,
-    CleanupPadInst, FpPhiInst, FreezeInst, IndirectBrInst, InvokeInst, LandingPadInst, PhiInst,
-    PointerPhiInst, StoreInst, SwitchInst, TypedCallInst, VAArgInst,
+    CleanupPadInst, FpPhiInst, FreezeInst, IndirectBrInst, InvokeInst, LandingPadInst,
+    OtherPhiInst, PhiInst, PointerPhiInst, StoreInst, SwitchInst, TypedCallInst, VAArgInst,
 };
 use super::int_width::{IntDyn, IntWidth, IntoIntValue};
 use super::intrinsic_inst::IntrinsicInst;
@@ -5830,6 +5830,39 @@ where
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(PointerPhiInst::<PhiOpen, B>::from_raw(
+            inst.as_value().id,
+            ModuleRef::<B>::new(self.module),
+            inst.ty().id(),
+        ))
+    }
+
+    /// Runtime-typed phi for an *arbitrary* first-class result type — the
+    /// vector / array / struct cases the int / float / pointer `_dyn`
+    /// builders don't cover. Takes the [`Type`] explicitly (the erased
+    /// handle carries no static shape) and yields the read-only
+    /// [`OtherPhiInst`], the same erased classification
+    /// [`PhiKind::Other`](crate::PhiKind) surfaces for such phis. Incoming
+    /// edges are added through the type-checked
+    /// [`phi_add_incoming_from_value`](Self::phi_add_incoming_from_value)
+    /// path. Inserted at the block's phi head regardless of cursor position,
+    /// so phi placement is correct by construction.
+    ///
+    /// The caller must pass a first-class `ty` (mirroring how the typed
+    /// `_dyn` builders trust their narrowed type handles); `void`, function,
+    /// and opaque-struct types are not valid phi result types. The `.ll`
+    /// parser gates on [`Type::is_first_class`](crate::Type::is_first_class)
+    /// before routing through here.
+    pub fn build_phi_dyn<Name>(
+        &self,
+        ty: Type<'ctx, B>,
+        name: Name,
+    ) -> IrResult<OtherPhiInst<'ctx, B>>
+    where
+        Name: AsRef<str>,
+    {
+        let payload = crate::instr_types::PhiData::new();
+        let inst = self.append_phi_instruction(ty.id(), InstructionKindData::Phi(payload), name);
+        Ok(OtherPhiInst::<B>::from_raw(
             inst.as_value().id,
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
