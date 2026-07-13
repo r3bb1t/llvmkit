@@ -45,9 +45,48 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InstSimplifyPass {
                 if crate::dce::is_trivially_dead(&view) {
                     patch.erase(&inst);
                 }
+            } else if let Some(v) = uniform_phi_value(&view) {
+                // `simplifyInstruction`'s PHINode core: every incoming is the
+                // same value (self-references allowed), so the phi IS that
+                // value. Going through the same `replace_all_uses` path re-queues
+                // the phi's former users so a dependent chain re-simplifies in the
+                // one run; erasing the now-use-less phi cannot change the CFG, so
+                // the `PatchBody` floor still holds.
+                patch.replace_all_uses(&view, v)?; // auto-pushes users
+                if crate::dce::is_trivially_dead(&view) {
+                    patch.erase(&inst);
+                }
             }
         }
         drop(scope);
         Ok(patch.done())
     }
+}
+
+/// If every incoming of `view` (a phi) is one same value — ignoring entries
+/// that are the phi itself — return that value. `None` for non-phis, phis with
+/// zero non-self incomings, and mixed phis. Mirrors the common-value core of
+/// `llvm::simplifyPHINode` (self-reference tolerance). Undef blending (upstream
+/// folds `[X, undef]` to `X`) is deliberately not mirrored here; it is
+/// documented as out of scope.
+fn uniform_phi_value<'ctx, B: ModuleBrand + 'ctx>(
+    view: &crate::instruction::InstructionView<'ctx, B>,
+) -> Option<crate::value::Value<'ctx, B>> {
+    let crate::instruction::InstructionKind::Phi(kind) = view.kind()? else {
+        return None;
+    };
+    let self_value = view.as_value();
+    let mut common: Option<crate::value::Value<'ctx, B>> = None;
+    for i in 0..kind.incoming_count() {
+        let (value, _block) = kind.incoming(i).ok()?;
+        if value == self_value {
+            continue; // self-reference: neutral
+        }
+        match common {
+            None => common = Some(value),
+            Some(c) if c == value => {}
+            Some(_) => return None,
+        }
+    }
+    common
 }

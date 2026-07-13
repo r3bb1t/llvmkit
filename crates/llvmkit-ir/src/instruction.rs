@@ -1675,6 +1675,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> PhiKind<'ctx, B> {
         }
     }
 
+    /// Read the `(value, block label)` pair at `index`, independent of
+    /// variant. The value comes back type-erased (`Value`), which is all a
+    /// value-only consumer needs; the per-variant handles keep the narrowed
+    /// accessors.
+    pub fn incoming(
+        &self,
+        index: u32,
+    ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
+        match self {
+            Self::Int(p) => p.incoming(index),
+            Self::Fp(p) => p.incoming(index),
+            Self::Ptr(p) => p.incoming(index),
+            Self::Other(p) => p.incoming(index),
+        }
+    }
+
     /// Read-only erased instruction view for this phi.
     pub fn as_view(&self) -> InstructionView<'ctx, B> {
         match self {

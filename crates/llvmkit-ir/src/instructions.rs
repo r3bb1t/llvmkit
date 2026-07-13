@@ -1547,6 +1547,32 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
         let len = self.payload().incoming.borrow().len();
         u32::try_from(len).unwrap_or_else(|_| unreachable!("phi has more than u32::MAX incoming"))
     }
+
+    /// Read the `(value, block label)` pair at `index`.
+    pub fn incoming(
+        &self,
+        index: u32,
+    ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
+        let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
+        let module = self.module.module();
+        let pair = self
+            .payload()
+            .incoming
+            .borrow()
+            .get(slot)
+            .map(|(v, b)| (v.get(), *b))
+            .ok_or(crate::IrError::ArgumentIndexOutOfRange {
+                index,
+                count: self.incoming_count(),
+            })?;
+        let (vid, bid) = pair;
+        let v_data = module.context().value_data(vid);
+        let value = Value::from_parts(vid, self.module, v_data.ty);
+        let label_ty = module.label_type().as_type().id();
+        let block =
+            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, self.module, label_ty).label();
+        Ok((value, block))
+    }
 }
 
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
@@ -1693,6 +1719,32 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
     pub fn incoming_count(&self) -> u32 {
         let len = self.payload().incoming.borrow().len();
         u32::try_from(len).unwrap_or_else(|_| unreachable!("phi has more than u32::MAX incoming"))
+    }
+
+    /// Read the `(value, block label)` pair at `index`.
+    pub fn incoming(
+        &self,
+        index: u32,
+    ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
+        let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
+        let module = self.module.module();
+        let pair = self
+            .payload()
+            .incoming
+            .borrow()
+            .get(slot)
+            .map(|(v, b)| (v.get(), *b))
+            .ok_or(crate::IrError::ArgumentIndexOutOfRange {
+                index,
+                count: self.incoming_count(),
+            })?;
+        let (vid, bid) = pair;
+        let v_data = module.context().value_data(vid);
+        let value = Value::from_parts(vid, self.module, v_data.ty);
+        let label_ty = module.label_type().as_type().id();
+        let block =
+            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, self.module, label_ty).label();
+        Ok((value, block))
     }
 }
 
