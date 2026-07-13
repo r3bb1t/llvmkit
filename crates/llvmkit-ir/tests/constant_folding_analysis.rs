@@ -181,14 +181,19 @@ fn phi_poison_and_undef_incomings_fold_to_undef() -> Result<(), IrError> {
         let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
+        let other = f.append_basic_block(&m, "other");
         let entry_label = entry.label();
+        let other_label = other.label();
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let poison = IntValue::try_from(i32_ty.as_type().get_poison().as_value())?;
         let undef = IntValue::try_from(i32_ty.as_type().get_undef().as_value())?;
+        // Distinct predecessor blocks: a phi with two *different* values from
+        // the *same* block is ill-formed (AmbiguousPhi); the folder arm under
+        // test folds by value regardless of predecessor identity.
         let phi = b
             .build_int_phi::<i32, _>("p")?
             .add_incoming(poison, entry_label)?
-            .add_incoming(undef, entry_label)?;
+            .add_incoming(undef, other_label)?;
         let instruction = InstructionView::try_from(phi.as_int_value().as_value())?;
 
         let folded =
@@ -209,13 +214,18 @@ fn phi_poison_beside_constant_folds_to_the_constant() -> Result<(), IrError> {
         let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
+        let other = f.append_basic_block(&m, "other");
         let entry_label = entry.label();
+        let other_label = other.label();
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let poison = IntValue::try_from(i32_ty.as_type().get_poison().as_value())?;
+        // Distinct predecessor blocks: two different values from one block is
+        // ill-formed (AmbiguousPhi); the poison-skipping folder arm folds by
+        // value regardless of predecessor identity.
         let phi = b
             .build_int_phi::<i32, _>("p")?
             .add_incoming(poison, entry_label)?
-            .add_incoming(7_i32, entry_label)?;
+            .add_incoming(7_i32, other_label)?;
         let instruction = InstructionView::try_from(phi.as_int_value().as_value())?;
 
         let folded =

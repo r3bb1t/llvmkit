@@ -61,16 +61,22 @@ use super::analysis::{
     FunctionAnalysisManager, ModuleAnalysis, ModuleAnalysisList, ModuleAnalysisManager,
     ModuleAnalysisSelector, PreservedAnalyses, RepairOutcome,
 };
+use super::basic_block::BasicBlockLabel;
 use super::block_state::{Terminated, Unterminated};
 use super::cfg_update::CfgUpdate;
+use super::dominator_tree::DominatorTreeAnalysis;
+use super::error::IrError;
 use super::function::FunctionValue;
 use super::instruction::{Instruction, InstructionView, NonTerminator, state};
+use super::ir_builder::IRBuilder;
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, Invariant, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::pass_access::{
     FnAccess, ModAccess, MutatingFn, MutatingModule, PatchBody, ReshapeCfg, RewriteModule,
 };
-use super::value::{IsValue, ValueId};
+use super::phi_check::{check_phi_incoming, render_phi_violation};
+use super::r#type::Type;
+use super::value::{IsValue, Value, ValueId};
 use super::worklist::Worklist;
 
 /// Read-only view of a basic block under its owning module brand.
@@ -713,10 +719,15 @@ where
 /// [`BasicBlock::split_at`]), so the rung is distinct from `FnPatch` and its
 /// `done()` floor is `none()` — nothing preserved.
 ///
-/// Only the split primitive is shipped this branch (no in-tree consumer needs
-/// more). Fuller terminator surgery — rewiring branches, inserting PHIs,
-/// deleting blocks — is future work; the point here is to prove the rung and its
-/// empty floor, not to be exhaustive.
+/// Structural ops maintain the phis of every block they touch as part of the op
+/// itself (split_block rewrites successor incomings; there is no separate fixup
+/// call to forget). Ops that make phis *gain* entries take the new values as
+/// typed arguments and witness every SSA obligation at the call:
+/// [`FnReshape::insert_phi`] creates a phi that is complete against `block`'s
+/// predecessors, correctly typed, free of differing duplicates, and whose every
+/// incoming value dominates its edge — all checkable because a `ReshapeCfg` pass
+/// sees the whole CFG. A general in-pass `IRBuilder` surface and fuller
+/// terminator surgery — rewiring branches, deleting blocks — remain future work.
 pub struct FnReshape<'m, 'r, 'ctx, B, R>
 where
     B: ModuleBrand + 'ctx,
@@ -912,6 +923,33 @@ where
         let new_block = source.split_at(self.patch.module_mut(), before, name)?;
         let new_id = new_block.as_value().id;
 
+        // The terminator moved to `new_block`, so every edge that used to
+        // leave `block` now leaves `new_block`. Phis in the successors
+        // still name `block`; rewrite them here, as part of the mutation
+        // itself — the op carries its own phi maintenance, there is no
+        // separate fixup call to forget (mirrors what
+        // BasicBlock::replacePhiUsesWith does for upstream splitters).
+        for succ in &successors {
+            let succ_block: BasicBlock<'ctx, Dyn, Terminated, B> =
+                BasicBlock::from_parts(succ.id, succ.module, succ.ty);
+            for inst_id in succ_block.instruction_ids() {
+                let data = succ.module.value_data(inst_id);
+                let crate::value::ValueKindData::Instruction(inst) = &data.kind else {
+                    continue;
+                };
+                let crate::instruction::InstructionKindData::Phi(p) = &inst.kind else {
+                    // Phis are grouped at the block top; stop at the first
+                    // non-phi instead of scanning the whole block.
+                    break;
+                };
+                for pair in p.incoming.borrow_mut().iter_mut() {
+                    if pair.1 == source_id {
+                        pair.1 = new_id;
+                    }
+                }
+            }
+        }
+
         if !successors.is_empty() {
             let mut log = self.cfg_updates.borrow_mut();
             for succ in &successors {
@@ -922,6 +960,462 @@ where
         }
         self.patch.dirty.set(true);
         Ok(new_block)
+    }
+
+    /// Drop every leading-phi incoming in `block` whose predecessor is
+    /// `pred_id`, deregistering the phi from each removed value's use-list so
+    /// reverse-use bookkeeping (and hence RAUW) stays correct. The
+    /// incoming-removal half of LLVM `BasicBlock::removePredecessor`: after the
+    /// CFG edge is gone, `pred_id` is no longer a predecessor, so every
+    /// `(value, pred_id)` pair leaves each head phi. Phis are grouped at the
+    /// block top, so the scan stops at the first non-phi.
+    fn drop_incoming_from_pred(
+        &self,
+        block: &BasicBlock<'ctx, Dyn, Terminated, B>,
+        pred_id: ValueId,
+    ) {
+        let ctx = self.patch.module_mut().core_ref().context();
+        for inst_id in block.instruction_ids() {
+            let crate::value::ValueKindData::Instruction(inst) = &ctx.value_data(inst_id).kind
+            else {
+                continue;
+            };
+            let crate::instruction::InstructionKindData::Phi(p) = &inst.kind else {
+                break;
+            };
+            let mut dropped_values: Vec<ValueId> = Vec::new();
+            {
+                let mut incoming = p.incoming.borrow_mut();
+                incoming.retain(|(value, pred)| {
+                    if *pred == pred_id {
+                        dropped_values.push(value.get());
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+            for val_id in dropped_values {
+                let mut uses = ctx.value_data(val_id).use_list.borrow_mut();
+                if let Some(pos) = uses
+                    .iter()
+                    .position(|e| *e == crate::value::ValueUse::Instruction(inst_id))
+                {
+                    uses.remove(pos);
+                }
+            }
+        }
+    }
+
+    /// Remove the CFG edge `from → to`, dropping `to`'s successor-phi
+    /// incomings that named `from` as part of the same op — the phi
+    /// maintenance is carried by the edit, never deferred to a fixup a caller
+    /// could forget.
+    ///
+    /// **Supported terminator.** `from` must end in a `switch`, and `to` must
+    /// be reached only through the switch's case list: every case targeting
+    /// `to` is dropped, collapsing the `from → to` edge. Removing a switch's
+    /// *default* edge is rejected (a `switch` must keep a default), as is a
+    /// `from` whose terminator is not a `switch`. A `br`/`cond_br` stores its
+    /// target block-ids in a payload that is not interior-mutable, and
+    /// collapsing a `cond_br` to a `br` would rewrite the terminator's *kind* —
+    /// neither is expressible through the shared `&self` module token, which
+    /// reaches instruction storage only by shared reference. A `switch`,
+    /// whose case list and default live behind `Cell`/`RefCell`, is the
+    /// terminator this op edits. Dropping the last remaining case to `to`
+    /// leaves a `switch` with only its default (`switch %x, label %d []`) —
+    /// degenerate but valid IR.
+    ///
+    /// **Phi maintenance.** Once the cases are dropped `from` is no longer a
+    /// predecessor of `to`, so every leading phi in `to` loses all its
+    /// `(value, from)` incomings (LLVM `removePredecessor`), each removed
+    /// value's use-list updated so RAUW stays correct. A phi left with a
+    /// single remaining entry is legal — the uniform-phi fold cleans it later.
+    ///
+    /// Records [`CfgUpdate::delete(from, to)`](CfgUpdate) and marks the mutator
+    /// dirty.
+    ///
+    /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator, its
+    /// terminator is not a `switch`, `to` is the switch's default, or `to` is
+    /// not a case target of `from`.
+    pub fn remove_edge(
+        &self,
+        from: &BasicBlockView<'ctx, B>,
+        to: &BasicBlockLabel<'ctx, Dyn, B>,
+    ) -> IrResult<()> {
+        let from_block = from.as_basic_block();
+        let from_id = from_block.as_value().id;
+        let to_id = to.as_value().id;
+        let ctx = self.patch.module_mut().core_ref().context();
+
+        let term = from_block.terminator().ok_or(IrError::InvalidOperation {
+            message: "remove_edge: `from` has no terminator",
+        })?;
+        let term_id = term.as_value().id;
+        let switch = match &ctx.value_data(term_id).kind {
+            crate::value::ValueKindData::Instruction(i) => match &i.kind {
+                crate::instruction::InstructionKindData::Switch(s) => s,
+                _ => {
+                    return Err(IrError::InvalidOperation {
+                        message: "remove_edge: supported only for a `switch` terminator",
+                    });
+                }
+            },
+            _ => {
+                return Err(IrError::InvalidOperation {
+                    message: "remove_edge: `from`'s terminator is not an instruction",
+                });
+            }
+        };
+
+        // A switch must keep its default, so a default-only edge cannot be
+        // dropped this way.
+        if switch.default_bb.get() == to_id {
+            return Err(IrError::InvalidOperation {
+                message: "remove_edge: cannot remove a `switch`'s default edge",
+            });
+        }
+        if !switch.cases.borrow().iter().any(|(_, dest)| *dest == to_id) {
+            return Err(IrError::InvalidOperation {
+                message: "remove_edge: `to` is not a successor of `from`",
+            });
+        }
+
+        // Drop every case targeting `to`, deregistering the switch from each
+        // dropped case-value's use-list (the case value is an SSA operand of
+        // the switch).
+        let mut dropped_case_values: Vec<ValueId> = Vec::new();
+        switch.cases.borrow_mut().retain(|(case_val, dest)| {
+            if *dest == to_id {
+                dropped_case_values.push(case_val.get());
+                false
+            } else {
+                true
+            }
+        });
+        for val_id in dropped_case_values {
+            let mut uses = ctx.value_data(val_id).use_list.borrow_mut();
+            if let Some(pos) = uses
+                .iter()
+                .position(|e| *e == crate::value::ValueUse::Instruction(term_id))
+            {
+                uses.remove(pos);
+            }
+        }
+
+        // Mechanically drop `to`'s phi incomings that named `from`.
+        let to_block = BasicBlock::<Dyn, Terminated, B>::from_parts(to.id, to.module, to.ty);
+        self.drop_incoming_from_pred(&to_block, from_id);
+
+        self.cfg_updates
+            .borrow_mut()
+            .push(CfgUpdate::delete(from_id, to_id));
+        self.patch.dirty.set(true);
+        Ok(())
+    }
+
+    /// Redirect the CFG edge `from → old_to` to `from → new_to`, dropping
+    /// `old_to`'s `from`-incomings and adding the required, typed incomings to
+    /// `new_to`'s phis — all as one op. Because the new target's phis *gain*
+    /// entries, the values that flow to them are a required, typed argument:
+    /// "forgot the target's phis" is unrepresentable, the call cannot be made
+    /// without them.
+    ///
+    /// **Supported terminator.** `from` must end in a `switch` that reaches
+    /// `old_to` through exactly one edge — one case, or the default — and must
+    /// not already reach `new_to`. That single target (the matching case
+    /// entry, or the default slot) is retargeted to `new_to`; the case's value
+    /// operand is untouched, so no terminator *kind* changes. A `br`/`cond_br`
+    /// `from` is rejected for the same reason as [`Self::remove_edge`]: its
+    /// target payload is not interior-mutable.
+    ///
+    /// **Typed phi values.** `phi_values` is aligned to `new_to`'s leading
+    /// phis (its block parameters), one value per phi: its length must equal
+    /// that count ([`IrError::PhiArgArityMismatch`]) and each value's type must
+    /// match its phi ([`IrError::TypeMismatch`]). Both are checked, together
+    /// with the terminator preconditions, *before* any mutation, so a rejected
+    /// call leaves the terminator and every phi untouched. Dominance of each
+    /// supplied value over the new edge is the caller's obligation, settled at
+    /// [`Module::verify`](crate::Module::verify) — matching the block-argument
+    /// authoring path ([`IRBuilder::build_br_with_args`](crate::IRBuilder)).
+    ///
+    /// **Phi maintenance.** `old_to`'s leading phis lose their `from`
+    /// incomings (`from` is no longer their predecessor); `new_to`'s leading
+    /// phis each gain a `(phi_values[i], from)` incoming, registered in the
+    /// value's use-list so RAUW stays correct.
+    ///
+    /// Records [`CfgUpdate::delete(from, old_to)`](CfgUpdate) and
+    /// [`CfgUpdate::insert(from, new_to)`](CfgUpdate), and marks the mutator
+    /// dirty.
+    ///
+    /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator, its
+    /// terminator is not a `switch`, `old_to` is not a successor of `from`,
+    /// `from` reaches `old_to` through more than one edge, or `from` already
+    /// reaches `new_to`; [`IrError::PhiArgArityMismatch`] /
+    /// [`IrError::TypeMismatch`] for a mis-sized or mistyped `phi_values`.
+    pub fn redirect_edge(
+        &self,
+        from: &BasicBlockView<'ctx, B>,
+        old_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        phi_values: &[Value<'ctx, B>],
+    ) -> IrResult<()> {
+        let from_block = from.as_basic_block();
+        let from_id = from_block.as_value().id;
+        let old_id = old_to.as_value().id;
+        let new_id = new_to.as_value().id;
+        let ctx = self.patch.module_mut().core_ref().context();
+
+        let term = from_block.terminator().ok_or(IrError::InvalidOperation {
+            message: "redirect_edge: `from` has no terminator",
+        })?;
+        let term_id = term.as_value().id;
+        let switch = match &ctx.value_data(term_id).kind {
+            crate::value::ValueKindData::Instruction(i) => match &i.kind {
+                crate::instruction::InstructionKindData::Switch(s) => s,
+                _ => {
+                    return Err(IrError::InvalidOperation {
+                        message: "redirect_edge: supported only for a `switch` terminator",
+                    });
+                }
+            },
+            _ => {
+                return Err(IrError::InvalidOperation {
+                    message: "redirect_edge: `from`'s terminator is not an instruction",
+                });
+            }
+        };
+
+        // Exactly one edge `from → old_to` (a case or the default), and `from`
+        // must not already reach `new_to`: redirect mints a fresh edge, so the
+        // new-target phi gains exactly one incoming per phi.
+        let default_is_old = switch.default_bb.get() == old_id;
+        let case_hits = switch
+            .cases
+            .borrow()
+            .iter()
+            .filter(|(_, dest)| *dest == old_id)
+            .count();
+        let edges_to_old = usize::from(default_is_old) + case_hits;
+        if edges_to_old == 0 {
+            return Err(IrError::InvalidOperation {
+                message: "redirect_edge: `old_to` is not a successor of `from`",
+            });
+        }
+        if edges_to_old > 1 {
+            return Err(IrError::InvalidOperation {
+                message: "redirect_edge: `from` reaches `old_to` through multiple edges",
+            });
+        }
+        let already_reaches_new = switch.default_bb.get() == new_id
+            || switch
+                .cases
+                .borrow()
+                .iter()
+                .any(|(_, dest)| *dest == new_id);
+        if already_reaches_new {
+            return Err(IrError::InvalidOperation {
+                message: "redirect_edge: `from` already reaches `new_to`",
+            });
+        }
+
+        // Collect `new_to`'s leading phis (its block parameters) and validate
+        // `phi_values` against them BEFORE mutating — all-or-nothing, mirroring
+        // the block-argument branch builder.
+        let new_block =
+            BasicBlock::<Dyn, Terminated, B>::from_parts(new_to.id, new_to.module, new_to.ty);
+        let mut param_phis: Vec<ValueId> = Vec::new();
+        for inst_id in new_block.instruction_ids() {
+            let crate::value::ValueKindData::Instruction(inst) = &ctx.value_data(inst_id).kind
+            else {
+                continue;
+            };
+            let crate::instruction::InstructionKindData::Phi(_) = &inst.kind else {
+                break;
+            };
+            param_phis.push(inst_id);
+        }
+        if param_phis.len() != phi_values.len() {
+            return Err(IrError::PhiArgArityMismatch {
+                expected: param_phis.len(),
+                got: phi_values.len(),
+            });
+        }
+        for (phi_id, value) in param_phis.iter().zip(phi_values.iter()) {
+            let phi_ty = ctx.value_data(*phi_id).ty;
+            if value.ty != phi_ty {
+                return Err(IrError::TypeMismatch {
+                    expected: Type::new(phi_ty, new_to.module).kind_label(),
+                    got: Type::new(value.ty, new_to.module).kind_label(),
+                });
+            }
+        }
+
+        // All preconditions witnessed — retarget the single edge `from →
+        // old_to` onto `new_to`.
+        if default_is_old {
+            switch.default_bb.set(new_id);
+        } else {
+            for entry in switch.cases.borrow_mut().iter_mut() {
+                if entry.1 == old_id {
+                    entry.1 = new_id;
+                }
+            }
+        }
+
+        // Drop `from`'s incomings from `old_to`'s phis, then add the typed
+        // incomings to `new_to`'s phis (each registered in its value's use-list
+        // by the erased edge-add path).
+        let old_block =
+            BasicBlock::<Dyn, Terminated, B>::from_parts(old_to.id, old_to.module, old_to.ty);
+        self.drop_incoming_from_pred(&old_block, from_id);
+
+        let builder = IRBuilder::new(self.patch.module_mut());
+        for (phi_id, value) in param_phis.iter().zip(phi_values.iter()) {
+            let phi_ty = ctx.value_data(*phi_id).ty;
+            let phi_val = Value::from_parts(*phi_id, new_to.module, phi_ty);
+            // This add cannot fail: arity and per-phi type were validated above,
+            // and the ambiguous-duplicate check cannot fire because `from` was
+            // proven not to already reach `new_to`. The `?` is defensive — if
+            // either precondition ever weakens, an error here would leave a
+            // partial redirect, so keep both guards ahead of this loop.
+            builder.phi_add_incoming_from_value(phi_val, *value, from_block.copy_handle())?;
+        }
+
+        {
+            let mut log = self.cfg_updates.borrow_mut();
+            log.push(CfgUpdate::delete(from_id, old_id));
+            log.push(CfgUpdate::insert(from_id, new_id));
+        }
+        self.patch.dirty.set(true);
+        Ok(())
+    }
+
+    /// Insert a fully-witnessed phi at `block`'s phi head and return its erased
+    /// result [`Value`].
+    ///
+    /// Do not `insert_phi` into a block whose leading phis are block parameters
+    /// (created by [`IRBuilder::append_block_with_params`](crate::IRBuilder)):
+    /// the new phi lands in that same head group, where the block-argument path
+    /// would miscount it as an extra block parameter.
+    ///
+    /// Because a [`ReshapeCfg`] pass sees a *complete* CFG, every SSA obligation
+    /// a phi carries is witnessed here at the call — none is deferred to
+    /// [`Module::verify`](crate::Module::verify):
+    ///
+    /// 1. **Completeness / type / differing-duplicate** — `block`'s predecessor
+    ///    multiset is rebuilt by inverting the CFG successors of the function's
+    ///    blocks (edge multiplicity preserved), then the authoritative
+    ///    per-phi coherence check the verifier and parser share is run over the
+    ///    incomings.
+    /// 2. **Incoming-value dominance** — each incoming value must dominate the
+    ///    edge it flows in on. A value defined in an instruction must have its
+    ///    defining block dominate the incoming's predecessor (inclusive: a value
+    ///    defined *in* the predecessor dominates the edge); a non-instruction
+    ///    operand (parameter / constant / global) dominates every block. The
+    ///    verdicts are read from the **repaired** dominator tree via
+    ///    [`Self::analysis_repaired`].
+    ///
+    /// The borrow of the dominator tree is `&mut self`-tied, so it is read and
+    /// every dominance verdict is settled *before* any IR mutation; the phi is
+    /// created only once all obligations are witnessed. A phi insertion adds no
+    /// CFG edge, so no [`CfgUpdate`] is recorded — but the module changed, so the
+    /// mutator is marked dirty.
+    ///
+    /// The pass must declare [`DominatorTreeAnalysis`] in its `Requires`: the
+    /// `R: AnalysisSelector<.., DominatorTreeAnalysis, _>` bound below is
+    /// unsatisfiable otherwise, so a pass that forgot it fails to compile — a
+    /// type-level nudge rather than a runtime surprise.
+    ///
+    /// Errors: [`IrError::PhiIncomingNotDominating`] if some incoming value does
+    /// not dominate its edge; a coherence [`IrError`] (mapped from the shared
+    /// phi check) if the incomings are incomplete, mistyped, or carry a
+    /// differing duplicate for one predecessor.
+    #[inline]
+    pub fn insert_phi<I>(
+        &mut self,
+        block: &BasicBlockView<'ctx, B>,
+        ty: Type<'ctx, B>,
+        incomings: &[(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)],
+    ) -> IrResult<Value<'ctx, B>>
+    where
+        R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
+    {
+        let target_id = block.as_basic_block().as_value().id;
+
+        // (1) Predecessor multiset of `block`: invert `block_successors` over
+        // the function's blocks (the pattern `check_function_phi_coherence`
+        // uses), keeping edge multiplicity so a multi-edge is counted once per
+        // edge.
+        let mut preds: Vec<ValueId> = Vec::new();
+        for bb in self.function().basic_blocks() {
+            let handle = bb.as_basic_block();
+            let pred_id = handle.as_value().id;
+            for succ in crate::cfg::block_successors(&handle) {
+                if succ.as_value().id == target_id {
+                    preds.push(pred_id);
+                }
+            }
+        }
+
+        // (2) Completeness / type / differing-duplicate: the authoritative
+        // per-phi coherence algorithm, mapped to an `IrError` on failure.
+        let ty_id = ty.id();
+        let incoming_ids: Vec<(ValueId, ValueId)> = incomings
+            .iter()
+            .map(|(value, pred)| (value.id, pred.as_value().id))
+            .collect();
+        let ctx = self.patch.module_mut().core_ref().context();
+        let value_ty_of = |id: ValueId| ctx.value_data(id).ty;
+        if let Err(violation) = check_phi_incoming(ty_id, &incoming_ids, &preds, &value_ty_of) {
+            // Same renderer the .ll parser uses for its coherence diagnostics,
+            // so a pass-side insert and a parse report the same message for the
+            // same failure.
+            return Err(IrError::PhiCoherence {
+                message: render_phi_violation(&violation, ty_id, self.patch.module_mut()),
+            });
+        }
+
+        // (3) SSA dominance. `dt` borrows `&mut self`, so settle every verdict
+        // into owned ids and drop the borrow BEFORE any IR mutation runs.
+        let mut dom_failure: Option<(ValueId, ValueId)> = None;
+        {
+            let dt = self.analysis_repaired::<DominatorTreeAnalysis, _>();
+            for (value, pred) in incomings {
+                // Only instruction operands carry a dominance obligation; a
+                // parameter / constant / global dominates every block.
+                if let Ok(inst) = InstructionView::try_from(*value) {
+                    let def_block = inst.parent();
+                    if !dt.dominates_block(def_block, *pred) {
+                        dom_failure = Some((def_block.as_value().id, pred.as_value().id));
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some((value_block, pred_block)) = dom_failure {
+            let ctx = self.patch.module_mut().core_ref().context();
+            return Err(IrError::PhiIncomingNotDominating {
+                value_block: ctx.block_diag_name(value_block),
+                pred_block: ctx.block_diag_name(pred_block),
+            });
+        }
+
+        // (4) All witnessed — create the phi at `block`'s phi head and record
+        // every incoming. `make_phi_in_block` is cursor-independent, so an
+        // Unpositioned builder is fine.
+        let builder = IRBuilder::new(self.patch.module_mut());
+        let phi_val = builder.make_phi_in_block(target_id, ty_id, "");
+        for (value, pred) in incomings {
+            let pred_block =
+                BasicBlock::<Dyn, Terminated, B>::from_parts(pred.id, pred.module, pred.ty);
+            builder.phi_add_incoming_from_value(phi_val, *value, pred_block)?;
+        }
+
+        // (5) No CFG edge changed, so no `CfgUpdate` is recorded — but the
+        // module did change.
+        self.patch.dirty.set(true);
+        Ok(phi_val)
     }
 
     /// Finish: report the [`ReshapeCfg`] preservation floor (`none()` — nothing

@@ -1398,6 +1398,9 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, Open, B> {
     /// Append `(value, block)` to the incoming list. Mirrors
     /// `PHINode::addIncoming`. Returns `Self` so calls chain.
     /// Errors if `value`'s type does not match the phi's result type.
+    /// Rejects a second entry for the same block with a different value
+    /// ([`IrError::AmbiguousPhiIncoming`](crate::IrError::AmbiguousPhiIncoming));
+    /// same-value duplicates are legal (multi-edges from `switch`).
     /// The block's module provenance is carried by its branded handle in
     /// ordinary construction paths; CFG predecessor completeness is verified by
     /// [`Module::verify`](crate::Module::verify).
@@ -1412,6 +1415,17 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, Open, B> {
         if value.as_value().ty == self.ty {
             let value_id = value.as_value().id;
             let block_id = block.into_basic_block_label().as_value().id;
+            if self
+                .payload()
+                .incoming
+                .borrow()
+                .iter()
+                .any(|(v, b)| *b == block_id && v.get() != value_id)
+            {
+                return Err(crate::IrError::AmbiguousPhiIncoming {
+                    block: module.context().block_diag_name(block_id),
+                });
+            }
             self.payload()
                 .incoming
                 .borrow_mut()
@@ -1533,12 +1547,42 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
         let len = self.payload().incoming.borrow().len();
         u32::try_from(len).unwrap_or_else(|_| unreachable!("phi has more than u32::MAX incoming"))
     }
+
+    /// Read the `(value, block label)` pair at `index`.
+    pub fn incoming(
+        &self,
+        index: u32,
+    ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
+        let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
+        let module = self.module.module();
+        let pair = self
+            .payload()
+            .incoming
+            .borrow()
+            .get(slot)
+            .map(|(v, b)| (v.get(), *b))
+            .ok_or(crate::IrError::ArgumentIndexOutOfRange {
+                index,
+                count: self.incoming_count(),
+            })?;
+        let (vid, bid) = pair;
+        let v_data = module.context().value_data(vid);
+        let value = Value::from_parts(vid, self.module, v_data.ty);
+        let label_ty = module.label_type().as_type().id();
+        let block =
+            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, self.module, label_ty).label();
+        Ok((value, block))
+    }
 }
 
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
     /// Append `(value, block)` to the incoming list. Mirrors
     /// `PHINode::addIncoming`. Errors if `value`'s type does not match
-    /// the phi's result type. The block's module provenance is carried by its
+    /// the phi's result type. Rejects a second entry for the same block with
+    /// a different value
+    /// ([`IrError::AmbiguousPhiIncoming`](crate::IrError::AmbiguousPhiIncoming));
+    /// same-value duplicates are legal (multi-edges from `switch`).
+    /// The block's module provenance is carried by its
     /// branded handle in ordinary construction paths; CFG predecessor
     /// completeness is verified by [`Module::verify`](crate::Module::verify).
     pub fn add_incoming<V, R, Block>(self, value: V, block: Block) -> IrResult<Self>
@@ -1552,6 +1596,17 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
         if value.as_value().ty == self.ty {
             let value_id = value.as_value().id;
             let block_id = block.into_basic_block_label().as_value().id;
+            if self
+                .payload()
+                .incoming
+                .borrow()
+                .iter()
+                .any(|(v, b)| *b == block_id && v.get() != value_id)
+            {
+                return Err(crate::IrError::AmbiguousPhiIncoming {
+                    block: module.context().block_diag_name(block_id),
+                });
+            }
             self.payload()
                 .incoming
                 .borrow_mut()
@@ -1665,10 +1720,39 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
         let len = self.payload().incoming.borrow().len();
         u32::try_from(len).unwrap_or_else(|_| unreachable!("phi has more than u32::MAX incoming"))
     }
+
+    /// Read the `(value, block label)` pair at `index`.
+    pub fn incoming(
+        &self,
+        index: u32,
+    ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
+        let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
+        let module = self.module.module();
+        let pair = self
+            .payload()
+            .incoming
+            .borrow()
+            .get(slot)
+            .map(|(v, b)| (v.get(), *b))
+            .ok_or(crate::IrError::ArgumentIndexOutOfRange {
+                index,
+                count: self.incoming_count(),
+            })?;
+        let (vid, bid) = pair;
+        let v_data = module.context().value_data(vid);
+        let value = Value::from_parts(vid, self.module, v_data.ty);
+        let label_ty = module.label_type().as_type().id();
+        let block =
+            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, self.module, label_ty).label();
+        Ok((value, block))
+    }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, Open, B> {
-    /// Append `(value, block)` to the incoming list.
+    /// Append `(value, block)` to the incoming list. Rejects a second entry
+    /// for the same block with a different value
+    /// ([`IrError::AmbiguousPhiIncoming`](crate::IrError::AmbiguousPhiIncoming));
+    /// same-value duplicates are legal (multi-edges from `switch`).
     pub fn add_incoming<V, R, Block>(self, value: V, block: Block) -> IrResult<Self>
     where
         V: IntoPointerValue<'ctx, B>,
@@ -1680,6 +1764,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, Open, B> {
         if value.as_value().ty == self.ty {
             let value_id = value.as_value().id;
             let block_id = block.into_basic_block_label().as_value().id;
+            if self
+                .payload()
+                .incoming
+                .borrow()
+                .iter()
+                .any(|(v, b)| *b == block_id && v.get() != value_id)
+            {
+                return Err(crate::IrError::AmbiguousPhiIncoming {
+                    block: module.context().block_diag_name(block_id),
+                });
+            }
             self.payload()
                 .incoming
                 .borrow_mut()

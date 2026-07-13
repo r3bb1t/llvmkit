@@ -39,7 +39,7 @@ use core::marker::PhantomData;
 
 use super::align::{Align, MaybeAlign};
 use super::atomic_ordering::AtomicOrdering;
-use super::basic_block::{BasicBlock, IntoBasicBlockLabel};
+use super::basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
 use super::block_state::{Terminated, Unterminated};
 use super::calling_conv::CallingConv;
 use super::cmp_predicate::CmpPredicate;
@@ -68,8 +68,8 @@ use super::instruction::{
 };
 use super::instructions::{
     AtomicCmpXchgInst, AtomicRMWInst, CallBrInst, CallInst, CatchPadInst, CatchSwitchInst,
-    CleanupPadInst, FpPhiInst, FreezeInst, IndirectBrInst, InvokeInst, LandingPadInst, PhiInst,
-    PointerPhiInst, StoreInst, SwitchInst, TypedCallInst, VAArgInst,
+    CleanupPadInst, FpPhiInst, FreezeInst, IndirectBrInst, InvokeInst, LandingPadInst,
+    OtherPhiInst, PhiInst, PointerPhiInst, StoreInst, SwitchInst, TypedCallInst, VAArgInst,
 };
 use super::int_width::{IntDyn, IntWidth, IntoIntValue};
 use super::intrinsic_inst::IntrinsicInst;
@@ -96,6 +96,12 @@ pub type TerminatedBlockInst<'ctx, R, B = Brand<'ctx>> = (
     BasicBlock<'ctx, R, Terminated, B>,
     Instruction<'ctx, Attached, B>,
 );
+
+/// Pair returned by [`IRBuilder::append_block_with_params`]: the freshly
+/// appended, still-[`Unterminated`] block and one head-phi result [`Value`]
+/// per declared block parameter, in declaration order.
+pub type BlockWithParams<'ctx, R, B = Brand<'ctx>> =
+    (BasicBlock<'ctx, R, Unterminated, B>, Vec<Value<'ctx, B>>);
 
 /// Pair returned by `switch` builders before the case list is closed.
 pub type TerminatedBlockSwitch<'ctx, R, B = Brand<'ctx>> = (
@@ -501,9 +507,20 @@ where
     /// use by parsers and passes where compile-time type markers are
     /// unavailable.
     ///
-    /// Errors if `phi_val` does not refer to a phi instruction. `val` and
-    /// `block` already carry the builder brand `B`; remaining value-type and
-    /// predecessor-set coherence is verified by [`Module::verify`](crate::Module::verify).
+    /// Errors if `phi_val` does not refer to a phi instruction, if `val`'s
+    /// type does not match the phi's result type
+    /// ([`IrError::TypeMismatch`]), or if the phi already has an entry for
+    /// `block` with a *different* value
+    /// ([`IrError::AmbiguousPhiIncoming`]) — the same result-type and
+    /// differing-duplicate rules the typed [`PhiInst::add_incoming`]
+    /// enforces, applied here so the parser / ssa_builder callers reject at
+    /// the call site instead of deferring to
+    /// [`Module::verify`](crate::Module::verify). A same-block *same-value*
+    /// duplicate stays legal (multi-edges from `switch`). `val` and `block`
+    /// already carry the builder brand `B`; remaining predecessor-set
+    /// coherence is verified by [`Module::verify`](crate::Module::verify).
+    ///
+    /// [`PhiInst::add_incoming`]: crate::PhiInst::add_incoming
     pub fn phi_add_incoming_from_value<RBb, SBb>(
         &self,
         phi_val: Value<'ctx, B>,
@@ -532,10 +549,36 @@ where
                 });
             }
         };
+        // Result-type check: the same rule the typed `PhiInst::add_incoming`
+        // enforces, applied here so the parser / ssa_builder paths reject a
+        // mismatched incoming at the call site rather than deferring to
+        // `Module::verify`.
+        let phi_ty = self.module.context().value_data(phi_val.id).ty;
+        if val.ty != phi_ty {
+            return Err(IrError::TypeMismatch {
+                expected: Type::new(phi_ty, ModuleRef::<B>::new(self.module)).kind_label(),
+                got: Type::new(val.ty, ModuleRef::<B>::new(self.module)).kind_label(),
+            });
+        }
+        // Differing-duplicate check: a second entry for the same predecessor
+        // block with a different value is meaningless in any CFG (the
+        // InstCombine #196954 bug class). A same-block same-value duplicate
+        // stays legal (multi-edges from `switch`).
+        let block_id = block.as_value().id;
+        if phi_payload
+            .incoming
+            .borrow()
+            .iter()
+            .any(|(v, b)| *b == block_id && v.get() != val.id)
+        {
+            return Err(IrError::AmbiguousPhiIncoming {
+                block: self.module.context().block_diag_name(block_id),
+            });
+        }
         phi_payload
             .incoming
             .borrow_mut()
-            .push((core::cell::Cell::new(val.id), block.as_value().id));
+            .push((core::cell::Cell::new(val.id), block_id));
         // Register phi as a user of the incoming value.
         self.module
             .context()
@@ -544,6 +587,100 @@ where
             .borrow_mut()
             .push(ValueUse::Instruction(phi_val.id));
         Ok(())
+    }
+
+    /// Build a fresh, operandless phi at the phi head of the block with id
+    /// `block_id` and return its result [`Value`]. Independent of the
+    /// builder's insertion cursor: the phi always lands at `block_id`'s phi
+    /// head (via [`BasicBlock::insert_instruction_at_phi_head`]) regardless
+    /// of where -- or whether -- the builder is positioned, so callers can
+    /// seed head-phis in a block they are not currently editing. The phi
+    /// starts with zero incoming edges.
+    ///
+    /// Low-level counterpart of [`Self::append_phi_instruction`], which
+    /// targets the *insertion* block; this one targets an arbitrary block by
+    /// id and hands back the erased [`Value`] rather than a typed phi handle.
+    pub(crate) fn make_phi_in_block(
+        &self,
+        block_id: ValueId,
+        ty: TypeId,
+        name: &str,
+    ) -> Value<'ctx, B> {
+        let payload = crate::instr_types::PhiData::new();
+        let value = build_instruction_value(ty, block_id, InstructionKindData::Phi(payload), None);
+        // Snapshot operand ids before the value moves into the arena so the
+        // new phi can be registered in each operand's reverse use-list --
+        // identical to `append_phi_instruction`. A fresh phi has no operands,
+        // so this loop is a no-op until incomings are added later.
+        let operand_ids = match &value.kind {
+            ValueKindData::Instruction(i) => i.kind.operand_ids(),
+            _ => unreachable!("make_phi_in_block built non-instruction value"),
+        };
+        let id = self.module.context().push_value(value);
+        for op in operand_ids {
+            self.module
+                .context()
+                .value_data(op)
+                .use_list
+                .borrow_mut()
+                .push(ValueUse::Instruction(id));
+        }
+        let label_ty = self.module.label_type().as_type().id();
+        let bb = BasicBlock::<Dyn, Unterminated, B>::from_parts(
+            block_id,
+            ModuleRef::<B>::new(self.module),
+            label_ty,
+        );
+        bb.insert_instruction_at_phi_head(id);
+        if !name.is_empty()
+            && !Type::new(ty, ModuleRef::<B>::new(self.module)).is_void()
+            && let Some(parent_fn_id) = bb.parent_id()
+        {
+            let parent_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(
+                parent_fn_id,
+                ModuleRef::<B>::new(self.module),
+            );
+            parent_fn.set_local_value_name(id, Some(name));
+        }
+        Value::from_parts(id, ModuleRef::<B>::new(self.module), ty)
+    }
+
+    /// Append a fresh basic block to `function` whose parameters are
+    /// operandless head-phis, in the style of Swift SIL / MLIR block
+    /// arguments. One phi is materialised at the new block's head per entry
+    /// in `param_types`, in order; the returned `Vec<Value>` holds those phi
+    /// results, so `params[i]` is the `Value` for `param_types[i]` and
+    /// carries that type.
+    ///
+    /// Each parameter is a [`Value`] backed by a phi with zero incoming
+    /// edges. Supply the incomings later by branching to this block with the
+    /// block-argument branch builders, which carry one argument value per
+    /// parameter into the matching head-phi.
+    ///
+    /// The block is returned still [`Unterminated`] and is *not* made the
+    /// builder's insertion point, so the caller positions the builder at it
+    /// (or elsewhere) and fills its body. Creation is independent of the
+    /// builder's current cursor -- the builder need not be positioned.
+    ///
+    /// Parameter types are passed as a `&[Type<'ctx, B>]` slice; each
+    /// parameter phi takes its type directly from the corresponding `Type`.
+    pub fn append_block_with_params<Name>(
+        &self,
+        function: FunctionValue<'ctx, R, B>,
+        param_types: &[Type<'ctx, B>],
+        name: Name,
+    ) -> IrResult<BlockWithParams<'ctx, R, B>>
+    where
+        Name: Into<String>,
+    {
+        let module = Module::<'ctx, B, Unverified>::from_core(self.module);
+        let bb = function.append_basic_block(&module, name);
+        let bb_id = bb.as_value().id;
+        let mut params = Vec::with_capacity(param_types.len());
+        for ty in param_types {
+            params.push(self.make_phi_in_block(bb_id, ty.id(), ""));
+        }
+        Ok((bb, params))
     }
 }
 
@@ -5568,7 +5705,9 @@ where
     /// `let i32_ty = m.i32_type();`. Mirrors `IRBuilder::CreatePHI`
     /// followed by zero `PHINode::addIncoming` calls. Subsequent
     /// edges are added through [`crate::PhiInst::add_incoming`],
-    /// which returns `Self` so calls chain.
+    /// which returns `Self` so calls chain. Inserted at the block's phi
+    /// head regardless of cursor position, so phi placement is correct by
+    /// construction.
     pub fn build_int_phi<W, Name>(&self, name: Name) -> IrResult<PhiInst<'ctx, W, PhiOpen, B>>
     where
         Name: AsRef<str>,
@@ -5577,7 +5716,7 @@ where
         let ty = W::ir_type(ModuleRef::<B>::new(self.module));
         let payload = crate::instr_types::PhiData::new();
         let inst =
-            self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
+            self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok({
             let _i = inst;
             PhiInst::<W, PhiOpen, B>::from_raw(
@@ -5590,6 +5729,8 @@ where
 
     /// Runtime-width phi for the [`crate::IntDyn`] case. Takes the
     /// type explicitly because the marker carries no static width.
+    /// Inserted at the block's phi head regardless of cursor position, so
+    /// phi placement is correct by construction.
     pub fn build_int_phi_dyn<Name>(
         &self,
         ty: IntType<'ctx, IntDyn, B>,
@@ -5600,7 +5741,7 @@ where
     {
         let payload = crate::instr_types::PhiData::new();
         let inst =
-            self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
+            self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok({
             let _i = inst;
             PhiInst::<IntDyn, PhiOpen, B>::from_raw(
@@ -5613,7 +5754,9 @@ where
 
     /// Float-typed phi: `phi <fpty>`. Marker-only form keyed on
     /// `K: StaticFloatKind`. Mirrors `IRBuilder::CreatePHI(Type*, ...)`
-    /// applied to a floating-point type.
+    /// applied to a floating-point type. Inserted at the block's phi head
+    /// regardless of cursor position, so phi placement is correct by
+    /// construction.
     pub fn build_fp_phi<K, Name>(&self, name: Name) -> IrResult<FpPhiInst<'ctx, K, PhiOpen, B>>
     where
         Name: AsRef<str>,
@@ -5622,7 +5765,7 @@ where
         let ty = K::ir_type(ModuleRef::<B>::new(self.module));
         let payload = super::instr_types::PhiData::new();
         let inst =
-            self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
+            self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(FpPhiInst::<K, PhiOpen, B>::from_raw(
             inst.as_value().id,
             ModuleRef::<B>::new(self.module),
@@ -5631,7 +5774,9 @@ where
     }
 
     /// Runtime-kind float phi: takes the type explicitly because
-    /// [`crate::FloatDyn`] carries no static kind.
+    /// [`crate::FloatDyn`] carries no static kind. Inserted at the block's
+    /// phi head regardless of cursor position, so phi placement is correct
+    /// by construction.
     pub fn build_fp_phi_dyn<Name>(
         &self,
         ty: FloatType<'ctx, FloatDyn, B>,
@@ -5642,7 +5787,7 @@ where
     {
         let payload = super::instr_types::PhiData::new();
         let inst =
-            self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
+            self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(FpPhiInst::<FloatDyn, PhiOpen, B>::from_raw(
             inst.as_value().id,
             ModuleRef::<B>::new(self.module),
@@ -5652,6 +5797,8 @@ where
 
     /// Pointer-typed phi in the default address space (addrspace 0).
     /// Mirrors `IRBuilder::CreatePHI(PointerType::getUnqual(...), ...)`.
+    /// Inserted at the block's phi head regardless of cursor position, so
+    /// phi placement is correct by construction.
     pub fn build_pointer_phi<Name>(&self, name: Name) -> IrResult<PointerPhiInst<'ctx, PhiOpen, B>>
     where
         Name: AsRef<str>,
@@ -5659,7 +5806,7 @@ where
         let ty = self.module.ptr_type(0);
         let payload = super::instr_types::PhiData::new();
         let inst =
-            self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
+            self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(PointerPhiInst::<PhiOpen, B>::from_raw(
             inst.as_value().id,
             ModuleRef::<B>::new(self.module),
@@ -5668,7 +5815,9 @@ where
     }
 
     /// Pointer-typed phi in a caller-specified address space. Mirrors
-    /// `IRBuilder::CreatePHI(PointerType::get(Ctx, AS), ...)`.
+    /// `IRBuilder::CreatePHI(PointerType::get(Ctx, AS), ...)`. Inserted at
+    /// the block's phi head regardless of cursor position, so phi
+    /// placement is correct by construction.
     pub fn build_pointer_phi_in_addrspace<Name>(
         &self,
         ty: PointerType<'ctx, B>,
@@ -5679,8 +5828,54 @@ where
     {
         let payload = super::instr_types::PhiData::new();
         let inst =
-            self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
+            self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(PointerPhiInst::<PhiOpen, B>::from_raw(
+            inst.as_value().id,
+            ModuleRef::<B>::new(self.module),
+            inst.ty().id(),
+        ))
+    }
+
+    /// Runtime-typed phi for an *arbitrary* first-class result type — the
+    /// vector / array / struct cases the int / float / pointer `_dyn`
+    /// builders don't cover. Takes the [`Type`] explicitly (the erased
+    /// handle carries no static shape) and yields the read-only
+    /// [`OtherPhiInst`], the same erased classification
+    /// [`PhiKind::Other`](crate::PhiKind) surfaces for such phis. Incoming
+    /// edges are added through the type-checked
+    /// [`phi_add_incoming_from_value`](Self::phi_add_incoming_from_value)
+    /// path. Inserted at the block's phi head regardless of cursor position,
+    /// so phi placement is correct by construction.
+    ///
+    /// # Precondition
+    ///
+    /// Unlike the typed `_dyn` builders, this takes a fully **erased**
+    /// [`Type`] with no type-level first-class constraint, so it cannot
+    /// reject a nonsense result type statically — the caller carries that
+    /// obligation. `ty` **must** be a first-class *data* type: `int`,
+    /// `float`, `pointer`, `vector`, `array`, or `struct`. `void`, function,
+    /// and opaque-struct types are not valid phi result types; neither are
+    /// the other first-class types `label`, `metadata`, and `token` (LLVM
+    /// rejects e.g. `phi token`, and note
+    /// [`Type::is_first_class`](crate::Type::is_first_class) returns `true`
+    /// for those, so it is *not* a sufficient gate). The `.ll` parser
+    /// enumerates the acceptable result types explicitly before routing here.
+    ///
+    /// This is an internal builder shared only with the in-tree `.ll` parser
+    /// (hence `#[doc(hidden)]`); it is not part of the supported public
+    /// surface and may change without notice.
+    #[doc(hidden)]
+    pub fn build_phi_dyn<Name>(
+        &self,
+        ty: Type<'ctx, B>,
+        name: Name,
+    ) -> IrResult<OtherPhiInst<'ctx, B>>
+    where
+        Name: AsRef<str>,
+    {
+        let payload = crate::instr_types::PhiData::new();
+        let inst = self.append_phi_instruction(ty.id(), InstructionKindData::Phi(payload), name);
+        Ok(OtherPhiInst::<B>::from_raw(
             inst.as_value().id,
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
@@ -5738,6 +5933,171 @@ where
         let inst = self.append_instruction(void_ty, InstructionKindData::Br(payload), "");
         let bb = self.into_insert_block();
         Ok((bb.retag_termination::<Terminated>(), inst))
+    }
+
+    /// Produce `br label %target` while carrying block arguments into
+    /// `target`'s parameters. In the Swift-SIL / MLIR block-argument model a
+    /// branch supplies the successor's parameters at the edge: `target`'s
+    /// leading head-phis (created by
+    /// [`append_block_with_params`](Self::append_block_with_params)) are its
+    /// parameters, and `args[i]` becomes the incoming value for the `i`-th
+    /// parameter from *this* block.
+    ///
+    /// The edge and the values move together, so a wrong argument fails here,
+    /// not at a distant [`Module::verify`](crate::Module::verify): `args.len()`
+    /// must equal `target`'s parameter count ([`IrError::PhiArgArityMismatch`]
+    /// otherwise), and each argument's type must match its parameter
+    /// ([`IrError::TypeMismatch`] otherwise). Both the arity and every argument
+    /// type are checked up front — all-or-nothing for those two — before the
+    /// `br` is emitted, so a mis-sized or mistyped argument leaves no
+    /// half-formed terminator.
+    ///
+    /// Consumes `self`; the target may be in any termination state (a
+    /// back-edge targets an already-terminated block).
+    pub fn build_br_with_args<T>(
+        self,
+        target: T,
+        args: &[Value<'ctx, B>],
+    ) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+    where
+        T: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let target = target.into_basic_block_label();
+        // Capture the predecessor label before the terminator builder consumes
+        // `self` — the incoming edges name *this* block as their predecessor.
+        let pred = self.insert_block().label();
+        self.add_block_args(target, pred, args)?;
+        self.build_br(target)
+    }
+
+    /// Produce `br i1 <cond>, label %then, label %else` while carrying block
+    /// arguments down each edge into the matching successor's parameters. Each
+    /// edge supplies its own argument list to its own target, following the
+    /// same Swift-SIL block-argument model as
+    /// [`build_br_with_args`](Self::build_br_with_args): `then_args` seed
+    /// `then_bb`'s parameter-phis and `else_args` seed `else_bb`'s, each with
+    /// *this* block as the predecessor.
+    ///
+    /// Each edge's arity ([`IrError::PhiArgArityMismatch`]) and argument types
+    /// ([`IrError::TypeMismatch`]) are checked up front — all-or-nothing for
+    /// those two — before that edge's parameter-phis are seeded, so a mis-sized
+    /// or mistyped argument fails here rather than at
+    /// [`Module::verify`](crate::Module::verify). The edges are processed in
+    /// order and this is *not* one atomic transaction across both: if
+    /// `then_bb == else_bb` and the two argument lists differ, the `then`
+    /// edge's incomings are already recorded when the `else` edge-add rejects
+    /// the differing duplicate for the shared predecessor
+    /// ([`IrError::AmbiguousPhiIncoming`]) — the `br` is never emitted and the
+    /// consumed builder leaves the block unterminated for `verify()` to catch.
+    ///
+    /// Consumes `self`; both targets may be in any termination state.
+    pub fn build_cond_br_with_args<C, Then, Else>(
+        self,
+        cond: C,
+        then_bb: Then,
+        then_args: &[Value<'ctx, B>],
+        else_bb: Else,
+        else_args: &[Value<'ctx, B>],
+    ) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+    where
+        C: IntoIntValue<'ctx, bool, B>,
+        Then: IntoBasicBlockLabel<'ctx, R, B>,
+        Else: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let then_bb = then_bb.into_basic_block_label();
+        let else_bb = else_bb.into_basic_block_label();
+        let pred = self.insert_block().label();
+        self.add_block_args(then_bb, pred, then_args)?;
+        self.add_block_args(else_bb, pred, else_args)?;
+        self.build_cond_br(cond, then_bb, else_bb)
+    }
+
+    /// Seed a target block's parameters with the values a branch carries into
+    /// it. The parameters are the target's leading head-phis (in order); this
+    /// arity-checks `args` against them and type-checks each `args[i]` against
+    /// its parameter up front, then records each as an incoming edge from `pred`
+    /// into the `i`-th parameter-phi via the type-checked erased path
+    /// ([`phi_add_incoming_from_value`](Self::phi_add_incoming_from_value)).
+    ///
+    /// Arity and per-argument type are all-or-nothing: both are validated before
+    /// any incoming is recorded, so a mis-sized or mistyped call leaves the
+    /// target parameters untouched. The differing-value-duplicate rejection for
+    /// `pred`, however, is *not* part of that up-front pass — it runs per-edge
+    /// inside [`phi_add_incoming_from_value`](Self::phi_add_incoming_from_value)
+    /// as each incoming is recorded, so it can fire after earlier incomings in
+    /// the same call have already been written.
+    ///
+    /// Shared by [`build_br_with_args`](Self::build_br_with_args) and
+    /// [`build_cond_br_with_args`](Self::build_cond_br_with_args); called
+    /// before the terminator is emitted so a rejected argument aborts the
+    /// branch cleanly.
+    fn add_block_args(
+        &self,
+        target: BasicBlockLabel<'ctx, R, B>,
+        pred: BasicBlockLabel<'ctx, R, B>,
+        args: &[Value<'ctx, B>],
+    ) -> IrResult<()> {
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let label_ty = self.module.label_type().as_type().id();
+
+        // The target block's parameters are its leading head-phis, in order.
+        // Scan from the block top and stop at the first non-phi (phis are
+        // grouped at the head) — the pattern the CFG splitter uses.
+        let target_block = BasicBlock::<Dyn, Terminated, B>::from_parts(
+            target.as_value().id,
+            module_ref,
+            label_ty,
+        );
+        let mut param_phis: Vec<ValueId> = Vec::new();
+        for inst_id in target_block.instruction_ids() {
+            let data = self.module.context().value_data(inst_id);
+            let ValueKindData::Instruction(inst) = &data.kind else {
+                continue;
+            };
+            let InstructionKindData::Phi(_) = &inst.kind else {
+                break;
+            };
+            param_phis.push(inst_id);
+        }
+
+        // Arity: exactly one argument per parameter. Caught here so a wrong
+        // count fails at the branch rather than at a distant `verify()`.
+        if param_phis.len() != args.len() {
+            return Err(IrError::PhiArgArityMismatch {
+                expected: param_phis.len(),
+                got: args.len(),
+            });
+        }
+
+        // Type-check every argument against its parameter-phi up front, before
+        // recording any incoming. Recording mutates the phis through interior
+        // mutability and cannot be rolled back, so validating arity and type
+        // first makes *those two* all-or-nothing: a mis-sized or mistyped
+        // argument leaves the target parameters untouched. (The
+        // differing-value-duplicate check is not pre-scanned — it runs per-edge
+        // in the record loop below, so it can fire after earlier incomings in
+        // this call are already written.)
+        for (phi_id, arg) in param_phis.iter().zip(args.iter()) {
+            let phi_ty = self.module.context().value_data(*phi_id).ty;
+            if arg.ty != phi_ty {
+                return Err(IrError::TypeMismatch {
+                    expected: Type::new(phi_ty, self.module).kind_label(),
+                    got: Type::new(arg.ty, self.module).kind_label(),
+                });
+            }
+        }
+
+        // Record each argument as an incoming edge from `pred` into the
+        // matching parameter-phi (types already validated above; the erased
+        // path re-checks and registers the phi in each value's use-list).
+        let pred_block =
+            BasicBlock::<Dyn, Terminated, B>::from_parts(pred.as_value().id, module_ref, label_ty);
+        for (phi_id, arg) in param_phis.iter().zip(args.iter()) {
+            let phi_ty = self.module.context().value_data(*phi_id).ty;
+            let phi_val = Value::from_parts(*phi_id, module_ref, phi_ty);
+            self.phi_add_incoming_from_value(phi_val, *arg, pred_block.copy_handle())?;
+        }
+        Ok(())
     }
 
     /// Produce `switch <cond>, label <default> [...]`. Mirrors
@@ -6571,6 +6931,56 @@ where
             }
             None => bb.append_instruction(id),
         }
+        if !name.is_empty()
+            && !Type::new(ty, self.module).is_void()
+            && let Some(parent_fn_id) = bb.parent_id()
+        {
+            let parent_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(
+                parent_fn_id,
+                ModuleRef::<B>::new(self.module),
+            );
+            parent_fn.set_local_value_name(id, Some(name));
+        }
+        Instruction::from_parts(id, ModuleRef::<B>::new(self.module))
+    }
+
+    /// Crate-internal: append a freshly-built phi to the insertion block.
+    /// Identical to [`Self::append_instruction`] (same operand use-list
+    /// registration and value-symbol-table population) except for
+    /// placement: the phi is inserted at the block's phi head via
+    /// [`BasicBlock::insert_instruction_at_phi_head`], regardless of the
+    /// builder's cursor, so phis stay grouped at the top of the block by
+    /// construction rather than only by a verifier check.
+    fn append_phi_instruction<N: AsRef<str>>(
+        &self,
+        ty: TypeId,
+        kind: InstructionKindData,
+        name: N,
+    ) -> Instruction<'ctx, Attached, B> {
+        let name = name.as_ref();
+        let bb = self.insert_block();
+        let bb_id = bb.as_value().id;
+        let value = build_instruction_value(ty, bb_id, kind, None);
+        // Snapshot operand ids before the value is moved into the arena so
+        // we can register the new instruction in each operand's reverse
+        // use-list -- identical to `append_instruction`.
+        let operand_ids = match &value.kind {
+            ValueKindData::Instruction(i) => i.kind.operand_ids(),
+            // append_phi_instruction always builds an Instruction-kind value.
+            _ => unreachable!("append_phi_instruction built non-instruction value"),
+        };
+        let id = self.module.context().push_value(value);
+        for op in operand_ids {
+            self.module
+                .context()
+                .value_data(op)
+                .use_list
+                .borrow_mut()
+                .push(ValueUse::Instruction(id));
+        }
+        // Unlike `append_instruction`, placement ignores the builder's
+        // insert cursor: phis always land at the block's phi head.
+        bb.insert_instruction_at_phi_head(id);
         if !name.is_empty()
             && !Type::new(ty, self.module).is_void()
             && let Some(parent_fn_id) = bb.parent_id()

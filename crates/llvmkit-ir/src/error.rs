@@ -812,6 +812,63 @@ pub enum IrError {
     /// onto a partially-built function is rejected.
     #[error("SsaBuilder requires a function with no existing basic blocks")]
     SsaFunctionHasBlocks,
+
+    /// A phi already has an entry for this predecessor block with a
+    /// different value; a second, differing entry is meaningless in any
+    /// CFG. Same-block same-value duplicates are legal (multi-edges from
+    /// `switch`). Mirrors the class of upstream bug llvm/llvm-project#196954,
+    /// enforced at the edge-add call site rather than deferred to
+    /// [`Module::verify`](crate::Module::verify)'s `AmbiguousPhi` rule.
+    #[error("phi already has an entry for block %{block} with a different value")]
+    AmbiguousPhiIncoming {
+        /// Printed name of the predecessor block.
+        block: String,
+    },
+
+    /// A block-argument branch supplied a number of arguments that does not
+    /// match the target block's parameter (leading-phi) count. The branch
+    /// carries exactly one value per target parameter; a differing count is
+    /// rejected at the branch builder rather than deferred to
+    /// [`Module::verify`](crate::Module::verify).
+    #[error("phi argument arity mismatch: target expects {expected}, got {got}")]
+    PhiArgArityMismatch {
+        /// Number of parameters (leading head-phis) the target block declares.
+        expected: usize,
+        /// Number of arguments the branch supplied.
+        got: usize,
+    },
+
+    /// A phi inserted through
+    /// [`FnReshape::insert_phi`](crate::FnReshape::insert_phi) names an incoming
+    /// value that does not dominate the CFG edge it flows in on: the value is
+    /// defined in `value_block`, which does not dominate the predecessor
+    /// `pred_block` the incoming enters from. Because a `ReshapeCfg` pass sees a
+    /// complete CFG, this SSA-dominance obligation is witnessed at the insertion
+    /// call (against the repaired dominator tree) rather than deferred to
+    /// [`Module::verify`](crate::Module::verify)'s `verifyDominatesUse` rule.
+    #[error(
+        "phi incoming value defined in %{value_block} does not dominate its edge from predecessor %{pred_block}"
+    )]
+    PhiIncomingNotDominating {
+        /// Printed name of the block that defines the offending incoming value.
+        value_block: String,
+        /// Printed name of the predecessor block the incoming edge enters from.
+        pred_block: String,
+    },
+
+    /// A phi failed the shared per-phi coherence check (`check_phi_incoming`)
+    /// during pass-side insertion
+    /// ([`FnReshape::insert_phi`](crate::FnReshape::insert_phi)):
+    /// its incoming set is incomplete, names a non-predecessor, over-counts a
+    /// predecessor, carries a differing-value duplicate, or has a
+    /// type-mismatched incoming. The rendered `message` is produced by the same
+    /// renderer the `.ll` parser uses for its coherence diagnostics, so the two
+    /// cannot drift.
+    #[error("{message}")]
+    PhiCoherence {
+        /// Rendered coherence-failure description.
+        message: String,
+    },
 }
 
 /// Crate-wide `Result` alias.

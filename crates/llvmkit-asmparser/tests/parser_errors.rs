@@ -65,3 +65,158 @@ entry:\n\
         other => panic!("unexpected error variant: {other:?}"),
     }
 }
+
+/// Parse `src` and return `Ok(())` on success, propagating any parse error.
+fn parse_ok(src: &str) -> Result<(), ParseError> {
+    Module::with_new("parser_ok", |module| {
+        Parser::new(src.as_bytes(), &module)
+            .expect("lexer primes")
+            .parse_module()
+            .map(|_| ())
+    })
+}
+
+/// A `phi` appearing after a non-phi instruction is a parse error.
+///
+/// With the auto-hoisting phi builders, feeding a misplaced `phi` to a builder
+/// would silently reorder it into valid position, laundering ill-formed `.ll`
+/// into valid IR. The parser rejects it up front instead.
+///
+/// Uses a zero-input `phi` (as in `zero-input-phi/phi_int_round_trips.ll`) so
+/// the test isolates *placement*: the guard fires before `parse_phi` runs, and
+/// no incoming-edge resolution is involved.
+#[test]
+fn phi_after_non_phi_is_a_parse_error() {
+    let src = r#"
+define void @f() {
+entry:
+  ret void
+
+return:
+  %x = add i32 0, 1
+  %r = phi i32
+  ret void
+}
+"#;
+    let err = parse_err(src);
+    let msg = err.to_string();
+    assert!(
+        msg.contains("phi must be grouped at the top"),
+        "expected phi-placement parse error, got: {msg}"
+    );
+}
+
+/// A `phi` that appears before the first non-phi instruction still parses,
+/// even when a non-phi instruction follows it in the same block.
+#[test]
+fn leading_phis_still_parse() {
+    let src = r#"
+define void @f() {
+entry:
+  ret void
+
+return:
+  %r = phi i32
+  %x = add i32 %r, 1
+  ret void
+}
+"#;
+    parse_ok(src).expect("well-placed phi must keep parsing");
+}
+
+/// A `phi` whose incoming value type does not match the phi result type is
+/// now a PARSE error, caught at the edge-add call site
+/// (`IRBuilder::phi_add_incoming_from_value`) rather than deferred to
+/// `verify()`. Here the incoming value `%v` is a `ptr` (from `alloca`) fed
+/// to an `i32` phi, so the result-type check rejects the edge and the
+/// parser surfaces it through `builder_err`'s `valid phi.add_incoming:`
+/// prefix.
+///
+/// The predecessor is written as a forward-referenced block (`%fwd`) on
+/// purpose: the resolved-value edge takes the *immediate* add path, and a
+/// forward block is still unterminated at that point, so block resolution
+/// succeeds and control reaches the type check. (A predecessor that is
+/// already terminated — the common case — is rejected earlier by the
+/// parser's `basic_block_for_construction` guard, independent of this
+/// check.)
+#[test]
+fn phi_incoming_type_mismatch_is_a_parse_error() {
+    let src = r#"
+define i32 @f() {
+entry:
+  %v = alloca i8
+  br label %next
+
+next:
+  %p = phi i32 [ %v, %fwd ]
+  br label %fwd
+
+fwd:
+  ret i32 %p
+}
+"#;
+    let err = parse_err(src);
+    let msg = err.to_string();
+    assert!(
+        msg.contains("phi.add_incoming") && msg.contains("type mismatch"),
+        "expected phi add_incoming type-check parse error, got: {msg}"
+    );
+}
+
+/// A phi that omits one of its block's predecessors used to parse fine and
+/// only fail `Module::verify()` later, far from the source. After a function
+/// is fully parsed all predecessors are known (Cranelift's seal insight), so
+/// the parser checks completeness itself, at the phi's location.
+///
+/// The predecessor the phi *does* list (`%other`) is written as a
+/// forward-referenced block on purpose: a phi incoming can only name a block
+/// that is still unterminated at edge-add time — a predecessor defined
+/// *earlier* is already terminated and rejected by
+/// `basic_block_for_construction`. Using the later-defined `%other` keeps the
+/// edge resolvable while leaving the earlier `%entry` predecessor unlisted,
+/// which is exactly the completeness failure under test: `merge` has two
+/// predecessors but the phi supplies one incoming.
+#[test]
+fn incomplete_phi_is_a_parse_error() {
+    let src = r#"
+define i32 @f(i32 %a, i1 %c) {
+entry:
+  br i1 %c, label %merge, label %other
+merge:
+  %p = phi i32 [ %a, %other ]
+  ret i32 %p
+other:
+  br label %merge
+}
+"#;
+    let err = parse_err(src);
+    let msg = err.to_string();
+    assert!(msg.contains("phi"), "got: {msg}");
+    assert!(msg.contains("predecessor"), "got: {msg}");
+}
+
+/// Valid loop-shaped phis (back-edge incoming) must keep parsing — the check
+/// runs after the WHOLE function is parsed, so predecessor blocks defined
+/// later in the text are fine. Here `%latch` is defined *after* the `loop`
+/// header yet is a predecessor of it; a per-block eager check would not yet
+/// see that edge, but the end-of-function check does, and the phi is complete.
+#[test]
+fn loop_phi_still_parses() {
+    let src = r#"
+define i32 @f(i32 %n) {
+entry:
+  br label %preheader
+loop:
+  %i = phi i32 [ 0, %preheader ], [ 1, %latch ]
+  %done = icmp eq i32 %i, %n
+  br i1 %done, label %exit, label %latch
+preheader:
+  br label %loop
+latch:
+  br label %loop
+exit:
+  ret i32 %i
+}
+"#;
+    parse_ok(src).expect("loop phi must parse");
+}
