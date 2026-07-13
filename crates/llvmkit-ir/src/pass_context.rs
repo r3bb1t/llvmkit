@@ -962,6 +962,328 @@ where
         Ok(new_block)
     }
 
+    /// Drop every leading-phi incoming in `block` whose predecessor is
+    /// `pred_id`, deregistering the phi from each removed value's use-list so
+    /// reverse-use bookkeeping (and hence RAUW) stays correct. The
+    /// incoming-removal half of LLVM `BasicBlock::removePredecessor`: after the
+    /// CFG edge is gone, `pred_id` is no longer a predecessor, so every
+    /// `(value, pred_id)` pair leaves each head phi. Phis are grouped at the
+    /// block top, so the scan stops at the first non-phi.
+    fn drop_incoming_from_pred(
+        &self,
+        block: &BasicBlock<'ctx, Dyn, Terminated, B>,
+        pred_id: ValueId,
+    ) {
+        let ctx = self.patch.module_mut().core_ref().context();
+        for inst_id in block.instruction_ids() {
+            let crate::value::ValueKindData::Instruction(inst) = &ctx.value_data(inst_id).kind
+            else {
+                continue;
+            };
+            let crate::instruction::InstructionKindData::Phi(p) = &inst.kind else {
+                break;
+            };
+            let mut dropped_values: Vec<ValueId> = Vec::new();
+            {
+                let mut incoming = p.incoming.borrow_mut();
+                incoming.retain(|(value, pred)| {
+                    if *pred == pred_id {
+                        dropped_values.push(value.get());
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+            for val_id in dropped_values {
+                let mut uses = ctx.value_data(val_id).use_list.borrow_mut();
+                if let Some(pos) = uses
+                    .iter()
+                    .position(|e| *e == crate::value::ValueUse::Instruction(inst_id))
+                {
+                    uses.remove(pos);
+                }
+            }
+        }
+    }
+
+    /// Remove the CFG edge `from → to`, dropping `to`'s successor-phi
+    /// incomings that named `from` as part of the same op — the phi
+    /// maintenance is carried by the edit, never deferred to a fixup a caller
+    /// could forget.
+    ///
+    /// **Supported terminator.** `from` must end in a `switch`, and `to` must
+    /// be reached only through the switch's case list: every case targeting
+    /// `to` is dropped, collapsing the `from → to` edge. Removing a switch's
+    /// *default* edge is rejected (a `switch` must keep a default), as is a
+    /// `from` whose terminator is not a `switch`. A `br`/`cond_br` stores its
+    /// target block-ids in a payload that is not interior-mutable, and
+    /// collapsing a `cond_br` to a `br` would rewrite the terminator's *kind* —
+    /// neither is expressible through the shared `&self` module token, which
+    /// reaches instruction storage only by shared reference. A `switch`,
+    /// whose case list and default live behind `Cell`/`RefCell`, is the
+    /// terminator this op edits.
+    ///
+    /// **Phi maintenance.** Once the cases are dropped `from` is no longer a
+    /// predecessor of `to`, so every leading phi in `to` loses all its
+    /// `(value, from)` incomings (LLVM `removePredecessor`), each removed
+    /// value's use-list updated so RAUW stays correct. A phi left with a
+    /// single remaining entry is legal — the uniform-phi fold cleans it later.
+    ///
+    /// Records [`CfgUpdate::delete(from, to)`](CfgUpdate) and marks the mutator
+    /// dirty.
+    ///
+    /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator, its
+    /// terminator is not a `switch`, `to` is the switch's default, or `to` is
+    /// not a case target of `from`.
+    pub fn remove_edge(
+        &self,
+        from: &BasicBlockView<'ctx, B>,
+        to: &BasicBlockLabel<'ctx, Dyn, B>,
+    ) -> IrResult<()> {
+        let from_block = from.as_basic_block();
+        let from_id = from_block.as_value().id;
+        let to_id = to.as_value().id;
+        let ctx = self.patch.module_mut().core_ref().context();
+
+        let term = from_block.terminator().ok_or(IrError::InvalidOperation {
+            message: "remove_edge: `from` has no terminator",
+        })?;
+        let term_id = term.as_value().id;
+        let switch = match &ctx.value_data(term_id).kind {
+            crate::value::ValueKindData::Instruction(i) => match &i.kind {
+                crate::instruction::InstructionKindData::Switch(s) => s,
+                _ => {
+                    return Err(IrError::InvalidOperation {
+                        message: "remove_edge: supported only for a `switch` terminator",
+                    });
+                }
+            },
+            _ => {
+                return Err(IrError::InvalidOperation {
+                    message: "remove_edge: `from`'s terminator is not an instruction",
+                });
+            }
+        };
+
+        // A switch must keep its default, so a default-only edge cannot be
+        // dropped this way.
+        if switch.default_bb.get() == to_id {
+            return Err(IrError::InvalidOperation {
+                message: "remove_edge: cannot remove a `switch`'s default edge",
+            });
+        }
+        if !switch.cases.borrow().iter().any(|(_, dest)| *dest == to_id) {
+            return Err(IrError::InvalidOperation {
+                message: "remove_edge: `to` is not a successor of `from`",
+            });
+        }
+
+        // Drop every case targeting `to`, deregistering the switch from each
+        // dropped case-value's use-list (the case value is an SSA operand of
+        // the switch).
+        let mut dropped_case_values: Vec<ValueId> = Vec::new();
+        switch.cases.borrow_mut().retain(|(case_val, dest)| {
+            if *dest == to_id {
+                dropped_case_values.push(case_val.get());
+                false
+            } else {
+                true
+            }
+        });
+        for val_id in dropped_case_values {
+            let mut uses = ctx.value_data(val_id).use_list.borrow_mut();
+            if let Some(pos) = uses
+                .iter()
+                .position(|e| *e == crate::value::ValueUse::Instruction(term_id))
+            {
+                uses.remove(pos);
+            }
+        }
+
+        // Mechanically drop `to`'s phi incomings that named `from`.
+        let to_block = BasicBlock::<Dyn, Terminated, B>::from_parts(to.id, to.module, to.ty);
+        self.drop_incoming_from_pred(&to_block, from_id);
+
+        self.cfg_updates
+            .borrow_mut()
+            .push(CfgUpdate::delete(from_id, to_id));
+        self.patch.dirty.set(true);
+        Ok(())
+    }
+
+    /// Redirect the CFG edge `from → old_to` to `from → new_to`, dropping
+    /// `old_to`'s `from`-incomings and adding the required, typed incomings to
+    /// `new_to`'s phis — all as one op. Because the new target's phis *gain*
+    /// entries, the values that flow to them are a required, typed argument:
+    /// "forgot the target's phis" is unrepresentable, the call cannot be made
+    /// without them.
+    ///
+    /// **Supported terminator.** `from` must end in a `switch` that reaches
+    /// `old_to` through exactly one edge — one case, or the default — and must
+    /// not already reach `new_to`. That single target (the matching case
+    /// entry, or the default slot) is retargeted to `new_to`; the case's value
+    /// operand is untouched, so no terminator *kind* changes. A `br`/`cond_br`
+    /// `from` is rejected for the same reason as [`Self::remove_edge`]: its
+    /// target payload is not interior-mutable.
+    ///
+    /// **Typed phi values.** `phi_values` is aligned to `new_to`'s leading
+    /// phis (its block parameters), one value per phi: its length must equal
+    /// that count ([`IrError::PhiArgArityMismatch`]) and each value's type must
+    /// match its phi ([`IrError::TypeMismatch`]). Both are checked, together
+    /// with the terminator preconditions, *before* any mutation, so a rejected
+    /// call leaves the terminator and every phi untouched. Dominance of each
+    /// supplied value over the new edge is the caller's obligation, settled at
+    /// [`Module::verify`](crate::Module::verify) — matching the block-argument
+    /// authoring path ([`IRBuilder::build_br_with_args`](crate::IRBuilder)).
+    ///
+    /// **Phi maintenance.** `old_to`'s leading phis lose their `from`
+    /// incomings (`from` is no longer their predecessor); `new_to`'s leading
+    /// phis each gain a `(phi_values[i], from)` incoming, registered in the
+    /// value's use-list so RAUW stays correct.
+    ///
+    /// Records [`CfgUpdate::delete(from, old_to)`](CfgUpdate) and
+    /// [`CfgUpdate::insert(from, new_to)`](CfgUpdate), and marks the mutator
+    /// dirty.
+    ///
+    /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator, its
+    /// terminator is not a `switch`, `old_to` is not a successor of `from`,
+    /// `from` reaches `old_to` through more than one edge, or `from` already
+    /// reaches `new_to`; [`IrError::PhiArgArityMismatch`] /
+    /// [`IrError::TypeMismatch`] for a mis-sized or mistyped `phi_values`.
+    pub fn redirect_edge(
+        &self,
+        from: &BasicBlockView<'ctx, B>,
+        old_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        phi_values: &[Value<'ctx, B>],
+    ) -> IrResult<()> {
+        let from_block = from.as_basic_block();
+        let from_id = from_block.as_value().id;
+        let old_id = old_to.as_value().id;
+        let new_id = new_to.as_value().id;
+        let ctx = self.patch.module_mut().core_ref().context();
+
+        let term = from_block.terminator().ok_or(IrError::InvalidOperation {
+            message: "redirect_edge: `from` has no terminator",
+        })?;
+        let term_id = term.as_value().id;
+        let switch = match &ctx.value_data(term_id).kind {
+            crate::value::ValueKindData::Instruction(i) => match &i.kind {
+                crate::instruction::InstructionKindData::Switch(s) => s,
+                _ => {
+                    return Err(IrError::InvalidOperation {
+                        message: "redirect_edge: supported only for a `switch` terminator",
+                    });
+                }
+            },
+            _ => {
+                return Err(IrError::InvalidOperation {
+                    message: "redirect_edge: `from`'s terminator is not an instruction",
+                });
+            }
+        };
+
+        // Exactly one edge `from → old_to` (a case or the default), and `from`
+        // must not already reach `new_to`: redirect mints a fresh edge, so the
+        // new-target phi gains exactly one incoming per phi.
+        let default_is_old = switch.default_bb.get() == old_id;
+        let case_hits = switch
+            .cases
+            .borrow()
+            .iter()
+            .filter(|(_, dest)| *dest == old_id)
+            .count();
+        let edges_to_old = usize::from(default_is_old) + case_hits;
+        if edges_to_old == 0 {
+            return Err(IrError::InvalidOperation {
+                message: "redirect_edge: `old_to` is not a successor of `from`",
+            });
+        }
+        if edges_to_old > 1 {
+            return Err(IrError::InvalidOperation {
+                message: "redirect_edge: `from` reaches `old_to` through multiple edges",
+            });
+        }
+        let already_reaches_new = switch.default_bb.get() == new_id
+            || switch
+                .cases
+                .borrow()
+                .iter()
+                .any(|(_, dest)| *dest == new_id);
+        if already_reaches_new {
+            return Err(IrError::InvalidOperation {
+                message: "redirect_edge: `from` already reaches `new_to`",
+            });
+        }
+
+        // Collect `new_to`'s leading phis (its block parameters) and validate
+        // `phi_values` against them BEFORE mutating — all-or-nothing, mirroring
+        // the block-argument branch builder.
+        let new_block =
+            BasicBlock::<Dyn, Terminated, B>::from_parts(new_to.id, new_to.module, new_to.ty);
+        let mut param_phis: Vec<ValueId> = Vec::new();
+        for inst_id in new_block.instruction_ids() {
+            let crate::value::ValueKindData::Instruction(inst) = &ctx.value_data(inst_id).kind
+            else {
+                continue;
+            };
+            let crate::instruction::InstructionKindData::Phi(_) = &inst.kind else {
+                break;
+            };
+            param_phis.push(inst_id);
+        }
+        if param_phis.len() != phi_values.len() {
+            return Err(IrError::PhiArgArityMismatch {
+                expected: param_phis.len(),
+                got: phi_values.len(),
+            });
+        }
+        for (phi_id, value) in param_phis.iter().zip(phi_values.iter()) {
+            let phi_ty = ctx.value_data(*phi_id).ty;
+            if value.ty != phi_ty {
+                return Err(IrError::TypeMismatch {
+                    expected: Type::new(phi_ty, new_to.module).kind_label(),
+                    got: Type::new(value.ty, new_to.module).kind_label(),
+                });
+            }
+        }
+
+        // All preconditions witnessed — retarget the single edge `from →
+        // old_to` onto `new_to`.
+        if default_is_old {
+            switch.default_bb.set(new_id);
+        } else {
+            for entry in switch.cases.borrow_mut().iter_mut() {
+                if entry.1 == old_id {
+                    entry.1 = new_id;
+                }
+            }
+        }
+
+        // Drop `from`'s incomings from `old_to`'s phis, then add the typed
+        // incomings to `new_to`'s phis (each registered in its value's use-list
+        // by the erased edge-add path).
+        let old_block =
+            BasicBlock::<Dyn, Terminated, B>::from_parts(old_to.id, old_to.module, old_to.ty);
+        self.drop_incoming_from_pred(&old_block, from_id);
+
+        let builder = IRBuilder::new(self.patch.module_mut());
+        for (phi_id, value) in param_phis.iter().zip(phi_values.iter()) {
+            let phi_ty = ctx.value_data(*phi_id).ty;
+            let phi_val = Value::from_parts(*phi_id, new_to.module, phi_ty);
+            builder.phi_add_incoming_from_value(phi_val, *value, from_block.copy_handle())?;
+        }
+
+        {
+            let mut log = self.cfg_updates.borrow_mut();
+            log.push(CfgUpdate::delete(from_id, old_id));
+            log.push(CfgUpdate::insert(from_id, new_id));
+        }
+        self.patch.dirty.set(true);
+        Ok(())
+    }
+
     /// Insert a fully-witnessed phi at `block`'s phi head and return its erased
     /// result [`Value`].
     ///

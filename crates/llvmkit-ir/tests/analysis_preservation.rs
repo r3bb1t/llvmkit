@@ -368,3 +368,324 @@ fn insert_phi_rejects_incomplete_incomings() -> Result<(), IrError> {
         Ok(())
     })
 }
+
+// ---------------------------------------------------------------------------
+// phi wave 2: `FnReshape::remove_edge` / `redirect_edge`
+//
+// These ops perform terminator surgery on a `switch` (whose case list and
+// default live behind interior mutability) and mechanically maintain the
+// successor phis of every block they touch — the same "the op carries its own
+// phi maintenance" contract as wave-1 `split_block`. `br`/`cond_br` are not
+// edited (their target payload is not interior-mutable), so the fixtures below
+// build `switch`-terminated blocks.
+// ---------------------------------------------------------------------------
+
+/// A `ReshapeCfg` pass that calls [`FnReshape::remove_edge`] on the block named
+/// `from_name`, dropping its edge to `to`. The `to` label is stashed at build
+/// time (arena ids are stable across `verify()`), mirroring how `InsertMergePhi`
+/// stashes its incomings.
+struct RemoveSwitchEdge<'ctx, B: ModuleBrand + 'ctx> {
+    from_name: &'static str,
+    to: BasicBlockLabel<'ctx, Dyn, B>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveSwitchEdge<'ctx, B> {
+    type Access = ReshapeCfg;
+    type Requires = ();
+    const NAME: &'static str = "remove-switch-edge";
+
+    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+        let reshape = cx.mutate();
+        let from = reshape
+            .function()
+            .basic_blocks()
+            .find(|bb| bb.name().as_deref() == Some(self.from_name))
+            .expect("`from` block is present");
+        reshape.remove_edge(&from, &self.to)?;
+        Ok(reshape.done())
+    }
+}
+
+/// A `ReshapeCfg` pass that calls [`FnReshape::redirect_edge`], retargeting the
+/// `from_name` block's edge from `old_to` to `new_to` and seeding `new_to`'s
+/// leading phis with the stashed `phi_values`.
+struct RedirectSwitchEdge<'ctx, B: ModuleBrand + 'ctx> {
+    from_name: &'static str,
+    old_to: BasicBlockLabel<'ctx, Dyn, B>,
+    new_to: BasicBlockLabel<'ctx, Dyn, B>,
+    phi_values: Vec<Value<'ctx, B>>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchEdge<'ctx, B> {
+    type Access = ReshapeCfg;
+    type Requires = ();
+    const NAME: &'static str = "redirect-switch-edge";
+
+    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+        let reshape = cx.mutate();
+        let from = reshape
+            .function()
+            .basic_blocks()
+            .find(|bb| bb.name().as_deref() == Some(self.from_name))
+            .expect("`from` block is present");
+        reshape.redirect_edge(&from, &self.old_to, &self.new_to, &self.phi_values)?;
+        Ok(reshape.done())
+    }
+}
+
+/// Build a `switch`-fed merge with a two-incoming phi, returning the function
+/// and `merge`'s `Dyn` label.
+///
+/// ```text
+/// entry(a): %e = add %a, 7
+///           switch i32 %a, label %dflt [ i32 0, label %merge ; i32 1, label %other ]
+/// dflt:     %d = add %a, 9 ; br %merge
+/// other:    ret 0
+/// merge:    %p = phi i32 [ %e, %entry ], [ %d, %dflt ] ; ret %p
+/// ```
+///
+/// `merge`'s predecessors are `{entry (case 0), dflt (br)}`; removing the
+/// `entry → merge` edge must drop the phi's `entry` incoming to stay coherent.
+#[allow(clippy::type_complexity)]
+fn build_switch_merge<'ctx>(
+    m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
+) -> IrResult<(
+    llvmkit_ir::FunctionValue<'ctx, i32>,
+    BasicBlockLabel<'ctx, Dyn>,
+)> {
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let entry = f.append_basic_block(m, "entry");
+    let dflt = f.append_basic_block(m, "dflt");
+    let other = f.append_basic_block(m, "other");
+    let merge = f.append_basic_block(m, "merge");
+
+    let entry_lbl = entry.label();
+    let dflt_lbl = dflt.label();
+    let other_lbl = other.label();
+    let merge_lbl = merge.label();
+    let merge_dyn: BasicBlockLabel<Dyn> = merge_lbl.as_value().try_into()?;
+
+    // entry: %e = add %a, 7 ; switch %a, default %dflt [ 0 -> merge, 1 -> other ]
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let e = b.build_int_add(a, 7_i32, "e")?;
+    let (_sealed, sw) = b.build_switch(a, dflt_lbl, "")?;
+    sw.add_case(i32_ty.const_int(0_u32), merge_lbl)?
+        .add_case(i32_ty.const_int(1_u32), other_lbl)?
+        .finish();
+
+    // dflt: %d = add %a, 9 ; br merge
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(dflt);
+    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let d = b.build_int_add(a, 9_i32, "d")?;
+    b.build_br(merge_lbl)?;
+
+    // other: ret 0
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(other);
+    b.build_ret(i32_ty.const_int(0_u32))?;
+
+    // merge: %p = phi i32 [ %e, entry ], [ %d, dflt ] ; ret %p
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(merge);
+    let p = b
+        .build_int_phi::<i32, _>("p")?
+        .add_incoming(e, entry_lbl)?
+        .add_incoming(d, dflt_lbl)?;
+    b.build_ret(p.as_int_value())?;
+
+    Ok((f, merge_dyn))
+}
+
+/// Build a `switch` whose case-0 edge can be redirected, plus a `new` block
+/// already carrying a phi, returning the function, the `old`/`new` `Dyn`
+/// labels, and a value (`%ev`, defined in `entry`) to seed `new`'s phi.
+///
+/// ```text
+/// entry(a): %ev = add %a, 3
+///           switch i32 %a, label %dflt [ i32 0, label %old ]
+/// dflt:     %nd = add %a, 5 ; br %new
+/// old:      ret 0
+/// new:      %np = phi i32 [ %nd, %dflt ] ; ret %np
+/// ```
+///
+/// `redirect_edge(entry, old, new, [%ev])` retargets the case-0 edge onto `new`
+/// and adds `[ %ev, %entry ]` to `new`'s phi.
+#[allow(clippy::type_complexity)]
+fn build_switch_redirect<'ctx>(
+    m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
+) -> IrResult<(
+    llvmkit_ir::FunctionValue<'ctx, i32>,
+    BasicBlockLabel<'ctx, Dyn>,
+    BasicBlockLabel<'ctx, Dyn>,
+    Value<'ctx>,
+)> {
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let entry = f.append_basic_block(m, "entry");
+    let dflt = f.append_basic_block(m, "dflt");
+    let old = f.append_basic_block(m, "old");
+    let new = f.append_basic_block(m, "new");
+
+    let dflt_lbl = dflt.label();
+    let old_lbl = old.label();
+    let new_lbl = new.label();
+    let old_dyn: BasicBlockLabel<Dyn> = old_lbl.as_value().try_into()?;
+    let new_dyn: BasicBlockLabel<Dyn> = new_lbl.as_value().try_into()?;
+
+    // entry: %ev = add %a, 3 ; switch %a, default %dflt [ 0 -> old ]
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let ev = b.build_int_add(a, 3_i32, "ev")?;
+    let (_sealed, sw) = b.build_switch(a, dflt_lbl, "")?;
+    sw.add_case(i32_ty.const_int(0_u32), old_lbl)?.finish();
+
+    // dflt: %nd = add %a, 5 ; br new
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(dflt);
+    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let nd = b.build_int_add(a, 5_i32, "nd")?;
+    b.build_br(new_lbl)?;
+
+    // old: ret 0
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(old);
+    b.build_ret(i32_ty.const_int(0_u32))?;
+
+    // new: %np = phi i32 [ %nd, dflt ] ; ret %np
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(new);
+    let np = b
+        .build_int_phi::<i32, _>("np")?
+        .add_incoming(nd, dflt_lbl)?;
+    b.build_ret(np.as_int_value())?;
+
+    Ok((f, old_dyn, new_dyn, ev.as_value()))
+}
+
+/// `remove_edge` drops the `entry → merge` switch case AND mechanically removes
+/// `merge`'s phi incoming that named `entry`; the output re-verifies. Without
+/// the phi maintenance, `merge`'s phi would still name `entry` (no longer a
+/// predecessor) and `verify()` would fail with `PhiPredecessorMismatch`.
+#[test]
+fn remove_edge_drops_successor_phi_incoming() -> Result<(), IrError> {
+    Module::with_new("remove-edge", |m| {
+        let (f, merge_dyn) = build_switch_merge(&m)?;
+
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        let pass = RemoveSwitchEdge {
+            from_name: "entry",
+            to: merge_dyn,
+        };
+        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+
+        let reverified = out.verify().expect("remove_edge output must re-verify");
+        let printed = format!("{reverified}");
+        assert!(
+            printed.contains("[ %d, %dflt ]"),
+            "merge's phi must keep the dflt incoming, got:\n{printed}"
+        );
+        assert!(
+            !printed.contains(", %entry ]"),
+            "merge's phi must have dropped the entry incoming, got:\n{printed}"
+        );
+        Ok(())
+    })
+}
+
+/// `redirect_edge` retargets the `entry → old` switch case onto `new` AND adds
+/// the supplied, typed value as `new`'s phi incoming from `entry`; the output
+/// re-verifies.
+#[test]
+fn redirect_edge_retargets_and_seeds_new_phi() -> Result<(), IrError> {
+    Module::with_new("redirect-edge", |m| {
+        let (f, old_dyn, new_dyn, ev) = build_switch_redirect(&m)?;
+
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        let pass = RedirectSwitchEdge {
+            from_name: "entry",
+            old_to: old_dyn,
+            new_to: new_dyn,
+            phi_values: vec![ev],
+        };
+        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+
+        let reverified = out.verify().expect("redirect_edge output must re-verify");
+        let printed = format!("{reverified}");
+        assert!(
+            printed.contains("[ %ev, %entry ]"),
+            "new's phi must gain the supplied incoming from entry, got:\n{printed}"
+        );
+        assert!(
+            printed.contains("i32 0, label %new"),
+            "the switch case must now target new, got:\n{printed}"
+        );
+        assert!(
+            !printed.contains("i32 0, label %old"),
+            "the switch case must no longer target old, got:\n{printed}"
+        );
+        Ok(())
+    })
+}
+
+/// `redirect_edge` rejects a `phi_values` slice whose length differs from the
+/// new target's leading-phi count — witnessed at the call, not at `verify()`.
+#[test]
+fn redirect_edge_rejects_wrong_arity() -> Result<(), IrError> {
+    Module::with_new("redirect-edge-arity", |m| {
+        let (f, old_dyn, new_dyn, ev) = build_switch_redirect(&m)?;
+
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        // `new` has one leading phi; supplying two values is a wrong arity.
+        let pass = RedirectSwitchEdge {
+            from_name: "entry",
+            old_to: old_dyn,
+            new_to: new_dyn,
+            phi_values: vec![ev, ev],
+        };
+        let err = run_function_pass(pass, verified, f, &mut analyses)
+            .err()
+            .expect("redirect_edge must reject a wrong-arity phi_values");
+        assert!(
+            matches!(
+                err,
+                IrError::PhiArgArityMismatch {
+                    expected: 1,
+                    got: 2
+                }
+            ),
+            "expected PhiArgArityMismatch {{ expected: 1, got: 2 }}, got: {err:?}"
+        );
+        Ok(())
+    })
+}
+
+/// `redirect_edge` rejects a `phi_values` entry whose type differs from its
+/// target phi — witnessed at the call, not at `verify()`.
+#[test]
+fn redirect_edge_rejects_wrong_type() -> Result<(), IrError> {
+    Module::with_new("redirect-edge-type", |m| {
+        let i64_ty = m.i64_type();
+        let (f, old_dyn, new_dyn, _ev) = build_switch_redirect(&m)?;
+
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        // `new`'s phi is i32; an i64 constant is the wrong type for it.
+        let wrong: Value = i64_ty.const_int(0_u32).as_value();
+        let pass = RedirectSwitchEdge {
+            from_name: "entry",
+            old_to: old_dyn,
+            new_to: new_dyn,
+            phi_values: vec![wrong],
+        };
+        let err = run_function_pass(pass, verified, f, &mut analyses)
+            .err()
+            .expect("redirect_edge must reject a mistyped phi_values");
+        assert!(
+            matches!(err, IrError::TypeMismatch { .. }),
+            "expected TypeMismatch, got: {err:?}"
+        );
+        Ok(())
+    })
+}
