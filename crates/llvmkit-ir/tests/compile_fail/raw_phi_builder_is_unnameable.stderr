@@ -1,0 +1,16 @@
+error[E0624]: method `build_int_phi` is private
+  --> tests/compile_fail/raw_phi_builder_is_unnameable.rs:28:22
+   |
+28 |           let _phi = b.build_int_phi::<i32, _>("p");
+   |                        ^^^^^^^^^^^^^ private method
+   |
+  ::: src/ir_builder.rs
+   |
+   | /     pub(crate) fn build_int_phi<W, Name>(
+   | |         &self,
+   | |         name: Name,
+   | |     ) -> IrResult<PhiInst<'ctx, W, PhiOpen, B>>
+   | |     where
+   | |         Name: AsRef<str>,
+   | |         W: crate::int_width::StaticIntWidth,
+   | |____________________________________________- private method defined here

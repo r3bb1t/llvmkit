@@ -13,6 +13,31 @@ use crate::{
     Type,
 };
 
+/// The `Open -> Closed` finalisation applies to every phi family, not just the
+/// integer one: finishing an `fp` and a `pointer` phi consumes the open handle
+/// and yields a `Closed` view that still reads back its incoming count. Covers
+/// `FpPhiInst::finish` / `PointerPhiInst::finish` (the int case is
+/// `phi_finishes_after_all_incomings`).
+#[test]
+fn fp_and_pointer_phi_finish_to_closed() -> Result<(), IrError> {
+    Module::with_new("phi_finish_fp_ptr", |m| {
+        let f64_ty = m.f64_type();
+        let fn_ty = m.fn_type(f64_ty, Vec::<Type>::new(), false);
+        let f = m.add_function::<f64, _>("f", fn_ty, Linkage::External)?;
+        let bb = f.append_basic_block(&m, "bb");
+        let b = IRBuilder::new_for::<f64>(&m).position_at_end(bb);
+
+        // `finish()` consumes the Open handle for the fp and pointer families
+        // exactly as it does for the int family. No incomings are added, so the
+        // closed handles read back a count of zero.
+        let fp_closed = b.build_fp_phi::<f64, _>("fp")?.finish();
+        let ptr_closed = b.build_pointer_phi("pp")?.finish();
+        assert_eq!(fp_closed.incoming_count(), 0);
+        assert_eq!(ptr_closed.incoming_count(), 0);
+        Ok(())
+    })
+}
+
 /// Port of `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest,
 /// CreateCondBr)` constructive shape, extended to exercise the phi
 /// `Open -> Closed` typestate. The structural assertions

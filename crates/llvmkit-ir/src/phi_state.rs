@@ -5,10 +5,10 @@
 //! runtime that a phi has one incoming pair per predecessor edge and
 //! that no predecessor was missed. llvmkit gives the common construction path an
 //! explicit view state: a freshly-built phi is [`Open`] and accepts
-//! [`crate::PhiInst::add_incoming`]; calling [`crate::PhiInst::finish`] returns a
+//! `add_incoming`; calling `PhiInst::finish` returns a
 //! [`Closed`] view that no longer exposes `add_incoming`.
 //!
-//! Open phi handles are linear (`!Copy` / `!Clone`): [`crate::PhiInst::finish`]
+//! Open phi handles are linear (`!Copy` / `!Clone`): `PhiInst::finish`
 //! consumes the only open capability, so retained copies cannot continue adding
 //! incoming edges. Runtime-side coherence rules, such as the incoming-block set
 //! matching the predecessor set, remain verifier responsibilities.

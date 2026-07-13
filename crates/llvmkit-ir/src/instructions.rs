@@ -1293,7 +1293,7 @@ decl_handle_scaffold!(UnreachableInst);
 /// later in the same block.
 ///
 /// The `P: PhiState` parameter (default [`Open`]) tracks whether the
-/// phi handle accepts `add_incoming` calls. Calling [`PhiInst::finish`] consumes
+/// phi handle accepts `add_incoming` calls. Calling `PhiInst::finish` consumes
 /// the open handle and returns a [`Closed`] handle; the closed handle exposes
 /// only read accessors.
 #[derive(Debug)]
@@ -1322,6 +1322,7 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
 
     /// Re-tag the phi-state marker. Crate-internal: only [`finish`]
     /// flips the public marker.
+    #[cfg_attr(not(test), allow(dead_code))]
     #[inline]
     pub(super) fn retag<P2: PhiState>(self) -> PhiInst<'ctx, W, P2, B> {
         PhiInst {
@@ -1394,6 +1395,12 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
     }
 }
 
+// The typed open-phi mutation surface is crate-internal since slice 7 (block
+// arguments are the public phi-authoring surface). It has no production caller
+// today — the parser and SSA builder add incomings through the erased
+// `phi_add_incoming_from_value` path — so `dead_code` is allowed in non-test
+// builds; the in-crate phi typestate tests exercise it.
+#[cfg_attr(not(test), allow(dead_code))]
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, Open, B> {
     /// Append `(value, block)` to the incoming list. Mirrors
     /// `PHINode::addIncoming`. Returns `Self` so calls chain.
@@ -1404,7 +1411,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, Open, B> {
     /// The block's module provenance is carried by its branded handle in
     /// ordinary construction paths; CFG predecessor completeness is verified by
     /// [`Module::verify`](crate::Module::verify).
-    pub fn add_incoming<V, R, Block>(self, value: V, block: Block) -> IrResult<Self>
+    pub(crate) fn add_incoming<V, R, Block>(self, value: V, block: Block) -> IrResult<Self>
     where
         V: IntoIntValue<'ctx, W, B>,
         R: ReturnMarker,
@@ -1452,7 +1459,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, Open, B> {
     /// the implicit "phi is finalised" convention upstream where the
     /// verifier subsequently runs `Verifier::visitPHINode`.
     #[inline]
-    pub fn finish(self) -> PhiInst<'ctx, W, Closed, B> {
+    pub(crate) fn finish(self) -> PhiInst<'ctx, W, Closed, B> {
         self.retag::<Closed>()
     }
 }
@@ -1504,6 +1511,7 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     #[inline]
     pub(super) fn retag<P2: PhiState>(self) -> FpPhiInst<'ctx, K, P2, B> {
         FpPhiInst {
@@ -1575,6 +1583,7 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
     /// Append `(value, block)` to the incoming list. Mirrors
     /// `PHINode::addIncoming`. Errors if `value`'s type does not match
@@ -1585,7 +1594,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
     /// The block's module provenance is carried by its
     /// branded handle in ordinary construction paths; CFG predecessor
     /// completeness is verified by [`Module::verify`](crate::Module::verify).
-    pub fn add_incoming<V, R, Block>(self, value: V, block: Block) -> IrResult<Self>
+    pub(crate) fn add_incoming<V, R, Block>(self, value: V, block: Block) -> IrResult<Self>
     where
         V: IntoFloatValue<'ctx, K, B>,
         R: ReturnMarker,
@@ -1628,7 +1637,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
 
     /// Consume the open phi and return its [`Closed`] view.
     #[inline]
-    pub fn finish(self) -> FpPhiInst<'ctx, K, Closed, B> {
+    pub(crate) fn finish(self) -> FpPhiInst<'ctx, K, Closed, B> {
         self.retag::<Closed>()
     }
 }
@@ -1678,6 +1687,7 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     #[inline]
     pub(super) fn retag<P2: PhiState>(self) -> PointerPhiInst<'ctx, P2, B> {
         PointerPhiInst {
@@ -1748,12 +1758,13 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, Open, B> {
     /// Append `(value, block)` to the incoming list. Rejects a second entry
     /// for the same block with a different value
     /// ([`IrError::AmbiguousPhiIncoming`](crate::IrError::AmbiguousPhiIncoming));
     /// same-value duplicates are legal (multi-edges from `switch`).
-    pub fn add_incoming<V, R, Block>(self, value: V, block: Block) -> IrResult<Self>
+    pub(crate) fn add_incoming<V, R, Block>(self, value: V, block: Block) -> IrResult<Self>
     where
         V: IntoPointerValue<'ctx, B>,
         R: ReturnMarker,
@@ -1796,7 +1807,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, Open, B> {
 
     /// Consume the open phi and return its [`Closed`] view.
     #[inline]
-    pub fn finish(self) -> PointerPhiInst<'ctx, Closed, B> {
+    pub(crate) fn finish(self) -> PointerPhiInst<'ctx, Closed, B> {
         self.retag::<Closed>()
     }
 }

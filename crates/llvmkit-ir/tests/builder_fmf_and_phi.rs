@@ -393,10 +393,7 @@ fn build_fp_phi_emits_phi_with_double_kind() -> Result<(), IrError> {
         let text = format!("{m}");
         // The param-phi is unnamed, so assert on the load-bearing `phi double`
         // kind + incoming pair rather than a `%merge =` label.
-        assert!(
-            text.contains("phi double [ %0, %entry ]\n"),
-            "got:\n{text}"
-        );
+        assert!(text.contains("phi double [ %0, %entry ]\n"), "got:\n{text}");
         Ok(())
     })
 }
@@ -429,10 +426,7 @@ fn build_pointer_phi_emits_phi_with_ptr() -> Result<(), IrError> {
         let text = format!("{m}");
         // The param-phi is unnamed, so assert on the load-bearing `phi ptr`
         // kind + incoming pair rather than a `%merge =` label.
-        assert!(
-            text.contains("phi ptr [ %0, %entry ]\n"),
-            "got:\n{text}"
-        );
+        assert!(text.contains("phi ptr [ %0, %entry ]\n"), "got:\n{text}");
         Ok(())
     })
 }

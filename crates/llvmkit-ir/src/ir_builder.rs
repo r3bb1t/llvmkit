@@ -521,6 +521,11 @@ where
     /// coherence is verified by [`Module::verify`](crate::Module::verify).
     ///
     /// [`PhiInst::add_incoming`]: crate::PhiInst::add_incoming
+    /// Internal contract shared with the in-tree `.ll` parser and the SSA
+    /// builder (hence `#[doc(hidden)]`); block arguments are the public
+    /// phi-authoring surface, so this is not part of the supported API and may
+    /// change without notice.
+    #[doc(hidden)]
     pub fn phi_add_incoming_from_value<RBb, SBb>(
         &self,
         phi_val: Value<'ctx, B>,
@@ -5741,7 +5746,16 @@ where
     /// which returns `Self` so calls chain. Inserted at the block's phi
     /// head regardless of cursor position, so phi placement is correct by
     /// construction.
-    pub fn build_int_phi<W, Name>(&self, name: Name) -> IrResult<PhiInst<'ctx, W, PhiOpen, B>>
+    /// Crate-internal since slice 7 — block arguments
+    /// (`append_block_with_params`) are the only public phi-authoring surface.
+    /// No production caller today (parser/SSA use the `_dyn`/erased paths), so
+    /// `dead_code` is allowed in non-test builds; the in-crate typestate tests
+    /// exercise it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn build_int_phi<W, Name>(
+        &self,
+        name: Name,
+    ) -> IrResult<PhiInst<'ctx, W, PhiOpen, B>>
     where
         Name: AsRef<str>,
         W: crate::int_width::StaticIntWidth,
@@ -5764,6 +5778,9 @@ where
     /// type explicitly because the marker carries no static width.
     /// Inserted at the block's phi head regardless of cursor position, so
     /// phi placement is correct by construction.
+    /// Internal contract shared with the in-tree `.ll` parser (hence
+    /// `#[doc(hidden)]`); block arguments are the public phi-authoring surface.
+    #[doc(hidden)]
     pub fn build_int_phi_dyn<Name>(
         &self,
         ty: IntType<'ctx, IntDyn, B>,
@@ -5790,7 +5807,16 @@ where
     /// applied to a floating-point type. Inserted at the block's phi head
     /// regardless of cursor position, so phi placement is correct by
     /// construction.
-    pub fn build_fp_phi<K, Name>(&self, name: Name) -> IrResult<FpPhiInst<'ctx, K, PhiOpen, B>>
+    /// Crate-internal since slice 7 — block arguments
+    /// (`append_block_with_params`) are the only public phi-authoring surface.
+    /// No production caller today (parser/SSA use the `_dyn`/erased paths), so
+    /// `dead_code` is allowed in non-test builds; the in-crate typestate tests
+    /// exercise it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn build_fp_phi<K, Name>(
+        &self,
+        name: Name,
+    ) -> IrResult<FpPhiInst<'ctx, K, PhiOpen, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::StaticFloatKind,
@@ -5810,6 +5836,9 @@ where
     /// [`crate::FloatDyn`] carries no static kind. Inserted at the block's
     /// phi head regardless of cursor position, so phi placement is correct
     /// by construction.
+    /// Internal contract shared with the in-tree `.ll` parser (hence
+    /// `#[doc(hidden)]`); block arguments are the public phi-authoring surface.
+    #[doc(hidden)]
     pub fn build_fp_phi_dyn<Name>(
         &self,
         ty: FloatType<'ctx, FloatDyn, B>,
@@ -5832,7 +5861,16 @@ where
     /// Mirrors `IRBuilder::CreatePHI(PointerType::getUnqual(...), ...)`.
     /// Inserted at the block's phi head regardless of cursor position, so
     /// phi placement is correct by construction.
-    pub fn build_pointer_phi<Name>(&self, name: Name) -> IrResult<PointerPhiInst<'ctx, PhiOpen, B>>
+    /// Crate-internal since slice 7 — block arguments
+    /// (`append_block_with_params`) are the only public phi-authoring surface.
+    /// No production caller today (parser/SSA use the `_dyn`/erased paths), so
+    /// `dead_code` is allowed in non-test builds; the in-crate typestate tests
+    /// exercise it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn build_pointer_phi<Name>(
+        &self,
+        name: Name,
+    ) -> IrResult<PointerPhiInst<'ctx, PhiOpen, B>>
     where
         Name: AsRef<str>,
     {
@@ -5851,6 +5889,9 @@ where
     /// `IRBuilder::CreatePHI(PointerType::get(Ctx, AS), ...)`. Inserted at
     /// the block's phi head regardless of cursor position, so phi
     /// placement is correct by construction.
+    /// Internal contract shared with the in-tree `.ll` parser (hence
+    /// `#[doc(hidden)]`); block arguments are the public phi-authoring surface.
+    #[doc(hidden)]
     pub fn build_pointer_phi_in_addrspace<Name>(
         &self,
         ty: PointerType<'ctx, B>,
