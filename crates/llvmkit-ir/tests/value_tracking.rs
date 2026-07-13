@@ -95,9 +95,10 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
         let f = m.add_function::<i8, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let other = f.append_basic_block(&m, "other");
-        let join = f.append_basic_block(&m, "join");
-        let entry_label = entry.label();
-        let other_label = other.label();
+        // join(%p: i8): the phi is the block's head-phi parameter, seeded from
+        // each predecessor by a block-argument `br`.
+        let bwp = IRBuilder::new_for::<i8>(&m);
+        let (join, params) = bwp.append_block_with_params(f, &[i8_ty.as_type()], "join")?;
         let join_label = join.label();
 
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -107,16 +108,13 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
         let c_aa_val: IntValue<i8> = c_aa.as_constant().try_into()?;
         let c_ae_val: IntValue<i8> = c_ae.as_constant().try_into()?;
         let select = b.build_select(cond, c_aa_val, c_ae_val, "sel")?;
-        b.build_br(join_label)?;
+        b.build_br_with_args(join_label, &[i8_ty.const_int(0x03_u8).as_value()])?;
 
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(other);
-        b.build_br(join_label)?;
+        b.build_br_with_args(join_label, &[i8_ty.const_int(0x07_u8).as_value()])?;
 
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(join);
-        let phi = b
-            .build_int_phi::<i8, _>("p")?
-            .add_incoming(i8_ty.const_int(0x03_u8), entry_label)?
-            .add_incoming(i8_ty.const_int(0x07_u8), other_label)?;
+        let phi = params[0];
         let trunc_src: IntValue<i16> = i16_ty.const_int(0x00f0_u16).as_constant().try_into()?;
         let zext_src: IntValue<i8> = c_aa.as_constant().try_into()?;
         let sext_src: IntValue<i8> = c_aa.as_constant().try_into()?;
@@ -136,10 +134,7 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
         let query = ValueTrackingQuery::new(&dl);
 
         assert_eq!(known(select.as_value(), &query)?.to_string(), "10101?10");
-        assert_eq!(
-            known(phi.as_int_value().as_value(), &query)?.to_string(),
-            "00000?11"
-        );
+        assert_eq!(known(phi, &query)?.to_string(), "00000?11");
         assert_eq!(known(trunc.as_value(), &query)?.to_string(), "11110000");
         assert_eq!(
             known(zext.as_value(), &query)?.to_string(),

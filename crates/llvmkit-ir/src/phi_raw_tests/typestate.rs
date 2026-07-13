@@ -1,9 +1,42 @@
-//! Phi-finalisation typestate coverage (session T2).
+//! Relocated raw-phi typestate mechanics: the `Open -> Closed -> finish`
+//! finalisation lifecycle, `add_incoming` linearity, `PhiKind` rediscovery,
+//! phi-head placement, and a deliberately self-referential phi-iteration
+//! shape. These cases drive the raw `build_*_phi`/`add_incoming`/`finish`
+//! typestate that block-argument authoring cannot express. Ported verbatim
+//! from `tests/builder_typestate_phi.rs` and the phi test extracted from
+//! `tests/builder_typestate_termination.rs` (only the `llvmkit_ir::` paths
+//! are rewritten to `crate::`); dormant until wired into the crate's
+//! `#[cfg(test)]` tree.
 
-use llvmkit_ir::{
+use crate::{
     FloatDyn, FloatValue, IRBuilder, InstructionKind, IntValue, IrError, Linkage, Module, PhiKind,
     Type,
 };
+
+/// The `Open -> Closed` finalisation applies to every phi family, not just the
+/// integer one: finishing an `fp` and a `pointer` phi consumes the open handle
+/// and yields a `Closed` view that still reads back its incoming count. Covers
+/// `FpPhiInst::finish` / `PointerPhiInst::finish` (the int case is
+/// `phi_finishes_after_all_incomings`).
+#[test]
+fn fp_and_pointer_phi_finish_to_closed() -> Result<(), IrError> {
+    Module::with_new("phi_finish_fp_ptr", |m| {
+        let f64_ty = m.f64_type();
+        let fn_ty = m.fn_type(f64_ty, Vec::<Type>::new(), false);
+        let f = m.add_function::<f64, _>("f", fn_ty, Linkage::External)?;
+        let bb = f.append_basic_block(&m, "bb");
+        let b = IRBuilder::new_for::<f64>(&m).position_at_end(bb);
+
+        // `finish()` consumes the Open handle for the fp and pointer families
+        // exactly as it does for the int family. No incomings are added, so the
+        // closed handles read back a count of zero.
+        let fp_closed = b.build_fp_phi::<f64, _>("fp")?.finish();
+        let ptr_closed = b.build_pointer_phi("pp")?.finish();
+        assert_eq!(fp_closed.incoming_count(), 0);
+        assert_eq!(ptr_closed.incoming_count(), 0);
+        Ok(())
+    })
+}
 
 /// Port of `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest,
 /// CreateCondBr)` constructive shape, extended to exercise the phi
@@ -198,6 +231,47 @@ fn two_phis_built_after_nonphi_keep_relative_order() -> Result<(), IrError> {
             "both phis must print before the non-phi add; got:\n{text}"
         );
         m.verify()?;
+        Ok(())
+    })
+}
+
+/// Port of `unittests/IR/BasicBlockTest.cpp::TEST(BasicBlockTest, PhiRange)`
+/// (the phi-iteration assertion `EXPECT_EQ(std::distance(Phis.begin(),
+/// Phis.end()), 3)`). Upstream's filter-iterator over `BB`'s
+/// instructions is mirrored here by collecting and counting the
+/// phi-handle subset.
+#[test]
+fn phi_range_iterates_three_phis() -> Result<(), IrError> {
+    Module::with_new("p", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, Vec::<crate::Type>::new(), false);
+        let f = m.add_function::<i32, _>("p", fn_ty, Linkage::External)?;
+        let bb = f.append_basic_block(&m, "bb");
+        let bb_label = bb.label();
+
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(bb);
+        let p1 = b.build_int_phi::<i32, _>("phi.1")?;
+        let p2 = b.build_int_phi::<i32, _>("phi.2")?;
+        let p3 = b.build_int_phi::<i32, _>("phi.3")?;
+        // Upstream wires `P1->addIncoming(P2, BB)` etc. via the same `BB`
+        // (cycle). We add poisons referencing self -- the structural shape
+        // matches the upstream phi count assertion regardless of operand
+        // identities.
+        let p1_value = p1.as_int_value();
+        let p2_value = p2.as_int_value();
+        let p3_value = p3.as_int_value();
+        p1.add_incoming(0_i32, bb_label)?.finish();
+        p2.add_incoming(0_i32, bb_label)?.finish();
+        p3.add_incoming(0_i32, bb_label)?.finish();
+        let _sum = b.build_int_add(p1_value, p2_value, "sum")?;
+        let (terminated_bb, _) = b.build_ret(p3_value)?;
+
+        // Upstream `EXPECT_EQ(std::distance(Phis.begin(), Phis.end()), 3)`.
+        let phi_count = terminated_bb
+            .instructions()
+            .filter(|inst| matches!(inst.kind(), Some(crate::InstructionKind::Phi(_))))
+            .count();
+        assert_eq!(phi_count, 3);
         Ok(())
     })
 }

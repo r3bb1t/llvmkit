@@ -22,11 +22,17 @@ fn typestate_compile_fail() {
     // Relies on the unblessed `has_pass` workaround (dtolnay/trybuild#258); re-verify this still forces `cargo build` mode after any trybuild version bump.
     t.pass("tests/compile_fail/extract_value_dyn_empty_slice_compiles.rs");
     t.compile_fail("tests/compile_fail/position_at_end_terminated_block.rs");
-    t.compile_fail("tests/compile_fail/add_incoming_after_finish.rs");
     t.compile_fail("tests/compile_fail/retained_unterminated_block_cannot_reposition.rs");
     t.compile_fail("tests/compile_fail/terminated_block_cannot_start_cursor.rs");
-    t.compile_fail("tests/compile_fail/retained_open_phi_cannot_add_after_finish.rs");
-    t.compile_fail("tests/compile_fail/finished_phi_cannot_reopen_through_instruction_kind.rs");
+    // Slice 7 "the break": the raw typed-phi builders and the open-phi
+    // `add_incoming`/`finish` mutators are `pub(crate)`, so block arguments
+    // (`append_block_with_params` + `build_*_with_args`) are the ONLY public
+    // phi-authoring surface. This replaces the three former phi-typestate
+    // fixtures (add-after-finish / retained-open / reopen-through-kind): once
+    // the raw builders are unnameable, an external caller cannot even construct
+    // the Open phi those fixtures needed, so the load-bearing guarantee is now
+    // that the builder itself cannot be named.
+    t.compile_fail("tests/compile_fail/raw_phi_builder_is_unnameable.rs");
     t.compile_fail("tests/compile_fail/retained_open_switch_cannot_add_after_finish.rs");
     t.compile_fail("tests/compile_fail/retained_open_indirectbr_cannot_add_after_finish.rs");
     t.compile_fail("tests/compile_fail/retained_open_landingpad_cannot_add_after_finish.rs");

@@ -19,7 +19,7 @@ use std::rc::Rc;
 
 use llvmkit_ir::{
     Analyses, Brand, DcePass, DominatorTreeAnalysis, FnCx, FnReport, FunctionPass, IRBuilder,
-    Inspect, InstSimplifyPass, IntPredicate, IrError, Linkage, ModCx, ModReport, Module,
+    Inspect, InstSimplifyPass, IntPredicate, IntValue, IrError, Linkage, ModCx, ModReport, Module,
     ModulePass, run_function_pass, run_module_pass,
 };
 
@@ -82,11 +82,16 @@ impl<'ctx> FunctionPass<'ctx> for ReportFunctionPass {
 }
 
 pub fn build(m: &Module<'_>) -> Result<(), IrError> {
+    let i32_ty = m.i32_type();
     let f = m.add_typed_function::<i32, (bool, i32, i32), _>("select_or_add", Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let then_bb = f.append_basic_block(m, "then");
     let else_bb = f.append_basic_block(m, "else");
-    let merge = f.append_basic_block(m, "merge");
+    // `merge`'s single `i32` parameter is the diamond's head-phi: the `then`
+    // and `else` arms carry their values in as block arguments below.
+    let bwp = IRBuilder::new_for::<i32>(m);
+    let (merge, params) =
+        bwp.append_block_with_params(f.as_function(), &[i32_ty.as_type()], "merge")?;
     let then_label = then_bb.label();
     let else_label = else_bb.label();
     let merge_label = merge.label();
@@ -99,19 +104,18 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
 
     let bt = IRBuilder::new_for::<i32>(m).position_at_end(then_bb);
     let add_xy = bt.build_int_add(x, y, "add_xy")?;
-    bt.build_br(merge_label)?;
+    bt.build_br_with_args(merge_label, &[add_xy.as_value()])?;
 
     let be = IRBuilder::new_for::<i32>(m).position_at_end(else_bb);
     let sub_xy = be.build_int_sub(x, y, "sub_xy")?;
-    be.build_br(merge_label)?;
+    be.build_br_with_args(merge_label, &[sub_xy.as_value()])?;
 
     let bm = IRBuilder::new_for::<i32>(m).position_at_end(merge);
-    let phi = bm
-        .build_int_phi::<i32, _>("result")?
-        .add_incoming(add_xy, then_label)?
-        .add_incoming(sub_xy, else_label)?;
-    let is_zero = bm.build_int_cmp(IntPredicate::Eq, phi.as_int_value(), 0_i32, "is_zero")?;
-    let selected = bm.build_select(is_zero, x, phi.as_int_value(), "selected")?;
+    // `params[0]` is `merge`'s head-phi, seeded with `[ %add_xy, %then ]` and
+    // `[ %sub_xy, %else ]` by the two block-argument branches above.
+    let result: IntValue<i32> = params[0].try_into()?;
+    let is_zero = bm.build_int_cmp(IntPredicate::Eq, result, 0_i32, "is_zero")?;
+    let selected = bm.build_select(is_zero, x, result, "selected")?;
     bm.build_ret(selected)?;
     Ok(())
 }

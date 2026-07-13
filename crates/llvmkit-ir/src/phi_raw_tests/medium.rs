@@ -8,7 +8,7 @@
 //! `unittests/IR/BasicBlockTest.cpp::TEST(BasicBlockTest, PhiRange)` for the
 //! phi-incoming-value structure under test.
 
-use llvmkit_ir::{IRBuilder, IrError, Linkage, Module};
+use crate::{IRBuilder, IrError, Linkage, Module};
 
 /// Mirrors `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)`
 /// (multi-block scaffolding) plus

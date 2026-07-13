@@ -294,3 +294,54 @@ fn block_args_br_type_mismatch_errors() -> Result<(), IrError> {
         Ok(())
     })
 }
+
+/// `append_block_with_named_params` names each head-phi, so the printed IR
+/// reads `%name = phi ...` instead of an anonymous slot — the capability that
+/// lets block-argument authoring reproduce named-phi output byte-for-byte (the
+/// hand-written factorial's `%acc`/`%i` loop-header phis).
+#[test]
+fn append_block_with_named_params_names_head_phis() -> Result<(), IrError> {
+    Module::with_new("block_args_named", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+
+        // hdr(%acc: i32, %i: i32): a two-parameter block whose head-phis are
+        // named, unlike the anonymous `append_block_with_params`.
+        let bwp = IRBuilder::new_for::<i32>(&m);
+        let (hdr, params) = bwp.append_block_with_named_params(
+            f,
+            &[(i32_ty.as_type(), "acc"), (i32_ty.as_type(), "i")],
+            "hdr",
+        )?;
+        let hdr_label = hdr.label();
+
+        // entry: br hdr(1, 2) — seed both named head-phis.
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        b.build_br_with_args(
+            hdr_label,
+            &[
+                i32_ty.const_int(1_i32).as_value(),
+                i32_ty.const_int(2_i32).as_value(),
+            ],
+        )?;
+
+        // hdr: ret %acc.
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(hdr);
+        let acc: IntValue<i32> = params[0].try_into()?;
+        b.build_ret(acc)?;
+
+        let text = format!("{m}");
+        assert!(
+            text.contains("%acc = phi i32 [ 1, %entry ]"),
+            "expected named `%acc` head-phi, got:\n{text}"
+        );
+        assert!(
+            text.contains("%i = phi i32 [ 2, %entry ]"),
+            "expected named `%i` head-phi, got:\n{text}"
+        );
+        m.verify()?;
+        Ok(())
+    })
+}

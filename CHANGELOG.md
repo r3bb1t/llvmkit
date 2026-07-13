@@ -63,9 +63,8 @@ A Swift-SIL / MLIR-style block-argument authoring surface where a branch
 carries the values for its successor's parameters, so the edge and its phi
 incomings move together and can never desync. Plus dominance-witnessed
 pass-side phi creation and edge edits that maintain successor phis
-mechanically. These are additive — the raw phi builders remain public
-(making them internal, so block arguments become the *only* public phi
-construction, is a planned follow-up).
+mechanically. (Wave-2 additions; the raw phi builders were subsequently made
+internal — see "Phi authoring — raw builders internal" below.)
 
 #### Added
 
@@ -98,3 +97,41 @@ construction, is a planned follow-up).
   result types (`phi <4 x i32>`, `phi {i32, i8}`) — previously rejected as
   "must be int, float, or pointer". Non-data first-class types (`label`,
   `metadata`, `token`) are still rejected, so no invalid IR slips through.
+
+### Phi authoring — raw builders internal (breaking)
+
+Completes the block-argument transition: block arguments are now the *only*
+public way to author a phi, so an incomplete or predecessor-desynced phi is
+unrepresentable through the public API rather than merely rejected at
+`Module::verify()`.
+
+#### Added
+
+- `IRBuilder::append_block_with_named_params(function, &[(Type, &str)], name)`
+  names each block parameter's head-phi, so block-argument authoring reproduces
+  named-phi output byte-for-byte (e.g. the hand-written factorial's `%acc`/`%i`
+  loop-header phis, which keep byte-parity with the auto-SSA factorial).
+
+#### Changed
+
+- **Breaking:** the three marker-form builders `IRBuilder::build_int_phi` /
+  `build_fp_phi` / `build_pointer_phi` and the `PhiInst` / `FpPhiInst` /
+  `PointerPhiInst` open-phi `add_incoming` / `finish` mutators are no longer
+  public (`pub(crate)`). (The runtime-typed `build_int_phi_dyn` /
+  `build_fp_phi_dyn` / `build_pointer_phi_in_addrspace` forms and the untyped
+  `phi_add_incoming_from_value` stay reachable, but only as `#[doc(hidden)]`
+  internal-contract items for the `.ll` parser — not supported public API.)
+  Author phis with block arguments instead — the edge and its incomings move
+  together, so desync is unrepresentable rather than deferred to `verify()`:
+
+  | Was (no longer public) | Now (public) |
+  | --- | --- |
+  | `let p = b.build_int_phi::<i32, _>("p")?;` then `p.add_incoming(v0, pred0)?.add_incoming(v1, pred1)?;` | `let (blk, params) = b.append_block_with_params(f, &[i32_ty], "join")?;` then from each predecessor `b.build_br_with_args(blk.label(), &[v])?;`; the phi is `params[0]` |
+  | naming the phi: `build_int_phi::<i32, _>("acc")` | `append_block_with_named_params(f, &[(i32_ty, "acc")], "join")` |
+  | pass-side phi creation | `FnReshape::insert_phi(block, ty, incomings)` (unchanged) |
+
+  The read surface (`PhiKind`, `incoming`, `incoming_count`, the `m_phi`
+  matcher) is unchanged, and the `.ll` parser is unaffected (it reaches the
+  builders through `#[doc(hidden)]` internal-contract entry points). The phi
+  storage, printer, and verifier are unchanged — printed IR is still ordinary
+  phis.

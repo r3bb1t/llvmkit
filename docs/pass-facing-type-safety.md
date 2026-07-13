@@ -143,7 +143,7 @@ Framework-witnessed preservation; **no author claims API anywhere** (rejected Op
 
 ## Testing / verification
 
-- **Compile-fail (trybuild)** pinning every Tier-1 claim: terminator-erase-through-cursor impossible; analysis-ref-across-CFG-edit borrow error; hookless-analysis-mid-reshape; AtomicRMW-mutation-without-token; DSL binding type/arity mismatches; reopen-through-sub-enum variants (extend the existing finished-phi/switch fixtures). **Known gotcha:** `.stderr` files must be blessed on the canonical CI rustc (past CI breakage; see `docs/future-work.md:270-276`).
+- **Compile-fail (trybuild)** pinning every Tier-1 claim: terminator-erase-through-cursor impossible; analysis-ref-across-CFG-edit borrow error; hookless-analysis-mid-reshape; AtomicRMW-mutation-without-token; DSL binding type/arity mismatches; reopen-through-sub-enum variants (the `finished_switch` / `finished_landingpad` reopen fixtures; the phi reopen/typestate fixtures were retired when the raw phi builders went internal, replaced by `raw_phi_builder_is_unnameable`, since block arguments are now the only public phi surface). **Known gotcha:** `.stderr` files must be blessed on the canonical CI rustc (past CI breakage; see `docs/future-work.md:270-276`).
 - **Runtime**: DSL unit tests transliterated from real InstCombine folds; DCE/InstSimplify rewrite equivalence vs current outputs; cursor semantics under erase-ahead/erase-behind; dirty-bit report correctness (clean run → all-preserved; single erase → floor); CfgUpdate recording unit tests for `split_block`; `cases()`/`clauses()` reader round-trips against builder-constructed IR.
 - `cargo test --workspace` green on Windows dev box + CI (master+dev).
 
