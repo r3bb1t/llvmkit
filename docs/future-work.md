@@ -318,3 +318,32 @@ driver marks preserved exactly what it watched repair). What remains deferred:
   the pass-API fixtures above; its `E0502` borrow-error wording is stable
   across toolchains, but it joins the set that should be re-blessed on the
   reference rustc.
+
+## Phi authoring — deferred
+
+The block-argument authoring surface (`append_block_with_params`,
+`build_*_with_args`), dominance-witnessed `FnReshape::insert_phi`, and the
+`remove_edge`/`redirect_edge` edge ops shipped as *additions*. The remaining
+phi-authoring work:
+
+- **Make raw phi authoring internal ("the break").** The plan's final slice
+  demotes the six `build_*_phi` builders and the `add_incoming`/`finish`
+  mutators to an internal (`#[doc(hidden)]`) surface so block arguments become
+  the *only* public phi construction — making incompleteness/desync
+  unrepresentable in all public authoring, not merely all-or-nothing at the
+  call site. Deferred because it requires migrating ~15 in-tree test files plus
+  `factorial.rs`/`pass_manager_demo.rs` onto the block-args surface and
+  reworking the phi typestate compile-fail fixtures against the internal
+  module. Do it once block arguments are battle-tested.
+- **Edge ops beyond `switch`.** `remove_edge`/`redirect_edge` operate on
+  `switch` terminators only, because the arena hands out `&ValueData` and only
+  `SwitchInstData`'s `default_bb: Cell` / `cases: RefCell` are mutable through
+  the `&self` mutator. Editing a `br`/`cond_br` target (or collapsing a
+  `cond_br` to a `br`) needs `BranchKind` to become interior-mutable (or a
+  terminator-rebuild path on the reshape mutator).
+- **Verifier phi-result-type rule (defense in depth).** The `.ll` parser
+  rejects `label`/`metadata`/`token` phi result types, but `Module::verify()`
+  has no phi-result-type check, so such a phi built through another path would
+  verify clean. Add the upstream "PHI nodes cannot have token type" (and
+  label/metadata) rule to `check_phi` so the guarantee holds regardless of
+  construction path.

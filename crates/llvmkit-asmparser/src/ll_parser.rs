@@ -7308,8 +7308,10 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         Ok(v)
     }
 
-    /// `phi <ty> [ <val>, <label> ], ...`. Handles int, float, and pointer
-    /// phis. Forward-referenced incoming values are stored in
+    /// `phi <ty> [ <val>, <label> ], ...`. Handles any first-class *data*
+    /// result type — int, float, pointer, vector, array, or struct; other
+    /// first-class types (`label` / `metadata` / `token`) and non-first-class
+    /// types are rejected. Forward-referenced incoming values are stored in
     /// `state.deferred_phi` and resolved by `PerFunctionState::finish`.
     /// Mirrors `LLParser::parsePhi` (LLParser.cpp ~7990).
     ///
@@ -7343,7 +7345,29 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     .map_err(|e| self.builder_err("phi", e))?;
                 phi.as_value()
             }
-            _ => return Err(self.expected("phi result type must be int, float, or pointer")),
+            // The remaining first-class *data* types — vector, array, and
+            // struct — are legal phi result types. Route them through the
+            // erased `build_phi_dyn`; the type-checked incoming-add path is
+            // unchanged.
+            AnyTypeEnum::Vector(_) | AnyTypeEnum::Array(_) | AnyTypeEnum::Struct(_) => {
+                let phi = b
+                    .build_phi_dyn(ty, name)
+                    .map_err(|e| self.builder_err("phi", e))?;
+                phi.as_value()
+            }
+            // Everything else is rejected here. `label`, `metadata`, and
+            // `token` are first-class per `Type::is_first_class` yet are not
+            // valid phi result types (LLVM rejects e.g. `phi token`, and the
+            // llvmkit verifier does not catch it); function / void /
+            // opaque-struct types are likewise invalid (`void` is already
+            // caught earlier by `parse_type`). Gating on `is_first_class`
+            // would wrongly admit the label/metadata/token cases, so the
+            // acceptable result types are enumerated explicitly instead.
+            _ => {
+                return Err(self.expected(
+                    "phi result type must be int, float, pointer, vector, array, or struct",
+                ));
+            }
         };
         // Record the phi's source location, keyed by its arena id, so the
         // end-of-function coherence check can anchor a diagnostic here — a
