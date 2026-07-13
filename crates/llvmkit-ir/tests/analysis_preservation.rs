@@ -370,7 +370,8 @@ fn insert_phi_rejects_incomplete_incomings() -> Result<(), IrError> {
 }
 
 // ---------------------------------------------------------------------------
-// phi wave 2: `FnReshape::remove_edge` / `redirect_edge`
+// `FnReshape::remove_edge` / `redirect_edge` — edge ops that mechanically
+// maintain successor phis.
 //
 // These ops perform terminator surgery on a `switch` (whose case list and
 // default live behind interior mutability) and mechanically maintain the

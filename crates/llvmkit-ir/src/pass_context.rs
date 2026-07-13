@@ -1272,6 +1272,11 @@ where
         for (phi_id, value) in param_phis.iter().zip(phi_values.iter()) {
             let phi_ty = ctx.value_data(*phi_id).ty;
             let phi_val = Value::from_parts(*phi_id, new_to.module, phi_ty);
+            // This add cannot fail: arity and per-phi type were validated above,
+            // and the ambiguous-duplicate check cannot fire because `from` was
+            // proven not to already reach `new_to`. The `?` is defensive — if
+            // either precondition ever weakens, an error here would leave a
+            // partial redirect, so keep both guards ahead of this loop.
             builder.phi_add_incoming_from_value(phi_val, *value, from_block.copy_handle())?;
         }
 
