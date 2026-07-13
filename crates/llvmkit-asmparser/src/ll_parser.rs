@@ -7345,9 +7345,10 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             }
             _ => return Err(self.expected("phi result type must be int, float, or pointer")),
         };
-        // Record the phi's source location, keyed by its result name, so the
-        // end-of-function coherence check can anchor a diagnostic here.
-        state.phi_locs.push((name.to_owned(), self.loc()));
+        // Record the phi's source location, keyed by its arena id, so the
+        // end-of-function coherence check can anchor a diagnostic here — a
+        // numbered/anonymous phi has no matchable textual name.
+        state.phi_locs.push((phi_val.id(), self.loc()));
         // Parse incoming pairs: `[ val, label ], ...`
         // First pair has no leading comma; subsequent pairs have one.
         let mut first = true;
@@ -7483,13 +7484,17 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 if !state.defined_blocks.contains(&n) {
                     state.block_refs.entry(n.clone()).or_insert(loc);
                 }
-                state.ensure_block(self.module, &n, loc)?;
+                // A phi predecessor may already be terminated (the common
+                // merge-block case), so ensure the block through the
+                // state-agnostic label path, never the unterminated-only
+                // construction path.
+                state.ensure_block_label(self.module, &n, loc)?;
                 Ok(BlockRef::Named(n))
             }
             Token::LocalVarId(id) => {
                 let id = *id;
                 self.bump()?;
-                state.get_or_create_numbered_block(self.module, id, loc)?;
+                state.get_or_create_numbered_block_label(self.module, id, loc)?;
                 Ok(BlockRef::Numbered(id))
             }
             _ => Err(self.expected("block label in phi incoming pair")),
@@ -8862,7 +8867,7 @@ struct PerFunctionState<'ctx, B: ModuleBrand = Brand<'ctx>> {
     /// Source span of each parsed phi, keyed by its result name, so the
     /// end-of-function coherence check in `finish()` can point a diagnostic
     /// at the offending phi instead of at `Module::verify()`.
-    phi_locs: Vec<(String, Span)>,
+    phi_locs: Vec<(llvmkit_ir::value::ValueId, Span)>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
@@ -9050,30 +9055,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         Ok(self.value_as_block_view(value, loc)?.label())
     }
 
-    fn get_or_create_numbered_block(
-        &mut self,
-        module: &Module<'ctx, B, Unverified>,
-        id: u32,
-        loc: Span,
-    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
-    {
-        if let Some(value) = self.local_numbered.get(&id).copied() {
-            return self.value_as_block(module, value, loc);
-        }
-        if id < self.next_unnamed_value_id {
-            return Err(self.invalid_numbered_slot(id, loc));
-        }
-        let bb = if let Some(value) = self.numbered_blocks.get(&id).copied() {
-            self.value_as_block(module, value, loc)?
-        } else {
-            let bb = self.func.append_basic_block(module, "");
-            self.numbered_blocks.insert(id, bb.as_value());
-            bb
-        };
-        self.numbered_block_refs.entry(id).or_insert(loc);
-        Ok(bb)
-    }
-
     fn get_or_create_numbered_block_label(
         &mut self,
         module: &Module<'ctx, B, Unverified>,
@@ -9097,17 +9078,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         Ok(label)
     }
 
+    /// Resolve a phi-incoming predecessor block reference for an edge-add.
+    ///
+    /// Unlike block *construction*, a phi predecessor is a label reference and
+    /// is usually already terminated (the common merge-block / diamond-tail
+    /// case), so this resolves through the state-agnostic label path and
+    /// returns a view rather than an [`Unterminated`] construction handle. The
+    /// block was ensured to exist when the phi incoming pair was parsed
+    /// (`parse_phi_label`). Only phi resolution uses this; branch/switch
+    /// targets go through `parse_block_ref`.
     fn resolve_block_ref(
         &mut self,
         module: &Module<'ctx, B, Unverified>,
         block_ref: &BlockRef,
         loc: Span,
-    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
-    {
-        match block_ref {
-            BlockRef::Named(name) => self.ensure_block(module, name, loc),
-            BlockRef::Numbered(id) => self.get_or_create_numbered_block(module, *id, loc),
-        }
+    ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Terminated, B>> {
+        let label = match block_ref {
+            BlockRef::Named(name) => self.ensure_block_label(module, name, loc)?,
+            BlockRef::Numbered(id) => self.get_or_create_numbered_block_label(module, *id, loc)?,
+        };
+        self.value_as_block_view(label.as_value(), loc)
     }
 
     fn bind_local(
@@ -9256,7 +9246,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             let loc = self
                 .phi_locs
                 .iter()
-                .find(|(name, _)| *name == e.phi_name)
+                .find(|(id, _)| *id == e.phi_id)
                 .map(|(_, span)| DiagLoc::span(*span))
                 .unwrap_or_else(|| DiagLoc::span(Span::default()));
             return Err(ParseError::Expected {
