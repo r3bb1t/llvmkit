@@ -170,13 +170,12 @@ fwd:
 ///
 /// The predecessor the phi *does* list (`%other`) is written as a
 /// forward-referenced block on purpose: a phi incoming can only name a block
-/// that is still unterminated at edge-add time (the Task 3/4
-/// immediate-resolution limitation — a predecessor defined *earlier* is
-/// already terminated and rejected by `basic_block_for_construction`). Using
-/// the later-defined `%other` keeps the edge resolvable while leaving the
-/// earlier `%entry` predecessor unlisted, which is exactly the completeness
-/// failure under test: `merge` has two predecessors but the phi supplies one
-/// incoming.
+/// that is still unterminated at edge-add time — a predecessor defined
+/// *earlier* is already terminated and rejected by
+/// `basic_block_for_construction`. Using the later-defined `%other` keeps the
+/// edge resolvable while leaving the earlier `%entry` predecessor unlisted,
+/// which is exactly the completeness failure under test: `merge` has two
+/// predecessors but the phi supplies one incoming.
 #[test]
 fn incomplete_phi_is_a_parse_error() {
     let src = r#"
