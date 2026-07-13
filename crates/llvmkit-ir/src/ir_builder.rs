@@ -682,6 +682,39 @@ where
         }
         Ok((bb, params))
     }
+
+    /// Like [`Self::append_block_with_params`], but names each parameter phi.
+    ///
+    /// Each entry is a `(type, name)` pair; the head-phi for that parameter is
+    /// emitted with the given name, so the printed IR reads `%name = phi ...`
+    /// instead of an anonymous numbered slot. An empty name falls back to the
+    /// anonymous form for that parameter. This is the block-argument
+    /// counterpart of naming a raw phi — it lets block-argument authoring
+    /// reproduce named-phi output byte-for-byte (e.g. the hand-written and
+    /// auto-SSA factorial examples print identical IR).
+    ///
+    /// Ordering and return shape match [`Self::append_block_with_params`]:
+    /// `params[i]` is the `Value` for `params[i].0`, in order, and the block is
+    /// returned still [`Unterminated`] without becoming the builder's insertion
+    /// point.
+    pub fn append_block_with_named_params<Name>(
+        &self,
+        function: FunctionValue<'ctx, R, B>,
+        params: &[(Type<'ctx, B>, &str)],
+        name: Name,
+    ) -> IrResult<BlockWithParams<'ctx, R, B>>
+    where
+        Name: Into<String>,
+    {
+        let module = Module::<'ctx, B, Unverified>::from_core(self.module);
+        let bb = function.append_basic_block(&module, name);
+        let bb_id = bb.as_value().id;
+        let mut out = Vec::with_capacity(params.len());
+        for (ty, param_name) in params {
+            out.push(self.make_phi_in_block(bb_id, ty.id(), param_name));
+        }
+        Ok((bb, out))
+    }
 }
 
 impl<'m, 'ctx, B, F, R> IRBuilder<'m, 'ctx, B, F, Positioned, R>

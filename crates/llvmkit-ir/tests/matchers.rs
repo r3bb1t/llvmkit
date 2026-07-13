@@ -229,22 +229,21 @@ fn m_phi_binds_phi_kind() -> Result<(), IrError> {
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let other = f.append_basic_block(&m, "other");
-        let join = f.append_basic_block(&m, "join");
-        let entry_label = entry.label();
-        let other_label = other.label();
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        b.build_br(&join)?;
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(other);
-        b.build_br(&join)?;
+        // join(%p: i32): two unconditional predecessors merge here, each
+        // carrying its own constant into the head-phi: `[1, entry], [2, other]`.
+        let bwp = IRBuilder::new_for::<i32>(&m);
+        let (join, params) = bwp.append_block_with_params(f, &[i32_ty.as_type()], "join")?;
+        let join_label = join.label();
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
-        let phi = b
-            .build_int_phi::<i32, _>("p")?
-            .add_incoming(1_i32, entry_label)?
-            .add_incoming(2_i32, other_label)?;
+        IRBuilder::new_for::<i32>(&m)
+            .position_at_end(entry)
+            .build_br_with_args(join_label, &[i32_ty.const_int(1_i32).as_value()])?;
+        IRBuilder::new_for::<i32>(&m)
+            .position_at_end(other)
+            .build_br_with_args(join_label, &[i32_ty.const_int(2_i32).as_value()])?;
 
-        let view = view_of(phi.as_int_value().as_value());
+        let view = view_of(params[0]);
         let (kind,) = m_phi().match_view(&view).expect("phi matches");
         assert!(matches!(kind, PhiKind::Int(_)));
         Ok(())
@@ -280,24 +279,27 @@ fn m_phi_composes_with_m_one_use() -> Result<(), IrError> {
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let other = f.append_basic_block(&m, "other");
-        let join = f.append_basic_block(&m, "join");
-        let entry_label = entry.label();
-        let other_label = other.label();
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        b.build_br(&join)?;
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(other);
-        b.build_br(&join)?;
+        // join(%p: i32): two unconditional predecessors merge here, carrying
+        // `[1, entry], [2, other]` into the head-phi.
+        let bwp = IRBuilder::new_for::<i32>(&m);
+        let (join, params) = bwp.append_block_with_params(f, &[i32_ty.as_type()], "join")?;
+        let join_label = join.label();
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
-        let phi = b
-            .build_int_phi::<i32, _>("p")?
-            .add_incoming(1_i32, entry_label)?
-            .add_incoming(2_i32, other_label)?;
+        IRBuilder::new_for::<i32>(&m)
+            .position_at_end(entry)
+            .build_br_with_args(join_label, &[i32_ty.const_int(1_i32).as_value()])?;
+        IRBuilder::new_for::<i32>(&m)
+            .position_at_end(other)
+            .build_br_with_args(join_label, &[i32_ty.const_int(2_i32).as_value()])?;
+
         // Exactly one use of the phi result: the return.
-        b.build_ret(phi.as_int_value())?;
+        let p: IntValue<i32> = params[0].try_into()?;
+        IRBuilder::new_for::<i32>(&m)
+            .position_at_end(join)
+            .build_ret(p)?;
 
-        let view = view_of(phi.as_int_value().as_value());
+        let view = view_of(params[0]);
         assert!(m_one_use(m_phi()).match_view(&view).is_some());
         Ok(())
     })

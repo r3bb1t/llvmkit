@@ -56,47 +56,6 @@ fn cond_br_terminator_terminates_block() -> Result<(), IrError> {
     })
 }
 
-/// Port of `unittests/IR/BasicBlockTest.cpp::TEST(BasicBlockTest, PhiRange)`
-/// (the phi-iteration assertion `EXPECT_EQ(std::distance(Phis.begin(),
-/// Phis.end()), 3)`). Upstream's filter-iterator over `BB`'s
-/// instructions is mirrored here by collecting and counting the
-/// phi-handle subset.
-#[test]
-fn phi_range_iterates_three_phis() -> Result<(), IrError> {
-    Module::with_new("p", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<i32, _>("p", fn_ty, Linkage::External)?;
-        let bb = f.append_basic_block(&m, "bb");
-        let bb_label = bb.label();
-
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(bb);
-        let p1 = b.build_int_phi::<i32, _>("phi.1")?;
-        let p2 = b.build_int_phi::<i32, _>("phi.2")?;
-        let p3 = b.build_int_phi::<i32, _>("phi.3")?;
-        // Upstream wires `P1->addIncoming(P2, BB)` etc. via the same `BB`
-        // (cycle). We add poisons referencing self -- the structural shape
-        // matches the upstream phi count assertion regardless of operand
-        // identities.
-        let p1_value = p1.as_int_value();
-        let p2_value = p2.as_int_value();
-        let p3_value = p3.as_int_value();
-        p1.add_incoming(0_i32, bb_label)?.finish();
-        p2.add_incoming(0_i32, bb_label)?.finish();
-        p3.add_incoming(0_i32, bb_label)?.finish();
-        let _sum = b.build_int_add(p1_value, p2_value, "sum")?;
-        let (terminated_bb, _) = b.build_ret(p3_value)?;
-
-        // Upstream `EXPECT_EQ(std::distance(Phis.begin(), Phis.end()), 3)`.
-        let phi_count = terminated_bb
-            .instructions()
-            .filter(|inst| matches!(inst.kind(), Some(llvmkit_ir::InstructionKind::Phi(_))))
-            .count();
-        assert_eq!(phi_count, 3);
-        Ok(())
-    })
-}
-
 /// llvmkit-specific (Doctrine D11): the termination-state typestate carries
 /// no runtime data; verifying the cosmetic IR text still matches the
 /// pre-T2 baseline guards against accidental AsmWriter regressions

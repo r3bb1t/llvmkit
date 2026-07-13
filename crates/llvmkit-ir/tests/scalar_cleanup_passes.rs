@@ -351,7 +351,9 @@ fn instsimplify_folds_uniform_phi() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let l = f.append_basic_block(&m, "l");
         let r = f.append_basic_block(&m, "r");
-        let join = f.append_basic_block(&m, "m");
+        // m(%p: i32): the merge head-phi param carries the joined value.
+        let bwp = IRBuilder::new_for::<i32>(&m);
+        let (join, params) = bwp.append_block_with_params(f, &[i32_ty.as_type()], "m")?;
         let l_label = l.label();
         let r_label = r.label();
         let join_label = join.label();
@@ -363,19 +365,16 @@ fn instsimplify_folds_uniform_phi() -> Result<(), IrError> {
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, c, 0_i32, "cond")?;
         b.build_cond_br(cond, l_label, r_label)?;
-        // l: br m
+        // l: br m(%c)
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(l);
-        b.build_br(join_label)?;
-        // r: br m
+        b.build_br_with_args(join_label, &[c.as_value()])?;
+        // r: br m(%c)
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(r);
-        b.build_br(join_label)?;
-        // m: %p = phi i32 [ %c, %l ], [ %c, %r ]; ret %p
+        b.build_br_with_args(join_label, &[c.as_value()])?;
+        // m: ret %p (the head-phi param merges %c down both edges -> uniform)
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(join);
-        let phi = b
-            .build_int_phi::<i32, _>("p")?
-            .add_incoming(c, l_label)?
-            .add_incoming(c, r_label)?;
-        b.build_ret(phi.as_int_value())?;
+        let p: IntValue<i32> = params[0].try_into()?;
+        b.build_ret(p)?;
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
@@ -411,29 +410,26 @@ fn instsimplify_folds_self_referential_uniform_phi() -> Result<(), IrError> {
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let loop_bb = f.append_basic_block(&m, "loop");
+        // loop(%p: i32): the loop-header head-phi param is the loop-carried value.
+        let bwp = IRBuilder::new_for::<i32>(&m);
+        let (loop_bb, params) = bwp.append_block_with_params(f, &[i32_ty.as_type()], "loop")?;
         let exit = f.append_basic_block(&m, "exit");
-        let entry_label = entry.label();
         let loop_label = loop_bb.label();
         let exit_label = exit.label();
 
         f.param(0)?.set_name(&m, "v0");
         let v0: IntValue<i32> = f.param(0)?.try_into()?;
 
-        // entry: br loop
+        // entry: br loop(%v0)
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        b.build_br(loop_label)?;
-        // loop: %p = phi [ %v0, %entry ], [ %p, %loop ]; body; cond_br exit/loop
+        b.build_br_with_args(loop_label, &[v0.as_value()])?;
+        // loop: body; cond_br exit / loop(%p). The self-edge carries the loop
+        // param itself back, reproducing `[ %v0, %entry ], [ %p, %loop ]`.
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(loop_bb);
-        let phi = b.build_int_phi::<i32, _>("p")?;
-        let p = phi.as_int_value();
+        let p: IntValue<i32> = params[0].try_into()?;
         let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, p, 0_i32, "cond")?;
-        b.build_cond_br(cond, exit_label, loop_label)?;
-        // Deferred incomings (both blocks now terminated), including the self-ref.
-        phi.add_incoming(v0, entry_label)?
-            .add_incoming(p, loop_label)?
-            .finish();
-        // exit: ret %p
+        b.build_cond_br_with_args(cond, exit_label, &[], loop_label, &[params[0]])?;
+        // exit: ret %p (the loop param dominates exit)
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(exit);
         b.build_ret(p)?;
 
@@ -470,7 +466,9 @@ fn instsimplify_keeps_non_uniform_phi() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let l = f.append_basic_block(&m, "l");
         let r = f.append_basic_block(&m, "r");
-        let join = f.append_basic_block(&m, "m");
+        // m(%p: i32): merge head-phi param.
+        let bwp = IRBuilder::new_for::<i32>(&m);
+        let (join, params) = bwp.append_block_with_params(f, &[i32_ty.as_type()], "m")?;
         let l_label = l.label();
         let r_label = r.label();
         let join_label = join.label();
@@ -483,16 +481,16 @@ fn instsimplify_keeps_non_uniform_phi() -> Result<(), IrError> {
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "cond")?;
         b.build_cond_br(cond, l_label, r_label)?;
+        // l: br m(%a)
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(l);
-        b.build_br(join_label)?;
+        b.build_br_with_args(join_label, &[a.as_value()])?;
+        // r: br m(%b)
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(r);
-        b.build_br(join_label)?;
+        b.build_br_with_args(join_label, &[bparam.as_value()])?;
+        // m: ret %p -- distinct incomings %a / %b keep the phi non-uniform.
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(join);
-        let phi = b
-            .build_int_phi::<i32, _>("p")?
-            .add_incoming(a, l_label)?
-            .add_incoming(bparam, r_label)?;
-        b.build_ret(phi.as_int_value())?;
+        let p: IntValue<i32> = params[0].try_into()?;
+        b.build_ret(p)?;
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
@@ -501,7 +499,7 @@ fn instsimplify_keeps_non_uniform_phi() -> Result<(), IrError> {
         let text = format!("{reverified}");
 
         assert!(
-            text.contains("%p = phi i32 [ %a, %l ], [ %b, %r ]"),
+            text.contains("phi i32 [ %a, %l ], [ %b, %r ]"),
             "non-uniform phi must survive:\n{text}"
         );
         Ok(())
@@ -524,7 +522,9 @@ fn uniform_phi_fold_cascades_to_users() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let l = f.append_basic_block(&m, "l");
         let r = f.append_basic_block(&m, "r");
-        let join = f.append_basic_block(&m, "m");
+        // m(%p: i32): merge head-phi param; constant 3 down both edges -> uniform.
+        let bwp = IRBuilder::new_for::<i32>(&m);
+        let (join, params) = bwp.append_block_with_params(f, &[i32_ty.as_type()], "m")?;
         let l_label = l.label();
         let r_label = r.label();
         let join_label = join.label();
@@ -534,16 +534,16 @@ fn uniform_phi_fold_cascades_to_users() -> Result<(), IrError> {
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, x, 0_i32, "cond")?;
         b.build_cond_br(cond, l_label, r_label)?;
+        // l: br m(3)
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(l);
-        b.build_br(join_label)?;
+        b.build_br_with_args(join_label, &[i32_ty.const_int(3_i32).as_value()])?;
+        // r: br m(3)
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(r);
-        b.build_br(join_label)?;
+        b.build_br_with_args(join_label, &[i32_ty.const_int(3_i32).as_value()])?;
+        // m: %q = add %p, 4 ; ret %q -- the user reads the head-phi param.
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(join);
-        let phi = b
-            .build_int_phi::<i32, _>("p")?
-            .add_incoming(3_i32, l_label)?
-            .add_incoming(3_i32, r_label)?;
-        let q = b.build_int_add::<i32, _, _, _>(phi.as_int_value(), 4_i32, "q")?;
+        let p: IntValue<i32> = params[0].try_into()?;
+        let q = b.build_int_add::<i32, _, _, _>(p, 4_i32, "q")?;
         b.build_ret(q)?;
 
         let verified = m.verify()?;

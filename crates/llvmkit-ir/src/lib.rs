@@ -119,6 +119,8 @@ pub mod pass_manager;
 pub mod pass_pipeline;
 pub(crate) mod phi_check;
 pub mod phi_state;
+#[cfg(test)]
+mod phi_raw_tests;
 pub mod sized_element;
 pub mod ssa_builder;
 pub mod struct_body_state;
