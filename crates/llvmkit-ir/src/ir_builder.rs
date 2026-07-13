@@ -600,7 +600,12 @@ where
     /// Low-level counterpart of [`Self::append_phi_instruction`], which
     /// targets the *insertion* block; this one targets an arbitrary block by
     /// id and hands back the erased [`Value`] rather than a typed phi handle.
-    fn make_phi_in_block(&self, block_id: ValueId, ty: TypeId, name: &str) -> Value<'ctx, B> {
+    pub(crate) fn make_phi_in_block(
+        &self,
+        block_id: ValueId,
+        ty: TypeId,
+        name: &str,
+    ) -> Value<'ctx, B> {
         let payload = crate::instr_types::PhiData::new();
         let value = build_instruction_value(ty, block_id, InstructionKindData::Phi(payload), None);
         // Snapshot operand ids before the value moves into the arena so the

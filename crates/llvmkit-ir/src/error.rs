@@ -837,6 +837,24 @@ pub enum IrError {
         /// Number of arguments the branch supplied.
         got: usize,
     },
+
+    /// A phi inserted through
+    /// [`FnReshape::insert_phi`](crate::FnReshape::insert_phi) names an incoming
+    /// value that does not dominate the CFG edge it flows in on: the value is
+    /// defined in `value_block`, which does not dominate the predecessor
+    /// `pred_block` the incoming enters from. Because a `ReshapeCfg` pass sees a
+    /// complete CFG, this SSA-dominance obligation is witnessed at the insertion
+    /// call (against the repaired dominator tree) rather than deferred to
+    /// [`Module::verify`](crate::Module::verify)'s `verifyDominatesUse` rule.
+    #[error(
+        "phi incoming value defined in %{value_block} does not dominate its edge from predecessor %{pred_block}"
+    )]
+    PhiIncomingNotDominating {
+        /// Printed name of the block that defines the offending incoming value.
+        value_block: String,
+        /// Printed name of the predecessor block the incoming edge enters from.
+        pred_block: String,
+    },
 }
 
 /// Crate-wide `Result` alias.

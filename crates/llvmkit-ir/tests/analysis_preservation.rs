@@ -9,9 +9,9 @@
 //! than thrown away. No author ever *claims* the preservation.
 
 use llvmkit_ir::{
-    Analyses, DominatorTree, DominatorTreeAnalysis, Dyn, FnCx, FnReport, FunctionPass,
-    FunctionView, IRBuilder, InsertPoint, IntValue, IrError, IrResult, Linkage, Module,
-    ModuleBrand, ReshapeCfg, Type, run_function_pass,
+    Analyses, BasicBlockLabel, DominatorTree, DominatorTreeAnalysis, Dyn, FnCx, FnReport,
+    FunctionPass, FunctionView, IRBuilder, InsertPoint, IntPredicate, IntValue, IrError, IrResult,
+    Linkage, Module, ModuleBrand, ReshapeCfg, Type, Value, run_function_pass,
 };
 
 /// A `ReshapeCfg` pass that requires the dominator tree and splits the entry
@@ -179,6 +179,158 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
             printed.contains("[ %x, %\"entry.split\" ]")
                 || printed.contains("[ %x, %entry.split ]"),
             "phi incoming must name the new block, got:\n{printed}"
+        );
+        Ok(())
+    })
+}
+
+/// A `ReshapeCfg` pass that inserts a single phi into the merge block named
+/// `merge_name`, with the pre-computed `incomings` of type `ty`. It requires the
+/// dominator tree, because `FnReshape::insert_phi` witnesses every incoming
+/// value's dominance over its edge through `analysis_repaired` before creating
+/// the phi. The incomings/labels are stashed at build time (arena ids are stable
+/// across `verify()`), mirroring how `SplitAtAdd` stashes its `InsertPoint`.
+struct InsertMergePhi<'ctx, B: ModuleBrand + 'ctx> {
+    merge_name: &'static str,
+    ty: Type<'ctx, B>,
+    incomings: Vec<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InsertMergePhi<'ctx, B> {
+    type Access = ReshapeCfg;
+    type Requires = (DominatorTreeAnalysis,);
+    const NAME: &'static str = "insert-merge-phi";
+
+    fn run(
+        &mut self,
+        cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, (DominatorTreeAnalysis,)>,
+    ) -> IrResult<FnReport> {
+        let mut reshape = cx.mutate();
+        let merge = reshape
+            .function()
+            .basic_blocks()
+            .find(|bb| bb.name().as_deref() == Some(self.merge_name))
+            .expect("merge block is present");
+        reshape.insert_phi(&merge, self.ty, &self.incomings)?;
+        Ok(reshape.done())
+    }
+}
+
+/// Build a verifying diamond `entry -> {left, right} -> merge` returning `i32`.
+/// `left` defines `%lv = add %a, 10`, `right` defines `%rv = add %a, 20`, and
+/// `merge` initially just `ret 0` (no phi yet — a pass inserts one). Returns the
+/// function plus the two arm values and the two arm labels the pass will feed as
+/// phi incomings.
+#[allow(clippy::type_complexity)]
+fn build_diamond<'ctx>(
+    m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
+) -> IrResult<(
+    llvmkit_ir::FunctionValue<'ctx, i32>,
+    Value<'ctx>,
+    BasicBlockLabel<'ctx, Dyn>,
+    Value<'ctx>,
+    BasicBlockLabel<'ctx, Dyn>,
+)> {
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let entry = f.append_basic_block(m, "entry");
+    let left = f.append_basic_block(m, "left");
+    let right = f.append_basic_block(m, "right");
+    let merge = f.append_basic_block(m, "merge");
+    // Erase the arm labels to `Dyn` for the `insert_phi` incoming slice (whose
+    // pred labels are `Dyn`); the diamond's return marker is `i32`, so
+    // `label()` alone would hand back `i32`-marked labels.
+    let left_label: BasicBlockLabel<Dyn> = left.label().as_value().try_into()?;
+    let right_label: BasicBlockLabel<Dyn> = right.label().as_value().try_into()?;
+
+    // entry: br (%a == 0) ? left : right
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
+    b.build_cond_br(cond, &left, &right)?;
+
+    // left: %lv = add %a, 10 ; br merge
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(left);
+    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let lv = b.build_int_add(a, 10_i32, "lv")?;
+    b.build_br(merge.label())?;
+
+    // right: %rv = add %a, 20 ; br merge
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(right);
+    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let rv = b.build_int_add(a, 20_i32, "rv")?;
+    b.build_br(merge.label())?;
+
+    // merge: ret 0   (no phi yet — the pass inserts one)
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(merge);
+    b.build_ret(i32_ty.const_int(0_u32))?;
+
+    Ok((f, lv.as_value(), left_label, rv.as_value(), right_label))
+}
+
+/// POSITIVE: a `ReshapeCfg` pass inserts a phi into a 2-predecessor merge block
+/// with two valid, dominating incomings (each arm's value defined in the arm it
+/// flows from, which trivially dominates its own edge). The pass succeeds, the
+/// output re-verifies, and the phi prints with both incomings.
+#[test]
+fn insert_phi_into_merge_block_verifies() -> Result<(), IrError> {
+    Module::with_new("insert-phi-merge", |m| {
+        let i32_ty = m.i32_type();
+        let (f, lv, left_label, rv, right_label) = build_diamond(&m)?;
+
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        let pass = InsertMergePhi {
+            merge_name: "merge",
+            ty: i32_ty.as_type(),
+            incomings: vec![(lv, left_label), (rv, right_label)],
+        };
+        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+
+        // The inserted phi keeps the module coherent: merge's two predecessors
+        // {left, right} match the phi's two incomings, and both values dominate
+        // their edges.
+        let reverified = out.verify().expect("inserted phi must be coherent");
+        let printed = format!("{reverified}");
+        assert!(
+            printed.contains("[ %lv, %left ]"),
+            "phi must carry the left incoming, got:\n{printed}"
+        );
+        assert!(
+            printed.contains("[ %rv, %right ]"),
+            "phi must carry the right incoming, got:\n{printed}"
+        );
+        Ok(())
+    })
+}
+
+/// NEGATIVE (dominance): a `ReshapeCfg` pass tries to insert a phi whose incoming
+/// value does NOT dominate its edge — `%lv` (defined in `left`) fed down the
+/// `right` edge, and `left` does not dominate `right` in the diamond. The
+/// completeness/type checks pass (both blocks are real predecessors, types
+/// match), so this genuinely reaches the dominance witness, which rejects it.
+#[test]
+fn insert_phi_rejects_non_dominating_incoming() -> Result<(), IrError> {
+    Module::with_new("insert-phi-nondom", |m| {
+        let i32_ty = m.i32_type();
+        let (f, lv, left_label, _rv, right_label) = build_diamond(&m)?;
+
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        // Feed %lv (defined in `left`) down BOTH edges. The `right` edge names a
+        // value that does not dominate `right` -> the dominance witness fails.
+        let pass = InsertMergePhi {
+            merge_name: "merge",
+            ty: i32_ty.as_type(),
+            incomings: vec![(lv, left_label), (lv, right_label)],
+        };
+        let err = run_function_pass(pass, verified, f, &mut analyses)
+            .err()
+            .expect("insert_phi must reject a non-dominating incoming");
+        assert!(
+            matches!(err, IrError::PhiIncomingNotDominating { .. }),
+            "expected PhiIncomingNotDominating, got: {err:?}"
         );
         Ok(())
     })

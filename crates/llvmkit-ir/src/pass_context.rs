@@ -61,16 +61,22 @@ use super::analysis::{
     FunctionAnalysisManager, ModuleAnalysis, ModuleAnalysisList, ModuleAnalysisManager,
     ModuleAnalysisSelector, PreservedAnalyses, RepairOutcome,
 };
+use super::basic_block::BasicBlockLabel;
 use super::block_state::{Terminated, Unterminated};
 use super::cfg_update::CfgUpdate;
+use super::dominator_tree::DominatorTreeAnalysis;
+use super::error::IrError;
 use super::function::FunctionValue;
 use super::instruction::{Instruction, InstructionView, NonTerminator, state};
+use super::ir_builder::IRBuilder;
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, Invariant, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::pass_access::{
     FnAccess, ModAccess, MutatingFn, MutatingModule, PatchBody, ReshapeCfg, RewriteModule,
 };
-use super::value::{IsValue, ValueId};
+use super::phi_check::{PhiViolation, check_phi_incoming};
+use super::r#type::Type;
+use super::value::{IsValue, Value, ValueId};
 use super::worklist::Worklist;
 
 /// Read-only view of a basic block under its owning module brand.
@@ -713,12 +719,15 @@ where
 /// [`BasicBlock::split_at`]), so the rung is distinct from `FnPatch` and its
 /// `done()` floor is `none()` — nothing preserved.
 ///
-/// Only the split primitive is shipped this branch (no in-tree consumer needs
-/// more). Structural ops maintain the phis of every block they touch as part of
-/// the op itself (split_block rewrites successor incomings; there is no separate
-/// fixup call to forget). Ops that make phis *gain* entries must take the new
-/// values as typed arguments. Fuller terminator surgery — rewiring branches,
-/// deleting blocks — is future work.
+/// Structural ops maintain the phis of every block they touch as part of the op
+/// itself (split_block rewrites successor incomings; there is no separate fixup
+/// call to forget). Ops that make phis *gain* entries take the new values as
+/// typed arguments and witness every SSA obligation at the call:
+/// [`FnReshape::insert_phi`] creates a phi that is complete against `block`'s
+/// predecessors, correctly typed, free of differing duplicates, and whose every
+/// incoming value dominates its edge — all checkable because a `ReshapeCfg` pass
+/// sees the whole CFG. A general in-pass `IRBuilder` surface and fuller
+/// terminator surgery — rewiring branches, deleting blocks — remain future work.
 pub struct FnReshape<'m, 'r, 'ctx, B, R>
 where
     B: ModuleBrand + 'ctx,
@@ -951,6 +960,139 @@ where
         }
         self.patch.dirty.set(true);
         Ok(new_block)
+    }
+
+    /// Insert a fully-witnessed phi at `block`'s phi head and return its erased
+    /// result [`Value`].
+    ///
+    /// Because a [`ReshapeCfg`] pass sees a *complete* CFG, every SSA obligation
+    /// a phi carries is witnessed here at the call — none is deferred to
+    /// [`Module::verify`](crate::Module::verify):
+    ///
+    /// 1. **Completeness / type / differing-duplicate** — `block`'s predecessor
+    ///    multiset is rebuilt by inverting the CFG successors of the function's
+    ///    blocks (edge multiplicity preserved), then the authoritative
+    ///    per-phi coherence check the verifier and parser share is run over the
+    ///    incomings.
+    /// 2. **Incoming-value dominance** — each incoming value must dominate the
+    ///    edge it flows in on. A value defined in an instruction must have its
+    ///    defining block dominate the incoming's predecessor (inclusive: a value
+    ///    defined *in* the predecessor dominates the edge); a non-instruction
+    ///    operand (parameter / constant / global) dominates every block. The
+    ///    verdicts are read from the **repaired** dominator tree via
+    ///    [`Self::analysis_repaired`].
+    ///
+    /// The borrow of the dominator tree is `&mut self`-tied, so it is read and
+    /// every dominance verdict is settled *before* any IR mutation; the phi is
+    /// created only once all obligations are witnessed. A phi insertion adds no
+    /// CFG edge, so no [`CfgUpdate`] is recorded — but the module changed, so the
+    /// mutator is marked dirty.
+    ///
+    /// The pass must declare [`DominatorTreeAnalysis`] in its `Requires`: the
+    /// `R: AnalysisSelector<.., DominatorTreeAnalysis, _>` bound below is
+    /// unsatisfiable otherwise, so a pass that forgot it fails to compile — a
+    /// type-level nudge rather than a runtime surprise.
+    ///
+    /// Errors: [`IrError::PhiIncomingNotDominating`] if some incoming value does
+    /// not dominate its edge; a coherence [`IrError`] (mapped from the shared
+    /// phi check) if the incomings are incomplete, mistyped, or carry a
+    /// differing duplicate for one predecessor.
+    #[inline]
+    pub fn insert_phi<I>(
+        &mut self,
+        block: &BasicBlockView<'ctx, B>,
+        ty: Type<'ctx, B>,
+        incomings: &[(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)],
+    ) -> IrResult<Value<'ctx, B>>
+    where
+        R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
+    {
+        let target_id = block.as_basic_block().as_value().id;
+
+        // (1) Predecessor multiset of `block`: invert `block_successors` over
+        // the function's blocks (the pattern `check_function_phi_coherence`
+        // uses), keeping edge multiplicity so a multi-edge is counted once per
+        // edge.
+        let mut preds: Vec<ValueId> = Vec::new();
+        for bb in self.function().basic_blocks() {
+            let handle = bb.as_basic_block();
+            let pred_id = handle.as_value().id;
+            for succ in crate::cfg::block_successors(&handle) {
+                if succ.as_value().id == target_id {
+                    preds.push(pred_id);
+                }
+            }
+        }
+
+        // (2) Completeness / type / differing-duplicate: the authoritative
+        // per-phi coherence algorithm, mapped to an `IrError` on failure.
+        let ty_id = ty.id();
+        let incoming_ids: Vec<(ValueId, ValueId)> = incomings
+            .iter()
+            .map(|(value, pred)| (value.id, pred.as_value().id))
+            .collect();
+        let ctx = self.patch.module_mut().core_ref().context();
+        let value_ty_of = |id: ValueId| ctx.value_data(id).ty;
+        if let Err(violation) = check_phi_incoming(ty_id, &incoming_ids, &preds, &value_ty_of) {
+            return Err(match violation {
+                PhiViolation::CountMismatch { .. } => IrError::InvalidOperation {
+                    message: "insert_phi: incoming count does not match the block's predecessor count",
+                },
+                PhiViolation::NotAPredecessor { .. } => IrError::InvalidOperation {
+                    message: "insert_phi: an incoming names a block that is not a predecessor",
+                },
+                PhiViolation::TooManyFromBlock { .. } => IrError::InvalidOperation {
+                    message: "insert_phi: too many incoming entries from one predecessor block",
+                },
+                PhiViolation::AmbiguousValues { block } => IrError::AmbiguousPhiIncoming {
+                    block: ctx.block_diag_name(block),
+                },
+                PhiViolation::IncomingTypeMismatch { .. } => IrError::InvalidOperation {
+                    message: "insert_phi: an incoming value's type does not match the phi result type",
+                },
+            });
+        }
+
+        // (3) SSA dominance. `dt` borrows `&mut self`, so settle every verdict
+        // into owned ids and drop the borrow BEFORE any IR mutation runs.
+        let mut dom_failure: Option<(ValueId, ValueId)> = None;
+        {
+            let dt = self.analysis_repaired::<DominatorTreeAnalysis, _>();
+            for (value, pred) in incomings {
+                // Only instruction operands carry a dominance obligation; a
+                // parameter / constant / global dominates every block.
+                if let Ok(inst) = InstructionView::try_from(*value) {
+                    let def_block = inst.parent();
+                    if !dt.dominates_block(def_block, *pred) {
+                        dom_failure = Some((def_block.as_value().id, pred.as_value().id));
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some((value_block, pred_block)) = dom_failure {
+            let ctx = self.patch.module_mut().core_ref().context();
+            return Err(IrError::PhiIncomingNotDominating {
+                value_block: ctx.block_diag_name(value_block),
+                pred_block: ctx.block_diag_name(pred_block),
+            });
+        }
+
+        // (4) All witnessed — create the phi at `block`'s phi head and record
+        // every incoming. `make_phi_in_block` is cursor-independent, so an
+        // Unpositioned builder is fine.
+        let builder = IRBuilder::new(self.patch.module_mut());
+        let phi_val = builder.make_phi_in_block(target_id, ty_id, "");
+        for (value, pred) in incomings {
+            let pred_block =
+                BasicBlock::<Dyn, Terminated, B>::from_parts(pred.id, pred.module, pred.ty);
+            builder.phi_add_incoming_from_value(phi_val, *value, pred_block)?;
+        }
+
+        // (5) No CFG edge changed, so no `CfgUpdate` is recorded — but the
+        // module did change.
+        self.patch.dirty.set(true);
+        Ok(phi_val)
     }
 
     /// Finish: report the [`ReshapeCfg`] preservation floor (`none()` — nothing
