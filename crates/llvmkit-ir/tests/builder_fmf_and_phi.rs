@@ -522,6 +522,68 @@ fn typed_add_incoming_rejects_differing_duplicate() -> Result<(), IrError> {
     })
 }
 
+/// The fp phi path enforces the same rule as the int path:
+/// `phi.add_incoming(c1, a)?.add_incoming(c2, a)` with `c2 != c1` is
+/// `IrError::AmbiguousPhiIncoming`. Discriminates the differing-duplicate
+/// guard in `FpPhiInst::add_incoming` (deleting that guard makes this fail).
+#[test]
+fn fp_phi_add_incoming_rejects_differing_duplicate() -> Result<(), IrError> {
+    Module::with_new("a", |m| {
+        let f64_ty = m.f64_type();
+        let fn_ty = m.fn_type(f64_ty, [f64_ty.as_type()], false);
+        let f = m.add_function::<f64, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let a = f.append_basic_block(&m, "a");
+        let a_label = a.label();
+        let b = IRBuilder::new_for::<f64>(&m).position_at_end(entry);
+        let phi = b.build_fp_phi::<f64, _>("p")?;
+        // `1.0_f64` and `2.0_f64` intern to distinct constants, so the two
+        // edges from block `a` carry different values: the guard fires.
+        let err = phi
+            .add_incoming(1.0_f64, a_label)?
+            .add_incoming(2.0_f64, a_label)
+            .unwrap_err();
+        assert!(
+            matches!(err, IrError::AmbiguousPhiIncoming { .. }),
+            "expected AmbiguousPhiIncoming, got {err:?}"
+        );
+        Ok(())
+    })
+}
+
+/// The pointer phi path enforces the same rule as the int/fp paths:
+/// `phi.add_incoming(p1, a)?.add_incoming(p2, a)` with `p2 != p1` is
+/// `IrError::AmbiguousPhiIncoming`. Discriminates the differing-duplicate
+/// guard in `PointerPhiInst::add_incoming` (deleting that guard makes this
+/// fail). Two distinct pointer params supply the two different SSA values
+/// (there is no second distinct pointer constant to use).
+#[test]
+fn pointer_phi_add_incoming_rejects_differing_duplicate() -> Result<(), IrError> {
+    Module::with_new("a", |m| {
+        let ptr_ty = m.ptr_type(0);
+        let fn_ty = m.fn_type(ptr_ty, [ptr_ty.as_type(), ptr_ty.as_type()], false);
+        let f = m.add_function::<Ptr, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let a = f.append_basic_block(&m, "a");
+        let a_label = a.label();
+        let b = IRBuilder::new_for::<Ptr>(&m).position_at_end(entry);
+        let phi = b.build_pointer_phi("p")?;
+        let p1: PointerValue = f.param(0)?.try_into()?;
+        let p2: PointerValue = f.param(1)?.try_into()?;
+        // Two distinct params are two distinct SSA values, so the two edges
+        // from block `a` differ: the guard fires.
+        let err = phi
+            .add_incoming(p1, a_label)?
+            .add_incoming(p2, a_label)
+            .unwrap_err();
+        assert!(
+            matches!(err, IrError::AmbiguousPhiIncoming { .. }),
+            "expected AmbiguousPhiIncoming, got {err:?}"
+        );
+        Ok(())
+    })
+}
+
 /// Same predecessor twice with the SAME value stays legal — a switch with
 /// two cases to one successor produces exactly this shape. Pins the
 /// multi-edge exception against over-rejection by the duplicate check.

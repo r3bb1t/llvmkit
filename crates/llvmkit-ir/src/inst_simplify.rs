@@ -46,7 +46,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InstSimplifyPass {
                     patch.erase(&inst);
                 }
             } else if let Some(v) = uniform_phi_value(&view) {
-                // `simplifyInstruction`'s PHINode core: every incoming is the
+                // `simplifyPHINode`'s core: every incoming is the
                 // same value (self-references allowed), so the phi IS that
                 // value. Going through the same `replace_all_uses` path re-queues
                 // the phi's former users so a dependent chain re-simplifies in the
