@@ -76,7 +76,7 @@ fn parse_ok(src: &str) -> Result<(), ParseError> {
     })
 }
 
-/// Phi W1: a `phi` appearing after a non-phi instruction is a parse error.
+/// A `phi` appearing after a non-phi instruction is a parse error.
 ///
 /// With the auto-hoisting phi builders, feeding a misplaced `phi` to a builder
 /// would silently reorder it into valid position, laundering ill-formed `.ll`
