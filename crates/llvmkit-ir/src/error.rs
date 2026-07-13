@@ -855,6 +855,20 @@ pub enum IrError {
         /// Printed name of the predecessor block the incoming edge enters from.
         pred_block: String,
     },
+
+    /// A phi failed the shared per-phi coherence check (`check_phi_incoming`)
+    /// during pass-side insertion
+    /// ([`FnReshape::insert_phi`](crate::FnReshape::insert_phi)):
+    /// its incoming set is incomplete, names a non-predecessor, over-counts a
+    /// predecessor, carries a differing-value duplicate, or has a
+    /// type-mismatched incoming. The rendered `message` is produced by the same
+    /// renderer the `.ll` parser uses for its coherence diagnostics, so the two
+    /// cannot drift.
+    #[error("{message}")]
+    PhiCoherence {
+        /// Rendered coherence-failure description.
+        message: String,
+    },
 }
 
 /// Crate-wide `Result` alias.
