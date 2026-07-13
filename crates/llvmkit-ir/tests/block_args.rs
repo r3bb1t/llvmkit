@@ -40,3 +40,35 @@ fn append_block_with_params_creates_head_phi() -> Result<(), IrError> {
         Ok(())
     })
 }
+
+/// Multiple params: `params[i]` is the i-th param type, and the head-phis
+/// print in that same order — the ordering contract the block-argument branch
+/// builders rely on to line up carried values with target params.
+#[test]
+fn append_block_with_params_preserves_param_order() -> Result<(), IrError> {
+    Module::with_new("block_args_order", |m| {
+        let i32_ty = m.i32_type();
+        let i64_ty = m.i64_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+
+        let b = IRBuilder::new_for::<i32>(&m);
+        let (_hdr, params) =
+            b.append_block_with_params(f, &[i32_ty.as_type(), i64_ty.as_type()], "hdr")?;
+
+        // params vector mirrors the requested type order.
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].ty(), i32_ty.as_type());
+        assert_eq!(params[1].ty(), i64_ty.as_type());
+
+        // The two head-phis print in the same order (i32 before i64).
+        let text = format!("{m}");
+        let i32_pos = text.find("phi i32").expect("i32 head-phi printed");
+        let i64_pos = text.find("phi i64").expect("i64 head-phi printed");
+        assert!(
+            i32_pos < i64_pos,
+            "head-phis must print in param order (i32 before i64), got:\n{text}"
+        );
+        Ok(())
+    })
+}
