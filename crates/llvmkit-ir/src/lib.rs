@@ -117,6 +117,7 @@ pub mod pass_context;
 pub mod pass_instrumentation;
 pub mod pass_manager;
 pub mod pass_pipeline;
+pub(crate) mod phi_check;
 pub mod phi_state;
 pub mod sized_element;
 pub mod ssa_builder;
@@ -308,6 +309,11 @@ pub use pass_pipeline::{
     default_o0_pipeline, default_o1_pipeline, default_pipeline, parse_pass_pipeline_text,
 };
 pub use phi_state::{Closed, Open, PhiState};
+// Internal contract for llvmkit-asmparser; not public API, may change
+// without notice. The parser runs the verifier's phi-coherence algorithm
+// via this shared helper so the two cannot drift.
+#[doc(hidden)]
+pub use phi_check::{PhiCoherenceError, check_function_phi_coherence};
 pub use sized_element::{ArrayDyn, SizedElement};
 pub use ssa_builder::{
     FloatVariable, IntVariable, IntoIrResult, PointerVariable, SsaBlock, SsaBuilder, SsaBuilderId,

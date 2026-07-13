@@ -714,9 +714,11 @@ where
 /// `done()` floor is `none()` — nothing preserved.
 ///
 /// Only the split primitive is shipped this branch (no in-tree consumer needs
-/// more). Fuller terminator surgery — rewiring branches, inserting PHIs,
-/// deleting blocks — is future work; the point here is to prove the rung and its
-/// empty floor, not to be exhaustive.
+/// more). Structural ops maintain the phis of every block they touch as part of
+/// the op itself (split_block rewrites successor incomings; there is no separate
+/// fixup call to forget). Ops that make phis *gain* entries must take the new
+/// values as typed arguments. Fuller terminator surgery — rewiring branches,
+/// deleting blocks — is future work.
 pub struct FnReshape<'m, 'r, 'ctx, B, R>
 where
     B: ModuleBrand + 'ctx,
@@ -911,6 +913,33 @@ where
 
         let new_block = source.split_at(self.patch.module_mut(), before, name)?;
         let new_id = new_block.as_value().id;
+
+        // The terminator moved to `new_block`, so every edge that used to
+        // leave `block` now leaves `new_block`. Phis in the successors
+        // still name `block`; rewrite them here, as part of the mutation
+        // itself — the op carries its own phi maintenance, there is no
+        // separate fixup call to forget (mirrors what
+        // BasicBlock::replacePhiUsesWith does for upstream splitters).
+        for succ in &successors {
+            let succ_block: BasicBlock<'ctx, Dyn, Terminated, B> =
+                BasicBlock::from_parts(succ.id, succ.module, succ.ty);
+            for inst_id in succ_block.instruction_ids() {
+                let data = succ.module.value_data(inst_id);
+                let crate::value::ValueKindData::Instruction(inst) = &data.kind else {
+                    continue;
+                };
+                let crate::instruction::InstructionKindData::Phi(p) = &inst.kind else {
+                    // Phis are grouped at the block top; stop at the first
+                    // non-phi instead of scanning the whole block.
+                    break;
+                };
+                for pair in p.incoming.borrow_mut().iter_mut() {
+                    if pair.1 == source_id {
+                        pair.1 = new_id;
+                    }
+                }
+            }
+        }
 
         if !successors.is_empty() {
             let mut log = self.cfg_updates.borrow_mut();

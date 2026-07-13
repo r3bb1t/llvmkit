@@ -24,7 +24,7 @@
 
 use crate::ap_int::ApInt;
 use crate::instr_types::BinaryOpcode;
-use crate::instruction::{InstructionKind, InstructionView};
+use crate::instruction::{InstructionKind, InstructionView, PhiKind};
 use crate::module::{Brand, ModuleBrand};
 use crate::value::Value;
 
@@ -579,6 +579,32 @@ where
         let view = InstructionView::try_from(value).ok()?;
         match view.kind()? {
             InstructionKind::Load(load) => self.0.try_match(load.pointer().as_value()),
+            _ => None,
+        }
+    }
+}
+
+/// Matches any `phi` and binds its result-typed [`PhiKind`] discriminator.
+/// The binding narrows further by matching on the variant
+/// (`PhiKind::Int`/`Fp`/`Ptr`/`Other`). No upstream analog binds the node
+/// this precisely; `m_Phi` in `PatternMatch.h` binds operands only.
+pub fn m_phi() -> MPhi {
+    MPhi
+}
+
+/// Matcher returned by [`m_phi`].
+pub struct MPhi;
+
+impl<'ctx, B> Matcher<'ctx, B> for MPhi
+where
+    B: ModuleBrand + 'ctx,
+{
+    type Bindings = (PhiKind<'ctx, B>,);
+    #[inline]
+    fn try_match(&self, value: Value<'ctx, B>) -> Option<Self::Bindings> {
+        let view = InstructionView::try_from(value).ok()?;
+        match view.kind()? {
+            InstructionKind::Phi(kind) => Some((kind,)),
             _ => None,
         }
     }

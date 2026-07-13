@@ -5748,6 +5748,11 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         // Emit instructions until a terminator consumes `builder`.
         let mut builder = Some(builder);
         let mut pending_debug_records = Vec::new();
+        // Track whether any non-phi instruction has been emitted in this block.
+        // A `phi` appearing after one is ill-formed `.ll`: the auto-hoisting phi
+        // builders would silently reorder it into valid position, so reject it
+        // at parse time instead of laundering bad input into valid IR.
+        let mut seen_non_phi = false;
         loop {
             while matches!(self.peek(), Token::Hash) {
                 self.bump()?;
@@ -5780,6 +5785,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     self.bump()?;
                     self.parse_store(state, b_ref)?;
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                    seen_non_phi = true;
                     continue;
                 }
                 Token::Instruction(crate::ll_token::Opcode::Fence) => {
@@ -5787,6 +5793,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     self.bump()?;
                     self.parse_fence(b_ref)?;
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                    seen_non_phi = true;
                     continue;
                 }
                 Token::Instruction(crate::ll_token::Opcode::Switch) => {
@@ -5867,6 +5874,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 let value = self.parse_call(state, b_ref, &result_name)?;
                 self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                 state.bind_local(&result_name, value, result_loc)?;
+                seen_non_phi = true;
                 continue;
             }
             if matches!(
@@ -5886,6 +5894,16 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 Token::Instruction(op) => *op,
                 _ => return Err(self.expected("instruction opcode")),
             };
+            // A `phi` must be grouped at the top of its block: reject one that
+            // follows any non-phi instruction. Every other (non-terminator)
+            // opcode marks the boundary past which phis are no longer allowed.
+            if matches!(opcode, crate::ll_token::Opcode::Phi) {
+                if seen_non_phi {
+                    return Err(self.expected("phi must be grouped at the top of its basic block"));
+                }
+            } else {
+                seen_non_phi = true;
+            }
             self.bump()?;
             let b_ref = borrow_live_builder(&builder, self.loc())?;
             let value = match opcode {
@@ -7327,6 +7345,9 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             }
             _ => return Err(self.expected("phi result type must be int, float, or pointer")),
         };
+        // Record the phi's source location, keyed by its result name, so the
+        // end-of-function coherence check can anchor a diagnostic here.
+        state.phi_locs.push((name.to_owned(), self.loc()));
         // Parse incoming pairs: `[ val, label ], ...`
         // First pair has no leading comma; subsequent pairs have one.
         let mut first = true;
@@ -8838,6 +8859,10 @@ struct PerFunctionState<'ctx, B: ModuleBrand = Brand<'ctx>> {
     deferred_phi: Vec<DeferredPhiEdge<'ctx, B>>,
     /// Deferred `atomicrmw` value operands for non-PHI forward references.
     deferred_atomicrmw_values: Vec<DeferredAtomicRmwValue<'ctx, B>>,
+    /// Source span of each parsed phi, keyed by its result name, so the
+    /// end-of-function coherence check in `finish()` can point a diagnostic
+    /// at the offending phi instead of at `Module::verify()`.
+    phi_locs: Vec<(String, Span)>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
@@ -8860,6 +8885,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             defined_numbered_blocks: std::collections::HashSet::new(),
             deferred_phi: Vec::new(),
             deferred_atomicrmw_values: Vec::new(),
+            phi_locs: Vec::new(),
         }
     }
 
@@ -9220,6 +9246,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                     expected: format!("valid phi add_incoming: {e}"),
                     loc: DiagLoc::span(edge.loc),
                 })?;
+        }
+        // All blocks and edges now exist — every predecessor is known (the
+        // parse-time analog of Cranelift's seal_block). Run the shared phi
+        // coherence check here, anchored at the phi's source location,
+        // instead of leaving an incomplete/incoherent phi to surface far
+        // away from a later `Module::verify()`.
+        if let Err(e) = llvmkit_ir::check_function_phi_coherence(module, self.func) {
+            let loc = self
+                .phi_locs
+                .iter()
+                .find(|(name, _)| *name == e.phi_name)
+                .map(|(_, span)| DiagLoc::span(*span))
+                .unwrap_or_else(|| DiagLoc::span(Span::default()));
+            return Err(ParseError::Expected {
+                expected: e.message,
+                loc,
+            });
         }
         Ok(())
     }

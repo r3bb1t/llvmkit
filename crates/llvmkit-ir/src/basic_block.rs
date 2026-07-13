@@ -20,7 +20,7 @@
 
 use super::block_state::{BlockTerminationState, Unterminated};
 use super::function::FunctionValue;
-use super::instruction::InstructionView;
+use super::instruction::{InstructionKindData, InstructionView};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::TypeId;
@@ -467,6 +467,29 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx>
                 message: "instruction anchor is not in this block",
             }),
         }
+    }
+
+    /// Insert `id` after the block's existing leading phis and before its
+    /// first non-phi instruction. Keeps the "phis grouped at the top"
+    /// invariant a construction-time fact instead of a verifier-time one:
+    /// the IR builder routes every phi through here, so a phi built while
+    /// the cursor sits past a non-phi still lands at the phi head. Mirrors
+    /// the placement `IRBuilder::SetInsertPoint(&BB.getFirstNonPHI())`
+    /// gives phis in `llvm/lib/IR/IRBuilder.cpp`.
+    pub(crate) fn insert_instruction_at_phi_head(&self, id: ValueId) {
+        let mut list = self.data().instructions.borrow_mut();
+        let at = list
+            .iter()
+            .position(|iid| {
+                // First instruction that is NOT a phi.
+                !matches!(
+                    &self.module.module().context().value_data(*iid).kind,
+                    ValueKindData::Instruction(i)
+                        if matches!(i.kind, InstructionKindData::Phi(_))
+                )
+            })
+            .unwrap_or(list.len());
+        list.insert(at, id);
     }
 }
 

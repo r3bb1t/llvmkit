@@ -1493,13 +1493,15 @@ where
         // between the phi's cached result type and `replacement`'s type
         // (instruction.rs). `same` is one of this very phi's own incoming
         // operands (the loop above only ever assigns `same` from
-        // `self.phi_incoming_values(phi)`). IMPORTANT: unlike the typed
-        // `PhiInst::add_incoming`, the dyn path this engine uses
+        // `self.phi_incoming_values(phi)`). The dyn path this engine uses
         // (`phi_add_incoming_raw` -> `IRBuilder::phi_add_incoming_from_value`,
-        // ir_builder.rs) performs NO type check of its own -- its own doc
-        // comment defers "value-type ... coherence" to `Module::verify`.
-        // The real guarantee here is narrower and currently-true-by-
-        // construction rather than checked at the phi-mutation call site:
+        // ir_builder.rs) now performs the same result-type check the typed
+        // `PhiInst::add_incoming` does, at the call site rather than only at
+        // `Module::verify` (belt-and-braces: Braun reads are same-typed by
+        // construction, so that check never fires on this engine's writes).
+        // The narrower guarantee this `unreachable!` actually relies on is
+        // currently-true-by-construction and not (yet) checked at the
+        // phi-mutation call site:
         // every operand this engine has EVER pushed onto a layer-created
         // phi's incoming list is either (a) another layer-created phi's
         // own id (`emit_operandless_phi` always builds it from the same
@@ -1560,13 +1562,14 @@ where
         v
     }
 
-    /// Emit an operandless phi at the head of `block`. Every phi this
-    /// engine ever creates lands at position 0 (Braun's algorithm never
-    /// grows a phi list after the fact except via `add_incoming`, so
-    /// "the head" is always exactly "before the block's current first
-    /// instruction" -- this collapses to two cases, keyed on emptiness
-    /// rather than on which of `self.inner` / `open_blocks` currently
-    /// owns the block's linear handle:
+    /// Emit an operandless phi at the phi head of `block`. The phi
+    /// builders insert after the block's leading phi run regardless of the
+    /// throwaway builder's cursor (see `append_phi_instruction`), so this
+    /// method only has to position a builder *inside* `block` — the exact
+    /// cursor within it does not affect where the phi lands. That
+    /// collapses to two cases, keyed on emptiness rather than on which of
+    /// `self.inner` / `open_blocks` currently owns the block's linear
+    /// handle:
     ///
     /// - `block` has >= 1 instruction already (whether it is open,
     ///   current, or filled/terminated): a fresh throwaway builder

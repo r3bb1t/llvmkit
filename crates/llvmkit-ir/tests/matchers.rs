@@ -2,7 +2,9 @@
 //! InstCombine folds (`orig_cpp/.../lib/Transforms/InstCombine`).
 
 use llvmkit_ir::matchers::*;
-use llvmkit_ir::{IRBuilder, IntDyn, IntValue, IrError, Linkage, Module, PointerValue, Value};
+use llvmkit_ir::{
+    IRBuilder, IntDyn, IntValue, IrError, Linkage, Module, PhiKind, PointerValue, Value,
+};
 
 /// Helper: rediscover an instruction's `InstructionView` from its result.
 fn view_of<'ctx>(v: llvmkit_ir::Value<'ctx>) -> llvmkit_ir::InstructionView<'ctx> {
@@ -213,6 +215,90 @@ fn two_step_specific_reuse() -> Result<(), IrError> {
                 .match_view(&view_of(and.as_value()))
                 .is_some()
         );
+        Ok(())
+    })
+}
+
+/// `m_phi()` matches any phi and binds its result-typed [`PhiKind`]
+/// discriminator — an `i32` phi surfaces as `PhiKind::Int`.
+#[test]
+fn m_phi_binds_phi_kind() -> Result<(), IrError> {
+    Module::with_new("m_phi_bind", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let other = f.append_basic_block(&m, "other");
+        let join = f.append_basic_block(&m, "join");
+        let entry_label = entry.label();
+        let other_label = other.label();
+
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        b.build_br(&join)?;
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(other);
+        b.build_br(&join)?;
+
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
+        let phi = b
+            .build_int_phi::<i32, _>("p")?
+            .add_incoming(1_i32, entry_label)?
+            .add_incoming(2_i32, other_label)?;
+
+        let view = view_of(phi.as_int_value().as_value());
+        let (kind,) = m_phi().match_view(&view).expect("phi matches");
+        assert!(matches!(kind, PhiKind::Int(_)));
+        Ok(())
+    })
+}
+
+/// `m_phi()` rejects a non-phi instruction (an `add`).
+#[test]
+fn m_phi_rejects_non_phi() -> Result<(), IrError> {
+    Module::with_new("m_phi_reject", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let x: IntValue<i32> = f.param(0)?.try_into()?;
+        let y: IntValue<i32> = f.param(1)?.try_into()?;
+        let add = b.build_int_add::<i32, _, _, _>(x, y, "r")?;
+
+        let view = view_of(add.as_value());
+        assert!(m_phi().match_view(&view).is_none());
+        Ok(())
+    })
+}
+
+/// `m_phi()` composes under [`m_one_use`]: a phi whose result has exactly
+/// one use still matches through the gate.
+#[test]
+fn m_phi_composes_with_m_one_use() -> Result<(), IrError> {
+    Module::with_new("m_phi_one_use", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let other = f.append_basic_block(&m, "other");
+        let join = f.append_basic_block(&m, "join");
+        let entry_label = entry.label();
+        let other_label = other.label();
+
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        b.build_br(&join)?;
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(other);
+        b.build_br(&join)?;
+
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
+        let phi = b
+            .build_int_phi::<i32, _>("p")?
+            .add_incoming(1_i32, entry_label)?
+            .add_incoming(2_i32, other_label)?;
+        // Exactly one use of the phi result: the return.
+        b.build_ret(phi.as_int_value())?;
+
+        let view = view_of(phi.as_int_value().as_value());
+        assert!(m_one_use(m_phi()).match_view(&view).is_some());
         Ok(())
     })
 }

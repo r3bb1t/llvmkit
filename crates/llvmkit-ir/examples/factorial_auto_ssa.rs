@@ -100,16 +100,17 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let b = b.switch_to_block(base)?;
     let b = b.ret(1_i32)?;
 
-    // loop: read i/acc BEFORE this block's own back-edge is recorded --
+    // loop: read acc/i BEFORE this block's own back-edge is recorded --
     // `loop` is still unsealed (its only known predecessor so far is
     // `entry`), so each read creates an operandless phi named after the
-    // variable, head-inserted (each new phi anchors "before the current
-    // first instruction", so reading `i` THEN `acc` prints `acc` first,
-    // matching the manual example's phi order). `next_acc`/`next_i`/
-    // `done` reuse the manual example's exact instruction names.
+    // variable, head-inserted in creation order (each new phi lands after
+    // the block's existing leading phis). Reading `acc` THEN `i` therefore
+    // prints `acc` first, matching the manual example's phi creation order
+    // (`build_int_phi("acc")` before `build_int_phi("i")`). `next_acc`/
+    // `next_i`/`done` reuse the manual example's exact instruction names.
     let mut b = b.switch_to_block(loop_bb)?;
-    let i = b.use_int_var(i_var)?;
     let acc = b.use_int_var(acc_var)?;
+    let i = b.use_int_var(i_var)?;
     let next_acc = b.ins().build_int_mul(acc, i, "next_acc")?;
     let next_i = b.ins().build_int_sub(i, 1_i32, "next_i")?;
     let done = b
