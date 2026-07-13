@@ -114,11 +114,15 @@ unrepresentable through the public API rather than merely rejected at
 
 #### Changed
 
-- **Breaking:** the six `IRBuilder::build_*_phi` builders and the
-  `PhiInst` / `FpPhiInst` / `PointerPhiInst` open-phi `add_incoming` / `finish`
-  mutators are no longer public (`pub(crate)`). Author phis with block
-  arguments instead — the edge and its incomings move together, so desync is
-  unrepresentable rather than deferred to `verify()`:
+- **Breaking:** the three marker-form builders `IRBuilder::build_int_phi` /
+  `build_fp_phi` / `build_pointer_phi` and the `PhiInst` / `FpPhiInst` /
+  `PointerPhiInst` open-phi `add_incoming` / `finish` mutators are no longer
+  public (`pub(crate)`). (The runtime-typed `build_int_phi_dyn` /
+  `build_fp_phi_dyn` / `build_pointer_phi_in_addrspace` forms and the untyped
+  `phi_add_incoming_from_value` stay reachable, but only as `#[doc(hidden)]`
+  internal-contract items for the `.ll` parser — not supported public API.)
+  Author phis with block arguments instead — the edge and its incomings move
+  together, so desync is unrepresentable rather than deferred to `verify()`:
 
   | Was (no longer public) | Now (public) |
   | --- | --- |

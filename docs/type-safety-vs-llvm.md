@@ -536,15 +536,16 @@ desynced phi is not merely rejected at `verify()` — it is unrepresentable thro
 the public surface. Printed IR is ordinary phis; storage, parser, printer, and
 verifier are unchanged.
 
-Underneath, the incremental editing window still exists as a **crate-internal**
-handle — it backs the block-argument lowering, the `.ll` parser, and the auto-SSA
-builder, but it is no longer public. The `build_*_phi` builders and the open
-handle's `add_incoming`/`finish` mutators are `pub(crate)`; the few entry points
-the separate parser crate needs are `#[doc(hidden)] pub` "internal contract"
-items. The handle is a typestate:
+Underneath, the incremental editing window still exists — the `PhiInst` handle
+*type* and its read accessors stay public (a `_dyn` builder returns one, and
+rediscovery yields it), but *authoring through it* is now crate-internal: the
+marker-form `build_*_phi` builders and the open handle's `add_incoming`/`finish`
+mutators are `pub(crate)`, and the few entry points the separate parser crate
+needs are `#[doc(hidden)] pub` "internal contract" items. The handle is a
+typestate:
 
 ```rust
-pub(crate) struct PhiInst<'ctx, W: IntWidth, P: PhiState = Open, B: ModuleBrand = Brand<'ctx>> {
+pub struct PhiInst<'ctx, W: IntWidth, P: PhiState = Open, B: ModuleBrand = Brand<'ctx>> {
     /* fields omitted */
 }
 ```

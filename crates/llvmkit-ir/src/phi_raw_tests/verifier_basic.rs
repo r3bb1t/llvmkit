@@ -1,9 +1,11 @@
 //! Raw-phi verifier coverage relocated from `tests/verifier_basic.rs`.
 //!
-//! These cases feed phi incomings from `switch`/`invoke`/`callbr` CFG edges,
-//! or are malformed-by-design, so the block-argument authoring surface
-//! (`append_block_with_params` + `build_*_with_args`) physically cannot
-//! express them. They exercise the raw `build_int_phi`/`add_incoming` API
+//! Most feed phi incomings from `switch`/`invoke`/`callbr` CFG edges, which the
+//! block-argument authoring surface (`append_block_with_params` +
+//! `build_*_with_args`, which only carry `br`/`cond_br` edges) cannot express;
+//! the rest are malformed-by-design verifier-negative cases for which the raw
+//! path is the natural way to author a deliberately-broken phi. They exercise
+//! the raw `build_int_phi`/`add_incoming` API
 //! from inside the crate and are kept verbatim from their integration-test
 //! origin (only the `llvmkit_ir::` paths are rewritten to `crate::`).
 

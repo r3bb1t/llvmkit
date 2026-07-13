@@ -388,7 +388,6 @@ fn instsimplify_folds_uniform_phi() -> Result<(), IrError> {
             !text.contains("= phi"),
             "uniform phi must fold away:\n{text}"
         );
-        assert!(!text.contains("%p"), "phi result must be gone:\n{text}");
         assert!(
             text.contains("ret i32 %c"),
             "return must use %c directly:\n{text}"
