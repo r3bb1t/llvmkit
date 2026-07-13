@@ -6006,9 +6006,24 @@ where
             });
         }
 
+        // Type-check every argument against its parameter-phi up front, before
+        // recording any incoming. Recording mutates the phis through interior
+        // mutability and cannot be rolled back, so validating first keeps the
+        // whole operation all-or-nothing: a rejected argument leaves the target
+        // parameters untouched.
+        for (phi_id, arg) in param_phis.iter().zip(args.iter()) {
+            let phi_ty = self.module.context().value_data(*phi_id).ty;
+            if arg.ty != phi_ty {
+                return Err(IrError::TypeMismatch {
+                    expected: Type::new(phi_ty, self.module).kind_label(),
+                    got: Type::new(arg.ty, self.module).kind_label(),
+                });
+            }
+        }
+
         // Record each argument as an incoming edge from `pred` into the
-        // matching parameter-phi. The erased path type-checks the argument
-        // and rejects a differing-value duplicate for `pred`.
+        // matching parameter-phi (types already validated above; the erased
+        // path re-checks and registers the phi in each value's use-list).
         let pred_block =
             BasicBlock::<Dyn, Terminated, B>::from_parts(pred.as_value().id, module_ref, label_ty);
         for (phi_id, arg) in param_phis.iter().zip(args.iter()) {
