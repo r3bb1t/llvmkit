@@ -267,10 +267,10 @@ merge:
 }
 
 /// A phi whose result type is not first-class (here a function type
-/// `i32 (i32)`) is still rejected — widening the result-type gate accepts
-/// every first-class type but must not admit function/void/opaque-struct
+/// `i32 (i32)`) is rejected — the result-type gate admits only int / float /
+/// pointer / vector / array / struct, never function/void/opaque-struct
 /// types. (`void` alone is caught earlier by `parse_type`; a function type
-/// reaches the widened result-type gate.)
+/// reaches the result-type gate.)
 #[test]
 fn non_first_class_phi_result_type_is_a_parse_error() {
     let src = "\
@@ -285,8 +285,34 @@ merge:
     let err = parse_err(src);
     let msg = err.to_string();
     assert!(
-        msg.contains("phi") && msg.contains("first-class"),
+        msg.contains("phi") && msg.contains("result type"),
         "expected a non-first-class phi result-type parse error, got: {msg}"
+    );
+}
+
+/// A phi whose result type is first-class per `Type::is_first_class` but is
+/// *not* a first-class **data** type (`token`; likewise `metadata` / `label`)
+/// must be a parse error. `Type::is_first_class` returns `true` for `token`,
+/// yet `phi token` is invalid IR that LLVM rejects — and the llvmkit verifier
+/// does not catch it, so the parser must reject it at the result-type gate
+/// rather than build clean-but-invalid IR. The result-type gate accepts only
+/// int / float / pointer / vector / array / struct.
+#[test]
+fn token_phi_result_type_is_a_parse_error() {
+    let src = "\
+define void @f() {
+entry:
+  ret void
+dead:
+  %p = phi token
+  ret void
+}
+";
+    let err = parse_err(src);
+    let msg = err.to_string();
+    assert!(
+        msg.contains("phi") && msg.contains("result type"),
+        "expected a phi result-type parse error for `phi token`, got: {msg}"
     );
 }
 

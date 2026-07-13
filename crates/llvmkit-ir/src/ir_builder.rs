@@ -5847,11 +5847,24 @@ where
     /// path. Inserted at the block's phi head regardless of cursor position,
     /// so phi placement is correct by construction.
     ///
-    /// The caller must pass a first-class `ty` (mirroring how the typed
-    /// `_dyn` builders trust their narrowed type handles); `void`, function,
-    /// and opaque-struct types are not valid phi result types. The `.ll`
-    /// parser gates on [`Type::is_first_class`](crate::Type::is_first_class)
-    /// before routing through here.
+    /// # Precondition
+    ///
+    /// Unlike the typed `_dyn` builders, this takes a fully **erased**
+    /// [`Type`] with no type-level first-class constraint, so it cannot
+    /// reject a nonsense result type statically — the caller carries that
+    /// obligation. `ty` **must** be a first-class *data* type: `int`,
+    /// `float`, `pointer`, `vector`, `array`, or `struct`. `void`, function,
+    /// and opaque-struct types are not valid phi result types; neither are
+    /// the other first-class types `label`, `metadata`, and `token` (LLVM
+    /// rejects e.g. `phi token`, and note
+    /// [`Type::is_first_class`](crate::Type::is_first_class) returns `true`
+    /// for those, so it is *not* a sufficient gate). The `.ll` parser
+    /// enumerates the acceptable result types explicitly before routing here.
+    ///
+    /// This is an internal builder shared only with the in-tree `.ll` parser
+    /// (hence `#[doc(hidden)]`); it is not part of the supported public
+    /// surface and may change without notice.
+    #[doc(hidden)]
     pub fn build_phi_dyn<Name>(
         &self,
         ty: Type<'ctx, B>,
