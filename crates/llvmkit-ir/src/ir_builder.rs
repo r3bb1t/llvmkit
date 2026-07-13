@@ -97,6 +97,12 @@ pub type TerminatedBlockInst<'ctx, R, B = Brand<'ctx>> = (
     Instruction<'ctx, Attached, B>,
 );
 
+/// Pair returned by [`IRBuilder::append_block_with_params`]: the freshly
+/// appended, still-[`Unterminated`] block and one head-phi result [`Value`]
+/// per declared block parameter, in declaration order.
+pub type BlockWithParams<'ctx, R, B = Brand<'ctx>> =
+    (BasicBlock<'ctx, R, Unterminated, B>, Vec<Value<'ctx, B>>);
+
 /// Pair returned by `switch` builders before the case list is closed.
 pub type TerminatedBlockSwitch<'ctx, R, B = Brand<'ctx>> = (
     BasicBlock<'ctx, R, Terminated, B>,
@@ -581,6 +587,95 @@ where
             .borrow_mut()
             .push(ValueUse::Instruction(phi_val.id));
         Ok(())
+    }
+
+    /// Build a fresh, operandless phi at the phi head of the block with id
+    /// `block_id` and return its result [`Value`]. Independent of the
+    /// builder's insertion cursor: the phi always lands at `block_id`'s phi
+    /// head (via [`BasicBlock::insert_instruction_at_phi_head`]) regardless
+    /// of where -- or whether -- the builder is positioned, so callers can
+    /// seed head-phis in a block they are not currently editing. The phi
+    /// starts with zero incoming edges.
+    ///
+    /// Low-level counterpart of [`Self::append_phi_instruction`], which
+    /// targets the *insertion* block; this one targets an arbitrary block by
+    /// id and hands back the erased [`Value`] rather than a typed phi handle.
+    fn make_phi_in_block(&self, block_id: ValueId, ty: TypeId, name: &str) -> Value<'ctx, B> {
+        let payload = crate::instr_types::PhiData::new();
+        let value = build_instruction_value(ty, block_id, InstructionKindData::Phi(payload), None);
+        // Snapshot operand ids before the value moves into the arena so the
+        // new phi can be registered in each operand's reverse use-list --
+        // identical to `append_phi_instruction`. A fresh phi has no operands,
+        // so this loop is a no-op until incomings are added later.
+        let operand_ids = match &value.kind {
+            ValueKindData::Instruction(i) => i.kind.operand_ids(),
+            _ => unreachable!("make_phi_in_block built non-instruction value"),
+        };
+        let id = self.module.context().push_value(value);
+        for op in operand_ids {
+            self.module
+                .context()
+                .value_data(op)
+                .use_list
+                .borrow_mut()
+                .push(ValueUse::Instruction(id));
+        }
+        let label_ty = self.module.label_type().as_type().id();
+        let bb = BasicBlock::<Dyn, Unterminated, B>::from_parts(
+            block_id,
+            ModuleRef::<B>::new(self.module),
+            label_ty,
+        );
+        bb.insert_instruction_at_phi_head(id);
+        if !name.is_empty()
+            && !Type::new(ty, ModuleRef::<B>::new(self.module)).is_void()
+            && let Some(parent_fn_id) = bb.parent_id()
+        {
+            let parent_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(
+                parent_fn_id,
+                ModuleRef::<B>::new(self.module),
+            );
+            parent_fn.set_local_value_name(id, Some(name));
+        }
+        Value::from_parts(id, ModuleRef::<B>::new(self.module), ty)
+    }
+
+    /// Append a fresh basic block to `function` whose parameters are
+    /// operandless head-phis, in the style of Swift SIL / MLIR block
+    /// arguments. One phi is materialised at the new block's head per entry
+    /// in `param_types`, in order; the returned `Vec<Value>` holds those phi
+    /// results, so `params[i]` is the `Value` for `param_types[i]` and
+    /// carries that type.
+    ///
+    /// Each parameter is a [`Value`] backed by a phi with zero incoming
+    /// edges. Supply the incomings later by branching to this block with the
+    /// block-argument branch builders, which carry one argument value per
+    /// parameter into the matching head-phi.
+    ///
+    /// The block is returned still [`Unterminated`] and is *not* made the
+    /// builder's insertion point, so the caller positions the builder at it
+    /// (or elsewhere) and fills its body. Creation is independent of the
+    /// builder's current cursor -- the builder need not be positioned.
+    ///
+    /// Parameter types are passed as a `&[Type<'ctx, B>]` slice; each
+    /// parameter phi takes its type directly from the corresponding `Type`.
+    pub fn append_block_with_params<Name>(
+        &self,
+        function: FunctionValue<'ctx, R, B>,
+        param_types: &[Type<'ctx, B>],
+        name: Name,
+    ) -> IrResult<BlockWithParams<'ctx, R, B>>
+    where
+        Name: Into<String>,
+    {
+        let module = Module::<'ctx, B, Unverified>::from_core(self.module);
+        let bb = function.append_basic_block(&module, name);
+        let bb_id = bb.as_value().id;
+        let mut params = Vec::with_capacity(param_types.len());
+        for ty in param_types {
+            params.push(self.make_phi_in_block(bb_id, ty.id(), ""));
+        }
+        Ok((bb, params))
     }
 }
 
