@@ -124,33 +124,38 @@ fn phi_operands_are_dominated_on_incoming_edges() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let then_bb = f.append_basic_block(&m, "then");
         let else_bb = f.append_basic_block(&m, "else");
-        let join = f.append_basic_block(&m, "join");
         let then_label = then_bb.label();
         let else_label = else_bb.label();
-        let join_label = join.label();
         let x: IntValue<i32> = f.param(0)?.try_into()?;
         let cond: IntValue<bool> = f.param(1)?.try_into()?;
+
+        // join(%p: i32): the merge head-phi. Its incomings arrive in branch
+        // order — `then` carries `%y` first, then `else` carries `%x` — so the
+        // head-phi records `[%y, then], [%x, else]` and `%p` (params[0]) is the
+        // phi result, exactly the explicit phi this test used before.
+        let bwp = IRBuilder::new_for::<i32>(&m);
+        let (join, params) = bwp.append_block_with_params(f, &[i32_ty.as_type()], "join")?;
+        let join_label = join.label();
 
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(entry)
             .build_cond_br(cond, then_label, else_label)?;
         let bt = IRBuilder::new_for::<i32>(&m).position_at_end(then_bb);
         let y = bt.build_int_add(x, 1_i32, "y")?;
-        bt.build_br(join_label)?;
+        bt.build_br_with_args(join_label, &[y.as_value()])?;
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(else_bb)
-            .build_br(join_label)?;
-        let bj = IRBuilder::new_for::<i32>(&m).position_at_end(join);
-        let phi = bj
-            .build_int_phi::<i32, _>("p")?
-            .add_incoming(y, then_label)?
-            .add_incoming(x, else_label)?;
-        bj.build_ret(phi.as_int_value())?;
+            .build_br_with_args(join_label, &[x.as_value()])?;
+        let p: IntValue<i32> = params[0].try_into()?;
+        IRBuilder::new_for::<i32>(&m)
+            .position_at_end(join)
+            .build_ret(p)?;
 
         let yi = inst(y.as_value())?;
-        let phii = phi.as_view();
-        let y_use = phi
-            .as_view()
+        // The phi is the join block's head param; recover its view from
+        // `params[0]`. `operand_use` consumes the view, so recover it twice.
+        let phii = inst(params[0])?;
+        let y_use = inst(params[0])?
             .operand_use(0)
             .expect("phi has first incoming use");
         let dt = DominatorTree::new(f.as_dyn());
@@ -219,21 +224,30 @@ fn duplicate_edges_do_not_dominate_successor() -> Result<(), IrError> {
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()], false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let join = f.append_basic_block(&m, "join");
-        let entry_label = entry.label();
-        let join_label = join.label();
         let x: IntValue<i32> = f.param(0)?.try_into()?;
         let cond: IntValue<bool> = f.param(1)?.try_into()?;
 
+        // join(%p: i32): both arms of the conditional branch target join (a
+        // duplicate edge), each carrying the same `%x`. The head-phi therefore
+        // records `[%x, entry], [%x, entry]` — the same-value duplicate for the
+        // shared predecessor is accepted.
+        let bwp = IRBuilder::new_for::<i32>(&m);
+        let (join, params) = bwp.append_block_with_params(f, &[i32_ty.as_type()], "join")?;
+        let join_label = join.label();
+
         IRBuilder::new_for::<i32>(&m)
             .position_at_end(entry)
-            .build_cond_br(cond, join_label, join_label)?;
-        let bj = IRBuilder::new_for::<i32>(&m).position_at_end(join);
-        let phi = bj
-            .build_int_phi::<i32, _>("p")?
-            .add_incoming(x, entry_label)?
-            .add_incoming(x, entry_label)?;
-        bj.build_ret(phi.as_int_value())?;
+            .build_cond_br_with_args(
+                cond,
+                join_label,
+                &[x.as_value()],
+                join_label,
+                &[x.as_value()],
+            )?;
+        let p: IntValue<i32> = params[0].try_into()?;
+        IRBuilder::new_for::<i32>(&m)
+            .position_at_end(join)
+            .build_ret(p)?;
 
         let cfg = FunctionCfg::new(f.as_dyn());
         let edge: BasicBlockEdge<'_> = cfg.edges().next().expect("conditional branch has an edge");

@@ -1,7 +1,9 @@
-//! Phase E victory lap. Builds a factorial function as a single
-//! loop with a phi-tracked accumulator and counter.
+//! Phase E victory lap. Builds a factorial function as a single loop
+//! whose accumulator and counter are carried as the loop header block's
+//! two parameters (head-phis), authored with the block-argument API.
 //!
-//! Target IR:
+//! Target IR (the loop's accumulator and counter are the block's two *named*
+//! parameters, so they print as the named head-phis `%acc`/`%i`):
 //!
 //! ```llvm
 //! ; ModuleID = 'factorial'
@@ -31,11 +33,15 @@
 //! - `IntoIntValue<i32>` lifting Rust scalars (`0_i32`, `1_i32`) at
 //!   call sites without an intermediate constant binding.
 //! - `build_int_cmp::<i32, _, _, _>` returning `IntValue<bool>`.
-//! - `build_cond_br` consuming the `i1`.
-//! - `build_int_phi` followed by chained `add_incoming` calls,
-//!   mirroring `PHINode::addIncoming` (the loop-edge incoming value
-//!   is defined later in the same block, so the chain interleaves
-//!   with `build_int_mul` / `build_int_sub`).
+//! - `append_block_with_named_params` creating the `loop` header whose two
+//!   named parameters ARE the accumulator/counter head-phis: `params[0]` is
+//!   `%acc`, `params[1]` is `%i`.
+//! - `build_cond_br_with_args` seeding those head-phis with block
+//!   arguments: `entry` carries the initial values `[ 1, %n ]` down the
+//!   loop edge, and the loop latch carries the back-edge values
+//!   `[ %next_acc, %next_i ]`. The back-edge values are computed in the
+//!   loop body BEFORE the latch terminator, so they dominate the branch
+//!   that carries them.
 //!
 //! Run:
 //!
@@ -43,7 +49,7 @@
 //! cargo run -p llvmkit-ir --example factorial
 //! ```
 
-use llvmkit_ir::{IRBuilder, IntPredicate, IrError, Linkage, Module};
+use llvmkit_ir::{IRBuilder, IntPredicate, IntValue, IrError, Linkage, Module};
 
 pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
@@ -57,43 +63,56 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
 
     let entry = f.append_basic_block(m, "entry");
     let base = f.append_basic_block(m, "base");
-    let loop_bb = f.append_basic_block(m, "loop");
+    // The loop header's two parameters ARE the head-phis: `params[0]` carries
+    // the accumulator (`%acc`), `params[1]` the counter (`%i`). Their incomings
+    // arrive later as block arguments on the branches into `loop`.
+    let bwp = IRBuilder::new_for::<i32>(m);
+    let (loop_bb, params) = bwp.append_block_with_named_params(
+        f.as_function(),
+        &[(i32_ty.as_type(), "acc"), (i32_ty.as_type(), "i")],
+        "loop",
+    )?;
     let exit = f.append_basic_block(m, "exit");
-    let entry_label = entry.label();
     let base_label = base.label();
     let loop_label = loop_bb.label();
     let exit_label = exit.label();
 
     let (n,) = f.params();
 
-    // entry: %is_zero = icmp eq i32 %n, 0; br i1 %is_zero, ...
+    // entry: %is_zero = icmp eq i32 %n, 0; then branch to `base` with no
+    // arguments, or into `loop` carrying the header-phis' initial values
+    // `[ acc = 1, i = %n ]`.
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
     let is_zero = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
-    b.build_cond_br(is_zero, base_label, loop_label)?;
+    b.build_cond_br_with_args(
+        is_zero,
+        base_label,
+        &[],
+        loop_label,
+        &[i32_ty.const_int(1_i32).as_value(), n.as_value()],
+    )?;
 
     // base: ret i32 1
     let b = IRBuilder::new_for::<i32>(m).position_at_end(base);
     b.build_ret(1_i32)?;
 
-    // loop: create phis empty, build body, then patch phis with both edges.
+    // loop: `params[0]`/`params[1]` are the `%acc`/`%i` head-phis. Compute the
+    // back-edge values from them, then re-enter `loop` carrying
+    // `[ next_acc, next_i ]`. Those values are defined before the latch
+    // terminator, so they dominate the branch that carries them.
     let b = IRBuilder::new_for::<i32>(m).position_at_end(loop_bb);
-    let acc_phi = b.build_int_phi::<i32, _>("acc")?;
-    let i_phi = b.build_int_phi::<i32, _>("i")?;
-    let acc = acc_phi.as_int_value();
-    let i = i_phi.as_int_value();
+    let acc: IntValue<i32> = params[0].try_into()?;
+    let i: IntValue<i32> = params[1].try_into()?;
     let next_acc = b.build_int_mul(acc, i, "next_acc")?;
     let next_i = b.build_int_sub(i, 1_i32, "next_i")?;
     let done = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, next_i, 0_i32, "done")?;
-    b.build_cond_br(done, exit_label, loop_label)?;
-
-    acc_phi
-        .add_incoming(1_i32, entry_label)?
-        .add_incoming(next_acc, loop_label)?
-        .finish();
-    i_phi
-        .add_incoming(n, entry_label)?
-        .add_incoming(next_i, loop_label)?
-        .finish();
+    b.build_cond_br_with_args(
+        done,
+        exit_label,
+        &[],
+        loop_label,
+        &[next_acc.as_value(), next_i.as_value()],
+    )?;
 
     // exit: ret i32 %next_acc
     let b = IRBuilder::new_for::<i32>(m).position_at_end(exit);

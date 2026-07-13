@@ -505,7 +505,8 @@ reinsertion.
 
 ## 9. Open/closed views for variable-shape instructions
 
-LLVM C++ phi construction returns a mutable `PHINode *`:
+LLVM C++ phi construction returns a mutable `PHINode *` that the caller fills in
+incoming-by-incoming:
 
 ```cpp
 PHINode *CreatePHI(Type *Ty, unsigned NumReservedValues,
@@ -515,7 +516,33 @@ PHINode *CreatePHI(Type *Ty, unsigned NumReservedValues,
 }
 ```
 
-`llvmkit` represents the editing window explicitly:
+That incremental fill-in is where predecessor/incoming *desync* is born — a CFG
+edit that forgets to update a successor phi, or a phi left one incoming short.
+`llvmkit`'s **public** phi authoring closes the gap by construction: you never
+build a bare phi and bolt edges onto it. Instead you give a block *parameters*
+and let each branch carry the values — the Swift-SIL / MLIR block-argument shape:
+
+```rust
+// The block's parameters ARE its head-phis; the branch carries the incomings.
+let (hdr, params) = builder.append_block_with_params(f, &[i32_ty], "hdr")?;
+// ... from each predecessor:
+builder.build_br_with_args(hdr.label(), &[value])?; // edge + incoming, together
+```
+
+`build_br_with_args` / `build_cond_br_with_args` append the terminator *and* seed
+each successor parameter in one call, arity- and type-checked at the call site,
+all-or-nothing. The edge and its incomings move together, so an incomplete or
+desynced phi is not merely rejected at `verify()` — it is unrepresentable through
+the public surface. Printed IR is ordinary phis; storage, parser, printer, and
+verifier are unchanged.
+
+Underneath, the incremental editing window still exists — the `PhiInst` handle
+*type* and its read accessors stay public (a `_dyn` builder returns one, and
+rediscovery yields it), but *authoring through it* is now crate-internal: the
+marker-form `build_*_phi` builders and the open handle's `add_incoming`/`finish`
+mutators are `pub(crate)`, and the few entry points the separate parser crate
+needs are `#[doc(hidden)] pub` "internal contract" items. The handle is a
+typestate:
 
 ```rust
 pub struct PhiInst<'ctx, W: IntWidth, P: PhiState = Open, B: ModuleBrand = Brand<'ctx>> {
@@ -523,41 +550,26 @@ pub struct PhiInst<'ctx, W: IntWidth, P: PhiState = Open, B: ModuleBrand = Brand
 }
 ```
 
-Only an open phi accepts incoming edges:
+Only an open phi accepts incoming edges, and `add_incoming` witnesses the *local*
+phi facts at the call site rather than at `verify()` time: the incoming value's
+type is checked against the phi (the untyped parser / SSA-builder path
+`phi_add_incoming_from_value` included), and a second incoming for a predecessor
+already recorded with a *different* value is rejected as
+`IrError::AmbiguousPhiIncoming` — same-value duplicates stay legal, so a `switch`
+with several edges from one predecessor still builds. Placement is correct by
+construction too: the internal builders insert at the block's PHI head regardless
+of cursor position (the verifier's `PhiNotAtTop` check stays as defense in
+depth). What these local checks do *not* cover — phi-incoming completeness against
+the final predecessor set, and dominance — remains `Module::verify()`'s job; the
+`.ll` parser additionally checks that completeness once all predecessors are
+known. Calling `finish` returns a closed view exposing read accessors, not
+`add_incoming`.
 
-```rust
-pub fn add_incoming<V, R, S>(self, value: V, block: BasicBlock<'ctx, R, S>) -> IrResult<Self>
-where
-    V: IntoIntValue<'ctx, W, B>,
-```
-
-`add_incoming` also witnesses the *local* phi facts at the call site rather than
-at `verify()` time: the incoming value's type is checked against the phi (the
-untyped parser / SSA-builder path `phi_add_incoming_from_value` included), and a
-second incoming for a predecessor already recorded with a *different* value is
-rejected as `IrError::AmbiguousPhiIncoming`. Same-value duplicates stay legal, so
-a `switch` with several edges from one predecessor still builds. Placement is
-correct by construction too: the `build_*_phi` builders insert at the block's PHI
-head regardless of cursor position, so a phi cannot be emitted below a non-phi
-instruction (the verifier's `PhiNotAtTop` check stays as defense in depth). What
-these local checks do *not* cover — phi-incoming completeness against the final
-predecessor set, and dominance — remains `Module::verify()`'s job; the `.ll`
-parser additionally checks that completeness once all predecessors are known.
-
-Calling `finish` returns a closed view:
-
-```rust
-pub fn finish(self) -> PhiInst<'ctx, W, Closed, B> {
-    self.retag::<Closed>()
-}
-```
-
-The closed view exposes read accessors, not `add_incoming`. The same linear
-open/closed pattern is used for `switch`, `indirectbr`, `landingpad`, and
-`catchswitch`: open handles are not `Copy`, mutators consume `self`, and
-`finish()` returns a closed view. Rediscovery through `InstructionKind` /
-`TerminatorKind` also returns closed variants, so it cannot reopen a finalized
-variable-arity instruction.
+The same linear open/closed pattern remains **public** for the variable-arity
+terminators — `switch`, `indirectbr`, `landingpad`, and `catchswitch`: open
+handles are not `Copy`, mutators consume `self`, and `finish()` returns a closed
+view. Rediscovery through `InstructionKind` / `TerminatorKind` also returns closed
+variants, so it cannot reopen a finalized variable-arity instruction.
 
 The closed views are still fully inspectable: each variable-arity terminator
 exposes a reader for its entries — `SwitchInst::cases()` yields
