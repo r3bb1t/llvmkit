@@ -7345,6 +7345,9 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             }
             _ => return Err(self.expected("phi result type must be int, float, or pointer")),
         };
+        // Record the phi's source location, keyed by its result name, so the
+        // end-of-function coherence check can anchor a diagnostic here.
+        state.phi_locs.push((name.to_owned(), self.loc()));
         // Parse incoming pairs: `[ val, label ], ...`
         // First pair has no leading comma; subsequent pairs have one.
         let mut first = true;
@@ -8856,6 +8859,10 @@ struct PerFunctionState<'ctx, B: ModuleBrand = Brand<'ctx>> {
     deferred_phi: Vec<DeferredPhiEdge<'ctx, B>>,
     /// Deferred `atomicrmw` value operands for non-PHI forward references.
     deferred_atomicrmw_values: Vec<DeferredAtomicRmwValue<'ctx, B>>,
+    /// Source span of each parsed phi, keyed by its result name, so the
+    /// end-of-function coherence check in `finish()` can point a diagnostic
+    /// at the offending phi instead of at `Module::verify()`.
+    phi_locs: Vec<(String, Span)>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
@@ -8878,6 +8885,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             defined_numbered_blocks: std::collections::HashSet::new(),
             deferred_phi: Vec::new(),
             deferred_atomicrmw_values: Vec::new(),
+            phi_locs: Vec::new(),
         }
     }
 
@@ -9238,6 +9246,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                     expected: format!("valid phi add_incoming: {e}"),
                     loc: DiagLoc::span(edge.loc),
                 })?;
+        }
+        // All blocks and edges now exist — every predecessor is known (the
+        // parse-time analog of Cranelift's seal_block). Run the shared phi
+        // coherence check here, anchored at the phi's source location,
+        // instead of leaving an incomplete/incoherent phi to surface far
+        // away from a later `Module::verify()`.
+        if let Err(e) = llvmkit_ir::check_function_phi_coherence(module, self.func) {
+            let loc = self
+                .phi_locs
+                .iter()
+                .find(|(name, _)| *name == e.phi_name)
+                .map(|(_, span)| DiagLoc::span(*span))
+                .unwrap_or_else(|| DiagLoc::span(Span::default()));
+            return Err(ParseError::Expected {
+                expected: e.message,
+                loc,
+            });
         }
         Ok(())
     }

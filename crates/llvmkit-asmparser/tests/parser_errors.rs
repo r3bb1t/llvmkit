@@ -162,3 +162,62 @@ fwd:
         "expected phi add_incoming type-check parse error, got: {msg}"
     );
 }
+
+/// A phi that omits one of its block's predecessors used to parse fine and
+/// only fail `Module::verify()` later, far from the source. After a function
+/// is fully parsed all predecessors are known (Cranelift's seal insight), so
+/// the parser checks completeness itself, at the phi's location.
+///
+/// The predecessor the phi *does* list (`%other`) is written as a
+/// forward-referenced block on purpose: a phi incoming can only name a block
+/// that is still unterminated at edge-add time (the Task 3/4
+/// immediate-resolution limitation — a predecessor defined *earlier* is
+/// already terminated and rejected by `basic_block_for_construction`). Using
+/// the later-defined `%other` keeps the edge resolvable while leaving the
+/// earlier `%entry` predecessor unlisted, which is exactly the completeness
+/// failure under test: `merge` has two predecessors but the phi supplies one
+/// incoming.
+#[test]
+fn incomplete_phi_is_a_parse_error() {
+    let src = r#"
+define i32 @f(i32 %a, i1 %c) {
+entry:
+  br i1 %c, label %merge, label %other
+merge:
+  %p = phi i32 [ %a, %other ]
+  ret i32 %p
+other:
+  br label %merge
+}
+"#;
+    let err = parse_err(src);
+    let msg = err.to_string();
+    assert!(msg.contains("phi"), "got: {msg}");
+    assert!(msg.contains("predecessor"), "got: {msg}");
+}
+
+/// Valid loop-shaped phis (back-edge incoming) must keep parsing — the check
+/// runs after the WHOLE function is parsed, so predecessor blocks defined
+/// later in the text are fine. Here `%latch` is defined *after* the `loop`
+/// header yet is a predecessor of it; a per-block eager check would not yet
+/// see that edge, but the end-of-function check does, and the phi is complete.
+#[test]
+fn loop_phi_still_parses() {
+    let src = r#"
+define i32 @f(i32 %n) {
+entry:
+  br label %preheader
+loop:
+  %i = phi i32 [ 0, %preheader ], [ 1, %latch ]
+  %done = icmp eq i32 %i, %n
+  br i1 %done, label %exit, label %latch
+preheader:
+  br label %loop
+latch:
+  br label %loop
+exit:
+  ret i32 %i
+}
+"#;
+    parse_ok(src).expect("loop phi must parse");
+}
