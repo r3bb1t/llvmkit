@@ -65,3 +65,61 @@ entry:\n\
         other => panic!("unexpected error variant: {other:?}"),
     }
 }
+
+/// Parse `src` and return `Ok(())` on success, propagating any parse error.
+fn parse_ok(src: &str) -> Result<(), ParseError> {
+    Module::with_new("parser_ok", |module| {
+        Parser::new(src.as_bytes(), &module)
+            .expect("lexer primes")
+            .parse_module()
+            .map(|_| ())
+    })
+}
+
+/// Phi W1: a `phi` appearing after a non-phi instruction is a parse error.
+///
+/// With the auto-hoisting phi builders, feeding a misplaced `phi` to a builder
+/// would silently reorder it into valid position, laundering ill-formed `.ll`
+/// into valid IR. The parser rejects it up front instead.
+///
+/// Uses a zero-input `phi` (as in `zero-input-phi/phi_int_round_trips.ll`) so
+/// the test isolates *placement*: the guard fires before `parse_phi` runs, and
+/// no incoming-edge resolution is involved.
+#[test]
+fn phi_after_non_phi_is_a_parse_error() {
+    let src = r#"
+define void @f() {
+entry:
+  ret void
+
+return:
+  %x = add i32 0, 1
+  %r = phi i32
+  ret void
+}
+"#;
+    let err = parse_err(src);
+    let msg = err.to_string();
+    assert!(
+        msg.contains("phi must be grouped at the top"),
+        "expected phi-placement parse error, got: {msg}"
+    );
+}
+
+/// A `phi` that appears before the first non-phi instruction still parses,
+/// even when a non-phi instruction follows it in the same block.
+#[test]
+fn leading_phis_still_parse() {
+    let src = r#"
+define void @f() {
+entry:
+  ret void
+
+return:
+  %r = phi i32
+  %x = add i32 %r, 1
+  ret void
+}
+"#;
+    parse_ok(src).expect("well-placed phi must keep parsing");
+}

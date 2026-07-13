@@ -5748,6 +5748,11 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         // Emit instructions until a terminator consumes `builder`.
         let mut builder = Some(builder);
         let mut pending_debug_records = Vec::new();
+        // Track whether any non-phi instruction has been emitted in this block.
+        // A `phi` appearing after one is ill-formed `.ll`: the auto-hoisting phi
+        // builders would silently reorder it into valid position, so reject it
+        // at parse time instead of laundering bad input into valid IR.
+        let mut seen_non_phi = false;
         loop {
             while matches!(self.peek(), Token::Hash) {
                 self.bump()?;
@@ -5780,6 +5785,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     self.bump()?;
                     self.parse_store(state, b_ref)?;
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                    seen_non_phi = true;
                     continue;
                 }
                 Token::Instruction(crate::ll_token::Opcode::Fence) => {
@@ -5787,6 +5793,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     self.bump()?;
                     self.parse_fence(b_ref)?;
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                    seen_non_phi = true;
                     continue;
                 }
                 Token::Instruction(crate::ll_token::Opcode::Switch) => {
@@ -5867,6 +5874,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 let value = self.parse_call(state, b_ref, &result_name)?;
                 self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                 state.bind_local(&result_name, value, result_loc)?;
+                seen_non_phi = true;
                 continue;
             }
             if matches!(
@@ -5886,6 +5894,16 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 Token::Instruction(op) => *op,
                 _ => return Err(self.expected("instruction opcode")),
             };
+            // A `phi` must be grouped at the top of its block: reject one that
+            // follows any non-phi instruction. Every other (non-terminator)
+            // opcode marks the boundary past which phis are no longer allowed.
+            if matches!(opcode, crate::ll_token::Opcode::Phi) {
+                if seen_non_phi {
+                    return Err(self.expected("phi must be grouped at the top of its basic block"));
+                }
+            } else {
+                seen_non_phi = true;
+            }
             self.bump()?;
             let b_ref = borrow_live_builder(&builder, self.loc())?;
             let value = match opcode {
