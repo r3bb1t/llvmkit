@@ -335,3 +335,36 @@ fn insert_phi_rejects_non_dominating_incoming() -> Result<(), IrError> {
         Ok(())
     })
 }
+
+/// NEGATIVE (completeness): a `ReshapeCfg` pass inserts a phi with fewer
+/// incomings than the merge block's predecessors — one incoming for the
+/// 2-predecessor `merge`. The shared coherence check rejects the incomplete
+/// phi before it is created (the count-mismatch arm, which the dominance
+/// negative does not exercise).
+#[test]
+fn insert_phi_rejects_incomplete_incomings() -> Result<(), IrError> {
+    Module::with_new("insert-phi-incomplete", |m| {
+        let i32_ty = m.i32_type();
+        let (f, lv, left_label, _rv, _right_label) = build_diamond(&m)?;
+
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        // Only one incoming for merge's two predecessors {left, right}.
+        let pass = InsertMergePhi {
+            merge_name: "merge",
+            ty: i32_ty.as_type(),
+            incomings: vec![(lv, left_label)],
+        };
+        let err = run_function_pass(pass, verified, f, &mut analyses)
+            .err()
+            .expect("insert_phi must reject an incomplete incoming set");
+        // Assert on the rendered message rather than the exact variant so the
+        // test survives a future refinement of the coherence-error mapping.
+        let msg = err.to_string();
+        assert!(
+            msg.contains("predecessor"),
+            "expected an incomplete-phi coherence error mentioning predecessors, got: {err:?}"
+        );
+        Ok(())
+    })
+}
