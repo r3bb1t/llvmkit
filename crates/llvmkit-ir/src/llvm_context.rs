@@ -476,6 +476,18 @@ impl Context {
         }
     }
 
+    /// Render a basic-block value's printed name for a diagnostic: its
+    /// textual name if present, else its numeric arena index. Used by the
+    /// phi edge-add paths' [`IrError::AmbiguousPhiIncoming`](crate::IrError::AmbiguousPhiIncoming)
+    /// message, which does not carry a borrowed block handle.
+    pub(crate) fn block_diag_name(&self, id: ValueId) -> String {
+        self.value_data(id)
+            .name
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| id.arena_index().to_string())
+    }
+
     /// Push a fresh value to the arena and return its id.
     pub(crate) fn push_value(&self, data: ValueData) -> ValueId {
         let idx = self.values.push(data);

@@ -1493,13 +1493,15 @@ where
         // between the phi's cached result type and `replacement`'s type
         // (instruction.rs). `same` is one of this very phi's own incoming
         // operands (the loop above only ever assigns `same` from
-        // `self.phi_incoming_values(phi)`). IMPORTANT: unlike the typed
-        // `PhiInst::add_incoming`, the dyn path this engine uses
+        // `self.phi_incoming_values(phi)`). The dyn path this engine uses
         // (`phi_add_incoming_raw` -> `IRBuilder::phi_add_incoming_from_value`,
-        // ir_builder.rs) performs NO type check of its own -- its own doc
-        // comment defers "value-type ... coherence" to `Module::verify`.
-        // The real guarantee here is narrower and currently-true-by-
-        // construction rather than checked at the phi-mutation call site:
+        // ir_builder.rs) now performs the same result-type check the typed
+        // `PhiInst::add_incoming` does, at the call site rather than only at
+        // `Module::verify` (belt-and-braces: Braun reads are same-typed by
+        // construction, so that check never fires on this engine's writes).
+        // The narrower guarantee this `unreachable!` actually relies on is
+        // currently-true-by-construction and not (yet) checked at the
+        // phi-mutation call site:
         // every operand this engine has EVER pushed onto a layer-created
         // phi's incoming list is either (a) another layer-created phi's
         // own id (`emit_operandless_phi` always builds it from the same

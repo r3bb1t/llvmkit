@@ -812,6 +812,18 @@ pub enum IrError {
     /// onto a partially-built function is rejected.
     #[error("SsaBuilder requires a function with no existing basic blocks")]
     SsaFunctionHasBlocks,
+
+    /// A phi already has an entry for this predecessor block with a
+    /// different value; a second, differing entry is meaningless in any
+    /// CFG. Same-block same-value duplicates are legal (multi-edges from
+    /// `switch`). Mirrors the class of upstream bug llvm/llvm-project#196954,
+    /// enforced at the edge-add call site rather than deferred to
+    /// [`Module::verify`](crate::Module::verify)'s `AmbiguousPhi` rule.
+    #[error("phi already has an entry for block %{block} with a different value")]
+    AmbiguousPhiIncoming {
+        /// Printed name of the predecessor block.
+        block: String,
+    },
 }
 
 /// Crate-wide `Result` alias.

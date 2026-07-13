@@ -123,3 +123,42 @@ return:
 "#;
     parse_ok(src).expect("well-placed phi must keep parsing");
 }
+
+/// A `phi` whose incoming value type does not match the phi result type is
+/// now a PARSE error, caught at the edge-add call site
+/// (`IRBuilder::phi_add_incoming_from_value`) rather than deferred to
+/// `verify()`. Here the incoming value `%v` is a `ptr` (from `alloca`) fed
+/// to an `i32` phi, so the result-type check rejects the edge and the
+/// parser surfaces it through `builder_err`'s `valid phi.add_incoming:`
+/// prefix.
+///
+/// The predecessor is written as a forward-referenced block (`%fwd`) on
+/// purpose: the resolved-value edge takes the *immediate* add path, and a
+/// forward block is still unterminated at that point, so block resolution
+/// succeeds and control reaches the type check. (A predecessor that is
+/// already terminated — the common case — is rejected earlier by the
+/// parser's `basic_block_for_construction` guard, independent of this
+/// check.)
+#[test]
+fn phi_incoming_type_mismatch_is_a_parse_error() {
+    let src = r#"
+define i32 @f() {
+entry:
+  %v = alloca i8
+  br label %next
+
+next:
+  %p = phi i32 [ %v, %fwd ]
+  br label %fwd
+
+fwd:
+  ret i32 %p
+}
+"#;
+    let err = parse_err(src);
+    let msg = err.to_string();
+    assert!(
+        msg.contains("phi.add_incoming") && msg.contains("type mismatch"),
+        "expected phi add_incoming type-check parse error, got: {msg}"
+    );
+}

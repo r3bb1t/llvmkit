@@ -501,9 +501,20 @@ where
     /// use by parsers and passes where compile-time type markers are
     /// unavailable.
     ///
-    /// Errors if `phi_val` does not refer to a phi instruction. `val` and
-    /// `block` already carry the builder brand `B`; remaining value-type and
-    /// predecessor-set coherence is verified by [`Module::verify`](crate::Module::verify).
+    /// Errors if `phi_val` does not refer to a phi instruction, if `val`'s
+    /// type does not match the phi's result type
+    /// ([`IrError::TypeMismatch`]), or if the phi already has an entry for
+    /// `block` with a *different* value
+    /// ([`IrError::AmbiguousPhiIncoming`]) — the same result-type and
+    /// differing-duplicate rules the typed [`PhiInst::add_incoming`]
+    /// enforces, applied here so the parser / ssa_builder callers reject at
+    /// the call site instead of deferring to
+    /// [`Module::verify`](crate::Module::verify). A same-block *same-value*
+    /// duplicate stays legal (multi-edges from `switch`). `val` and `block`
+    /// already carry the builder brand `B`; remaining predecessor-set
+    /// coherence is verified by [`Module::verify`](crate::Module::verify).
+    ///
+    /// [`PhiInst::add_incoming`]: crate::PhiInst::add_incoming
     pub fn phi_add_incoming_from_value<RBb, SBb>(
         &self,
         phi_val: Value<'ctx, B>,
@@ -532,10 +543,36 @@ where
                 });
             }
         };
+        // Result-type check: the same rule the typed `PhiInst::add_incoming`
+        // enforces, applied here so the parser / ssa_builder paths reject a
+        // mismatched incoming at the call site rather than deferring to
+        // `Module::verify`.
+        let phi_ty = self.module.context().value_data(phi_val.id).ty;
+        if val.ty != phi_ty {
+            return Err(IrError::TypeMismatch {
+                expected: Type::new(phi_ty, ModuleRef::<B>::new(self.module)).kind_label(),
+                got: Type::new(val.ty, ModuleRef::<B>::new(self.module)).kind_label(),
+            });
+        }
+        // Differing-duplicate check: a second entry for the same predecessor
+        // block with a different value is meaningless in any CFG (the
+        // InstCombine #196954 bug class). A same-block same-value duplicate
+        // stays legal (multi-edges from `switch`).
+        let block_id = block.as_value().id;
+        if phi_payload
+            .incoming
+            .borrow()
+            .iter()
+            .any(|(v, b)| *b == block_id && v.get() != val.id)
+        {
+            return Err(IrError::AmbiguousPhiIncoming {
+                block: self.module.context().block_diag_name(block_id),
+            });
+        }
         phi_payload
             .incoming
             .borrow_mut()
-            .push((core::cell::Cell::new(val.id), block.as_value().id));
+            .push((core::cell::Cell::new(val.id), block_id));
         // Register phi as a user of the incoming value.
         self.module
             .context()
