@@ -29,6 +29,7 @@ on user-visible API failure modes; D11's test-provenance rule is tracked in
 | Use an instruction handle after erase | D2 | Raw pointer discipline | Lifecycle methods consume a non-`Copy`, non-`Clone` `Instruction` handle |
 | Recover lifecycle authority from a copyable value, block, or use-list | D2, D9 | Any retained `Instruction *` can be reused for mutation | Copyable rediscovery APIs return `InstructionView`; only builder output, `BlockCursor`, and detached reinsertion produce `Instruction<Attached>` |
 | Add more incoming edges or destinations after a variable-arity instruction is finalized | D1, D2 | Caller discipline plus verifier | `PhiInst<Open>` / `SwitchInst<Open>` / `IndirectBrInst<Open>` / `LandingPadInst<Open>` / `CatchSwitchInst<Open>` are linear; `finish()` returns closed views without mutators |
+| Misplace a phi, mistype a phi incoming, or give one predecessor two different incoming values | D1, D4 | Builder accepts all three; the verifier later reports `PhiNotAtTop` or the type / predecessor mismatch | `build_*_phi` always insert at the block's PHI head (placement correct by construction); `add_incoming` — the typed path *and* the untyped parser/SSA-builder path — type-checks the incoming and rejects a differing duplicate for one predecessor as `IrError::AmbiguousPhiIncoming`; whole-graph incoming-vs-predecessor completeness stays in `Module::verify()` |
 | Run verified-only analyses after a transform | D8 | Verifier pass convention | A pass pipeline's output is `Module<Unverified>` whenever any member mutates (derived from the members' rungs), so verified-only analyses require an explicit `verify()` first |
 | Pass mutates IR but reports everything preserved | D8, D1 | Pass returns a hand-written `PreservedAnalyses`; over-claiming leaves stale analyses that later passes miscompile against, caught only if a verifier/analysis-checker pass is opted in | Preservation is *derived* from the pass's capability rung, so over-claiming is a compile error: a mutating rung's `done()` floor is fixed by the rung, and `Access = Inspect` has no `mutate()` at all |
 | Declare an analysis dependency | D8, D1 | Fallible `getResult` / `getCachedResult`; querying an undeclared or uncomputed analysis returns null and is undefined behavior | `type Requires` is prefetched, then read through the infallible `cx.analysis::<A, _>()`; an undeclared analysis has no `AnalysisSelector` impl, so the access is a compile error |
@@ -210,8 +211,14 @@ Module::with_new::<_, _, _>("left", |left| {
 
 Result: compile error. The branch target is not from the same branded module.
 
-Limit: same-module CFG facts that depend on the complete graph, such as phi
-predecessor completeness and dominance, still belong in `Module::verify()`.
+Limit: same-module CFG facts that depend on the *complete* graph — dominance,
+and phi-incoming completeness against the final predecessor set for
+builder-constructed IR — still belong in `Module::verify()`. The *local* phi
+facts are witnessed earlier now: placement is correct by construction, each
+`add_incoming` checks the incoming value's type and rejects a conflicting
+duplicate for one predecessor, and the `.ll` parser checks phi completeness once
+all predecessors are known (see section 9). `Module::verify()` remains the final
+gate over the whole-graph coherence.
 
 ## 3. Global initializer operands from the wrong module
 
@@ -524,6 +531,19 @@ where
     V: IntoIntValue<'ctx, W, B>,
 ```
 
+`add_incoming` also witnesses the *local* phi facts at the call site rather than
+at `verify()` time: the incoming value's type is checked against the phi (the
+untyped parser / SSA-builder path `phi_add_incoming_from_value` included), and a
+second incoming for a predecessor already recorded with a *different* value is
+rejected as `IrError::AmbiguousPhiIncoming`. Same-value duplicates stay legal, so
+a `switch` with several edges from one predecessor still builds. Placement is
+correct by construction too: the `build_*_phi` builders insert at the block's PHI
+head regardless of cursor position, so a phi cannot be emitted below a non-phi
+instruction (the verifier's `PhiNotAtTop` check stays as defense in depth). What
+these local checks do *not* cover — phi-incoming completeness against the final
+predecessor set, and dominance — remains `Module::verify()`'s job; the `.ll`
+parser additionally checks that completeness once all predecessors are known.
+
 Calling `finish` returns a closed view:
 
 ```rust
@@ -803,7 +823,14 @@ type system. Runtime verification still owns:
 
 - parsed or otherwise erased `Dyn` forms;
 - dominance and cross-block SSA use checks;
-- phi incoming set versus CFG predecessor set;
+- phi-incoming completeness against the *complete* CFG predecessor set — the
+  whole-graph check. Wave 1 moved the *local* phi facts earlier (placement is
+  correct by construction; `add_incoming` checks the incoming value's type and
+  rejects a differing duplicate for one predecessor; the `.ll` parser checks
+  completeness at end-of-function parse once all predecessors are known; and
+  `split_block` maintains its successors' phi incomings itself), but
+  `Module::verify()` remains the final gate over whole-graph phi coherence, as
+  defense in depth;
 - complete terminator and reachability invariants after parser/pass mutation;
 - data-layout-dependent size/alignment rules;
 - verifier rules for attributes, globals, atomics, calls, EH pads, and metadata
