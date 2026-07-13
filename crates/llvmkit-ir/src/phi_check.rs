@@ -120,6 +120,41 @@ pub struct PhiCoherenceError {
     pub message: String,
 }
 
+/// Render a [`PhiViolation`] to its human-readable message. Shared by the
+/// parser's end-of-function coherence check and the pass-side
+/// [`FnReshape::insert_phi`](crate::FnReshape::insert_phi), so the two report
+/// the same diagnostic for the same failure and cannot drift.
+pub(crate) fn render_phi_violation<'ctx, B: ModuleBrand>(
+    violation: &PhiViolation,
+    result_ty: TypeId,
+    module: &Module<'ctx, B, Unverified>,
+) -> String {
+    let ctx = module.core_ref().context();
+    match violation {
+        PhiViolation::CountMismatch { entries, preds } => {
+            format!("phi has {entries} incoming entries but block has {preds} predecessors")
+        }
+        PhiViolation::NotAPredecessor { block } => format!(
+            "phi incoming block %{} is not a predecessor",
+            ctx.block_diag_name(*block)
+        ),
+        PhiViolation::TooManyFromBlock { block } => format!(
+            "phi has too many incoming entries from block %{}",
+            ctx.block_diag_name(*block)
+        ),
+        PhiViolation::AmbiguousValues { block } => format!(
+            "phi has multiple entries for block %{} with different values",
+            ctx.block_diag_name(*block)
+        ),
+        PhiViolation::IncomingTypeMismatch { block, value_ty } => format!(
+            "phi expects {} but incoming from %{} is {}",
+            Type::new(result_ty, module.module_ref()),
+            ctx.block_diag_name(*block),
+            Type::new(*value_ty, module.module_ref()),
+        ),
+    }
+}
+
 /// Run the shared phi-coherence check over every phi in `function`,
 /// recomputing the CFG predecessor multiset from the current
 /// terminators.
@@ -175,32 +210,9 @@ pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
                 .map(|(v, b)| (v.get(), *b))
                 .collect();
             if let Err(violation) = check_phi_incoming(result_ty, &incoming, preds, &value_ty_of) {
-                let message = match violation {
-                    PhiViolation::CountMismatch { entries, preds } => format!(
-                        "phi has {entries} incoming entries but block has {preds} predecessors"
-                    ),
-                    PhiViolation::NotAPredecessor { block } => format!(
-                        "phi incoming block %{} is not a predecessor",
-                        ctx.block_diag_name(block)
-                    ),
-                    PhiViolation::TooManyFromBlock { block } => format!(
-                        "phi has too many incoming entries from block %{}",
-                        ctx.block_diag_name(block)
-                    ),
-                    PhiViolation::AmbiguousValues { block } => format!(
-                        "phi has multiple entries for block %{} with different values",
-                        ctx.block_diag_name(block)
-                    ),
-                    PhiViolation::IncomingTypeMismatch { block, value_ty } => format!(
-                        "phi expects {} but incoming from %{} is {}",
-                        Type::new(result_ty, module.module_ref()),
-                        ctx.block_diag_name(block),
-                        Type::new(value_ty, module.module_ref()),
-                    ),
-                };
                 return Err(PhiCoherenceError {
                     phi_id: inst.as_value().id,
-                    message,
+                    message: render_phi_violation(&violation, result_ty, module),
                 });
             }
         }

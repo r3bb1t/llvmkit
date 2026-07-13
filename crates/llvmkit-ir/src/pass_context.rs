@@ -74,7 +74,7 @@ use super::module::{Brand, Invariant, Module, ModuleBrand, ModuleRef, ModuleView
 use super::pass_access::{
     FnAccess, ModAccess, MutatingFn, MutatingModule, PatchBody, ReshapeCfg, RewriteModule,
 };
-use super::phi_check::{PhiViolation, check_phi_incoming};
+use super::phi_check::{check_phi_incoming, render_phi_violation};
 use super::r#type::Type;
 use super::value::{IsValue, Value, ValueId};
 use super::worklist::Worklist;
@@ -1022,7 +1022,9 @@ where
     /// neither is expressible through the shared `&self` module token, which
     /// reaches instruction storage only by shared reference. A `switch`,
     /// whose case list and default live behind `Cell`/`RefCell`, is the
-    /// terminator this op edits.
+    /// terminator this op edits. Dropping the last remaining case to `to`
+    /// leaves a `switch` with only its default (`switch %x, label %d []`) —
+    /// degenerate but valid IR.
     ///
     /// **Phi maintenance.** Once the cases are dropped `from` is no longer a
     /// predecessor of `to`, so every leading phi in `to` loses all its
@@ -1366,22 +1368,11 @@ where
         let ctx = self.patch.module_mut().core_ref().context();
         let value_ty_of = |id: ValueId| ctx.value_data(id).ty;
         if let Err(violation) = check_phi_incoming(ty_id, &incoming_ids, &preds, &value_ty_of) {
-            return Err(match violation {
-                PhiViolation::CountMismatch { .. } => IrError::InvalidOperation {
-                    message: "insert_phi: incoming count does not match the block's predecessor count",
-                },
-                PhiViolation::NotAPredecessor { .. } => IrError::InvalidOperation {
-                    message: "insert_phi: an incoming names a block that is not a predecessor",
-                },
-                PhiViolation::TooManyFromBlock { .. } => IrError::InvalidOperation {
-                    message: "insert_phi: too many incoming entries from one predecessor block",
-                },
-                PhiViolation::AmbiguousValues { block } => IrError::AmbiguousPhiIncoming {
-                    block: ctx.block_diag_name(block),
-                },
-                PhiViolation::IncomingTypeMismatch { .. } => IrError::InvalidOperation {
-                    message: "insert_phi: an incoming value's type does not match the phi result type",
-                },
+            // Same renderer the .ll parser uses for its coherence diagnostics,
+            // so a pass-side insert and a parse report the same message for the
+            // same failure.
+            return Err(IrError::PhiCoherence {
+                message: render_phi_violation(&violation, ty_id, self.patch.module_mut()),
             });
         }
 
