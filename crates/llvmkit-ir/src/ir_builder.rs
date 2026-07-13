@@ -39,7 +39,7 @@ use core::marker::PhantomData;
 
 use super::align::{Align, MaybeAlign};
 use super::atomic_ordering::AtomicOrdering;
-use super::basic_block::{BasicBlock, IntoBasicBlockLabel};
+use super::basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
 use super::block_state::{Terminated, Unterminated};
 use super::calling_conv::CallingConv;
 use super::cmp_predicate::CmpPredicate;
@@ -5882,6 +5882,141 @@ where
         let inst = self.append_instruction(void_ty, InstructionKindData::Br(payload), "");
         let bb = self.into_insert_block();
         Ok((bb.retag_termination::<Terminated>(), inst))
+    }
+
+    /// Produce `br label %target` while carrying block arguments into
+    /// `target`'s parameters. In the Swift-SIL / MLIR block-argument model a
+    /// branch supplies the successor's parameters at the edge: `target`'s
+    /// leading head-phis (created by
+    /// [`append_block_with_params`](Self::append_block_with_params)) are its
+    /// parameters, and `args[i]` becomes the incoming value for the `i`-th
+    /// parameter from *this* block.
+    ///
+    /// The edge and the values move together, so a wrong argument fails here,
+    /// not at a distant [`Module::verify`](crate::Module::verify): `args.len()`
+    /// must equal `target`'s parameter count ([`IrError::PhiArgArityMismatch`]
+    /// otherwise), and each argument's type must match its parameter
+    /// ([`IrError::TypeMismatch`] otherwise). Arguments are validated and the
+    /// parameter-phis seeded *before* the `br` is emitted, so a rejected
+    /// argument leaves no half-formed terminator.
+    ///
+    /// Consumes `self`; the target may be in any termination state (a
+    /// back-edge targets an already-terminated block).
+    pub fn build_br_with_args<T>(
+        self,
+        target: T,
+        args: &[Value<'ctx, B>],
+    ) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+    where
+        T: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let target = target.into_basic_block_label();
+        // Capture the predecessor label before the terminator builder consumes
+        // `self` — the incoming edges name *this* block as their predecessor.
+        let pred = self.insert_block().label();
+        self.add_block_args(target, pred, args)?;
+        self.build_br(target)
+    }
+
+    /// Produce `br i1 <cond>, label %then, label %else` while carrying block
+    /// arguments down each edge into the matching successor's parameters. Each
+    /// edge supplies its own argument list to its own target, following the
+    /// same Swift-SIL block-argument model as
+    /// [`build_br_with_args`](Self::build_br_with_args): `then_args` seed
+    /// `then_bb`'s parameter-phis and `else_args` seed `else_bb`'s, each with
+    /// *this* block as the predecessor.
+    ///
+    /// Both edges are validated and their parameter-phis seeded before the
+    /// `br` is emitted, so a wrong arity ([`IrError::PhiArgArityMismatch`]) or
+    /// type ([`IrError::TypeMismatch`]) fails here rather than at
+    /// [`Module::verify`](crate::Module::verify). If `then_bb == else_bb` and
+    /// the two argument lists differ, the second edge-add rejects the
+    /// differing duplicate for the shared predecessor
+    /// ([`IrError::AmbiguousPhiIncoming`]).
+    ///
+    /// Consumes `self`; both targets may be in any termination state.
+    pub fn build_cond_br_with_args<C, Then, Else>(
+        self,
+        cond: C,
+        then_bb: Then,
+        then_args: &[Value<'ctx, B>],
+        else_bb: Else,
+        else_args: &[Value<'ctx, B>],
+    ) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+    where
+        C: IntoIntValue<'ctx, bool, B>,
+        Then: IntoBasicBlockLabel<'ctx, R, B>,
+        Else: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let then_bb = then_bb.into_basic_block_label();
+        let else_bb = else_bb.into_basic_block_label();
+        let pred = self.insert_block().label();
+        self.add_block_args(then_bb, pred, then_args)?;
+        self.add_block_args(else_bb, pred, else_args)?;
+        self.build_cond_br(cond, then_bb, else_bb)
+    }
+
+    /// Seed a target block's parameters with the values a branch carries into
+    /// it. The parameters are the target's leading head-phis (in order); this
+    /// arity-checks `args` against them and records each `args[i]` as an
+    /// incoming edge from `pred` into the `i`-th parameter-phi via the
+    /// type-checked erased path
+    /// ([`phi_add_incoming_from_value`](Self::phi_add_incoming_from_value)),
+    /// which rejects a type mismatch or a differing-value duplicate for `pred`.
+    ///
+    /// Shared by [`build_br_with_args`](Self::build_br_with_args) and
+    /// [`build_cond_br_with_args`](Self::build_cond_br_with_args); called
+    /// before the terminator is emitted so a rejected argument aborts the
+    /// branch cleanly.
+    fn add_block_args(
+        &self,
+        target: BasicBlockLabel<'ctx, R, B>,
+        pred: BasicBlockLabel<'ctx, R, B>,
+        args: &[Value<'ctx, B>],
+    ) -> IrResult<()> {
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let label_ty = self.module.label_type().as_type().id();
+
+        // The target block's parameters are its leading head-phis, in order.
+        // Scan from the block top and stop at the first non-phi (phis are
+        // grouped at the head) — the pattern the CFG splitter uses.
+        let target_block = BasicBlock::<Dyn, Terminated, B>::from_parts(
+            target.as_value().id,
+            module_ref,
+            label_ty,
+        );
+        let mut param_phis: Vec<ValueId> = Vec::new();
+        for inst_id in target_block.instruction_ids() {
+            let data = self.module.context().value_data(inst_id);
+            let ValueKindData::Instruction(inst) = &data.kind else {
+                continue;
+            };
+            let InstructionKindData::Phi(_) = &inst.kind else {
+                break;
+            };
+            param_phis.push(inst_id);
+        }
+
+        // Arity: exactly one argument per parameter. Caught here so a wrong
+        // count fails at the branch rather than at a distant `verify()`.
+        if param_phis.len() != args.len() {
+            return Err(IrError::PhiArgArityMismatch {
+                expected: param_phis.len(),
+                got: args.len(),
+            });
+        }
+
+        // Record each argument as an incoming edge from `pred` into the
+        // matching parameter-phi. The erased path type-checks the argument
+        // and rejects a differing-value duplicate for `pred`.
+        let pred_block =
+            BasicBlock::<Dyn, Terminated, B>::from_parts(pred.as_value().id, module_ref, label_ty);
+        for (phi_id, arg) in param_phis.iter().zip(args.iter()) {
+            let phi_ty = self.module.context().value_data(*phi_id).ty;
+            let phi_val = Value::from_parts(*phi_id, module_ref, phi_ty);
+            self.phi_add_incoming_from_value(phi_val, *arg, pred_block.copy_handle())?;
+        }
+        Ok(())
     }
 
     /// Produce `switch <cond>, label <default> [...]`. Mirrors

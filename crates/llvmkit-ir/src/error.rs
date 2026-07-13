@@ -824,6 +824,19 @@ pub enum IrError {
         /// Printed name of the predecessor block.
         block: String,
     },
+
+    /// A block-argument branch supplied a number of arguments that does not
+    /// match the target block's parameter (leading-phi) count. The branch
+    /// carries exactly one value per target parameter; a differing count is
+    /// rejected at the branch builder rather than deferred to
+    /// [`Module::verify`](crate::Module::verify).
+    #[error("phi argument arity mismatch: target expects {expected}, got {got}")]
+    PhiArgArityMismatch {
+        /// Number of parameters (leading head-phis) the target block declares.
+        expected: usize,
+        /// Number of arguments the branch supplied.
+        got: usize,
+    },
 }
 
 /// Crate-wide `Result` alias.
