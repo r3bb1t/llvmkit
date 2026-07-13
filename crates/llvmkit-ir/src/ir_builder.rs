@@ -5568,7 +5568,9 @@ where
     /// `let i32_ty = m.i32_type();`. Mirrors `IRBuilder::CreatePHI`
     /// followed by zero `PHINode::addIncoming` calls. Subsequent
     /// edges are added through [`crate::PhiInst::add_incoming`],
-    /// which returns `Self` so calls chain.
+    /// which returns `Self` so calls chain. Inserted at the block's phi
+    /// head regardless of cursor position, so phi placement is correct by
+    /// construction.
     pub fn build_int_phi<W, Name>(&self, name: Name) -> IrResult<PhiInst<'ctx, W, PhiOpen, B>>
     where
         Name: AsRef<str>,
@@ -5577,7 +5579,7 @@ where
         let ty = W::ir_type(ModuleRef::<B>::new(self.module));
         let payload = crate::instr_types::PhiData::new();
         let inst =
-            self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
+            self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok({
             let _i = inst;
             PhiInst::<W, PhiOpen, B>::from_raw(
@@ -5590,6 +5592,8 @@ where
 
     /// Runtime-width phi for the [`crate::IntDyn`] case. Takes the
     /// type explicitly because the marker carries no static width.
+    /// Inserted at the block's phi head regardless of cursor position, so
+    /// phi placement is correct by construction.
     pub fn build_int_phi_dyn<Name>(
         &self,
         ty: IntType<'ctx, IntDyn, B>,
@@ -5600,7 +5604,7 @@ where
     {
         let payload = crate::instr_types::PhiData::new();
         let inst =
-            self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
+            self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok({
             let _i = inst;
             PhiInst::<IntDyn, PhiOpen, B>::from_raw(
@@ -5613,7 +5617,9 @@ where
 
     /// Float-typed phi: `phi <fpty>`. Marker-only form keyed on
     /// `K: StaticFloatKind`. Mirrors `IRBuilder::CreatePHI(Type*, ...)`
-    /// applied to a floating-point type.
+    /// applied to a floating-point type. Inserted at the block's phi head
+    /// regardless of cursor position, so phi placement is correct by
+    /// construction.
     pub fn build_fp_phi<K, Name>(&self, name: Name) -> IrResult<FpPhiInst<'ctx, K, PhiOpen, B>>
     where
         Name: AsRef<str>,
@@ -5622,7 +5628,7 @@ where
         let ty = K::ir_type(ModuleRef::<B>::new(self.module));
         let payload = super::instr_types::PhiData::new();
         let inst =
-            self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
+            self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(FpPhiInst::<K, PhiOpen, B>::from_raw(
             inst.as_value().id,
             ModuleRef::<B>::new(self.module),
@@ -5631,7 +5637,9 @@ where
     }
 
     /// Runtime-kind float phi: takes the type explicitly because
-    /// [`crate::FloatDyn`] carries no static kind.
+    /// [`crate::FloatDyn`] carries no static kind. Inserted at the block's
+    /// phi head regardless of cursor position, so phi placement is correct
+    /// by construction.
     pub fn build_fp_phi_dyn<Name>(
         &self,
         ty: FloatType<'ctx, FloatDyn, B>,
@@ -5642,7 +5650,7 @@ where
     {
         let payload = super::instr_types::PhiData::new();
         let inst =
-            self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
+            self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(FpPhiInst::<FloatDyn, PhiOpen, B>::from_raw(
             inst.as_value().id,
             ModuleRef::<B>::new(self.module),
@@ -5652,6 +5660,8 @@ where
 
     /// Pointer-typed phi in the default address space (addrspace 0).
     /// Mirrors `IRBuilder::CreatePHI(PointerType::getUnqual(...), ...)`.
+    /// Inserted at the block's phi head regardless of cursor position, so
+    /// phi placement is correct by construction.
     pub fn build_pointer_phi<Name>(&self, name: Name) -> IrResult<PointerPhiInst<'ctx, PhiOpen, B>>
     where
         Name: AsRef<str>,
@@ -5659,7 +5669,7 @@ where
         let ty = self.module.ptr_type(0);
         let payload = super::instr_types::PhiData::new();
         let inst =
-            self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
+            self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(PointerPhiInst::<PhiOpen, B>::from_raw(
             inst.as_value().id,
             ModuleRef::<B>::new(self.module),
@@ -5668,7 +5678,9 @@ where
     }
 
     /// Pointer-typed phi in a caller-specified address space. Mirrors
-    /// `IRBuilder::CreatePHI(PointerType::get(Ctx, AS), ...)`.
+    /// `IRBuilder::CreatePHI(PointerType::get(Ctx, AS), ...)`. Inserted at
+    /// the block's phi head regardless of cursor position, so phi
+    /// placement is correct by construction.
     pub fn build_pointer_phi_in_addrspace<Name>(
         &self,
         ty: PointerType<'ctx, B>,
@@ -5679,7 +5691,7 @@ where
     {
         let payload = super::instr_types::PhiData::new();
         let inst =
-            self.append_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
+            self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(PointerPhiInst::<PhiOpen, B>::from_raw(
             inst.as_value().id,
             ModuleRef::<B>::new(self.module),
@@ -6571,6 +6583,56 @@ where
             }
             None => bb.append_instruction(id),
         }
+        if !name.is_empty()
+            && !Type::new(ty, self.module).is_void()
+            && let Some(parent_fn_id) = bb.parent_id()
+        {
+            let parent_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(
+                parent_fn_id,
+                ModuleRef::<B>::new(self.module),
+            );
+            parent_fn.set_local_value_name(id, Some(name));
+        }
+        Instruction::from_parts(id, ModuleRef::<B>::new(self.module))
+    }
+
+    /// Crate-internal: append a freshly-built phi to the insertion block.
+    /// Identical to [`Self::append_instruction`] (same operand use-list
+    /// registration and value-symbol-table population) except for
+    /// placement: the phi is inserted at the block's phi head via
+    /// [`BasicBlock::insert_instruction_at_phi_head`], regardless of the
+    /// builder's cursor, so phis stay grouped at the top of the block by
+    /// construction rather than only by a verifier check.
+    fn append_phi_instruction<N: AsRef<str>>(
+        &self,
+        ty: TypeId,
+        kind: InstructionKindData,
+        name: N,
+    ) -> Instruction<'ctx, Attached, B> {
+        let name = name.as_ref();
+        let bb = self.insert_block();
+        let bb_id = bb.as_value().id;
+        let value = build_instruction_value(ty, bb_id, kind, None);
+        // Snapshot operand ids before the value is moved into the arena so
+        // we can register the new instruction in each operand's reverse
+        // use-list -- identical to `append_instruction`.
+        let operand_ids = match &value.kind {
+            ValueKindData::Instruction(i) => i.kind.operand_ids(),
+            // append_phi_instruction always builds an Instruction-kind value.
+            _ => unreachable!("append_phi_instruction built non-instruction value"),
+        };
+        let id = self.module.context().push_value(value);
+        for op in operand_ids {
+            self.module
+                .context()
+                .value_data(op)
+                .use_list
+                .borrow_mut()
+                .push(ValueUse::Instruction(id));
+        }
+        // Unlike `append_instruction`, placement ignores the builder's
+        // insert cursor: phis always land at the block's phi head.
+        bb.insert_instruction_at_phi_head(id);
         if !name.is_empty()
             && !Type::new(ty, self.module).is_void()
             && let Some(parent_fn_id) = bb.parent_id()
