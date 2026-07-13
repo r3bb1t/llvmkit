@@ -201,6 +201,13 @@ pub enum VerifierRule {
     /// ("PHI node has multiple entries for the same basic block with
     /// different incoming values").
     AmbiguousPhi,
+    /// `phi` result type is not a valid first-class *data* type
+    /// (int / float / pointer / vector / array / non-opaque struct). Mirrors
+    /// `Verifier::visitPHINode` ("PHI nodes cannot have token type", and the
+    /// implicit rule that label/metadata are not phi result types). The `.ll`
+    /// parser rejects the same set at parse time, so this makes the guarantee
+    /// hold regardless of construction path (defense in depth).
+    PhiInvalidResultType,
     /// `call` callee is not a function-typed value.
     /// Mirrors `Verifier::visitCallBase`.
     CallNonFunction,
@@ -398,6 +405,9 @@ impl fmt::Display for VerifierRule {
             }
             Self::AmbiguousPhi => {
                 "PHI node has multiple entries for the same basic block with different incoming values"
+            }
+            Self::PhiInvalidResultType => {
+                "PHI node result type is not a valid first-class data type"
             }
             Self::CallNonFunction => "call callee is not a function value",
             Self::CallArgCountMismatch => "call argument count does not match callee signature",

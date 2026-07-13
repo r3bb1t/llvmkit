@@ -2402,6 +2402,33 @@ impl<'ctx> Verifier<'ctx> {
         predecessors: &HashMap<ValueId, Vec<ValueId>>,
     ) -> IrResult<()> {
         let result_ty = inst.ty().id;
+
+        // The phi result type must be a first-class *data* type. `is_first_class`
+        // is not a sufficient gate — it admits `label`/`metadata`/`token` — so
+        // enumerate the valid kinds exactly as the `.ll` parser's `parse_phi`
+        // whitelist does (int / float / pointer / vector / array / struct), with
+        // the `is_first_class` conjunct on struct excluding opaque structs. This
+        // runs before the coherence delegation so an invalid result type is
+        // rejected regardless of incoming coherence.
+        let rty = Type::new(result_ty, self.module);
+        let valid_result = rty.is_integer()
+            || rty.is_floating_point()
+            || rty.is_pointer()
+            || rty.is_vector()
+            || rty.is_array()
+            || (rty.is_struct() && rty.is_first_class());
+        if !valid_result {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::PhiInvalidResultType,
+                format!(
+                    "phi result type {} is not a valid first-class data type",
+                    self.type_label(result_ty)
+                ),
+            ));
+        }
+
         let preds = predecessors
             .get(&bb.as_value().id)
             .map(|v| v.as_slice())
@@ -3429,6 +3456,46 @@ mod tests {
             append_ret_void(&m, bb_id);
             let err = m.verify_borrowed().unwrap_err();
             assert_rule(&err, VerifierRule::SelfReference);
+        });
+    }
+
+    /// `Verifier::visitPHINode` -- "PHI nodes cannot have token type", plus the
+    /// general rule that a phi result must be a first-class data type. The
+    /// verifier now rejects an invalid phi *result* type before any coherence
+    /// check, mirroring the `.ll` parser's parse-time rejection so the
+    /// guarantee holds regardless of construction path (the raw phi builders
+    /// are internal, but `build_phi_dyn`/`make_phi_in_block` still take an
+    /// erased type).
+    #[test]
+    fn phi_with_invalid_result_type_rejected() {
+        // `token`: LLVM's explicit "PHI nodes cannot have token type".
+        Module::with_new("t", |m| {
+            let void_ty = m.void_type().as_type();
+            let token_ty = m.token_type().as_type();
+            let (_f_id, entry_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            fabricate_instruction(
+                &m,
+                entry_id,
+                token_ty.id(),
+                InstructionKindData::Phi(PhiData::new()),
+            );
+            append_ret_void(&m, entry_id);
+            let err = m.verify_borrowed().unwrap_err();
+            assert_rule(&err, VerifierRule::PhiInvalidResultType);
+        });
+        // `void`: not a first-class type, so also not a valid phi result.
+        Module::with_new("t", |m| {
+            let void_ty = m.void_type().as_type();
+            let (_f_id, entry_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            fabricate_instruction(
+                &m,
+                entry_id,
+                void_ty.id(),
+                InstructionKindData::Phi(PhiData::new()),
+            );
+            append_ret_void(&m, entry_id);
+            let err = m.verify_borrowed().unwrap_err();
+            assert_rule(&err, VerifierRule::PhiInvalidResultType);
         });
     }
 
