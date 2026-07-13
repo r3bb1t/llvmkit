@@ -13,7 +13,7 @@
 //! in the value arena. Public per-opcode handles live in
 //! [`crate::instructions`].
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 
 use crate::align::{Align, MaybeAlign};
 use crate::atomic_ordering::AtomicOrdering;
@@ -596,12 +596,18 @@ impl core::hash::Hash for FCmpInstData {
 /// (cond, then, else) for the conditional case.
 #[derive(Debug, Clone)]
 pub(crate) struct BranchInstData {
-    pub(crate) kind: BranchKind,
+    /// Interior-mutable so the reshape mutator — which reaches instructions
+    /// only through the arena's shared `&ValueData` — can retarget a `br` /
+    /// `cond_br` successor or collapse a `cond_br` to a `br`. Mirrors how
+    /// `SwitchInstData`'s `default_bb` / `cases` are `Cell` / `RefCell`. The
+    /// `cond` SSA operand stays a `Cell` inside `BranchKind::Conditional` for
+    /// RAUW; the `RefCell` here is the separate CFG-edit mutation axis.
+    pub(crate) kind: RefCell<BranchKind>,
 }
 
 impl PartialEq for BranchInstData {
     fn eq(&self, other: &Self) -> bool {
-        match (&self.kind, &other.kind) {
+        match (&*self.kind.borrow(), &*other.kind.borrow()) {
             (BranchKind::Unconditional(a), BranchKind::Unconditional(b)) => a == b,
             (
                 BranchKind::Conditional {
@@ -622,7 +628,7 @@ impl PartialEq for BranchInstData {
 impl Eq for BranchInstData {}
 impl core::hash::Hash for BranchInstData {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
-        match &self.kind {
+        match &*self.kind.borrow() {
             BranchKind::Unconditional(t) => {
                 0u8.hash(h);
                 t.hash(h);

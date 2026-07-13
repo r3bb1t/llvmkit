@@ -1012,19 +1012,18 @@ where
     /// maintenance is carried by the edit, never deferred to a fixup a caller
     /// could forget.
     ///
-    /// **Supported terminator.** `from` must end in a `switch`, and `to` must
-    /// be reached only through the switch's case list: every case targeting
-    /// `to` is dropped, collapsing the `from → to` edge. Removing a switch's
-    /// *default* edge is rejected (a `switch` must keep a default), as is a
-    /// `from` whose terminator is not a `switch`. A `br`/`cond_br` stores its
-    /// target block-ids in a payload that is not interior-mutable, and
-    /// collapsing a `cond_br` to a `br` would rewrite the terminator's *kind* —
-    /// neither is expressible through the shared `&self` module token, which
-    /// reaches instruction storage only by shared reference. A `switch`,
-    /// whose case list and default live behind `Cell`/`RefCell`, is the
-    /// terminator this op edits. Dropping the last remaining case to `to`
-    /// leaves a `switch` with only its default (`switch %x, label %d []`) —
-    /// degenerate but valid IR.
+    /// **Supported terminators.** `switch` and `cond_br` — all their target
+    /// payloads are interior-mutable (the `switch` case list / default behind
+    /// `Cell`/`RefCell`, and `BranchInstData.kind` behind a `RefCell`). For a
+    /// `switch`, every case targeting `to` is dropped, collapsing the
+    /// `from → to` edge; removing the *default* edge is rejected (a `switch`
+    /// must keep a default). For a `cond_br`, removing one of its two edges
+    /// collapses it to an unconditional `br` to the surviving target and
+    /// deregisters the now-dead condition operand. The sole edge of an
+    /// unconditional `br` cannot be removed (no successor would remain), nor can
+    /// an edge when both `cond_br` arms target the same block. Dropping the last
+    /// remaining `switch` case to `to` leaves a `switch` with only its default
+    /// (`switch %x, label %d []`) — degenerate but valid IR.
     ///
     /// **Phi maintenance.** Once the cases are dropped `from` is no longer a
     /// predecessor of `to`, so every leading phi in `to` loses all its
@@ -1036,8 +1035,10 @@ where
     /// dirty.
     ///
     /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator, its
-    /// terminator is not a `switch`, `to` is the switch's default, or `to` is
-    /// not a case target of `from`.
+    /// terminator is not a `switch`/`br`/`cond_br`, `to` is a `switch`'s
+    /// default, `to` is not a successor of `from`, `from` is an unconditional
+    /// `br` (its sole edge cannot be removed), or both `cond_br` arms target
+    /// `to`.
     pub fn remove_edge(
         &self,
         from: &BasicBlockView<'ctx, B>,
@@ -1052,12 +1053,91 @@ where
             message: "remove_edge: `from` has no terminator",
         })?;
         let term_id = term.as_value().id;
-        let switch = match &ctx.value_data(term_id).kind {
+
+        match &ctx.value_data(term_id).kind {
             crate::value::ValueKindData::Instruction(i) => match &i.kind {
-                crate::instruction::InstructionKindData::Switch(s) => s,
+                crate::instruction::InstructionKindData::Switch(switch) => {
+                    // A switch must keep its default, so a default-only edge
+                    // cannot be dropped this way.
+                    if switch.default_bb.get() == to_id {
+                        return Err(IrError::InvalidOperation {
+                            message: "remove_edge: cannot remove a `switch`'s default edge",
+                        });
+                    }
+                    if !switch.cases.borrow().iter().any(|(_, dest)| *dest == to_id) {
+                        return Err(IrError::InvalidOperation {
+                            message: "remove_edge: `to` is not a successor of `from`",
+                        });
+                    }
+                    // Drop every case targeting `to`, deregistering the switch
+                    // from each dropped case-value's use-list (the case value is
+                    // an SSA operand of the switch).
+                    let mut dropped_case_values: Vec<ValueId> = Vec::new();
+                    switch.cases.borrow_mut().retain(|(case_val, dest)| {
+                        if *dest == to_id {
+                            dropped_case_values.push(case_val.get());
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    for val_id in dropped_case_values {
+                        let mut uses = ctx.value_data(val_id).use_list.borrow_mut();
+                        if let Some(pos) = uses
+                            .iter()
+                            .position(|e| *e == crate::value::ValueUse::Instruction(term_id))
+                        {
+                            uses.remove(pos);
+                        }
+                    }
+                }
+                crate::instruction::InstructionKindData::Br(branch) => {
+                    // A `br` has only one edge, so removing it would leave the
+                    // block with no successor; a `cond_br` losing one of its two
+                    // edges collapses to an unconditional `br` to the surviving
+                    // target, and the now-dead condition operand is deregistered.
+                    let (cond_id, surviving) = {
+                        let kind = branch.kind.borrow();
+                        match &*kind {
+                            crate::instr_types::BranchKind::Unconditional(_) => {
+                                return Err(IrError::InvalidOperation {
+                                    message: "remove_edge: cannot remove the sole edge of an unconditional `br`",
+                                });
+                            }
+                            crate::instr_types::BranchKind::Conditional {
+                                cond,
+                                then_bb,
+                                else_bb,
+                            } => {
+                                let matches_then = *then_bb == to_id;
+                                let matches_else = *else_bb == to_id;
+                                if !matches_then && !matches_else {
+                                    return Err(IrError::InvalidOperation {
+                                        message: "remove_edge: `to` is not a successor of `from`",
+                                    });
+                                }
+                                if matches_then && matches_else {
+                                    return Err(IrError::InvalidOperation {
+                                        message: "remove_edge: both `cond_br` edges target `to`; removing it would leave no successor",
+                                    });
+                                }
+                                (cond.get(), if matches_then { *else_bb } else { *then_bb })
+                            }
+                        }
+                    };
+                    *branch.kind.borrow_mut() =
+                        crate::instr_types::BranchKind::Unconditional(surviving);
+                    let mut uses = ctx.value_data(cond_id).use_list.borrow_mut();
+                    if let Some(pos) = uses
+                        .iter()
+                        .position(|e| *e == crate::value::ValueUse::Instruction(term_id))
+                    {
+                        uses.remove(pos);
+                    }
+                }
                 _ => {
                     return Err(IrError::InvalidOperation {
-                        message: "remove_edge: supported only for a `switch` terminator",
+                        message: "remove_edge: supported only for a `switch` or `cond_br` terminator",
                     });
                 }
             },
@@ -1065,41 +1145,6 @@ where
                 return Err(IrError::InvalidOperation {
                     message: "remove_edge: `from`'s terminator is not an instruction",
                 });
-            }
-        };
-
-        // A switch must keep its default, so a default-only edge cannot be
-        // dropped this way.
-        if switch.default_bb.get() == to_id {
-            return Err(IrError::InvalidOperation {
-                message: "remove_edge: cannot remove a `switch`'s default edge",
-            });
-        }
-        if !switch.cases.borrow().iter().any(|(_, dest)| *dest == to_id) {
-            return Err(IrError::InvalidOperation {
-                message: "remove_edge: `to` is not a successor of `from`",
-            });
-        }
-
-        // Drop every case targeting `to`, deregistering the switch from each
-        // dropped case-value's use-list (the case value is an SSA operand of
-        // the switch).
-        let mut dropped_case_values: Vec<ValueId> = Vec::new();
-        switch.cases.borrow_mut().retain(|(case_val, dest)| {
-            if *dest == to_id {
-                dropped_case_values.push(case_val.get());
-                false
-            } else {
-                true
-            }
-        });
-        for val_id in dropped_case_values {
-            let mut uses = ctx.value_data(val_id).use_list.borrow_mut();
-            if let Some(pos) = uses
-                .iter()
-                .position(|e| *e == crate::value::ValueUse::Instruction(term_id))
-            {
-                uses.remove(pos);
             }
         }
 
@@ -1121,13 +1166,12 @@ where
     /// "forgot the target's phis" is unrepresentable, the call cannot be made
     /// without them.
     ///
-    /// **Supported terminator.** `from` must end in a `switch` that reaches
-    /// `old_to` through exactly one edge — one case, or the default — and must
-    /// not already reach `new_to`. That single target (the matching case
-    /// entry, or the default slot) is retargeted to `new_to`; the case's value
-    /// operand is untouched, so no terminator *kind* changes. A `br`/`cond_br`
-    /// `from` is rejected for the same reason as [`Self::remove_edge`]: its
-    /// target payload is not interior-mutable.
+    /// **Supported terminators.** `switch`, `br`, and `cond_br`. `from` must
+    /// reach `old_to` through exactly one edge — one `switch` case or its
+    /// default, the unconditional `br` target, or one arm of a `cond_br` — and
+    /// must not already reach `new_to`. That single target slot is retargeted to
+    /// `new_to`; no terminator *kind* changes (a `cond_br` stays a `cond_br`,
+    /// its condition untouched), only the successor id.
     ///
     /// **Typed phi values.** `phi_values` is aligned to `new_to`'s leading
     /// phis (its block parameters), one value per phi: its length must equal
@@ -1149,8 +1193,9 @@ where
     /// dirty.
     ///
     /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator, its
-    /// terminator is not a `switch`, `old_to` is not a successor of `from`,
-    /// `from` reaches `old_to` through more than one edge, or `from` already
+    /// terminator is not a `switch`/`br`/`cond_br`, `old_to` is not a successor
+    /// of `from`, `from` reaches `old_to` through more than one edge, or `from`
+    /// already
     /// reaches `new_to`; [`IrError::PhiArgArityMismatch`] /
     /// [`IrError::TypeMismatch`] for a mis-sized or mistyped `phi_values`.
     pub fn redirect_edge(
@@ -1170,12 +1215,110 @@ where
             message: "redirect_edge: `from` has no terminator",
         })?;
         let term_id = term.as_value().id;
-        let switch = match &ctx.value_data(term_id).kind {
+        // Which single edge slot to retarget. Determined -- and the edge
+        // preconditions witnessed -- before any mutation.
+        enum Slot {
+            SwitchDefault,
+            SwitchCase,
+            BranchThen,
+            BranchElse,
+            BranchUncond,
+        }
+        let slot = match &ctx.value_data(term_id).kind {
             crate::value::ValueKindData::Instruction(i) => match &i.kind {
-                crate::instruction::InstructionKindData::Switch(s) => s,
+                crate::instruction::InstructionKindData::Switch(switch) => {
+                    // Exactly one edge `from -> old_to` (a case or the default),
+                    // and `from` must not already reach `new_to`: redirect mints
+                    // a fresh edge, so the new-target phi gains exactly one
+                    // incoming per phi.
+                    let default_is_old = switch.default_bb.get() == old_id;
+                    let case_hits = switch
+                        .cases
+                        .borrow()
+                        .iter()
+                        .filter(|(_, dest)| *dest == old_id)
+                        .count();
+                    let edges_to_old = usize::from(default_is_old) + case_hits;
+                    if edges_to_old == 0 {
+                        return Err(IrError::InvalidOperation {
+                            message: "redirect_edge: `old_to` is not a successor of `from`",
+                        });
+                    }
+                    if edges_to_old > 1 {
+                        return Err(IrError::InvalidOperation {
+                            message: "redirect_edge: `from` reaches `old_to` through multiple edges",
+                        });
+                    }
+                    let already_reaches_new = switch.default_bb.get() == new_id
+                        || switch
+                            .cases
+                            .borrow()
+                            .iter()
+                            .any(|(_, dest)| *dest == new_id);
+                    if already_reaches_new {
+                        return Err(IrError::InvalidOperation {
+                            message: "redirect_edge: `from` already reaches `new_to`",
+                        });
+                    }
+                    if default_is_old {
+                        Slot::SwitchDefault
+                    } else {
+                        Slot::SwitchCase
+                    }
+                }
+                crate::instruction::InstructionKindData::Br(branch) => {
+                    // A `br`/`cond_br` reaches `old_to` through exactly one edge
+                    // (the unconditional target, or one of `then`/`else`), and
+                    // `from` must not already reach `new_to` -- the same edge
+                    // rules as the switch path.
+                    let kind = branch.kind.borrow();
+                    match &*kind {
+                        crate::instr_types::BranchKind::Unconditional(target) => {
+                            if *target != old_id {
+                                return Err(IrError::InvalidOperation {
+                                    message: "redirect_edge: `old_to` is not a successor of `from`",
+                                });
+                            }
+                            if *target == new_id {
+                                return Err(IrError::InvalidOperation {
+                                    message: "redirect_edge: `from` already reaches `new_to`",
+                                });
+                            }
+                            Slot::BranchUncond
+                        }
+                        crate::instr_types::BranchKind::Conditional {
+                            then_bb, else_bb, ..
+                        } => {
+                            let matches_then = *then_bb == old_id;
+                            let matches_else = *else_bb == old_id;
+                            let edges_to_old =
+                                usize::from(matches_then) + usize::from(matches_else);
+                            if edges_to_old == 0 {
+                                return Err(IrError::InvalidOperation {
+                                    message: "redirect_edge: `old_to` is not a successor of `from`",
+                                });
+                            }
+                            if edges_to_old > 1 {
+                                return Err(IrError::InvalidOperation {
+                                    message: "redirect_edge: `from` reaches `old_to` through multiple edges",
+                                });
+                            }
+                            if *then_bb == new_id || *else_bb == new_id {
+                                return Err(IrError::InvalidOperation {
+                                    message: "redirect_edge: `from` already reaches `new_to`",
+                                });
+                            }
+                            if matches_then {
+                                Slot::BranchThen
+                            } else {
+                                Slot::BranchElse
+                            }
+                        }
+                    }
+                }
                 _ => {
                     return Err(IrError::InvalidOperation {
-                        message: "redirect_edge: supported only for a `switch` terminator",
+                        message: "redirect_edge: supported only for a `switch`, `br`, or `cond_br` terminator",
                     });
                 }
             },
@@ -1185,39 +1328,6 @@ where
                 });
             }
         };
-
-        // Exactly one edge `from → old_to` (a case or the default), and `from`
-        // must not already reach `new_to`: redirect mints a fresh edge, so the
-        // new-target phi gains exactly one incoming per phi.
-        let default_is_old = switch.default_bb.get() == old_id;
-        let case_hits = switch
-            .cases
-            .borrow()
-            .iter()
-            .filter(|(_, dest)| *dest == old_id)
-            .count();
-        let edges_to_old = usize::from(default_is_old) + case_hits;
-        if edges_to_old == 0 {
-            return Err(IrError::InvalidOperation {
-                message: "redirect_edge: `old_to` is not a successor of `from`",
-            });
-        }
-        if edges_to_old > 1 {
-            return Err(IrError::InvalidOperation {
-                message: "redirect_edge: `from` reaches `old_to` through multiple edges",
-            });
-        }
-        let already_reaches_new = switch.default_bb.get() == new_id
-            || switch
-                .cases
-                .borrow()
-                .iter()
-                .any(|(_, dest)| *dest == new_id);
-        if already_reaches_new {
-            return Err(IrError::InvalidOperation {
-                message: "redirect_edge: `from` already reaches `new_to`",
-            });
-        }
 
         // Collect `new_to`'s leading phis (its block parameters) and validate
         // `phi_values` against them BEFORE mutating — all-or-nothing, mirroring
@@ -1251,16 +1361,43 @@ where
             }
         }
 
-        // All preconditions witnessed — retarget the single edge `from →
-        // old_to` onto `new_to`.
-        if default_is_old {
-            switch.default_bb.set(new_id);
-        } else {
-            for entry in switch.cases.borrow_mut().iter_mut() {
-                if entry.1 == old_id {
-                    entry.1 = new_id;
+        // All preconditions witnessed -- retarget the single edge onto
+        // `new_to`. The terminator kind is unchanged since the witness above
+        // (single-threaded, no intervening mutation).
+        match &ctx.value_data(term_id).kind {
+            crate::value::ValueKindData::Instruction(i) => match &i.kind {
+                crate::instruction::InstructionKindData::Switch(switch) => match slot {
+                    Slot::SwitchDefault => switch.default_bb.set(new_id),
+                    Slot::SwitchCase => {
+                        for entry in switch.cases.borrow_mut().iter_mut() {
+                            if entry.1 == old_id {
+                                entry.1 = new_id;
+                            }
+                        }
+                    }
+                    _ => unreachable!("switch terminator yielded a non-switch slot"),
+                },
+                crate::instruction::InstructionKindData::Br(branch) => {
+                    let mut kind = branch.kind.borrow_mut();
+                    match (&mut *kind, slot) {
+                        (
+                            crate::instr_types::BranchKind::Unconditional(target),
+                            Slot::BranchUncond,
+                        ) => *target = new_id,
+                        (
+                            crate::instr_types::BranchKind::Conditional { then_bb, .. },
+                            Slot::BranchThen,
+                        ) => *then_bb = new_id,
+                        (
+                            crate::instr_types::BranchKind::Conditional { else_bb, .. },
+                            Slot::BranchElse,
+                        ) => *else_bb = new_id,
+                        _ => unreachable!("branch terminator yielded a non-branch slot"),
+                    }
                 }
-            }
+                _ => unreachable!("terminator kind changed between witness and mutate"),
+            },
+            _ => unreachable!("terminator is no longer an instruction"),
         }
 
         // Drop `from`'s incomings from `old_to`'s phis, then add the typed

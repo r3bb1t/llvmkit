@@ -2706,7 +2706,7 @@ impl<'ctx> Verifier<'ctx> {
         b: &BranchInstData,
         block_index: &HashMap<ValueId, usize>,
     ) -> IrResult<()> {
-        match &b.kind {
+        match &*b.kind.borrow() {
             BranchKind::Unconditional(target) => {
                 if !block_index.contains_key(target) {
                     return Err(self.fail(
@@ -3377,11 +3377,11 @@ mod tests {
                 entry_id,
                 void_ty.id(),
                 InstructionKindData::Br(BranchInstData {
-                    kind: BranchKind::Conditional {
+                    kind: core::cell::RefCell::new(BranchKind::Conditional {
                         cond: core::cell::Cell::new(p0.as_value().id),
                         then_bb: then_bb.as_value().id,
                         else_bb: else_bb.as_value().id,
-                    },
+                    }),
                 }),
             );
             let err = m.verify_borrowed().unwrap_err();
@@ -3516,11 +3516,11 @@ mod tests {
                 entry_id,
                 void_ty.id(),
                 InstructionKindData::Br(BranchInstData {
-                    kind: BranchKind::Conditional {
+                    kind: core::cell::RefCell::new(BranchKind::Conditional {
                         cond: core::cell::Cell::new(cond_id),
                         then_bb: target.as_value().id,
                         else_bb: target.as_value().id,
-                    },
+                    }),
                 }),
             );
             let one = fab_const_int_id(&m, i32_ty.id(), 1);
@@ -3559,7 +3559,7 @@ mod tests {
                 entry_id,
                 void_ty.id(),
                 InstructionKindData::Br(BranchInstData {
-                    kind: BranchKind::Unconditional(target.as_value().id),
+                    kind: core::cell::RefCell::new(BranchKind::Unconditional(target.as_value().id)),
                 }),
             );
             append_ret_void(&m, unrelated.as_value().id);

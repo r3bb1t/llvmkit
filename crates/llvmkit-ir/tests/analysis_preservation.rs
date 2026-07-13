@@ -376,9 +376,10 @@ fn insert_phi_rejects_incomplete_incomings() -> Result<(), IrError> {
 // These ops perform terminator surgery on a `switch` (whose case list and
 // default live behind interior mutability) and mechanically maintain the
 // successor phis of every block they touch — the same "the op carries its own
-// phi maintenance" contract as wave-1 `split_block`. `br`/`cond_br` are not
-// edited (their target payload is not interior-mutable), so the fixtures below
-// build `switch`-terminated blocks.
+// phi maintenance" contract as wave-1 `split_block`. Since `BranchInstData.kind`
+// became interior-mutable, `br`/`cond_br` are edited too: `redirect_edge`
+// retargets a `br`/`cond_br` successor and `remove_edge` collapses a `cond_br`
+// to a `br` (the `br`/`cond_br` tests are at the bottom of this file).
 // ---------------------------------------------------------------------------
 
 /// A `ReshapeCfg` pass that calls [`FnReshape::redirect_edge`], retargeting the
@@ -566,6 +567,236 @@ fn redirect_edge_rejects_wrong_type() -> Result<(), IrError> {
         assert!(
             matches!(err, IrError::TypeMismatch { .. }),
             "expected TypeMismatch, got: {err:?}"
+        );
+        Ok(())
+    })
+}
+
+// ---------------------------------------------------------------------------
+// `br` / `cond_br` edge ops. `BranchInstData.kind` is now `RefCell<BranchKind>`,
+// so the reshape mutator can retarget a branch successor (`redirect_edge`) or
+// collapse a `cond_br` to a `br` (`remove_edge`) through its `&self` token.
+// ---------------------------------------------------------------------------
+
+/// A `ReshapeCfg` pass that calls [`FnReshape::remove_edge`] on `from_name`'s
+/// edge to `to`. Propagates the op's error, so a rejected op surfaces as the
+/// pass's error.
+struct RemoveEdgePass<'ctx, B: ModuleBrand + 'ctx> {
+    from_name: &'static str,
+    to: BasicBlockLabel<'ctx, Dyn, B>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveEdgePass<'ctx, B> {
+    type Access = ReshapeCfg;
+    type Requires = ();
+    const NAME: &'static str = "remove-edge-test";
+
+    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+        let reshape = cx.mutate();
+        let from = reshape
+            .function()
+            .basic_blocks()
+            .find(|bb| bb.name().as_deref() == Some(self.from_name))
+            .expect("`from` block is present");
+        reshape.remove_edge(&from, &self.to)?;
+        Ok(reshape.done())
+    }
+}
+
+/// `redirect_edge` retargets the matching arm of a `cond_br` onto `new` and
+/// seeds `new`'s head-phi with the supplied value; the output re-verifies.
+#[test]
+fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
+    Module::with_new("redirect-condbr", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let old = f.append_basic_block(&m, "old");
+        let other = f.append_basic_block(&m, "other");
+        // new(%np: i32): a head-phi block param seeded by the redirect.
+        let (new, new_params) = IRBuilder::new_for::<i32>(&m).append_block_with_params(
+            f,
+            &[i32_ty.as_type()],
+            "new",
+        )?;
+        let old_lbl = old.label();
+        let other_lbl = other.label();
+        let old_dyn: BasicBlockLabel<Dyn> = old_lbl.as_value().try_into()?;
+        let new_dyn: BasicBlockLabel<Dyn> = new.label().as_value().try_into()?;
+
+        // entry: %ev = add %a, 3 ; cond_br (%a == 0) ? old : other
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let ev = b.build_int_add(a, 3_i32, "ev")?;
+        let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
+        b.build_cond_br(c, old_lbl, other_lbl)?;
+
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(old);
+        b.build_ret(i32_ty.const_int(0_u32))?;
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(other);
+        b.build_ret(i32_ty.const_int(1_u32))?;
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(new);
+        let np: IntValue<i32> = new_params[0].try_into()?;
+        b.build_ret(np)?;
+
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        let pass = RedirectSwitchEdge {
+            from_name: "entry",
+            old_to: old_dyn,
+            new_to: new_dyn,
+            phi_values: vec![ev.as_value()],
+        };
+        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+        let reverified = out.verify().expect("redirect_edge output must re-verify");
+        let printed = format!("{reverified}");
+        assert!(
+            printed.contains("[ %ev, %entry ]"),
+            "new's phi must gain the entry incoming, got:\n{printed}"
+        );
+        assert!(
+            printed.contains("label %new"),
+            "the then-arm must now target new, got:\n{printed}"
+        );
+        assert!(
+            !printed.contains("label %old"),
+            "no branch may still target old, got:\n{printed}"
+        );
+        Ok(())
+    })
+}
+
+/// `remove_edge` on one arm of a `cond_br` collapses it to an unconditional
+/// `br` to the surviving target; the output re-verifies with no conditional
+/// branch left.
+#[test]
+fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
+    Module::with_new("remove-condbr", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let keep = f.append_basic_block(&m, "keep");
+        let drop_bb = f.append_basic_block(&m, "drop");
+        let keep_lbl = keep.label();
+        let drop_lbl = drop_bb.label();
+        let drop_dyn: BasicBlockLabel<Dyn> = drop_lbl.as_value().try_into()?;
+
+        // entry: cond_br (%a == 0) ? keep : drop
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
+        b.build_cond_br(c, keep_lbl, drop_lbl)?;
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(keep);
+        b.build_ret(i32_ty.const_int(0_u32))?;
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(drop_bb);
+        b.build_ret(i32_ty.const_int(1_u32))?;
+
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        let pass = RemoveEdgePass {
+            from_name: "entry",
+            to: drop_dyn,
+        };
+        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+        let reverified = out.verify().expect("collapsed output must re-verify");
+        let printed = format!("{reverified}");
+        assert!(
+            printed.contains("br label %keep"),
+            "cond_br must collapse to `br label %keep`, got:\n{printed}"
+        );
+        assert!(
+            !printed.contains("br i1"),
+            "the conditional branch must be gone, got:\n{printed}"
+        );
+        Ok(())
+    })
+}
+
+/// `redirect_edge` retargets an unconditional `br` and seeds the new target's
+/// head-phi; the output re-verifies.
+#[test]
+fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
+    Module::with_new("redirect-br", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let old = f.append_basic_block(&m, "old");
+        let (new, new_params) = IRBuilder::new_for::<i32>(&m).append_block_with_params(
+            f,
+            &[i32_ty.as_type()],
+            "new",
+        )?;
+        let old_lbl = old.label();
+        let old_dyn: BasicBlockLabel<Dyn> = old_lbl.as_value().try_into()?;
+        let new_dyn: BasicBlockLabel<Dyn> = new.label().as_value().try_into()?;
+
+        // entry: %ev = add %a, 3 ; br old
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let ev = b.build_int_add(a, 3_i32, "ev")?;
+        b.build_br(old_lbl)?;
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(old);
+        b.build_ret(i32_ty.const_int(0_u32))?;
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(new);
+        let np: IntValue<i32> = new_params[0].try_into()?;
+        b.build_ret(np)?;
+
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        let pass = RedirectSwitchEdge {
+            from_name: "entry",
+            old_to: old_dyn,
+            new_to: new_dyn,
+            phi_values: vec![ev.as_value()],
+        };
+        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+        let reverified = out.verify().expect("redirect_edge output must re-verify");
+        let printed = format!("{reverified}");
+        assert!(
+            printed.contains("br label %new"),
+            "the br must now target new, got:\n{printed}"
+        );
+        assert!(
+            printed.contains("[ %ev, %entry ]"),
+            "new's phi must gain the entry incoming, got:\n{printed}"
+        );
+        Ok(())
+    })
+}
+
+/// `remove_edge` rejects the sole edge of an unconditional `br` — removing it
+/// would leave the block with no successor.
+#[test]
+fn remove_edge_rejects_unconditional_br() -> Result<(), IrError> {
+    Module::with_new("remove-br-reject", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let target = f.append_basic_block(&m, "target");
+        let target_lbl = target.label();
+        let target_dyn: BasicBlockLabel<Dyn> = target_lbl.as_value().try_into()?;
+
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        b.build_br(target_lbl)?;
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(target);
+        b.build_ret(i32_ty.const_int(0_u32))?;
+
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        let pass = RemoveEdgePass {
+            from_name: "entry",
+            to: target_dyn,
+        };
+        let err = run_function_pass(pass, verified, f, &mut analyses)
+            .err()
+            .expect("remove_edge on an unconditional br must be rejected");
+        assert!(
+            matches!(err, IrError::InvalidOperation { message } if message.contains("unconditional")),
+            "expected InvalidOperation about the unconditional br, got: {err:?}"
         );
         Ok(())
     })
