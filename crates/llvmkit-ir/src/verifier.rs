@@ -43,6 +43,7 @@ use crate::instruction::{InstructionKindData, InstructionView};
 use crate::marker::Dyn;
 use crate::metadata::{MetadataAttachmentKind, MetadataId, MetadataKind};
 use crate::module::{ModuleCore, ModuleView};
+use crate::phi_check::{PhiViolation, check_phi_incoming};
 use crate::r#type::{Type, TypeData, TypeId};
 use crate::value::{ValueId, ValueKindData};
 
@@ -2406,84 +2407,64 @@ impl<'ctx> Verifier<'ctx> {
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
 
-        let incoming = p.incoming.borrow();
-        // Entry-count must equal predecessor-count (with multiplicity).
-        if incoming.len() != preds.len() {
-            return Err(self.fail(
+        // Snapshot the (value, predecessor-block) pairs and delegate to
+        // the shared coherence core so the parser (which runs the same
+        // helper) cannot drift from the verifier. Each `PhiViolation`
+        // maps back to the verifier's existing byte-identical diagnostic.
+        let incoming: Vec<(ValueId, ValueId)> = p
+            .incoming
+            .borrow()
+            .iter()
+            .map(|(v, b)| (v.get(), *b))
+            .collect();
+        let value_ty_of = |id: ValueId| self.value_type(id);
+        match check_phi_incoming(result_ty, &incoming, preds, &value_ty_of) {
+            Ok(()) => Ok(()),
+            Err(PhiViolation::CountMismatch { entries, preds }) => Err(self.fail(
+                f,
+                bb,
+                VerifierRule::PhiPredecessorMismatch,
+                format!("phi has {entries} incoming entries but block has {preds} predecessors"),
+            )),
+            Err(PhiViolation::NotAPredecessor { block }) => Err(self.fail(
                 f,
                 bb,
                 VerifierRule::PhiPredecessorMismatch,
                 format!(
-                    "phi has {} incoming entries but block has {} predecessors",
-                    incoming.len(),
-                    preds.len()
+                    "phi incoming block %{} is not a predecessor",
+                    slot_label(self.module, block)
                 ),
-            ));
+            )),
+            Err(PhiViolation::TooManyFromBlock { block }) => Err(self.fail(
+                f,
+                bb,
+                VerifierRule::PhiPredecessorMismatch,
+                format!(
+                    "phi has too many incoming entries from block %{}",
+                    slot_label(self.module, block)
+                ),
+            )),
+            Err(PhiViolation::AmbiguousValues { block }) => Err(self.fail(
+                f,
+                bb,
+                VerifierRule::AmbiguousPhi,
+                format!(
+                    "phi has multiple entries for block %{} with different values",
+                    slot_label(self.module, block)
+                ),
+            )),
+            Err(PhiViolation::IncomingTypeMismatch { block, value_ty }) => Err(self.fail(
+                f,
+                bb,
+                VerifierRule::PhiIncomingTypeMismatch,
+                format!(
+                    "phi expects {} but incoming from %{} is {}",
+                    self.type_label(result_ty),
+                    slot_label(self.module, block),
+                    self.type_label(value_ty)
+                ),
+            )),
         }
-        // Every incoming block must be a real predecessor of the phi's
-        // block (with multiplicity).
-        let mut pred_counts: HashMap<ValueId, u32> = HashMap::new();
-        for p in preds {
-            *pred_counts.entry(*p).or_insert(0) += 1;
-        }
-        let mut seen: HashMap<ValueId, ValueId> = HashMap::new();
-        for (val_id, block_id) in incoming.iter().map(|(v, b)| (v.get(), *b)) {
-            let Some(slot) = pred_counts.get_mut(&block_id) else {
-                return Err(self.fail(
-                    f,
-                    bb,
-                    VerifierRule::PhiPredecessorMismatch,
-                    format!(
-                        "phi incoming block %{} is not a predecessor",
-                        slot_label(self.module, block_id)
-                    ),
-                ));
-            };
-            if *slot == 0 {
-                // Already exhausted -- means more incoming than CFG
-                // edges from this block. Same diagnostic class.
-                return Err(self.fail(
-                    f,
-                    bb,
-                    VerifierRule::PhiPredecessorMismatch,
-                    format!(
-                        "phi has too many incoming entries from block %{}",
-                        slot_label(self.module, block_id)
-                    ),
-                ));
-            }
-            *slot -= 1;
-            // AmbiguousPhi: duplicate predecessor with differing values.
-            if let Some(prev) = seen.insert(block_id, val_id)
-                && prev != val_id
-            {
-                return Err(self.fail(
-                    f,
-                    bb,
-                    VerifierRule::AmbiguousPhi,
-                    format!(
-                        "phi has multiple entries for block %{} with different values",
-                        slot_label(self.module, block_id)
-                    ),
-                ));
-            }
-            // Incoming-value type must match phi result type.
-            let val_ty = self.value_type(val_id);
-            if val_ty != result_ty {
-                return Err(self.fail(
-                    f,
-                    bb,
-                    VerifierRule::PhiIncomingTypeMismatch,
-                    format!(
-                        "phi expects {} but incoming from %{} is {}",
-                        self.type_label(result_ty),
-                        slot_label(self.module, block_id),
-                        self.type_label(val_ty)
-                    ),
-                ));
-            }
-        }
-        Ok(())
     }
 
     /// `Verifier::visitReturnInst`.
