@@ -113,6 +113,31 @@ exit:
     );
 }
 
+/// A phi whose predecessor *block* is defined strictly later in the source
+/// than the phi itself (a forward-referenced block, not merely a forward
+/// value). When the phi is parsed, `%late` does not yet exist; the widened
+/// resolution creates the empty forward-ref block, and it is filled in below.
+#[test]
+fn phi_with_forward_referenced_predecessor_block_verifies() {
+    let src = "\
+define i32 @f(i32 %a, i1 %c) {
+entry:
+  %x = add i32 %a, 1
+  br i1 %c, label %merge, label %late
+merge:
+  %p = phi i32 [ %x, %entry ], [ %x, %late ]
+  ret i32 %p
+late:
+  br label %merge
+}
+";
+    let rendered = parse_verify_render(src);
+    assert!(
+        rendered.contains("[ %x, %entry ]") && rendered.contains("[ %x, %late ]"),
+        "phi naming a forward-referenced predecessor block must round-trip, got:\n{rendered}"
+    );
+}
+
 /// Numbered predecessor blocks exercise the numbered-block resolution path
 /// (`get_or_create_numbered_block_label`) rather than the named one.
 #[test]
