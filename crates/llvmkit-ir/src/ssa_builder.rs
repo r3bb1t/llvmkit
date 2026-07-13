@@ -1560,13 +1560,14 @@ where
         v
     }
 
-    /// Emit an operandless phi at the head of `block`. Every phi this
-    /// engine ever creates lands at position 0 (Braun's algorithm never
-    /// grows a phi list after the fact except via `add_incoming`, so
-    /// "the head" is always exactly "before the block's current first
-    /// instruction" -- this collapses to two cases, keyed on emptiness
-    /// rather than on which of `self.inner` / `open_blocks` currently
-    /// owns the block's linear handle:
+    /// Emit an operandless phi at the phi head of `block`. The phi
+    /// builders insert after the block's leading phi run regardless of the
+    /// throwaway builder's cursor (see `append_phi_instruction`), so this
+    /// method only has to position a builder *inside* `block` — the exact
+    /// cursor within it does not affect where the phi lands. That
+    /// collapses to two cases, keyed on emptiness rather than on which of
+    /// `self.inner` / `open_blocks` currently owns the block's linear
+    /// handle:
     ///
     /// - `block` has >= 1 instruction already (whether it is open,
     ///   current, or filled/terminated): a fresh throwaway builder
