@@ -113,8 +113,9 @@ pub(crate) fn check_phi_incoming(
 #[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct PhiCoherenceError {
-    /// Diagnostic name of the offending phi instruction.
-    pub phi_name: String,
+    /// Arena id of the offending phi instruction, so the caller can anchor a
+    /// diagnostic at that phi regardless of whether it is named or numbered.
+    pub phi_id: crate::value::ValueId,
     /// Rendered coherence-failure message.
     pub message: String,
 }
@@ -174,7 +175,6 @@ pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
                 .map(|(v, b)| (v.get(), *b))
                 .collect();
             if let Err(violation) = check_phi_incoming(result_ty, &incoming, preds, &value_ty_of) {
-                let phi_name = ctx.block_diag_name(inst.as_value().id);
                 let message = match violation {
                     PhiViolation::CountMismatch { entries, preds } => format!(
                         "phi has {entries} incoming entries but block has {preds} predecessors"
@@ -198,7 +198,10 @@ pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
                         Type::new(value_ty, module.module_ref()),
                     ),
                 };
-                return Err(PhiCoherenceError { phi_name, message });
+                return Err(PhiCoherenceError {
+                    phi_id: inst.as_value().id,
+                    message,
+                });
             }
         }
     }

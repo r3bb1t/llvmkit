@@ -7345,9 +7345,10 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             }
             _ => return Err(self.expected("phi result type must be int, float, or pointer")),
         };
-        // Record the phi's source location, keyed by its result name, so the
-        // end-of-function coherence check can anchor a diagnostic here.
-        state.phi_locs.push((name.to_owned(), self.loc()));
+        // Record the phi's source location, keyed by its arena id, so the
+        // end-of-function coherence check can anchor a diagnostic here — a
+        // numbered/anonymous phi has no matchable textual name.
+        state.phi_locs.push((phi_val.id(), self.loc()));
         // Parse incoming pairs: `[ val, label ], ...`
         // First pair has no leading comma; subsequent pairs have one.
         let mut first = true;
@@ -8866,7 +8867,7 @@ struct PerFunctionState<'ctx, B: ModuleBrand = Brand<'ctx>> {
     /// Source span of each parsed phi, keyed by its result name, so the
     /// end-of-function coherence check in `finish()` can point a diagnostic
     /// at the offending phi instead of at `Module::verify()`.
-    phi_locs: Vec<(String, Span)>,
+    phi_locs: Vec<(llvmkit_ir::value::ValueId, Span)>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
@@ -9245,7 +9246,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             let loc = self
                 .phi_locs
                 .iter()
-                .find(|(name, _)| *name == e.phi_name)
+                .find(|(id, _)| *id == e.phi_id)
                 .map(|(_, span)| DiagLoc::span(*span))
                 .unwrap_or_else(|| DiagLoc::span(Span::default()));
             return Err(ParseError::Expected {

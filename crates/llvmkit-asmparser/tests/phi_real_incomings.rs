@@ -162,6 +162,41 @@ merge:
     );
 }
 
+/// An incomplete phi with a *numbered* (anonymous) result still reports its
+/// parse error at the phi's own source location. The completeness check keys
+/// the phi's recorded span by the phi's arena id, so a numbered phi — whose
+/// textual result name does not match the diagnostic name — no longer falls
+/// back to a default (offset-zero) location.
+#[test]
+fn incomplete_numbered_phi_error_is_located_at_the_phi() {
+    // Block %3 has two predecessors (%1 and %2), but the numbered-result phi
+    // `%4` lists only one incoming — a completeness failure.
+    let src = "\
+define i32 @f(i32 %a, i1 %c) {
+  br i1 %c, label %1, label %2
+1:
+  br label %3
+2:
+  br label %3
+3:
+  %4 = phi i32 [ %a, %1 ]
+  ret i32 %4
+}
+";
+    let err = parse_err(src);
+    let msg = err.to_string();
+    assert!(
+        msg.contains("phi") && msg.contains("predecessor"),
+        "expected an incomplete-phi parse error, got: {msg}"
+    );
+    let span = err.loc().expect("error carries a location").span;
+    assert!(
+        span.start > 0,
+        "a numbered incomplete phi must be located at the phi, not the default \
+         offset-zero span (got {span:?})"
+    );
+}
+
 /// A zero-input (dead) phi still parses — the pre-existing behavior is not
 /// regressed by widening predecessor resolution.
 #[test]
