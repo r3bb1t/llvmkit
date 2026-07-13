@@ -1292,6 +1292,11 @@ where
     /// Insert a fully-witnessed phi at `block`'s phi head and return its erased
     /// result [`Value`].
     ///
+    /// Do not `insert_phi` into a block whose leading phis are block parameters
+    /// (created by [`IRBuilder::append_block_with_params`](crate::IRBuilder)):
+    /// the new phi lands in that same head group, where the block-argument path
+    /// would miscount it as an extra block parameter.
+    ///
     /// Because a [`ReshapeCfg`] pass sees a *complete* CFG, every SSA obligation
     /// a phi carries is witnessed here at the call — none is deferred to
     /// [`Module::verify`](crate::Module::verify):

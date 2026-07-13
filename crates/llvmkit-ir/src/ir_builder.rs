@@ -5947,9 +5947,10 @@ where
     /// not at a distant [`Module::verify`](crate::Module::verify): `args.len()`
     /// must equal `target`'s parameter count ([`IrError::PhiArgArityMismatch`]
     /// otherwise), and each argument's type must match its parameter
-    /// ([`IrError::TypeMismatch`] otherwise). Arguments are validated and the
-    /// parameter-phis seeded *before* the `br` is emitted, so a rejected
-    /// argument leaves no half-formed terminator.
+    /// ([`IrError::TypeMismatch`] otherwise). Both the arity and every argument
+    /// type are checked up front — all-or-nothing for those two — before the
+    /// `br` is emitted, so a mis-sized or mistyped argument leaves no
+    /// half-formed terminator.
     ///
     /// Consumes `self`; the target may be in any termination state (a
     /// back-edge targets an already-terminated block).
@@ -5977,13 +5978,17 @@ where
     /// `then_bb`'s parameter-phis and `else_args` seed `else_bb`'s, each with
     /// *this* block as the predecessor.
     ///
-    /// Both edges are validated and their parameter-phis seeded before the
-    /// `br` is emitted, so a wrong arity ([`IrError::PhiArgArityMismatch`]) or
-    /// type ([`IrError::TypeMismatch`]) fails here rather than at
-    /// [`Module::verify`](crate::Module::verify). If `then_bb == else_bb` and
-    /// the two argument lists differ, the second edge-add rejects the
-    /// differing duplicate for the shared predecessor
-    /// ([`IrError::AmbiguousPhiIncoming`]).
+    /// Each edge's arity ([`IrError::PhiArgArityMismatch`]) and argument types
+    /// ([`IrError::TypeMismatch`]) are checked up front — all-or-nothing for
+    /// those two — before that edge's parameter-phis are seeded, so a mis-sized
+    /// or mistyped argument fails here rather than at
+    /// [`Module::verify`](crate::Module::verify). The edges are processed in
+    /// order and this is *not* one atomic transaction across both: if
+    /// `then_bb == else_bb` and the two argument lists differ, the `then`
+    /// edge's incomings are already recorded when the `else` edge-add rejects
+    /// the differing duplicate for the shared predecessor
+    /// ([`IrError::AmbiguousPhiIncoming`]) — the `br` is never emitted and the
+    /// consumed builder leaves the block unterminated for `verify()` to catch.
     ///
     /// Consumes `self`; both targets may be in any termination state.
     pub fn build_cond_br_with_args<C, Then, Else>(
@@ -6009,11 +6014,18 @@ where
 
     /// Seed a target block's parameters with the values a branch carries into
     /// it. The parameters are the target's leading head-phis (in order); this
-    /// arity-checks `args` against them and records each `args[i]` as an
-    /// incoming edge from `pred` into the `i`-th parameter-phi via the
-    /// type-checked erased path
-    /// ([`phi_add_incoming_from_value`](Self::phi_add_incoming_from_value)),
-    /// which rejects a type mismatch or a differing-value duplicate for `pred`.
+    /// arity-checks `args` against them and type-checks each `args[i]` against
+    /// its parameter up front, then records each as an incoming edge from `pred`
+    /// into the `i`-th parameter-phi via the type-checked erased path
+    /// ([`phi_add_incoming_from_value`](Self::phi_add_incoming_from_value)).
+    ///
+    /// Arity and per-argument type are all-or-nothing: both are validated before
+    /// any incoming is recorded, so a mis-sized or mistyped call leaves the
+    /// target parameters untouched. The differing-value-duplicate rejection for
+    /// `pred`, however, is *not* part of that up-front pass — it runs per-edge
+    /// inside [`phi_add_incoming_from_value`](Self::phi_add_incoming_from_value)
+    /// as each incoming is recorded, so it can fire after earlier incomings in
+    /// the same call have already been written.
     ///
     /// Shared by [`build_br_with_args`](Self::build_br_with_args) and
     /// [`build_cond_br_with_args`](Self::build_cond_br_with_args); called
@@ -6059,9 +6071,12 @@ where
 
         // Type-check every argument against its parameter-phi up front, before
         // recording any incoming. Recording mutates the phis through interior
-        // mutability and cannot be rolled back, so validating first keeps the
-        // whole operation all-or-nothing: a rejected argument leaves the target
-        // parameters untouched.
+        // mutability and cannot be rolled back, so validating arity and type
+        // first makes *those two* all-or-nothing: a mis-sized or mistyped
+        // argument leaves the target parameters untouched. (The
+        // differing-value-duplicate check is not pre-scanned — it runs per-edge
+        // in the record loop below, so it can fire after earlier incomings in
+        // this call are already written.)
         for (phi_id, arg) in param_phis.iter().zip(args.iter()) {
             let phi_ty = self.module.context().value_data(*phi_id).ty;
             if arg.ty != phi_ty {

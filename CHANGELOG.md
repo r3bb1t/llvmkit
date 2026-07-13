@@ -75,7 +75,8 @@ construction, is a planned follow-up).
   `build_cond_br_with_args` build the terminator *and* seed each successor
   parameter with the value the branch carries, from the current block —
   arity-checked (`IrError::PhiArgArityMismatch`) and type-checked at the call
-  site, all-or-nothing. Printed IR is ordinary phis; storage/parser/printer
+  site — those two validations are all-or-nothing (run up front, before any
+  incoming is recorded). Printed IR is ordinary phis; storage/parser/printer
   are unchanged.
 - `FnReshape::insert_phi(block, ty, incomings)` — pass-side phi creation that
   *witnesses* everything at the call: completeness against the block's

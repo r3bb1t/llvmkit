@@ -435,7 +435,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchEdge<'
 }
 
 /// Build a `switch`-fed merge with a two-incoming phi, returning the function
-/// and `merge`'s `Dyn` label.
+/// and the `dflt` / `other` / `merge` `Dyn` labels.
 ///
 /// ```text
 /// entry(a): %e = add %a, 7
@@ -447,11 +447,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchEdge<'
 ///
 /// `merge`'s predecessors are `{entry (case 0), dflt (br)}`; removing the
 /// `entry → merge` edge must drop the phi's `entry` incoming to stay coherent.
+/// `dflt` is the switch default and ends in a plain `br` (a non-switch `from`);
+/// `other` is the case-1 target — both feed the edge-op guard negatives below.
 #[allow(clippy::type_complexity)]
 fn build_switch_merge<'ctx>(
     m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
 ) -> IrResult<(
     llvmkit_ir::FunctionValue<'ctx, i32>,
+    BasicBlockLabel<'ctx, Dyn>,
+    BasicBlockLabel<'ctx, Dyn>,
     BasicBlockLabel<'ctx, Dyn>,
 )> {
     let i32_ty = m.i32_type();
@@ -467,6 +471,8 @@ fn build_switch_merge<'ctx>(
     let other_lbl = other.label();
     let merge_lbl = merge.label();
     let merge_dyn: BasicBlockLabel<Dyn> = merge_lbl.as_value().try_into()?;
+    let dflt_dyn: BasicBlockLabel<Dyn> = dflt_lbl.as_value().try_into()?;
+    let other_dyn: BasicBlockLabel<Dyn> = other_lbl.as_value().try_into()?;
 
     // entry: %e = add %a, 7 ; switch %a, default %dflt [ 0 -> merge, 1 -> other ]
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
@@ -495,7 +501,7 @@ fn build_switch_merge<'ctx>(
         .add_incoming(d, dflt_lbl)?;
     b.build_ret(p.as_int_value())?;
 
-    Ok((f, merge_dyn))
+    Ok((f, dflt_dyn, other_dyn, merge_dyn))
 }
 
 /// Build a `switch` whose case-0 edge can be redirected, plus a `new` block
@@ -569,7 +575,7 @@ fn build_switch_redirect<'ctx>(
 #[test]
 fn remove_edge_drops_successor_phi_incoming() -> Result<(), IrError> {
     Module::with_new("remove-edge", |m| {
-        let (f, merge_dyn) = build_switch_merge(&m)?;
+        let (f, _dflt_dyn, _other_dyn, merge_dyn) = build_switch_merge(&m)?;
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
@@ -686,6 +692,89 @@ fn redirect_edge_rejects_wrong_type() -> Result<(), IrError> {
         assert!(
             matches!(err, IrError::TypeMismatch { .. }),
             "expected TypeMismatch, got: {err:?}"
+        );
+        Ok(())
+    })
+}
+
+/// `remove_edge` rejects a `from` whose terminator is not a `switch` (here the
+/// `dflt` block, which ends in a plain `br %merge`): the op only edits `switch`
+/// terminators, whose case list and default live behind interior mutability.
+#[test]
+fn remove_edge_rejects_non_switch_from() -> Result<(), IrError> {
+    Module::with_new("remove-edge-non-switch", |m| {
+        let (f, _dflt_dyn, _other_dyn, merge_dyn) = build_switch_merge(&m)?;
+
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        // `dflt` ends in `br %merge`, not a switch — the guard trips before the
+        // successor check, so `merge` as `to` is fine.
+        let pass = RemoveSwitchEdge {
+            from_name: "dflt",
+            to: merge_dyn,
+        };
+        let err = run_function_pass(pass, verified, f, &mut analyses)
+            .err()
+            .expect("remove_edge must reject a non-switch `from`");
+        assert!(
+            matches!(err, IrError::InvalidOperation { .. }),
+            "expected InvalidOperation for a non-switch `from`, got: {err:?}"
+        );
+        Ok(())
+    })
+}
+
+/// `remove_edge` rejects dropping a `switch`'s default edge — a `switch` must
+/// keep a default, so the `entry → dflt` default edge cannot be collapsed.
+#[test]
+fn remove_edge_rejects_default_edge() -> Result<(), IrError> {
+    Module::with_new("remove-edge-default", |m| {
+        let (f, dflt_dyn, _other_dyn, _merge_dyn) = build_switch_merge(&m)?;
+
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        // `dflt` is `entry`'s switch default; removing that edge is rejected.
+        let pass = RemoveSwitchEdge {
+            from_name: "entry",
+            to: dflt_dyn,
+        };
+        let err = run_function_pass(pass, verified, f, &mut analyses)
+            .err()
+            .expect("remove_edge must reject dropping the switch default edge");
+        assert!(
+            matches!(err, IrError::InvalidOperation { .. }),
+            "expected InvalidOperation for the switch default edge, got: {err:?}"
+        );
+        Ok(())
+    })
+}
+
+/// `redirect_edge` rejects a redirect whose `new_to` is already a successor of
+/// `from`: a redirect mints a fresh edge, and if `from` already reached
+/// `new_to` the new-target phi would gain an ambiguous second incoming for the
+/// same predecessor.
+#[test]
+fn redirect_edge_rejects_already_reaches_new() -> Result<(), IrError> {
+    Module::with_new("redirect-edge-already-reaches", |m| {
+        let (f, _dflt_dyn, other_dyn, merge_dyn) = build_switch_merge(&m)?;
+
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        // `entry` already reaches `merge` (case 0); redirecting the `entry →
+        // other` case-1 edge onto `merge` would double the edge. The guard
+        // trips before any `phi_values` validation, so an empty slice is fine.
+        let pass = RedirectSwitchEdge {
+            from_name: "entry",
+            old_to: other_dyn,
+            new_to: merge_dyn,
+            phi_values: vec![],
+        };
+        let err = run_function_pass(pass, verified, f, &mut analyses)
+            .err()
+            .expect("redirect_edge must reject a `new_to` already reached by `from`");
+        assert!(
+            matches!(err, IrError::InvalidOperation { .. }),
+            "expected InvalidOperation when `from` already reaches `new_to`, got: {err:?}"
         );
         Ok(())
     })
