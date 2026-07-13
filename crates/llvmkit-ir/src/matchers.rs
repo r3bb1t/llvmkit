@@ -587,7 +587,7 @@ where
 /// Matches any `phi` and binds its result-typed [`PhiKind`] discriminator.
 /// The binding narrows further by matching on the variant
 /// (`PhiKind::Int`/`Fp`/`Ptr`/`Other`). No upstream analog binds the node
-/// this precisely; `m_Phi` in `PatternMatch.h` (LLVM 22) binds operands only.
+/// this precisely; `m_Phi` in `PatternMatch.h` binds operands only.
 pub fn m_phi() -> MPhi {
     MPhi
 }
