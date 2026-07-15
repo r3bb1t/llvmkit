@@ -285,8 +285,9 @@ pub use pass_access::{
     PipelineVerdict, ReshapeCfg, RewriteModule, StaysVerified, VerdictFold,
 };
 pub use pass_context::{
-    BasicBlockView, FnCx, FnPatch, FnReport, FnReshape, FunctionBody, FunctionView, ModCx,
-    ModReport, ModRewrite, ModuleFunctionViews,
+    BasicBlockView, BrEdit, CallBrEdit, CondBrEdit, FnCx, FnPatch, FnReport, FnReshape,
+    FunctionBody, FunctionView, InvokeEdit, ModCx, ModReport, ModRewrite, ModuleFunctionViews,
+    SwitchEdit, TermEdit,
 };
 pub use pass_instrumentation::{PassInstrumentationAnalysis, PassInstrumentationCallbacks};
 pub use pass_manager::{

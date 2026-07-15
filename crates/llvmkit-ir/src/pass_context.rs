@@ -67,7 +67,7 @@ use super::cfg_update::CfgUpdate;
 use super::dominator_tree::DominatorTreeAnalysis;
 use super::error::IrError;
 use super::function::FunctionValue;
-use super::instruction::{Instruction, InstructionView, NonTerminator, state};
+use super::instruction::{Instruction, InstructionView, NonTerminator, TerminatorKind, state};
 use super::ir_builder::IRBuilder;
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, Invariant, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
@@ -722,7 +722,12 @@ where
 /// The `br`/`cond_br` slots are *role-based* (which arm), so the helper reads
 /// the old target off the current terminator; the switch case slot is
 /// *target-based* — it carries the old destination id because a switch edit
-/// touches *every* case pointing at that block.
+/// touches *every* case pointing at that block. The `invoke`/`callbr` slots are
+/// role-based too, and — unlike the switch/branch slots — appear only in
+/// [`FnReshape::redirect_slot`]: an `invoke`/`callbr` edge is not removable, so
+/// there is deliberately no [`FnReshape::remove_slot`] arm for them (the absence
+/// is the mechanical-layer half of the "no remove" guarantee the typed handles
+/// enforce at compile time).
 #[derive(Clone, Copy)]
 enum EditSlot {
     /// Every `switch` case whose destination is the carried id.
@@ -735,6 +740,14 @@ enum EditSlot {
     BrElse,
     /// The sole target of an unconditional `br`.
     BrUncond,
+    /// The normal (non-unwind) destination of an `invoke`.
+    InvokeNormal,
+    /// The unwind destination of an `invoke`.
+    InvokeUnwind,
+    /// The default (fallthrough) destination of a `callbr`.
+    CallBrDefault,
+    /// The `i`-th indirect destination of a `callbr`.
+    CallBrIndirect(usize),
 }
 
 /// CFG-rewriting mutator for the [`ReshapeCfg`] rung — minimal but real. It has
@@ -1156,7 +1169,12 @@ where
                 }
                 removed
             }
-            EditSlot::SwitchDefault | EditSlot::BrUncond => {
+            EditSlot::SwitchDefault
+            | EditSlot::BrUncond
+            | EditSlot::InvokeNormal
+            | EditSlot::InvokeUnwind
+            | EditSlot::CallBrDefault
+            | EditSlot::CallBrIndirect(_) => {
                 unreachable!("remove_slot: slot is not removable")
             }
         };
@@ -1178,18 +1196,28 @@ where
         Ok(())
     }
 
-    /// Mechanical body of [`Self::redirect_edge`]: validate `phi_values`
-    /// against `new_to`'s leading phis, retarget the single edge selected by
-    /// `slot` onto `new_to`, drop the old target's `from`-incomings, seed
-    /// `new_to`'s phis, log the [`CfgUpdate`] pair, and mark dirty.
+    /// Mechanical body of [`Self::redirect_edge`] and every typed
+    /// terminator-edit handle's `redirect_*`: reject `from` already reaching
+    /// `new_to`, validate `phi_values` against `new_to`'s leading phis,
+    /// retarget the single edge selected by `slot` onto `new_to`, drop the old
+    /// target's `from`-incomings, seed `new_to`'s phis, log the [`CfgUpdate`]
+    /// pair, and mark dirty.
     ///
-    /// The edge preconditions (single edge to the old target, `from` not
-    /// already reaching `new_to`, terminator kind supported) are witnessed by
-    /// the caller before the slot is built. The `phi_values` arity/type check
-    /// is done here *before* any mutation, so a mis-sized or mistyped
-    /// `phi_values` leaves the terminator and every phi untouched. For the
-    /// role slots (`BrThen`/`BrElse`/`BrUncond`) the old target is read off the
-    /// current terminator; for `SwitchCase(old)` it is carried in the slot.
+    /// This is the single validated mutation path, so both the "`from` already
+    /// reaches `new_to`" edge precondition and the `phi_values` arity/type
+    /// check live here (the former first, preserving the
+    /// edge-precondition-before-phi-arity error priority); every redirect
+    /// surface — the legacy edge op and the typed handles — inherits them for
+    /// free. Both are checked *before* any mutation, so a rejected call leaves
+    /// the terminator and every phi untouched. The remaining "find-the-slot"
+    /// preconditions (which edge of `old_to`, terminator kind supported) stay
+    /// in [`Self::redirect_edge`]: they are about *locating* an edge from
+    /// `old_to`, which the role-named typed ops don't need.
+    ///
+    /// For the role slots (`BrThen`/`BrElse`/`BrUncond`/`InvokeNormal`/
+    /// `InvokeUnwind`/`CallBrDefault`/`CallBrIndirect`) the old target is read
+    /// off the current terminator; for `SwitchCase(old)` it is carried in the
+    /// slot.
     fn redirect_slot(
         &self,
         from: &BasicBlockView<'ctx, B>,
@@ -1202,6 +1230,23 @@ where
         let from_id = from_block.as_value().id;
         let new_id = new_to.as_value().id;
         let ctx = self.patch.module_mut().core_ref().context();
+
+        // Centralized edge precondition: `from` must not already reach
+        // `new_to`. Redirect mints a fresh edge, so each new-target phi gains
+        // exactly one `(value, from)` incoming; if `from` already reached
+        // `new_to`, seeding would add a duplicate for the same predecessor.
+        // Checked here (over the terminator's live successor set, which covers
+        // every terminator kind uniformly) and BEFORE the phi-values check, so
+        // every redirect path — legacy and typed — shares it at the same error
+        // priority.
+        if crate::cfg::block_successors(&from_block)
+            .iter()
+            .any(|succ| succ.as_value().id == new_id)
+        {
+            return Err(IrError::InvalidOperation {
+                message: "redirect: `from` already reaches `new_to`",
+            });
+        }
 
         // Collect `new_to`'s leading phis (its block parameters) and validate
         // `phi_values` against them BEFORE mutating — all-or-nothing, mirroring
@@ -1301,6 +1346,58 @@ where
                     }
                     _ => unreachable!("redirect_slot: branch terminator yielded a non-branch slot"),
                 }
+            }
+            EditSlot::InvokeNormal | EditSlot::InvokeUnwind => {
+                let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
+                else {
+                    unreachable!("redirect_slot: terminator is not an instruction");
+                };
+                let crate::instruction::InstructionKindData::Invoke(invoke) = &i.kind else {
+                    unreachable!("redirect_slot: invoke slot on a non-invoke terminator");
+                };
+                match slot {
+                    EditSlot::InvokeNormal => {
+                        let old = invoke.normal_dest.get();
+                        invoke.normal_dest.set(new_id);
+                        old
+                    }
+                    EditSlot::InvokeUnwind => {
+                        let old = invoke.unwind_dest.get();
+                        invoke.unwind_dest.set(new_id);
+                        old
+                    }
+                    _ => unreachable!("redirect_slot: invoke arm restricts slot to an invoke dest"),
+                }
+            }
+            EditSlot::CallBrDefault => {
+                let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
+                else {
+                    unreachable!("redirect_slot: terminator is not an instruction");
+                };
+                let crate::instruction::InstructionKindData::CallBr(callbr) = &i.kind else {
+                    unreachable!("redirect_slot: callbr slot on a non-callbr terminator");
+                };
+                let old = callbr.default_dest.get();
+                callbr.default_dest.set(new_id);
+                old
+            }
+            EditSlot::CallBrIndirect(idx) => {
+                let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
+                else {
+                    unreachable!("redirect_slot: terminator is not an instruction");
+                };
+                let crate::instruction::InstructionKindData::CallBr(callbr) = &i.kind else {
+                    unreachable!("redirect_slot: callbr slot on a non-callbr terminator");
+                };
+                // Bounds-check the caller-supplied index before mutating: an
+                // out-of-range index is rejected here, before the dest cell or
+                // any phi is touched, so a bad index leaves the IR untouched.
+                let cell = callbr.indirect_dests.get(idx).ok_or(IrError::InvalidOperation {
+                    message: "redirect_indirect: `callbr` indirect destination index out of range",
+                })?;
+                let old = cell.get();
+                cell.set(new_id);
+                old
             }
         };
 
@@ -1511,7 +1608,6 @@ where
     ) -> IrResult<()> {
         let from_block = from.as_basic_block();
         let old_id = old_to.as_value().id;
-        let new_id = new_to.as_value().id;
         let ctx = self.patch.module_mut().core_ref().context();
 
         let term = from_block.terminator().ok_or(IrError::InvalidOperation {
@@ -1525,10 +1621,10 @@ where
         let slot = match &ctx.value_data(term_id).kind {
             crate::value::ValueKindData::Instruction(i) => match &i.kind {
                 crate::instruction::InstructionKindData::Switch(switch) => {
-                    // Exactly one edge `from -> old_to` (a case or the default),
-                    // and `from` must not already reach `new_to`: redirect mints
-                    // a fresh edge, so the new-target phi gains exactly one
-                    // incoming per phi.
+                    // Locate the single edge `from -> old_to` (a case or the
+                    // default). The "`from` already reaches `new_to`" precondition
+                    // is centralized in `redirect_slot`, so it is not repeated
+                    // here.
                     let default_is_old = switch.default_bb.get() == old_id;
                     let case_hits = switch
                         .cases
@@ -1547,17 +1643,6 @@ where
                             message: "redirect_edge: `from` reaches `old_to` through multiple edges",
                         });
                     }
-                    let already_reaches_new = switch.default_bb.get() == new_id
-                        || switch
-                            .cases
-                            .borrow()
-                            .iter()
-                            .any(|(_, dest)| *dest == new_id);
-                    if already_reaches_new {
-                        return Err(IrError::InvalidOperation {
-                            message: "redirect_edge: `from` already reaches `new_to`",
-                        });
-                    }
                     if default_is_old {
                         EditSlot::SwitchDefault
                     } else {
@@ -1566,20 +1651,16 @@ where
                 }
                 crate::instruction::InstructionKindData::Br(branch) => {
                     // A `br`/`cond_br` reaches `old_to` through exactly one edge
-                    // (the unconditional target, or one of `then`/`else`), and
-                    // `from` must not already reach `new_to` -- the same edge
-                    // rules as the switch path.
+                    // (the unconditional target, or one of `then`/`else`) -- the
+                    // same edge-location rules as the switch path. The "`from`
+                    // already reaches `new_to`" precondition is centralized in
+                    // `redirect_slot`, so it is not repeated here.
                     let kind = branch.kind.borrow();
                     match &*kind {
                         crate::instr_types::BranchKind::Unconditional(target) => {
                             if *target != old_id {
                                 return Err(IrError::InvalidOperation {
                                     message: "redirect_edge: `old_to` is not a successor of `from`",
-                                });
-                            }
-                            if *target == new_id {
-                                return Err(IrError::InvalidOperation {
-                                    message: "redirect_edge: `from` already reaches `new_to`",
                                 });
                             }
                             EditSlot::BrUncond
@@ -1599,11 +1680,6 @@ where
                             if edges_to_old > 1 {
                                 return Err(IrError::InvalidOperation {
                                     message: "redirect_edge: `from` reaches `old_to` through multiple edges",
-                                });
-                            }
-                            if *then_bb == new_id || *else_bb == new_id {
-                                return Err(IrError::InvalidOperation {
-                                    message: "redirect_edge: `from` already reaches `new_to`",
                                 });
                             }
                             if matches_then {
@@ -1628,6 +1704,179 @@ where
         };
 
         self.redirect_slot(from, term_id, slot, new_to, phi_values)
+    }
+
+    /// Read the current `default` destination id of the `switch` terminator
+    /// `term_id`. Used by [`SwitchEdit::remove_successor`] to reject removing
+    /// the default edge (a `switch` must keep its default).
+    fn switch_default_dest(&self, term_id: ValueId) -> ValueId {
+        let ctx = self.patch.module_mut().core_ref().context();
+        let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind else {
+            unreachable!("switch_default_dest: terminator is not an instruction");
+        };
+        let crate::instruction::InstructionKindData::Switch(switch) = &i.kind else {
+            unreachable!("switch_default_dest: `SwitchEdit` term is not a switch");
+        };
+        switch.default_bb.get()
+    }
+
+    /// Narrow `from`'s terminator into a typed edit handle, choosing the arm
+    /// by opcode (and splitting `br` from `cond_br` by
+    /// [`is_conditional`](crate::BranchInst::is_conditional)). The returned
+    /// [`TermEdit`] *type* fixes which edge ops exist — a `br` yields a
+    /// [`BrEdit`] with only `redirect`, a `cond_br` a [`CondBrEdit`] with
+    /// `remove_then`/`remove_else`, an `invoke`/`callbr` a handle with no
+    /// `remove_*` at all — so a structurally-invalid edge edit (e.g. removing
+    /// an `invoke`'s normal edge) is a *compile* error rather than a runtime
+    /// rejection. Terminators with no editable edges here (`ret`,
+    /// `unreachable`, `indirectbr`, and the exception-handling terminators)
+    /// come back as [`TermEdit::Uneditable`] carrying the raw view.
+    ///
+    /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator.
+    #[inline]
+    pub fn edit_terminator<'e>(
+        &'e self,
+        from: &BasicBlockView<'ctx, B>,
+    ) -> IrResult<TermEdit<'e, 'm, 'r, 'ctx, B, R>> {
+        let from_block = from.as_basic_block();
+        let term = from_block.terminator().ok_or(IrError::InvalidOperation {
+            message: "edit_terminator: `from` has no terminator",
+        })?;
+        let term_id = term.as_value().id;
+        let from_view = from.clone();
+        let kind = term.terminator_kind().ok_or(IrError::InvalidOperation {
+            message: "edit_terminator: `from`'s last instruction is not a terminator",
+        })?;
+        Ok(match kind {
+            TerminatorKind::Br(branch) => {
+                if branch.is_conditional() {
+                    TermEdit::CondBr(CondBrEdit {
+                        reshape: self,
+                        from: from_view,
+                        term_id,
+                    })
+                } else {
+                    TermEdit::Br(BrEdit {
+                        reshape: self,
+                        from: from_view,
+                        term_id,
+                    })
+                }
+            }
+            TerminatorKind::Switch(_) => TermEdit::Switch(SwitchEdit {
+                reshape: self,
+                from: from_view,
+                term_id,
+            }),
+            TerminatorKind::Invoke(_) => TermEdit::Invoke(InvokeEdit {
+                reshape: self,
+                from: from_view,
+                term_id,
+            }),
+            TerminatorKind::CallBr(_) => TermEdit::CallBr(CallBrEdit {
+                reshape: self,
+                from: from_view,
+                term_id,
+            }),
+            TerminatorKind::Ret(_)
+            | TerminatorKind::IndirectBr(_)
+            | TerminatorKind::Resume(_)
+            | TerminatorKind::CatchReturn(_)
+            | TerminatorKind::CleanupReturn(_)
+            | TerminatorKind::CatchSwitch(_)
+            | TerminatorKind::Unreachable(_) => TermEdit::Uneditable(term),
+        })
+    }
+
+    /// `dyn_cast`-style narrow to a [`SwitchEdit`]: `Err` if `from`'s
+    /// terminator is not a `switch`.
+    ///
+    /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator or its
+    /// terminator is not a `switch`.
+    #[inline]
+    pub fn edit_switch<'e>(
+        &'e self,
+        from: &BasicBlockView<'ctx, B>,
+    ) -> IrResult<SwitchEdit<'e, 'm, 'r, 'ctx, B, R>> {
+        match self.edit_terminator(from)? {
+            TermEdit::Switch(edit) => Ok(edit),
+            _ => Err(IrError::InvalidOperation {
+                message: "edit_switch: `from`'s terminator is not a `switch`",
+            }),
+        }
+    }
+
+    /// `dyn_cast`-style narrow to a [`CondBrEdit`]: `Err` if `from`'s
+    /// terminator is not a conditional `br`.
+    ///
+    /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator or its
+    /// terminator is not a `cond_br`.
+    #[inline]
+    pub fn edit_cond_br<'e>(
+        &'e self,
+        from: &BasicBlockView<'ctx, B>,
+    ) -> IrResult<CondBrEdit<'e, 'm, 'r, 'ctx, B, R>> {
+        match self.edit_terminator(from)? {
+            TermEdit::CondBr(edit) => Ok(edit),
+            _ => Err(IrError::InvalidOperation {
+                message: "edit_cond_br: `from`'s terminator is not a `cond_br`",
+            }),
+        }
+    }
+
+    /// `dyn_cast`-style narrow to a [`BrEdit`]: `Err` if `from`'s terminator is
+    /// not an *unconditional* `br` (a `cond_br` is rejected — narrow it with
+    /// [`Self::edit_cond_br`] instead).
+    ///
+    /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator or its
+    /// terminator is not an unconditional `br`.
+    #[inline]
+    pub fn edit_br<'e>(
+        &'e self,
+        from: &BasicBlockView<'ctx, B>,
+    ) -> IrResult<BrEdit<'e, 'm, 'r, 'ctx, B, R>> {
+        match self.edit_terminator(from)? {
+            TermEdit::Br(edit) => Ok(edit),
+            _ => Err(IrError::InvalidOperation {
+                message: "edit_br: `from`'s terminator is not an unconditional `br`",
+            }),
+        }
+    }
+
+    /// `dyn_cast`-style narrow to an [`InvokeEdit`]: `Err` if `from`'s
+    /// terminator is not an `invoke`.
+    ///
+    /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator or its
+    /// terminator is not an `invoke`.
+    #[inline]
+    pub fn edit_invoke<'e>(
+        &'e self,
+        from: &BasicBlockView<'ctx, B>,
+    ) -> IrResult<InvokeEdit<'e, 'm, 'r, 'ctx, B, R>> {
+        match self.edit_terminator(from)? {
+            TermEdit::Invoke(edit) => Ok(edit),
+            _ => Err(IrError::InvalidOperation {
+                message: "edit_invoke: `from`'s terminator is not an `invoke`",
+            }),
+        }
+    }
+
+    /// `dyn_cast`-style narrow to a [`CallBrEdit`]: `Err` if `from`'s
+    /// terminator is not a `callbr`.
+    ///
+    /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator or its
+    /// terminator is not a `callbr`.
+    #[inline]
+    pub fn edit_callbr<'e>(
+        &'e self,
+        from: &BasicBlockView<'ctx, B>,
+    ) -> IrResult<CallBrEdit<'e, 'm, 'r, 'ctx, B, R>> {
+        match self.edit_terminator(from)? {
+            TermEdit::CallBr(edit) => Ok(edit),
+            _ => Err(IrError::InvalidOperation {
+                message: "edit_callbr: `from`'s terminator is not a `callbr`",
+            }),
+        }
     }
 
     /// Insert a fully-witnessed phi at `block`'s phi head and return its erased
@@ -1785,6 +2034,373 @@ where
 // footgun this rung exists to eliminate. The in-block-edit surface is delegated
 // by hand above; CFG analyses are read only through the `&mut self`-tied
 // [`FnReshape::analysis_repaired`].
+
+// ==========================================================================
+// Typed terminator edit handles
+// ==========================================================================
+//
+// Each handle narrows one terminator into a value whose *type* fixes which edge
+// ops exist, so a structurally-invalid CFG edge edit is a *compile* error, not a
+// runtime rejection:
+//
+//   * an unconditional `br` has exactly one edge that cannot be removed (nothing
+//     would remain), so [`BrEdit`] has `redirect` but no `remove`;
+//   * an `invoke`/`callbr` edge is never removable, so [`InvokeEdit`]/
+//     [`CallBrEdit`] carry only `redirect_*`;
+//   * a `switch` must keep its default, so [`SwitchEdit`] has `remove_successor`
+//     but no `remove_default`;
+//   * collapsing a `cond_br` consumes one arm, so [`CondBrEdit::remove_then`]/
+//     `remove_else` take `self` by value (a second collapse is a use-after-move).
+//
+// The `remove_*` methods live on NO shared trait — they are inherent methods on
+// the one handle each belongs to — so `invoke_edit.remove_normal(..)` is an
+// `E0599 no method`, proven by the compile-fail fixtures. Every method delegates
+// to the shared, single-validated [`FnReshape::redirect_slot`]/
+// [`FnReshape::remove_slot`], so the typed surface inherits the same phi and
+// edge validation as the legacy edge ops for free.
+
+/// Typed edit handle for an unconditional `br` terminator. Its sole edge cannot
+/// be removed (the block would be left with no successor), so this handle offers
+/// only [`redirect`](Self::redirect).
+pub struct BrEdit<'e, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    reshape: &'e FnReshape<'m, 'r, 'ctx, B, R>,
+    from: BasicBlockView<'ctx, B>,
+    term_id: ValueId,
+}
+
+impl<'e, 'm, 'r, 'ctx, B, R> BrEdit<'e, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    /// Retarget the branch's sole edge onto `new_to`, seeding `new_to`'s leading
+    /// phis with `phi_values`. Runs through the shared, single-validated redirect
+    /// path; see [`FnReshape::redirect_edge`] for the phi-values contract and
+    /// errors.
+    #[inline]
+    pub fn redirect(
+        &self,
+        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        phi_values: &[Value<'ctx, B>],
+    ) -> IrResult<()> {
+        self.reshape.redirect_slot(
+            &self.from,
+            self.term_id,
+            EditSlot::BrUncond,
+            new_to,
+            phi_values,
+        )
+    }
+}
+
+/// Typed edit handle for a conditional `br` (`cond_br`). Either arm may be
+/// redirected; removing an arm collapses the `cond_br` to an unconditional `br`
+/// to the survivor, so the `remove_*` methods consume `self` — a `cond_br` has
+/// exactly one collapse, and a second would be a use-after-move.
+pub struct CondBrEdit<'e, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    reshape: &'e FnReshape<'m, 'r, 'ctx, B, R>,
+    from: BasicBlockView<'ctx, B>,
+    term_id: ValueId,
+}
+
+impl<'e, 'm, 'r, 'ctx, B, R> CondBrEdit<'e, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    /// Retarget the `then` arm onto `new_to`, seeding `new_to`'s leading phis
+    /// with `phi_values`. See [`FnReshape::redirect_edge`] for the contract.
+    #[inline]
+    pub fn redirect_then(
+        &self,
+        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        phi_values: &[Value<'ctx, B>],
+    ) -> IrResult<()> {
+        self.reshape.redirect_slot(
+            &self.from,
+            self.term_id,
+            EditSlot::BrThen,
+            new_to,
+            phi_values,
+        )
+    }
+
+    /// Retarget the `else` arm onto `new_to`, seeding `new_to`'s leading phis
+    /// with `phi_values`. See [`FnReshape::redirect_edge`] for the contract.
+    #[inline]
+    pub fn redirect_else(
+        &self,
+        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        phi_values: &[Value<'ctx, B>],
+    ) -> IrResult<()> {
+        self.reshape.redirect_slot(
+            &self.from,
+            self.term_id,
+            EditSlot::BrElse,
+            new_to,
+            phi_values,
+        )
+    }
+
+    /// Remove the `then` edge, collapsing the `cond_br` to an unconditional `br`
+    /// to the surviving `else` target. Consumes `self`: the `cond_br` no longer
+    /// exists after the collapse, so a second removal cannot be spelled. See
+    /// [`FnReshape::remove_edge`] for the phi maintenance and collapse semantics.
+    #[inline]
+    pub fn remove_then(self) -> IrResult<()> {
+        self.reshape
+            .remove_slot(&self.from, self.term_id, EditSlot::BrThen)
+    }
+
+    /// Remove the `else` edge, collapsing the `cond_br` to an unconditional `br`
+    /// to the surviving `then` target. Consumes `self` (see
+    /// [`Self::remove_then`]).
+    #[inline]
+    pub fn remove_else(self) -> IrResult<()> {
+        self.reshape
+            .remove_slot(&self.from, self.term_id, EditSlot::BrElse)
+    }
+}
+
+/// Typed edit handle for a `switch`. A case edge (identified by its old target)
+/// or the default edge may be redirected; a case edge may be removed, but the
+/// default may not — a `switch` must keep its default — so there is no
+/// `remove_default`.
+pub struct SwitchEdit<'e, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    reshape: &'e FnReshape<'m, 'r, 'ctx, B, R>,
+    from: BasicBlockView<'ctx, B>,
+    term_id: ValueId,
+}
+
+impl<'e, 'm, 'r, 'ctx, B, R> SwitchEdit<'e, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    /// Retarget every case whose destination is `old_to` onto `new_to`, seeding
+    /// `new_to`'s leading phis with `phi_values`. See
+    /// [`FnReshape::redirect_edge`] for the contract.
+    #[inline]
+    pub fn redirect_successor(
+        &self,
+        old_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        phi_values: &[Value<'ctx, B>],
+    ) -> IrResult<()> {
+        self.reshape.redirect_slot(
+            &self.from,
+            self.term_id,
+            EditSlot::SwitchCase(old_to.as_value().id),
+            new_to,
+            phi_values,
+        )
+    }
+
+    /// Retarget the default edge onto `new_to`, seeding `new_to`'s leading phis
+    /// with `phi_values`. See [`FnReshape::redirect_edge`] for the contract.
+    #[inline]
+    pub fn redirect_default(
+        &self,
+        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        phi_values: &[Value<'ctx, B>],
+    ) -> IrResult<()> {
+        self.reshape.redirect_slot(
+            &self.from,
+            self.term_id,
+            EditSlot::SwitchDefault,
+            new_to,
+            phi_values,
+        )
+    }
+
+    /// Remove every case whose destination is `old_to`, collapsing the
+    /// `from → old_to` edge (the leftover `switch` keeps its default). Rejects
+    /// removing the default edge with [`IrError::InvalidOperation`]. See
+    /// [`FnReshape::remove_edge`] for the phi maintenance.
+    #[inline]
+    pub fn remove_successor(&self, old_to: &BasicBlockLabel<'ctx, Dyn, B>) -> IrResult<()> {
+        let old_id = old_to.as_value().id;
+        if self.reshape.switch_default_dest(self.term_id) == old_id {
+            return Err(IrError::InvalidOperation {
+                message: "remove_successor: cannot remove a `switch`'s default edge",
+            });
+        }
+        self.reshape
+            .remove_slot(&self.from, self.term_id, EditSlot::SwitchCase(old_id))
+    }
+}
+
+/// Typed edit handle for an `invoke`. Both destinations (normal and unwind) may
+/// be redirected; neither may be removed — an `invoke` always has exactly two
+/// edges — so this handle carries only `redirect_*`.
+pub struct InvokeEdit<'e, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    reshape: &'e FnReshape<'m, 'r, 'ctx, B, R>,
+    from: BasicBlockView<'ctx, B>,
+    term_id: ValueId,
+}
+
+impl<'e, 'm, 'r, 'ctx, B, R> InvokeEdit<'e, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    /// Retarget the normal (non-unwind) edge onto `new_to`, seeding `new_to`'s
+    /// leading phis with `phi_values`. See [`FnReshape::redirect_edge`] for the
+    /// contract.
+    #[inline]
+    pub fn redirect_normal(
+        &self,
+        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        phi_values: &[Value<'ctx, B>],
+    ) -> IrResult<()> {
+        self.reshape.redirect_slot(
+            &self.from,
+            self.term_id,
+            EditSlot::InvokeNormal,
+            new_to,
+            phi_values,
+        )
+    }
+
+    /// Retarget the unwind edge onto `new_to`, seeding `new_to`'s leading phis
+    /// with `phi_values`. See [`FnReshape::redirect_edge`] for the contract.
+    #[inline]
+    pub fn redirect_unwind(
+        &self,
+        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        phi_values: &[Value<'ctx, B>],
+    ) -> IrResult<()> {
+        self.reshape.redirect_slot(
+            &self.from,
+            self.term_id,
+            EditSlot::InvokeUnwind,
+            new_to,
+            phi_values,
+        )
+    }
+}
+
+/// Typed edit handle for a `callbr`. The default (fallthrough) edge and each
+/// indirect edge may be redirected; none may be removed, so this handle carries
+/// only `redirect_*`.
+pub struct CallBrEdit<'e, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    reshape: &'e FnReshape<'m, 'r, 'ctx, B, R>,
+    from: BasicBlockView<'ctx, B>,
+    term_id: ValueId,
+}
+
+impl<'e, 'm, 'r, 'ctx, B, R> CallBrEdit<'e, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    /// Retarget the default (fallthrough) edge onto `new_to`, seeding `new_to`'s
+    /// leading phis with `phi_values`. See [`FnReshape::redirect_edge`] for the
+    /// contract.
+    #[inline]
+    pub fn redirect_default(
+        &self,
+        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        phi_values: &[Value<'ctx, B>],
+    ) -> IrResult<()> {
+        self.reshape.redirect_slot(
+            &self.from,
+            self.term_id,
+            EditSlot::CallBrDefault,
+            new_to,
+            phi_values,
+        )
+    }
+
+    /// Retarget the `index`-th indirect edge onto `new_to`, seeding `new_to`'s
+    /// leading phis with `phi_values`. An out-of-range `index` is rejected with
+    /// [`IrError::InvalidOperation`]. See [`FnReshape::redirect_edge`] for the
+    /// phi-values contract.
+    #[inline]
+    pub fn redirect_indirect(
+        &self,
+        index: usize,
+        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        phi_values: &[Value<'ctx, B>],
+    ) -> IrResult<()> {
+        self.reshape.redirect_slot(
+            &self.from,
+            self.term_id,
+            EditSlot::CallBrIndirect(index),
+            new_to,
+            phi_values,
+        )
+    }
+}
+
+/// A terminator narrowed by [`FnReshape::edit_terminator`] into whichever typed
+/// edit handle its opcode admits. Matching on this enum recovers the concrete
+/// handle whose method set encodes the legal edge ops (see the module-level
+/// note on the typed edit handles). Terminators with no editable edges here
+/// (`ret`, `unreachable`, `indirectbr`, and the exception-handling terminators)
+/// come back as [`Self::Uneditable`].
+pub enum TermEdit<'e, 'm, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    /// An unconditional `br`.
+    Br(BrEdit<'e, 'm, 'r, 'ctx, B, R>),
+    /// A conditional `br` (`cond_br`).
+    CondBr(CondBrEdit<'e, 'm, 'r, 'ctx, B, R>),
+    /// A `switch`.
+    Switch(SwitchEdit<'e, 'm, 'r, 'ctx, B, R>),
+    /// An `invoke`.
+    Invoke(InvokeEdit<'e, 'm, 'r, 'ctx, B, R>),
+    /// A `callbr`.
+    CallBr(CallBrEdit<'e, 'm, 'r, 'ctx, B, R>),
+    /// A terminator this surface does not edge-edit (`ret`, `unreachable`,
+    /// `indirectbr`, `resume`, `catchret`, `cleanupret`, `catchswitch`),
+    /// carrying its raw read-only view.
+    Uneditable(InstructionView<'ctx, B>),
+}
 
 impl MutatingFn for PatchBody {
     type Mutator<'m, 'r, 'ctx, B, R>
