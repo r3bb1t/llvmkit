@@ -47,6 +47,7 @@ use super::constant::{Constant, ConstantExprFlags, ConstantExprOpcode};
 use super::constant_fold;
 use super::constants::ConstantExprOptions;
 use super::derived_types::{FloatType, FunctionType, IntType, PointerType, StructType};
+use super::element::ElemDyn;
 use super::error::{IrError, IrResult, TypeKindLabel};
 use super::float_kind::{FloatDyn, FloatKind, FloatWiderThan, IntoFloatValue};
 use super::fmf::FastMathFlags;
@@ -89,6 +90,7 @@ use super::value::{
     FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Value, ValueId, ValueKindData,
     ValueUse, VectorValue,
 };
+use super::vec_len::LenDyn;
 
 /// Pair returned by terminator builders: the terminated insertion block and
 /// the emitted terminator instruction.
@@ -5329,7 +5331,7 @@ where
         count: u32,
         scalar: V,
         name: Name,
-    ) -> IrResult<VectorValue<'ctx, B>>
+    ) -> IrResult<VectorValue<'ctx, ElemDyn, LenDyn, B>>
     where
         Name: AsRef<str>,
         V: IsValue<'ctx, B>,

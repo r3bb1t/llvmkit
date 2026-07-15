@@ -45,8 +45,10 @@ use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
+use super::element::{ElemDyn, StaticVecElem, VecElem};
 use super::float_kind::{BFloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
 use super::int_width::{IntDyn, IntWidth, Width};
+use super::vec_len::{Len, LenDyn, VecLen};
 
 // --------------------------------------------------------------------------
 // ValueId
@@ -895,25 +897,281 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>> for St
     }
 }
 
-decl_value_handle!(
-    /// Value whose type is a fixed or scalable vector.
-    VectorValue, FixedVector, VectorType,
-    type_predicate |d| matches!(
-        d,
-        TypeData::FixedVector { .. } | TypeData::ScalableVector { .. }
-    )
-);
-impl<'ctx, B: ModuleBrand + 'ctx> VectorValue<'ctx, B> {
-    /// Crate-internal: wrap a [`Value`] known to have a vector type.
-    /// The IR builder uses this when it just produced a vector-result
-    /// instruction (insertelement / shufflevector / splat).
+// --------------------------------------------------------------------------
+// VectorValue<'ctx, E, L> -- element + length-typed vector value handle
+// --------------------------------------------------------------------------
+
+/// Value whose IR type is a fixed or scalable vector. The `E: VecElem`
+/// marker (default [`ElemDyn`]) pins the element type and `L: VecLen`
+/// (default [`LenDyn`]) pins the lane count at the type level, mirroring
+/// [`IntValue`]'s width marker. `VectorValue<'ctx>` (both markers erased)
+/// is the dynamic handle; `VectorValue<'ctx, i32, Len<4>>` is a statically
+/// typed `<4 x i32>`.
+pub struct VectorValue<'ctx, E: VecElem = ElemDyn, L: VecLen = LenDyn, B: ModuleBrand = Brand<'ctx>>
+{
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) ty: TypeId,
+    pub(super) _e: PhantomData<E>,
+    pub(super) _l: PhantomData<L>,
+}
+
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> Clone for VectorValue<'ctx, E, L, B> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> Copy for VectorValue<'ctx, E, L, B> {}
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> PartialEq for VectorValue<'ctx, E, L, B> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.module == other.module && self.ty == other.ty
+    }
+}
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> Eq for VectorValue<'ctx, E, L, B> {}
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> Hash for VectorValue<'ctx, E, L, B> {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        self.id.hash(h);
+        self.module.hash(h);
+        self.ty.hash(h);
+    }
+}
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> fmt::Debug for VectorValue<'ctx, E, L, B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VectorValue").field("id", &self.id).finish()
+    }
+}
+
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorValue<'ctx, E, L, B> {
+    /// Crate-internal: wrap a [`Value`] known to have a vector type of the
+    /// claimed element / length. The IR builder uses the erased form when it
+    /// just produced a vector-result instruction (insertelement /
+    /// shufflevector / splat); typed callers pass the pinned `E, L`.
     #[inline]
     pub(super) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
         Self {
             id: v.id,
             module: v.module,
             ty: v.ty,
+            _e: PhantomData,
+            _l: PhantomData,
         }
+    }
+
+    /// Widen to the erased [`Value`] handle.
+    #[inline]
+    pub fn as_value(self) -> Value<'ctx, B> {
+        Value {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+        }
+    }
+    /// Owning module reference.
+    #[inline]
+    pub fn module(self) -> ModuleView<'ctx, B> {
+        ModuleView::new(self.module.module())
+    }
+    /// Refined IR-type handle for this value.
+    #[inline]
+    pub fn ty(self) -> VectorType<'ctx, E, L, B> {
+        VectorType::new(self.ty, self.module)
+    }
+    /// Optional textual name.
+    pub fn name(self) -> Option<String> {
+        self.as_value().name()
+    }
+    /// Set the textual name.
+    pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
+        self.as_value().set_name(module_token, name);
+    }
+    /// Clear the textual name.
+    pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+        self.as_value().clear_name(module_token);
+    }
+    /// Optional debug-location.
+    #[inline]
+    pub fn debug_loc(self) -> Option<DebugLoc> {
+        self.as_value().debug_loc()
+    }
+    /// Erase both markers; preserves the runtime element type / lane count.
+    #[inline]
+    pub fn as_dyn(self) -> VectorValue<'ctx, ElemDyn, LenDyn, B> {
+        VectorValue {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+            _e: PhantomData,
+            _l: PhantomData,
+        }
+    }
+}
+
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> sealed::Sealed
+    for VectorValue<'ctx, E, L, B>
+{
+}
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> IsValue<'ctx, B>
+    for VectorValue<'ctx, E, L, B>
+{
+    #[inline]
+    fn as_value(self) -> Value<'ctx, B> {
+        Self::as_value(self)
+    }
+}
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> Typed<'ctx, B>
+    for VectorValue<'ctx, E, L, B>
+{
+    #[inline]
+    fn ty(self) -> Type<'ctx, B> {
+        self.ty().as_type()
+    }
+}
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> HasName<'ctx, B>
+    for VectorValue<'ctx, E, L, B>
+{
+    #[inline]
+    fn name(self) -> Option<String> {
+        Self::name(self)
+    }
+    #[inline]
+    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
+        Self::set_name(self, module_token, name)
+    }
+    #[inline]
+    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+        Self::clear_name(self, module_token)
+    }
+}
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> HasDebugLoc
+    for VectorValue<'ctx, E, L, B>
+{
+    #[inline]
+    fn debug_loc(self) -> Option<DebugLoc> {
+        Self::debug_loc(self)
+    }
+}
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> From<VectorValue<'ctx, E, L, B>>
+    for Value<'ctx, B>
+{
+    #[inline]
+    fn from(v: VectorValue<'ctx, E, L, B>) -> Self {
+        v.as_value()
+    }
+}
+
+// Erased narrowing: any vector value lands in the fully dynamic form.
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>>
+    for VectorValue<'ctx, ElemDyn, LenDyn, B>
+{
+    type Error = IrError;
+    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
+        let ty = v.ty();
+        if matches!(
+            ty.data(),
+            TypeData::FixedVector { .. } | TypeData::ScalableVector { .. }
+        ) {
+            Ok(Self {
+                id: v.id,
+                module: v.module,
+                ty: v.ty,
+                _e: PhantomData,
+                _l: PhantomData,
+            })
+        } else {
+            Err(IrError::TypeMismatch {
+                expected: TypeKindLabel::FixedVector,
+                got: ty.kind_label(),
+            })
+        }
+    }
+}
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>>
+    for VectorValue<'ctx, ElemDyn, LenDyn, B>
+{
+    type Error = IrError;
+    #[inline]
+    fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+    }
+}
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
+    for VectorValue<'ctx, ElemDyn, LenDyn, B>
+{
+    type Error = IrError;
+    #[inline]
+    fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+    }
+}
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
+    for VectorValue<'ctx, ElemDyn, LenDyn, B>
+{
+    type Error = IrError;
+    #[inline]
+    fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
+    }
+}
+
+/// Typed narrowing: a `Value` accepts into `VectorValue<'ctx, E, Len<N>>`
+/// only if it is a **fixed** vector whose element type is exactly `E`'s
+/// projection and whose lane count is exactly `N`. Element mismatch reports
+/// [`IrError::TypeMismatch`] (the element kinds); lane-count mismatch
+/// reports [`IrError::OperandWidthMismatch`] (the "vector length" arm of
+/// that variant's doc). Scalable vectors — whose lane count is a runtime
+/// multiple, not a fixed `N` — never narrow to `Len<N>`.
+impl<'ctx, E, const N: u32, B> TryFrom<Value<'ctx, B>> for VectorValue<'ctx, E, Len<N>, B>
+where
+    E: StaticVecElem<'ctx, B>,
+    B: ModuleBrand + 'ctx,
+{
+    type Error = IrError;
+    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
+        let ty = v.ty();
+        match ty.data() {
+            TypeData::FixedVector { elem, n } => {
+                let expected_elem = E::element_ir_type(v.module);
+                if *elem != expected_elem.id() {
+                    return Err(IrError::TypeMismatch {
+                        expected: expected_elem.kind_label(),
+                        got: Type::new(*elem, v.module).kind_label(),
+                    });
+                }
+                if *n != N {
+                    return Err(IrError::OperandWidthMismatch { lhs: N, rhs: *n });
+                }
+                Ok(Self {
+                    id: v.id,
+                    module: v.module,
+                    ty: v.ty,
+                    _e: PhantomData,
+                    _l: PhantomData,
+                })
+            }
+            _ => Err(IrError::TypeMismatch {
+                expected: TypeKindLabel::FixedVector,
+                got: ty.kind_label(),
+            }),
+        }
+    }
+}
+
+/// Static -> `Dyn` widening (always succeeds). Restricted to the `Len<N>`
+/// typed form so it cannot overlap the reflexive `From<T> for T`.
+impl<'ctx, E: VecElem, const N: u32, B: ModuleBrand + 'ctx> From<VectorValue<'ctx, E, Len<N>, B>>
+    for VectorValue<'ctx, ElemDyn, LenDyn, B>
+{
+    #[inline]
+    fn from(v: VectorValue<'ctx, E, Len<N>, B>) -> Self {
+        v.as_dyn()
     }
 }
 
