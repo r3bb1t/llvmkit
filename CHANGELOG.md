@@ -170,3 +170,61 @@ The last two deferred phi-authoring items.
   an **opaque struct** (`phi %opaque`). It previously accepted it — contradicting
   its own comment — and produced IR that then failed `Module::verify()`. The
   parser and the verifier now accept exactly the same set of phi result types.
+
+### Const-generic vector and array types (breaking)
+
+Fixed vectors and arrays now carry their **element type** and **length** in the
+Rust type system, so `<N x T>` / `[N x T]` length mismatches and wrong-element
+`insertelement` / `insertvalue` — previously caught only by `Module::verify()` —
+become **compile errors**. This is the vector/array analog of the scalar
+`IntValue<'ctx, W: IntWidth, B>`. Erased (`Dyn`) markers are the defaults, so a
+bare `VectorValue<'ctx>` / `ArrayValue<'ctx>` is the fully-erased form, and
+parsed `.ll`, scalable vectors, and runtime lengths land there unchanged.
+
+#### Added
+
+- Element markers `VecElem` (base) and `StaticVecElem<'ctx, B>` (projection) in
+  `element.rs`, spelled by the scalar markers themselves (`i64`, `f64`, `bool`,
+  the int-width and float-kind markers); `ElemDyn` is the erased element.
+- Length markers `Len<const N: u32>` / `LenDyn` (+ `StaticVecLen`) for vectors
+  and `ArrLen<const N: u64>` / `ArrLenDyn` (+ `StaticArrayLen`) for arrays —
+  separate families because vector lengths are `u32` and array lengths `u64`.
+- Const-generic constructors `Module::vector_type_n::<E, const N: u32>()` and
+  `array_type_n::<E, const N: u64>()`. `vector_type_n` rejects `N == 0` at
+  monomorphisation (a `const {}` assert); `[0 x T]` arrays stay legal.
+- Typed value narrowing — `TryFrom<Value>` for `VectorValue<E, Len<N>>` and
+  `ArrayValue<E, ArrLen<N>>` checks element **and** length before stamping the
+  markers (`OperandWidthMismatch` / `IrError::ArrayLengthMismatch` for length,
+  `TypeMismatch` for element), mirroring the scalar `IntValue` narrowing.
+- Typed op builders that lower into the existing erased builders (byte-identical
+  IR): `build_vec_int_{add,sub,mul,xor,and,or,shl,lshr,ashr}` (both operands
+  pinned to the same `E`,`N`, so a length/element mismatch has no matching impl),
+  `build_vec_extract` / `build_vec_insert` / `build_vec_splat`, and the array
+  `build_arr_extract` / `build_arr_insert`. `build_alloca` accepts a typed array
+  type directly (its result stays an erased `PointerValue`).
+- `IrError::ArrayLengthMismatch { expected: u64, got: u64 }` — a statically
+  lengthed array handle narrowed from an array of a different length.
+- `WrapWitness` — an unforgeable in-crate token gating `StaticVecElem::wrap_value`
+  (the sole unchecked `Value` → typed-scalar-handle wrap) to callers that already
+  hold an element-type proof; every external `Value` → typed-handle path stays the
+  checked `TryFrom`.
+- Example `crates/llvmkit-ir/examples/typed_vector_array.rs` and three new table
+  rows in `docs/type-safety-vs-llvm.md`.
+
+#### Changed
+
+- **Breaking:** `VectorType` / `VectorValue` and `ArrayType` / `ArrayValue` each
+  gained two defaulted generic parameters — element and length. The bare handles
+  (`VectorValue<'ctx>`, `ArrayType<'ctx>`, …) still name the fully-erased form and
+  behave exactly as before; only code that spelled these handles with an explicit
+  brand-only generic list must now also spell the `Dyn` markers.
+- **Breaking:** the unwired element-as-type-handle scaffolds `VectorElement` /
+  `SizedElement` (`vector_element.rs` / `sized_element.rs`) are removed, replaced
+  by the scalar-marker `VecElem` / `ElemDyn` in `element.rs`. They had no
+  consumers.
+
+Still erased by design (runtime/verifier-checked, unchanged): scalable vectors,
+pointer-element vectors (blocked on address-space markers), composite-element
+arrays, and length-relating ops (`shufflevector` output length, concat `N1+N2`,
+compile-time index-in-bounds) that need `generic_const_exprs` on nightly. See
+`docs/future-work.md`.
