@@ -63,7 +63,7 @@ fn value_narrows_to_matching_typed_array() {
 }
 
 /// An element-count mismatch (`[2 x i32]` into `ArrLen<4>`) is rejected with
-/// the array-length arm of `OperandWidthMismatch`.
+/// `ArrayLengthMismatch`.
 #[test]
 fn wrong_element_count_is_rejected() {
     Module::with_new("at", |m| {
@@ -72,7 +72,13 @@ fn wrong_element_count_is_rejected() {
 
         let err = ArrayValue::<i32, ArrLen<4>>::try_from(v)
             .expect_err("[2 x i32] must not narrow to ArrLen<4>");
-        assert_eq!(err, IrError::OperandWidthMismatch { lhs: 4, rhs: 2 });
+        assert_eq!(
+            err,
+            IrError::ArrayLengthMismatch {
+                expected: 4,
+                got: 2
+            }
+        );
     })
 }
 

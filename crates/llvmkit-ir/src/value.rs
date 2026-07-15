@@ -957,8 +957,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
 /// only if it is an array whose element type is exactly `E`'s projection and
 /// whose element count is exactly `N`. Element mismatch reports
 /// [`IrError::TypeMismatch`] (the element kinds); length mismatch reports
-/// [`IrError::OperandWidthMismatch`] (mirroring the sibling `VectorValue`
-/// narrowing).
+/// [`IrError::ArrayLengthMismatch`] — a `u64`-shaped variant, since array
+/// lengths do not fit the `u32` `OperandWidthMismatch` the sibling
+/// `VectorValue` narrowing uses for its lane count.
 impl<'ctx, E, const N: u64, B> TryFrom<Value<'ctx, B>> for ArrayValue<'ctx, E, ArrLen<N>, B>
 where
     E: StaticVecElem<'ctx, B>,
@@ -977,9 +978,9 @@ where
                     });
                 }
                 if *n != N {
-                    return Err(IrError::OperandWidthMismatch {
-                        lhs: N as u32,
-                        rhs: *n as u32,
+                    return Err(IrError::ArrayLengthMismatch {
+                        expected: N,
+                        got: *n,
                     });
                 }
                 Ok(Self {
