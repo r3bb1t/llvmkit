@@ -79,6 +79,8 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/vec_binop_length_mismatch.rs");
     t.compile_fail("tests/compile_fail/vec_binop_element_mismatch.rs");
     t.compile_fail("tests/compile_fail/vec_insert_wrong_element.rs");
+    // Slice 6: typed array ops make wrong-element inserts compile errors.
+    t.compile_fail("tests/compile_fail/array_insert_wrong_element.rs");
     t.compile_fail("tests/compile_fail/typed_gep_bad_index.rs");
     t.compile_fail("tests/compile_fail/fp_ext_equal_width.rs");
     t.compile_fail("tests/compile_fail/extract_value_empty_indices.rs");

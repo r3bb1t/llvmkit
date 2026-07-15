@@ -844,6 +844,22 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayValue<'ctx, E, L
             _l: PhantomData,
         }
     }
+
+    /// Crate-internal: wrap a [`Value`] known to have an array type of the
+    /// claimed element / length. The IR builder uses this when it just
+    /// produced an array-result instruction (`insertvalue`) whose element and
+    /// length markers are pinned by its statically-typed input array. Mirrors
+    /// [`VectorValue::from_value_unchecked`](VectorValue).
+    #[inline]
+    pub(super) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
+        Self {
+            id: v.id,
+            module: v.module,
+            ty: v.ty,
+            _e: PhantomData,
+            _l: PhantomData,
+        }
+    }
 }
 
 impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> sealed::Sealed

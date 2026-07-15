@@ -38,6 +38,7 @@ pub mod no_folder;
 use core::marker::PhantomData;
 
 use super::align::{Align, MaybeAlign};
+use super::array_len::ArrayLen;
 use super::atomic_ordering::AtomicOrdering;
 use super::basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
 use super::block_state::{Terminated, Unterminated};
@@ -87,8 +88,8 @@ use super::term_open_state::Open;
 use super::r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeId};
 use super::typed_pointer_value::TypedPointerValue;
 use super::value::{
-    FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Value, ValueId, ValueKindData,
-    ValueUse, VectorValue,
+    ArrayValue, FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Value, ValueId,
+    ValueKindData, ValueUse, VectorValue,
 };
 use super::vec_len::{LenDyn, StaticVecLen, VecLen};
 
@@ -2902,6 +2903,61 @@ where
     {
         let erased = self.build_vector_splat(L::STATIC_LEN, scalar, name)?;
         Ok(VectorValue::from_value_unchecked(erased.as_value()))
+    }
+
+    // ---- Typed array ops: extractvalue / insertvalue ----
+
+    /// Typed single-index `extractvalue` on a statically-typed array: read
+    /// element `index` out of `array`, returning it as its statically-typed
+    /// scalar handle (`E::Value` — `IntValue<iN>` / `FloatValue<fN>`),
+    /// inferred from `array`'s element marker so no annotation is needed.
+    /// Sibling of the erased [`Self::build_extract_value`], lowering into it
+    /// with the single-element index list `[index]` (arrays index by a `u32`,
+    /// matching the erased aggregate op).
+    ///
+    /// **Index-in-bounds is NOT checked at compile time.** An out-of-bounds
+    /// `index` stays poison per LLVM, exactly as the erased path — the nightly
+    /// `generic_const_exprs` `I < N` bound is out of scope here; the win is
+    /// element-typing only.
+    pub fn build_arr_extract<E, L, Name>(
+        &self,
+        array: ArrayValue<'ctx, E, L, B>,
+        index: u32,
+        name: Name,
+    ) -> IrResult<E::Value>
+    where
+        E: StaticVecElem<'ctx, B>,
+        L: ArrayLen,
+        Name: AsRef<str>,
+    {
+        let raw = self.build_extract_value(array, [index], name)?;
+        Ok(E::wrap_value(raw))
+    }
+
+    /// Typed single-index `insertvalue` on a statically-typed array: write
+    /// `element` into slot `index` of `array`, returning an array with the
+    /// same element/length markers. The `element: E::Value` parameter makes
+    /// inserting a wrong-typed element (e.g. a `FloatValue<f32>` into a
+    /// `[4 x i32]`) a compile error. Sibling of the erased
+    /// [`Self::build_insert_value`], lowering into it with the single-element
+    /// index list `[index]`.
+    ///
+    /// **Index-in-bounds is NOT checked at compile time** — same
+    /// poison-on-out-of-bounds semantics as [`Self::build_arr_extract`].
+    pub fn build_arr_insert<E, L, Name>(
+        &self,
+        array: ArrayValue<'ctx, E, L, B>,
+        element: E::Value,
+        index: u32,
+        name: Name,
+    ) -> IrResult<ArrayValue<'ctx, E, L, B>>
+    where
+        E: StaticVecElem<'ctx, B>,
+        L: ArrayLen,
+        Name: AsRef<str>,
+    {
+        let raw = self.build_insert_value(array, element, [index], name)?;
+        Ok(ArrayValue::from_value_unchecked(raw))
     }
 
     // ---- Atomic ops: fence / cmpxchg / atomicrmw ----
