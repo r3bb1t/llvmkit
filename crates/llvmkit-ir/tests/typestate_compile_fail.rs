@@ -75,6 +75,10 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/module_pipeline_step_rejects_raw_string.rs");
     t.compile_fail("tests/compile_fail/select_arm_forge.rs");
     t.compile_fail("tests/compile_fail/folder_typed_wrong_width.rs");
+    // Slice 5: typed vector ops make element/length mismatches compile errors.
+    t.compile_fail("tests/compile_fail/vec_binop_length_mismatch.rs");
+    t.compile_fail("tests/compile_fail/vec_binop_element_mismatch.rs");
+    t.compile_fail("tests/compile_fail/vec_insert_wrong_element.rs");
     t.compile_fail("tests/compile_fail/typed_gep_bad_index.rs");
     t.compile_fail("tests/compile_fail/fp_ext_equal_width.rs");
     t.compile_fail("tests/compile_fail/extract_value_empty_indices.rs");

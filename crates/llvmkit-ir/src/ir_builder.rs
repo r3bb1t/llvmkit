@@ -47,7 +47,7 @@ use super::constant::{Constant, ConstantExprFlags, ConstantExprOpcode};
 use super::constant_fold;
 use super::constants::ConstantExprOptions;
 use super::derived_types::{FloatType, FunctionType, IntType, PointerType, StructType};
-use super::element::ElemDyn;
+use super::element::{ElemDyn, StaticVecElem, VecElem};
 use super::error::{IrError, IrResult, TypeKindLabel};
 use super::float_kind::{FloatDyn, FloatKind, FloatWiderThan, IntoFloatValue};
 use super::fmf::FastMathFlags;
@@ -72,7 +72,7 @@ use super::instructions::{
     CleanupPadInst, FpPhiInst, FreezeInst, IndirectBrInst, InvokeInst, LandingPadInst,
     OtherPhiInst, PhiInst, PointerPhiInst, StoreInst, SwitchInst, TypedCallInst, VAArgInst,
 };
-use super::int_width::{IntDyn, IntWidth, IntoIntValue};
+use super::int_width::{IntDyn, IntWidth, IntoIntValue, StaticIntWidth};
 use super::intrinsic_inst::IntrinsicInst;
 use super::intrinsics::{BinaryIntrinsic, IntrinsicDescriptor, IntrinsicId};
 use super::ir_builder::constant_folder::ConstantFolder;
@@ -90,7 +90,7 @@ use super::value::{
     FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Value, ValueId, ValueKindData,
     ValueUse, VectorValue,
 };
-use super::vec_len::LenDyn;
+use super::vec_len::{LenDyn, StaticVecLen, VecLen};
 
 /// Pair returned by terminator builders: the terminated insertion block and
 /// the emitted terminator instruction.
@@ -2644,6 +2644,264 @@ where
             name,
         );
         Ok(inst.as_value())
+    }
+
+    // ---- Typed vector ops: element/length-checked siblings ----
+    //
+    // Additive, distinctly-named siblings of the erased vector builders
+    // above (`build_extract_element` / `build_insert_element` /
+    // `build_vector_splat`) and the erased integer-vector binop family
+    // (`build_int_add_dyn` & friends). The erased forms take `Value`/`u32`
+    // operands and rely on the verifier for shape agreement; these carry the
+    // element marker `E` and the lane-count marker `L` in the type system,
+    // so an element-width mismatch (`<4 x i32>` vs `<4 x i64>`) or a
+    // lane-count mismatch (`Len<4>` vs `Len<2>`) is a compile error at the
+    // call site — for free, since both operands name the SAME `E, L`. They
+    // lower into the erased builders unchanged; the verifier stays as
+    // defense-in-depth.
+
+    /// Crate-internal: shared body for the nine typed integer-vector binops.
+    /// Both operands share the SAME `E` (integer element width) and `L`
+    /// (static lane count), so element- and length-mismatches are compile
+    /// errors. Lowers into the erased [`Self::build_int_binop_dyn`].
+    fn build_vec_int_binop<E, L, Name, F2>(
+        &self,
+        opcode: BinaryOpcode,
+        lhs: VectorValue<'ctx, E, L, B>,
+        rhs: VectorValue<'ctx, E, L, B>,
+        name: Name,
+        kind_ctor: F2,
+    ) -> IrResult<VectorValue<'ctx, E, L, B>>
+    where
+        E: VecElem + StaticIntWidth,
+        L: StaticVecLen,
+        Name: AsRef<str>,
+        F2: FnOnce(BinaryOpData) -> InstructionKindData,
+    {
+        let r =
+            self.build_int_binop_dyn(opcode, lhs.as_value(), rhs.as_value(), name, kind_ctor)?;
+        Ok(VectorValue::from_value_unchecked(r))
+    }
+
+    /// Typed element-wise `add` on two identically-typed integer vectors.
+    /// The element width (`E`) and lane count (`L`) must match at compile
+    /// time. Sibling of the erased [`Self::build_int_add_dyn`].
+    pub fn build_vec_int_add<E, L, Name>(
+        &self,
+        lhs: VectorValue<'ctx, E, L, B>,
+        rhs: VectorValue<'ctx, E, L, B>,
+        name: Name,
+    ) -> IrResult<VectorValue<'ctx, E, L, B>>
+    where
+        E: VecElem + StaticIntWidth,
+        L: StaticVecLen,
+        Name: AsRef<str>,
+    {
+        self.build_vec_int_binop(BinaryOpcode::Add, lhs, rhs, name, InstructionKindData::Add)
+    }
+
+    /// Typed element-wise `sub`. See [`Self::build_vec_int_add`].
+    pub fn build_vec_int_sub<E, L, Name>(
+        &self,
+        lhs: VectorValue<'ctx, E, L, B>,
+        rhs: VectorValue<'ctx, E, L, B>,
+        name: Name,
+    ) -> IrResult<VectorValue<'ctx, E, L, B>>
+    where
+        E: VecElem + StaticIntWidth,
+        L: StaticVecLen,
+        Name: AsRef<str>,
+    {
+        self.build_vec_int_binop(BinaryOpcode::Sub, lhs, rhs, name, InstructionKindData::Sub)
+    }
+
+    /// Typed element-wise `mul`. See [`Self::build_vec_int_add`].
+    pub fn build_vec_int_mul<E, L, Name>(
+        &self,
+        lhs: VectorValue<'ctx, E, L, B>,
+        rhs: VectorValue<'ctx, E, L, B>,
+        name: Name,
+    ) -> IrResult<VectorValue<'ctx, E, L, B>>
+    where
+        E: VecElem + StaticIntWidth,
+        L: StaticVecLen,
+        Name: AsRef<str>,
+    {
+        self.build_vec_int_binop(BinaryOpcode::Mul, lhs, rhs, name, InstructionKindData::Mul)
+    }
+
+    /// Typed element-wise `xor`. See [`Self::build_vec_int_add`].
+    pub fn build_vec_int_xor<E, L, Name>(
+        &self,
+        lhs: VectorValue<'ctx, E, L, B>,
+        rhs: VectorValue<'ctx, E, L, B>,
+        name: Name,
+    ) -> IrResult<VectorValue<'ctx, E, L, B>>
+    where
+        E: VecElem + StaticIntWidth,
+        L: StaticVecLen,
+        Name: AsRef<str>,
+    {
+        self.build_vec_int_binop(BinaryOpcode::Xor, lhs, rhs, name, InstructionKindData::Xor)
+    }
+
+    /// Typed element-wise `and`. See [`Self::build_vec_int_add`].
+    pub fn build_vec_int_and<E, L, Name>(
+        &self,
+        lhs: VectorValue<'ctx, E, L, B>,
+        rhs: VectorValue<'ctx, E, L, B>,
+        name: Name,
+    ) -> IrResult<VectorValue<'ctx, E, L, B>>
+    where
+        E: VecElem + StaticIntWidth,
+        L: StaticVecLen,
+        Name: AsRef<str>,
+    {
+        self.build_vec_int_binop(BinaryOpcode::And, lhs, rhs, name, InstructionKindData::And)
+    }
+
+    /// Typed element-wise `or`. See [`Self::build_vec_int_add`].
+    pub fn build_vec_int_or<E, L, Name>(
+        &self,
+        lhs: VectorValue<'ctx, E, L, B>,
+        rhs: VectorValue<'ctx, E, L, B>,
+        name: Name,
+    ) -> IrResult<VectorValue<'ctx, E, L, B>>
+    where
+        E: VecElem + StaticIntWidth,
+        L: StaticVecLen,
+        Name: AsRef<str>,
+    {
+        self.build_vec_int_binop(BinaryOpcode::Or, lhs, rhs, name, InstructionKindData::Or)
+    }
+
+    /// Typed element-wise `shl`. Both operands are the same `<L x E>` vector
+    /// type (LLVM vector shifts take a same-typed shift-amount vector). See
+    /// [`Self::build_vec_int_add`].
+    pub fn build_vec_int_shl<E, L, Name>(
+        &self,
+        lhs: VectorValue<'ctx, E, L, B>,
+        rhs: VectorValue<'ctx, E, L, B>,
+        name: Name,
+    ) -> IrResult<VectorValue<'ctx, E, L, B>>
+    where
+        E: VecElem + StaticIntWidth,
+        L: StaticVecLen,
+        Name: AsRef<str>,
+    {
+        self.build_vec_int_binop(BinaryOpcode::Shl, lhs, rhs, name, InstructionKindData::Shl)
+    }
+
+    /// Typed element-wise `lshr`. See [`Self::build_vec_int_shl`].
+    pub fn build_vec_int_lshr<E, L, Name>(
+        &self,
+        lhs: VectorValue<'ctx, E, L, B>,
+        rhs: VectorValue<'ctx, E, L, B>,
+        name: Name,
+    ) -> IrResult<VectorValue<'ctx, E, L, B>>
+    where
+        E: VecElem + StaticIntWidth,
+        L: StaticVecLen,
+        Name: AsRef<str>,
+    {
+        self.build_vec_int_binop(
+            BinaryOpcode::LShr,
+            lhs,
+            rhs,
+            name,
+            InstructionKindData::LShr,
+        )
+    }
+
+    /// Typed element-wise `ashr`. See [`Self::build_vec_int_shl`].
+    pub fn build_vec_int_ashr<E, L, Name>(
+        &self,
+        lhs: VectorValue<'ctx, E, L, B>,
+        rhs: VectorValue<'ctx, E, L, B>,
+        name: Name,
+    ) -> IrResult<VectorValue<'ctx, E, L, B>>
+    where
+        E: VecElem + StaticIntWidth,
+        L: StaticVecLen,
+        Name: AsRef<str>,
+    {
+        self.build_vec_int_binop(
+            BinaryOpcode::AShr,
+            lhs,
+            rhs,
+            name,
+            InstructionKindData::AShr,
+        )
+    }
+
+    /// Typed `extractelement`: read lane `index` out of `vec`, returning the
+    /// element as its statically-typed scalar handle (`E::Value` —
+    /// `IntValue<iN>` / `FloatValue<fN>`), inferred from `vec`'s element
+    /// marker so no annotation is needed. Any lane count is allowed (extract
+    /// does not need a static length). Sibling of the erased
+    /// [`Self::build_extract_element`].
+    pub fn build_vec_extract<E, L, W, I, Name>(
+        &self,
+        vec: VectorValue<'ctx, E, L, B>,
+        index: I,
+        name: Name,
+    ) -> IrResult<E::Value>
+    where
+        E: StaticVecElem<'ctx, B>,
+        L: VecLen,
+        W: IntWidth,
+        I: IntoIntValue<'ctx, W, B>,
+        Name: AsRef<str>,
+    {
+        let raw = self.build_extract_element::<_, W, _, _>(vec, index, name)?;
+        Ok(E::wrap_value(raw))
+    }
+
+    /// Typed `insertelement`: write `element` into lane `index` of `vec`,
+    /// returning a vector with the same element/length markers. The
+    /// `element: E::Value` parameter makes inserting a wrong-typed scalar
+    /// (e.g. a `FloatValue<f32>` into a `<4 x i32>`) a compile error.
+    /// Sibling of the erased [`Self::build_insert_element`].
+    pub fn build_vec_insert<E, L, W, I, Name>(
+        &self,
+        vec: VectorValue<'ctx, E, L, B>,
+        element: E::Value,
+        index: I,
+        name: Name,
+    ) -> IrResult<VectorValue<'ctx, E, L, B>>
+    where
+        E: StaticVecElem<'ctx, B>,
+        L: VecLen,
+        W: IntWidth,
+        I: IntoIntValue<'ctx, W, B>,
+        Name: AsRef<str>,
+    {
+        let raw = self.build_insert_element::<_, _, W, _, _>(vec, element, index, name)?;
+        Ok(VectorValue::from_value_unchecked(raw))
+    }
+
+    /// Typed vector splat: broadcast `scalar` across a fixed-length vector.
+    /// The scalar must be the element's typed handle (`scalar: E::Value`), so
+    /// a wrong-typed scalar is a compile error. `E` and `L` are pinned by the
+    /// result: annotate it — `let v: VectorValue<i32, Len<4>> =
+    /// b.build_vec_splat(x, "v")?` — or spell the element out with a turbofish
+    /// (`build_vec_splat::<i32, Len<4>, _>(x, "v")`). `E` cannot be left as a
+    /// `_` placeholder: Rust does not invert the `E::Value` projection, so it
+    /// cannot deduce `E` from the scalar's type alone. Sibling of the erased
+    /// [`Self::build_vector_splat`], lowering into it with
+    /// `count = L::STATIC_LEN`.
+    pub fn build_vec_splat<E, L, Name>(
+        &self,
+        scalar: E::Value,
+        name: Name,
+    ) -> IrResult<VectorValue<'ctx, E, L, B>>
+    where
+        E: StaticVecElem<'ctx, B>,
+        L: StaticVecLen,
+        Name: AsRef<str>,
+    {
+        let erased = self.build_vector_splat(L::STATIC_LEN, scalar, name)?;
+        Ok(VectorValue::from_value_unchecked(erased.as_value()))
     }
 
     // ---- Atomic ops: fence / cmpxchg / atomicrmw ----
