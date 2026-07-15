@@ -27,6 +27,7 @@ use core::num::NonZeroU32;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::align::MaybeAlign;
+use super::array_len::{ArrLen, ArrLenDyn};
 use super::attributes::AttributeStorage;
 use super::basic_block::BasicBlock;
 use super::comdat::{ComdatData, ComdatId, ComdatRef, SelectionKind};
@@ -39,6 +40,7 @@ use super::derived_types::{
     ArrayType, FloatType, FunctionType, IntType, LabelType, MetadataType, PointerType, StructType,
     TargetExtType, TokenType, VectorType, VoidType,
 };
+use super::element::{ElemDyn, StaticVecElem};
 use super::error::{IrError, IrResult, TypeKindLabel};
 use super::float_kind::{BFloat, Fp128, Half, PpcFp128, X86Fp80};
 use super::function::{FunctionBuilder, FunctionValue};
@@ -67,6 +69,7 @@ use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, Type
 use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{Value, ValueData, ValueId, ValueKindData, ValueUse};
+use super::vec_len::{Len, LenDyn};
 
 fn reject_reserved_intrinsic_name(name: &str) -> IrResult<()> {
     match resolve_intrinsic_name(name) {
@@ -627,7 +630,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         )
     }
     #[inline]
-    pub(super) fn vector_type<T>(self, elem: T, n: u32, scalable: bool) -> VectorType<'ctx, B>
+    pub(super) fn vector_type<T>(
+        self,
+        elem: T,
+        n: u32,
+        scalable: bool,
+    ) -> VectorType<'ctx, ElemDyn, LenDyn, B>
     where
         T: Into<Type<'ctx, B>>,
     {
@@ -1077,7 +1085,7 @@ impl<'ctx> ModuleCore {
         elem: impl Into<Type<'ctx>>,
         n: u32,
         scalable: bool,
-    ) -> VectorType<'ctx> {
+    ) -> VectorType<'ctx, ElemDyn, LenDyn> {
         let elem_id = elem.into().id();
         let id = if scalable {
             self.ctx.scalable_vector_type(elem_id, n)
@@ -1086,6 +1094,12 @@ impl<'ctx> ModuleCore {
         };
         VectorType::new(id, self)
     }
+    // NB: unlike `int_type_n` (which the width-marker projection in
+    // `int_width.rs` reaches via `module.module().int_type_n()`), the
+    // element-marker projection lives in `element.rs` and does not route
+    // through a `ModuleCore` vector constructor, so there is no
+    // `ModuleCore::vector_type_n` — the public `Module::vector_type_n`
+    // (below) is the only const-generic vector entry point.
 
     // ---- Function creation ----
 
@@ -2220,7 +2234,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         )
     }
 
-    pub fn array_type<T>(&self, elem: T, n: u64) -> ArrayType<'ctx, B>
+    pub fn array_type<T>(&self, elem: T, n: u64) -> ArrayType<'ctx, ElemDyn, ArrLenDyn, B>
     where
         T: Into<Type<'ctx, B>>,
     {
@@ -2228,7 +2242,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         ArrayType::new(self.core.ctx.array_type(elem_id, n), self.module_ref())
     }
 
-    pub fn vector_type<T>(&self, elem: T, n: u32, scalable: bool) -> VectorType<'ctx, B>
+    /// Const-generic typed array `[N x E]`. The element marker `E` projects
+    /// the scalar element type and `N` pins the element count, yielding a
+    /// statically typed [`ArrayType<'ctx, E, ArrLen<N>, B>`]. Unlike
+    /// [`vector_type_n`](Self::vector_type_n), `N == 0` is **not** rejected:
+    /// LLVM permits zero-length arrays `[0 x T]`. Mirrors `Type::getIntNTy`
+    /// + `ArrayType::get`.
+    pub fn array_type_n<E, const N: u64>(&self) -> ArrayType<'ctx, E, ArrLen<N>, B>
+    where
+        E: StaticVecElem<'ctx, B>,
+    {
+        let elem = E::element_ir_type(self.module_ref());
+        let id = self.core.ctx.array_type(elem.id(), N);
+        ArrayType::new(id, self.module_ref())
+    }
+
+    pub fn vector_type<T>(
+        &self,
+        elem: T,
+        n: u32,
+        scalable: bool,
+    ) -> VectorType<'ctx, ElemDyn, LenDyn, B>
     where
         T: Into<Type<'ctx, B>>,
     {
@@ -2238,6 +2272,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         } else {
             self.core.ctx.fixed_vector_type(elem_id, n)
         };
+        VectorType::new(id, self.module_ref())
+    }
+
+    /// Const-generic typed vector `<N x E>`. The element marker `E`
+    /// projects the scalar element type and `N` pins the lane count,
+    /// yielding a statically typed [`VectorType<'ctx, E, Len<N>, B>`].
+    /// `const`-evaluated at monomorphisation: `N == 0` is a compile error.
+    /// Mirrors `Type::getIntNTy` + `VectorType::get`.
+    pub fn vector_type_n<E, const N: u32>(&self) -> VectorType<'ctx, E, Len<N>, B>
+    where
+        E: StaticVecElem<'ctx, B>,
+    {
+        const {
+            assert!(N > 0, "vector length must be >= 1");
+        }
+        let elem = E::element_ir_type(self.module_ref());
+        let id = self.core.ctx.fixed_vector_type(elem.id(), N);
         VectorType::new(id, self.module_ref())
     }
 

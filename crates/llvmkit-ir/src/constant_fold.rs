@@ -5,6 +5,7 @@
 use super::align::Align;
 use super::ap_float::{ApFloatCmpResult, ApFloatSemantics, ApFloatSign, NanPayload};
 use super::ap_int::{ApInt, ApIntDivRem, ApIntSignedness};
+use super::array_len::ArrLenDyn;
 use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 use super::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprInRange,
@@ -13,6 +14,7 @@ use super::constant::{
 use super::constants::{ConstantExprOptions, ConstantFloatValue, ConstantIntValue};
 use super::data_layout::FunctionPtrAlignType;
 use super::derived_types::{ArrayType, FloatType, IntType, PointerType, StructType, VectorType};
+use super::element::ElemDyn;
 use super::float_kind::FloatDyn;
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::global_value::Linkage;
@@ -23,6 +25,7 @@ use super::module::{ModuleBrand, ModuleRef, ModuleView};
 use super::r#type::{Type, TypeData};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{Value, ValueId, ValueKindData};
+use super::vec_len::LenDyn;
 use super::{IrError, IrResult, RoundingMode};
 
 /// Dispatch an instruction to the target-independent pure-constant folds
@@ -1945,7 +1948,7 @@ fn vector_splat_constant<'ctx, B: ModuleBrand + 'ctx>(
     ty: Type<'ctx, B>,
     scalar: Constant<'ctx, B>,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    let Ok(vector_ty) = VectorType::try_from(ty) else {
+    let Ok(vector_ty) = VectorType::<ElemDyn, LenDyn, _>::try_from(ty) else {
         return Ok(None);
     };
     if vector_ty.element() != scalar.ty() {
@@ -2486,7 +2489,7 @@ fn fold_vector_bitcast_splat<'ctx, B: ModuleBrand + 'ctx>(
     operand: Constant<'ctx, B>,
     dest_ty: Type<'ctx, B>,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    let Ok(dst_vec_ty) = VectorType::try_from(dest_ty) else {
+    let Ok(dst_vec_ty) = VectorType::<ElemDyn, LenDyn, _>::try_from(dest_ty) else {
         return Ok(None);
     };
     let dst_elem_ty = dst_vec_ty.element();
@@ -2754,7 +2757,7 @@ fn bool_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(None);
     };
     let scalar = bool_ty.const_int(value).as_constant();
-    let vector_ty = VectorType::try_from(ty)?;
+    let vector_ty = VectorType::<ElemDyn, LenDyn, _>::try_from(ty)?;
     vector_ty
         .const_vector((0..lane_count).map(|_| scalar))
         .map(|constant| Some(constant.as_constant()))
@@ -2873,7 +2876,7 @@ fn aggregate_elements_for_rebuild<'ctx, B: ModuleBrand + 'ctx>(
             None
         }
     };
-    if let Ok(array_ty) = ArrayType::try_from(aggregate.ty()) {
+    if let Ok(array_ty) = ArrayType::<ElemDyn, ArrLenDyn, _>::try_from(aggregate.ty()) {
         let Some(fill) = fill_for(array_ty.element()) else {
             return Ok(None);
         };
@@ -2974,12 +2977,12 @@ fn constant_aggregate_from_elements<'ctx, B: ModuleBrand + 'ctx>(
     ty: Type<'ctx, B>,
     elements: Vec<Constant<'ctx, B>>,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    if let Ok(vector_ty) = VectorType::try_from(ty) {
+    if let Ok(vector_ty) = VectorType::<ElemDyn, LenDyn, _>::try_from(ty) {
         return vector_ty
             .const_vector::<Constant<'ctx, B>, _>(elements)
             .map(|aggregate| Some(aggregate.as_constant()));
     }
-    if let Ok(array_ty) = ArrayType::try_from(ty) {
+    if let Ok(array_ty) = ArrayType::<ElemDyn, ArrLenDyn, _>::try_from(ty) {
         return array_ty
             .const_array::<Constant<'ctx, B>, _>(elements)
             .map(|aggregate| Some(aggregate.as_constant()));

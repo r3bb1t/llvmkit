@@ -22,6 +22,7 @@
 use super::DebugLoc;
 use super::ap_float::{ApFloat, ApFloatSemantics};
 use super::ap_int::ApInt;
+use super::array_len::ArrayLen;
 use super::basic_block::BasicBlock;
 use super::block_state::BlockTerminationState;
 use super::constant::{
@@ -38,6 +39,7 @@ use super::derived_types::{
     ArrayType, FloatType, IntType, PointerType, StructType, TargetExtProperty, TargetExtType,
     VectorType,
 };
+use super::element::VecElem;
 use super::error::{IrError, IrResult, TypeKindLabel};
 use super::function::FunctionValue;
 use super::instr_types::{BinaryOpcode, CastOpcode};
@@ -48,6 +50,7 @@ use super::r#type::{Type, TypeData, TypeId};
 use super::value::{
     HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, ValueUse, sealed,
 };
+use super::vec_len::VecLen;
 use core::convert::Infallible;
 use core::fmt;
 use core::hash::{Hash, Hasher};
@@ -840,7 +843,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerType<'ctx, B> {
 // Aggregate constructors
 // --------------------------------------------------------------------------
 
-impl<'ctx, B: ModuleBrand + 'ctx> ArrayType<'ctx, B> {
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L, B> {
     /// `[N x T] [...]`. Each element must have type `T` exactly.
     /// Mirrors `ConstantArray::get`.
     pub fn const_array<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx, B>>
@@ -911,7 +914,7 @@ impl<'ctx, Body: crate::struct_body_state::StructBodyState, B: ModuleBrand + 'ct
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> VectorType<'ctx, B> {
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, B> {
     /// `<N x T> < ... >`. Mirrors `ConstantVector::get`.
     pub fn const_vector<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx, B>>
     where

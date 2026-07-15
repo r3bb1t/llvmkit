@@ -270,6 +270,46 @@ the runtime type-narrowing that the erased path needs, and
 from a `#[derive(IrStruct)]` schema -- an out-of-range field index is a
 missing trait impl, not a runtime bounds check.
 
+### Typed vectors and arrays
+
+`VectorValue<'ctx, E, L, B>` and `ArrayValue<'ctx, E, L, B>` carry the element
+type (`E` -- a scalar marker like `i64`/`f64`) and the length (`L` -- `Len<N>`
+for vectors, `ArrLen<N>` for arrays) in the type system, so a `<N x T>` /
+`[N x T]` length mismatch or a wrong-element `insertelement` / `insertvalue` is
+a compile error rather than a `verify()` diagnostic -- the vector/array analog
+of `IntValue<'ctx, W>`. The bare `VectorValue<'ctx>` / `ArrayValue<'ctx>` is the
+fully-erased (`Dyn`) form that parsed IR, scalable vectors, and runtime lengths
+land in; it narrows to the typed form with `TryFrom`, which checks both element
+and length.
+
+```rust
+use llvmkit_ir::{IRBuilder, IrError, Len, Linkage, Module, VectorValue};
+
+fn typed_vec() -> Result<(), IrError> {
+    Module::with_new("demo", |m| {
+        let v4i32 = m.vector_type_n::<i32, 4>(); // VectorType<'_, i32, Len<4>>
+        let fn_ty = m.fn_type(m.i32_type().as_type(), [v4i32.as_type(), v4i32.as_type()], false);
+        let f = m.add_function::<i32, _>("vadd", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+
+        // `try_into` checks element (i32) AND lane count (4) before stamping the markers.
+        let a: VectorValue<'_, i32, Len<4>> = f.param(0).unwrap().as_value().try_into().unwrap();
+        let c: VectorValue<'_, i32, Len<4>> = f.param(1).unwrap().as_value().try_into().unwrap();
+
+        // Both operands are pinned to `<4 x i32>`; a length/element mismatch would not compile.
+        let sum = b.build_vec_int_add(a, c, "sum")?;
+        // Extract returns the element as its typed scalar handle -- `IntValue<i32>`, inferred.
+        let lane0 = b.build_vec_extract(sum, m.i32_type().const_int(0_i32), "lane0")?;
+        b.build_ret(lane0)?;
+        Ok(())
+    })
+}
+```
+
+The full runnable version (vectors and arrays) is
+`crates/llvmkit-ir/examples/typed_vector_array.rs`.
+
 ### Auto-SSA: typed local variables instead of manual phi wiring
 
 `SsaBuilder` (`crates/llvmkit-ir/src/ssa_builder.rs`) sits on top of the
@@ -391,6 +431,9 @@ cargo run -p llvmkit-ir --example cpu_state_add
 cargo run -p llvmkit-ir --example factorial
 cargo run -p llvmkit-ir --example concurrent_counter
 cargo run -p llvmkit-ir --example derived_struct_function
+
+# Typed vectors and arrays: length/element mismatches become compile errors
+cargo run -p llvmkit-ir --example typed_vector_array
 
 # Build IR, run a built-in analysis, and register custom passes
 cargo run -p llvmkit-ir --example pass_manager_demo
