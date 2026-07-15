@@ -246,7 +246,7 @@ pub(super) fn kind_successor_ids(kind: &InstructionKindData) -> Vec<ValueId> {
 }
 
 fn branch_successor_ids(d: &crate::instr_types::BranchInstData) -> Vec<ValueId> {
-    match &d.kind {
+    match &*d.kind.borrow() {
         crate::instr_types::BranchKind::Unconditional(target) => vec![*target],
         crate::instr_types::BranchKind::Conditional {
             then_bb, else_bb, ..

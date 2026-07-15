@@ -2288,7 +2288,7 @@ fn fmt_br(
     slots: &SlotTracker,
 ) -> fmt::Result {
     let module = inst.module();
-    match &b.kind {
+    match &*b.kind.borrow() {
         BranchKind::Unconditional(target) => {
             let data = module.context().value_data(*target);
             let v = Value::from_parts(*target, module, data.ty);

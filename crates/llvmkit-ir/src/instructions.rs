@@ -1240,10 +1240,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> BranchInst<'ctx, B> {
         }
     }
     pub fn is_conditional(self) -> bool {
-        matches!(self.payload().kind, BranchKind::Conditional { .. })
+        matches!(
+            &*self.payload().kind.borrow(),
+            BranchKind::Conditional { .. }
+        )
     }
     pub fn condition(self) -> Option<Value<'ctx, B>> {
-        match &self.payload().kind {
+        match &*self.payload().kind.borrow() {
             BranchKind::Conditional { cond, .. } => {
                 let module = self.module.module();
                 let cid = cond.get();
@@ -1255,7 +1258,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> BranchInst<'ctx, B> {
     }
     /// Iterator over successor block-ids.
     pub(super) fn successor_ids(self) -> Vec<ValueId> {
-        match &self.payload().kind {
+        match &*self.payload().kind.borrow() {
             BranchKind::Unconditional(t) => vec![*t],
             BranchKind::Conditional {
                 then_bb, else_bb, ..

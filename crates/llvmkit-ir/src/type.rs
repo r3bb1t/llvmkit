@@ -393,6 +393,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     pub fn is_pointer(self) -> bool {
         matches!(self.data(), TypeData::Pointer { .. })
     }
+    /// Legacy *typed* pointer (`i32*`), mirroring `TypedPointerType`. Distinct
+    /// from [`Self::is_pointer`], which is the opaque `ptr` — a first-class data
+    /// type just the same, so anywhere that accepts a pointer value (a `phi`
+    /// result, say) must accept both.
+    #[inline]
+    pub fn is_typed_pointer(self) -> bool {
+        matches!(self.data(), TypeData::TypedPointer { .. })
+    }
     #[inline]
     pub fn is_function(self) -> bool {
         matches!(self.data(), TypeData::Function { .. })

@@ -2402,6 +2402,34 @@ impl<'ctx> Verifier<'ctx> {
         predecessors: &HashMap<ValueId, Vec<ValueId>>,
     ) -> IrResult<()> {
         let result_ty = inst.ty().id;
+
+        // The phi result type must be a first-class *data* type. `is_first_class`
+        // is not a sufficient gate — it admits `label`/`metadata`/`token` — so
+        // enumerate the valid kinds exactly as the `.ll` parser's `parse_phi`
+        // whitelist does (int / float / pointer / vector / array / struct), with
+        // the `is_first_class` conjunct on struct excluding opaque structs. This
+        // runs before the coherence delegation so an invalid result type is
+        // rejected regardless of incoming coherence.
+        let rty = Type::new(result_ty, self.module);
+        let valid_result = rty.is_integer()
+            || rty.is_floating_point()
+            || rty.is_pointer()
+            || rty.is_typed_pointer()
+            || rty.is_vector()
+            || rty.is_array()
+            || (rty.is_struct() && rty.is_first_class());
+        if !valid_result {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::PhiInvalidResultType,
+                format!(
+                    "phi result type {} is not a valid first-class data type",
+                    self.type_label(result_ty)
+                ),
+            ));
+        }
+
         let preds = predecessors
             .get(&bb.as_value().id)
             .map(|v| v.as_slice())
@@ -2679,7 +2707,7 @@ impl<'ctx> Verifier<'ctx> {
         b: &BranchInstData,
         block_index: &HashMap<ValueId, usize>,
     ) -> IrResult<()> {
-        match &b.kind {
+        match &*b.kind.borrow() {
             BranchKind::Unconditional(target) => {
                 if !block_index.contains_key(target) {
                     return Err(self.fail(
@@ -3350,11 +3378,11 @@ mod tests {
                 entry_id,
                 void_ty.id(),
                 InstructionKindData::Br(BranchInstData {
-                    kind: BranchKind::Conditional {
+                    kind: core::cell::RefCell::new(BranchKind::Conditional {
                         cond: core::cell::Cell::new(p0.as_value().id),
                         then_bb: then_bb.as_value().id,
                         else_bb: else_bb.as_value().id,
-                    },
+                    }),
                 }),
             );
             let err = m.verify_borrowed().unwrap_err();
@@ -3432,6 +3460,70 @@ mod tests {
         });
     }
 
+    /// `Verifier::visitPHINode` -- "PHI nodes cannot have token type", plus the
+    /// general rule that a phi result must be a first-class data type. The
+    /// verifier now rejects an invalid phi *result* type before any coherence
+    /// check, mirroring the `.ll` parser's parse-time rejection so the
+    /// guarantee holds regardless of construction path (the raw phi builders
+    /// are internal, but `build_phi_dyn`/`make_phi_in_block` still take an
+    /// erased type).
+    #[test]
+    fn phi_with_invalid_result_type_rejected() {
+        // `token`: LLVM's explicit "PHI nodes cannot have token type".
+        Module::with_new("t", |m| {
+            let void_ty = m.void_type().as_type();
+            let token_ty = m.token_type().as_type();
+            let (_f_id, entry_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            fabricate_instruction(
+                &m,
+                entry_id,
+                token_ty.id(),
+                InstructionKindData::Phi(PhiData::new()),
+            );
+            append_ret_void(&m, entry_id);
+            let err = m.verify_borrowed().unwrap_err();
+            assert_rule(&err, VerifierRule::PhiInvalidResultType);
+        });
+        // `void`: not a first-class type, so also not a valid phi result.
+        Module::with_new("t", |m| {
+            let void_ty = m.void_type().as_type();
+            let (_f_id, entry_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            fabricate_instruction(
+                &m,
+                entry_id,
+                void_ty.id(),
+                InstructionKindData::Phi(PhiData::new()),
+            );
+            append_ret_void(&m, entry_id);
+            let err = m.verify_borrowed().unwrap_err();
+            assert_rule(&err, VerifierRule::PhiInvalidResultType);
+        });
+    }
+
+    /// The result-type rule must NOT reject a *typed* pointer (`i32*`, the legacy
+    /// `TypedPointerType`): it is a first-class data type and a valid phi result,
+    /// distinct from the opaque `ptr` that `Type::is_pointer` matches. Regression
+    /// guard — the first cut of this rule enumerated only `is_pointer()`, so it
+    /// rejected `phi i32*`, IR that verified clean before.
+    #[test]
+    fn phi_with_typed_pointer_result_type_verifies() {
+        Module::with_new("t", |m| {
+            let i32_ty = m.i32_type().as_type();
+            let void_ty = m.void_type().as_type();
+            let tptr_ty = m.typed_pointer_type(i32_ty, 0).as_type();
+            let (_f_id, entry_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            fabricate_instruction(
+                &m,
+                entry_id,
+                tptr_ty.id(),
+                InstructionKindData::Phi(PhiData::new()),
+            );
+            append_ret_void(&m, entry_id);
+            m.verify_borrowed()
+                .expect("a typed-pointer phi result must remain valid");
+        });
+    }
+
     /// `test/Verifier/AmbiguousPhi.ll` -- duplicate predecessor with
     /// differing values.
     #[test]
@@ -3449,11 +3541,11 @@ mod tests {
                 entry_id,
                 void_ty.id(),
                 InstructionKindData::Br(BranchInstData {
-                    kind: BranchKind::Conditional {
+                    kind: core::cell::RefCell::new(BranchKind::Conditional {
                         cond: core::cell::Cell::new(cond_id),
                         then_bb: target.as_value().id,
                         else_bb: target.as_value().id,
-                    },
+                    }),
                 }),
             );
             let one = fab_const_int_id(&m, i32_ty.id(), 1);
@@ -3492,7 +3584,7 @@ mod tests {
                 entry_id,
                 void_ty.id(),
                 InstructionKindData::Br(BranchInstData {
-                    kind: BranchKind::Unconditional(target.as_value().id),
+                    kind: core::cell::RefCell::new(BranchKind::Unconditional(target.as_value().id)),
                 }),
             );
             append_ret_void(&m, unrelated.as_value().id);

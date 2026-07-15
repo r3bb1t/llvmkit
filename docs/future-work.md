@@ -319,23 +319,38 @@ driver marks preserved exactly what it watched repair). What remains deferred:
   across toolchains, but it joins the set that should be re-blessed on the
   reference rustc.
 
-## Phi authoring — deferred
+## Phi authoring — shipped (one follow-up)
 
 The block-argument authoring surface (`append_block_with_params`,
 `append_block_with_named_params`, `build_*_with_args`), dominance-witnessed
-`FnReshape::insert_phi`, the `remove_edge`/`redirect_edge` edge ops, and the
-"break" that made the raw phi builders (the six `build_*_phi`, the open-phi
-`add_incoming`/`finish`) internal — block arguments are now the *only* public
-phi-authoring surface — have all shipped. The remaining phi-authoring work:
-- **Edge ops beyond `switch`.** `remove_edge`/`redirect_edge` operate on
-  `switch` terminators only, because the arena hands out `&ValueData` and only
-  `SwitchInstData`'s `default_bb: Cell` / `cases: RefCell` are mutable through
-  the `&self` mutator. Editing a `br`/`cond_br` target (or collapsing a
-  `cond_br` to a `br`) needs `BranchKind` to become interior-mutable (or a
-  terminator-rebuild path on the reshape mutator).
-- **Verifier phi-result-type rule (defense in depth).** The `.ll` parser
-  rejects `label`/`metadata`/`token` phi result types, but `Module::verify()`
-  has no phi-result-type check, so such a phi built through another path would
-  verify clean. Add the upstream "PHI nodes cannot have token type" (and
-  label/metadata) rule to `check_phi` so the guarantee holds regardless of
-  construction path.
+`FnReshape::insert_phi`, the "break" that made the raw phi builders (the six
+`build_*_phi`, the open-phi `add_incoming`/`finish`) internal — block arguments
+are now the *only* public phi-authoring surface — the `remove_edge`/`redirect_edge`
+edge ops over `switch`/`br`/`cond_br` (`BranchInstData.kind` became a `RefCell`,
+so `redirect_edge` retargets a branch successor and `remove_edge` collapses a
+`cond_br` to a `br`, deregistering the dead condition), and the verifier
+phi-result-type rule (`VerifierRule::PhiInvalidResultType`, defense in depth —
+`check_phi` rejects a phi whose result is not a first-class data type, matching
+the parser) have all shipped. Two smaller follow-ups remain:
+
+- **Edge ops on `invoke`/`callbr`.** `remove_edge`/`redirect_edge` now cover
+  `switch`, `br`, and `cond_br`. `invoke` (normal/unwind) and `callbr`
+  (default/indirect) successor ids are still plain `ValueId` (not
+  interior-mutable), so their CFG edges cannot yet be edited by the reshape
+  mutator. The same `RefCell`/`Cell` treatment applied to `BranchInstData.kind`
+  (or a terminator-rebuild path) would extend the ops to them.
+- **`remove_edge` can leave a zero-incoming phi.** `drop_incoming_from_pred`
+  (`pass_context.rs`) strips every `(value, from)` pair from the removed
+  successor's head phis. If `from` was that block's *only* predecessor, the phi
+  is left with **zero** incomings. That is internally coherent — the block now
+  has no predecessors, so `check_phi`'s count check passes — and `Module::verify()`
+  accepts it, but the printer emits `%p = phi i32` with no `[ … ]` pairs, which
+  LLVM's own `LLParser::parsePHI` rejects (it requires at least one pair), so the
+  module no longer round-trips. LLVM's `BasicBlock::removePredecessor` instead
+  replaces such a phi with poison and erases it. This is pre-existing (the
+  `switch` path can hit it too) but the `cond_br` collapse makes it easier to
+  reach. The fix — RAUW the emptied phi with poison and erase it — needs the
+  typed erase/RAUW machinery inside the reshape mutator, so it deserves its own
+  slice with tests; the behavior is documented on `FnReshape::remove_edge` in the
+  meantime. Consider also a verifier rule that a phi in a *reachable* block must
+  have at least one incoming.
