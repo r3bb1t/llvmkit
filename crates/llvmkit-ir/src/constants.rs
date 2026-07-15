@@ -22,6 +22,7 @@
 use super::DebugLoc;
 use super::ap_float::{ApFloat, ApFloatSemantics};
 use super::ap_int::ApInt;
+use super::array_len::ArrayLen;
 use super::basic_block::BasicBlock;
 use super::block_state::BlockTerminationState;
 use super::constant::{
@@ -842,7 +843,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerType<'ctx, B> {
 // Aggregate constructors
 // --------------------------------------------------------------------------
 
-impl<'ctx, B: ModuleBrand + 'ctx> ArrayType<'ctx, B> {
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L, B> {
     /// `[N x T] [...]`. Each element must have type `T` exactly.
     /// Mirrors `ConstantArray::get`.
     pub fn const_array<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx, B>>

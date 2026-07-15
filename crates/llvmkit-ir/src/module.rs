@@ -27,6 +27,7 @@ use core::num::NonZeroU32;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::align::MaybeAlign;
+use super::array_len::{ArrLen, ArrLenDyn};
 use super::attributes::AttributeStorage;
 use super::basic_block::BasicBlock;
 use super::comdat::{ComdatData, ComdatId, ComdatRef, SelectionKind};
@@ -2233,12 +2234,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         )
     }
 
-    pub fn array_type<T>(&self, elem: T, n: u64) -> ArrayType<'ctx, B>
+    pub fn array_type<T>(&self, elem: T, n: u64) -> ArrayType<'ctx, ElemDyn, ArrLenDyn, B>
     where
         T: Into<Type<'ctx, B>>,
     {
         let elem_id = elem.into().id();
         ArrayType::new(self.core.ctx.array_type(elem_id, n), self.module_ref())
+    }
+
+    /// Const-generic typed array `[N x E]`. The element marker `E` projects
+    /// the scalar element type and `N` pins the element count, yielding a
+    /// statically typed [`ArrayType<'ctx, E, ArrLen<N>, B>`]. Unlike
+    /// [`vector_type_n`](Self::vector_type_n), `N == 0` is **not** rejected:
+    /// LLVM permits zero-length arrays `[0 x T]`. Mirrors `Type::getIntNTy`
+    /// + `ArrayType::get`.
+    pub fn array_type_n<E, const N: u64>(&self) -> ArrayType<'ctx, E, ArrLen<N>, B>
+    where
+        E: StaticVecElem<'ctx, B>,
+    {
+        let elem = E::element_ir_type(self.module_ref());
+        let id = self.core.ctx.array_type(elem.id(), N);
+        ArrayType::new(id, self.module_ref())
     }
 
     pub fn vector_type<T>(

@@ -5,6 +5,7 @@
 use super::align::Align;
 use super::ap_float::{ApFloatCmpResult, ApFloatSemantics, ApFloatSign, NanPayload};
 use super::ap_int::{ApInt, ApIntDivRem, ApIntSignedness};
+use super::array_len::ArrLenDyn;
 use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 use super::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprInRange,
@@ -2875,7 +2876,7 @@ fn aggregate_elements_for_rebuild<'ctx, B: ModuleBrand + 'ctx>(
             None
         }
     };
-    if let Ok(array_ty) = ArrayType::try_from(aggregate.ty()) {
+    if let Ok(array_ty) = ArrayType::<ElemDyn, ArrLenDyn, _>::try_from(aggregate.ty()) {
         let Some(fill) = fill_for(array_ty.element()) else {
             return Ok(None);
         };
@@ -2981,7 +2982,7 @@ fn constant_aggregate_from_elements<'ctx, B: ModuleBrand + 'ctx>(
             .const_vector::<Constant<'ctx, B>, _>(elements)
             .map(|aggregate| Some(aggregate.as_constant()));
     }
-    if let Ok(array_ty) = ArrayType::try_from(ty) {
+    if let Ok(array_ty) = ArrayType::<ElemDyn, ArrLenDyn, _>::try_from(ty) {
         return array_ty
             .const_array::<Constant<'ctx, B>, _>(elements)
             .map(|aggregate| Some(aggregate.as_constant()));

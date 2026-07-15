@@ -45,6 +45,7 @@ use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
+use super::array_len::{ArrLen, ArrLenDyn, ArrayLen};
 use super::element::{ElemDyn, StaticVecElem, VecElem};
 use super::float_kind::{BFloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
 use super::int_width::{IntDyn, IntWidth, Width};
@@ -739,11 +740,274 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerValue<'ctx, B> {
     }
 }
 
-decl_value_handle!(
-    /// Value whose type is `[N x T]`.
-    ArrayValue, Array, ArrayType,
-    type_predicate |d| matches!(d, TypeData::Array { .. })
-);
+// --------------------------------------------------------------------------
+// ArrayValue<'ctx, E, L> -- element + length-typed array value handle
+// --------------------------------------------------------------------------
+
+/// Value whose IR type is `[N x T]`. The `E: VecElem` marker (default
+/// [`ElemDyn`]) pins the element type and `L: ArrayLen` (default
+/// [`ArrLenDyn`]) pins the element count at the type level, mirroring
+/// [`VectorValue`] (arrays differ only in the `u64` length and the
+/// `ArrLen`/`ArrLenDyn` marker family). `ArrayValue<'ctx>` (both markers
+/// erased) is the dynamic handle; `ArrayValue<'ctx, i32, ArrLen<4>>` is a
+/// statically typed `[4 x i32]`.
+pub struct ArrayValue<
+    'ctx,
+    E: VecElem = ElemDyn,
+    L: ArrayLen = ArrLenDyn,
+    B: ModuleBrand = Brand<'ctx>,
+> {
+    pub(super) id: ValueId,
+    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) ty: TypeId,
+    pub(super) _e: PhantomData<E>,
+    pub(super) _l: PhantomData<L>,
+}
+
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> Clone for ArrayValue<'ctx, E, L, B> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> Copy for ArrayValue<'ctx, E, L, B> {}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> PartialEq for ArrayValue<'ctx, E, L, B> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.module == other.module && self.ty == other.ty
+    }
+}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> Eq for ArrayValue<'ctx, E, L, B> {}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> Hash for ArrayValue<'ctx, E, L, B> {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        self.id.hash(h);
+        self.module.hash(h);
+        self.ty.hash(h);
+    }
+}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> fmt::Debug
+    for ArrayValue<'ctx, E, L, B>
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ArrayValue").field("id", &self.id).finish()
+    }
+}
+
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayValue<'ctx, E, L, B> {
+    /// Widen to the erased [`Value`] handle.
+    #[inline]
+    pub fn as_value(self) -> Value<'ctx, B> {
+        Value {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+        }
+    }
+    /// Owning module reference.
+    #[inline]
+    pub fn module(self) -> ModuleView<'ctx, B> {
+        ModuleView::new(self.module.module())
+    }
+    /// Refined IR-type handle for this value.
+    #[inline]
+    pub fn ty(self) -> ArrayType<'ctx, E, L, B> {
+        ArrayType::new(self.ty, self.module)
+    }
+    /// Optional textual name.
+    pub fn name(self) -> Option<String> {
+        self.as_value().name()
+    }
+    /// Set the textual name.
+    pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
+        self.as_value().set_name(module_token, name);
+    }
+    /// Clear the textual name.
+    pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+        self.as_value().clear_name(module_token);
+    }
+    /// Optional debug-location.
+    #[inline]
+    pub fn debug_loc(self) -> Option<DebugLoc> {
+        self.as_value().debug_loc()
+    }
+    /// Erase both markers; preserves the runtime element type / element count.
+    #[inline]
+    pub fn as_dyn(self) -> ArrayValue<'ctx, ElemDyn, ArrLenDyn, B> {
+        ArrayValue {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+            _e: PhantomData,
+            _l: PhantomData,
+        }
+    }
+}
+
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> sealed::Sealed
+    for ArrayValue<'ctx, E, L, B>
+{
+}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> IsValue<'ctx, B>
+    for ArrayValue<'ctx, E, L, B>
+{
+    #[inline]
+    fn as_value(self) -> Value<'ctx, B> {
+        Self::as_value(self)
+    }
+}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> Typed<'ctx, B>
+    for ArrayValue<'ctx, E, L, B>
+{
+    #[inline]
+    fn ty(self) -> Type<'ctx, B> {
+        self.ty().as_type()
+    }
+}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> HasName<'ctx, B>
+    for ArrayValue<'ctx, E, L, B>
+{
+    #[inline]
+    fn name(self) -> Option<String> {
+        Self::name(self)
+    }
+    #[inline]
+    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    where
+        Name: Into<String>,
+    {
+        Self::set_name(self, module_token, name)
+    }
+    #[inline]
+    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+        Self::clear_name(self, module_token)
+    }
+}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> HasDebugLoc
+    for ArrayValue<'ctx, E, L, B>
+{
+    #[inline]
+    fn debug_loc(self) -> Option<DebugLoc> {
+        Self::debug_loc(self)
+    }
+}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> From<ArrayValue<'ctx, E, L, B>>
+    for Value<'ctx, B>
+{
+    #[inline]
+    fn from(v: ArrayValue<'ctx, E, L, B>) -> Self {
+        v.as_value()
+    }
+}
+
+// Erased narrowing: any array value lands in the fully dynamic form.
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>>
+    for ArrayValue<'ctx, ElemDyn, ArrLenDyn, B>
+{
+    type Error = IrError;
+    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
+        let ty = v.ty();
+        if matches!(ty.data(), TypeData::Array { .. }) {
+            Ok(Self {
+                id: v.id,
+                module: v.module,
+                ty: v.ty,
+                _e: PhantomData,
+                _l: PhantomData,
+            })
+        } else {
+            Err(IrError::TypeMismatch {
+                expected: TypeKindLabel::Array,
+                got: ty.kind_label(),
+            })
+        }
+    }
+}
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>>
+    for ArrayValue<'ctx, ElemDyn, ArrLenDyn, B>
+{
+    type Error = IrError;
+    #[inline]
+    fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+    }
+}
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
+    for ArrayValue<'ctx, ElemDyn, ArrLenDyn, B>
+{
+    type Error = IrError;
+    #[inline]
+    fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+    }
+}
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
+    for ArrayValue<'ctx, ElemDyn, ArrLenDyn, B>
+{
+    type Error = IrError;
+    #[inline]
+    fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
+    }
+}
+
+/// Typed narrowing: a `Value` accepts into `ArrayValue<'ctx, E, ArrLen<N>>`
+/// only if it is an array whose element type is exactly `E`'s projection and
+/// whose element count is exactly `N`. Element mismatch reports
+/// [`IrError::TypeMismatch`] (the element kinds); length mismatch reports
+/// [`IrError::OperandWidthMismatch`] (mirroring the sibling `VectorValue`
+/// narrowing).
+impl<'ctx, E, const N: u64, B> TryFrom<Value<'ctx, B>> for ArrayValue<'ctx, E, ArrLen<N>, B>
+where
+    E: StaticVecElem<'ctx, B>,
+    B: ModuleBrand + 'ctx,
+{
+    type Error = IrError;
+    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
+        let ty = v.ty();
+        match ty.data() {
+            TypeData::Array { elem, n } => {
+                let expected_elem = E::element_ir_type(v.module);
+                if *elem != expected_elem.id() {
+                    return Err(IrError::TypeMismatch {
+                        expected: expected_elem.kind_label(),
+                        got: Type::new(*elem, v.module).kind_label(),
+                    });
+                }
+                if *n != N {
+                    return Err(IrError::OperandWidthMismatch {
+                        lhs: N as u32,
+                        rhs: *n as u32,
+                    });
+                }
+                Ok(Self {
+                    id: v.id,
+                    module: v.module,
+                    ty: v.ty,
+                    _e: PhantomData,
+                    _l: PhantomData,
+                })
+            }
+            _ => Err(IrError::TypeMismatch {
+                expected: TypeKindLabel::Array,
+                got: ty.kind_label(),
+            }),
+        }
+    }
+}
+
+/// Static -> `Dyn` widening (always succeeds). Restricted to the `ArrLen<N>`
+/// typed form so it cannot overlap the reflexive `From<T> for T`.
+impl<'ctx, E: VecElem, const N: u64, B: ModuleBrand + 'ctx> From<ArrayValue<'ctx, E, ArrLen<N>, B>>
+    for ArrayValue<'ctx, ElemDyn, ArrLenDyn, B>
+{
+    #[inline]
+    fn from(v: ArrayValue<'ctx, E, ArrLen<N>, B>) -> Self {
+        v.as_dyn()
+    }
+}
 
 /// Value whose type is a struct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

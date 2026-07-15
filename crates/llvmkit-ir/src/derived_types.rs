@@ -33,6 +33,7 @@ use super::r#type::{Type, TypeData, TypeId, TypeKind};
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
+use super::array_len::{ArrLenDyn, ArrayLen};
 use super::element::{ElemDyn, VecElem};
 use super::float_kind::{BFloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
 use super::int_width::{IntDyn, IntWidth};
@@ -120,11 +121,146 @@ decl_type_handle!(
     PointerType, Pointer,
     predicate |d| matches!(d, TypeData::Pointer { .. })
 );
-decl_type_handle!(
-    /// `[N x T]` array. Mirrors `ArrayType` (`DerivedTypes.h`).
-    ArrayType, Array,
-    predicate |d| matches!(d, TypeData::Array { .. })
-);
+// `ArrayType<'ctx, E, L>` is hand-written below: the `E: VecElem` /
+// `L: ArrayLen` markers pin the element type and element count at the type
+// level, mirroring `VectorType<'ctx, E, L>` (arrays differ only in the
+// `u64` length and the `ArrLen`/`ArrLenDyn` marker family). Existing
+// `ArrayType<'ctx>` references resolve to `ArrayType<'ctx, ElemDyn,
+// ArrLenDyn>` via the defaults.
+/// `[N x T]` array. Mirrors `ArrayType` (`DerivedTypes.h`).
+///
+/// The `E: VecElem` marker (default [`ElemDyn`]) pins the element type and
+/// `L: ArrayLen` marker (default [`ArrLenDyn`]) pins the element count at
+/// the type level. `ArrayType<'ctx>` (both markers erased) is the dynamic
+/// handle parsed IR lands in; `ArrayType<'ctx, i32, ArrLen<4>>` is a
+/// statically typed `[4 x i32]`, and builder call sites can reject a shape
+/// mismatch at compile time. Runtime-checked defaults keep existing call
+/// sites working. Array lengths are `u64` (mirroring
+/// `ArrayType::getNumElements`).
+pub struct ArrayType<
+    'ctx,
+    E: VecElem = ElemDyn,
+    L: ArrayLen = ArrLenDyn,
+    B: ModuleBrand = Brand<'ctx>,
+> {
+    pub(super) id: TypeId,
+    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) _e: PhantomData<E>,
+    pub(super) _l: PhantomData<L>,
+}
+
+// Manual derives — a `derive` would require `E: Trait` / `L: Trait` on the
+// impls; the manual versions avoid leaking those bounds to consumers
+// (`PhantomData<E>` / `PhantomData<L>` are trivially `Copy`/`Eq`/`Hash`).
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> Clone for ArrayType<'ctx, E, L, B> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> Copy for ArrayType<'ctx, E, L, B> {}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> PartialEq for ArrayType<'ctx, E, L, B> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.module == other.module
+    }
+}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> Eq for ArrayType<'ctx, E, L, B> {}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> Hash for ArrayType<'ctx, E, L, B> {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        self.id.hash(h);
+        self.module.hash(h);
+    }
+}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> fmt::Debug for ArrayType<'ctx, E, L, B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ArrayType").field("id", &self.id).finish()
+    }
+}
+
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L, B> {
+    #[inline]
+    pub(super) fn new<M>(id: TypeId, module: M) -> Self
+    where
+        M: Into<ModuleRef<'ctx, B>>,
+    {
+        Self {
+            id,
+            module: module.into(),
+            _e: PhantomData,
+            _l: PhantomData,
+        }
+    }
+
+    /// Widen to the erased [`Type`] handle.
+    #[inline]
+    pub fn as_type(self) -> Type<'ctx, B> {
+        Type {
+            id: self.id,
+            module: self.module,
+        }
+    }
+
+    /// Erase both markers, producing the fully dynamic handle. Preserves the
+    /// runtime element type / element count but loses the static guarantees.
+    #[inline]
+    pub fn as_dyn(self) -> ArrayType<'ctx, ElemDyn, ArrLenDyn, B> {
+        ArrayType {
+            id: self.id,
+            module: self.module,
+            _e: PhantomData,
+            _l: PhantomData,
+        }
+    }
+}
+
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> sealed::Sealed for ArrayType<'ctx, E, L, B> {}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> IrType<'ctx, B>
+    for ArrayType<'ctx, E, L, B>
+{
+    #[inline]
+    fn as_type(self) -> Type<'ctx, B> {
+        self.as_type()
+    }
+}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> fmt::Display
+    for ArrayType<'ctx, E, L, B>
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        <Type<'ctx, B> as fmt::Display>::fmt(&self.as_type(), f)
+    }
+}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> From<ArrayType<'ctx, E, L, B>>
+    for Type<'ctx, B>
+{
+    #[inline]
+    fn from(t: ArrayType<'ctx, E, L, B>) -> Self {
+        t.as_type()
+    }
+}
+// Only the fully-erased form has a `TryFrom<Type>` (mirrors
+// `IntType<IntDyn>`): a typed handle would need to check the runtime shape,
+// which the length narrowing on `ArrayValue` handles instead.
+impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for ArrayType<'ctx, ElemDyn, ArrLenDyn, B> {
+    type Error = IrError;
+    #[inline]
+    fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
+        if matches!(t.data(), TypeData::Array { .. }) {
+            Ok(Self {
+                id: t.id(),
+                module: t.module,
+                _e: PhantomData,
+                _l: PhantomData,
+            })
+        } else {
+            Err(IrError::TypeMismatch {
+                expected: TypeKindLabel::Array,
+                got: t.kind_label(),
+            })
+        }
+    }
+}
 // `StructType<'ctx, B = StructBodyDyn>` is hand-written below: the
 // `B: StructBodyState` parameter expresses the body-set typestate
 // (Doctrine D1 -- see `struct_body_state.rs`). Existing
@@ -808,7 +944,7 @@ impl<'ctx, B: ModuleBrand> PointerType<'ctx, B> {
 // ArrayType — element + length accessors
 // --------------------------------------------------------------------------
 
-impl<'ctx, B: ModuleBrand + 'ctx> ArrayType<'ctx, B> {
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L, B> {
     #[inline]
     pub fn element(self) -> Type<'ctx, B> {
         let (elem, _) = self
@@ -831,6 +967,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> ArrayType<'ctx, B> {
     #[inline]
     pub fn is_empty(self) -> bool {
         self.len() == 0
+    }
+    /// Statically known element count, if the length marker `L` pins one.
+    /// `Some(N)` for `L = ArrLen<N>`, `None` for the erased [`ArrLenDyn`].
+    /// This is the type-level view; [`len`](Self::len) reads the runtime
+    /// element count from the arena regardless of `L`.
+    #[inline]
+    pub fn static_len(self) -> Option<u64> {
+        L::static_len()
     }
 }
 
@@ -1076,7 +1220,7 @@ pub enum AnyTypeEnum<'ctx, B: ModuleBrand = Brand<'ctx>> {
     Int(IntType<'ctx, IntDyn, B>),
     Float(FloatType<'ctx, FloatDyn, B>),
     Pointer(PointerType<'ctx, B>),
-    Array(ArrayType<'ctx, B>),
+    Array(ArrayType<'ctx, ElemDyn, ArrLenDyn, B>),
     Struct(StructType<'ctx, StructBodyDyn, B>),
     Vector(VectorType<'ctx, ElemDyn, LenDyn, B>),
     Function(FunctionType<'ctx, B>),
@@ -1199,7 +1343,7 @@ pub enum BasicTypeEnum<'ctx, B: ModuleBrand = Brand<'ctx>> {
     Int(IntType<'ctx, IntDyn, B>),
     Float(FloatType<'ctx, FloatDyn, B>),
     Pointer(PointerType<'ctx, B>),
-    Array(ArrayType<'ctx, B>),
+    Array(ArrayType<'ctx, ElemDyn, ArrLenDyn, B>),
     Struct(StructType<'ctx, StructBodyDyn, B>),
     Vector(VectorType<'ctx, ElemDyn, LenDyn, B>),
 }
@@ -1267,7 +1411,7 @@ pub enum BasicMetadataTypeEnum<'ctx, B: ModuleBrand = Brand<'ctx>> {
     Int(IntType<'ctx, IntDyn, B>),
     Float(FloatType<'ctx, FloatDyn, B>),
     Pointer(PointerType<'ctx, B>),
-    Array(ArrayType<'ctx, B>),
+    Array(ArrayType<'ctx, ElemDyn, ArrLenDyn, B>),
     Struct(StructType<'ctx, StructBodyDyn, B>),
     Vector(VectorType<'ctx, ElemDyn, LenDyn, B>),
     Metadata(MetadataType<'ctx, B>),
@@ -1329,7 +1473,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for BasicMetadataTypeEnum<'ctx, B
 /// (matches `Type.h` + LangRef).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AggregateType<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    Array(ArrayType<'ctx, B>),
+    Array(ArrayType<'ctx, ElemDyn, ArrLenDyn, B>),
     Struct(StructType<'ctx, StructBodyDyn, B>),
 }
 
