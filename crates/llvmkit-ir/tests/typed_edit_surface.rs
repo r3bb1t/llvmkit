@@ -14,6 +14,32 @@ use llvmkit_ir::{
     Type, Value, run_function_pass,
 };
 
+// Fixture return-type aliases. These keep the `build_*` helper signatures under
+// clippy's `type_complexity` threshold without an `#[allow]` (the repo bans
+// `#[allow(...)]`).
+
+/// Return of `build_invoke_caller`/`build_callbr_caller`: the caller function
+/// and the `%new` `Dyn` label a redirect can aim at.
+type CallerFixture<'ctx> = (FunctionValue<'ctx, ()>, BasicBlockLabel<'ctx, Dyn>);
+
+/// Return of `build_switch_fn`: the function plus the `case0` and `new` `Dyn`
+/// labels.
+type SwitchFixture<'ctx> = (
+    FunctionValue<'ctx, i32>,
+    BasicBlockLabel<'ctx, Dyn>,
+    BasicBlockLabel<'ctx, Dyn>,
+);
+
+/// Return of `build_switch_bogus_fn`: the function, a non-case (`bogus`) `Dyn`
+/// label, the `new` `Dyn` label (which carries a head-phi), and a valid phi
+/// seed value for `new`.
+type SwitchBogusFixture<'ctx> = (
+    FunctionValue<'ctx, i32>,
+    BasicBlockLabel<'ctx, Dyn>,
+    BasicBlockLabel<'ctx, Dyn>,
+    Value<'ctx>,
+);
+
 // ---------------------------------------------------------------------------
 // invoke — NEW capability: redirect the normal / unwind edge.
 // ---------------------------------------------------------------------------
@@ -54,10 +80,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectInvokeEdge<'
 /// Build `void @caller()` with an `invoke void @callee() to label %normal
 /// unwind label %unwind`, plus an unreferenced `%new` block that a redirect can
 /// aim at. Returns the caller and the `%new` `Dyn` label.
-#[allow(clippy::type_complexity)]
 fn build_invoke_caller<'ctx>(
     m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
-) -> IrResult<(FunctionValue<'ctx, ()>, BasicBlockLabel<'ctx, Dyn>)> {
+) -> IrResult<CallerFixture<'ctx>> {
     let void_ty = m.void_type();
     let callee_ty = m.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
     let callee = m.add_function::<(), _>("callee", callee_ty, Linkage::External)?;
@@ -164,10 +189,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectCallBrEdge<'
 
 /// Build `void @caller()` with a `callbr void @callee() to label %cont
 /// [label %ind]`, plus an unreferenced `%new` block a redirect can aim at.
-#[allow(clippy::type_complexity)]
 fn build_callbr_caller<'ctx>(
     m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
-) -> IrResult<(FunctionValue<'ctx, ()>, BasicBlockLabel<'ctx, Dyn>)> {
+) -> IrResult<CallerFixture<'ctx>> {
     let void_ty = m.void_type();
     let callee_ty = m.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
     let callee = m.add_function::<(), _>("callee", callee_ty, Linkage::External)?;
@@ -380,14 +404,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for SwitchCaseOp<'ctx, B
 /// Build `i32 @f(i32 %a)` whose entry is `switch %a, default %dflt [ 0 ->
 /// case0, 1 -> case1 ]`, plus an unreferenced `%new` block. Returns the
 /// function and the `case0`/`new` `Dyn` labels.
-#[allow(clippy::type_complexity)]
 fn build_switch_fn<'ctx>(
     m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
-) -> IrResult<(
-    FunctionValue<'ctx, i32>,
-    BasicBlockLabel<'ctx, Dyn>,
-    BasicBlockLabel<'ctx, Dyn>,
-)> {
+) -> IrResult<SwitchFixture<'ctx>> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
@@ -471,6 +490,152 @@ fn switch_remove_successor_drops_case() -> Result<(), IrError> {
         assert!(
             printed.contains("label %dflt ["),
             "the default must survive, got:\n{printed}"
+        );
+        Ok(())
+    })
+}
+
+// ---------------------------------------------------------------------------
+// switch — reject a target-based op whose `old_to` is not a live case.
+// ---------------------------------------------------------------------------
+
+/// A `ReshapeCfg` pass that narrows the entry block's `switch` and calls
+/// `redirect_successor(old_to, new_to, phi_values)`. Unlike `SwitchCaseOp`, it
+/// carries an explicit `phi_values` so the bogus-target test can seed a
+/// phi-arity-valid redirect (making the pre-fix path sail past already-reaches
+/// + phi validation before it would corrupt `new_to`'s phi).
+struct RedirectSwitchSuccessor<'ctx, B: ModuleBrand + 'ctx> {
+    old_to: BasicBlockLabel<'ctx, Dyn, B>,
+    new_to: BasicBlockLabel<'ctx, Dyn, B>,
+    phi_values: Vec<Value<'ctx, B>>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchSuccessor<'ctx, B> {
+    type Access = ReshapeCfg;
+    type Requires = ();
+    const NAME: &'static str = "redirect-switch-successor";
+
+    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+        let reshape = cx.mutate();
+        let entry = reshape
+            .function()
+            .entry_block()
+            .expect("definition has entry");
+        let switch = reshape.edit_switch(&entry)?;
+        switch.redirect_successor(&self.old_to, &self.new_to, &self.phi_values)?;
+        Ok(reshape.done())
+    }
+}
+
+/// Build `i32 @f(i32 %a)`:
+/// ```text
+/// entry:    %ev = add %a, 3 ; switch %a, default %dflt [ 0 -> case0 ]
+/// dflt:     %nd = add %a, 5 ; br new(%nd)
+/// case0:    ret 0
+/// bogus:    ret 99            ; a real block, but NOT a case target
+/// new(%np): ret %np           ; head-phi seeded by `dflt`
+/// ```
+/// `bogus` is neither a case destination nor the default, so a target-based op
+/// naming it must be rejected. `new` carries a head-phi (arity 1) so a pre-fix
+/// `redirect_successor(bogus, new, [ev])` would pass phi validation and corrupt
+/// `new`'s phi; `%ev` (defined in `entry`) is a valid seed for it.
+fn build_switch_bogus_fn<'ctx>(
+    m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
+) -> IrResult<SwitchBogusFixture<'ctx>> {
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let entry = f.append_basic_block(m, "entry");
+    let dflt = f.append_basic_block(m, "dflt");
+    let case0 = f.append_basic_block(m, "case0");
+    let bogus = f.append_basic_block(m, "bogus");
+    // new(%np: i32): a head-phi authored as a block parameter, seeded by `dflt`.
+    let (new, new_params) =
+        IRBuilder::new_for::<i32>(m).append_block_with_params(f, &[i32_ty.as_type()], "new")?;
+
+    let dflt_lbl = dflt.label();
+    let case0_lbl = case0.label();
+    let new_lbl = new.label();
+    let bogus_dyn: BasicBlockLabel<Dyn> = bogus.label().as_value().try_into()?;
+    let new_dyn: BasicBlockLabel<Dyn> = new_lbl.as_value().try_into()?;
+
+    // entry: %ev = add %a, 3 ; switch %a, default %dflt [ 0 -> case0 ]
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let ev = b.build_int_add(a, 3_i32, "ev")?;
+    let (_sealed, sw) = b.build_switch(a, dflt_lbl, "")?;
+    sw.add_case(i32_ty.const_int(0_u32), case0_lbl)?.finish();
+
+    // dflt: %nd = add %a, 5 ; br new(%nd)
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(dflt);
+    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let nd = b.build_int_add(a, 5_i32, "nd")?;
+    b.build_br_with_args(new_lbl, &[nd.as_value()])?;
+
+    // case0: ret 0
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(case0);
+    b.build_ret(i32_ty.const_int(0_u32))?;
+
+    // bogus: ret 99 (a real block, but not reached from the switch's cases).
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(bogus);
+    b.build_ret(i32_ty.const_int(99_u32))?;
+
+    // new: ret %np (the head-phi param carrying dflt's branch argument).
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(new);
+    let np: IntValue<i32> = new_params[0].try_into()?;
+    b.build_ret(np)?;
+
+    Ok((f, bogus_dyn, new_dyn, ev.as_value()))
+}
+
+/// `redirect_successor` rejects an `old_to` that is not a case successor of the
+/// switch — even when `new_to`'s head-phi arity matches the seed, so the pre-fix
+/// path would sail past already-reaches + phi validation, retarget zero cases,
+/// and corrupt `new`'s phi (an incoming from a non-predecessor). Regression for
+/// the missing target-liveness check.
+#[test]
+fn switch_redirect_successor_rejects_non_case_target() -> Result<(), IrError> {
+    Module::with_new("switch-redirect-bogus", |m| {
+        let (f, bogus_dyn, new_dyn, ev) = build_switch_bogus_fn(&m)?;
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        let pass = RedirectSwitchSuccessor {
+            old_to: bogus_dyn,
+            new_to: new_dyn,
+            phi_values: vec![ev],
+        };
+        let err = run_function_pass(pass, verified, f, &mut analyses)
+            .err()
+            .expect("a non-case `old_to` must be rejected");
+        assert!(
+            matches!(err, IrError::InvalidOperation { message } if message.contains("not a case successor")),
+            "expected InvalidOperation about a non-case successor, got: {err:?}"
+        );
+        Ok(())
+    })
+}
+
+/// `remove_successor` rejects an `old_to` that is not a case successor (and is
+/// not the default) rather than dropping zero cases yet logging a spurious
+/// `CfgUpdate::delete` for an edge that never existed. Regression for the
+/// missing target-liveness check.
+#[test]
+fn switch_remove_successor_rejects_non_case_target() -> Result<(), IrError> {
+    Module::with_new("switch-remove-bogus", |m| {
+        let (f, bogus_dyn, new_dyn, _ev) = build_switch_bogus_fn(&m)?;
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        let pass = SwitchCaseOp {
+            remove: true,
+            case0: bogus_dyn,
+            new_to: new_dyn,
+        };
+        let err = run_function_pass(pass, verified, f, &mut analyses)
+            .err()
+            .expect("a non-case `old_to` must be rejected");
+        assert!(
+            matches!(err, IrError::InvalidOperation { message } if message.contains("not a case successor")),
+            "expected InvalidOperation about a non-case successor, got: {err:?}"
         );
         Ok(())
     })

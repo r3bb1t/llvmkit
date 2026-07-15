@@ -1720,6 +1720,24 @@ where
         switch.default_bb.get()
     }
 
+    /// Whether any case of the `switch` terminator `term_id` targets `dest_id`.
+    /// Used by [`SwitchEdit::redirect_successor`]/[`SwitchEdit::remove_successor`]
+    /// to reject an `old_to` that is not a live case successor of the switch
+    /// (the target-based typed ops carry `old_to` in the slot, so — unlike the
+    /// role-named ops — they must witness that it names a real case; mirrors the
+    /// legacy [`Self::redirect_edge`]'s "is not a successor" rejection). The
+    /// default edge is deliberately not a case, so this returns `false` for it.
+    fn switch_has_case_successor(&self, term_id: ValueId, dest_id: ValueId) -> bool {
+        let ctx = self.patch.module_mut().core_ref().context();
+        let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind else {
+            unreachable!("switch_has_case_successor: terminator is not an instruction");
+        };
+        let crate::instruction::InstructionKindData::Switch(switch) = &i.kind else {
+            unreachable!("switch_has_case_successor: `SwitchEdit` term is not a switch");
+        };
+        switch.cases.borrow().iter().any(|entry| entry.1 == dest_id)
+    }
+
     /// Narrow `from`'s terminator into a typed edit handle, choosing the arm
     /// by opcode (and splitting `br` from `cond_br` by
     /// [`is_conditional`](crate::BranchInst::is_conditional)). The returned
@@ -1731,6 +1749,14 @@ where
     /// rejection. Terminators with no editable edges here (`ret`,
     /// `unreachable`, `indirectbr`, and the exception-handling terminators)
     /// come back as [`TermEdit::Uneditable`] carrying the raw view.
+    ///
+    /// Single-use: a handle (this factory's result and the [`Self::edit_switch`]
+    /// / [`Self::edit_cond_br`] / [`Self::edit_br`] / [`Self::edit_invoke`] /
+    /// [`Self::edit_callbr`] narrows) caches `from`'s terminator id. Obtain a
+    /// handle, perform one edit; do not retain a handle across an intervening op
+    /// that replaces `from`'s terminator (e.g. a `remove_*` collapse, or a later
+    /// narrow) and then reuse it — the cached id is stale and an edge op on it
+    /// would hit an `unreachable!`. Re-narrow with a fresh `edit_*` instead.
     ///
     /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator.
     #[inline]
@@ -2211,10 +2237,21 @@ where
         new_to: &BasicBlockLabel<'ctx, Dyn, B>,
         phi_values: &[Value<'ctx, B>],
     ) -> IrResult<()> {
+        let old_id = old_to.as_value().id;
+        // `old_to` is target-based, so witness it names a live case before
+        // delegating: a bogus `old_to` retargets zero cases yet the shared tail
+        // would still seed `new_to`'s phis / log a spurious `CfgUpdate`. This
+        // also rejects `old_to == default` (the default is not a case; edit it
+        // with [`Self::redirect_default`]).
+        if !self.reshape.switch_has_case_successor(self.term_id, old_id) {
+            return Err(IrError::InvalidOperation {
+                message: "redirect_successor: `old_to` is not a case successor of this switch",
+            });
+        }
         self.reshape.redirect_slot(
             &self.from,
             self.term_id,
-            EditSlot::SwitchCase(old_to.as_value().id),
+            EditSlot::SwitchCase(old_id),
             new_to,
             phi_values,
         )
@@ -2247,6 +2284,14 @@ where
         if self.reshape.switch_default_dest(self.term_id) == old_id {
             return Err(IrError::InvalidOperation {
                 message: "remove_successor: cannot remove a `switch`'s default edge",
+            });
+        }
+        // `old_to` is target-based: witness it names a live case before
+        // delegating, else `remove_slot` drops zero cases yet still logs a
+        // spurious `CfgUpdate::delete` that corrupts incremental CFG analysis.
+        if !self.reshape.switch_has_case_successor(self.term_id, old_id) {
+            return Err(IrError::InvalidOperation {
+                message: "remove_successor: `old_to` is not a case successor of this switch",
             });
         }
         self.reshape
