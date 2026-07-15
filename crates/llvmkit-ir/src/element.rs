@@ -2,7 +2,7 @@
 //!
 //! Mirrors the static-width split the integer side keeps between
 //! [`IntWidth`](crate::IntWidth) (the bound a handle carries) and
-//! [`StaticIntWidth`](crate::StaticIntWidth) (the projection subtrait that
+//! [`StaticIntWidth`] (the projection subtrait that
 //! can name a concrete [`IntType`](crate::IntType) from a module). Here the
 //! same split describes the *element* of a typed vector or array.
 //!
@@ -13,9 +13,9 @@
 //! scalar marker the scalar handles use (`IntValue<i64>`,
 //! `FloatValue<f64>`). The marker set is therefore exactly the int-width
 //! scalar markers (`bool`, `i8`, `i16`, `i32`, `i64`, `i128`) plus the
-//! float-kind markers (`f32`, `f64`, [`Half`](crate::Half),
-//! [`BFloat`](crate::BFloat), [`Fp128`](crate::Fp128),
-//! [`X86Fp80`](crate::X86Fp80), [`PpcFp128`](crate::PpcFp128)). Only
+//! float-kind markers (`f32`, `f64`, [`Half`],
+//! [`BFloat`], [`Fp128`],
+//! [`X86Fp80`], [`PpcFp128`]). Only
 //! [`ElemDyn`] needs a dedicated struct, since "element unknown at compile
 //! time" has no Rust counterpart.
 //!
@@ -58,8 +58,8 @@ impl VecElem for ElemDyn {}
 /// Projection subtrait — element markers whose element type is known at
 /// compile time AND whose IR type / value handle can be projected from a
 /// [`Module`](crate::Module) without an extra runtime parameter. The element
-/// analog of [`StaticIntWidth`](crate::StaticIntWidth) /
-/// [`StaticFloatKind`](crate::StaticFloatKind).
+/// analog of [`StaticIntWidth`] /
+/// [`StaticFloatKind`].
 ///
 /// Parameterised over `'ctx, B` so the associated value type can name them.
 /// Not implemented for [`ElemDyn`] — there is no single static element type
