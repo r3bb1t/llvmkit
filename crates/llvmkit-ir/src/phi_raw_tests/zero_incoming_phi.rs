@@ -1,7 +1,7 @@
 //! Regression coverage for the zero-incoming-phi round-trip hole.
 //!
-//! When [`FnReshape::remove_edge`](crate::pass_context) /
-//! [`redirect_edge`](crate::pass_context) drops the *only* predecessor of a
+//! When the typed edge-edit ops (`edit_cond_br(..).remove_then` /
+//! `redirect_then`) drop the *only* predecessor of a
 //! block, that block's leading phis are left with zero incomings. A phi with no
 //! incomings has no legal textual form (`%p = phi i32` with no `[ … ]` pairs),
 //! which LLVM's own LL parser rejects, so the module no longer round-trips. The
@@ -18,14 +18,14 @@ use crate::{
     IrResult, Linkage, Module, ModuleBrand, ReshapeCfg, VerifierRule, run_function_pass,
 };
 
-/// A `ReshapeCfg` pass that removes the `from_name → to` edge. The `to` label is
-/// stashed at build time (arena ids are stable across `verify()`).
-struct RemoveEdge<'ctx, B: ModuleBrand + 'ctx> {
+/// A `ReshapeCfg` pass that removes the `from_name` block's `cond_br` then-edge
+/// (its target `to` is the then-arm by construction), collapsing the `cond_br`
+/// to a `br` to the surviving else-arm.
+struct RemoveEdge {
     from_name: &'static str,
-    to: BasicBlockLabel<'ctx, Dyn, B>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveEdge<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveEdge {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "remove-edge-empty-phi";
@@ -37,18 +37,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveEdge<'ctx, B> 
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
-        reshape.remove_edge(&from, &self.to)?;
+        reshape.edit_cond_br(&from)?.remove_then()?;
         Ok(reshape.done())
     }
 }
 
-/// A `ReshapeCfg` pass that retargets the `from_name → old_to` `cond_br` arm
-/// onto `new_to`. `new_to` is authored with no leading phis, so the
-/// `redirect_edge` `phi_values` slice is empty. The labels are stashed at build
-/// time (arena ids are stable across `verify()`).
+/// A `ReshapeCfg` pass that retargets the `from_name` block's `cond_br` then-arm
+/// (its target `old_to` by construction) onto `new_to`. `new_to` is authored
+/// with no leading phis, so the `redirect_then` `phi_values` slice is empty. The
+/// label is stashed at build time (arena ids are stable across `verify()`).
 struct RedirectEmptyEdge<'ctx, B: ModuleBrand + 'ctx> {
     from_name: &'static str,
-    old_to: BasicBlockLabel<'ctx, Dyn, B>,
     new_to: BasicBlockLabel<'ctx, Dyn, B>,
 }
 
@@ -65,7 +64,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectEmptyEdge<'c
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
         // `new_to` has no leading phis, so no incoming values are supplied.
-        reshape.redirect_edge(&from, &self.old_to, &self.new_to, &[])?;
+        reshape
+            .edit_cond_br(&from)?
+            .redirect_then(&self.new_to, &[])?;
         Ok(reshape.done())
     }
 }
@@ -128,19 +129,16 @@ fn build_single_pred_phi<'ctx>(
 #[test]
 fn remove_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
     Module::with_new("remove-edge-empty-phi", |m| {
-        let (f, to_dyn) = build_single_pred_phi(&m)?;
+        let (f, _to_dyn) = build_single_pred_phi(&m)?;
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let pass = RemoveEdge {
-            from_name: "entry",
-            to: to_dyn,
-        };
+        let pass = RemoveEdge { from_name: "entry" };
         let out = run_function_pass(pass, verified, f, &mut analyses)?;
 
         let reverified = out
             .verify()
-            .expect("remove_edge output must re-verify after emptying a phi");
+            .expect("remove_then output must re-verify after emptying a phi");
         let printed = format!("{reverified}");
         // The emptied phi is erased entirely — never left as a bracket-less
         // `phi i32`, the shape LLVM's LL parser rejects. (Match the instruction
@@ -221,15 +219,15 @@ fn build_redirect_single_pred_phi<'ctx>(
 }
 
 /// Redirecting `entry → old_to` onto `new_to` — `entry` being `old_to`'s only
-/// predecessor — empties `old_to`'s head phi. `redirect_edge` must erase that
+/// predecessor — empties `old_to`'s head phi. `redirect_then` must erase that
 /// phi (LLVM `removePredecessor` parity), RAUW'ing its sole user onto poison of
 /// the phi's own type, so the output re-verifies AND round-trips (no
 /// bracket-less `phi i32` is printed).
 ///
-/// This is the `redirect_edge` twin of
+/// This is the `redirect_then` twin of
 /// [`remove_edge_emptying_phi_erases_it_with_poison`]: both reach the shared
-/// `drop_incoming_from_pred` empty-phi erase, but this drives it through
-/// `redirect_edge`'s `old_to` argument rather than `remove_edge`'s `to` — the
+/// `drop_incoming_from_pred` empty-phi erase, but this drives it through the
+/// redirected then-arm's old target rather than the removed then-edge — the
 /// path a final review flagged as covered only transitively.
 ///
 /// Without the fix the phi survives with zero incomings in the now-unreachable
@@ -240,20 +238,19 @@ fn build_redirect_single_pred_phi<'ctx>(
 #[test]
 fn redirect_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
     Module::with_new("redirect-edge-empty-phi", |m| {
-        let (f, old_to_dyn, new_to_dyn) = build_redirect_single_pred_phi(&m)?;
+        let (f, _old_to_dyn, new_to_dyn) = build_redirect_single_pred_phi(&m)?;
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
         let pass = RedirectEmptyEdge {
             from_name: "entry",
-            old_to: old_to_dyn,
             new_to: new_to_dyn,
         };
         let out = run_function_pass(pass, verified, f, &mut analyses)?;
 
         let reverified = out
             .verify()
-            .expect("redirect_edge output must re-verify after emptying a phi");
+            .expect("redirect_then output must re-verify after emptying a phi");
         let printed = format!("{reverified}");
         // The emptied phi is erased entirely — never left as a bracket-less
         // `phi i32`, the shape LLVM's LL parser rejects. (Match the instruction

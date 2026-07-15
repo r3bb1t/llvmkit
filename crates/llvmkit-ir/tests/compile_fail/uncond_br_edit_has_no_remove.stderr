@@ -1,0 +1,5 @@
+error[E0599]: no method named `remove` found for struct `BrEdit<'e, 'm, 'r, 'ctx, B, R>` in the current scope
+  --> tests/compile_fail/uncond_br_edit_has_no_remove.rs:23:31
+   |
+23 |         reshape.edit_br(&bb)?.remove();
+   |                               ^^^^^^ method not found in `BrEdit<'_, '_, '_, '_, B, ()>`

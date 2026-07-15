@@ -350,16 +350,21 @@ driver marks preserved exactly what it watched repair). What remains deferred:
   across toolchains, but it joins the set that should be re-blessed on the
   reference rustc.
 
-## Phi authoring — shipped (one follow-up)
+## Phi authoring — shipped
 
 The block-argument authoring surface (`append_block_with_params`,
 `append_block_with_named_params`, `build_*_with_args`), dominance-witnessed
 `FnReshape::insert_phi`, the "break" that made the raw phi builders (the six
 `build_*_phi`, the open-phi `add_incoming`/`finish`) internal — block arguments
-are now the *only* public phi-authoring surface — the `remove_edge`/`redirect_edge`
-edge ops over `switch`/`br`/`cond_br` (`BranchInstData.kind` became a `RefCell`,
-so `redirect_edge` retargets a branch successor and `remove_edge` collapses a
-`cond_br` to a `br`, deregistering the dead condition), the verifier
+are now the *only* public phi-authoring surface — the **typed terminator edit
+surface** (`FnReshape::edit_terminator` and the `edit_switch`/`edit_cond_br`/
+`edit_br`/`edit_invoke`/`edit_callbr` narrows → `BrEdit`/`CondBrEdit`/
+`SwitchEdit`/`InvokeEdit`/`CallBrEdit`) that *replaced* the dynamic
+`remove_edge`/`redirect_edge` edge ops (`BranchInstData.kind` became a `RefCell`,
+so a branch successor is retargeted and a `cond_br` collapses to a `br`,
+deregistering the dead condition — now through role-named `redirect_*`/`remove_*`
+whose very method set encodes the legal edits, so a structurally-invalid edge
+edit is a *compile* error rather than a runtime rejection), the verifier
 phi-result-type rule (`VerifierRule::PhiInvalidResultType`, defense in depth —
 `check_phi` rejects a phi whose result is not a first-class data type, matching
 the parser), and the zero-incoming-phi verifier backstop
@@ -368,14 +373,14 @@ carries no incomings in a block reachable from entry, gated on
 `DominatorTree::is_reachable_from_entry`; such a phi is un-round-trippable
 because `LLParser::parsePHI` rejects a bracket-less `%p = phi i32`, and the
 shared `check_phi_incoming` count guard would otherwise miss it on the `0 == 0`
-gap LLVM's `visitPHINode` shares) have all shipped. One smaller follow-up
-remains:
+gap LLVM's `visitPHINode` shares) have all shipped.
 
-- **Edge ops on `invoke`/`callbr`.** `remove_edge`/`redirect_edge` now cover
-  `switch`, `br`, and `cond_br`. `invoke` (`normal_dest`/`unwind_dest`) and
-  `callbr` (`default_dest`/`indirect_dests`) successor ids are *already*
-  interior-mutable — `Cell<ValueId>` and `Box<[Cell<ValueId>]>` on
-  `InvokeInstData`/`CallBrInstData` (`instr_types.rs`) — so the remaining work
-  is only the reshape match arms, not the storage: add the `invoke`/`callbr`
-  cases to the `remove_edge`/`redirect_edge` terminator matches, retargeting a
-  successor `Cell` in place exactly as the `br`/`cond_br` arms do.
+The former follow-up here — **edge ops on `invoke`/`callbr`** — has also
+shipped: the `invoke` (`normal_dest`/`unwind_dest`) and `callbr`
+(`default_dest`/`indirect_dests`) successor `Cell`s are editable through the
+typed edit surface — `edit_invoke` → `redirect_normal`/`redirect_unwind`,
+`edit_callbr` → `redirect_default`/`redirect_indirect` — retargeting a successor
+`Cell` in place exactly as the `br`/`cond_br` arms do. *Removal* is structurally
+N/A for them: both `invoke` edges and the `callbr` default are mandatory and the
+indirect count is fixed, and that absence is a compile-time guarantee (the
+`InvokeEdit`/`CallBrEdit` handles carry no `remove_*`), not a gap.

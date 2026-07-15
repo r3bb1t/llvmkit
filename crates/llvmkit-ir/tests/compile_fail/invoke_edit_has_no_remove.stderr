@@ -1,0 +1,15 @@
+error[E0599]: no method named `remove_normal` found for struct `InvokeEdit<'e, 'm, 'r, 'ctx, B, R>` in the current scope
+  --> tests/compile_fail/invoke_edit_has_no_remove.rs:23:35
+   |
+23 |         reshape.edit_invoke(&bb)?.remove_normal();
+   |                                   ^^^^^^^^^^^^^
+   |
+help: there is a method `redirect_normal` with a similar name, but with different arguments
+  --> src/pass_context.rs
+   |
+   | /     pub fn redirect_normal(
+   | |         &self,
+   | |         new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+   | |         phi_values: &[Value<'ctx, B>],
+   | |     ) -> IrResult<()> {
+   | |_____________________^
