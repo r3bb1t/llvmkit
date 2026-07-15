@@ -199,11 +199,66 @@ The companion defensive verifier rule to the round-trip fix above.
   LLVM's `Verifier::visitPHINode` shares). The new check runs before that
   delegation and gates on `DominatorTree::is_reachable_from_entry` — an
   unreachable block may legitimately have no predecessors, so its phis are not
-  forced to carry incomings. The public mutation path (`remove_edge` /
-  `redirect_edge`) already erases such phis; this backstop catches any other
-  construction path. **Stricter `verify()`**, though only for IR that has no
+  forced to carry incomings. The public mutation path (the typed edge-edit ops —
+  see the breaking entry below) already erases such phis; this backstop catches
+  any other construction path. **Stricter `verify()`**, though only for IR that
+  has no
   legal textual form. `VerifierRule` is `#[non_exhaustive]`, so the new variant
   is not a breaking change.
+
+### Phi — typed terminator edit surface (breaking)
+
+Replaces the dynamic CFG-edge ops with a typed edit surface whose method set
+encodes which edits are legal, so a structurally-invalid edge edit is a compile
+error instead of a runtime rejection. Same single-validated phi/edge maintenance
+underneath.
+
+#### Added
+
+- `FnReshape::edit_terminator(from)` narrows a block's terminator into a typed
+  edit handle whose *type* fixes the legal edge ops, plus the `dyn_cast`-style
+  narrows `edit_switch` / `edit_cond_br` / `edit_br` / `edit_invoke` /
+  `edit_callbr`:
+  - `SwitchEdit`: `redirect_successor` / `redirect_default` / `remove_successor`
+  - `CondBrEdit`: `redirect_then` / `redirect_else` / `remove_then` / `remove_else`
+  - `BrEdit`: `redirect`
+  - `InvokeEdit`: `redirect_normal` / `redirect_unwind`
+  - `CallBrEdit`: `redirect_default` / `redirect_indirect`
+
+  `edit_terminator` returns the `TermEdit` enum (with an `Uneditable` arm for
+  `ret` / `unreachable` / `indirectbr` and the EH terminators). Each op runs
+  through the same single-validated path as before: successor phis are maintained
+  mechanically, and an emptied phi is poison-erased for LLVM `removePredecessor`
+  parity.
+- First-class `invoke` / `callbr` edge redirects (`redirect_normal` /
+  `redirect_unwind`, `redirect_default` / `redirect_indirect`) retarget those
+  mandatory successor edges in place — the last deferred phi follow-up, now
+  shipped.
+
+#### Removed
+
+- **Breaking:** the dynamic `FnReshape::remove_edge` / `redirect_edge` are gone;
+  use the typed narrows above. The migration is mechanical:
+  `remove_edge(from, to)` → `edit_switch(&from)?.remove_successor(&to)` (switch)
+  or `edit_cond_br(&from)?.remove_then()` / `.remove_else()` (cond_br, pick the
+  arm whose target is `to`); `redirect_edge(from, old, new, vals)` →
+  `edit_switch(&from)?.redirect_successor(&old, &new, vals)` /
+  `.redirect_default(&new, vals)` (switch),
+  `edit_cond_br(&from)?.redirect_then` / `.redirect_else(&new, vals)` (cond_br),
+  or `edit_br(&from)?.redirect(&new, vals)` (unconditional `br`).
+
+#### Changed
+
+- **Structurally-invalid edge edits are now compile errors, not runtime
+  rejections.** Removing an `invoke` / `callbr` edge, the sole edge of an
+  unconditional `br`, or a `switch` default is unspellable — the method simply
+  does not exist on the corresponding handle (`E0599`). A second `cond_br`
+  collapse is a use-after-move, since `remove_then` / `remove_else` consume the
+  handle (`E0382`).
+- **Semantic change:** collapsing a `cond_br` whose *both* arms target the same
+  block is now valid. The old `remove_edge` rejected it as ambiguous; the
+  role-named `remove_then` / `remove_else` name the arm, so the collapse to
+  `br <survivor>` is unambiguous.
 
 ### Const-generic vector and array types (breaking)
 

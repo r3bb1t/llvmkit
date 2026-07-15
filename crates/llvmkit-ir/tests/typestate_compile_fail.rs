@@ -104,4 +104,15 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/function_pass_missing_name.rs");
     t.compile_fail("tests/compile_fail/function_pass_wrong_level_access.rs");
     t.compile_fail("tests/compile_fail/claim_preserved_after_mutate.rs");
+    // Slice 2 (typed terminator edit handles): the handle *type* fixes which
+    // edge ops exist, so a structurally-invalid CFG edge edit is a compile
+    // error. Each fixture's primary error is one of OUR OWN stable messages —
+    // an `E0599` absent-method (no `remove_*` where an edge is not removable)
+    // or an `E0382` use-after-move (a `cond_br` collapse consumes the handle) —
+    // which do not drift across rustc versions.
+    t.compile_fail("tests/compile_fail/invoke_edit_has_no_remove.rs");
+    t.compile_fail("tests/compile_fail/callbr_edit_has_no_remove.rs");
+    t.compile_fail("tests/compile_fail/uncond_br_edit_has_no_remove.rs");
+    t.compile_fail("tests/compile_fail/switch_edit_has_no_remove_default.rs");
+    t.compile_fail("tests/compile_fail/cond_br_edit_remove_consumes.rs");
 }

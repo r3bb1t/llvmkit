@@ -1,5 +1,5 @@
-//! Round-trip regression for the zero-incoming-phi hole in
-//! `FnReshape::remove_edge`.
+//! Round-trip regression for the zero-incoming-phi hole in the typed edge-edit
+//! surface (`edit_cond_br(..).remove_then`).
 //!
 //! Removing a block's only incoming edge empties its head phi. Before the fix,
 //! the op left that phi in place with zero incomings; it prints as
@@ -14,17 +14,18 @@
 
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::{
-    Analyses, BasicBlockLabel, Dyn, FnCx, FnReport, FunctionPass, IRBuilder, IntValue, IrError,
-    IrResult, Linkage, Module, ModuleBrand, ReshapeCfg, run_function_pass,
+    Analyses, FnCx, FnReport, FunctionPass, IRBuilder, IntValue, IrError, IrResult, Linkage,
+    Module, ModuleBrand, ReshapeCfg, run_function_pass,
 };
 
-/// A `ReshapeCfg` pass that removes the `from_name → to` edge.
-struct RemoveEdge<'ctx, B: ModuleBrand + 'ctx> {
+/// A `ReshapeCfg` pass that removes the `from_name` block's `cond_br` then-edge
+/// (its target is `to` by construction), collapsing the `cond_br` to a `br` to
+/// the surviving else-arm.
+struct RemoveEdge {
     from_name: &'static str,
-    to: BasicBlockLabel<'ctx, Dyn, B>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveEdge<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveEdge {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "remove-edge-empty-phi-rt";
@@ -36,7 +37,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveEdge<'ctx, B> 
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
-        reshape.remove_edge(&from, &self.to)?;
+        reshape.edit_cond_br(&from)?.remove_then()?;
         Ok(reshape.done())
     }
 }
@@ -63,7 +64,6 @@ fn build_and_empty_phi() -> IrResult<String> {
             IRBuilder::new_for::<i32>(&m).append_block_with_params(f, &[i32_ty.as_type()], "to")?;
         let to_lbl = to_bb.label();
         let other_lbl = other.label();
-        let to_dyn: BasicBlockLabel<Dyn> = to_lbl.as_value().try_into()?;
 
         // entry: %c = icmp eq %a, 0 ; br %c ? to(%a) : other()
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -82,12 +82,9 @@ fn build_and_empty_phi() -> IrResult<String> {
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let pass = RemoveEdge {
-            from_name: "entry",
-            to: to_dyn,
-        };
+        let pass = RemoveEdge { from_name: "entry" };
         let out = run_function_pass(pass, verified, f, &mut analyses)?;
-        let reverified = out.verify().expect("remove_edge output must re-verify");
+        let reverified = out.verify().expect("remove_then output must re-verify");
         Ok(format!("{reverified}"))
     })
 }
