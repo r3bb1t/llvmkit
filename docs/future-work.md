@@ -350,7 +350,7 @@ driver marks preserved exactly what it watched repair). What remains deferred:
   across toolchains, but it joins the set that should be re-blessed on the
   reference rustc.
 
-## Phi authoring — shipped (two follow-ups)
+## Phi authoring — shipped (one follow-up)
 
 The block-argument authoring surface (`append_block_with_params`,
 `append_block_with_named_params`, `build_*_with_args`), dominance-witnessed
@@ -359,10 +359,17 @@ The block-argument authoring surface (`append_block_with_params`,
 are now the *only* public phi-authoring surface — the `remove_edge`/`redirect_edge`
 edge ops over `switch`/`br`/`cond_br` (`BranchInstData.kind` became a `RefCell`,
 so `redirect_edge` retargets a branch successor and `remove_edge` collapses a
-`cond_br` to a `br`, deregistering the dead condition), and the verifier
+`cond_br` to a `br`, deregistering the dead condition), the verifier
 phi-result-type rule (`VerifierRule::PhiInvalidResultType`, defense in depth —
 `check_phi` rejects a phi whose result is not a first-class data type, matching
-the parser) have all shipped. Two smaller follow-ups remain:
+the parser), and the zero-incoming-phi verifier backstop
+(`VerifierRule::PhiEmptyInReachableBlock` — `check_phi` now rejects a phi that
+carries no incomings in a block reachable from entry, gated on
+`DominatorTree::is_reachable_from_entry`; such a phi is un-round-trippable
+because `LLParser::parsePHI` rejects a bracket-less `%p = phi i32`, and the
+shared `check_phi_incoming` count guard would otherwise miss it on the `0 == 0`
+gap LLVM's `visitPHINode` shares) have all shipped. One smaller follow-up
+remains:
 
 - **Edge ops on `invoke`/`callbr`.** `remove_edge`/`redirect_edge` now cover
   `switch`, `br`, and `cond_br`. `invoke` (`normal_dest`/`unwind_dest`) and
@@ -372,12 +379,3 @@ the parser) have all shipped. Two smaller follow-ups remain:
   is only the reshape match arms, not the storage: add the `invoke`/`callbr`
   cases to the `remove_edge`/`redirect_edge` terminator matches, retargeting a
   successor `Cell` in place exactly as the `br`/`cond_br` arms do.
-- **Verifier rule for a zero-incoming phi in a reachable block.** The
-  round-trip hole is closed: `drop_incoming_from_pred` (`pass_context.rs`) now
-  RAUWs a phi it empties with poison (of the phi's own type) and erases it —
-  LLVM `BasicBlock::removePredecessor` parity — so neither `remove_edge` nor
-  `redirect_edge` leaves a bracket-less `%p = phi i32` behind, and the result
-  round-trips. What remains is a *defensive* verifier rule: a phi in a
-  **reachable** block must carry at least one incoming (`check_phi` today
-  accepts zero incomings because the count still matches a zero-predecessor
-  block). That is its own slice with its own unit coverage.

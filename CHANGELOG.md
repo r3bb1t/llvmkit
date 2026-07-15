@@ -184,6 +184,27 @@ The last two deferred phi-authoring items.
   *defensive* verifier rule — a phi in a reachable block must carry at least one
   incoming — is tracked separately in `docs/future-work.md`.)
 
+### Phi — zero-incoming verifier backstop
+
+The companion defensive verifier rule to the round-trip fix above.
+
+#### Added
+
+- `VerifierRule::PhiEmptyInReachableBlock` — `Module::verify()` now rejects a
+  phi that carries **zero** incoming values in a block **reachable from entry**,
+  however the phi arose. Such a phi prints as `%p = phi i32` with no `[ … ]`
+  pairs — a form `LLParser::parsePHI` rejects, so the module no longer
+  round-trips. The shared `check_phi_incoming` count guard misses this: a
+  zero-incoming phi in a zero-predecessor block passes on `0 == 0` (the same gap
+  LLVM's `Verifier::visitPHINode` shares). The new check runs before that
+  delegation and gates on `DominatorTree::is_reachable_from_entry` — an
+  unreachable block may legitimately have no predecessors, so its phis are not
+  forced to carry incomings. The public mutation path (`remove_edge` /
+  `redirect_edge`) already erases such phis; this backstop catches any other
+  construction path. **Stricter `verify()`**, though only for IR that has no
+  legal textual form. `VerifierRule` is `#[non_exhaustive]`, so the new variant
+  is not a breaking change.
+
 ### Const-generic vector and array types (breaking)
 
 Fixed vectors and arrays now carry their **element type** and **length** in the
