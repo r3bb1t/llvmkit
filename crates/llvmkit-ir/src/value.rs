@@ -976,7 +976,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
     /// The IRBuilder uses this when it just produced an instruction whose
     /// type matches the operand widths it validated.
     #[inline]
-    pub(super) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
+    pub(crate) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
         Self {
             id: v.id,
             module: v.module,
@@ -1314,7 +1314,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> fmt::Debug for FloatValue<'ctx, 
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
     /// Crate-internal: wrap a [`Value`] known to have a float type of kind `K`.
     #[inline]
-    pub(super) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
+    pub(crate) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
         Self {
             id: v.id,
             module: v.module,
