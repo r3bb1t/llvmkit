@@ -999,16 +999,29 @@ where
         Ok(new_block)
     }
 
-    /// Drop every leading-phi incoming in `block` whose predecessor is
-    /// `pred_id`, deregistering the phi from each removed value's use-list so
-    /// reverse-use bookkeeping (and hence RAUW) stays correct, and cleaning up
-    /// any phi left with **zero** incomings. The full LLVM
-    /// `BasicBlock::removePredecessor`: after the CFG edge is gone, `pred_id` is
-    /// no longer a predecessor, so every `(value, pred_id)` pair leaves each head
-    /// phi; a phi that thereby loses its *last* incoming is RAUW'd with poison
-    /// (of its own result type) and erased, since `%p = phi i32` with no
-    /// `[ … ]` pairs has no legal textual form. Phis are grouped at the block
-    /// top, so the scan stops at the first non-phi.
+    /// Drop `block`'s leading-phi incomings whose predecessor is `pred_id`,
+    /// retaining exactly `keep` of them per phi and deregistering the phi from
+    /// each removed value's use-list so reverse-use bookkeeping (and hence RAUW)
+    /// stays correct. `keep` is the number of `pred_id → block` edges that
+    /// *survive* the terminator edit, so each head phi must end with exactly
+    /// `keep` incomings from `pred_id`. Phis are grouped at the block top, so the
+    /// scan stops at the first non-phi.
+    ///
+    /// `keep == 0` is the full LLVM `BasicBlock::removePredecessor`: `pred_id` no
+    /// longer reaches `block`, so every `(value, pred_id)` pair leaves each head
+    /// phi, and a phi that thereby loses its *last* incoming is RAUW'd with
+    /// poison (of its own result type) and erased, since `%p = phi i32` with no
+    /// `[ … ]` pairs has no legal textual form.
+    ///
+    /// `keep > 0` is the surviving-parallel-edge case: a terminator edit removed
+    /// some but not all of the `pred_id → block` edges (one arm of a
+    /// `cond_br %c, X, X`; one `switch` case when the default also targets that
+    /// block), so `pred_id` still reaches `block`. Only the excess incomings
+    /// beyond the first `keep` are dropped and no phi is erased — a phi that
+    /// retains an incoming has a legal textual form. A verified module carries
+    /// the same value for every incoming of a given predecessor (differing
+    /// duplicates for one block are a coherence error), so *which* `keep` copies
+    /// remain is immaterial.
     ///
     /// Two passes, collect-then-mutate: pass 1 does the `retain` +
     /// use-list-deregister and records which phis emptied; pass 2 RAUWs and
@@ -1021,9 +1034,11 @@ where
         &self,
         block: &BasicBlock<'ctx, Dyn, Terminated, B>,
         pred_id: ValueId,
+        keep: usize,
     ) -> IrResult<()> {
         let ctx = self.patch.module_mut().core_ref().context();
-        // Pass 1: drop `pred_id`'s incomings, collecting phis left with none.
+        // Pass 1: drop `pred_id`'s incomings beyond the first `keep`, collecting
+        // phis left with none.
         let mut emptied: Vec<ValueId> = Vec::new();
         for inst_id in block.instruction_ids() {
             let crate::value::ValueKindData::Instruction(inst) = &ctx.value_data(inst_id).kind
@@ -1035,11 +1050,19 @@ where
             };
             let mut dropped_values: Vec<ValueId> = Vec::new();
             {
+                // Retain the first `keep` incomings from `pred_id` (one per
+                // surviving parallel edge); drop the rest.
+                let mut kept = 0_usize;
                 let mut incoming = p.incoming.borrow_mut();
                 incoming.retain(|(value, pred)| {
                     if *pred == pred_id {
-                        dropped_values.push(value.get());
-                        false
+                        if kept < keep {
+                            kept += 1;
+                            true
+                        } else {
+                            dropped_values.push(value.get());
+                            false
+                        }
                     } else {
                         true
                     }
@@ -1055,7 +1078,10 @@ where
                 }
             }
             // Release this read borrow immediately — it must not be held into
-            // pass 2, whose RAUW/erase re-enter the same phi storage.
+            // pass 2, whose RAUW/erase re-enter the same phi storage. Only a
+            // fully-emptied phi (`keep == 0` and `pred_id` was its last
+            // predecessor) is collected; a `keep > 0` phi retains an incoming
+            // and never reaches here.
             if p.incoming.borrow().is_empty() {
                 emptied.push(inst_id);
             }
@@ -1182,14 +1208,23 @@ where
         };
 
         // Mechanically drop the removed target's phi incomings that named
-        // `from`. All blocks share the module's label type, so `from`'s block
-        // carries the same module ref and label type as the target.
+        // `from`, but keep one per surviving parallel `from → target` edge.
+        // Removing one arm of a `cond_br %c, X, X` collapses to `br X`, so
+        // `from` STILL reaches `X` through the surviving arm; the survivor count
+        // is read off the now-mutated terminator (0 for the normal single-edge
+        // removal, 1 when the sibling arm targeted the same block). All blocks
+        // share the module's label type, so `from`'s block carries the same
+        // module ref and label type as the target.
         let target_block = BasicBlock::<Dyn, Terminated, B>::from_parts(
             target_id,
             from_block.module,
             from_block.ty,
         );
-        self.drop_incoming_from_pred(&target_block, from_id)?;
+        let surviving = crate::cfg::block_successors(&from_block)
+            .iter()
+            .filter(|succ| succ.as_value().id == target_id)
+            .count();
+        self.drop_incoming_from_pred(&target_block, from_id, surviving)?;
 
         self.cfg_updates
             .borrow_mut()
@@ -1404,14 +1439,23 @@ where
             }
         };
 
-        // Drop `from`'s incomings from the old target's phis, then add the
-        // typed incomings to `new_to`'s phis (each registered in its value's
-        // use-list by the edge-add path). All blocks share the module's label
-        // type, so `from`'s block carries the same module ref and label type as
-        // the old target.
+        // Drop `from`'s incomings from the old target's phis, keeping one per
+        // surviving parallel `from → old` edge, then add the typed incomings to
+        // `new_to`'s phis (each registered in its value's use-list by the
+        // edge-add path). Retargeting one arm of a `cond_br %c, X, X` (or one
+        // `switch` case when the default also targets that block) leaves `from`
+        // still reaching `old` through the untouched parallel edge; the survivor
+        // count is read off the now-mutated terminator (0 for the normal
+        // single-edge redirect). All blocks share the module's label type, so
+        // `from`'s block carries the same module ref and label type as the old
+        // target.
         let old_block =
             BasicBlock::<Dyn, Terminated, B>::from_parts(old_id, from_block.module, from_block.ty);
-        self.drop_incoming_from_pred(&old_block, from_id)?;
+        let surviving = crate::cfg::block_successors(&from_block)
+            .iter()
+            .filter(|succ| succ.as_value().id == old_id)
+            .count();
+        self.drop_incoming_from_pred(&old_block, from_id, surviving)?;
 
         let builder = IRBuilder::new(self.patch.module_mut());
         for (phi_id, value) in param_phis.iter().zip(phi_values.iter()) {

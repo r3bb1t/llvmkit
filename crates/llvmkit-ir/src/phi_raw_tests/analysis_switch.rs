@@ -159,7 +159,9 @@ fn remove_edge_drops_successor_phi_incoming() -> Result<(), IrError> {
         };
         let out = run_function_pass(pass, verified, f, &mut analyses)?;
 
-        let reverified = out.verify().expect("remove_edge output must re-verify");
+        let reverified = out
+            .verify()
+            .expect("remove_successor output must re-verify");
         let printed = format!("{reverified}");
         assert!(
             printed.contains("[ %d, %dflt ]"),
@@ -252,6 +254,116 @@ fn redirect_edge_rejects_already_reaches_new() -> Result<(), IrError> {
         assert!(
             matches!(err, IrError::InvalidOperation { .. }),
             "expected InvalidOperation when `from` already reaches `new_to`, got: {err:?}"
+        );
+        Ok(())
+    })
+}
+
+/// Build a `switch` whose DEFAULT and case-0 both target `shared`, so `entry`
+/// reaches `shared` through two parallel edges. A third predecessor `mid` gives
+/// `shared` three predecessors total.
+///
+/// ```text
+/// entry(a): %e = add %a, 7
+///           switch i32 %a, label %shared [ i32 0, label %shared ; i32 1, label %mid ]
+/// mid:      %mv = add %a, 3 ; br %shared
+/// shared:   %p = phi i32 [ %e, %entry ], [ %e, %entry ], [ %mv, %mid ] ; ret %p
+/// new:      ret 1   (phi-less redirect target)
+/// ```
+///
+/// Redirecting the case-0 edge (`redirect_successor(shared, new)`) leaves the
+/// DEFAULT still targeting `shared`, so `entry` survives as a predecessor of
+/// `shared` through the default — `shared`'s phi must keep one `entry` incoming.
+#[allow(clippy::type_complexity)]
+fn build_switch_default_parallel<'ctx>(
+    m: &Module<'ctx, crate::Brand<'ctx>, crate::Unverified>,
+) -> IrResult<(
+    crate::FunctionValue<'ctx, i32>,
+    BasicBlockLabel<'ctx, Dyn>,
+    BasicBlockLabel<'ctx, Dyn>,
+)> {
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let entry = f.append_basic_block(m, "entry");
+    let mid = f.append_basic_block(m, "mid");
+    let shared = f.append_basic_block(m, "shared");
+    let new = f.append_basic_block(m, "new");
+
+    let entry_lbl = entry.label();
+    let mid_lbl = mid.label();
+    let shared_lbl = shared.label();
+    let shared_dyn: BasicBlockLabel<Dyn> = shared_lbl.as_value().try_into()?;
+    let new_dyn: BasicBlockLabel<Dyn> = new.label().as_value().try_into()?;
+
+    // entry: %e = add %a, 7 ; switch %a, default %shared [ 0 -> shared, 1 -> mid ]
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let e = b.build_int_add(a, 7_i32, "e")?;
+    let (_sealed, sw) = b.build_switch(a, shared_lbl, "")?;
+    sw.add_case(i32_ty.const_int(0_u32), shared_lbl)?
+        .add_case(i32_ty.const_int(1_u32), mid_lbl)?
+        .finish();
+
+    // mid: %mv = add %a, 3 ; br shared
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(mid);
+    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let mv = b.build_int_add(a, 3_i32, "mv")?;
+    b.build_br(shared_lbl)?;
+
+    // shared: %p = phi i32 [ %e, entry ] (default), [ %e, entry ] (case 0), [ %mv, mid ] ; ret %p
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(shared);
+    let p = b
+        .build_int_phi::<i32, _>("p")?
+        .add_incoming(e, entry_lbl)?
+        .add_incoming(e, entry_lbl)?
+        .add_incoming(mv, mid_lbl)?;
+    b.build_ret(p.as_int_value())?;
+
+    // new: ret 1  (no phi — a redirect onto it seeds an empty phi_values)
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(new);
+    b.build_ret(i32_ty.const_int(1_u32))?;
+
+    Ok((f, shared_dyn, new_dyn))
+}
+
+/// SURVIVING-PARALLEL-EDGE (switch redirect): redirecting the case-0 edge of a
+/// `switch` whose DEFAULT also targets `shared` retargets only the case, leaving
+/// the default at `shared`. `entry` STILL reaches `shared` through the default,
+/// so `shared`'s phi must KEEP one `entry` incoming.
+///
+/// Before the fix, `redirect_slot` dropped every `entry` incoming from `shared`,
+/// leaving `[ %mv, %mid ]` (1 entry) against 2 predecessors — `verify()` fails
+/// with `PhiPredecessorMismatch`. (`remove_successor` cannot exercise this: it
+/// rejects `old_to == default`, so a removed case can never parallel a surviving
+/// default.)
+#[test]
+fn redirect_successor_keeps_surviving_default_parallel_phi_incoming() -> Result<(), IrError> {
+    Module::with_new("switch-default-parallel", |m| {
+        let (f, shared_dyn, new_dyn) = build_switch_default_parallel(&m)?;
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        let pass = RedirectSwitchEdge {
+            from_name: "entry",
+            old_to: shared_dyn,
+            new_to: new_dyn,
+            phi_values: vec![],
+        };
+        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+
+        let reverified = out.verify().expect(
+            "redirect must re-verify: shared keeps one entry incoming for the surviving default",
+        );
+        let printed = format!("{reverified}");
+        // shared retains one `entry` incoming (surviving default) plus its `mid`
+        // incoming: two entries for two predecessors.
+        assert!(
+            printed.contains("[ %e, %entry ]"),
+            "shared's phi must keep one entry incoming for the surviving default, got:\n{printed}"
+        );
+        assert!(
+            printed.contains("[ %mv, %mid ]"),
+            "shared's phi must keep its mid incoming, got:\n{printed}"
         );
         Ok(())
     })

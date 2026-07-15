@@ -1027,3 +1027,172 @@ fn redirect_edge_rejects_cond_br_already_reaching_new() -> Result<(), IrError> {
         Ok(())
     })
 }
+
+// ---------------------------------------------------------------------------
+// Surviving-parallel-edge phi maintenance on `cond_br %c, X, X`.
+//
+// The role-named `remove_then`/`redirect_then` reach a case the old
+// target-based `remove_edge`/`redirect_edge` rejected: editing ONE arm of a
+// `cond_br` whose BOTH arms target the same block `X`. After the edit `from`
+// STILL reaches `X` through the untouched parallel arm, so `X`'s phi must retain
+// exactly one `from` incoming — dropping all of them (the correct behavior only
+// when `from` fully stops reaching `X`) under-counts and makes `verify()` report
+// `PhiPredecessorMismatch`. The `build_cond_br_pair`-based tests above pass only
+// because their shared target has no phi; these give it one.
+// ---------------------------------------------------------------------------
+
+/// Build a `cond_br %c, shared, shared` (both arms → `shared`) whose target
+/// carries a head phi, with a third predecessor `keep` so `shared` has three
+/// predecessors: `src` (×2, via the parallel arms) and `keep` (×1). Editing one
+/// arm of `src`'s branch must leave `shared` reachable from `src` through the
+/// surviving arm, so `shared`'s phi must retain exactly one `src` incoming.
+///
+/// ```text
+/// entry(a): %c0 = icmp eq %a, 0 ; cond_br %c0, src, keep
+/// src(a):   %sv = add %a, 3 ; %c1 = icmp eq %a, 1
+///           cond_br %c1, shared(%sv), shared(%sv)   ; BOTH arms → shared
+/// keep(a):  %kv = add %a, 7 ; br shared(%kv)
+/// shared(%sp): ret %sp                              ; preds {src, src, keep}
+/// ```
+///
+/// Returns the function plus `new`'s `Dyn` label (a spare, phi-less block for the
+/// redirect test — a redirect onto it seeds an empty `phi_values`).
+#[allow(clippy::type_complexity)]
+fn build_cond_br_both_arms_phi<'ctx>(
+    m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
+) -> IrResult<(
+    llvmkit_ir::FunctionValue<'ctx, i32>,
+    BasicBlockLabel<'ctx, Dyn>,
+)> {
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let entry = f.append_basic_block(m, "entry");
+    let src = f.append_basic_block(m, "src");
+    let keep = f.append_basic_block(m, "keep");
+    let new = f.append_basic_block(m, "new");
+    // shared(%sp: i32): reached from `src` via BOTH cond_br arms and from `keep`.
+    let (shared, shared_params) =
+        IRBuilder::new_for::<i32>(m).append_block_with_params(f, &[i32_ty.as_type()], "shared")?;
+    let src_lbl = src.label();
+    let keep_lbl = keep.label();
+    let shared_lbl = shared.label();
+    let new_dyn: BasicBlockLabel<Dyn> = new.label().as_value().try_into()?;
+
+    // entry: cond_br (%a == 0) ? src : keep
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let c0 = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c0")?;
+    b.build_cond_br(c0, src_lbl, keep_lbl)?;
+
+    // src: %sv = add %a, 3 ; cond_br (%a == 1) ? shared(%sv) : shared(%sv)
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(src);
+    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let sv = b.build_int_add(a, 3_i32, "sv")?;
+    let c1 = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 1_i32, "c1")?;
+    b.build_cond_br_with_args(
+        c1,
+        shared_lbl,
+        &[sv.as_value()],
+        shared_lbl,
+        &[sv.as_value()],
+    )?;
+
+    // keep: %kv = add %a, 7 ; br shared(%kv)
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(keep);
+    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let kv = b.build_int_add(a, 7_i32, "kv")?;
+    b.build_br_with_args(shared_lbl, &[kv.as_value()])?;
+
+    // shared: ret %sp
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(shared);
+    let sp: IntValue<i32> = shared_params[0].try_into()?;
+    b.build_ret(sp)?;
+
+    // new: ret 1  (no phi — a redirect onto it seeds an empty phi_values)
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(new);
+    b.build_ret(i32_ty.const_int(1_u32))?;
+
+    Ok((f, new_dyn))
+}
+
+/// SURVIVING-PARALLEL-EDGE (remove): `remove_then` on a `cond_br %c, shared,
+/// shared` collapses it to `br shared`, so `src` STILL reaches `shared` through
+/// the surviving (else) arm. `shared`'s phi must therefore KEEP one `src`
+/// incoming (alongside its `keep` incoming), not drop both.
+///
+/// Before the fix, `remove_slot` dropped every `src` incoming unconditionally,
+/// leaving `shared`'s phi with only `[ %kv, %keep ]` (1 entry) against 2
+/// predecessors — `verify()` fails with `PhiPredecessorMismatch` ("phi has 1
+/// incoming entries but block has 2 predecessors").
+#[test]
+fn remove_then_keeps_surviving_parallel_edge_phi_incoming() -> Result<(), IrError> {
+    Module::with_new("remove-parallel-phi", |m| {
+        let (f, _new_dyn) = build_cond_br_both_arms_phi(&m)?;
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        let pass = RemoveCondBrThen { from_name: "src" };
+        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+
+        let reverified = out
+            .verify()
+            .expect("collapse must re-verify: shared keeps one src incoming for the surviving arm");
+        let printed = format!("{reverified}");
+        assert!(
+            printed.contains("br label %shared"),
+            "both-arms cond_br must collapse to `br label %shared`, got:\n{printed}"
+        );
+        // shared retains exactly one `src` incoming (surviving arm) plus its
+        // `keep` incoming: two entries for two predecessors.
+        assert!(
+            printed.contains("[ %sv, %src ]"),
+            "shared's phi must keep one src incoming for the surviving arm, got:\n{printed}"
+        );
+        assert!(
+            printed.contains("[ %kv, %keep ]"),
+            "shared's phi must keep its keep incoming, got:\n{printed}"
+        );
+        Ok(())
+    })
+}
+
+/// SURVIVING-PARALLEL-EDGE (redirect): `redirect_then` on a `cond_br %c, shared,
+/// shared` retargets only the then-arm onto `new`, leaving the else-arm at
+/// `shared`. `src` STILL reaches `shared` through the surviving else-arm, so
+/// `shared`'s phi must KEEP one `src` incoming.
+///
+/// Before the fix, the redirect dropped every `src` incoming from `shared`,
+/// leaving `[ %kv, %keep ]` (1 entry) against 2 predecessors — `verify()` fails
+/// with `PhiPredecessorMismatch`.
+#[test]
+fn redirect_then_keeps_surviving_parallel_edge_phi_incoming() -> Result<(), IrError> {
+    Module::with_new("redirect-parallel-phi", |m| {
+        let (f, new_dyn) = build_cond_br_both_arms_phi(&m)?;
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        let pass = RedirectCondBrThen {
+            from_name: "src",
+            new_to: new_dyn,
+            phi_values: vec![],
+        };
+        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+
+        let reverified = out
+            .verify()
+            .expect("redirect must re-verify: shared keeps one src incoming for the surviving arm");
+        let printed = format!("{reverified}");
+        assert!(
+            printed.contains("br i1 %c1, label %new, label %shared"),
+            "only the then-arm may be retargeted (else-arm stays shared), got:\n{printed}"
+        );
+        assert!(
+            printed.contains("[ %sv, %src ]"),
+            "shared's phi must keep one src incoming for the surviving arm, got:\n{printed}"
+        );
+        assert!(
+            printed.contains("[ %kv, %keep ]"),
+            "shared's phi must keep its keep incoming, got:\n{printed}"
+        );
+        Ok(())
+    })
+}
