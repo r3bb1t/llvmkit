@@ -359,29 +359,23 @@ The block-argument authoring surface (`append_block_with_params`,
 are now the *only* public phi-authoring surface — the `remove_edge`/`redirect_edge`
 edge ops over `switch`/`br`/`cond_br` (`BranchInstData.kind` became a `RefCell`,
 so `redirect_edge` retargets a branch successor and `remove_edge` collapses a
-`cond_br` to a `br`, deregistering the dead condition), and the verifier
+`cond_br` to a `br`, deregistering the dead condition), the verifier
 phi-result-type rule (`VerifierRule::PhiInvalidResultType`, defense in depth —
 `check_phi` rejects a phi whose result is not a first-class data type, matching
-the parser) have all shipped. Two smaller follow-ups remain:
+the parser), and the zero-incoming-phi verifier backstop
+(`VerifierRule::PhiEmptyInReachableBlock` — `check_phi` now rejects a phi that
+carries no incomings in a block reachable from entry, gated on
+`DominatorTree::is_reachable_from_entry`; such a phi is un-round-trippable
+because `LLParser::parsePHI` rejects a bracket-less `%p = phi i32`, and the
+shared `check_phi_incoming` count guard would otherwise miss it on the `0 == 0`
+gap LLVM's `visitPHINode` shares) have all shipped. One smaller follow-up
+remains:
 
 - **Edge ops on `invoke`/`callbr`.** `remove_edge`/`redirect_edge` now cover
-  `switch`, `br`, and `cond_br`. `invoke` (normal/unwind) and `callbr`
-  (default/indirect) successor ids are still plain `ValueId` (not
-  interior-mutable), so their CFG edges cannot yet be edited by the reshape
-  mutator. The same `RefCell`/`Cell` treatment applied to `BranchInstData.kind`
-  (or a terminator-rebuild path) would extend the ops to them.
-- **`remove_edge` can leave a zero-incoming phi.** `drop_incoming_from_pred`
-  (`pass_context.rs`) strips every `(value, from)` pair from the removed
-  successor's head phis. If `from` was that block's *only* predecessor, the phi
-  is left with **zero** incomings. That is internally coherent — the block now
-  has no predecessors, so `check_phi`'s count check passes — and `Module::verify()`
-  accepts it, but the printer emits `%p = phi i32` with no `[ … ]` pairs, which
-  LLVM's own `LLParser::parsePHI` rejects (it requires at least one pair), so the
-  module no longer round-trips. LLVM's `BasicBlock::removePredecessor` instead
-  replaces such a phi with poison and erases it. This is pre-existing (the
-  `switch` path can hit it too) but the `cond_br` collapse makes it easier to
-  reach. The fix — RAUW the emptied phi with poison and erase it — needs the
-  typed erase/RAUW machinery inside the reshape mutator, so it deserves its own
-  slice with tests; the behavior is documented on `FnReshape::remove_edge` in the
-  meantime. Consider also a verifier rule that a phi in a *reachable* block must
-  have at least one incoming.
+  `switch`, `br`, and `cond_br`. `invoke` (`normal_dest`/`unwind_dest`) and
+  `callbr` (`default_dest`/`indirect_dests`) successor ids are *already*
+  interior-mutable — `Cell<ValueId>` and `Box<[Cell<ValueId>]>` on
+  `InvokeInstData`/`CallBrInstData` (`instr_types.rs`) — so the remaining work
+  is only the reshape match arms, not the storage: add the `invoke`/`callbr`
+  cases to the `remove_edge`/`redirect_edge` terminator matches, retargeting a
+  successor `Cell` in place exactly as the `br`/`cond_br` arms do.

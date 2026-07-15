@@ -964,17 +964,30 @@ where
 
     /// Drop every leading-phi incoming in `block` whose predecessor is
     /// `pred_id`, deregistering the phi from each removed value's use-list so
-    /// reverse-use bookkeeping (and hence RAUW) stays correct. The
-    /// incoming-removal half of LLVM `BasicBlock::removePredecessor`: after the
-    /// CFG edge is gone, `pred_id` is no longer a predecessor, so every
-    /// `(value, pred_id)` pair leaves each head phi. Phis are grouped at the
-    /// block top, so the scan stops at the first non-phi.
+    /// reverse-use bookkeeping (and hence RAUW) stays correct, and cleaning up
+    /// any phi left with **zero** incomings. The full LLVM
+    /// `BasicBlock::removePredecessor`: after the CFG edge is gone, `pred_id` is
+    /// no longer a predecessor, so every `(value, pred_id)` pair leaves each head
+    /// phi; a phi that thereby loses its *last* incoming is RAUW'd with poison
+    /// (of its own result type) and erased, since `%p = phi i32` with no
+    /// `[ … ]` pairs has no legal textual form. Phis are grouped at the block
+    /// top, so the scan stops at the first non-phi.
+    ///
+    /// Two passes, collect-then-mutate: pass 1 does the `retain` +
+    /// use-list-deregister and records which phis emptied; pass 2 RAUWs and
+    /// erases them. The split is required — RAUW/erase re-enter the phi's
+    /// storage and the block instruction list, so they cannot run while pass 1
+    /// holds those borrows or walks the (owned) id snapshot. An emptied phi has
+    /// zero incomings, so it references no other emptied phi: the pass-2 order is
+    /// immaterial.
     fn drop_incoming_from_pred(
         &self,
         block: &BasicBlock<'ctx, Dyn, Terminated, B>,
         pred_id: ValueId,
-    ) {
+    ) -> IrResult<()> {
         let ctx = self.patch.module_mut().core_ref().context();
+        // Pass 1: drop `pred_id`'s incomings, collecting phis left with none.
+        let mut emptied: Vec<ValueId> = Vec::new();
         for inst_id in block.instruction_ids() {
             let crate::value::ValueKindData::Instruction(inst) = &ctx.value_data(inst_id).kind
             else {
@@ -1004,7 +1017,24 @@ where
                     uses.remove(pos);
                 }
             }
+            // Release this read borrow immediately — it must not be held into
+            // pass 2, whose RAUW/erase re-enter the same phi storage.
+            if p.incoming.borrow().is_empty() {
+                emptied.push(inst_id);
+            }
         }
+
+        // Pass 2: an emptied phi is unprintable, so replace its uses with poison
+        // (of its own type, so RAUW cannot type-mismatch) and detach it. RAUW
+        // first (redirect users), erase second (unlink from the block).
+        let module = self.patch.module_mut().module_ref();
+        for inst_id in emptied {
+            let view = crate::instruction::InstructionView::from_parts(inst_id, module);
+            let poison = view.ty().get_poison();
+            self.replace_all_uses(&view, poison)?;
+            self.erase(&view.as_non_terminator().expect("a phi is a non-terminator"));
+        }
+        Ok(())
     }
 
     /// Remove the CFG edge `from → to`, dropping `to`'s successor-phi
@@ -1030,15 +1060,13 @@ where
     /// `(value, from)` incomings (LLVM `removePredecessor`), each removed
     /// value's use-list updated so RAUW stays correct. A phi left with a
     /// single remaining entry is legal — the uniform-phi fold cleans it later.
+    /// If `from` was `to`'s *only* predecessor, a phi is left with **zero**
+    /// incomings; because `%p = phi i32` with no `[ … ]` pairs has no legal
+    /// textual form (LLVM's own parser rejects it, so the module would not
+    /// round-trip), such an emptied phi is replaced with poison of its own type
+    /// and erased — full LLVM `removePredecessor` parity.
     ///
-    /// **Two things this op deliberately does not clean up.** (1) If `from` was
-    /// `to`'s *only* predecessor, `to`'s phis are left with **zero** incomings.
-    /// That is internally coherent (`to` now has no predecessors, so the counts
-    /// still match) and `verify()` accepts it, but it prints as `%p = phi i32`
-    /// with no `[ … ]` pairs — which LLVM's own parser rejects, so the module no
-    /// longer round-trips. LLVM's `removePredecessor` instead replaces such a phi
-    /// with poison and erases it. Prefer removing an edge into a block that keeps
-    /// another predecessor, or erase the emptied phi yourself. (2) Collapsing a
+    /// **One thing this op deliberately does not clean up.** Collapsing a
     /// `cond_br` leaves the instruction that computed the condition in place,
     /// now dead — its use-list *is* correctly emptied (so `has_uses()` reports it
     /// dead), and DCE removes it; this op does not.
@@ -1162,7 +1190,7 @@ where
 
         // Mechanically drop `to`'s phi incomings that named `from`.
         let to_block = BasicBlock::<Dyn, Terminated, B>::from_parts(to.id, to.module, to.ty);
-        self.drop_incoming_from_pred(&to_block, from_id);
+        self.drop_incoming_from_pred(&to_block, from_id)?;
 
         self.cfg_updates
             .borrow_mut()
@@ -1196,9 +1224,12 @@ where
     /// authoring path ([`IRBuilder::build_br_with_args`](crate::IRBuilder)).
     ///
     /// **Phi maintenance.** `old_to`'s leading phis lose their `from`
-    /// incomings (`from` is no longer their predecessor); `new_to`'s leading
-    /// phis each gain a `(phi_values[i], from)` incoming, registered in the
-    /// value's use-list so RAUW stays correct.
+    /// incomings (`from` is no longer their predecessor); if `from` was
+    /// `old_to`'s only predecessor, a phi thereby emptied is replaced with
+    /// poison of its own type and erased (the same LLVM `removePredecessor`
+    /// parity as [`Self::remove_edge`], keeping the result round-trippable).
+    /// `new_to`'s leading phis each gain a `(phi_values[i], from)` incoming,
+    /// registered in the value's use-list so RAUW stays correct.
     ///
     /// Records [`CfgUpdate::delete(from, old_to)`](CfgUpdate) and
     /// [`CfgUpdate::insert(from, new_to)`](CfgUpdate), and marks the mutator
@@ -1416,7 +1447,7 @@ where
         // by the erased edge-add path).
         let old_block =
             BasicBlock::<Dyn, Terminated, B>::from_parts(old_to.id, old_to.module, old_to.ty);
-        self.drop_incoming_from_pred(&old_block, from_id);
+        self.drop_incoming_from_pred(&old_block, from_id)?;
 
         let builder = IRBuilder::new(self.patch.module_mut());
         for (phi_id, value) in param_phis.iter().zip(phi_values.iter()) {

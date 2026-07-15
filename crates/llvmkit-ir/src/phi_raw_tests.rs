@@ -20,3 +20,4 @@ mod fmf;
 mod medium;
 mod typestate;
 mod verifier_basic;
+mod zero_incoming_phi;
