@@ -59,6 +59,7 @@ pub mod analysis;
 pub mod ap_float;
 pub mod ap_int;
 pub mod argument;
+pub mod array_len;
 pub mod asm_writer;
 pub mod atomic_ordering;
 pub mod atomicrmw_binop;
@@ -136,6 +137,7 @@ pub mod user;
 pub mod value;
 pub mod value_symbol_table;
 pub mod value_tracking;
+pub mod vec_len;
 pub mod vector_element;
 pub mod verifier;
 pub mod worklist;
@@ -347,6 +349,7 @@ pub use float_kind::{
 };
 // `f32`/`f64` are std types — no re-export needed.
 
+pub use array_len::{ArrLen, ArrLenDyn, ArrayLen, StaticArrayLen};
 pub use int_width::{
     IntDyn, IntWidth, IntoConstantInt, IntoIntValue, StaticIntWidth, WiderThan, Width,
 };
@@ -354,6 +357,7 @@ pub use value_tracking::{
     KnownBitsAnalysis, KnownBitsAnalysisResult, MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery,
     compute_known_bits, is_known_non_zero, is_known_one, is_known_zero, known_bits_from_operator,
 };
+pub use vec_len::{Len, LenDyn, StaticVecLen, VecLen};
 // `bool`/`i8`/`i16`/`i32`/`i64`/`i128` are std types — no re-export.
 
 #[cfg(feature = "macros")]
