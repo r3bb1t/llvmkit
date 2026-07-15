@@ -84,8 +84,8 @@ internal — see "Phi authoring — raw builders internal" below.)
   its edge, read from the pass's dominator tree
   (`analysis_repaired::<DominatorTreeAnalysis>`). `IrError::PhiIncomingNotDominating`
   on a dominance failure.
-- `FnReshape::remove_edge` / `redirect_edge` (`switch`-terminator scope this
-  release) drop or retarget a CFG edge and mechanically maintain the affected
+- `FnReshape::remove_edge` / `redirect_edge` drop or retarget a CFG edge and
+  mechanically maintain the affected
   successors' phis as part of the op — `remove_edge` drops the predecessor's
   incomings, `redirect_edge` takes the new target's per-parameter values as a
   required, type-checked argument, so "forgot the target's phis" cannot occur.
@@ -135,3 +135,38 @@ unrepresentable through the public API rather than merely rejected at
   builders through `#[doc(hidden)]` internal-contract entry points). The phi
   storage, printer, and verifier are unchanged — printed IR is still ordinary
   phis.
+
+### Phi — verifier result-type rule and branch edge ops
+
+The last two deferred phi-authoring items.
+
+#### Added
+
+- `VerifierRule::PhiInvalidResultType` — `Module::verify()` now rejects a phi
+  whose *result* type is not a first-class **data** type (int, float, pointer —
+  the opaque `ptr` and the legacy typed `i32*` — vector, array, non-opaque
+  struct). Previously only the `.ll` parser enforced this, so a phi with a
+  `token` / `label` / `metadata` / `void` result built through another path (the
+  internal erased phi builders take an arbitrary `Type`) verified clean. Defense
+  in depth: the guarantee now holds regardless of construction path. **Stricter
+  `verify()`**, though only for IR that was already invalid. `VerifierRule` is
+  `#[non_exhaustive]`, so the new variant is not a breaking change. Adds
+  `Type::is_typed_pointer` alongside `Type::is_pointer` (which matches only the
+  opaque `ptr`).
+- `FnReshape::remove_edge` / `redirect_edge` now operate on **`br` and `cond_br`**,
+  not just `switch`. `redirect_edge` retargets the unconditional `br` target or
+  the matching arm of a `cond_br`; `remove_edge` collapses a `cond_br` to
+  `br <surviving>` when one of its two edges is dropped, deregistering the
+  now-dead condition operand. `BranchInstData.kind` became interior-mutable (a
+  `RefCell<BranchKind>`, mirroring `SwitchInstData`'s `Cell`/`RefCell`), so the
+  reshape mutator — which reaches instructions only through the arena's shared
+  `&ValueData` — can edit branch targets and the branch *kind*. Removing the sole
+  edge of an unconditional `br` is rejected (no successor would remain).
+  `invoke`/`callbr` edges remain uneditable — see `docs/future-work.md`.
+
+#### Changed
+
+- **Stricter parsing:** the `.ll` parser now rejects a phi whose result type is
+  an **opaque struct** (`phi %opaque`). It previously accepted it — contradicting
+  its own comment — and produced IR that then failed `Module::verify()`. The
+  parser and the verifier now accept exactly the same set of phi result types.

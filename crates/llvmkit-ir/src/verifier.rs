@@ -2414,6 +2414,7 @@ impl<'ctx> Verifier<'ctx> {
         let valid_result = rty.is_integer()
             || rty.is_floating_point()
             || rty.is_pointer()
+            || rty.is_typed_pointer()
             || rty.is_vector()
             || rty.is_array()
             || (rty.is_struct() && rty.is_first_class());
@@ -3496,6 +3497,30 @@ mod tests {
             append_ret_void(&m, entry_id);
             let err = m.verify_borrowed().unwrap_err();
             assert_rule(&err, VerifierRule::PhiInvalidResultType);
+        });
+    }
+
+    /// The result-type rule must NOT reject a *typed* pointer (`i32*`, the legacy
+    /// `TypedPointerType`): it is a first-class data type and a valid phi result,
+    /// distinct from the opaque `ptr` that `Type::is_pointer` matches. Regression
+    /// guard — the first cut of this rule enumerated only `is_pointer()`, so it
+    /// rejected `phi i32*`, IR that verified clean before.
+    #[test]
+    fn phi_with_typed_pointer_result_type_verifies() {
+        Module::with_new("t", |m| {
+            let i32_ty = m.i32_type().as_type();
+            let void_ty = m.void_type().as_type();
+            let tptr_ty = m.typed_pointer_type(i32_ty, 0).as_type();
+            let (_f_id, entry_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            fabricate_instruction(
+                &m,
+                entry_id,
+                tptr_ty.id(),
+                InstructionKindData::Phi(PhiData::new()),
+            );
+            append_ret_void(&m, entry_id);
+            m.verify_borrowed()
+                .expect("a typed-pointer phi result must remain valid");
         });
     }
 

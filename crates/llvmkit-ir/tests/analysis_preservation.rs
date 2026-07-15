@@ -655,9 +655,13 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
             printed.contains("[ %ev, %entry ]"),
             "new's phi must gain the entry incoming, got:\n{printed}"
         );
+        // Pin the WHOLE terminator: only the matching arm may be retargeted. An
+        // impl that retargeted both arms would emit `label %new, label %new` and
+        // still satisfy a bare `contains("label %new")` + `!contains("label
+        // %old")`, so those two checks alone cannot catch it.
         assert!(
-            printed.contains("label %new"),
-            "the then-arm must now target new, got:\n{printed}"
+            printed.contains("br i1 %c, label %new, label %other"),
+            "only the then-arm may be retargeted (else-arm must still be other), got:\n{printed}"
         );
         assert!(
             !printed.contains("label %old"),
@@ -668,8 +672,20 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
 }
 
 /// `remove_edge` on one arm of a `cond_br` collapses it to an unconditional
-/// `br` to the surviving target; the output re-verifies with no conditional
-/// branch left.
+/// `br` to the surviving target, drops the removed successor's `from`-incomings,
+/// and deregisters the now-dead condition operand.
+///
+/// ```text
+/// entry(a): %ev = add %a, 3 ; %c = icmp eq %a, 0
+///           br %c ? keep() : drop(%ev)
+/// keep:     %kv = add %a, 7 ; br drop(%kv)
+/// drop(%dp): ret %dp          ; preds {entry, keep}
+/// ```
+///
+/// `remove_edge(entry, drop)` must leave `entry: br label %keep`, `drop`'s phi
+/// holding only `[ %kv, %keep ]`, and `%c` with no uses. `drop` keeps a second
+/// predecessor (`keep`) on purpose, so the phi genuinely *loses one incoming*
+/// rather than being emptied.
 #[test]
 fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
     Module::with_new("remove-condbr", |m| {
@@ -678,20 +694,33 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let keep = f.append_basic_block(&m, "keep");
-        let drop_bb = f.append_basic_block(&m, "drop");
+        // drop(%dp: i32): reached from BOTH entry and keep.
+        let (drop_bb, drop_params) = IRBuilder::new_for::<i32>(&m).append_block_with_params(
+            f,
+            &[i32_ty.as_type()],
+            "drop",
+        )?;
         let keep_lbl = keep.label();
         let drop_lbl = drop_bb.label();
         let drop_dyn: BasicBlockLabel<Dyn> = drop_lbl.as_value().try_into()?;
 
-        // entry: cond_br (%a == 0) ? keep : drop
+        // entry: %ev = add %a, 3 ; br (%a == 0) ? keep() : drop(%ev)
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let ev = b.build_int_add(a, 3_i32, "ev")?;
         let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
-        b.build_cond_br(c, keep_lbl, drop_lbl)?;
+        b.build_cond_br_with_args(c, keep_lbl, &[], drop_lbl, &[ev.as_value()])?;
+
+        // keep: %kv = add %a, 7 ; br drop(%kv)
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(keep);
-        b.build_ret(i32_ty.const_int(0_u32))?;
+        let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let kv = b.build_int_add(a, 7_i32, "kv")?;
+        b.build_br_with_args(drop_lbl, &[kv.as_value()])?;
+
+        // drop: ret %dp
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(drop_bb);
-        b.build_ret(i32_ty.const_int(1_u32))?;
+        let dp: IntValue<i32> = drop_params[0].try_into()?;
+        b.build_ret(dp)?;
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
@@ -700,6 +729,15 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
             to: drop_dyn,
         };
         let out = run_function_pass(pass, verified, f, &mut analyses)?;
+
+        // The condition is no longer an operand of the (now unconditional)
+        // branch — the collapse deregistered it. Nothing in `verify()` checks
+        // use-list consistency, so assert it directly.
+        assert!(
+            !c.as_value().has_uses(),
+            "the collapse must deregister the dead condition operand"
+        );
+
         let reverified = out.verify().expect("collapsed output must re-verify");
         let printed = format!("{reverified}");
         assert!(
@@ -709,6 +747,14 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
         assert!(
             !printed.contains("br i1"),
             "the conditional branch must be gone, got:\n{printed}"
+        );
+        assert!(
+            !printed.contains("[ %ev, %entry ]"),
+            "drop's phi must lose its entry incoming, got:\n{printed}"
+        );
+        assert!(
+            printed.contains("[ %kv, %keep ]"),
+            "drop's phi must keep its surviving (keep) incoming, got:\n{printed}"
         );
         Ok(())
     })
@@ -797,6 +843,121 @@ fn remove_edge_rejects_unconditional_br() -> Result<(), IrError> {
         assert!(
             matches!(err, IrError::InvalidOperation { message } if message.contains("unconditional")),
             "expected InvalidOperation about the unconditional br, got: {err:?}"
+        );
+        Ok(())
+    })
+}
+
+/// Builds `entry: br %c ? t : e` with the two arms pointed at `t_name`/`e_name`,
+/// plus a spare `new` block — the shared skeleton for the branch-edge rejection
+/// guards below. Returns the function and the `Dyn` labels for `old`/`new`.
+#[allow(clippy::type_complexity)]
+fn build_cond_br_pair<'ctx>(
+    m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
+    then_is_new: bool,
+) -> IrResult<(
+    llvmkit_ir::FunctionValue<'ctx, i32>,
+    BasicBlockLabel<'ctx, Dyn>,
+    BasicBlockLabel<'ctx, Dyn>,
+)> {
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let entry = f.append_basic_block(m, "entry");
+    let old = f.append_basic_block(m, "old");
+    let new = f.append_basic_block(m, "new");
+    let old_lbl = old.label();
+    let new_lbl = new.label();
+    let old_dyn: BasicBlockLabel<Dyn> = old_lbl.as_value().try_into()?;
+    let new_dyn: BasicBlockLabel<Dyn> = new_lbl.as_value().try_into()?;
+
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
+    if then_is_new {
+        // entry: br %c ? old : new  — the else-arm ALREADY reaches `new`.
+        b.build_cond_br(c, old_lbl, new_lbl)?;
+    } else {
+        // entry: br %c ? old : old  — BOTH arms reach `old`.
+        b.build_cond_br(c, old_lbl, old_lbl)?;
+    }
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(old);
+    b.build_ret(i32_ty.const_int(0_u32))?;
+    let b = IRBuilder::new_for::<i32>(m).position_at_end(new);
+    b.build_ret(i32_ty.const_int(1_u32))?;
+
+    Ok((f, old_dyn, new_dyn))
+}
+
+/// `remove_edge` rejects a `cond_br` whose two arms BOTH target `to` — removing
+/// that edge would leave the block with no successor at all.
+#[test]
+fn remove_edge_rejects_cond_br_with_both_arms_to_to() -> Result<(), IrError> {
+    Module::with_new("remove-condbr-both", |m| {
+        let (f, old_dyn, _new_dyn) = build_cond_br_pair(&m, false)?;
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        let pass = RemoveEdgePass {
+            from_name: "entry",
+            to: old_dyn,
+        };
+        let err = run_function_pass(pass, verified, f, &mut analyses)
+            .err()
+            .expect("removing the only successor must be rejected");
+        assert!(
+            matches!(err, IrError::InvalidOperation { message } if message.contains("both")),
+            "expected InvalidOperation about both cond_br arms, got: {err:?}"
+        );
+        Ok(())
+    })
+}
+
+/// `redirect_edge` rejects a `cond_br` that reaches `old_to` through BOTH arms
+/// — the op retargets exactly one edge, so a two-edge `old_to` is ambiguous.
+#[test]
+fn redirect_edge_rejects_cond_br_reaching_old_through_both_arms() -> Result<(), IrError> {
+    Module::with_new("redirect-condbr-multi", |m| {
+        let (f, old_dyn, new_dyn) = build_cond_br_pair(&m, false)?;
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        let pass = RedirectSwitchEdge {
+            from_name: "entry",
+            old_to: old_dyn,
+            new_to: new_dyn,
+            phi_values: vec![],
+        };
+        let err = run_function_pass(pass, verified, f, &mut analyses)
+            .err()
+            .expect("a two-edge old_to must be rejected");
+        assert!(
+            matches!(err, IrError::InvalidOperation { message } if message.contains("multiple edges")),
+            "expected InvalidOperation about multiple edges, got: {err:?}"
+        );
+        Ok(())
+    })
+}
+
+/// `redirect_edge` rejects a `cond_br` whose OTHER arm already targets `new_to`
+/// — redirect mints a fresh edge, so the new target's phis would otherwise gain
+/// a second incoming from the same predecessor.
+#[test]
+fn redirect_edge_rejects_cond_br_already_reaching_new() -> Result<(), IrError> {
+    Module::with_new("redirect-condbr-already", |m| {
+        let (f, old_dyn, new_dyn) = build_cond_br_pair(&m, true)?;
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        let pass = RedirectSwitchEdge {
+            from_name: "entry",
+            old_to: old_dyn,
+            new_to: new_dyn,
+            phi_values: vec![],
+        };
+        let err = run_function_pass(pass, verified, f, &mut analyses)
+            .err()
+            .expect("an already-reached new_to must be rejected");
+        assert!(
+            matches!(err, IrError::InvalidOperation { message } if message.contains("already reaches")),
+            "expected InvalidOperation about already reaching new_to, got: {err:?}"
         );
         Ok(())
     })

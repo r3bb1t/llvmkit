@@ -1025,11 +1025,23 @@ where
     /// remaining `switch` case to `to` leaves a `switch` with only its default
     /// (`switch %x, label %d []`) — degenerate but valid IR.
     ///
-    /// **Phi maintenance.** Once the cases are dropped `from` is no longer a
+    /// **Phi maintenance.** Once the edge is gone `from` is no longer a
     /// predecessor of `to`, so every leading phi in `to` loses all its
     /// `(value, from)` incomings (LLVM `removePredecessor`), each removed
     /// value's use-list updated so RAUW stays correct. A phi left with a
     /// single remaining entry is legal — the uniform-phi fold cleans it later.
+    ///
+    /// **Two things this op deliberately does not clean up.** (1) If `from` was
+    /// `to`'s *only* predecessor, `to`'s phis are left with **zero** incomings.
+    /// That is internally coherent (`to` now has no predecessors, so the counts
+    /// still match) and `verify()` accepts it, but it prints as `%p = phi i32`
+    /// with no `[ … ]` pairs — which LLVM's own parser rejects, so the module no
+    /// longer round-trips. LLVM's `removePredecessor` instead replaces such a phi
+    /// with poison and erases it. Prefer removing an edge into a block that keeps
+    /// another predecessor, or erase the emptied phi yourself. (2) Collapsing a
+    /// `cond_br` leaves the instruction that computed the condition in place,
+    /// now dead — its use-list *is* correctly emptied (so `has_uses()` reports it
+    /// dead), and DCE removes it; this op does not.
     ///
     /// Records [`CfgUpdate::delete(from, to)`](CfgUpdate) and marks the mutator
     /// dirty.
@@ -1195,8 +1207,7 @@ where
     /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator, its
     /// terminator is not a `switch`/`br`/`cond_br`, `old_to` is not a successor
     /// of `from`, `from` reaches `old_to` through more than one edge, or `from`
-    /// already
-    /// reaches `new_to`; [`IrError::PhiArgArityMismatch`] /
+    /// already reaches `new_to`; [`IrError::PhiArgArityMismatch`] /
     /// [`IrError::TypeMismatch`] for a mis-sized or mistyped `phi_values`.
     pub fn redirect_edge(
         &self,
