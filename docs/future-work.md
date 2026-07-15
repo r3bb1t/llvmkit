@@ -109,8 +109,39 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
 
 ## Type-system follow-ups
 
-- Const-generic `VectorType<E, const N, Scalable>` / `ArrayType<E, const N>`
-  (T4 follow-up already on the AGENTS.md roadmap).
+- **Const-generic `VectorType<E, Len<N>>` / `ArrayType<E, ArrLen<N>>` — shipped**
+  (`feature-17/const-generic-vec-array`, S1–S6). `VectorType`/`VectorValue` and
+  `ArrayType`/`ArrayValue` now carry a scalar **element** marker (the scalar
+  itself — `i64`, `f64`, … via `VecElem`/`StaticVecElem` in `element.rs`) and a
+  **length** marker (`Len<const N: u32>`/`LenDyn` in `vec_len.rs`;
+  `ArrLen<const N: u64>`/`ArrLenDyn` in `array_len.rs`). The bare
+  `VectorValue<'ctx>`/`ArrayValue<'ctx>` stay the all-`Dyn` (erased) form —
+  parsed `.ll`, scalable vectors, and runtime lengths land there and narrow via
+  `TryFrom` (`OperandWidthMismatch` for lane count, `IrError::ArrayLengthMismatch`
+  for arrays, `TypeMismatch` for element). Constructors
+  `Module::vector_type_n::<E, const N>()` / `array_type_n::<E, const N>()`. Typed
+  ops make an element/length mismatch a **compile error**:
+  `build_vec_int_{add,sub,mul,xor,and,or,shl,lshr,ashr}` (two
+  `VectorValue<E, Len<N>>` with the same `E`,`N` ⇒ equal element+length for
+  free), `build_vec_extract`/`build_vec_insert`/`build_vec_splat`, and array
+  `build_arr_extract`/`build_arr_insert` (plus a typed-array `build_alloca`); the
+  verifier's vector/array checks are unchanged (defense in depth). The old
+  unwired `VectorElement`/`SizedElement`/`VectorDyn`/`ArrayDyn` markers were
+  replaced by `VecElem`/`ElemDyn`. Residual, deliberately still erased / `Dyn`:
+  - **Length-relating ops** — shufflevector output length, concat (`N1+N2`),
+    compile-time index-in-bounds (`I<N`), cross-`Len` widen/narrow — **blocked on
+    `generic_const_exprs` (unstable)**, the same wall as the integer `WiderThan`
+    relations below.
+  - **Scalable vectors** — always `Dyn` (**scoped out** this cycle).
+  - **Pointer-element vectors** — **scoped out**, blocked on address-space
+    markers (see the address-space-typed-pointers bullet below).
+  - **Composite-element arrays** (`[N x {..}]` / `[N x [..]]` / `[N x <..>]`) — a
+    scalar element marker can't name a composite element (**scoped out**).
+  - **Float / div / rem vector binops and vector `icmp`/`fcmp`** — **scoped out**;
+    no existing erased `_dyn` lowering to reuse.
+  - `build_vec_splat` can't infer its element from the scalar (a Rust
+    associated-type-projection limitation), so its callers annotate / turbofish
+    the result.
 - `Width<M>`/`Width<N>` `WiderThan` relations blocked on stable
   const-generics (documented at `int_width.rs` ~105-116); revisit when
   `generic_const_exprs` stabilizes.

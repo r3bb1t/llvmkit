@@ -532,6 +532,18 @@ pub enum IrError {
         rhs: u32,
     },
 
+    /// A statically-lengthed array handle (`ArrayValue<_, ArrLen<N>>`) was
+    /// narrowed from an array of a different length. Distinct from
+    /// [`OperandWidthMismatch`](Self::OperandWidthMismatch), whose `u32` fields
+    /// fit integer/vector widths but not the `u64` length of an `ArrayType`.
+    #[error("array length mismatch: expected [{expected} x _], got [{got} x _]")]
+    ArrayLengthMismatch {
+        /// The statically-required length `N`.
+        expected: u64,
+        /// The array's actual length.
+        got: u64,
+    },
+
     /// `set_struct_body` called twice on the same named struct.
     #[error("named struct {name:?} already has a body")]
     StructBodyAlreadySet {

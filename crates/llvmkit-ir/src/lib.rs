@@ -59,6 +59,7 @@ pub mod analysis;
 pub mod ap_float;
 pub mod ap_int;
 pub mod argument;
+pub mod array_len;
 pub mod asm_writer;
 pub mod atomic_ordering;
 pub mod atomicrmw_binop;
@@ -83,6 +84,7 @@ pub mod demanded_bits;
 pub mod denormal_mode;
 pub mod derived_types;
 pub mod dominator_tree;
+pub mod element;
 pub mod error;
 pub mod float_kind;
 pub mod fmf;
@@ -121,7 +123,6 @@ pub(crate) mod phi_check;
 #[cfg(test)]
 mod phi_raw_tests;
 pub mod phi_state;
-pub mod sized_element;
 pub mod ssa_builder;
 pub mod struct_body_state;
 pub mod struct_schema;
@@ -136,7 +137,7 @@ pub mod user;
 pub mod value;
 pub mod value_symbol_table;
 pub mod value_tracking;
-pub mod vector_element;
+pub mod vec_len;
 pub mod verifier;
 pub mod worklist;
 
@@ -316,7 +317,6 @@ pub use phi_state::{Closed, Open, PhiState};
 // via this shared helper so the two cannot drift.
 #[doc(hidden)]
 pub use phi_check::{PhiCoherenceError, check_function_phi_coherence};
-pub use sized_element::{ArrayDyn, SizedElement};
 pub use ssa_builder::{
     FloatVariable, IntVariable, IntoIrResult, PointerVariable, SsaBlock, SsaBuilder, SsaBuilderId,
 };
@@ -337,7 +337,6 @@ pub use value::{
     ArrayValue, FloatValue, FunctionTypedValue, HasDebugLoc, HasName, IntValue, IntoPointerValue,
     IsValue, PointerValue, StructValue, Typed, Value, ValueCategory, ValueId, VectorValue,
 };
-pub use vector_element::{VectorDyn, VectorElement};
 pub use worklist::Worklist;
 
 pub use align::{Align, MaybeAlign};
@@ -347,6 +346,8 @@ pub use float_kind::{
 };
 // `f32`/`f64` are std types — no re-export needed.
 
+pub use array_len::{ArrLen, ArrLenDyn, ArrayLen, StaticArrayLen};
+pub use element::{ElemDyn, StaticVecElem, VecElem, WrapWitness};
 pub use int_width::{
     IntDyn, IntWidth, IntoConstantInt, IntoIntValue, StaticIntWidth, WiderThan, Width,
 };
@@ -354,6 +355,7 @@ pub use value_tracking::{
     KnownBitsAnalysis, KnownBitsAnalysisResult, MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery,
     compute_known_bits, is_known_non_zero, is_known_one, is_known_zero, known_bits_from_operator,
 };
+pub use vec_len::{Len, LenDyn, StaticVecLen, VecLen};
 // `bool`/`i8`/`i16`/`i32`/`i64`/`i128` are std types — no re-export.
 
 #[cfg(feature = "macros")]
