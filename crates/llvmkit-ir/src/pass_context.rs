@@ -714,9 +714,9 @@ where
 }
 
 /// Which single successor slot of a `switch`/`br`/`cond_br` terminator an edge
-/// edit acts on. Determined by the public edge op ([`FnReshape::remove_edge`]/
-/// [`FnReshape::redirect_edge`]) once it has witnessed the terminator kind and
-/// the edge preconditions, then handed to the mechanical mutation helpers
+/// edit acts on. Fixed by the typed terminator-edit handles (e.g.
+/// [`SwitchEdit::redirect_successor`], [`CondBrEdit::remove_then`]) — each hands
+/// a constant slot to the mechanical mutation helpers
 /// ([`FnReshape::remove_slot`]/[`FnReshape::redirect_slot`]).
 ///
 /// The `br`/`cond_br` slots are *role-based* (which arm), so the helper reads
@@ -1074,12 +1074,14 @@ where
         Ok(())
     }
 
-    /// Mechanical body of [`Self::remove_edge`]: perform the terminator
-    /// mutation selected by `slot`, drop the removed target's `from`-incoming
-    /// phis, log the [`CfgUpdate::delete`], and mark dirty. The edge
-    /// preconditions are witnessed by the caller before the slot is built, so
-    /// this helper does no validation; a `SwitchDefault`/`BrUncond` slot is
-    /// unremovable (the caller rejects it) and never reaches here.
+    /// Mechanical body of the typed handles' edge-removal ops
+    /// ([`CondBrEdit::remove_then`]/[`CondBrEdit::remove_else`]/
+    /// [`SwitchEdit::remove_successor`]): perform the terminator mutation
+    /// selected by `slot`, drop the removed target's `from`-incoming phis, log
+    /// the [`CfgUpdate::delete`], and mark dirty. The edge preconditions are
+    /// witnessed by the handle before the slot is built, so this helper does no
+    /// validation; a `SwitchDefault`/`BrUncond` slot is unremovable (no handle
+    /// method builds one) and never reaches here.
     ///
     /// A `SwitchCase(to)` drops every case targeting `to` (deregistering each
     /// dropped case value's use of the switch); a `BrThen`/`BrElse` collapses
@@ -1196,8 +1198,8 @@ where
         Ok(())
     }
 
-    /// Mechanical body of [`Self::redirect_edge`] and every typed
-    /// terminator-edit handle's `redirect_*`: reject `from` already reaching
+    /// Mechanical body of every typed terminator-edit handle's `redirect_*`:
+    /// reject `from` already reaching
     /// `new_to`, validate `phi_values` against `new_to`'s leading phis,
     /// retarget the single edge selected by `slot` onto `new_to`, drop the old
     /// target's `from`-incomings, seed `new_to`'s phis, log the [`CfgUpdate`]
@@ -1206,13 +1208,14 @@ where
     /// This is the single validated mutation path, so both the "`from` already
     /// reaches `new_to`" edge precondition and the `phi_values` arity/type
     /// check live here (the former first, preserving the
-    /// edge-precondition-before-phi-arity error priority); every redirect
-    /// surface — the legacy edge op and the typed handles — inherits them for
+    /// edge-precondition-before-phi-arity error priority); every typed redirect
+    /// handle inherits them for
     /// free. Both are checked *before* any mutation, so a rejected call leaves
     /// the terminator and every phi untouched. The remaining "find-the-slot"
-    /// preconditions (which edge of `old_to`, terminator kind supported) stay
-    /// in [`Self::redirect_edge`]: they are about *locating* an edge from
-    /// `old_to`, which the role-named typed ops don't need.
+    /// precondition (that `old_to` names a live case) is witnessed by the
+    /// target-based [`SwitchEdit::redirect_successor`] via
+    /// [`Self::switch_has_case_successor`]; the role-named ops read their arm
+    /// off the current terminator and need no such lookup.
     ///
     /// For the role slots (`BrThen`/`BrElse`/`BrUncond`/`InvokeNormal`/
     /// `InvokeUnwind`/`CallBrDefault`/`CallBrIndirect`) the old target is read
@@ -1431,281 +1434,6 @@ where
         Ok(())
     }
 
-    /// Remove the CFG edge `from → to`, dropping `to`'s successor-phi
-    /// incomings that named `from` as part of the same op — the phi
-    /// maintenance is carried by the edit, never deferred to a fixup a caller
-    /// could forget.
-    ///
-    /// **Supported terminators.** `switch` and `cond_br` — all their target
-    /// payloads are interior-mutable (the `switch` case list / default behind
-    /// `Cell`/`RefCell`, and `BranchInstData.kind` behind a `RefCell`). For a
-    /// `switch`, every case targeting `to` is dropped, collapsing the
-    /// `from → to` edge; removing the *default* edge is rejected (a `switch`
-    /// must keep a default). For a `cond_br`, removing one of its two edges
-    /// collapses it to an unconditional `br` to the surviving target and
-    /// deregisters the now-dead condition operand. The sole edge of an
-    /// unconditional `br` cannot be removed (no successor would remain), nor can
-    /// an edge when both `cond_br` arms target the same block. Dropping the last
-    /// remaining `switch` case to `to` leaves a `switch` with only its default
-    /// (`switch %x, label %d []`) — degenerate but valid IR.
-    ///
-    /// **Phi maintenance.** Once the edge is gone `from` is no longer a
-    /// predecessor of `to`, so every leading phi in `to` loses all its
-    /// `(value, from)` incomings (LLVM `removePredecessor`), each removed
-    /// value's use-list updated so RAUW stays correct. A phi left with a
-    /// single remaining entry is legal — the uniform-phi fold cleans it later.
-    /// If `from` was `to`'s *only* predecessor, a phi is left with **zero**
-    /// incomings; because `%p = phi i32` with no `[ … ]` pairs has no legal
-    /// textual form (LLVM's own parser rejects it, so the module would not
-    /// round-trip), such an emptied phi is replaced with poison of its own type
-    /// and erased — full LLVM `removePredecessor` parity.
-    ///
-    /// **One thing this op deliberately does not clean up.** Collapsing a
-    /// `cond_br` leaves the instruction that computed the condition in place,
-    /// now dead — its use-list *is* correctly emptied (so `has_uses()` reports it
-    /// dead), and DCE removes it; this op does not.
-    ///
-    /// Records [`CfgUpdate::delete(from, to)`](CfgUpdate) and marks the mutator
-    /// dirty.
-    ///
-    /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator, its
-    /// terminator is not a `switch`/`br`/`cond_br`, `to` is a `switch`'s
-    /// default, `to` is not a successor of `from`, `from` is an unconditional
-    /// `br` (its sole edge cannot be removed), or both `cond_br` arms target
-    /// `to`.
-    pub fn remove_edge(
-        &self,
-        from: &BasicBlockView<'ctx, B>,
-        to: &BasicBlockLabel<'ctx, Dyn, B>,
-    ) -> IrResult<()> {
-        let from_block = from.as_basic_block();
-        let to_id = to.as_value().id;
-        let ctx = self.patch.module_mut().core_ref().context();
-
-        let term = from_block.terminator().ok_or(IrError::InvalidOperation {
-            message: "remove_edge: `from` has no terminator",
-        })?;
-        let term_id = term.as_value().id;
-
-        // Witness the terminator kind and the edge preconditions, then pick the
-        // slot the mechanical mutation acts on. The actual case-drop / cond_br
-        // collapse + phi maintenance lives in `remove_slot`.
-        let slot = match &ctx.value_data(term_id).kind {
-            crate::value::ValueKindData::Instruction(i) => match &i.kind {
-                crate::instruction::InstructionKindData::Switch(switch) => {
-                    // A switch must keep its default, so a default-only edge
-                    // cannot be dropped this way.
-                    if switch.default_bb.get() == to_id {
-                        return Err(IrError::InvalidOperation {
-                            message: "remove_edge: cannot remove a `switch`'s default edge",
-                        });
-                    }
-                    if !switch.cases.borrow().iter().any(|(_, dest)| *dest == to_id) {
-                        return Err(IrError::InvalidOperation {
-                            message: "remove_edge: `to` is not a successor of `from`",
-                        });
-                    }
-                    EditSlot::SwitchCase(to_id)
-                }
-                crate::instruction::InstructionKindData::Br(branch) => {
-                    // A `br` has only one edge, so removing it would leave the
-                    // block with no successor; a `cond_br` losing one of its two
-                    // edges collapses to an unconditional `br` to the surviving
-                    // target, and the now-dead condition operand is deregistered.
-                    let kind = branch.kind.borrow();
-                    match &*kind {
-                        crate::instr_types::BranchKind::Unconditional(_) => {
-                            return Err(IrError::InvalidOperation {
-                                message: "remove_edge: cannot remove the sole edge of an unconditional `br`",
-                            });
-                        }
-                        crate::instr_types::BranchKind::Conditional {
-                            then_bb, else_bb, ..
-                        } => {
-                            let matches_then = *then_bb == to_id;
-                            let matches_else = *else_bb == to_id;
-                            if !matches_then && !matches_else {
-                                return Err(IrError::InvalidOperation {
-                                    message: "remove_edge: `to` is not a successor of `from`",
-                                });
-                            }
-                            if matches_then && matches_else {
-                                return Err(IrError::InvalidOperation {
-                                    message: "remove_edge: both `cond_br` edges target `to`; removing it would leave no successor",
-                                });
-                            }
-                            if matches_then {
-                                EditSlot::BrThen
-                            } else {
-                                EditSlot::BrElse
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    return Err(IrError::InvalidOperation {
-                        message: "remove_edge: supported only for a `switch` or `cond_br` terminator",
-                    });
-                }
-            },
-            _ => {
-                return Err(IrError::InvalidOperation {
-                    message: "remove_edge: `from`'s terminator is not an instruction",
-                });
-            }
-        };
-
-        self.remove_slot(from, term_id, slot)
-    }
-
-    /// Redirect the CFG edge `from → old_to` to `from → new_to`, dropping
-    /// `old_to`'s `from`-incomings and adding the required, typed incomings to
-    /// `new_to`'s phis — all as one op. Because the new target's phis *gain*
-    /// entries, the values that flow to them are a required, typed argument:
-    /// "forgot the target's phis" is unrepresentable, the call cannot be made
-    /// without them.
-    ///
-    /// **Supported terminators.** `switch`, `br`, and `cond_br`. `from` must
-    /// reach `old_to` through exactly one edge — one `switch` case or its
-    /// default, the unconditional `br` target, or one arm of a `cond_br` — and
-    /// must not already reach `new_to`. That single target slot is retargeted to
-    /// `new_to`; no terminator *kind* changes (a `cond_br` stays a `cond_br`,
-    /// its condition untouched), only the successor id.
-    ///
-    /// **Typed phi values.** `phi_values` is aligned to `new_to`'s leading
-    /// phis (its block parameters), one value per phi: its length must equal
-    /// that count ([`IrError::PhiArgArityMismatch`]) and each value's type must
-    /// match its phi ([`IrError::TypeMismatch`]). Both are checked, together
-    /// with the terminator preconditions, *before* any mutation, so a rejected
-    /// call leaves the terminator and every phi untouched. Dominance of each
-    /// supplied value over the new edge is the caller's obligation, settled at
-    /// [`Module::verify`](crate::Module::verify) — matching the block-argument
-    /// authoring path ([`IRBuilder::build_br_with_args`](crate::IRBuilder)).
-    ///
-    /// **Phi maintenance.** `old_to`'s leading phis lose their `from`
-    /// incomings (`from` is no longer their predecessor); if `from` was
-    /// `old_to`'s only predecessor, a phi thereby emptied is replaced with
-    /// poison of its own type and erased (the same LLVM `removePredecessor`
-    /// parity as [`Self::remove_edge`], keeping the result round-trippable).
-    /// `new_to`'s leading phis each gain a `(phi_values[i], from)` incoming,
-    /// registered in the value's use-list so RAUW stays correct.
-    ///
-    /// Records [`CfgUpdate::delete(from, old_to)`](CfgUpdate) and
-    /// [`CfgUpdate::insert(from, new_to)`](CfgUpdate), and marks the mutator
-    /// dirty.
-    ///
-    /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator, its
-    /// terminator is not a `switch`/`br`/`cond_br`, `old_to` is not a successor
-    /// of `from`, `from` reaches `old_to` through more than one edge, or `from`
-    /// already reaches `new_to`; [`IrError::PhiArgArityMismatch`] /
-    /// [`IrError::TypeMismatch`] for a mis-sized or mistyped `phi_values`.
-    pub fn redirect_edge(
-        &self,
-        from: &BasicBlockView<'ctx, B>,
-        old_to: &BasicBlockLabel<'ctx, Dyn, B>,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
-        phi_values: &[Value<'ctx, B>],
-    ) -> IrResult<()> {
-        let from_block = from.as_basic_block();
-        let old_id = old_to.as_value().id;
-        let ctx = self.patch.module_mut().core_ref().context();
-
-        let term = from_block.terminator().ok_or(IrError::InvalidOperation {
-            message: "redirect_edge: `from` has no terminator",
-        })?;
-        let term_id = term.as_value().id;
-
-        // Witness the terminator kind and the edge preconditions, then pick the
-        // single slot to retarget. The retarget + phi maintenance + phi
-        // seeding lives in `redirect_slot`.
-        let slot = match &ctx.value_data(term_id).kind {
-            crate::value::ValueKindData::Instruction(i) => match &i.kind {
-                crate::instruction::InstructionKindData::Switch(switch) => {
-                    // Locate the single edge `from -> old_to` (a case or the
-                    // default). The "`from` already reaches `new_to`" precondition
-                    // is centralized in `redirect_slot`, so it is not repeated
-                    // here.
-                    let default_is_old = switch.default_bb.get() == old_id;
-                    let case_hits = switch
-                        .cases
-                        .borrow()
-                        .iter()
-                        .filter(|(_, dest)| *dest == old_id)
-                        .count();
-                    let edges_to_old = usize::from(default_is_old) + case_hits;
-                    if edges_to_old == 0 {
-                        return Err(IrError::InvalidOperation {
-                            message: "redirect_edge: `old_to` is not a successor of `from`",
-                        });
-                    }
-                    if edges_to_old > 1 {
-                        return Err(IrError::InvalidOperation {
-                            message: "redirect_edge: `from` reaches `old_to` through multiple edges",
-                        });
-                    }
-                    if default_is_old {
-                        EditSlot::SwitchDefault
-                    } else {
-                        EditSlot::SwitchCase(old_id)
-                    }
-                }
-                crate::instruction::InstructionKindData::Br(branch) => {
-                    // A `br`/`cond_br` reaches `old_to` through exactly one edge
-                    // (the unconditional target, or one of `then`/`else`) -- the
-                    // same edge-location rules as the switch path. The "`from`
-                    // already reaches `new_to`" precondition is centralized in
-                    // `redirect_slot`, so it is not repeated here.
-                    let kind = branch.kind.borrow();
-                    match &*kind {
-                        crate::instr_types::BranchKind::Unconditional(target) => {
-                            if *target != old_id {
-                                return Err(IrError::InvalidOperation {
-                                    message: "redirect_edge: `old_to` is not a successor of `from`",
-                                });
-                            }
-                            EditSlot::BrUncond
-                        }
-                        crate::instr_types::BranchKind::Conditional {
-                            then_bb, else_bb, ..
-                        } => {
-                            let matches_then = *then_bb == old_id;
-                            let matches_else = *else_bb == old_id;
-                            let edges_to_old =
-                                usize::from(matches_then) + usize::from(matches_else);
-                            if edges_to_old == 0 {
-                                return Err(IrError::InvalidOperation {
-                                    message: "redirect_edge: `old_to` is not a successor of `from`",
-                                });
-                            }
-                            if edges_to_old > 1 {
-                                return Err(IrError::InvalidOperation {
-                                    message: "redirect_edge: `from` reaches `old_to` through multiple edges",
-                                });
-                            }
-                            if matches_then {
-                                EditSlot::BrThen
-                            } else {
-                                EditSlot::BrElse
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    return Err(IrError::InvalidOperation {
-                        message: "redirect_edge: supported only for a `switch`, `br`, or `cond_br` terminator",
-                    });
-                }
-            },
-            _ => {
-                return Err(IrError::InvalidOperation {
-                    message: "redirect_edge: `from`'s terminator is not an instruction",
-                });
-            }
-        };
-
-        self.redirect_slot(from, term_id, slot, new_to, phi_values)
-    }
-
     /// Read the current `default` destination id of the `switch` terminator
     /// `term_id`. Used by [`SwitchEdit::remove_successor`] to reject removing
     /// the default edge (a `switch` must keep its default).
@@ -1724,8 +1452,8 @@ where
     /// Used by [`SwitchEdit::redirect_successor`]/[`SwitchEdit::remove_successor`]
     /// to reject an `old_to` that is not a live case successor of the switch
     /// (the target-based typed ops carry `old_to` in the slot, so — unlike the
-    /// role-named ops — they must witness that it names a real case; mirrors the
-    /// legacy [`Self::redirect_edge`]'s "is not a successor" rejection). The
+    /// role-named ops — they must witness that it names a real case; the
+    /// classic "is not a successor" rejection). The
     /// default edge is deliberately not a case, so this returns `false` for it.
     fn switch_has_case_successor(&self, term_id: ValueId, dest_id: ValueId) -> bool {
         let ctx = self.patch.module_mut().core_ref().context();
@@ -2109,8 +1837,8 @@ where
 {
     /// Retarget the branch's sole edge onto `new_to`, seeding `new_to`'s leading
     /// phis with `phi_values`. Runs through the shared, single-validated redirect
-    /// path; see [`FnReshape::redirect_edge`] for the phi-values contract and
-    /// errors.
+    /// path; see [`SwitchEdit::redirect_successor`] for the phi-values contract
+    /// and errors.
     #[inline]
     pub fn redirect(
         &self,
@@ -2151,7 +1879,8 @@ where
     'ctx: 'r,
 {
     /// Retarget the `then` arm onto `new_to`, seeding `new_to`'s leading phis
-    /// with `phi_values`. See [`FnReshape::redirect_edge`] for the contract.
+    /// with `phi_values`. See [`SwitchEdit::redirect_successor`] for the
+    /// phi-values contract and errors.
     #[inline]
     pub fn redirect_then(
         &self,
@@ -2168,7 +1897,8 @@ where
     }
 
     /// Retarget the `else` arm onto `new_to`, seeding `new_to`'s leading phis
-    /// with `phi_values`. See [`FnReshape::redirect_edge`] for the contract.
+    /// with `phi_values`. See [`SwitchEdit::redirect_successor`] for the
+    /// phi-values contract and errors.
     #[inline]
     pub fn redirect_else(
         &self,
@@ -2185,9 +1915,10 @@ where
     }
 
     /// Remove the `then` edge, collapsing the `cond_br` to an unconditional `br`
-    /// to the surviving `else` target. Consumes `self`: the `cond_br` no longer
-    /// exists after the collapse, so a second removal cannot be spelled. See
-    /// [`FnReshape::remove_edge`] for the phi maintenance and collapse semantics.
+    /// to the surviving `else` target and deregistering the now-dead condition
+    /// operand. Consumes `self`: the `cond_br` no longer exists after the
+    /// collapse, so a second removal cannot be spelled. See
+    /// [`SwitchEdit::remove_successor`] for the shared phi maintenance.
     #[inline]
     pub fn remove_then(self) -> IrResult<()> {
         self.reshape
@@ -2227,9 +1958,33 @@ where
     'ctx: 'm,
     'ctx: 'r,
 {
-    /// Retarget every case whose destination is `old_to` onto `new_to`, seeding
-    /// `new_to`'s leading phis with `phi_values`. See
-    /// [`FnReshape::redirect_edge`] for the contract.
+    /// Retarget every case whose destination is `old_to` onto `new_to`,
+    /// dropping `old_to`'s `from`-incomings and seeding `new_to`'s leading phis
+    /// with `phi_values` — all as one op. This is the **canonical redirect
+    /// contract**; every other `redirect_*` on the typed edit handles shares it.
+    ///
+    /// **Typed phi values.** `phi_values` is aligned to `new_to`'s leading phis
+    /// (its block parameters), one value per phi: its length must equal that
+    /// count ([`IrError::PhiArgArityMismatch`]) and each value's type must match
+    /// its phi ([`IrError::TypeMismatch`]). Both are checked, together with the
+    /// edge precondition, *before* any mutation, so a rejected call leaves the
+    /// terminator and every phi untouched. Dominance of each supplied value over
+    /// the new edge is the caller's obligation, settled at
+    /// [`Module::verify`](crate::Module::verify).
+    ///
+    /// **Phi maintenance.** `old_to`'s leading phis lose their `from` incomings;
+    /// if `from` was `old_to`'s only predecessor, a phi thereby emptied is
+    /// replaced with poison of its own type and erased (LLVM `removePredecessor`
+    /// parity, keeping the result round-trippable). `new_to`'s leading phis each
+    /// gain a `(phi_values[i], from)` incoming, registered in the value's
+    /// use-list so RAUW stays correct.
+    ///
+    /// Records a [`CfgUpdate`] delete + insert pair and marks the mutator dirty.
+    ///
+    /// Errors: [`IrError::InvalidOperation`] if `old_to` is not a case successor
+    /// of this switch or `from` already reaches `new_to`;
+    /// [`IrError::PhiArgArityMismatch`] / [`IrError::TypeMismatch`] for a
+    /// mis-sized or mistyped `phi_values`.
     #[inline]
     pub fn redirect_successor(
         &self,
@@ -2258,7 +2013,8 @@ where
     }
 
     /// Retarget the default edge onto `new_to`, seeding `new_to`'s leading phis
-    /// with `phi_values`. See [`FnReshape::redirect_edge`] for the contract.
+    /// with `phi_values`. See [`Self::redirect_successor`] for the phi-values
+    /// contract and errors.
     #[inline]
     pub fn redirect_default(
         &self,
@@ -2275,9 +2031,23 @@ where
     }
 
     /// Remove every case whose destination is `old_to`, collapsing the
-    /// `from → old_to` edge (the leftover `switch` keeps its default). Rejects
-    /// removing the default edge with [`IrError::InvalidOperation`]. See
-    /// [`FnReshape::remove_edge`] for the phi maintenance.
+    /// `from → old_to` edge (the leftover `switch` keeps its default). This is
+    /// the **canonical edge-removal contract** for its phi maintenance, shared
+    /// by [`CondBrEdit::remove_then`]/[`CondBrEdit::remove_else`].
+    ///
+    /// **Phi maintenance.** Once the edge is gone `from` is no longer a
+    /// predecessor of `old_to`, so every leading phi in `old_to` loses all its
+    /// `(value, from)` incomings (LLVM `removePredecessor`), each removed value's
+    /// use-list updated so RAUW stays correct. A phi left with a single entry is
+    /// legal (the uniform-phi fold cleans it later); if `from` was `old_to`'s
+    /// *only* predecessor, a phi left with **zero** incomings — which has no
+    /// legal textual form, so the module would not round-trip — is replaced with
+    /// poison of its own type and erased.
+    ///
+    /// Records a [`CfgUpdate`] delete and marks the mutator dirty.
+    ///
+    /// Errors: [`IrError::InvalidOperation`] if `old_to` is the switch's default
+    /// edge (a `switch` must keep its default) or is not a case successor.
     #[inline]
     pub fn remove_successor(&self, old_to: &BasicBlockLabel<'ctx, Dyn, B>) -> IrResult<()> {
         let old_id = old_to.as_value().id;
@@ -2322,8 +2092,8 @@ where
     'ctx: 'r,
 {
     /// Retarget the normal (non-unwind) edge onto `new_to`, seeding `new_to`'s
-    /// leading phis with `phi_values`. See [`FnReshape::redirect_edge`] for the
-    /// contract.
+    /// leading phis with `phi_values`. See [`SwitchEdit::redirect_successor`] for
+    /// the phi-values contract and errors.
     #[inline]
     pub fn redirect_normal(
         &self,
@@ -2340,7 +2110,8 @@ where
     }
 
     /// Retarget the unwind edge onto `new_to`, seeding `new_to`'s leading phis
-    /// with `phi_values`. See [`FnReshape::redirect_edge`] for the contract.
+    /// with `phi_values`. See [`SwitchEdit::redirect_successor`] for the
+    /// phi-values contract and errors.
     #[inline]
     pub fn redirect_unwind(
         &self,
@@ -2380,8 +2151,8 @@ where
     'ctx: 'r,
 {
     /// Retarget the default (fallthrough) edge onto `new_to`, seeding `new_to`'s
-    /// leading phis with `phi_values`. See [`FnReshape::redirect_edge`] for the
-    /// contract.
+    /// leading phis with `phi_values`. See [`SwitchEdit::redirect_successor`] for
+    /// the phi-values contract and errors.
     #[inline]
     pub fn redirect_default(
         &self,
@@ -2399,8 +2170,8 @@ where
 
     /// Retarget the `index`-th indirect edge onto `new_to`, seeding `new_to`'s
     /// leading phis with `phi_values`. An out-of-range `index` is rejected with
-    /// [`IrError::InvalidOperation`]. See [`FnReshape::redirect_edge`] for the
-    /// phi-values contract.
+    /// [`IrError::InvalidOperation`]. See [`SwitchEdit::redirect_successor`] for
+    /// the phi-values contract.
     #[inline]
     pub fn redirect_indirect(
         &self,

@@ -1,6 +1,7 @@
 //! Raw-phi edge-op coverage relocated from `tests/analysis_preservation.rs`.
 //!
-//! These `FnReshape::remove_edge` / `redirect_edge` cases build a `switch`-fed
+//! These typed switch edge-edit cases (`edit_switch(..).remove_successor` /
+//! `redirect_successor`) build a `switch`-fed
 //! merge whose phi collects an incoming from a `switch` case edge — which the
 //! block-argument authoring surface (`append_block_with_params` +
 //! `build_*_with_args`) physically cannot express — so they keep the raw
@@ -13,10 +14,10 @@ use crate::{
     IrResult, Linkage, Module, ModuleBrand, ReshapeCfg, Value, run_function_pass,
 };
 
-/// A `ReshapeCfg` pass that calls [`FnReshape::remove_edge`] on the block named
-/// `from_name`, dropping its edge to `to`. The `to` label is stashed at build
-/// time (arena ids are stable across `verify()`), mirroring how `InsertMergePhi`
-/// stashes its incomings.
+/// A `ReshapeCfg` pass that calls `edit_switch(&from)?.remove_successor(&to)` on
+/// the block named `from_name`, dropping its edge to `to`. The `to` label is
+/// stashed at build time (arena ids are stable across `verify()`), mirroring how
+/// `InsertMergePhi` stashes its incomings.
 struct RemoveSwitchEdge<'ctx, B: ModuleBrand + 'ctx> {
     from_name: &'static str,
     to: BasicBlockLabel<'ctx, Dyn, B>,
@@ -34,14 +35,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveSwitchEdge<'ct
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
-        reshape.remove_edge(&from, &self.to)?;
+        reshape.edit_switch(&from)?.remove_successor(&self.to)?;
         Ok(reshape.done())
     }
 }
 
-/// A `ReshapeCfg` pass that calls [`FnReshape::redirect_edge`], retargeting the
-/// `from_name` block's edge from `old_to` to `new_to` and seeding `new_to`'s
-/// leading phis with the stashed `phi_values`.
+/// A `ReshapeCfg` pass that calls
+/// `edit_switch(&from)?.redirect_successor(&old_to, &new_to, ..)`, retargeting
+/// the `from_name` block's case edge from `old_to` to `new_to` and seeding
+/// `new_to`'s leading phis with the stashed `phi_values`.
 struct RedirectSwitchEdge<'ctx, B: ModuleBrand + 'ctx> {
     from_name: &'static str,
     old_to: BasicBlockLabel<'ctx, Dyn, B>,
@@ -61,7 +63,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchEdge<'
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
-        reshape.redirect_edge(&from, &self.old_to, &self.new_to, &self.phi_values)?;
+        reshape.edit_switch(&from)?.redirect_successor(
+            &self.old_to,
+            &self.new_to,
+            &self.phi_values,
+        )?;
         Ok(reshape.done())
     }
 }
@@ -136,10 +142,10 @@ fn build_switch_merge<'ctx>(
     Ok((f, dflt_dyn, other_dyn, merge_dyn))
 }
 
-/// `remove_edge` drops the `entry → merge` switch case AND mechanically removes
-/// `merge`'s phi incoming that named `entry`; the output re-verifies. Without
-/// the phi maintenance, `merge`'s phi would still name `entry` (no longer a
-/// predecessor) and `verify()` would fail with `PhiPredecessorMismatch`.
+/// `remove_successor` drops the `entry → merge` switch case AND mechanically
+/// removes `merge`'s phi incoming that named `entry`; the output re-verifies.
+/// Without the phi maintenance, `merge`'s phi would still name `entry` (no
+/// longer a predecessor) and `verify()` would fail with `PhiPredecessorMismatch`.
 #[test]
 fn remove_edge_drops_successor_phi_incoming() -> Result<(), IrError> {
     Module::with_new("remove-edge", |m| {
@@ -167,11 +173,12 @@ fn remove_edge_drops_successor_phi_incoming() -> Result<(), IrError> {
     })
 }
 
-/// `remove_edge` rejects a `from` whose terminator is not a `switch` (here the
-/// `dflt` block, which ends in a plain `br %merge`): the op only edits `switch`
-/// terminators, whose case list and default live behind interior mutability.
+/// `edit_switch` rejects a `from` whose terminator is not a `switch` (here the
+/// `dflt` block, which ends in a plain `br %merge`): the narrower only admits
+/// `switch` terminators, so the non-`switch` edge op cannot even be spelled —
+/// the narrow itself errs.
 #[test]
-fn remove_edge_rejects_non_switch_from() -> Result<(), IrError> {
+fn edit_switch_rejects_non_switch_from() -> Result<(), IrError> {
     Module::with_new("remove-edge-non-switch", |m| {
         let (f, _dflt_dyn, _other_dyn, merge_dyn) = build_switch_merge(&m)?;
 
@@ -185,7 +192,7 @@ fn remove_edge_rejects_non_switch_from() -> Result<(), IrError> {
         };
         let err = run_function_pass(pass, verified, f, &mut analyses)
             .err()
-            .expect("remove_edge must reject a non-switch `from`");
+            .expect("edit_switch must reject a non-switch `from`");
         assert!(
             matches!(err, IrError::InvalidOperation { .. }),
             "expected InvalidOperation for a non-switch `from`, got: {err:?}"
@@ -194,8 +201,8 @@ fn remove_edge_rejects_non_switch_from() -> Result<(), IrError> {
     })
 }
 
-/// `remove_edge` rejects dropping a `switch`'s default edge — a `switch` must
-/// keep a default, so the `entry → dflt` default edge cannot be collapsed.
+/// `remove_successor` rejects dropping a `switch`'s default edge — a `switch`
+/// must keep a default, so the `entry → dflt` default edge cannot be collapsed.
 #[test]
 fn remove_edge_rejects_default_edge() -> Result<(), IrError> {
     Module::with_new("remove-edge-default", |m| {
@@ -210,7 +217,7 @@ fn remove_edge_rejects_default_edge() -> Result<(), IrError> {
         };
         let err = run_function_pass(pass, verified, f, &mut analyses)
             .err()
-            .expect("remove_edge must reject dropping the switch default edge");
+            .expect("remove_successor must reject dropping the switch default edge");
         assert!(
             matches!(err, IrError::InvalidOperation { .. }),
             "expected InvalidOperation for the switch default edge, got: {err:?}"
@@ -219,8 +226,8 @@ fn remove_edge_rejects_default_edge() -> Result<(), IrError> {
     })
 }
 
-/// `redirect_edge` rejects a redirect whose `new_to` is already a successor of
-/// `from`: a redirect mints a fresh edge, and if `from` already reached
+/// `redirect_successor` rejects a redirect whose `new_to` is already a successor
+/// of `from`: a redirect mints a fresh edge, and if `from` already reached
 /// `new_to` the new-target phi would gain an ambiguous second incoming for the
 /// same predecessor.
 #[test]
@@ -241,7 +248,7 @@ fn redirect_edge_rejects_already_reaches_new() -> Result<(), IrError> {
         };
         let err = run_function_pass(pass, verified, f, &mut analyses)
             .err()
-            .expect("redirect_edge must reject a `new_to` already reached by `from`");
+            .expect("redirect_successor must reject a `new_to` already reached by `from`");
         assert!(
             matches!(err, IrError::InvalidOperation { .. }),
             "expected InvalidOperation when `from` already reaches `new_to`, got: {err:?}"

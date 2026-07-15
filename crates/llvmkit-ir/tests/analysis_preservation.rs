@@ -370,32 +370,34 @@ fn insert_phi_rejects_incomplete_incomings() -> Result<(), IrError> {
 }
 
 // ---------------------------------------------------------------------------
-// `FnReshape::remove_edge` / `redirect_edge` — edge ops that mechanically
-// maintain successor phis.
+// Typed terminator edge edits — `edit_switch`/`edit_cond_br`/`edit_br` narrows
+// whose `redirect_*`/`remove_*` ops mechanically maintain successor phis.
 //
 // These ops perform terminator surgery on a `switch` (whose case list and
 // default live behind interior mutability) and mechanically maintain the
 // successor phis of every block they touch — the same "the op carries its own
 // phi maintenance" contract as wave-1 `split_block`. Since `BranchInstData.kind`
-// became interior-mutable, `br`/`cond_br` are edited too: `redirect_edge`
-// retargets a `br`/`cond_br` successor and `remove_edge` collapses a `cond_br`
-// to a `br` (the `br`/`cond_br` tests are at the bottom of this file).
+// became interior-mutable, `br`/`cond_br` are edited too: `redirect_then`/
+// `redirect` retarget a `cond_br`/`br` successor and `remove_then`/`remove_else`
+// collapse a `cond_br` to a `br` (the `br`/`cond_br` tests are at the bottom of
+// this file).
 // ---------------------------------------------------------------------------
 
-/// A `ReshapeCfg` pass that calls [`FnReshape::redirect_edge`], retargeting the
-/// `from_name` block's edge from `old_to` to `new_to` and seeding `new_to`'s
-/// leading phis with the stashed `phi_values`.
-struct RedirectSwitchEdge<'ctx, B: ModuleBrand + 'ctx> {
+/// A `ReshapeCfg` pass that calls
+/// `edit_switch(&from)?.redirect_successor(&old_to, &new_to, ..)`, retargeting
+/// the `from_name` block's case edge from `old_to` to `new_to` and seeding
+/// `new_to`'s leading phis with the stashed `phi_values`.
+struct RedirectSwitchCase<'ctx, B: ModuleBrand + 'ctx> {
     from_name: &'static str,
     old_to: BasicBlockLabel<'ctx, Dyn, B>,
     new_to: BasicBlockLabel<'ctx, Dyn, B>,
     phi_values: Vec<Value<'ctx, B>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchEdge<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchCase<'ctx, B> {
     type Access = ReshapeCfg;
     type Requires = ();
-    const NAME: &'static str = "redirect-switch-edge";
+    const NAME: &'static str = "redirect-switch-case";
 
     fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
         let reshape = cx.mutate();
@@ -404,7 +406,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchEdge<'
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
-        reshape.redirect_edge(&from, &self.old_to, &self.new_to, &self.phi_values)?;
+        reshape.edit_switch(&from)?.redirect_successor(
+            &self.old_to,
+            &self.new_to,
+            &self.phi_values,
+        )?;
         Ok(reshape.done())
     }
 }
@@ -474,9 +480,9 @@ fn build_switch_redirect<'ctx>(
     Ok((f, old_dyn, new_dyn, ev.as_value()))
 }
 
-/// `redirect_edge` retargets the `entry → old` switch case onto `new` AND adds
-/// the supplied, typed value as `new`'s phi incoming from `entry`; the output
-/// re-verifies.
+/// `redirect_successor` retargets the `entry → old` switch case onto `new` AND
+/// adds the supplied, typed value as `new`'s phi incoming from `entry`; the
+/// output re-verifies.
 #[test]
 fn redirect_edge_retargets_and_seeds_new_phi() -> Result<(), IrError> {
     Module::with_new("redirect-edge", |m| {
@@ -484,7 +490,7 @@ fn redirect_edge_retargets_and_seeds_new_phi() -> Result<(), IrError> {
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let pass = RedirectSwitchEdge {
+        let pass = RedirectSwitchCase {
             from_name: "entry",
             old_to: old_dyn,
             new_to: new_dyn,
@@ -492,7 +498,9 @@ fn redirect_edge_retargets_and_seeds_new_phi() -> Result<(), IrError> {
         };
         let out = run_function_pass(pass, verified, f, &mut analyses)?;
 
-        let reverified = out.verify().expect("redirect_edge output must re-verify");
+        let reverified = out
+            .verify()
+            .expect("redirect_successor output must re-verify");
         let printed = format!("{reverified}");
         assert!(
             printed.contains("[ %ev, %entry ]"),
@@ -510,8 +518,8 @@ fn redirect_edge_retargets_and_seeds_new_phi() -> Result<(), IrError> {
     })
 }
 
-/// `redirect_edge` rejects a `phi_values` slice whose length differs from the
-/// new target's leading-phi count — witnessed at the call, not at `verify()`.
+/// `redirect_successor` rejects a `phi_values` slice whose length differs from
+/// the new target's leading-phi count — witnessed at the call, not at `verify()`.
 #[test]
 fn redirect_edge_rejects_wrong_arity() -> Result<(), IrError> {
     Module::with_new("redirect-edge-arity", |m| {
@@ -520,7 +528,7 @@ fn redirect_edge_rejects_wrong_arity() -> Result<(), IrError> {
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
         // `new` has one leading phi; supplying two values is a wrong arity.
-        let pass = RedirectSwitchEdge {
+        let pass = RedirectSwitchCase {
             from_name: "entry",
             old_to: old_dyn,
             new_to: new_dyn,
@@ -528,7 +536,7 @@ fn redirect_edge_rejects_wrong_arity() -> Result<(), IrError> {
         };
         let err = run_function_pass(pass, verified, f, &mut analyses)
             .err()
-            .expect("redirect_edge must reject a wrong-arity phi_values");
+            .expect("redirect_successor must reject a wrong-arity phi_values");
         assert!(
             matches!(
                 err,
@@ -543,7 +551,7 @@ fn redirect_edge_rejects_wrong_arity() -> Result<(), IrError> {
     })
 }
 
-/// `redirect_edge` rejects a `phi_values` entry whose type differs from its
+/// `redirect_successor` rejects a `phi_values` entry whose type differs from its
 /// target phi — witnessed at the call, not at `verify()`.
 #[test]
 fn redirect_edge_rejects_wrong_type() -> Result<(), IrError> {
@@ -555,7 +563,7 @@ fn redirect_edge_rejects_wrong_type() -> Result<(), IrError> {
         let mut analyses = Analyses::new();
         // `new`'s phi is i32; an i64 constant is the wrong type for it.
         let wrong: Value = i64_ty.const_int(0_u32).as_value();
-        let pass = RedirectSwitchEdge {
+        let pass = RedirectSwitchCase {
             from_name: "entry",
             old_to: old_dyn,
             new_to: new_dyn,
@@ -563,7 +571,7 @@ fn redirect_edge_rejects_wrong_type() -> Result<(), IrError> {
         };
         let err = run_function_pass(pass, verified, f, &mut analyses)
             .err()
-            .expect("redirect_edge must reject a mistyped phi_values");
+            .expect("redirect_successor must reject a mistyped phi_values");
         assert!(
             matches!(err, IrError::TypeMismatch { .. }),
             "expected TypeMismatch, got: {err:?}"
@@ -574,22 +582,29 @@ fn redirect_edge_rejects_wrong_type() -> Result<(), IrError> {
 
 // ---------------------------------------------------------------------------
 // `br` / `cond_br` edge ops. `BranchInstData.kind` is now `RefCell<BranchKind>`,
-// so the reshape mutator can retarget a branch successor (`redirect_edge`) or
-// collapse a `cond_br` to a `br` (`remove_edge`) through its `&self` token.
+// so the reshape mutator can retarget a branch successor (`edit_cond_br`/
+// `edit_br` → `redirect_then`/`redirect`) or collapse a `cond_br` to a `br`
+// (`remove_then`/`remove_else`) through its `&self` token. The removal ops are
+// role-named, so which arm is dropped is chosen at the call site rather than
+// inferred from a target — that is what makes dropping the sole edge of an
+// unconditional `br` (or an `invoke`/`callbr` edge) a *compile* error, since no
+// such method exists on `BrEdit`.
 // ---------------------------------------------------------------------------
 
-/// A `ReshapeCfg` pass that calls [`FnReshape::remove_edge`] on `from_name`'s
-/// edge to `to`. Propagates the op's error, so a rejected op surfaces as the
-/// pass's error.
-struct RemoveEdgePass<'ctx, B: ModuleBrand + 'ctx> {
+/// A `ReshapeCfg` pass that retargets `from_name`'s `cond_br` then-arm onto
+/// `new_to` via `edit_cond_br(&from)?.redirect_then(&new_to, ..)`, seeding
+/// `new_to`'s leading phis with the stashed `phi_values`. Propagates the op's
+/// error, so a rejected op surfaces as the pass's error.
+struct RedirectCondBrThen<'ctx, B: ModuleBrand + 'ctx> {
     from_name: &'static str,
-    to: BasicBlockLabel<'ctx, Dyn, B>,
+    new_to: BasicBlockLabel<'ctx, Dyn, B>,
+    phi_values: Vec<Value<'ctx, B>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveEdgePass<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectCondBrThen<'ctx, B> {
     type Access = ReshapeCfg;
     type Requires = ();
-    const NAME: &'static str = "remove-edge-test";
+    const NAME: &'static str = "redirect-condbr-then";
 
     fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
         let reshape = cx.mutate();
@@ -598,12 +613,90 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveEdgePass<'ctx,
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
-        reshape.remove_edge(&from, &self.to)?;
+        reshape
+            .edit_cond_br(&from)?
+            .redirect_then(&self.new_to, &self.phi_values)?;
         Ok(reshape.done())
     }
 }
 
-/// `redirect_edge` retargets the matching arm of a `cond_br` onto `new` and
+/// A `ReshapeCfg` pass that retargets `from_name`'s unconditional `br` onto
+/// `new_to` via `edit_br(&from)?.redirect(&new_to, ..)`, seeding `new_to`'s
+/// leading phis with the stashed `phi_values`.
+struct RedirectBr<'ctx, B: ModuleBrand + 'ctx> {
+    from_name: &'static str,
+    new_to: BasicBlockLabel<'ctx, Dyn, B>,
+    phi_values: Vec<Value<'ctx, B>>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectBr<'ctx, B> {
+    type Access = ReshapeCfg;
+    type Requires = ();
+    const NAME: &'static str = "redirect-br";
+
+    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+        let reshape = cx.mutate();
+        let from = reshape
+            .function()
+            .basic_blocks()
+            .find(|bb| bb.name().as_deref() == Some(self.from_name))
+            .expect("`from` block is present");
+        reshape
+            .edit_br(&from)?
+            .redirect(&self.new_to, &self.phi_values)?;
+        Ok(reshape.done())
+    }
+}
+
+/// A `ReshapeCfg` pass that removes `from_name`'s `cond_br` else-edge via
+/// `edit_cond_br(&from)?.remove_else()`, collapsing the `cond_br` to a `br` to
+/// the surviving then-arm.
+struct RemoveCondBrElse {
+    from_name: &'static str,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveCondBrElse {
+    type Access = ReshapeCfg;
+    type Requires = ();
+    const NAME: &'static str = "remove-condbr-else";
+
+    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+        let reshape = cx.mutate();
+        let from = reshape
+            .function()
+            .basic_blocks()
+            .find(|bb| bb.name().as_deref() == Some(self.from_name))
+            .expect("`from` block is present");
+        reshape.edit_cond_br(&from)?.remove_else()?;
+        Ok(reshape.done())
+    }
+}
+
+/// A `ReshapeCfg` pass that removes `from_name`'s `cond_br` then-edge via
+/// `edit_cond_br(&from)?.remove_then()`, collapsing the `cond_br` to a `br` to
+/// the surviving else-arm.
+struct RemoveCondBrThen {
+    from_name: &'static str,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveCondBrThen {
+    type Access = ReshapeCfg;
+    type Requires = ();
+    const NAME: &'static str = "remove-condbr-then";
+
+    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+        let reshape = cx.mutate();
+        let from = reshape
+            .function()
+            .basic_blocks()
+            .find(|bb| bb.name().as_deref() == Some(self.from_name))
+            .expect("`from` block is present");
+        reshape.edit_cond_br(&from)?.remove_then()?;
+        Ok(reshape.done())
+    }
+}
+
+/// `redirect_then` retargets the then-arm of a `cond_br` onto `new` and
 /// seeds `new`'s head-phi with the supplied value; the output re-verifies.
 #[test]
 fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
@@ -622,7 +715,6 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
         )?;
         let old_lbl = old.label();
         let other_lbl = other.label();
-        let old_dyn: BasicBlockLabel<Dyn> = old_lbl.as_value().try_into()?;
         let new_dyn: BasicBlockLabel<Dyn> = new.label().as_value().try_into()?;
 
         // entry: %ev = add %a, 3 ; cond_br (%a == 0) ? old : other
@@ -642,20 +734,19 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let pass = RedirectSwitchEdge {
+        let pass = RedirectCondBrThen {
             from_name: "entry",
-            old_to: old_dyn,
             new_to: new_dyn,
             phi_values: vec![ev.as_value()],
         };
         let out = run_function_pass(pass, verified, f, &mut analyses)?;
-        let reverified = out.verify().expect("redirect_edge output must re-verify");
+        let reverified = out.verify().expect("redirect_then output must re-verify");
         let printed = format!("{reverified}");
         assert!(
             printed.contains("[ %ev, %entry ]"),
             "new's phi must gain the entry incoming, got:\n{printed}"
         );
-        // Pin the WHOLE terminator: only the matching arm may be retargeted. An
+        // Pin the WHOLE terminator: only the then-arm may be retargeted. An
         // impl that retargeted both arms would emit `label %new, label %new` and
         // still satisfy a bare `contains("label %new")` + `!contains("label
         // %old")`, so those two checks alone cannot catch it.
@@ -671,9 +762,9 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
     })
 }
 
-/// `remove_edge` on one arm of a `cond_br` collapses it to an unconditional
-/// `br` to the surviving target, drops the removed successor's `from`-incomings,
-/// and deregisters the now-dead condition operand.
+/// `remove_else` on a `cond_br` collapses it to an unconditional
+/// `br` to the surviving then-target, drops the removed successor's
+/// `from`-incomings, and deregisters the now-dead condition operand.
 ///
 /// ```text
 /// entry(a): %ev = add %a, 3 ; %c = icmp eq %a, 0
@@ -682,10 +773,10 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
 /// drop(%dp): ret %dp          ; preds {entry, keep}
 /// ```
 ///
-/// `remove_edge(entry, drop)` must leave `entry: br label %keep`, `drop`'s phi
-/// holding only `[ %kv, %keep ]`, and `%c` with no uses. `drop` keeps a second
-/// predecessor (`keep`) on purpose, so the phi genuinely *loses one incoming*
-/// rather than being emptied.
+/// Removing the else-arm (`drop`) must leave `entry: br label %keep`, `drop`'s
+/// phi holding only `[ %kv, %keep ]`, and `%c` with no uses. `drop` keeps a
+/// second predecessor (`keep`) on purpose, so the phi genuinely *loses one
+/// incoming* rather than being emptied.
 #[test]
 fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
     Module::with_new("remove-condbr", |m| {
@@ -702,7 +793,6 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
         )?;
         let keep_lbl = keep.label();
         let drop_lbl = drop_bb.label();
-        let drop_dyn: BasicBlockLabel<Dyn> = drop_lbl.as_value().try_into()?;
 
         // entry: %ev = add %a, 3 ; br (%a == 0) ? keep() : drop(%ev)
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -724,10 +814,7 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let pass = RemoveEdgePass {
-            from_name: "entry",
-            to: drop_dyn,
-        };
+        let pass = RemoveCondBrElse { from_name: "entry" };
         let out = run_function_pass(pass, verified, f, &mut analyses)?;
 
         // The condition is no longer an operand of the (now unconditional)
@@ -760,7 +847,7 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
     })
 }
 
-/// `redirect_edge` retargets an unconditional `br` and seeds the new target's
+/// `redirect` retargets an unconditional `br` and seeds the new target's
 /// head-phi; the output re-verifies.
 #[test]
 fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
@@ -776,7 +863,6 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
             "new",
         )?;
         let old_lbl = old.label();
-        let old_dyn: BasicBlockLabel<Dyn> = old_lbl.as_value().try_into()?;
         let new_dyn: BasicBlockLabel<Dyn> = new.label().as_value().try_into()?;
 
         // entry: %ev = add %a, 3 ; br old
@@ -792,14 +878,13 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let pass = RedirectSwitchEdge {
+        let pass = RedirectBr {
             from_name: "entry",
-            old_to: old_dyn,
             new_to: new_dyn,
             phi_values: vec![ev.as_value()],
         };
         let out = run_function_pass(pass, verified, f, &mut analyses)?;
-        let reverified = out.verify().expect("redirect_edge output must re-verify");
+        let reverified = out.verify().expect("redirect output must re-verify");
         let printed = format!("{reverified}");
         assert!(
             printed.contains("br label %new"),
@@ -813,40 +898,12 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
     })
 }
 
-/// `remove_edge` rejects the sole edge of an unconditional `br` — removing it
-/// would leave the block with no successor.
-#[test]
-fn remove_edge_rejects_unconditional_br() -> Result<(), IrError> {
-    Module::with_new("remove-br-reject", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let target = f.append_basic_block(&m, "target");
-        let target_lbl = target.label();
-        let target_dyn: BasicBlockLabel<Dyn> = target_lbl.as_value().try_into()?;
-
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        b.build_br(target_lbl)?;
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(target);
-        b.build_ret(i32_ty.const_int(0_u32))?;
-
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let pass = RemoveEdgePass {
-            from_name: "entry",
-            to: target_dyn,
-        };
-        let err = run_function_pass(pass, verified, f, &mut analyses)
-            .err()
-            .expect("remove_edge on an unconditional br must be rejected");
-        assert!(
-            matches!(err, IrError::InvalidOperation { message } if message.contains("unconditional")),
-            "expected InvalidOperation about the unconditional br, got: {err:?}"
-        );
-        Ok(())
-    })
-}
+// Removing the sole edge of an unconditional `br` is no longer a *runtime*
+// rejection: `edit_br` yields a `BrEdit`, which carries only `redirect` — there
+// is no `remove_*` method to call, so the edit is a *compile* error (`E0599 no
+// method`) rather than an `IrError`. The old runtime-rejection test is therefore
+// gone; the compile-time guarantee is covered by the typed-edit compile-fail
+// fixtures.
 
 /// Builds `entry: br %c ? t : e` with the two arms pointed at `t_name`/`e_name`,
 /// plus a spare `new` block — the shared skeleton for the branch-edge rejection
@@ -889,66 +946,74 @@ fn build_cond_br_pair<'ctx>(
     Ok((f, old_dyn, new_dyn))
 }
 
-/// `remove_edge` rejects a `cond_br` whose two arms BOTH target `to` — removing
-/// that edge would leave the block with no successor at all.
+/// SEMANTIC CHANGE (former error, now valid): removing the then-arm of a
+/// `cond_br` whose BOTH arms target the same block collapses it to `br old`.
+/// The old dynamic `remove_edge(from, to)` rejected this as ambiguous ("both
+/// arms target `to`; removing it would leave no successor"), but the role-named
+/// `remove_then` is unambiguous even when `then == else == old` — one arm is
+/// named, the survivor (`else`, also `old`) remains — so there is nothing to
+/// reject. This is a positive test of that now-valid collapse.
 #[test]
-fn remove_edge_rejects_cond_br_with_both_arms_to_to() -> Result<(), IrError> {
+fn remove_then_on_cond_br_with_both_arms_to_same_collapses() -> Result<(), IrError> {
     Module::with_new("remove-condbr-both", |m| {
-        let (f, old_dyn, _new_dyn) = build_cond_br_pair(&m, false)?;
+        let (f, _old_dyn, _new_dyn) = build_cond_br_pair(&m, false)?;
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let pass = RemoveEdgePass {
-            from_name: "entry",
-            to: old_dyn,
-        };
-        let err = run_function_pass(pass, verified, f, &mut analyses)
-            .err()
-            .expect("removing the only successor must be rejected");
+        let pass = RemoveCondBrThen { from_name: "entry" };
+        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+        let reverified = out.verify().expect("collapse output must re-verify");
+        let printed = format!("{reverified}");
         assert!(
-            matches!(err, IrError::InvalidOperation { message } if message.contains("both")),
-            "expected InvalidOperation about both cond_br arms, got: {err:?}"
+            printed.contains("br label %old"),
+            "both-arms-to-old cond_br must collapse to `br label %old`, got:\n{printed}"
+        );
+        assert!(
+            !printed.contains("br i1"),
+            "the conditional branch must be gone after the collapse, got:\n{printed}"
         );
         Ok(())
     })
 }
 
-/// `redirect_edge` rejects a `cond_br` that reaches `old_to` through BOTH arms
-/// — the op retargets exactly one edge, so a two-edge `old_to` is ambiguous.
+/// SEMANTIC CHANGE (former error, now valid): redirecting the then-arm of a
+/// `cond_br` whose BOTH arms target `old` retargets exactly that one edge,
+/// leaving `br %c ? new : old`. The old dynamic `redirect_edge(from, old, new)`
+/// rejected the two-edge `old` as ambiguous ("reaches `old_to` through multiple
+/// edges"); the role-named `redirect_then` names the arm, so one edge is
+/// retargeted unambiguously. This is a positive test of that now-valid redirect.
 #[test]
-fn redirect_edge_rejects_cond_br_reaching_old_through_both_arms() -> Result<(), IrError> {
+fn redirect_then_on_cond_br_with_both_arms_to_same_retargets_one() -> Result<(), IrError> {
     Module::with_new("redirect-condbr-multi", |m| {
-        let (f, old_dyn, new_dyn) = build_cond_br_pair(&m, false)?;
+        let (f, _old_dyn, new_dyn) = build_cond_br_pair(&m, false)?;
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let pass = RedirectSwitchEdge {
+        let pass = RedirectCondBrThen {
             from_name: "entry",
-            old_to: old_dyn,
             new_to: new_dyn,
             phi_values: vec![],
         };
-        let err = run_function_pass(pass, verified, f, &mut analyses)
-            .err()
-            .expect("a two-edge old_to must be rejected");
+        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+        let reverified = out.verify().expect("redirect_then output must re-verify");
+        let printed = format!("{reverified}");
         assert!(
-            matches!(err, IrError::InvalidOperation { message } if message.contains("multiple edges")),
-            "expected InvalidOperation about multiple edges, got: {err:?}"
+            printed.contains("br i1 %c, label %new, label %old"),
+            "only the then-arm may be retargeted (else-arm stays old), got:\n{printed}"
         );
         Ok(())
     })
 }
 
-/// `redirect_edge` rejects a `cond_br` whose OTHER arm already targets `new_to`
-/// — redirect mints a fresh edge, so the new target's phis would otherwise gain
-/// a second incoming from the same predecessor.
+/// `redirect_then` rejects a `cond_br` whose OTHER (else) arm already targets
+/// `new_to` — redirect mints a fresh edge, so the new target's phis would
+/// otherwise gain a second incoming from the same predecessor.
 #[test]
 fn redirect_edge_rejects_cond_br_already_reaching_new() -> Result<(), IrError> {
     Module::with_new("redirect-condbr-already", |m| {
-        let (f, old_dyn, new_dyn) = build_cond_br_pair(&m, true)?;
+        let (f, _old_dyn, new_dyn) = build_cond_br_pair(&m, true)?;
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let pass = RedirectSwitchEdge {
+        let pass = RedirectCondBrThen {
             from_name: "entry",
-            old_to: old_dyn,
             new_to: new_dyn,
             phi_values: vec![],
         };
