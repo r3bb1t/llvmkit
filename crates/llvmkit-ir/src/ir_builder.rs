@@ -5970,7 +5970,9 @@ where
     {
         let target = target.into_basic_block_label();
         let payload = crate::instr_types::BranchInstData {
-            kind: crate::instr_types::BranchKind::Unconditional(target.as_value().id),
+            kind: core::cell::RefCell::new(crate::instr_types::BranchKind::Unconditional(
+                target.as_value().id,
+            )),
         };
         let void_ty = self.module.void_type().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Br(payload), "");
@@ -5997,11 +5999,11 @@ where
         let else_bb = else_bb.into_basic_block_label();
         let cond = cond.into_int_value(ModuleRef::new(self.module))?;
         let payload = crate::instr_types::BranchInstData {
-            kind: crate::instr_types::BranchKind::Conditional {
+            kind: core::cell::RefCell::new(crate::instr_types::BranchKind::Conditional {
                 cond: core::cell::Cell::new(cond.as_value().id),
                 then_bb: then_bb.as_value().id,
                 else_bb: else_bb.as_value().id,
-            },
+            }),
         };
         let void_ty = self.module.void_type().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Br(payload), "");

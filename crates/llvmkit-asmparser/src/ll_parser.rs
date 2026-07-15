@@ -7346,10 +7346,15 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 phi.as_value()
             }
             // The remaining first-class *data* types — vector, array, and
-            // struct — are legal phi result types. Route them through the
-            // erased `build_phi_dyn`; the type-checked incoming-add path is
-            // unchanged.
-            AnyTypeEnum::Vector(_) | AnyTypeEnum::Array(_) | AnyTypeEnum::Struct(_) => {
+            // non-opaque struct — are legal phi result types. Route them through
+            // the erased `build_phi_dyn`; the type-checked incoming-add path is
+            // unchanged. The `is_first_class` guard is what excludes an *opaque*
+            // struct (no body, hence unsized): it is `AnyTypeEnum::Struct` but
+            // not a valid phi result, and `Module::verify()` rejects it, so
+            // reject it here rather than parse IR that cannot verify.
+            AnyTypeEnum::Vector(_) | AnyTypeEnum::Array(_) | AnyTypeEnum::Struct(_)
+                if ty.is_first_class() =>
+            {
                 let phi = b
                     .build_phi_dyn(ty, name)
                     .map_err(|e| self.builder_err("phi", e))?;
@@ -7365,7 +7370,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             // acceptable result types are enumerated explicitly instead.
             _ => {
                 return Err(self.expected(
-                    "phi result type must be int, float, pointer, vector, array, or struct",
+                    "phi result type must be int, float, pointer, vector, array, or non-opaque struct",
                 ));
             }
         };

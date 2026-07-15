@@ -188,7 +188,7 @@ impl InstructionKindData {
             Self::FCmp(c) => vec![c.lhs.get(), c.rhs.get()],
             Self::Phi(p) => p.incoming.borrow().iter().map(|(v, _)| v.get()).collect(),
             Self::Ret(r) => r.value.get().into_iter().collect(),
-            Self::Br(b) => match &b.kind {
+            Self::Br(b) => match &*b.kind.borrow() {
                 BranchKind::Unconditional(_) => Vec::new(),
                 BranchKind::Conditional { cond, .. } => vec![cond.get()],
             },
@@ -1208,7 +1208,7 @@ pub(super) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueId, t
             }
         }
         InstructionKindData::Ret(r) => swap_opt(&r.value),
-        InstructionKindData::Br(b) => match &b.kind {
+        InstructionKindData::Br(b) => match &*b.kind.borrow() {
             BranchKind::Unconditional(_) => {}
             BranchKind::Conditional { cond, .. } => swap(cond),
         },

@@ -201,6 +201,19 @@ pub enum VerifierRule {
     /// ("PHI node has multiple entries for the same basic block with
     /// different incoming values").
     AmbiguousPhi,
+    /// `phi` result type is not a valid first-class *data* type. Accepted: int,
+    /// float, pointer (the opaque `ptr` **and** the legacy typed `i32*`), vector,
+    /// array, and non-opaque struct — the exact set the `.ll` parser's
+    /// `parse_phi` accepts, so parser and verifier cannot drift.
+    ///
+    /// **Stricter than upstream.** `Verifier::visitPHINode` spells out only "PHI
+    /// nodes cannot have token type"; llvmkit additionally rejects `label`,
+    /// `metadata`, `x86_amx`, target-extension types, opaque structs, `void`, and
+    /// function types as phi results. All but `void`/function are
+    /// `Type::is_first_class`, so that predicate alone is *not* a sufficient
+    /// gate — hence the explicit enumeration. Defense in depth: the rule holds
+    /// regardless of construction path, not just for parsed IR.
+    PhiInvalidResultType,
     /// `call` callee is not a function-typed value.
     /// Mirrors `Verifier::visitCallBase`.
     CallNonFunction,
@@ -398,6 +411,9 @@ impl fmt::Display for VerifierRule {
             }
             Self::AmbiguousPhi => {
                 "PHI node has multiple entries for the same basic block with different incoming values"
+            }
+            Self::PhiInvalidResultType => {
+                "PHI node result type is not a valid first-class data type"
             }
             Self::CallNonFunction => "call callee is not a function value",
             Self::CallArgCountMismatch => "call argument count does not match callee signature",
