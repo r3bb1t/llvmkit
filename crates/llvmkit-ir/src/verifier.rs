@@ -637,7 +637,10 @@ impl<'ctx> Verifier<'ctx> {
             InstructionKindData::Gep(g) => self.check_gep(f, bb, inst, g),
             InstructionKindData::Call(c) => self.check_call(f, bb, inst, c),
             InstructionKindData::Select(s) => self.check_select(f, bb, inst, s),
-            InstructionKindData::Phi(p) => self.check_phi(f, bb, inst, p, cx.predecessors),
+            InstructionKindData::Phi(p) => {
+                let reachable = cx.dom_tree.is_reachable_from_entry(bb);
+                self.check_phi(f, bb, inst, p, cx.predecessors, reachable)
+            }
             InstructionKindData::Ret(r) => self.check_ret(f, bb, inst, r),
             InstructionKindData::Br(b) => self.check_br(f, bb, inst, b, cx.block_index),
             InstructionKindData::FNeg(u) => self.check_fneg(f, bb, inst, u),
@@ -2400,6 +2403,7 @@ impl<'ctx> Verifier<'ctx> {
         inst: &InstructionView<'ctx>,
         p: &PhiData,
         predecessors: &HashMap<ValueId, Vec<ValueId>>,
+        reachable: bool,
     ) -> IrResult<()> {
         let result_ty = inst.ty().id;
 
@@ -2445,6 +2449,25 @@ impl<'ctx> Verifier<'ctx> {
             .iter()
             .map(|(v, b)| (v.get(), *b))
             .collect();
+
+        // Defense in depth (stricter than upstream). A phi with zero incomings
+        // in a block reachable from entry prints as `%p = phi i32` with no
+        // `[ … ]` pairs — un-round-trippable, since `LLParser::parsePHI` rejects
+        // it. `check_phi_incoming` below would miss this: its only length guard
+        // is `incoming.len() != preds.len()`, so a zero-incoming phi in a
+        // zero-predecessor block passes on `0 == 0` (the same gap as LLVM's
+        // `visitPHINode`). We run before that delegation and gate on
+        // reachability — an unreachable block may legitimately have no
+        // predecessors, so we do not force its phis to carry incomings.
+        if reachable && incoming.is_empty() {
+            return Err(self.fail(
+                f,
+                bb,
+                VerifierRule::PhiEmptyInReachableBlock,
+                "phi in a block reachable from entry has no incoming values".into(),
+            ));
+        }
+
         let value_ty_of = |id: ValueId| self.value_type(id);
         match check_phi_incoming(result_ty, &incoming, preds, &value_ty_of) {
             Ok(()) => Ok(()),
@@ -3505,19 +3528,29 @@ mod tests {
     /// distinct from the opaque `ptr` that `Type::is_pointer` matches. Regression
     /// guard — the first cut of this rule enumerated only `is_pointer()`, so it
     /// rejected `phi i32*`, IR that verified clean before.
+    ///
+    /// The phi is fabricated in an **unreachable** block so this case isolates
+    /// the result-type gate (`PhiInvalidResultType`, which runs unconditionally
+    /// ahead of the reachable check) without tripping the zero-incoming backstop
+    /// (`PhiEmptyInReachableBlock`): a zero-incoming phi is only rejected in a
+    /// block reachable from entry.
     #[test]
     fn phi_with_typed_pointer_result_type_verifies() {
         Module::with_new("t", |m| {
             let i32_ty = m.i32_type().as_type();
             let void_ty = m.void_type().as_type();
             let tptr_ty = m.typed_pointer_type(i32_ty, 0).as_type();
-            let (_f_id, entry_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            let (f_id, entry_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
+            let dead = f.append_basic_block(&m, "dead");
+            let dead_id = dead.as_value().id;
             fabricate_instruction(
                 &m,
-                entry_id,
+                dead_id,
                 tptr_ty.id(),
                 InstructionKindData::Phi(PhiData::new()),
             );
+            append_ret_void(&m, dead_id);
             append_ret_void(&m, entry_id);
             m.verify_borrowed()
                 .expect("a typed-pointer phi result must remain valid");
