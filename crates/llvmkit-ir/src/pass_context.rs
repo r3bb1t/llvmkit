@@ -713,6 +713,30 @@ where
     }
 }
 
+/// Which single successor slot of a `switch`/`br`/`cond_br` terminator an edge
+/// edit acts on. Determined by the public edge op ([`FnReshape::remove_edge`]/
+/// [`FnReshape::redirect_edge`]) once it has witnessed the terminator kind and
+/// the edge preconditions, then handed to the mechanical mutation helpers
+/// ([`FnReshape::remove_slot`]/[`FnReshape::redirect_slot`]).
+///
+/// The `br`/`cond_br` slots are *role-based* (which arm), so the helper reads
+/// the old target off the current terminator; the switch case slot is
+/// *target-based* — it carries the old destination id because a switch edit
+/// touches *every* case pointing at that block.
+#[derive(Clone, Copy)]
+enum EditSlot {
+    /// Every `switch` case whose destination is the carried id.
+    SwitchCase(ValueId),
+    /// The `switch` default edge.
+    SwitchDefault,
+    /// The `then` arm of a `cond_br`.
+    BrThen,
+    /// The `else` arm of a `cond_br`.
+    BrElse,
+    /// The sole target of an unconditional `br`.
+    BrUncond,
+}
+
 /// CFG-rewriting mutator for the [`ReshapeCfg`] rung — minimal but real. It has
 /// everything [`FnPatch`] exposes (by composition) **plus** at least one genuine
 /// control-flow operation ([`FnReshape::split_block`], wired to
@@ -1037,6 +1061,279 @@ where
         Ok(())
     }
 
+    /// Mechanical body of [`Self::remove_edge`]: perform the terminator
+    /// mutation selected by `slot`, drop the removed target's `from`-incoming
+    /// phis, log the [`CfgUpdate::delete`], and mark dirty. The edge
+    /// preconditions are witnessed by the caller before the slot is built, so
+    /// this helper does no validation; a `SwitchDefault`/`BrUncond` slot is
+    /// unremovable (the caller rejects it) and never reaches here.
+    ///
+    /// A `SwitchCase(to)` drops every case targeting `to` (deregistering each
+    /// dropped case value's use of the switch); a `BrThen`/`BrElse` collapses
+    /// the `cond_br` to an unconditional `br` to the surviving arm and
+    /// deregisters the now-dead condition operand. The removed target id — the
+    /// block whose `from`-incoming phis are dropped and the delete-edge sink —
+    /// is `to` for the switch case and the named arm's current destination for
+    /// the branch, read off the terminator before the collapse.
+    fn remove_slot(
+        &self,
+        from: &BasicBlockView<'ctx, B>,
+        term_id: ValueId,
+        slot: EditSlot,
+    ) -> IrResult<()> {
+        let from_block = from.as_basic_block();
+        let from_id = from_block.as_value().id;
+        let ctx = self.patch.module_mut().core_ref().context();
+
+        // Mutate the terminator and learn the removed target block.
+        let target_id = match slot {
+            EditSlot::SwitchCase(to_id) => {
+                let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
+                else {
+                    unreachable!("remove_slot: terminator is not an instruction");
+                };
+                let crate::instruction::InstructionKindData::Switch(switch) = &i.kind else {
+                    unreachable!("remove_slot: `SwitchCase` slot on a non-switch terminator");
+                };
+                // Drop every case targeting `to`, deregistering the switch from
+                // each dropped case-value's use-list (the case value is an SSA
+                // operand of the switch).
+                let mut dropped_case_values: Vec<ValueId> = Vec::new();
+                switch.cases.borrow_mut().retain(|(case_val, dest)| {
+                    if *dest == to_id {
+                        dropped_case_values.push(case_val.get());
+                        false
+                    } else {
+                        true
+                    }
+                });
+                for val_id in dropped_case_values {
+                    let mut uses = ctx.value_data(val_id).use_list.borrow_mut();
+                    if let Some(pos) = uses
+                        .iter()
+                        .position(|e| *e == crate::value::ValueUse::Instruction(term_id))
+                    {
+                        uses.remove(pos);
+                    }
+                }
+                to_id
+            }
+            EditSlot::BrThen | EditSlot::BrElse => {
+                let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
+                else {
+                    unreachable!("remove_slot: terminator is not an instruction");
+                };
+                let crate::instruction::InstructionKindData::Br(branch) = &i.kind else {
+                    unreachable!("remove_slot: branch-arm slot on a non-branch terminator");
+                };
+                // Collapse the `cond_br` to an unconditional `br` to the
+                // surviving arm; the removed arm's target is the drop/delete
+                // sink and the dead condition operand is deregistered.
+                let (cond_id, removed, surviving) = {
+                    let kind = branch.kind.borrow();
+                    let crate::instr_types::BranchKind::Conditional {
+                        cond,
+                        then_bb,
+                        else_bb,
+                    } = &*kind
+                    else {
+                        unreachable!("remove_slot: branch-arm slot on an unconditional `br`");
+                    };
+                    match slot {
+                        EditSlot::BrThen => (cond.get(), *then_bb, *else_bb),
+                        EditSlot::BrElse => (cond.get(), *else_bb, *then_bb),
+                        _ => unreachable!("remove_slot: outer arm restricts slot to a branch arm"),
+                    }
+                };
+                *branch.kind.borrow_mut() =
+                    crate::instr_types::BranchKind::Unconditional(surviving);
+                let mut uses = ctx.value_data(cond_id).use_list.borrow_mut();
+                if let Some(pos) = uses
+                    .iter()
+                    .position(|e| *e == crate::value::ValueUse::Instruction(term_id))
+                {
+                    uses.remove(pos);
+                }
+                removed
+            }
+            EditSlot::SwitchDefault | EditSlot::BrUncond => {
+                unreachable!("remove_slot: slot is not removable")
+            }
+        };
+
+        // Mechanically drop the removed target's phi incomings that named
+        // `from`. All blocks share the module's label type, so `from`'s block
+        // carries the same module ref and label type as the target.
+        let target_block = BasicBlock::<Dyn, Terminated, B>::from_parts(
+            target_id,
+            from_block.module,
+            from_block.ty,
+        );
+        self.drop_incoming_from_pred(&target_block, from_id)?;
+
+        self.cfg_updates
+            .borrow_mut()
+            .push(CfgUpdate::delete(from_id, target_id));
+        self.patch.dirty.set(true);
+        Ok(())
+    }
+
+    /// Mechanical body of [`Self::redirect_edge`]: validate `phi_values`
+    /// against `new_to`'s leading phis, retarget the single edge selected by
+    /// `slot` onto `new_to`, drop the old target's `from`-incomings, seed
+    /// `new_to`'s phis, log the [`CfgUpdate`] pair, and mark dirty.
+    ///
+    /// The edge preconditions (single edge to the old target, `from` not
+    /// already reaching `new_to`, terminator kind supported) are witnessed by
+    /// the caller before the slot is built. The `phi_values` arity/type check
+    /// is done here *before* any mutation, so a mis-sized or mistyped
+    /// `phi_values` leaves the terminator and every phi untouched. For the
+    /// role slots (`BrThen`/`BrElse`/`BrUncond`) the old target is read off the
+    /// current terminator; for `SwitchCase(old)` it is carried in the slot.
+    fn redirect_slot(
+        &self,
+        from: &BasicBlockView<'ctx, B>,
+        term_id: ValueId,
+        slot: EditSlot,
+        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        phi_values: &[Value<'ctx, B>],
+    ) -> IrResult<()> {
+        let from_block = from.as_basic_block();
+        let from_id = from_block.as_value().id;
+        let new_id = new_to.as_value().id;
+        let ctx = self.patch.module_mut().core_ref().context();
+
+        // Collect `new_to`'s leading phis (its block parameters) and validate
+        // `phi_values` against them BEFORE mutating — all-or-nothing, mirroring
+        // the block-argument branch builder.
+        let new_block =
+            BasicBlock::<Dyn, Terminated, B>::from_parts(new_to.id, new_to.module, new_to.ty);
+        let mut param_phis: Vec<ValueId> = Vec::new();
+        for inst_id in new_block.instruction_ids() {
+            let crate::value::ValueKindData::Instruction(inst) = &ctx.value_data(inst_id).kind
+            else {
+                continue;
+            };
+            let crate::instruction::InstructionKindData::Phi(_) = &inst.kind else {
+                break;
+            };
+            param_phis.push(inst_id);
+        }
+        if param_phis.len() != phi_values.len() {
+            return Err(IrError::PhiArgArityMismatch {
+                expected: param_phis.len(),
+                got: phi_values.len(),
+            });
+        }
+        for (phi_id, value) in param_phis.iter().zip(phi_values.iter()) {
+            let phi_ty = ctx.value_data(*phi_id).ty;
+            if value.ty != phi_ty {
+                return Err(IrError::TypeMismatch {
+                    expected: Type::new(phi_ty, new_to.module).kind_label(),
+                    got: Type::new(value.ty, new_to.module).kind_label(),
+                });
+            }
+        }
+
+        // All preconditions witnessed -- retarget the single edge onto
+        // `new_to`, reading the old target off the terminator first so the phi
+        // maintenance and the delete-edge log can name it. The terminator kind
+        // is unchanged since the caller's witness (single-threaded, no
+        // intervening mutation).
+        let old_id = match slot {
+            EditSlot::SwitchDefault => {
+                let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
+                else {
+                    unreachable!("redirect_slot: terminator is not an instruction");
+                };
+                let crate::instruction::InstructionKindData::Switch(switch) = &i.kind else {
+                    unreachable!("redirect_slot: switch slot on a non-switch terminator");
+                };
+                let old = switch.default_bb.get();
+                switch.default_bb.set(new_id);
+                old
+            }
+            EditSlot::SwitchCase(old) => {
+                let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
+                else {
+                    unreachable!("redirect_slot: terminator is not an instruction");
+                };
+                let crate::instruction::InstructionKindData::Switch(switch) = &i.kind else {
+                    unreachable!("redirect_slot: switch slot on a non-switch terminator");
+                };
+                for entry in switch.cases.borrow_mut().iter_mut() {
+                    if entry.1 == old {
+                        entry.1 = new_id;
+                    }
+                }
+                old
+            }
+            EditSlot::BrThen | EditSlot::BrElse | EditSlot::BrUncond => {
+                let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
+                else {
+                    unreachable!("redirect_slot: terminator is not an instruction");
+                };
+                let crate::instruction::InstructionKindData::Br(branch) = &i.kind else {
+                    unreachable!("redirect_slot: branch slot on a non-branch terminator");
+                };
+                let mut kind = branch.kind.borrow_mut();
+                match (&mut *kind, slot) {
+                    (crate::instr_types::BranchKind::Unconditional(target), EditSlot::BrUncond) => {
+                        let old = *target;
+                        *target = new_id;
+                        old
+                    }
+                    (
+                        crate::instr_types::BranchKind::Conditional { then_bb, .. },
+                        EditSlot::BrThen,
+                    ) => {
+                        let old = *then_bb;
+                        *then_bb = new_id;
+                        old
+                    }
+                    (
+                        crate::instr_types::BranchKind::Conditional { else_bb, .. },
+                        EditSlot::BrElse,
+                    ) => {
+                        let old = *else_bb;
+                        *else_bb = new_id;
+                        old
+                    }
+                    _ => unreachable!("redirect_slot: branch terminator yielded a non-branch slot"),
+                }
+            }
+        };
+
+        // Drop `from`'s incomings from the old target's phis, then add the
+        // typed incomings to `new_to`'s phis (each registered in its value's
+        // use-list by the edge-add path). All blocks share the module's label
+        // type, so `from`'s block carries the same module ref and label type as
+        // the old target.
+        let old_block =
+            BasicBlock::<Dyn, Terminated, B>::from_parts(old_id, from_block.module, from_block.ty);
+        self.drop_incoming_from_pred(&old_block, from_id)?;
+
+        let builder = IRBuilder::new(self.patch.module_mut());
+        for (phi_id, value) in param_phis.iter().zip(phi_values.iter()) {
+            let phi_ty = ctx.value_data(*phi_id).ty;
+            let phi_val = Value::from_parts(*phi_id, new_to.module, phi_ty);
+            // This add cannot fail: arity and per-phi type were validated above,
+            // and the ambiguous-duplicate check cannot fire because `from` was
+            // proven not to already reach `new_to`. The `?` is defensive — if
+            // either precondition ever weakens, an error here would leave a
+            // partial redirect, so keep both guards ahead of this loop.
+            builder.phi_add_incoming_from_value(phi_val, *value, from_block.copy_handle())?;
+        }
+
+        {
+            let mut log = self.cfg_updates.borrow_mut();
+            log.push(CfgUpdate::delete(from_id, old_id));
+            log.push(CfgUpdate::insert(from_id, new_id));
+        }
+        self.patch.dirty.set(true);
+        Ok(())
+    }
+
     /// Remove the CFG edge `from → to`, dropping `to`'s successor-phi
     /// incomings that named `from` as part of the same op — the phi
     /// maintenance is carried by the edit, never deferred to a fixup a caller
@@ -1085,7 +1382,6 @@ where
         to: &BasicBlockLabel<'ctx, Dyn, B>,
     ) -> IrResult<()> {
         let from_block = from.as_basic_block();
-        let from_id = from_block.as_value().id;
         let to_id = to.as_value().id;
         let ctx = self.patch.module_mut().core_ref().context();
 
@@ -1094,7 +1390,10 @@ where
         })?;
         let term_id = term.as_value().id;
 
-        match &ctx.value_data(term_id).kind {
+        // Witness the terminator kind and the edge preconditions, then pick the
+        // slot the mechanical mutation acts on. The actual case-drop / cond_br
+        // collapse + phi maintenance lives in `remove_slot`.
+        let slot = match &ctx.value_data(term_id).kind {
             crate::value::ValueKindData::Instruction(i) => match &i.kind {
                 crate::instruction::InstructionKindData::Switch(switch) => {
                     // A switch must keep its default, so a default-only edge
@@ -1109,70 +1408,41 @@ where
                             message: "remove_edge: `to` is not a successor of `from`",
                         });
                     }
-                    // Drop every case targeting `to`, deregistering the switch
-                    // from each dropped case-value's use-list (the case value is
-                    // an SSA operand of the switch).
-                    let mut dropped_case_values: Vec<ValueId> = Vec::new();
-                    switch.cases.borrow_mut().retain(|(case_val, dest)| {
-                        if *dest == to_id {
-                            dropped_case_values.push(case_val.get());
-                            false
-                        } else {
-                            true
-                        }
-                    });
-                    for val_id in dropped_case_values {
-                        let mut uses = ctx.value_data(val_id).use_list.borrow_mut();
-                        if let Some(pos) = uses
-                            .iter()
-                            .position(|e| *e == crate::value::ValueUse::Instruction(term_id))
-                        {
-                            uses.remove(pos);
-                        }
-                    }
+                    EditSlot::SwitchCase(to_id)
                 }
                 crate::instruction::InstructionKindData::Br(branch) => {
                     // A `br` has only one edge, so removing it would leave the
                     // block with no successor; a `cond_br` losing one of its two
                     // edges collapses to an unconditional `br` to the surviving
                     // target, and the now-dead condition operand is deregistered.
-                    let (cond_id, surviving) = {
-                        let kind = branch.kind.borrow();
-                        match &*kind {
-                            crate::instr_types::BranchKind::Unconditional(_) => {
+                    let kind = branch.kind.borrow();
+                    match &*kind {
+                        crate::instr_types::BranchKind::Unconditional(_) => {
+                            return Err(IrError::InvalidOperation {
+                                message: "remove_edge: cannot remove the sole edge of an unconditional `br`",
+                            });
+                        }
+                        crate::instr_types::BranchKind::Conditional {
+                            then_bb, else_bb, ..
+                        } => {
+                            let matches_then = *then_bb == to_id;
+                            let matches_else = *else_bb == to_id;
+                            if !matches_then && !matches_else {
                                 return Err(IrError::InvalidOperation {
-                                    message: "remove_edge: cannot remove the sole edge of an unconditional `br`",
+                                    message: "remove_edge: `to` is not a successor of `from`",
                                 });
                             }
-                            crate::instr_types::BranchKind::Conditional {
-                                cond,
-                                then_bb,
-                                else_bb,
-                            } => {
-                                let matches_then = *then_bb == to_id;
-                                let matches_else = *else_bb == to_id;
-                                if !matches_then && !matches_else {
-                                    return Err(IrError::InvalidOperation {
-                                        message: "remove_edge: `to` is not a successor of `from`",
-                                    });
-                                }
-                                if matches_then && matches_else {
-                                    return Err(IrError::InvalidOperation {
-                                        message: "remove_edge: both `cond_br` edges target `to`; removing it would leave no successor",
-                                    });
-                                }
-                                (cond.get(), if matches_then { *else_bb } else { *then_bb })
+                            if matches_then && matches_else {
+                                return Err(IrError::InvalidOperation {
+                                    message: "remove_edge: both `cond_br` edges target `to`; removing it would leave no successor",
+                                });
+                            }
+                            if matches_then {
+                                EditSlot::BrThen
+                            } else {
+                                EditSlot::BrElse
                             }
                         }
-                    };
-                    *branch.kind.borrow_mut() =
-                        crate::instr_types::BranchKind::Unconditional(surviving);
-                    let mut uses = ctx.value_data(cond_id).use_list.borrow_mut();
-                    if let Some(pos) = uses
-                        .iter()
-                        .position(|e| *e == crate::value::ValueUse::Instruction(term_id))
-                    {
-                        uses.remove(pos);
                     }
                 }
                 _ => {
@@ -1186,17 +1456,9 @@ where
                     message: "remove_edge: `from`'s terminator is not an instruction",
                 });
             }
-        }
+        };
 
-        // Mechanically drop `to`'s phi incomings that named `from`.
-        let to_block = BasicBlock::<Dyn, Terminated, B>::from_parts(to.id, to.module, to.ty);
-        self.drop_incoming_from_pred(&to_block, from_id)?;
-
-        self.cfg_updates
-            .borrow_mut()
-            .push(CfgUpdate::delete(from_id, to_id));
-        self.patch.dirty.set(true);
-        Ok(())
+        self.remove_slot(from, term_id, slot)
     }
 
     /// Redirect the CFG edge `from → old_to` to `from → new_to`, dropping
@@ -1248,7 +1510,6 @@ where
         phi_values: &[Value<'ctx, B>],
     ) -> IrResult<()> {
         let from_block = from.as_basic_block();
-        let from_id = from_block.as_value().id;
         let old_id = old_to.as_value().id;
         let new_id = new_to.as_value().id;
         let ctx = self.patch.module_mut().core_ref().context();
@@ -1257,15 +1518,10 @@ where
             message: "redirect_edge: `from` has no terminator",
         })?;
         let term_id = term.as_value().id;
-        // Which single edge slot to retarget. Determined -- and the edge
-        // preconditions witnessed -- before any mutation.
-        enum Slot {
-            SwitchDefault,
-            SwitchCase,
-            BranchThen,
-            BranchElse,
-            BranchUncond,
-        }
+
+        // Witness the terminator kind and the edge preconditions, then pick the
+        // single slot to retarget. The retarget + phi maintenance + phi
+        // seeding lives in `redirect_slot`.
         let slot = match &ctx.value_data(term_id).kind {
             crate::value::ValueKindData::Instruction(i) => match &i.kind {
                 crate::instruction::InstructionKindData::Switch(switch) => {
@@ -1303,9 +1559,9 @@ where
                         });
                     }
                     if default_is_old {
-                        Slot::SwitchDefault
+                        EditSlot::SwitchDefault
                     } else {
-                        Slot::SwitchCase
+                        EditSlot::SwitchCase(old_id)
                     }
                 }
                 crate::instruction::InstructionKindData::Br(branch) => {
@@ -1326,7 +1582,7 @@ where
                                     message: "redirect_edge: `from` already reaches `new_to`",
                                 });
                             }
-                            Slot::BranchUncond
+                            EditSlot::BrUncond
                         }
                         crate::instr_types::BranchKind::Conditional {
                             then_bb, else_bb, ..
@@ -1351,9 +1607,9 @@ where
                                 });
                             }
                             if matches_then {
-                                Slot::BranchThen
+                                EditSlot::BrThen
                             } else {
-                                Slot::BranchElse
+                                EditSlot::BrElse
                             }
                         }
                     }
@@ -1371,103 +1627,7 @@ where
             }
         };
 
-        // Collect `new_to`'s leading phis (its block parameters) and validate
-        // `phi_values` against them BEFORE mutating — all-or-nothing, mirroring
-        // the block-argument branch builder.
-        let new_block =
-            BasicBlock::<Dyn, Terminated, B>::from_parts(new_to.id, new_to.module, new_to.ty);
-        let mut param_phis: Vec<ValueId> = Vec::new();
-        for inst_id in new_block.instruction_ids() {
-            let crate::value::ValueKindData::Instruction(inst) = &ctx.value_data(inst_id).kind
-            else {
-                continue;
-            };
-            let crate::instruction::InstructionKindData::Phi(_) = &inst.kind else {
-                break;
-            };
-            param_phis.push(inst_id);
-        }
-        if param_phis.len() != phi_values.len() {
-            return Err(IrError::PhiArgArityMismatch {
-                expected: param_phis.len(),
-                got: phi_values.len(),
-            });
-        }
-        for (phi_id, value) in param_phis.iter().zip(phi_values.iter()) {
-            let phi_ty = ctx.value_data(*phi_id).ty;
-            if value.ty != phi_ty {
-                return Err(IrError::TypeMismatch {
-                    expected: Type::new(phi_ty, new_to.module).kind_label(),
-                    got: Type::new(value.ty, new_to.module).kind_label(),
-                });
-            }
-        }
-
-        // All preconditions witnessed -- retarget the single edge onto
-        // `new_to`. The terminator kind is unchanged since the witness above
-        // (single-threaded, no intervening mutation).
-        match &ctx.value_data(term_id).kind {
-            crate::value::ValueKindData::Instruction(i) => match &i.kind {
-                crate::instruction::InstructionKindData::Switch(switch) => match slot {
-                    Slot::SwitchDefault => switch.default_bb.set(new_id),
-                    Slot::SwitchCase => {
-                        for entry in switch.cases.borrow_mut().iter_mut() {
-                            if entry.1 == old_id {
-                                entry.1 = new_id;
-                            }
-                        }
-                    }
-                    _ => unreachable!("switch terminator yielded a non-switch slot"),
-                },
-                crate::instruction::InstructionKindData::Br(branch) => {
-                    let mut kind = branch.kind.borrow_mut();
-                    match (&mut *kind, slot) {
-                        (
-                            crate::instr_types::BranchKind::Unconditional(target),
-                            Slot::BranchUncond,
-                        ) => *target = new_id,
-                        (
-                            crate::instr_types::BranchKind::Conditional { then_bb, .. },
-                            Slot::BranchThen,
-                        ) => *then_bb = new_id,
-                        (
-                            crate::instr_types::BranchKind::Conditional { else_bb, .. },
-                            Slot::BranchElse,
-                        ) => *else_bb = new_id,
-                        _ => unreachable!("branch terminator yielded a non-branch slot"),
-                    }
-                }
-                _ => unreachable!("terminator kind changed between witness and mutate"),
-            },
-            _ => unreachable!("terminator is no longer an instruction"),
-        }
-
-        // Drop `from`'s incomings from `old_to`'s phis, then add the typed
-        // incomings to `new_to`'s phis (each registered in its value's use-list
-        // by the erased edge-add path).
-        let old_block =
-            BasicBlock::<Dyn, Terminated, B>::from_parts(old_to.id, old_to.module, old_to.ty);
-        self.drop_incoming_from_pred(&old_block, from_id)?;
-
-        let builder = IRBuilder::new(self.patch.module_mut());
-        for (phi_id, value) in param_phis.iter().zip(phi_values.iter()) {
-            let phi_ty = ctx.value_data(*phi_id).ty;
-            let phi_val = Value::from_parts(*phi_id, new_to.module, phi_ty);
-            // This add cannot fail: arity and per-phi type were validated above,
-            // and the ambiguous-duplicate check cannot fire because `from` was
-            // proven not to already reach `new_to`. The `?` is defensive — if
-            // either precondition ever weakens, an error here would leave a
-            // partial redirect, so keep both guards ahead of this loop.
-            builder.phi_add_incoming_from_value(phi_val, *value, from_block.copy_handle())?;
-        }
-
-        {
-            let mut log = self.cfg_updates.borrow_mut();
-            log.push(CfgUpdate::delete(from_id, old_id));
-            log.push(CfgUpdate::insert(from_id, new_id));
-        }
-        self.patch.dirty.set(true);
-        Ok(())
+        self.redirect_slot(from, term_id, slot, new_to, phi_values)
     }
 
     /// Insert a fully-witnessed phi at `block`'s phi head and return its erased
