@@ -171,6 +171,19 @@ The last two deferred phi-authoring items.
   its own comment — and produced IR that then failed `Module::verify()`. The
   parser and the verifier now accept exactly the same set of phi result types.
 
+#### Fixed
+
+- `FnReshape::remove_edge` / `redirect_edge` no longer leave a **zero-incoming
+  phi** behind. When the removed edge was a block's *only* incoming edge, its
+  head phis lost their last incoming and were left as `%p = phi i32` with no
+  `[ … ]` pairs — a form LLVM's own LL parser rejects, so the module no longer
+  round-tripped (even though `Module::verify()` accepted it, the count matching
+  a now-zero-predecessor block). Both ops now mirror LLVM
+  `BasicBlock::removePredecessor`: an emptied phi is replaced with poison (of
+  its own result type) and erased, so the result round-trips. (A companion
+  *defensive* verifier rule — a phi in a reachable block must carry at least one
+  incoming — is tracked separately in `docs/future-work.md`.)
+
 ### Const-generic vector and array types (breaking)
 
 Fixed vectors and arrays now carry their **element type** and **length** in the
