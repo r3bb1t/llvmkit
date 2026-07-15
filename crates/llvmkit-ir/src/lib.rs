@@ -347,7 +347,7 @@ pub use float_kind::{
 // `f32`/`f64` are std types — no re-export needed.
 
 pub use array_len::{ArrLen, ArrLenDyn, ArrayLen, StaticArrayLen};
-pub use element::{ElemDyn, StaticVecElem, VecElem};
+pub use element::{ElemDyn, StaticVecElem, VecElem, WrapWitness};
 pub use int_width::{
     IntDyn, IntWidth, IntoConstantInt, IntoIntValue, StaticIntWidth, WiderThan, Width,
 };

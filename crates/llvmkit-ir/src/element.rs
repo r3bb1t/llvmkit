@@ -55,6 +55,24 @@ pub struct ElemDyn;
 impl sealed::Sealed for ElemDyn {}
 impl VecElem for ElemDyn {}
 
+/// Unforgeable in-crate witness gating [`StaticVecElem::wrap_value`] — the raw,
+/// unchecked `Value` → typed scalar-handle wrap. The type is public so it can
+/// name that public trait method's parameter, but it is constructible only
+/// inside this crate (`WrapWitness::new` is `pub(crate)`), so external safe
+/// code cannot invoke the wrap and forge a scalar handle whose element marker
+/// contradicts its runtime type. The only in-crate callers (the typed
+/// `extract` builders) already hold a `Value` whose element type provably
+/// matches `E`; every other external `Value` → typed-handle path is the
+/// *checked* `TryFrom`.
+pub struct WrapWitness(());
+
+impl WrapWitness {
+    #[inline]
+    pub(crate) fn new() -> Self {
+        Self(())
+    }
+}
+
 /// Projection subtrait — element markers whose element type is known at
 /// compile time AND whose IR type / value handle can be projected from a
 /// [`Module`](crate::Module) without an extra runtime parameter. The element
@@ -75,8 +93,10 @@ pub trait StaticVecElem<'ctx, B: ModuleBrand>: VecElem {
     fn element_ir_type(module: ModuleRef<'ctx, B>) -> Type<'ctx, B>;
 
     /// Wrap a [`Value`] known-by-construction to have this element type into
-    /// the typed scalar handle.
-    fn wrap_value(v: Value<'ctx, B>) -> Self::Value;
+    /// the typed scalar handle. Unchecked — the [`WrapWitness`] gates this to
+    /// in-crate callers that hold that proof; external code uses the checked
+    /// `TryFrom` narrowing instead.
+    fn wrap_value(v: Value<'ctx, B>, witness: WrapWitness) -> Self::Value;
 }
 
 // Int scalar markers. Concrete per-marker impls (not a blanket
@@ -93,7 +113,7 @@ macro_rules! impl_vec_elem_int {
                 <$ty as StaticIntWidth>::ir_type(module).as_type()
             }
             #[inline]
-            fn wrap_value(v: Value<'ctx, B>) -> Self::Value {
+            fn wrap_value(v: Value<'ctx, B>, _witness: WrapWitness) -> Self::Value {
                 IntValue::<$ty, B>::from_value_unchecked(v)
             }
         }
@@ -113,7 +133,7 @@ macro_rules! impl_vec_elem_float {
                 <$ty as StaticFloatKind>::ir_type(module).as_type()
             }
             #[inline]
-            fn wrap_value(v: Value<'ctx, B>) -> Self::Value {
+            fn wrap_value(v: Value<'ctx, B>, _witness: WrapWitness) -> Self::Value {
                 FloatValue::<$ty, B>::from_value_unchecked(v)
             }
         }

@@ -48,7 +48,7 @@ use super::constant::{Constant, ConstantExprFlags, ConstantExprOpcode};
 use super::constant_fold;
 use super::constants::ConstantExprOptions;
 use super::derived_types::{FloatType, FunctionType, IntType, PointerType, StructType};
-use super::element::{ElemDyn, StaticVecElem, VecElem};
+use super::element::{ElemDyn, StaticVecElem, VecElem, WrapWitness};
 use super::error::{IrError, IrResult, TypeKindLabel};
 use super::float_kind::{FloatDyn, FloatKind, FloatWiderThan, IntoFloatValue};
 use super::fmf::FastMathFlags;
@@ -2855,7 +2855,7 @@ where
         Name: AsRef<str>,
     {
         let raw = self.build_extract_element::<_, W, _, _>(vec, index, name)?;
-        Ok(E::wrap_value(raw))
+        Ok(E::wrap_value(raw, WrapWitness::new()))
     }
 
     /// Typed `insertelement`: write `element` into lane `index` of `vec`,
@@ -2931,7 +2931,7 @@ where
         Name: AsRef<str>,
     {
         let raw = self.build_extract_value(array, [index], name)?;
-        Ok(E::wrap_value(raw))
+        Ok(E::wrap_value(raw, WrapWitness::new()))
     }
 
     /// Typed single-index `insertvalue` on a statically-typed array: write
