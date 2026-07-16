@@ -6757,6 +6757,14 @@ where
     /// Produce `indirectbr <addr>, [...]`. Mirrors
     /// `IRBuilder::CreateIndirectBr`.
     ///
+    /// The address is bound by [`IntoPointerValue<'ctx, B>`](crate::IntoPointerValue),
+    /// so a typed [`PointerValue`] is accepted directly while a typed
+    /// non-pointer handle (e.g. [`IntValue<'ctx, i32, B>`](crate::IntValue))
+    /// is a *compile* error — there is no `IntoPointerValue` impl for it. An
+    /// erased [`Value`]/[`Argument`](crate::Argument)/[`Instruction`] address is still accepted
+    /// but is pointer-checked at *build* time (returns [`Err`] if it is not a
+    /// pointer) rather than deferring to [`verify()`](crate::Module::verify).
+    ///
     /// Returns the terminated parent block plus an [`Open`]-typestate
     /// [`IndirectBrInst`]. The
     /// caller adds destinations via
@@ -6768,9 +6776,9 @@ where
     ) -> IrResult<TerminatedBlockIndirectBr<'ctx, R, B>>
     where
         Name: AsRef<str>,
-        A: IsValue<'ctx, B>,
+        A: IntoPointerValue<'ctx, B>,
     {
-        let addr_v = address.as_value();
+        let addr_v = IsValue::as_value(address.into_pointer_value(ModuleRef::new(self.module))?);
         let void_ty = self.module.void_type().as_type().id();
         let payload = crate::instr_types::IndirectBrInstData::new(addr_v.id);
         let inst = self.append_instruction(void_ty, InstructionKindData::IndirectBr(payload), name);

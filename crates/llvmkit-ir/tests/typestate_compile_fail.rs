@@ -130,4 +130,10 @@ fn typestate_compile_fail() {
     // compile error. The primary error is our own `IntoIntValue<'_, i32, _>`
     // trait bound, stable across rustc versions.
     t.compile_fail("tests/compile_fail/switch_case_wrong_width.rs");
+    // OP Slice 2 (typed `indirectbr` address): `build_indirectbr` binds the
+    // address by `IntoPointerValue<'ctx, B>`, so a typed non-pointer value
+    // handle (an `IntValue<i32>`) is a compile error — the pointer-ness check
+    // moves from `verify()` to build/compile time. The primary error is our
+    // own `IntoPointerValue` trait bound, stable across rustc versions.
+    t.compile_fail("tests/compile_fail/indirectbr_non_pointer_address.rs");
 }

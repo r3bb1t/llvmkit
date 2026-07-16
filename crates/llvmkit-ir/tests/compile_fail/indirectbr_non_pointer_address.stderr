@@ -1,0 +1,23 @@
+error[E0277]: the trait bound `IntValue<'_, i32, Brand<'_>>: IntoPointerValue<'_, Brand<'_>>` is not satisfied
+  --> tests/compile_fail/indirectbr_non_pointer_address.rs:39:36
+   |
+39 |         let _ = b.build_indirectbr(addr, "");
+   |                   ---------------- ^^^^ the trait `IntoPointerValue<'_, Brand<'_>>` is not implemented for `IntValue<'_, i32, Brand<'_>>`
+   |                   |
+   |                   required by a bound introduced by this call
+   |
+   = help: the following other types implement trait `IntoPointerValue<'ctx, B>`:
+             ConstantPointerNull<'ctx, B>
+             PointerValue<'ctx, B>
+             TypedPointerValue<'ctx, T, B>
+             llvmkit_ir::Argument<'ctx, B>
+             llvmkit_ir::Instruction<'ctx, Attached, B>
+             llvmkit_ir::Value<'ctx, B>
+note: required by a bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_indirectbr`
+  --> src/ir_builder.rs
+   |
+   |     pub fn build_indirectbr<A, Name>(
+   |            ---------------- required by a bound in this associated function
+...
+   |         A: IntoPointerValue<'ctx, B>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_indirectbr`

@@ -301,3 +301,70 @@ fn indirectbr_multiple_destinations() -> Result<(), IrError> {
         Ok(())
     })
 }
+
+/// OP Slice 2: `build_indirectbr` binds the address by `IntoPointerValue`, so
+/// a typed [`PointerValue`] address is accepted directly (identity impl). It
+/// builds, prints the `indirectbr ptr ...` skeleton, and `verify()` passes.
+#[test]
+fn indirectbr_typed_pointer_address_builds_and_verifies() -> Result<(), IrError> {
+    Module::with_new("a", |m| {
+        let ptr_ty = m.ptr_type(0);
+        let void_ty = m.void_type();
+        let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let dest = f.append_basic_block(&m, "dest");
+        let dest_label = dest.label();
+        {
+            let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(dest);
+            bb_b.build_ret_void();
+        }
+        // A typed pointer handle: accepted by the identity `IntoPointerValue`.
+        let addr: PointerValue = f.param(0)?.try_into()?;
+        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let (_sealed, ibr) = b.build_indirectbr(addr, "")?;
+        let _closed = ibr.add_destination(dest_label)?.finish();
+        let text = format!("{m}");
+        assert!(
+            text.contains("indirectbr ptr %0, [label %dest]"),
+            "got:\n{text}"
+        );
+        m.verify()?;
+        Ok(())
+    })
+}
+
+/// OP Slice 2: an *erased* [`Value`](llvmkit_ir::Value) pointer address (the
+/// form the parser feeds `build_indirectbr`) still builds and verifies — the
+/// runtime-checked `IntoPointerValue for Value` impl narrows it back to a
+/// pointer at *build* time. Proves the tighter bound did not break the erased
+/// path.
+#[test]
+fn indirectbr_erased_value_pointer_address_builds_and_verifies() -> Result<(), IrError> {
+    Module::with_new("a", |m| {
+        let ptr_ty = m.ptr_type(0);
+        let void_ty = m.void_type();
+        let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let dest = f.append_basic_block(&m, "dest");
+        let dest_label = dest.label();
+        {
+            let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(dest);
+            bb_b.build_ret_void();
+        }
+        // Erase the pointer param to a bare `Value` before passing it — the
+        // runtime-checked `IntoPointerValue for Value` impl narrows it back.
+        let addr = f.param(0)?.as_value();
+        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let (_sealed, ibr) = b.build_indirectbr(addr, "")?;
+        let _closed = ibr.add_destination(dest_label)?.finish();
+        let text = format!("{m}");
+        assert!(
+            text.contains("indirectbr ptr %0, [label %dest]"),
+            "got:\n{text}"
+        );
+        m.verify()?;
+        Ok(())
+    })
+}
