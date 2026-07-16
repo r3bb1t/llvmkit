@@ -1139,7 +1139,7 @@ where
         let inner = self.inner.take().unwrap_or_else(|| {
             unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
         });
-        let (_terminated, open) = inner.build_switch(cond, default_dest.label, "")?;
+        let (_terminated, open) = inner.build_switch_dyn(cond, default_dest.label, "")?;
         let mut open = open;
         for (case_value, target) in cases {
             open = open.add_case(case_value, target.label).unwrap_or_else(|_| {

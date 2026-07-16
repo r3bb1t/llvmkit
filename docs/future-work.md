@@ -418,9 +418,9 @@ untouched. Two follow-ups remain deferred:
 (`feature-21/typed-terminator-operands`) — the program's move from a
 terminator's *edges* to its *operands*. The `switch` condition/case integer
 width is now a last, defaulted `W: IntWidth = IntDyn` parameter on
-`SwitchInst<'ctx, P, B, W>`; `IRBuilder::build_switch_typed::<W>` pins `W` and
+`SwitchInst<'ctx, P, B, W>`; `IRBuilder::build_switch::<W>` pins `W` and
 its `add_case` carries an `IntoIntValue<'ctx, W, B>` bound, so a wrong-width
-case value is a **compile error** (the erased `build_switch` keeps the runtime
+case value is a **compile error** (the erased `build_switch_dyn` keeps the runtime
 `TypeMismatch` check). And `build_indirectbr`'s address bound tightened from
 `IsValue` to `IntoPointerValue`, so a typed non-pointer jump address is a
 **compile error** (the pointer-ness check moves from `verify()` to build time;

@@ -128,7 +128,7 @@ fn switch_cfg_edges_include_default_then_cases() -> Result<(), IrError> {
         let val: IntValue<i8> = f.param(0)?.try_into()?;
         let (_sealed, switch) = IRBuilder::new_for::<()>(&m)
             .position_at_end(entry)
-            .build_switch(val, default_label, "")?;
+            .build_switch_dyn(val, default_label, "")?;
         let _closed = switch
             .add_case(i8_ty.const_int(0_i8), case0_label)?
             .add_case(i8_ty.const_int(1_i8), case1_label)?

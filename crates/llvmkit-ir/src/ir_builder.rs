@@ -118,13 +118,16 @@ pub type TypedBlockWithParams<'ctx, R, Params, B = Brand<'ctx>> = (
     <Params as FunctionParamList>::Values<'ctx, B>,
 );
 
-/// Pair returned by `switch` builders before the case list is closed.
+/// Pair returned by the width-erased [`IRBuilder::build_switch_dyn`] before
+/// the case list is closed. Erased sibling of
+/// [`TerminatedBlockSwitchTyped`], the way [`TerminatedBlockInvoke`] is of
+/// [`TerminatedBlockTypedInvoke`].
 pub type TerminatedBlockSwitch<'ctx, R, B = Brand<'ctx>> = (
     BasicBlock<'ctx, R, Terminated, B>,
     SwitchInst<'ctx, Open, B>,
 );
 
-/// Pair returned by the TYPED [`IRBuilder::build_switch_typed`] before the
+/// Pair returned by the TYPED [`IRBuilder::build_switch`] before the
 /// case list is closed: the terminated parent block plus an [`Open`],
 /// width-`W` [`SwitchInst`]. Every case added through the returned handle
 /// must share the condition's width `W` — a wrong-width case is a compile
@@ -6679,39 +6682,6 @@ where
         self.build_cond_br(cond, then_label, else_label)
     }
 
-    /// Produce `switch <cond>, label <default> [...]`. Mirrors
-    /// `IRBuilder::CreateSwitch`.
-    ///
-    /// Returns the terminated parent block plus an [`Open`]-typestate
-    /// [`SwitchInst`]. The caller adds
-    /// cases via [`SwitchInst::add_case`](SwitchInst::add_case)
-    /// (chainable) and seals the case list with
-    /// [`SwitchInst::finish`](SwitchInst::finish).
-    pub fn build_switch<C, DefaultTarget, Name>(
-        self,
-        cond: C,
-        default_target: DefaultTarget,
-        name: Name,
-    ) -> IrResult<TerminatedBlockSwitch<'ctx, R, B>>
-    where
-        Name: AsRef<str>,
-        C: IsValue<'ctx, B>,
-        DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
-    {
-        let default_target = default_target.into_basic_block_label();
-        let cond_v = cond.as_value();
-        let void_ty = self.module.void_type().as_type().id();
-        let payload =
-            crate::instr_types::SwitchInstData::new(cond_v.id, default_target.as_value().id);
-        let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
-        let module_ref = ModuleRef::<B>::new(self.module);
-        let bb = self.into_insert_block();
-        Ok((
-            bb.retag_termination::<Terminated>(),
-            SwitchInst::<Open, B>::from_raw(inst.as_value().id, module_ref, void_ty),
-        ))
-    }
-
     /// Produce a TYPED `switch <cond>, label <default> [...]` whose
     /// condition is a width-`W` integer. Mirrors `IRBuilder::CreateSwitch`
     /// with the case-value width statically pinned.
@@ -6723,12 +6693,16 @@ where
     /// `i64` literal on a `W = i32` switch) is a *compile* error — there
     /// is no `IntoIntValue<'ctx, W, B>` impl for the mismatched value —
     /// rather than the runtime [`IrError::TypeMismatch`] the width-erased
-    /// [`build_switch`](Self::build_switch) reports at
-    /// [`SwitchInst::add_case`]. Typed sibling of
-    /// [`build_switch`](Self::build_switch) (cf. `build_invoke` vs
-    /// `build_invoke_dyn`); the caller still seals the case list with
+    /// [`build_switch_dyn`](Self::build_switch_dyn) reports at
+    /// [`SwitchInst::add_case`]. The caller still seals the case list with
     /// [`SwitchInst::finish`](SwitchInst::finish).
-    pub fn build_switch_typed<W, C, DefaultTarget, Name>(
+    ///
+    /// Typed member of the pair, so it takes the unsuffixed name and its
+    /// erased sibling carries the `_dyn` — as with
+    /// [`build_call`](Self::build_call) / [`build_call_dyn`](Self::build_call_dyn)
+    /// and [`build_invoke`](Self::build_invoke) /
+    /// [`build_invoke_dyn`](Self::build_invoke_dyn).
+    pub fn build_switch<W, C, DefaultTarget, Name>(
         self,
         cond: C,
         default_target: DefaultTarget,
@@ -6751,6 +6725,47 @@ where
         Ok((
             bb.retag_termination::<Terminated>(),
             SwitchInst::<Open, B, W>::from_raw(inst.as_value().id, module_ref, void_ty),
+        ))
+    }
+
+    /// Produce a width-ERASED `switch <cond>, label <default> [...]`.
+    /// Mirrors `IRBuilder::CreateSwitch`.
+    ///
+    /// Returns the terminated parent block plus an [`Open`]-typestate
+    /// [`SwitchInst`]. The caller adds
+    /// cases via [`SwitchInst::add_case`](SwitchInst::add_case)
+    /// (chainable) and seals the case list with
+    /// [`SwitchInst::finish`](SwitchInst::finish).
+    ///
+    /// `cond` is bound by [`IsValue`], so the condition's width is not
+    /// pinned and `add_case` checks each case value at *runtime*
+    /// ([`IrError::TypeMismatch`]). Prefer the typed
+    /// [`build_switch`](Self::build_switch) where the width is statically
+    /// known — it makes a wrong-width case a compile error. This form is
+    /// what the `.ll` parser and the auto-SSA builder land on, since
+    /// neither knows the condition's width until run time.
+    pub fn build_switch_dyn<C, DefaultTarget, Name>(
+        self,
+        cond: C,
+        default_target: DefaultTarget,
+        name: Name,
+    ) -> IrResult<TerminatedBlockSwitch<'ctx, R, B>>
+    where
+        Name: AsRef<str>,
+        C: IsValue<'ctx, B>,
+        DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let default_target = default_target.into_basic_block_label();
+        let cond_v = cond.as_value();
+        let void_ty = self.module.void_type().as_type().id();
+        let payload =
+            crate::instr_types::SwitchInstData::new(cond_v.id, default_target.as_value().id);
+        let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let bb = self.into_insert_block();
+        Ok((
+            bb.retag_termination::<Terminated>(),
+            SwitchInst::<Open, B>::from_raw(inst.as_value().id, module_ref, void_ty),
         ))
     }
 

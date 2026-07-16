@@ -1052,7 +1052,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
 /// condition paired with an out-of-range `i32` case literal must fail
 /// with `IrError::ImmediateOverflow` from the pre-pass lift, and --
 /// unlike the old `IsValue`-bounded shape, where `SwitchInst::add_case`
-/// would only catch a bad case AFTER `build_switch` had already emitted
+/// would only catch a bad case AFTER `build_switch_dyn` had already emitted
 /// the terminator with its default target -- the printed module must
 /// show NO `switch` instruction at all: the failure happens strictly
 /// before the terminator is built.
@@ -1072,7 +1072,7 @@ fn switch_dyn_condition_bad_width_case_rejected_before_emit() -> Result<(), IrEr
         let b = b.switch_to_block(entry)?;
         // 1000 does not fit in the condition's actual 8-bit runtime
         // width -- the pre-pass lift via `IntoConstantInt<IntDyn>` must
-        // reject it before `build_switch` ever runs.
+        // reject it before `build_switch_dyn` ever runs.
         let bad_case = 1000_i32;
         match b.switch(cond, default_bb, [(bad_case, case_bb)]) {
             Err(IrError::ImmediateOverflow { bits: 8, .. }) => {}

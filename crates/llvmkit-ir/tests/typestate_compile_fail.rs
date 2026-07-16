@@ -124,7 +124,7 @@ fn typestate_compile_fail() {
     // across rustc versions.
     t.compile_fail("tests/compile_fail/block_call_wrong_arity.rs");
     t.compile_fail("tests/compile_fail/block_call_wrong_arg_type.rs");
-    // OP Slice 1 (typed `SwitchInst<W>`): `build_switch_typed` pins the
+    // OP Slice 1 (typed `SwitchInst<W>`): `build_switch` pins the
     // condition width `W`, so `SwitchInst::add_case` carries an
     // `IntoIntValue<'ctx, W, B>` bound and a wrong-width case value is a
     // compile error. The primary error is our own `IntoIntValue<'_, i32, _>`

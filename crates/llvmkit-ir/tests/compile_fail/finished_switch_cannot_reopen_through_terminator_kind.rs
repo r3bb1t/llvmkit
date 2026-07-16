@@ -16,7 +16,7 @@ fn main() {
         let dest_label = dest.label();
         let cond = f.param(0).unwrap();
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        let (sealed, switch) = b.build_switch(cond, dest_label, "").unwrap();
+        let (sealed, switch) = b.build_switch_dyn(cond, dest_label, "").unwrap();
         let _closed = switch.finish();
 
         if let Some(TerminatorKind::Switch(reopened)) = sealed.terminator().unwrap().terminator_kind() {

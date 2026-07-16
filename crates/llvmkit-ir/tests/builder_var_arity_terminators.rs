@@ -35,7 +35,7 @@ fn switch_three_cases_print_form() -> Result<(), IrError> {
         }
         let val: IntValue<i8> = f.param(0)?.try_into()?;
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        let (_sealed, switch) = b.build_switch(val, default_label, "")?;
+        let (_sealed, switch) = b.build_switch_dyn(val, default_label, "")?;
         let _closed = switch
             .add_case(i8_ty.const_int(0_i8), case0_label)?
             .add_case(i8_ty.const_int(1_i8), case1_label)?
@@ -87,7 +87,7 @@ fn switch_cases_reader_round_trips() -> Result<(), IrError> {
         }
         let val: IntValue<i8> = f.param(0)?.try_into()?;
         let builder = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        let (_sealed, switch) = builder.build_switch(val, default_label, "")?;
+        let (_sealed, switch) = builder.build_switch_dyn(val, default_label, "")?;
         let closed = switch
             .add_case(i8_ty.const_int(10_i8), a_label)?
             .add_case(i8_ty.const_int(20_i8), b_label)?
@@ -127,7 +127,7 @@ fn switch_no_cases_only_default() -> Result<(), IrError> {
         }
         let x: IntValue<i32> = f.param(0)?.try_into()?;
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        let (_sealed, switch) = b.build_switch(x, dest_label, "")?;
+        let (_sealed, switch) = b.build_switch_dyn(x, dest_label, "")?;
         let _closed = switch.finish();
         m.verify_borrowed()?;
         let text = format!("{m}");
@@ -139,7 +139,7 @@ fn switch_no_cases_only_default() -> Result<(), IrError> {
     })
 }
 
-/// Typed `build_switch_typed`: the width `W` is inferred from the typed
+/// Typed `build_switch`: the width `W` is inferred from the typed
 /// `i32` condition, and matching-width `i32` cases (a Rust literal and a
 /// `ConstantIntValue<i32>`) build, print the `switch i32 ...` form, and
 /// verify. The wrong-width negation is the `switch_case_wrong_width`
@@ -166,7 +166,7 @@ fn switch_typed_i32_matching_cases() -> Result<(), IrError> {
         let val: IntValue<i32> = f.param(0)?.try_into()?;
         let builder = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         // `W` is inferred as `i32` from `val: IntValue<i32>`.
-        let (_sealed, switch) = builder.build_switch_typed(val, default_label, "")?;
+        let (_sealed, switch) = builder.build_switch(val, default_label, "")?;
         let _closed = switch
             // Rust `i32` literal lifts to the `i32`-width case slot.
             .add_case(10_i32, a_label)?
@@ -185,7 +185,7 @@ fn switch_typed_i32_matching_cases() -> Result<(), IrError> {
     })
 }
 
-/// The width-erased `build_switch` is unchanged by `SwitchInst<W>`: it still
+/// The width-erased `build_switch_dyn` is unchanged by `SwitchInst<W>`: it still
 /// lands in `SwitchInst<IntDyn>` and its runtime-checked `add_case` still
 /// rejects a wrong-width case value with the runtime [`IrError::TypeMismatch`]
 /// the verifier would raise — a compile error is NOT forced on the erased
@@ -216,7 +216,7 @@ fn switch_erased_dyn_wrong_width_case_is_runtime_type_mismatch() -> Result<(), I
         // width; discipline is deferred to the runtime check below).
         let cond = f.param(0)?;
         let builder = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        let (_sealed, switch) = builder.build_switch(cond, default_label, "")?;
+        let (_sealed, switch) = builder.build_switch_dyn(cond, default_label, "")?;
         // A wrong-width (`i8`) case on the `i32` condition is a RUNTIME
         // `TypeMismatch`, not a compile error (`add_case` consumes `switch`).
         let err = switch

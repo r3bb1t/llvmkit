@@ -313,19 +313,19 @@ Extends the branching type-safety program from a terminator's *edges* to its
 address type now live in the Rust type system, so a wrong-width case value or a
 non-pointer jump address is a **compile error** rather than a runtime
 `TypeMismatch` / verifier rejection. Typing is **opt-in** — the erased authoring
-surface (`build_switch`, `build_indirectbr` with a runtime-checked `Value`
+surface (`build_switch_dyn`, `build_indirectbr` with a runtime-checked `Value`
 address) is untouched and keeps its existing runtime checks.
 
 #### Added
 
 - `SwitchInst<'ctx, P, B, W: IntWidth = IntDyn>` now threads the condition's
   integer width `W` as a **last, defaulted** type parameter, plus
-  `IRBuilder::build_switch_typed::<W>(cond, default, name)` — the typed sibling
-  of `build_switch` — which pins `W` from the typed condition and returns a
+  `IRBuilder::build_switch::<W>(cond, default, name)` — the typed sibling
+  of `build_switch_dyn` — which pins `W` from the typed condition and returns a
   `SwitchInst<…, W>`. On such a switch, `SwitchInst::add_case` carries an
   `IntoIntValue<'ctx, W, B>` bound, so a **wrong-width case value is a compile
   error** (an `i64` case on a `W = i32` switch has no `IntoIntValue<'_, i32, _>`
-  impl — never narrows). The erased `build_switch` still yields a
+  impl — never narrows). The erased `build_switch_dyn` still yields a
   `SwitchInst<…, IntDyn>` whose `add_case` keeps the runtime `TypeMismatch`
   check, and the parser / SSA-builder paths are unchanged (they land on the
   erased form).

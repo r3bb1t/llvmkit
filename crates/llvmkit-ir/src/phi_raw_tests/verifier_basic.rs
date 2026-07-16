@@ -29,7 +29,7 @@ fn verify_phi_predecessors_through_switch_passes() -> Result<(), IrError> {
         let x: IntValue<i32> = f.param(0)?.try_into()?;
         let (_sealed, switch) = IRBuilder::new_for::<i32>(&m)
             .position_at_end(entry)
-            .build_switch(x, join_label, "")?;
+            .build_switch_dyn(x, join_label, "")?;
         let _closed = switch
             .add_case(i32_ty.const_int(0_i32), join_label)?
             .finish();
@@ -62,7 +62,7 @@ fn verify_phi_predecessors_through_switch_rejects_missing_edge() -> Result<(), I
         let x: IntValue<i32> = f.param(0)?.try_into()?;
         let (_sealed, switch) = IRBuilder::new_for::<i32>(&m)
             .position_at_end(entry)
-            .build_switch(x, join_label, "")?;
+            .build_switch_dyn(x, join_label, "")?;
         let _closed = switch
             .add_case(i32_ty.const_int(0_i32), join_label)?
             .finish();
