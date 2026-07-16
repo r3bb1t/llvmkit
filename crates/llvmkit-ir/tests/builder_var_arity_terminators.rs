@@ -139,6 +139,94 @@ fn switch_no_cases_only_default() -> Result<(), IrError> {
     })
 }
 
+/// Typed `build_switch_typed`: the width `W` is inferred from the typed
+/// `i32` condition, and matching-width `i32` cases (a Rust literal and a
+/// `ConstantIntValue<i32>`) build, print the `switch i32 ...` form, and
+/// verify. The wrong-width negation is the `switch_case_wrong_width`
+/// compile-fail fixture (a bare `i64` case has no `IntoIntValue<i32>` impl).
+#[test]
+fn switch_typed_i32_matching_cases() -> Result<(), IrError> {
+    Module::with_new("switch_typed", |m| {
+        let i32_ty = m.i32_type();
+        let void_ty = m.void_type();
+        let fn_ty = m.fn_type(void_ty.as_type(), [i32_ty.as_type()], false);
+        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let default_bb = f.append_basic_block(&m, "default");
+        let a = f.append_basic_block(&m, "a");
+        let bb = f.append_basic_block(&m, "b");
+        let default_label = default_bb.label();
+        let a_label = a.label();
+        let b_label = bb.label();
+        for block in [default_bb, a, bb] {
+            IRBuilder::new_for::<()>(&m)
+                .position_at_end(block)
+                .build_ret_void();
+        }
+        let val: IntValue<i32> = f.param(0)?.try_into()?;
+        let builder = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        // `W` is inferred as `i32` from `val: IntValue<i32>`.
+        let (_sealed, switch) = builder.build_switch_typed(val, default_label, "")?;
+        let _closed = switch
+            // Rust `i32` literal lifts to the `i32`-width case slot.
+            .add_case(10_i32, a_label)?
+            // A same-width `ConstantIntValue<i32>` lifts too.
+            .add_case(i32_ty.const_int(20_i32), b_label)?
+            .finish();
+        m.verify_borrowed()?;
+        let text = format!("{m}");
+        assert!(
+            text.contains("switch i32 %0, label %default ["),
+            "got:\n{text}"
+        );
+        assert!(text.contains("    i32 10, label %a"), "got:\n{text}");
+        assert!(text.contains("    i32 20, label %b"), "got:\n{text}");
+        Ok(())
+    })
+}
+
+/// The width-erased `build_switch` is unchanged by `SwitchInst<W>`: it still
+/// lands in `SwitchInst<IntDyn>` and its runtime-checked `add_case` still
+/// rejects a wrong-width case value with the runtime [`IrError::TypeMismatch`]
+/// the verifier would raise — a compile error is NOT forced on the erased
+/// (parser / SSA-builder) path. Erased matching-width cases and their verify
+/// are covered by `switch_three_cases_print_form` / `switch_no_cases_only_default`
+/// above; this locks the erased flavour's runtime width check as intact
+/// defence in depth beneath what the typed flavour lifts to compile time.
+#[test]
+fn switch_erased_dyn_wrong_width_case_is_runtime_type_mismatch() -> Result<(), IrError> {
+    Module::with_new("switch_erased", |m| {
+        let i32_ty = m.i32_type();
+        let i8_ty = m.i8_type();
+        let void_ty = m.void_type();
+        let fn_ty = m.fn_type(void_ty.as_type(), [i32_ty.as_type()], false);
+        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let default_bb = f.append_basic_block(&m, "default");
+        let a = f.append_basic_block(&m, "a");
+        let default_label = default_bb.label();
+        let a_label = a.label();
+        for block in [default_bb, a] {
+            IRBuilder::new_for::<()>(&m)
+                .position_at_end(block)
+                .build_ret_void();
+        }
+        // Erased condition: `Argument` widens through the `IsValue` path, so
+        // the resulting switch is `SwitchInst<IntDyn>` (compiles for any case
+        // width; discipline is deferred to the runtime check below).
+        let cond = f.param(0)?;
+        let builder = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let (_sealed, switch) = builder.build_switch(cond, default_label, "")?;
+        // A wrong-width (`i8`) case on the `i32` condition is a RUNTIME
+        // `TypeMismatch`, not a compile error (`add_case` consumes `switch`).
+        let err = switch
+            .add_case(i8_ty.const_int(1_i8), a_label)
+            .expect_err("i8 case on i32 switch must be rejected at runtime");
+        assert!(matches!(err, IrError::TypeMismatch { .. }), "got: {err:?}");
+        Ok(())
+    })
+}
+
 // --------------------------------------------------------------------------
 // indirectbr
 // --------------------------------------------------------------------------

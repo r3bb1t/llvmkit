@@ -1,0 +1,37 @@
+error[E0277]: the trait bound `i64: IntoIntValue<'_, i32, Brand<'_>>` is not satisfied
+  --> tests/compile_fail/switch_case_wrong_width.rs:39:33
+   |
+39 |         let _ = switch.add_case(5_i64, dest_label);
+   |                        -------- ^^^^^ the trait `IntoIntValue<'_, i32, Brand<'_>>` is not implemented for `i64`
+   |                        |
+   |                        required by a bound introduced by this call
+   |
+help: `i64` implements trait `IntoIntValue<'ctx, W, B>`
+  --> src/int_width.rs
+   |
+   |           impl<'ctx, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, $marker, B> for $rust_ty {
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |           |
+   |           `IntoIntValue<'_, i128, B>`
+   |           `IntoIntValue<'_, i64, B>`
+...
+   |   impl_into_int_value_static!(i64, i64, i64_type);
+   |   ----------------------------------------------- in this macro invocation
+   |   impl_into_int_value_static!(i64, i128, i128_type);
+   |   ------------------------------------------------- in this macro invocation
+...
+   | /         impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoIntValue<'ctx, Width<N>, B>
+   | |             for $rust_ty
+   | |________________________^ `IntoIntValue<'_, Width<N>, B>`
+...
+   |   impl_into_int_value_width!(i64, 64);
+   |   ----------------------------------- in this macro invocation
+note: required by a bound in `SwitchInst::<'ctx, llvmkit_ir::term_open_state::Open, B, W>::add_case`
+  --> src/instructions.rs
+   |
+   |     pub fn add_case<V, R, Target>(self, case_value: V, target: Target) -> IrResult<Self>
+   |            -------- required by a bound in this associated function
+   |     where
+   |         V: IntoIntValue<'ctx, W, B>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `SwitchInst::<'ctx, Open, B, W>::add_case`
+   = note: this error originates in the macro `impl_into_int_value_static` which comes from the expansion of the macro `impl_into_int_value_width` (in Nightly builds, run with -Z macro-backtrace for more info)

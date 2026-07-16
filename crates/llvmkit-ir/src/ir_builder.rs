@@ -124,6 +124,16 @@ pub type TerminatedBlockSwitch<'ctx, R, B = Brand<'ctx>> = (
     SwitchInst<'ctx, Open, B>,
 );
 
+/// Pair returned by the TYPED [`IRBuilder::build_switch_typed`] before the
+/// case list is closed: the terminated parent block plus an [`Open`],
+/// width-`W` [`SwitchInst`]. Every case added through the returned handle
+/// must share the condition's width `W` — a wrong-width case is a compile
+/// error. Typed sibling of [`TerminatedBlockSwitch`].
+pub type TerminatedBlockSwitchTyped<'ctx, R, W, B = Brand<'ctx>> = (
+    BasicBlock<'ctx, R, Terminated, B>,
+    SwitchInst<'ctx, Open, B, W>,
+);
+
 /// Pair returned by `indirectbr` builders before destination insertion closes.
 pub type TerminatedBlockIndirectBr<'ctx, R, B = Brand<'ctx>> = (
     BasicBlock<'ctx, R, Terminated, B>,
@@ -6699,6 +6709,48 @@ where
         Ok((
             bb.retag_termination::<Terminated>(),
             SwitchInst::<Open, B>::from_raw(inst.as_value().id, module_ref, void_ty),
+        ))
+    }
+
+    /// Produce a TYPED `switch <cond>, label <default> [...]` whose
+    /// condition is a width-`W` integer. Mirrors `IRBuilder::CreateSwitch`
+    /// with the case-value width statically pinned.
+    ///
+    /// The width `W` is inferred from a typed integer `cond` (e.g. an
+    /// [`IntValue<'ctx, i32, B>`](crate::IntValue)); every case added
+    /// through the returned [`Open`]-typestate [`SwitchInst`] must share
+    /// that width `W`, so a wrong-width case (`IntValue<i64>` or a bare
+    /// `i64` literal on a `W = i32` switch) is a *compile* error — there
+    /// is no `IntoIntValue<'ctx, W, B>` impl for the mismatched value —
+    /// rather than the runtime [`IrError::TypeMismatch`] the width-erased
+    /// [`build_switch`](Self::build_switch) reports at
+    /// [`SwitchInst::add_case`]. Typed sibling of
+    /// [`build_switch`](Self::build_switch) (cf. `build_invoke` vs
+    /// `build_invoke_dyn`); the caller still seals the case list with
+    /// [`SwitchInst::finish`](SwitchInst::finish).
+    pub fn build_switch_typed<W, C, DefaultTarget, Name>(
+        self,
+        cond: C,
+        default_target: DefaultTarget,
+        name: Name,
+    ) -> IrResult<TerminatedBlockSwitchTyped<'ctx, R, W, B>>
+    where
+        W: IntWidth,
+        C: IntoIntValue<'ctx, W, B>,
+        Name: AsRef<str>,
+        DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let cond_id = IsValue::as_value(cond.into_int_value(module_ref)?).id;
+        let default_target = default_target.into_basic_block_label();
+        let void_ty = self.module.void_type().as_type().id();
+        let payload =
+            crate::instr_types::SwitchInstData::new(cond_id, default_target.as_value().id);
+        let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
+        let bb = self.into_insert_block();
+        Ok((
+            bb.retag_termination::<Terminated>(),
+            SwitchInst::<Open, B, W>::from_raw(inst.as_value().id, module_ref, void_ty),
         ))
     }
 

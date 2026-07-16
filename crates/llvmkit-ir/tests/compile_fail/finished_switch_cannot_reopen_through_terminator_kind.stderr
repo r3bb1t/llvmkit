@@ -4,4 +4,6 @@ error[E0599]: no method named `add_case` found for struct `SwitchInst<'_, llvmki
 23 |             let _ = reopened.add_case(i32_ty.const_int(1_i32), dest_label);
    |                              ^^^^^^^^ method not found in `SwitchInst<'_, llvmkit_ir::term_open_state::Closed, Brand<'_>>`
    |
-   = note: the method was found for `SwitchInst<'ctx, llvmkit_ir::term_open_state::Open, B>`
+   = note: the method was found for
+           - `SwitchInst<'ctx, llvmkit_ir::term_open_state::Open, B, W>`
+           - `SwitchInst<'ctx, llvmkit_ir::term_open_state::Open, B>`
