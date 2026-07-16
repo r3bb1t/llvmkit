@@ -19,18 +19,20 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 1516. Recounted on 2026-07-16 at the
+Total `#[test]` functions: 1517. Recounted on 2026-07-16 at the
 `feature-22/generic-narrowing` tip via the documented attribute-anchored grep
-below (`crates/llvmkit-ir` 1078 + `crates/llvmkit-asmparser` 430 +
+below (`crates/llvmkit-ir` 1079 + `crates/llvmkit-asmparser` 430 +
 `crates/llvmkit-support` 8). The prior 1372 header had drifted badly: it was
 genuine on 2026-07-10 but was never updated as the branches between that point
 and here landed their tests, so it understated the tree by 138 before this
 branch added anything. This branch's own contribution: the four
 `accept_folded_*` hostile-folder tests, the two `def_*_var` forged-handle tests,
 and the pointer address-space rows, all in
-`crates/llvmkit-ir/src/{ir_builder,ssa_builder}.rs::tests` (rows below). Note
-the 1513 written earlier *on this same branch* was already stale three commits
-later -- which is the point: treat this line as recount-on-touch, not
+`crates/llvmkit-ir/src/{ir_builder,ssa_builder}.rs::tests`, plus
+`tests/constant_folder_builder.rs::external_narrow_override_wrong_width_rejected_by_accept_folded_int`,
+which drives the same acceptor from outside the crate (rows below). Note both
+the 1513 and the 1516 written earlier *on this same branch* were stale within a
+few commits -- which is the point: treat this line as recount-on-touch, not
 incremental arithmetic. The 138-test gap is exactly what accumulates when a
 count is only ever adjusted by whoever remembers to. The 1372 point was
 recounted on 2026-07-10 via the documented
@@ -1350,6 +1352,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/src/ir_builder.rs::tests::hostile_native_typed_override_wrong_kind_rejected_by_accept_folded_cast_fp` | `llvm/include/llvm/IR/IRBuilderFolder.h` typed fold hook contract (`fold_cast_to_fp<K>`); the fourth and last `accept_folded_*` acceptor -- float twin of `..._rejected_by_accept_folded_cast_int`, checking a `fptrunc` fold result against a static destination kind | llvmkit-specific |
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::typed_and_dyn_int_add_fold_to_identical_constant` | `unittests/IR/ConstantsTest.cpp` constant-folding parity rows (folder produces the same `ConstantInt` regardless of the call shape used to reach it) | llvmkit-specific parity |
 | `crates/llvmkit-ir/tests/constant_folder_builder.rs::dyn_marker_fold_keeps_runtime_width_check` | `llvm/include/llvm/IR/IRBuilderFolder.h` `Value*` folder hook contract; locks the `IntValue<IntDyn>` builder-side TypeId re-check the typed-folder rewrite (task 5) preserves for erased markers | llvmkit-specific validation |
+| `crates/llvmkit-ir/tests/constant_folder_builder.rs::external_narrow_override_wrong_width_rejected_by_accept_folded_int` | `llvm/include/llvm/IR/IRBuilderFolder.h` typed fold hook contract, from the external-folder position; external counterpart of `src/ir_builder.rs::tests::hostile_native_typed_override_wrong_width_rejected_by_accept_folded_int` above -- same acceptor, same erased marker, reached without the `pub(crate)` `from_value_unchecked` those in-crate rows depend on. `NarrowingTypedFolder`'s **native** `fold_int_bin_op<W>` override builds its return with Slice 1.1's public `IntWidth::narrow`, the route that made this seam reachable from downstream code at all; the test file being an integration test outside the crate is what gives the folder a real downstream user's visibility, so the file compiling is itself the proof that the shape is writable. At `W = IntDyn` the narrow succeeds on a 64-bit payload (the marker asserts no width), so `accept_folded_int`'s **unconditional** check is the only remaining guard -- this row is why that unconditionality is load-bearing for external code, not merely defense-in-depth against in-crate folder bugs. Complements rather than weakens the `tests/compile_fail/folder_typed_wrong_width.rs` example-lock: that golden bars returning a *concrete* width from a generic override (`E0308`), which `narrow` never does -- it returns the caller's `W` | llvmkit-specific validation |
 | `crates/llvmkit-ir/tests/builder_typed_memory.rs::typed_alloca_load_store_round_trip_prints_identically_to_erased` | `llvm/include/llvm/IR/IRBuilder.h::CreateAlloca`/`CreateLoad`/`CreateStore` (opaque pointers have no upstream compile-time pointee overlay to port; anchored on the existing `alloca`/`load`/`store` print forms, e.g. `tests/medium_builder_int.rs`) | llvmkit-specific example-lock |
 | `crates/llvmkit-ir/tests/builder_typed_memory.rs::field_gep_projects_field_type_at_compile_time` | `test/Assembler/getelementptr.ll` (positive struct-GEP print-form anchor, shared with `tests/builder_gep.rs::struct_gep`; `getelementptr_struct.ll` is a negative fixture and was a misleading citation here) + `test/Assembler/flags.ll` `@gep_inbounds_nuw` (print-form anchor); `llvm/include/llvm/IR/IRBuilder.h::CreateStructGEP` (C++ narrows the field type only at runtime -- `build_field_gep::<S, I>`'s compile-time projection is llvmkit-specific; the `inbounds nuw` flag pair itself is ported) | llvmkit-specific example-lock |
 | `crates/llvmkit-ir/tests/compile_fail/typed_gep_bad_index.rs` | `llvm/include/llvm/IR/IRBuilder.h::CreateStructGEP` (C++ has no static analog for an out-of-range struct-field index -- the upstream check is a runtime assertion) | llvmkit-specific example-lock |
