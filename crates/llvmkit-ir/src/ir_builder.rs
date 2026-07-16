@@ -8605,4 +8605,47 @@ mod tests {
             Ok(())
         })
     }
+
+    /// Sibling of the `IntDyn` case above, at a *static* width. This is the
+    /// half `accept_folded_int`'s old `W::static_bits().is_none() &&`
+    /// short-circuit let through: the same `HostileTypedFolder` answers
+    /// `build_int_add::<i32, _, _, _>` with its 64-bit `stored` payload
+    /// rewrapped as `IntValue<'ctx, i32, B>`, and because the guard skipped
+    /// the TypeId compare whenever the marker was static, the builder
+    /// accepted it -- handing back an `IntValue<'_, i32>` whose real IR type
+    /// is `i64`. A mistyped handle escaping into user code.
+    ///
+    /// The static marker is not self-guaranteeing: `from_value_unchecked`
+    /// mints an `IntValue<W>` without ever consulting the payload's runtime
+    /// type, so `W` is only as honest as the in-crate caller that wrote it.
+    /// The acceptor now compares TypeIds for every marker, which is exactly
+    /// what this test locks.
+    #[test]
+    fn hostile_native_typed_override_wrong_width_rejected_at_static_width() -> Result<(), IrError> {
+        Module::with_new("hostile-typed-folder-static", |m| {
+            let i32_ty = m.i32_type();
+            let i64_ty = m.i64_type();
+            let fn_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+
+            // `stored`'s REAL IR type is i64; the folder hands it back as
+            // `IntValue<W>` for whatever `W` the builder asks for -- here i32.
+            let stored: IntValue<'_, i64, _> =
+                IntValue::from_value_unchecked(i64_ty.const_zero().as_value());
+            let folder = HostileTypedFolder { stored };
+            let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+
+            let lhs = i32_ty.const_int(1_i32);
+            let rhs = i32_ty.const_int(2_i32);
+
+            let err = b
+                .build_int_add::<i32, _, _, _>(lhs, rhs, "sum")
+                .expect_err("wrong-width fold result must be rejected at a static width too");
+
+            assert!(matches!(err, IrError::TypeMismatch { .. }));
+            assert_eq!(b.insert_block().instructions().len(), 0);
+            Ok(())
+        })
+    }
 }
