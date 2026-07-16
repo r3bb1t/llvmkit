@@ -31,9 +31,13 @@ pub trait FloatKind: sealed::Sealed + Copy + 'static + fmt::Debug {
     /// Narrow an erased [`Value`] to this kind, **proving** the marker.
     ///
     /// The generic counterpart of the per-marker
-    /// `TryFrom<Value> for FloatValue<'ctx, K, B>` impls — callable from
-    /// code that is generic over `K`, which `TryFrom` is not (it is
-    /// implemented per concrete marker only). Every implementation
+    /// `TryFrom<Value> for FloatValue<'ctx, K, B>` impls, which exist only
+    /// per concrete marker — never as a blanket over `K`. A bare
+    /// `K: FloatKind` bound therefore affords narrowing here, whereas
+    /// reaching `TryFrom` from generic code forces a
+    /// `where FloatValue<'ctx, K, B>: TryFrom<Value<'ctx, B>>` clause onto
+    /// every downstream signature, and is not expressible at all where a
+    /// trait impl fixes the signature for you. Every implementation
     /// delegates to the matching `TryFrom`, so a non-matching value
     /// yields [`IrError::TypeMismatch`] exactly as it does today.
     ///

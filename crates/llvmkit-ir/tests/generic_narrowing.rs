@@ -5,14 +5,17 @@
 //!
 //! `TryFrom<Value> for IntValue<'ctx, W, B>` is implemented **per
 //! concrete marker only** (`IntDyn`, the Rust scalars, `Width<N>`).
-//! There is no blanket impl for a generic `W`, so code that is generic
-//! over the width marker could not narrow at all — it had to re-attach
-//! the marker by assertion via the `pub(super)`
+//! There is no blanket impl for a generic `W`. Reaching `TryFrom` from
+//! generic code was therefore possible only by propagating a
+//! `where IntValue<'ctx, W, B>: TryFrom<Value<'ctx, B>>` clause through
+//! every downstream signature — and not expressible at all where a trait
+//! impl fixes the signature for you. In practice the crate did neither:
+//! it re-attached the marker by assertion via the `pub(super)`
 //! `IntValue::from_value_unchecked`, i.e. a marker applied without
 //! proof.
 //!
 //! The headline tests below (`narrow_generic` / `narrow_generic_float`)
-//! are helpers that **could not be written before this slice**. Every
+//! narrow behind a **bare** `W: IntWidth` / `K: FloatKind` bound. Every
 //! other test here pins the behaviour those helpers inherit from the
 //! per-marker `TryFrom` impls they delegate to.
 //!

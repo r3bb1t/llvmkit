@@ -49,9 +49,13 @@ pub trait IntWidth: sealed::Sealed + Copy + 'static + fmt::Debug {
     /// Narrow an erased [`Value`] to this width, **proving** the marker.
     ///
     /// The generic counterpart of the per-marker
-    /// `TryFrom<Value> for IntValue<'ctx, W, B>` impls — callable from
-    /// code that is generic over `W`, which `TryFrom` is not (it is
-    /// implemented per concrete marker only). Every implementation
+    /// `TryFrom<Value> for IntValue<'ctx, W, B>` impls, which exist only
+    /// per concrete marker ([`IntDyn`], the Rust scalars, [`Width<N>`](Width))
+    /// — never as a blanket over `W`. A bare `W: IntWidth` bound therefore
+    /// affords narrowing here, whereas reaching `TryFrom` from generic code
+    /// forces a `where IntValue<'ctx, W, B>: TryFrom<Value<'ctx, B>>` clause
+    /// onto every downstream signature, and is not expressible at all where
+    /// a trait impl fixes the signature for you. Every implementation
     /// delegates to the matching `TryFrom`, so the error split is
     /// inherited rather than restated:
     ///
