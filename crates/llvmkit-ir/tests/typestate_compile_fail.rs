@@ -115,4 +115,13 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/uncond_br_edit_has_no_remove.rs");
     t.compile_fail("tests/compile_fail/switch_edit_has_no_remove_default.rs");
     t.compile_fail("tests/compile_fail/cond_br_edit_remove_consumes.rs");
+    // BP Slice 3 (typed `BlockCall` edge): `BasicBlockLabel::call` carries a
+    // `CallArgs<Params>` bound, so seeding a typed block's head-phis with the
+    // wrong arity or a wrong-typed argument is a compile error. Each fixture's
+    // primary error is one of OUR OWN stable messages — `CallArgs`'s
+    // `#[diagnostic::on_unimplemented]` (wrong arity) or the root
+    // `IntoIntValue<i32>` trait bound (wrong lifted type) — which do not drift
+    // across rustc versions.
+    t.compile_fail("tests/compile_fail/block_call_wrong_arity.rs");
+    t.compile_fail("tests/compile_fail/block_call_wrong_arg_type.rs");
 }

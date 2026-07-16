@@ -6,8 +6,8 @@ error[E0308]: mismatched types
    |                       |
    |                       arguments to this function are incorrect
    |
-   = note: expected struct `llvmkit_ir::BasicBlock<'_, _, Unterminated, _>`
-              found struct `llvmkit_ir::BasicBlock<'_, (), Terminated, Brand<'_>>`
+   = note: expected struct `llvmkit_ir::BasicBlock<'_, _, Unterminated, _, BlockParamsDyn>`
+              found struct `llvmkit_ir::BasicBlock<'_, (), Terminated, Brand<'_>, BlockParamsDyn>`
 note: associated function defined here
   --> src/iter.rs
    |

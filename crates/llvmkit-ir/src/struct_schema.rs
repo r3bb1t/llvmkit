@@ -616,6 +616,17 @@ where
     {
         <S::FieldParams as FunctionParamList>::values(function, validated)
     }
+
+    #[inline]
+    fn values_from_phi_values<'ctx, B>(
+        phi_values: &[Value<'ctx, B>],
+        validated: &ValidatedFunctionParams<'_>,
+    ) -> Self::Values<'ctx, B>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        <S::FieldParams as FunctionParamList>::values_from_phi_values(phi_values, validated)
+    }
 }
 
 impl<'ctx, B, S, A> CallArgs<'ctx, StructFields<S>, B> for A
@@ -723,5 +734,16 @@ where
             StructValue::from_value_unchecked(arg.as_value()),
             &validated,
         )
+    }
+
+    fn value_from_value<'ctx, B>(
+        value: Value<'ctx, B>,
+        _validated: &ValidatedFunctionParams<'_>,
+    ) -> Self::Value<'ctx, B>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        let validated = ValidatedStructValue::new();
+        S::Value::from_struct_value(StructValue::from_value_unchecked(value), &validated)
     }
 }
