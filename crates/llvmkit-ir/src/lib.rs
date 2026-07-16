@@ -165,7 +165,7 @@ pub use attributes::{
     AttrIndex, AttrKind, Attribute, AttributeList, AttributeSet, AttributeStorage, MemoryEffects,
     MemoryLocation, ModRefInfo,
 };
-pub use basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
+pub use basic_block::{BasicBlock, BasicBlockLabel, BlockCall, IntoBasicBlockLabel};
 pub use block_params::{BlockParams, BlockParamsDyn};
 pub use block_state::{BlockTerminationState, Terminated, Unterminated};
 pub use calling_conv::CallingConv;

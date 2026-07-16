@@ -21,6 +21,7 @@
 use super::block_params::{BlockParams, BlockParamsDyn};
 use super::block_state::{BlockTerminationState, Unterminated};
 use super::function::FunctionValue;
+use super::function_signature::{CallArgs, FunctionParamList};
 use super::instruction::{InstructionKindData, InstructionView};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
@@ -200,6 +201,22 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
             ty: self.ty,
         }
     }
+
+    /// Drop the typed parameter marker, yielding the parameter-erased
+    /// ([`BlockParamsDyn`]) label form. Crate-internal: the typed branch
+    /// builders lower a [`BlockCall`] to this erased label before reusing the
+    /// erased phi-seeding path, which is written against the `BlockParamsDyn`
+    /// label.
+    #[inline]
+    pub(crate) fn erase_params(self) -> BasicBlockLabel<'ctx, R, B> {
+        BasicBlockLabel {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+            _r: PhantomData,
+            _params: PhantomData,
+        }
+    }
 }
 
 mod block_label_sealed {
@@ -299,6 +316,109 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoBasicBlockLabel<'ctx, R, 
     #[inline]
     fn into_basic_block_label(self) -> BasicBlockLabel<'ctx, R, B> {
         self.label()
+    }
+}
+
+// --------------------------------------------------------------------------
+// Typed control-flow edge bundle
+// --------------------------------------------------------------------------
+
+/// A typed control-flow edge: a branch target ([`BasicBlockLabel`]) stamped
+/// with its parameter schema `Params`, paired with the block-argument values
+/// that seed the target's leading head-phis on that edge.
+///
+/// Constructed by [`BasicBlockLabel::call`] (or, ergonomically,
+/// [`BasicBlock::call`]) on a **typed** label/block — one produced by
+/// [`IRBuilder::append_block_typed`](crate::IRBuilder::append_block_typed). The
+/// argument tuple is checked against `Params` at **compile time** through the
+/// [`CallArgs<Params>`](crate::CallArgs) bound on `.call()`: a wrong arity has
+/// no `CallArgs` impl and a wrong-typed position fails its per-position
+/// [`IntoCallArg`](crate::IntoCallArg) bound, so a mismatched edge does not
+/// compile — the same machinery that guards typed `build_call`.
+///
+/// The arguments are lowered eagerly at construction (the typed label carries
+/// its owning module), so `.call()` stays infallible and ergonomic. Any
+/// *value-level* lowering failure — the fallibility [`CallArgs::lower`] carries,
+/// e.g. a cross-module constant — is captured and re-surfaced when the bundle
+/// is consumed by
+/// [`IRBuilder::build_br_call`](crate::IRBuilder::build_br_call) /
+/// [`IRBuilder::build_cond_br_call`](crate::IRBuilder::build_cond_br_call),
+/// where a `?` is already expected.
+pub struct BlockCall<
+    'ctx,
+    R: ReturnMarker,
+    B: ModuleBrand = Brand<'ctx>,
+    Params: BlockParams = BlockParamsDyn,
+> {
+    target: BasicBlockLabel<'ctx, R, B, Params>,
+    /// The edge's block-arguments lowered to arena value-ids in declaration
+    /// order, or the deferred lowering error to surface at build time. The
+    /// arity and per-position types are already fixed by the compile-time
+    /// [`CallArgs<Params>`](crate::CallArgs) bound, so this only carries the
+    /// value-level fallibility of [`CallArgs::lower`].
+    lowered: IrResult<Box<[ValueId]>>,
+}
+
+impl<'ctx, R, B, Params> BasicBlockLabel<'ctx, R, B, Params>
+where
+    R: ReturnMarker,
+    B: ModuleBrand + 'ctx,
+    Params: BlockParams + FunctionParamList,
+{
+    /// Bundle this typed branch target with the block-arguments that seed its
+    /// leading head-phis, forming a [`BlockCall`] edge for
+    /// [`IRBuilder::build_br_call`](crate::IRBuilder::build_br_call) /
+    /// [`IRBuilder::build_cond_br_call`](crate::IRBuilder::build_cond_br_call).
+    ///
+    /// `args` must be an argument tuple matching this block's `Params` schema:
+    /// the [`CallArgs<'ctx, Params, B>`](crate::CallArgs) bound makes a wrong
+    /// arity or a wrong-typed position a **compile** error, reusing the exact
+    /// machinery of a typed `build_call`. The values are lowered here (this
+    /// label carries its module), so `.call()` is infallible; a value-level
+    /// lowering failure is deferred into the returned [`BlockCall`] and surfaces
+    /// when the branch builder consumes it.
+    #[inline]
+    pub fn call<A>(self, args: A) -> BlockCall<'ctx, R, B, Params>
+    where
+        A: CallArgs<'ctx, Params, B>,
+    {
+        let lowered = args.lower(self.module);
+        BlockCall {
+            target: self,
+            lowered,
+        }
+    }
+}
+
+impl<'ctx, R, Term, B, Params> BasicBlock<'ctx, R, Term, B, Params>
+where
+    R: ReturnMarker,
+    Term: BlockTerminationState,
+    B: ModuleBrand + 'ctx,
+    Params: BlockParams + FunctionParamList,
+{
+    /// Convenience wrapper for `self.label().call(args)`: bundle this typed
+    /// block as a branch target with the block-arguments that seed its head-phis.
+    /// Borrows the block, so the handle stays usable (e.g. to reposition the
+    /// builder into it afterwards). See [`BasicBlockLabel::call`].
+    #[inline]
+    pub fn call<A>(&self, args: A) -> BlockCall<'ctx, R, B, Params>
+    where
+        A: CallArgs<'ctx, Params, B>,
+    {
+        self.label().call(args)
+    }
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
+    BlockCall<'ctx, R, B, Params>
+{
+    /// Decompose into the parameter-erased target label and the edge's
+    /// lowered-or-deferred block-arguments. Crate-internal: the typed branch
+    /// builders consume the bundle here, then reuse the erased phi-seeding path.
+    #[inline]
+    pub(crate) fn into_parts(self) -> (BasicBlockLabel<'ctx, R, B>, IrResult<Box<[ValueId]>>) {
+        (self.target.erase_params(), self.lowered)
     }
 }
 

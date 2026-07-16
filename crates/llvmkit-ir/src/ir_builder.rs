@@ -40,8 +40,8 @@ use core::marker::PhantomData;
 use super::align::{Align, MaybeAlign};
 use super::array_len::ArrayLen;
 use super::atomic_ordering::AtomicOrdering;
-use super::basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
-use super::block_params::BlockParams;
+use super::basic_block::{BasicBlock, BasicBlockLabel, BlockCall, IntoBasicBlockLabel};
+use super::block_params::{BlockParams, BlockParamsDyn};
 use super::block_state::{Terminated, Unterminated};
 use super::calling_conv::CallingConv;
 use super::cmp_predicate::CmpPredicate;
@@ -380,14 +380,24 @@ where
     /// Position the builder at the end of `bb`. Mirrors
     /// `IRBuilder::SetInsertPoint(BasicBlock*)`. The block's
     /// [`ReturnMarker`] must match the builder's.
-    pub fn position_at_end(
+    ///
+    /// Accepts a block carrying any parameter schema `Params` — including a
+    /// typed block from
+    /// [`append_block_typed`](Self::append_block_typed) — so a typed
+    /// [`BlockCall`] target can be given a body. The parameter marker is
+    /// irrelevant to insertion (it constrains only branch edges), so it is
+    /// erased at the insertion point.
+    pub fn position_at_end<Params>(
         self,
-        bb: BasicBlock<'ctx, R, Unterminated, B>,
-    ) -> IRBuilder<'m, 'ctx, B, F, Positioned, R> {
+        bb: BasicBlock<'ctx, R, Unterminated, B, Params>,
+    ) -> IRBuilder<'m, 'ctx, B, F, Positioned, R>
+    where
+        Params: BlockParams,
+    {
         IRBuilder {
             module: self.module,
             _module: PhantomData,
-            insert_block: Some(bb),
+            insert_block: Some(bb.retag_params::<BlockParamsDyn>()),
             insert_before: None,
             folder: self.folder,
             fmf: self.fmf,
@@ -756,6 +766,14 @@ where
     /// `(IntValue<'_, i32, B>, PointerValue<'_, B>)`. The parameter types are
     /// built before the block is appended, so a construction failure leaves no
     /// half-built block behind.
+    ///
+    /// Typed parameter tuples are capped at arity 12: a `Params` tuple with
+    /// more than twelve entries does not implement [`BlockParams`] (the standard
+    /// library stops deriving `Debug` past arity 12) and so is rejected with a
+    /// `BlockParams`-unsatisfied trait-bound error. A block with more than twelve
+    /// parameters must use the erased
+    /// [`BlockParamsDyn`] form via
+    /// [`append_block_with_params`](Self::append_block_with_params).
     pub fn append_block_typed<Params, Name>(
         &self,
         function: FunctionValue<'ctx, R, B>,
@@ -792,12 +810,18 @@ where
     F: IRBuilderFolder<'ctx, B>,
     R: ReturnMarker,
 {
-    /// Re-position the builder at the end of `bb`.
-    pub fn position_at_end(self, bb: BasicBlock<'ctx, R, Unterminated, B>) -> Self {
+    /// Re-position the builder at the end of `bb`. Accepts any parameter
+    /// schema `Params` (including a typed block from
+    /// [`append_block_typed`](Self::append_block_typed)); the marker is erased
+    /// at the insertion point, which does not constrain block parameters.
+    pub fn position_at_end<Params>(self, bb: BasicBlock<'ctx, R, Unterminated, B, Params>) -> Self
+    where
+        Params: BlockParams,
+    {
         Self {
             module: self.module,
             _module: PhantomData,
-            insert_block: Some(bb),
+            insert_block: Some(bb.retag_params::<BlockParamsDyn>()),
             insert_before: None,
             folder: self.folder,
             fmf: self.fmf,
@@ -6551,6 +6575,98 @@ where
             self.phi_add_incoming_from_value(phi_val, *arg, pred_block.copy_handle())?;
         }
         Ok(())
+    }
+
+    /// Rebuild the erased [`Value`] handles a [`BlockCall`] lowered to
+    /// value-ids, sourcing each id's IR type from the arena. Shared by the
+    /// typed branch builders to feed the erased
+    /// [`add_block_args`](Self::add_block_args) phi-seeding path.
+    fn block_call_arg_values(&self, arg_ids: &[ValueId]) -> Vec<Value<'ctx, B>> {
+        let module_ref = ModuleRef::<B>::new(self.module);
+        arg_ids
+            .iter()
+            .map(|&id| {
+                let ty = self.module.context().value_data(id).ty;
+                Value::from_parts(id, module_ref, ty)
+            })
+            .collect()
+    }
+
+    /// Produce `br label %target` for a **typed** [`BlockCall`] edge, seeding
+    /// `target`'s leading head-phis with the edge's block-arguments. The typed
+    /// analog of [`build_br_with_args`](Self::build_br_with_args): the argument
+    /// arity and per-position types were already fixed at *compile* time by the
+    /// [`CallArgs<Params>`](crate::CallArgs) bound on
+    /// [`BasicBlockLabel::call`](crate::BasicBlockLabel::call) when the
+    /// [`BlockCall`] was built, so no mistyped or mis-sized edge can reach here.
+    ///
+    /// A distinct name from the label-taking [`build_br`](Self::build_br): both
+    /// are inherent methods on the same builder type, so they cannot share the
+    /// `build_br` name, and a [`BlockCall`] argument does not implement
+    /// [`IntoBasicBlockLabel`] (it carries edge arguments the label form does
+    /// not), so overloading by argument type is not possible either. The
+    /// erased [`build_br`](Self::build_br) /
+    /// [`build_br_with_args`](Self::build_br_with_args) are left unchanged.
+    ///
+    /// This still returns [`IrResult`]: the [`BlockCall`]'s eager argument
+    /// lowering may have failed at a value level (the fallibility
+    /// [`CallArgs::lower`](crate::CallArgs) carries), and that deferred error is
+    /// surfaced here before the branch is emitted. Consumes `self`; the target
+    /// may be in any termination state (a back-edge targets an already-terminated
+    /// block).
+    pub fn build_br_call<Params>(
+        self,
+        target: BlockCall<'ctx, R, B, Params>,
+    ) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+    where
+        Params: BlockParams + FunctionParamList,
+    {
+        let (label, lowered) = target.into_parts();
+        let arg_ids = lowered?;
+        let args = self.block_call_arg_values(&arg_ids);
+        // Capture the predecessor label before the terminator builder consumes
+        // `self` — the incoming edges name *this* block as their predecessor.
+        let pred = self.insert_block().label();
+        self.add_block_args(label, pred, &args)?;
+        self.build_br(label)
+    }
+
+    /// Produce `br i1 <cond>, label %then, label %else` for two **typed**
+    /// [`BlockCall`] edges, seeding each successor's leading head-phis with its
+    /// own edge's block-arguments. The typed analog of
+    /// [`build_cond_br_with_args`](Self::build_cond_br_with_args); each edge's
+    /// arity and per-position types were fixed at *compile* time by the
+    /// [`CallArgs<Params>`](crate::CallArgs) bound when its [`BlockCall`] was
+    /// built. The two edges may carry different parameter schemas.
+    ///
+    /// Named `build_cond_br_call` for the same reason as
+    /// [`build_br_call`](Self::build_br_call) — it cannot reuse the
+    /// label-taking [`build_cond_br`](Self::build_cond_br) name. Any deferred
+    /// value-level lowering error from either edge is surfaced here before the
+    /// branch is emitted; the `then` edge is lowered and checked first.
+    ///
+    /// Consumes `self`; both targets may be in any termination state.
+    pub fn build_cond_br_call<C, ThenP, ElseP>(
+        self,
+        cond: C,
+        then_call: BlockCall<'ctx, R, B, ThenP>,
+        else_call: BlockCall<'ctx, R, B, ElseP>,
+    ) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+    where
+        C: IntoIntValue<'ctx, bool, B>,
+        ThenP: BlockParams + FunctionParamList,
+        ElseP: BlockParams + FunctionParamList,
+    {
+        let (then_label, then_lowered) = then_call.into_parts();
+        let (else_label, else_lowered) = else_call.into_parts();
+        let then_ids = then_lowered?;
+        let else_ids = else_lowered?;
+        let then_args = self.block_call_arg_values(&then_ids);
+        let else_args = self.block_call_arg_values(&else_ids);
+        let pred = self.insert_block().label();
+        self.add_block_args(then_label, pred, &then_args)?;
+        self.add_block_args(else_label, pred, &else_args)?;
+        self.build_cond_br(cond, then_label, else_label)
     }
 
     /// Produce `switch <cond>, label <default> [...]`. Mirrors
