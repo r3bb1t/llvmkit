@@ -45,6 +45,34 @@ pub trait IntWidth: sealed::Sealed + Copy + 'static + fmt::Debug {
     /// Static bit-width if known at compile time, else `None` (used by
     /// [`IntDyn`]).
     fn static_bits() -> Option<u32>;
+
+    /// Narrow an erased [`Value`] to this width, **proving** the marker.
+    ///
+    /// The generic counterpart of the per-marker
+    /// `TryFrom<Value> for IntValue<'ctx, W, B>` impls, which exist only
+    /// per concrete marker ([`IntDyn`], the Rust scalars, [`Width<N>`](Width))
+    /// — never as a blanket over `W`. A bare `W: IntWidth` bound therefore
+    /// affords narrowing here, whereas reaching `TryFrom` from generic code
+    /// forces a `where IntValue<'ctx, W, B>: TryFrom<Value<'ctx, B>>` clause
+    /// onto every downstream signature, and is not expressible at all where
+    /// a trait impl fixes the signature for you. Every implementation
+    /// delegates to the matching `TryFrom`, so the error split is
+    /// inherited rather than restated:
+    ///
+    /// - right kind, wrong width → [`IrError::OperandWidthMismatch`]
+    /// - wrong kind entirely → [`IrError::TypeMismatch`]
+    ///
+    /// [`IntDyn`] accepts any integer width.
+    ///
+    /// ```
+    /// # use llvmkit_ir::{IntValue, IntWidth, IrResult, ModuleBrand, Value};
+    /// fn narrow_generic<'ctx, W: IntWidth, B: ModuleBrand + 'ctx>(
+    ///     v: Value<'ctx, B>,
+    /// ) -> IrResult<IntValue<'ctx, W, B>> {
+    ///     W::narrow(v)
+    /// }
+    /// ```
+    fn narrow<'ctx, B: ModuleBrand + 'ctx>(v: Value<'ctx, B>) -> IrResult<IntValue<'ctx, Self, B>>;
 }
 
 macro_rules! impl_int_width_scalar {
@@ -54,6 +82,12 @@ macro_rules! impl_int_width_scalar {
             #[inline]
             fn static_bits() -> Option<u32> {
                 Some($bits)
+            }
+            #[inline]
+            fn narrow<'ctx, B: ModuleBrand + 'ctx>(
+                v: Value<'ctx, B>,
+            ) -> IrResult<IntValue<'ctx, Self, B>> {
+                IntValue::<'ctx, Self, B>::try_from(v)
             }
         }
     };
@@ -82,6 +116,10 @@ impl IntWidth for IntDyn {
     #[inline]
     fn static_bits() -> Option<u32> {
         None
+    }
+    #[inline]
+    fn narrow<'ctx, B: ModuleBrand + 'ctx>(v: Value<'ctx, B>) -> IrResult<IntValue<'ctx, Self, B>> {
+        IntValue::<'ctx, Self, B>::try_from(v)
     }
 }
 
@@ -121,6 +159,10 @@ impl<const N: u32> IntWidth for Width<N> {
     #[inline]
     fn static_bits() -> Option<u32> {
         Some(N)
+    }
+    #[inline]
+    fn narrow<'ctx, B: ModuleBrand + 'ctx>(v: Value<'ctx, B>) -> IrResult<IntValue<'ctx, Self, B>> {
+        IntValue::<'ctx, Self, B>::try_from(v)
     }
 }
 
@@ -721,9 +763,7 @@ pub trait StaticIntWidth: IntWidth {
     const STATIC_BITS: u32;
     /// Project the marker into the matching [`IntType`] from the
     /// caller's module.
-    fn ir_type<'ctx, B: ModuleBrand + 'ctx>(module: ModuleRef<'ctx, B>) -> IntType<'ctx, Self, B>
-    where
-        Self: Sized;
+    fn ir_type<'ctx, B: ModuleBrand + 'ctx>(module: ModuleRef<'ctx, B>) -> IntType<'ctx, Self, B>;
 }
 
 macro_rules! impl_static_int_width {

@@ -840,21 +840,33 @@ where
 
     /// Braun `writeVariable`: pure bookkeeping, no IR emitted.
     ///
-    /// D11: the engine's
-    /// trivial-phi RAUW (`try_remove_trivial_phi`) assumes every value
-    /// ever written for a variable shares that variable's pinned `ty`.
-    /// For a statically-widthed `var` (`W::static_bits().is_some()`)
-    /// this holds by construction -- `value` was lifted through
-    /// `IntoIntValue<W>`, and `var` was declared via `W::ir_type`, so
-    /// the two `W`s (and therefore the two types) are the same type by
-    /// the type system alone; the runtime check below monomorphizes
-    /// away (see the private `IRBuilder::accept_folded_int` helper for
-    /// the same pattern applied to fold results). For a dyn-declared
-    /// `var` (`declare_int_var_dyn`, `W = IntDyn`) the marker only
-    /// proves "some integer width" -- `IntoIntValue<IntDyn>` happily
-    /// lifts a DIFFERENT width than `var.ty` pins, so the width must be
-    /// checked at runtime here, the one seam where an external value
-    /// enters `current_def`.
+    /// D11: the engine's trivial-phi RAUW (`try_remove_trivial_phi`)
+    /// assumes every value ever written for a variable shares that
+    /// variable's pinned `ty`. This is the one seam where an external
+    /// value enters `current_def`, so it is where that invariant is
+    /// established -- for **every** marker, static ones included.
+    ///
+    /// A static `W` does not establish it by itself. `IntoIntValue<W>` is
+    /// the *identity* on `IntValue<W>` (`int_width.rs`), so the lift adds
+    /// no check of its own, and the crate-internal
+    /// `IntValue::from_value_unchecked` mints an `IntValue<W>` without
+    /// consulting the payload's real type. An in-crate caller can
+    /// therefore hand a handle whose IR type contradicts `W` straight to
+    /// this method. Keying the check on `W::static_bits().is_none()`
+    /// would trust the very claim it exists to verify -- the caller's word
+    /// that `W` matches the payload -- so the check is unconditional
+    /// (`def_int_var_rejects_forged_static_width_handle` locks the static
+    /// half; `tests/ssa_builder.rs`'s `dyn_int_var_wrong_width_def_rejected`
+    /// the dyn one).
+    ///
+    /// No false rejections at a static `W`: [`Self::declare_int_var`]
+    /// pins `var.ty` to `W::ir_type(..)`, and types are interned by width
+    /// (`llvm_context.rs` memoizes `int_type(bits)`), so a correctly typed
+    /// value always compares equal. For a dyn-declared `var`
+    /// ([`Self::declare_int_var_dyn`], `W = IntDyn`) the marker proves
+    /// only "some integer width" while `var.ty` names the actual one --
+    /// `IntoIntValue<IntDyn>` happily lifts a DIFFERENT width than `var.ty`
+    /// pins, which is the case this check was originally written for.
     pub fn def_int_var<W: IntWidth, V>(
         &mut self,
         var: IntVariable<'ctx, W, B>,
@@ -865,12 +877,7 @@ where
     {
         self.check_owner_var(var.owner)?;
         let v = value.into_int_value(self.module_ref())?;
-        if W::static_bits().is_none() && v.as_value().ty().id() != var.ty {
-            return Err(IrError::TypeMismatch {
-                expected: super::r#type::Type::new(var.ty, self.module_ref()).kind_label(),
-                got: v.as_value().ty().kind_label(),
-            });
-        }
+        super::r#type::Type::new(var.ty, self.module_ref()).require_match(v.as_value().ty())?;
         let block = self.current_block_id();
         self.write_variable(var.index, block, v.as_value().id);
         Ok(())
@@ -878,9 +885,9 @@ where
 
     /// Braun `readVariable`; the result type reflects the declared
     /// variable (D4), sound because every writer of this variable's
-    /// `current_def` entries was type-checked at `def_int_var` time
-    /// (static `W`: by the type system; dyn `W`: by the runtime check
-    /// above) -- see that method's doc comment for the full argument.
+    /// `current_def` entries was type-checked against `var.ty` at
+    /// `def_int_var` time, at every marker -- see that method's doc
+    /// comment for the full argument.
     pub fn use_int_var<W: IntWidth>(
         &mut self,
         var: IntVariable<'ctx, W, B>,
@@ -892,11 +899,14 @@ where
         Ok(IntValue::from_value_unchecked(value))
     }
 
-    /// Float twin of [`Self::def_int_var`]; see that method's doc
-    /// comment for the dyn-width type-check rationale (mirrored here
-    /// keyed on `K::ieee_label().is_none()` instead of
-    /// `W::static_bits().is_none()`, matching the private
-    /// `IRBuilder::accept_folded_fp` helper's split).
+    /// Float twin of [`Self::def_int_var`]; see that method's doc comment
+    /// for the full type-check rationale, which mirrors here exactly --
+    /// including its reason for checking every marker rather than only the
+    /// erased `FloatDyn` one: `FloatValue::from_value_unchecked` forges a
+    /// static `K` just as freely as `IntValue`'s does a static `W`, and
+    /// `IntoFloatValue<K>` is likewise the identity on `FloatValue<K>`
+    /// (`def_float_var_rejects_forged_static_kind_handle` locks the static
+    /// half).
     pub fn def_float_var<K: FloatKind, V>(
         &mut self,
         var: FloatVariable<'ctx, K, B>,
@@ -907,12 +917,7 @@ where
     {
         self.check_owner_var(var.owner)?;
         let v = value.into_float_value(self.module_ref())?;
-        if K::ieee_label().is_none() && Typed::ty(v).id() != var.ty {
-            return Err(IrError::TypeMismatch {
-                expected: super::r#type::Type::new(var.ty, self.module_ref()).kind_label(),
-                got: Typed::ty(v).kind_label(),
-            });
-        }
+        super::r#type::Type::new(var.ty, self.module_ref()).require_match(Typed::ty(v))?;
         let block = self.current_block_id();
         self.write_variable(var.index, block, v.as_value().id);
         Ok(())
@@ -933,25 +938,28 @@ where
     /// Pointer twin of [`Self::def_int_var`]. Pointer variables pin an
     /// address space via `var.ty` (`declare_pointer_var_in_addrspace`),
     /// but [`PointerValue`] does not statically pin its address space --
-    /// `IntoPointerValue` happily lifts a pointer of ANY address space,
-    /// so unlike the int/float sides (where the static-marker case
-    /// monomorphizes the check away), the pointer def path always
-    /// carries a cheap runtime check. Honest rather than optimised: a
-    /// `TypeId` equality compare is negligible next to the rest of
-    /// `def_int_var`'s work, and skipping it would silently accept a
-    /// wrong-address-space write.
+    /// `IntoPointerValue` happily lifts a pointer of ANY address space.
+    /// This side therefore never had a static marker to key on, and is
+    /// unconditional for the same reason the int and float sides now are:
+    /// a `TypeId` equality compare is negligible next to the rest of the
+    /// work, and skipping it would silently accept a wrong-address-space
+    /// write. Honest rather than optimised.
+    ///
+    /// A drift here reports [`IrError::AddressSpaceMismatch`], not the
+    /// `TypeMismatch { expected: Pointer, got: Pointer }` that
+    /// [`TypeKindLabel`](crate::TypeKindLabel)'s single, address-space-less
+    /// `Pointer` variant would otherwise force -- the pointer analogue of
+    /// the int side's `OperandWidthMismatch`, and the reason this seam can
+    /// now share `Type::require_match` with its twins instead of spelling
+    /// its own compare (`pointer_var_wrong_addrspace_def_rejected`,
+    /// `tests/ssa_builder.rs`, names both address spaces).
     pub fn def_pointer_var<V>(&mut self, var: PointerVariable<'ctx, B>, value: V) -> IrResult<()>
     where
         V: IntoPointerValue<'ctx, B>,
     {
         self.check_owner_var(var.owner)?;
         let v = value.into_pointer_value(self.module_ref())?;
-        if Typed::ty(v).id() != var.ty {
-            return Err(IrError::TypeMismatch {
-                expected: super::r#type::Type::new(var.ty, self.module_ref()).kind_label(),
-                got: Typed::ty(v).kind_label(),
-            });
-        }
+        super::r#type::Type::new(var.ty, self.module_ref()).require_match(Typed::ty(v))?;
         let block = self.current_block_id();
         self.write_variable(var.index, block, v.as_value().id);
         Ok(())
@@ -1132,7 +1140,7 @@ where
         let inner = self.inner.take().unwrap_or_else(|| {
             unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
         });
-        let (_terminated, open) = inner.build_switch(cond, default_dest.label, "")?;
+        let (_terminated, open) = inner.build_switch_dyn(cond, default_dest.label, "")?;
         let mut open = open;
         for (case_value, target) in cases {
             open = open.add_case(case_value, target.label).unwrap_or_else(|_| {
@@ -2160,6 +2168,143 @@ mod tests {
                 b.state.current_def.get(&(b2_id, var.index)),
                 Some(&one),
                 "b2 should be memoized after the chase resolves through it"
+            );
+            Ok(())
+        })
+    }
+
+    /// llvmkit-specific: no upstream C++ equivalent. LLVM's `SSAUpdater`
+    /// carries no per-variable static width to contradict -- `AddAvailableValue`
+    /// takes a bare `Value *` and the type agreement it needs is asserted, not
+    /// typed (`SSAUpdater::AddAvailableValue`, `SSAUpdater.cpp`). The invariant
+    /// this locks is the Rust layer's own: D11's requirement that every value
+    /// written for a variable share that variable's pinned `ty`, which the
+    /// trivial-phi RAUW (`try_remove_trivial_phi`) depends on.
+    ///
+    /// Locks [`SsaBuilder::def_int_var`] at a *static* `W` -- the half its old
+    /// `W::static_bits().is_none() &&` short-circuit let through, and the same
+    /// bug class the `IRBuilder` acceptors shed in `bf57e17`/`b5cb1e5`
+    /// (`hostile_native_typed_override_wrong_width_rejected_at_static_width`,
+    /// `ir_builder.rs`, is the fold-result analogue). The old doc argued the
+    /// static case was safe because `IntValue<W>` proves the width -- circular,
+    /// since `from_value_unchecked` exists precisely to mint that claim without
+    /// consulting the payload, and `IntoIntValue<W>` is the identity on
+    /// `IntValue<W>`, so nothing between the forge and `current_def` re-checks.
+    ///
+    /// Here `x` is declared `IntVariable<i32>` (so `var.ty` is pinned to `i32`
+    /// by `declare_int_var`), but the value handed to `def_int_var` is an
+    /// `IntValue<'_, i32, _>` whose real IR type is `i64`. Unlike the honest
+    /// halves of the fixtures above, the lie is minted right at the call site
+    /// on purpose: an in-crate caller forging the handle *is* the threat this
+    /// seam exists to catch. Without the check the `i64` would land in
+    /// `current_def` under an `i32`-pinned variable and a later `use_int_var`
+    /// would hand back an `IntValue<'_, i32>` that is really an `i64`.
+    #[test]
+    fn def_int_var_rejects_forged_static_width_handle() -> Result<(), IrError> {
+        Module::with_new("ssa-forged-static-width", |m| {
+            let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+            let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+            let mut b = SsaBuilder::for_function(&m, f)?;
+            let entry = b.create_block("entry");
+            let x = b.declare_int_var::<i32, _>("x");
+
+            let mut b = b.switch_to_block(entry)?;
+            let forged: IntValue<'_, i32, _> =
+                IntValue::from_value_unchecked(m.i64_type().const_zero().as_value());
+
+            let err = b
+                .def_int_var(x, forged)
+                .expect_err("a forged static-width handle must be rejected");
+
+            // Both sides are integers, so the widths are reported rather than a
+            // `TypeMismatch { expected: Integer, got: Integer }` that could not
+            // say which width was wrong (`Type::require_match`).
+            assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
+            Ok(())
+        })
+    }
+
+    /// Float twin of [`def_int_var_rejects_forged_static_width_handle`],
+    /// locking [`SsaBuilder::def_float_var`] at a *static* `K` -- the half its
+    /// old `K::ieee_label().is_none() &&` short-circuit let through.
+    /// `FloatValue::from_value_unchecked` forges a static `K` just as freely as
+    /// `IntValue`'s does a static `W`, and `IntoFloatValue<K>` is likewise the
+    /// identity on `FloatValue<K>`. llvmkit-specific for the same reason as its
+    /// int twin.
+    ///
+    /// Stays [`IrError::TypeMismatch`]: `TypeKindLabel` has a distinct variant
+    /// per float kind, so the labels already name both sides precisely -- the
+    /// width-less `Integer` variant that forces the int side to report
+    /// `OperandWidthMismatch` has no float counterpart
+    /// (`Type::require_match`).
+    #[test]
+    fn def_float_var_rejects_forged_static_kind_handle() -> Result<(), IrError> {
+        Module::with_new("ssa-forged-static-kind", |m| {
+            let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+            let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+            let mut b = SsaBuilder::for_function(&m, f)?;
+            let entry = b.create_block("entry");
+            let x = b.declare_float_var::<f32, _>("x");
+
+            let mut b = b.switch_to_block(entry)?;
+            let forged: FloatValue<'_, f32, _> =
+                FloatValue::from_value_unchecked(m.f64_type().const_from_bits(0).as_value());
+
+            let err = b
+                .def_float_var(x, forged)
+                .expect_err("a forged static-kind handle must be rejected");
+
+            assert_eq!(
+                err,
+                IrError::TypeMismatch {
+                    expected: crate::TypeKindLabel::Float,
+                    got: crate::TypeKindLabel::Double,
+                }
+            );
+            Ok(())
+        })
+    }
+
+    /// Pointer twin of [`def_int_var_rejects_forged_static_width_handle`],
+    /// completing the `def_*_var` trio. `PointerValue` pins no address space
+    /// statically, so its forge lies about the *kind*: an honest non-pointer
+    /// cannot reach [`SsaBuilder::def_pointer_var`] (there is no
+    /// `IntoPointerValue` impl for `IntValue`), and
+    /// `PointerValue::from_value_unchecked` is the only door in --
+    /// crate-internal, and named as an `ssa_builder.rs` caller by that
+    /// method's own doc, which cites `def_pointer_var`'s check as what makes
+    /// the arena read (`use_pointer_var`) safe. This is that check.
+    ///
+    /// Stays [`IrError::TypeMismatch`] rather than the
+    /// [`IrError::AddressSpaceMismatch`] its honest wrong-address-space
+    /// sibling reports (`pointer_var_wrong_addrspace_def_rejected`,
+    /// `tests/ssa_builder.rs`): the address-space arm fires only when BOTH
+    /// sides are pointers, since an `i32` has no address space to name
+    /// (`Type::require_match`). llvmkit-specific for the same reason as its
+    /// int twin: `SSAUpdater` carries no per-variable type to contradict.
+    #[test]
+    fn def_pointer_var_rejects_forged_non_pointer_handle() -> Result<(), IrError> {
+        Module::with_new("ssa-forged-pointer", |m| {
+            let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+            let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+            let mut b = SsaBuilder::for_function(&m, f)?;
+            let entry = b.create_block("entry");
+            let p = b.declare_pointer_var("p");
+
+            let mut b = b.switch_to_block(entry)?;
+            let forged: PointerValue<'_, _> =
+                PointerValue::from_value_unchecked(m.i32_type().const_zero().as_value());
+
+            let err = b
+                .def_pointer_var(p, forged)
+                .expect_err("a forged non-pointer handle must be rejected");
+
+            assert_eq!(
+                err,
+                IrError::TypeMismatch {
+                    expected: crate::TypeKindLabel::Pointer,
+                    got: crate::TypeKindLabel::Integer,
+                }
             );
             Ok(())
         })

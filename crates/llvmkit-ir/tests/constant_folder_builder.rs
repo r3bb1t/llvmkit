@@ -8,8 +8,8 @@ use llvmkit_ir::instr_types::CastOpcode;
 use llvmkit_ir::{
     BinaryIntrinsic, BinaryOpcode, CastKind, Constant, ConstantFloatValue, ConstantFolder,
     ConstantIntValue, GepNoWrapFlags, IRBuilder, IRBuilderFolder, InstructionKind, InstructionView,
-    IntDyn, IntPredicate, IntValue, IrError, IrResult, Linkage, Module, MulFlags, NoFolder,
-    OverflowFlags, PointerValue, ShlFlags, Type, UDivFlags, Value,
+    IntDyn, IntPredicate, IntValue, IntWidth, IrError, IrResult, Linkage, Module, MulFlags,
+    NoFolder, OverflowFlags, PointerValue, ShlFlags, Type, UDivFlags, Value,
     constant_fold_binary_instruction,
 };
 
@@ -757,6 +757,13 @@ fn constant_folder_does_not_simplify_nonconstant_add_zero() -> Result<(), IrErro
 
 /// `llvmkit-specific subset` of `IRBuilderFolder.h`: custom folders may return
 /// an existing value, but the builder rejects a value with the wrong type.
+///
+/// `ReturningFolder` overrides only the erased `fold_bin_op_dyn`, so
+/// `build_int_add::<i32>` reaches it through the typed hook's *default* body
+/// and the wrong-width result is caught by `folder::narrow_folded_int`'s
+/// re-narrow. Both sides are integers, so that seam reports the two widths
+/// rather than a `TypeMismatch { expected: Integer, got: Integer }` that could
+/// not say which width was wrong (`Type::require_match`).
 #[test]
 fn custom_folder_wrong_type_is_rejected() -> Result<(), IrError> {
     Module::with_new("folder-wrong-type", |m| {
@@ -778,7 +785,7 @@ fn custom_folder_wrong_type_is_rejected() -> Result<(), IrError> {
             .build_int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "sum")
             .expect_err("wrong-type folded value is rejected");
 
-        assert!(matches!(err, IrError::TypeMismatch { .. }));
+        assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
         assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
     })
@@ -850,21 +857,42 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
 /// to `fold_bin_op_dyn` and then re-narrows the erased result by `TypeId`
 /// through `narrow_folded_int`. That re-narrow call is where the wrong-width
 /// 64-bit replacement is rejected; the builder's own `accept_folded_int`
-/// dyn-marker re-check (`ir_builder.rs`) is never reached on this path,
-/// because `fold_int_bin_op` already returns `Err(TypeMismatch)` before
+/// type check (`ir_builder.rs`) is never reached on this path, because
+/// `fold_int_bin_op` already returns `Err(TypeMismatch)` before
 /// `build_int_add` gets to call it.
 ///
-/// `accept_folded_int`'s dyn-marker branch is only reachable behind a
+/// `accept_folded_int` is only reachable behind a
 /// *native* override of a typed hook (`fold_int_bin_op<W>` or one of its
 /// siblings) that itself returns `Some(IntValue<'ctx, W, B>)` without going
-/// through `narrow_folded_int`. No such override can be written here: the
-/// trait declares `fn fold_int_bin_op<W: IntWidth>(...) -> IrResult<Option<
-/// IntValue<'ctx, W, B>>>` with only `W: IntWidth` in scope, and this crate
-/// exposes no safe, public construction of `IntValue<'ctx, W, B>` from an
-/// erased value that is generic over arbitrary `W` (every `TryFrom<Value>`/
-/// `IntoIntValue` impl is per concrete marker; the crate-internal
-/// `IntValue::from_value_unchecked` escape hatch `ConstantFolder` uses is
-/// `pub(super)`, unreachable from this external test crate). Confirmed by
+/// through `narrow_folded_int` -- which `WideningDynFolder`, overriding only
+/// the erased hook, deliberately is not.
+///
+/// Such an override *can* now be written from an external crate -- and is,
+/// immediately below: [`NarrowingTypedFolder`] is that override, and
+/// [`external_narrow_override_wrong_width_rejected_by_accept_folded_int`]
+/// drives it to the acceptor. This paragraph is therefore executable rather
+/// than aspirational; the file failing to compile would falsify it. Slice
+/// 1.1's `IntWidth::narrow` is a safe, public construction of
+/// `IntValue<'ctx, W, B>` from an erased `Value`, generic over arbitrary `W`
+/// (`tests/generic_narrowing.rs` exercises it from this same external-test
+/// position), so `Ok(Some(W::narrow(v)?))` typechecks inside a generic
+/// `fold_int_bin_op<W>` override. That does not let an external folder forge
+/// a width -- `narrow` checks the payload's real type against `W` -- but at
+/// `W = IntDyn` the marker proves only "some integer", so such a folder
+/// *can* reach `accept_folded_int` with a payload whose width contradicts
+/// the operands'. Nothing breaks, and that reachability is exactly why
+/// Slice 1.2 made `accept_folded_int` check *unconditionally* instead of
+/// only for the erased markers: the acceptor re-checks the fold result's
+/// runtime type against the operand's for every marker, so the wrong-width
+/// payload is rejected there. The unconditional acceptor is what makes the
+/// now-writable override safe.
+///
+/// What stays closed is forging a *static* `W` from outside: every
+/// `TryFrom<Value>` / `IntoIntValue` impl is per concrete marker, and the
+/// crate-internal `IntValue::from_value_unchecked` escape hatch -- the one
+/// unchecked mint, which `ConstantFolder`'s typed hooks no longer use (all
+/// nine route through `W::narrow` / `K::narrow` as of Slice 1.1) -- is
+/// `pub(crate)`, unreachable from this external test crate. Confirmed by
 /// the sibling compile-fail golden
 /// `tests/compile_fail/folder_typed_wrong_width.rs`, which locks exactly
 /// this shape (`Ok(Some(concrete_width_value))` inside a generic
@@ -874,7 +902,11 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
 /// `IntValue<'ctx, W, B>: TryFrom<Value<'ctx, B>>` is not implemented for
 /// generic `W`, and adding it as an extra `where` bound on the impl is
 /// itself rejected -- an impl may not add bounds beyond what the trait
-/// declares for a generic method).
+/// declares for a generic method). `IntWidth::narrow` does not breach that
+/// wall: it is the same per-marker `TryFrom`, reached through a method the
+/// `IntWidth` bound already carries, so the checked narrow rides in on a
+/// bound the trait declares rather than one the impl adds -- what is new is
+/// the bound, not the capability.
 ///
 /// The wrong-width replacement value is built once in the test (where the
 /// owning `Module` is available to mint a 64-bit `IntDyn` constant) and
@@ -902,9 +934,9 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B>
         // `fold_int_bin_op`'s *default* body, which re-narrows this erased
         // result via `narrow_folded_int`'s TypeId check. That is the seam
         // this test exercises -- not the builder's separate
-        // `accept_folded_int` dyn-marker re-check, which only runs behind a
-        // typed hook's *native* override (see the struct doc comment above
-        // for why no such override is reachable from this external crate).
+        // `accept_folded_int` type check, which only runs behind a typed
+        // hook's *native* override (see the struct doc comment above for
+        // why no such override is reachable from this external crate).
         Ok(Some(self.replacement))
     }
 }
@@ -915,6 +947,14 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B>
 /// `fold_bin_op_dyn` override that answers with a wrong-width replacement
 /// must still be caught by `narrow_folded_int`'s runtime check rather than
 /// silently accepted.
+///
+/// Also the guard on `narrow_folded_int`'s *shape*: this is the case that
+/// makes it irreplaceable by `W::narrow`. Here `W = IntDyn`, and
+/// `IntDyn::narrow` accepts ANY integer width (the marker names none), so
+/// rewriting the seam to narrow-to-the-marker would delete exactly this
+/// check and let the 64-bit replacement through for 32-bit operands.
+/// `narrow_folded_int` compares against `lhs`'s *runtime* type instead --
+/// see `Type::require_match`.
 #[test]
 fn dyn_marker_fold_keeps_runtime_width_check() -> Result<(), IrError> {
     Module::with_new("folder-dyn-widen", |m| {
@@ -935,7 +975,146 @@ fn dyn_marker_fold_keeps_runtime_width_check() -> Result<(), IrError> {
             .build_int_add::<IntDyn, _, _, _>(lhs, rhs, "sum")
             .expect_err("64-bit fold result for 32-bit IntDyn operands is rejected");
 
-        assert!(matches!(err, IrError::TypeMismatch { .. }));
+        assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
+        assert_eq!(b.insert_block().instructions().len(), 0);
+        Ok(())
+    })
+}
+
+/// The executable proof of the reachability claim in [`WideningDynFolder`]'s
+/// doc above: a folder that reaches the builder's `accept_folded_int` from
+/// *outside* the crate, through a **native** `fold_int_bin_op<W>` override
+/// whose body constructs its `IntValue<'ctx, W, B>` return with Slice 1.1's
+/// public [`IntWidth::narrow`].
+///
+/// **This file compiling at all is the proof.** This is an integration test:
+/// it lives outside `llvmkit-ir` and therefore has exactly a downstream
+/// user's visibility. `IntValue::from_value_unchecked` -- the unchecked mint
+/// the in-crate `HostileTypedFolder` (`src/ir_builder.rs::tests`) uses to
+/// reach the same acceptor -- is `pub(crate)` and simply does not exist from
+/// here, so no such shortcut is available and none is used. `W::narrow` is a
+/// safe, checked, public construction callable behind the bare `W: IntWidth`
+/// bound the trait method already declares, which is what makes
+/// `Ok(Some(W::narrow(v)?))` typecheck where the equivalent `TryFrom` would
+/// demand a `where` clause the trait's signature forbids adding.
+///
+/// Narrowing is *not* a width forgery, and the two markers show the split:
+///
+/// - At a **static** `W` (`i32`, `Width<7>`, ...) `narrow` checks the
+///   payload's real IR type against `W` and this folder's 64-bit
+///   `replacement` is rejected inside the override itself -- the builder is
+///   never even asked to accept it. The static marker is self-guaranteeing
+///   *on this route* precisely because `narrow` is checked.
+/// - At `W = `[`IntDyn`] the marker names no width, so `narrow` proves only
+///   "some integer" and *succeeds* on the 64-bit payload. The override then
+///   hands `build_int_add` an `IntValue<'ctx, IntDyn, B>` whose runtime
+///   width contradicts the 32-bit operands', and the builder's
+///   `accept_folded_int` is the only thing left between that payload and the
+///   IR.
+///
+/// That second bullet is why Slice 1.2 made `accept_folded_int` check
+/// **unconditionally** rather than only for erased markers: the acceptor
+/// compares the fold result's runtime type against the operand's for every
+/// marker, so it catches what `narrow` structurally cannot at a dyn marker.
+/// [`external_narrow_override_wrong_width_rejected_by_accept_folded_int`]
+/// drives exactly that case.
+///
+/// Contrast [`WideningDynFolder`] above, which overrides only the *erased*
+/// `fold_bin_op_dyn` hook and is therefore caught one seam earlier, by
+/// `narrow_folded_int` inside `fold_int_bin_op`'s default body. A native
+/// override replaces that default body outright, so `narrow_folded_int`
+/// never runs here.
+///
+/// What stays closed is forging a *static* `W`: the sibling compile-fail
+/// golden `tests/compile_fail/folder_typed_wrong_width.rs` locks
+/// `Ok(Some(concrete_width_value))` inside a generic `fold_int_bin_op<W>`
+/// override as `E0308: mismatched types`. `narrow` does not breach that
+/// wall -- it returns the caller's `W`, never a concrete one.
+#[derive(Debug, Clone, Copy)]
+struct NarrowingTypedFolder<'ctx, B: llvmkit_ir::ModuleBrand> {
+    /// An erased 64-bit constant, deliberately the wrong width for the
+    /// 32-bit operands the test folds. Erased (`Value`, not
+    /// `IntValue<'ctx, i64, B>`) because `narrow`'s input is an erased
+    /// `Value` -- that erasure is the whole point: this is the shape a real
+    /// external folder would hold after computing a replacement dynamically.
+    replacement: Value<'ctx, B>,
+}
+
+impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B>
+    for NarrowingTypedFolder<'ctx, B>
+{
+    fn fold_int_bin_op<W: IntWidth>(
+        &self,
+        _opcode: BinaryOpcode,
+        _lhs: IntValue<'ctx, W, B>,
+        _rhs: IntValue<'ctx, W, B>,
+    ) -> IrResult<Option<IntValue<'ctx, W, B>>> {
+        // The line the `WideningDynFolder` doc claims an external crate can
+        // now write, written from an external crate. No `unsafe`, no
+        // `pub(crate)` escape hatch, no extra `where` bound on the impl --
+        // just the `W: IntWidth` bound the trait method itself declares.
+        //
+        // At `W = IntDyn` this narrow SUCCEEDS on a 64-bit payload (the
+        // marker names no width to contradict), so a wrong-width
+        // `IntValue<'ctx, IntDyn, B>` flows out of this native override and
+        // straight into `accept_folded_int` -- `narrow_folded_int` is part
+        // of the default body this override replaced and never runs.
+        Ok(Some(W::narrow(self.replacement)?))
+    }
+}
+
+/// `llvm/include/llvm/IR/IRBuilderFolder.h` typed fold hook contract, from
+/// the external-folder position: locks `accept_folded_int`
+/// (`src/ir_builder.rs`) as the seam that rejects a wrong-width result from
+/// an **external** native `fold_int_bin_op<W>` override built with the
+/// public [`IntWidth::narrow`] -- the route Slice 1.1 opened and the
+/// in-crate `from_value_unchecked` siblings in
+/// `src/ir_builder.rs::tests::hostile_native_typed_override_*` cannot reach
+/// from a downstream user's visibility.
+///
+/// Trace confirming *this* line rejects, not `narrow_folded_int`:
+/// `build_int_add::<IntDyn, _, _, _>` calls
+/// `self.folder.fold_int_bin_op(BinaryOpcode::Add, lhs, rhs)`.
+/// [`NarrowingTypedFolder`]'s override is *native*, so it runs directly and
+/// the trait's default body -- the only caller of `fold_bin_op_dyn` and
+/// `narrow_folded_int` -- is bypassed entirely. Inside the override,
+/// `IntDyn::narrow(replacement)` succeeds: the payload is an integer, and
+/// `IntDyn` asserts nothing about width. The resulting
+/// `IntValue<'ctx, IntDyn, B>` (real IR type: 64-bit) returns to
+/// `build_int_add`, which forwards it to `self.accept_folded_int(folded, lhs)`.
+/// There, `folded.as_value().ty().id() != like.as_value().ty().id()` is
+/// `true` -- 64-bit payload against `lhs`'s 32-bit custom-width type -- so
+/// the acceptor returns `Err(IrError::OperandWidthMismatch { lhs: 32, rhs: 64 })`
+/// and no instruction is inserted.
+///
+/// This is the case that makes the acceptor's unconditionality load-bearing
+/// for *external* code, not just for in-crate folder bugs: `narrow` is a
+/// checked construction, but at a dyn marker there is nothing for it to
+/// check the width against. Deleting the acceptor's check -- or re-keying it
+/// on the folder's own claim about `W`, as the pre-`bf57e17` shape did --
+/// would let this 64-bit payload reach the IR as a 32-bit add's result.
+#[test]
+fn external_narrow_override_wrong_width_rejected_by_accept_folded_int() -> Result<(), IrError> {
+    Module::with_new("external-narrow-folder", |m| {
+        let i32_dyn_ty = m.custom_width_int_type(32)?;
+        let i64_dyn_ty = m.custom_width_int_type(64)?;
+        let fn_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
+        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+
+        let folder = NarrowingTypedFolder {
+            replacement: i64_dyn_ty.const_zero().as_value(),
+        };
+        let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+
+        let lhs = i32_dyn_ty.const_int_checked(1_i32)?;
+        let rhs = i32_dyn_ty.const_int_checked(2_i32)?;
+
+        let err = b
+            .build_int_add::<IntDyn, _, _, _>(lhs, rhs, "sum")
+            .expect_err("64-bit narrow-built fold result for 32-bit IntDyn operands is rejected");
+
+        assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
         assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
     })

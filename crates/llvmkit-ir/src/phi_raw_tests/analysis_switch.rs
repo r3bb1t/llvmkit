@@ -116,7 +116,7 @@ fn build_switch_merge<'ctx>(
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
     let a: IntValue<i32> = f.param(0)?.try_into()?;
     let e = b.build_int_add(a, 7_i32, "e")?;
-    let (_sealed, sw) = b.build_switch(a, dflt_lbl, "")?;
+    let (_sealed, sw) = b.build_switch_dyn(a, dflt_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), merge_lbl)?
         .add_case(i32_ty.const_int(1_u32), other_lbl)?
         .finish();
@@ -300,7 +300,7 @@ fn build_switch_default_parallel<'ctx>(
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
     let a: IntValue<i32> = f.param(0)?.try_into()?;
     let e = b.build_int_add(a, 7_i32, "e")?;
-    let (_sealed, sw) = b.build_switch(a, shared_lbl, "")?;
+    let (_sealed, sw) = b.build_switch_dyn(a, shared_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), shared_lbl)?
         .add_case(i32_ty.const_int(1_u32), mid_lbl)?
         .finish();

@@ -2415,7 +2415,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
 /// `W` — a wrong-width case is a *compile* error (there is no
 /// `IntoIntValue<'ctx, W, B>` impl for the mismatched value). The erased
 /// `W = IntDyn` flavour (produced by the parser / SSA builder via the
-/// width-erased [`build_switch`](crate::IRBuilder::build_switch)) keeps the
+/// width-erased [`build_switch_dyn`](crate::IRBuilder::build_switch_dyn)) keeps the
 /// runtime [`crate::IrError::TypeMismatch`] check instead. `W` is the LAST parameter
 /// and defaults to `IntDyn`, so width-agnostic `SwitchInst<'ctx, P, B>`
 /// annotations keep resolving to the erased flavour unchanged.

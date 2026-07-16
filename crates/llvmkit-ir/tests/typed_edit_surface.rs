@@ -429,7 +429,7 @@ fn build_switch_fn<'ctx>(
 
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
     let a: IntValue<i32> = f.param(0)?.try_into()?;
-    let (_sealed, sw) = b.build_switch(a, dflt_lbl, "")?;
+    let (_sealed, sw) = b.build_switch_dyn(a, dflt_lbl, "")?;
     let sw = sw.add_case(i32_ty.const_int(0_u32), case0_lbl)?;
     sw.add_case(i32_ty.const_int(1_u32), case1_lbl)?.finish();
     Ok((f, case0_dyn, new_dyn))
@@ -563,7 +563,7 @@ fn build_switch_bogus_fn<'ctx>(
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
     let a: IntValue<i32> = f.param(0)?.try_into()?;
     let ev = b.build_int_add(a, 3_i32, "ev")?;
-    let (_sealed, sw) = b.build_switch(a, dflt_lbl, "")?;
+    let (_sealed, sw) = b.build_switch_dyn(a, dflt_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), case0_lbl)?.finish();
 
     // dflt: %nd = add %a, 5 ; br new(%nd)

@@ -155,7 +155,7 @@ pub fn build_dispatch<'ctx>(m: &Module<'ctx>) -> Result<(), IrError> {
     // `Closed` view that no longer accepts new cases at the type level.
     let op: IntValue<i32> = f.param(0)?.try_into()?;
     let entry_b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
-    let (_sealed, sw) = entry_b.build_switch(op, default_label, "")?;
+    let (_sealed, sw) = entry_b.build_switch_dyn(op, default_label, "")?;
     let _closed = sw
         .add_case(i32_ty.const_int(0_i32), do_add_label)?
         .add_case(i32_ty.const_int(1_i32), do_sub_label)?

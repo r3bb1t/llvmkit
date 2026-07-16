@@ -7964,7 +7964,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         )?;
         let default_bb = self.parse_block_ref(state)?;
         let (_, mut sw) = b
-            .build_switch(cond_v, default_bb, "")
+            .build_switch_dyn(cond_v, default_bb, "")
             .map_err(|e| self.builder_err("switch", e))?;
         // Case list: `[ ty N, label %bb, ... ]`
         self.expect_punct(PunctKind::LSquare, "'[' to open switch case list")?;

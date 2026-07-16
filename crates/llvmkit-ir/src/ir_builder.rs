@@ -118,13 +118,16 @@ pub type TypedBlockWithParams<'ctx, R, Params, B = Brand<'ctx>> = (
     <Params as FunctionParamList>::Values<'ctx, B>,
 );
 
-/// Pair returned by `switch` builders before the case list is closed.
+/// Pair returned by the width-erased [`IRBuilder::build_switch_dyn`] before
+/// the case list is closed. Erased sibling of
+/// [`TerminatedBlockSwitchTyped`], the way [`TerminatedBlockInvoke`] is of
+/// [`TerminatedBlockTypedInvoke`].
 pub type TerminatedBlockSwitch<'ctx, R, B = Brand<'ctx>> = (
     BasicBlock<'ctx, R, Terminated, B>,
     SwitchInst<'ctx, Open, B>,
 );
 
-/// Pair returned by the TYPED [`IRBuilder::build_switch_typed`] before the
+/// Pair returned by the TYPED [`IRBuilder::build_switch`] before the
 /// case list is closed: the terminated parent block plus an [`Open`],
 /// width-`W` [`SwitchInst`]. Every case added through the returned handle
 /// must share the condition's width `W` — a wrong-width case is a compile
@@ -6679,39 +6682,6 @@ where
         self.build_cond_br(cond, then_label, else_label)
     }
 
-    /// Produce `switch <cond>, label <default> [...]`. Mirrors
-    /// `IRBuilder::CreateSwitch`.
-    ///
-    /// Returns the terminated parent block plus an [`Open`]-typestate
-    /// [`SwitchInst`]. The caller adds
-    /// cases via [`SwitchInst::add_case`](SwitchInst::add_case)
-    /// (chainable) and seals the case list with
-    /// [`SwitchInst::finish`](SwitchInst::finish).
-    pub fn build_switch<C, DefaultTarget, Name>(
-        self,
-        cond: C,
-        default_target: DefaultTarget,
-        name: Name,
-    ) -> IrResult<TerminatedBlockSwitch<'ctx, R, B>>
-    where
-        Name: AsRef<str>,
-        C: IsValue<'ctx, B>,
-        DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
-    {
-        let default_target = default_target.into_basic_block_label();
-        let cond_v = cond.as_value();
-        let void_ty = self.module.void_type().as_type().id();
-        let payload =
-            crate::instr_types::SwitchInstData::new(cond_v.id, default_target.as_value().id);
-        let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
-        let module_ref = ModuleRef::<B>::new(self.module);
-        let bb = self.into_insert_block();
-        Ok((
-            bb.retag_termination::<Terminated>(),
-            SwitchInst::<Open, B>::from_raw(inst.as_value().id, module_ref, void_ty),
-        ))
-    }
-
     /// Produce a TYPED `switch <cond>, label <default> [...]` whose
     /// condition is a width-`W` integer. Mirrors `IRBuilder::CreateSwitch`
     /// with the case-value width statically pinned.
@@ -6723,12 +6693,16 @@ where
     /// `i64` literal on a `W = i32` switch) is a *compile* error — there
     /// is no `IntoIntValue<'ctx, W, B>` impl for the mismatched value —
     /// rather than the runtime [`IrError::TypeMismatch`] the width-erased
-    /// [`build_switch`](Self::build_switch) reports at
-    /// [`SwitchInst::add_case`]. Typed sibling of
-    /// [`build_switch`](Self::build_switch) (cf. `build_invoke` vs
-    /// `build_invoke_dyn`); the caller still seals the case list with
+    /// [`build_switch_dyn`](Self::build_switch_dyn) reports at
+    /// [`SwitchInst::add_case`]. The caller still seals the case list with
     /// [`SwitchInst::finish`](SwitchInst::finish).
-    pub fn build_switch_typed<W, C, DefaultTarget, Name>(
+    ///
+    /// Typed member of the pair, so it takes the unsuffixed name and its
+    /// erased sibling carries the `_dyn` — as with
+    /// [`build_call`](Self::build_call) / [`build_call_dyn`](Self::build_call_dyn)
+    /// and [`build_invoke`](Self::build_invoke) /
+    /// [`build_invoke_dyn`](Self::build_invoke_dyn).
+    pub fn build_switch<W, C, DefaultTarget, Name>(
         self,
         cond: C,
         default_target: DefaultTarget,
@@ -6751,6 +6725,47 @@ where
         Ok((
             bb.retag_termination::<Terminated>(),
             SwitchInst::<Open, B, W>::from_raw(inst.as_value().id, module_ref, void_ty),
+        ))
+    }
+
+    /// Produce a width-ERASED `switch <cond>, label <default> [...]`.
+    /// Mirrors `IRBuilder::CreateSwitch`.
+    ///
+    /// Returns the terminated parent block plus an [`Open`]-typestate
+    /// [`SwitchInst`]. The caller adds
+    /// cases via [`SwitchInst::add_case`](SwitchInst::add_case)
+    /// (chainable) and seals the case list with
+    /// [`SwitchInst::finish`](SwitchInst::finish).
+    ///
+    /// `cond` is bound by [`IsValue`], so the condition's width is not
+    /// pinned and `add_case` checks each case value at *runtime*
+    /// ([`IrError::TypeMismatch`]). Prefer the typed
+    /// [`build_switch`](Self::build_switch) where the width is statically
+    /// known — it makes a wrong-width case a compile error. This form is
+    /// what the `.ll` parser and the auto-SSA builder land on, since
+    /// neither knows the condition's width until run time.
+    pub fn build_switch_dyn<C, DefaultTarget, Name>(
+        self,
+        cond: C,
+        default_target: DefaultTarget,
+        name: Name,
+    ) -> IrResult<TerminatedBlockSwitch<'ctx, R, B>>
+    where
+        Name: AsRef<str>,
+        C: IsValue<'ctx, B>,
+        DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let default_target = default_target.into_basic_block_label();
+        let cond_v = cond.as_value();
+        let void_ty = self.module.void_type().as_type().id();
+        let payload =
+            crate::instr_types::SwitchInstData::new(cond_v.id, default_target.as_value().id);
+        let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let bb = self.into_insert_block();
+        Ok((
+            bb.retag_termination::<Terminated>(),
+            SwitchInst::<Open, B>::from_raw(inst.as_value().id, module_ref, void_ty),
         ))
     }
 
@@ -7683,84 +7698,73 @@ where
         folded: Value<'ctx, B>,
         expected_ty: TypeId,
     ) -> IrResult<Value<'ctx, B>> {
-        if folded.ty != expected_ty {
-            return Err(IrError::TypeMismatch {
-                expected: Type::new(expected_ty, self.module).kind_label(),
-                got: folded.ty().kind_label(),
-            });
-        }
+        Type::new(expected_ty, ModuleRef::<B>::new(self.module)).require_match(folded.ty())?;
         Ok(folded)
     }
 
-    /// Accept a typed fold result. For static markers this is the identity —
-    /// the type system already guarantees the width/kind. For dyn markers
-    /// (IntDyn) the marker doesn't pin the width, so keep a TypeId check.
-    /// The branch monomorphizes away for static W.
+    /// Accept a typed fold result, checking the payload's runtime type
+    /// against the operand's for **every** marker — static ones included.
+    ///
+    /// A static `W` is not self-guaranteeing here. The type system pins `W`
+    /// only as tightly as whoever constructed the handle: the crate-internal
+    /// [`IntValue::from_value_unchecked`] mints an `IntValue<W>` without
+    /// consulting the payload's real type, so an in-crate folder overriding
+    /// the typed `fold_int_bin_op<W>` hook can hand back a value whose IR
+    /// type contradicts `W`. Keying this check on `W::static_bits().is_none()`
+    /// would trust the very claim it exists to verify — the folder's word
+    /// that `W` matches the payload. Both markers are checked instead
+    /// (`hostile_native_typed_override_wrong_width_rejected_at_static_width`
+    /// locks the static half; the `..._by_accept_folded_int` sibling the dyn).
+    ///
+    /// For the same reason this compares against `like`'s *runtime* type
+    /// rather than narrowing to `W`: see [`Type::require_match`], which
+    /// carries the error shape and the no-false-rejections argument.
     fn accept_folded_int<W: IntWidth>(
         &self,
         folded: IntValue<'ctx, W, B>,
         like: IntValue<'ctx, W, B>,
     ) -> IrResult<IntValue<'ctx, W, B>> {
-        if W::static_bits().is_none() && folded.as_value().ty().id() != like.as_value().ty().id() {
-            return Err(IrError::TypeMismatch {
-                expected: like.as_value().ty().kind_label(),
-                got: folded.as_value().ty().kind_label(),
-            });
-        }
+        like.as_value().ty().require_match(folded.as_value().ty())?;
         Ok(folded)
     }
 
-    /// Mirrors [`Self::accept_folded_int`] for float kinds, keyed on
-    /// `K::ieee_label().is_none()` (the erased `FloatDyn` marker) instead of
-    /// `W::static_bits()`.
+    /// Mirrors [`Self::accept_folded_int`] for float kinds — including its
+    /// reason for checking every marker rather than only the erased
+    /// `FloatDyn` one: `FloatValue::from_value_unchecked` forges a static
+    /// `K` just as freely as `IntValue`'s does a static `W`.
     fn accept_folded_fp<K: FloatKind>(
         &self,
         folded: FloatValue<'ctx, K, B>,
         like: FloatValue<'ctx, K, B>,
     ) -> IrResult<FloatValue<'ctx, K, B>> {
-        if K::ieee_label().is_none()
-            && crate::value::Typed::ty(folded).id() != crate::value::Typed::ty(like).id()
-        {
-            return Err(IrError::TypeMismatch {
-                expected: crate::value::Typed::ty(like).kind_label(),
-                got: crate::value::Typed::ty(folded).kind_label(),
-            });
-        }
+        crate::value::Typed::ty(like).require_match(crate::value::Typed::ty(folded))?;
         Ok(folded)
     }
 
     /// Accept a typed cast fold result against the destination int type.
     /// Casts have no same-type operand to compare against (unlike binops),
     /// so this checks against `dst_ty` instead of a `like` operand; otherwise
-    /// mirrors [`Self::accept_folded_int`].
+    /// mirrors [`Self::accept_folded_int`], including its every-marker check
+    /// and the reasoning for it.
     fn accept_folded_cast_int<W: IntWidth>(
         &self,
         folded: IntValue<'ctx, W, B>,
         dst_ty: IntType<'ctx, W, B>,
     ) -> IrResult<IntValue<'ctx, W, B>> {
-        if W::static_bits().is_none() && folded.as_value().ty().id() != dst_ty.as_type().id() {
-            return Err(IrError::TypeMismatch {
-                expected: dst_ty.as_type().kind_label(),
-                got: folded.as_value().ty().kind_label(),
-            });
-        }
+        dst_ty.as_type().require_match(folded.as_value().ty())?;
         Ok(folded)
     }
 
-    /// Mirrors [`Self::accept_folded_cast_int`] for float destination kinds.
+    /// Mirrors [`Self::accept_folded_cast_int`] for float destination kinds,
+    /// checking every marker for the same reason.
     fn accept_folded_cast_fp<K: FloatKind>(
         &self,
         folded: FloatValue<'ctx, K, B>,
         dst_ty: FloatType<'ctx, K, B>,
     ) -> IrResult<FloatValue<'ctx, K, B>> {
-        if K::ieee_label().is_none()
-            && crate::value::Typed::ty(folded).id() != dst_ty.as_type().id()
-        {
-            return Err(IrError::TypeMismatch {
-                expected: dst_ty.as_type().kind_label(),
-                got: crate::value::Typed::ty(folded).kind_label(),
-            });
-        }
+        dst_ty
+            .as_type()
+            .require_match(crate::value::Typed::ty(folded))?;
         Ok(folded)
     }
 
@@ -8505,25 +8509,27 @@ mod tests {
     use crate::Linkage;
 
     /// Hostile in-crate folder simulating a *buggy* native typed-hook
-    /// override (the class of bug `ConstantFolder`'s own native
-    /// `fold_int_bin_op<W>` override -- see `ir_builder/constant_folder.rs`
-    /// -- is trusted, by kernel-invariant audit, not to commit). Unlike
-    /// `tests/constant_folder_builder.rs`'s external `WideningDynFolder`
-    /// (which can only override the erased `fold_bin_op_dyn` hook and so
-    /// gets caught by `folder::narrow_folded_int`'s TypeId re-check before
-    /// the builder ever sees the result), this folder overrides the
-    /// *typed* `fold_int_bin_op<W>` hook directly and answers with an
-    /// `IntValue<'ctx, W, B>` built via the crate-internal
-    /// `IntValue::from_value_unchecked` escape hatch (`pub(super)` in
-    /// `value.rs`, reachable here because this module lives at the crate
-    /// root, same as `value`). That constructor performs no width check at
-    /// all, so this override can -- and deliberately does -- lie about the
-    /// width of its `stored` payload: it always answers with a 64-bit
-    /// constant, regardless of `W`. Because this is a *native* override
-    /// (not the trait's delegating default body at `folder.rs`'s
-    /// `fold_int_bin_op<W>`), `narrow_folded_int` never runs on this path;
-    /// the only remaining guard is the builder's own
-    /// `accept_folded_int` dyn-marker re-check.
+    /// override -- the class of bug `ConstantFolder`'s own native typed
+    /// overrides (see `ir_builder/constant_folder.rs`) are now structurally
+    /// incapable of committing, because every one of them re-types its
+    /// erased fold result through `W::narrow` / `K::narrow` instead of
+    /// rewrapping it unchecked on the authority of a prose invariant audit.
+    /// Unlike `tests/constant_folder_builder.rs`'s external
+    /// `WideningDynFolder` (which can only override the erased
+    /// `fold_bin_op_dyn` hook and so gets caught by
+    /// `folder::narrow_folded_int`'s TypeId re-check before the builder ever
+    /// sees the result), this folder overrides the *typed* hooks directly
+    /// and answers with an `IntValue<'ctx, W, B>` built via the
+    /// crate-internal `IntValue::from_value_unchecked` escape hatch
+    /// (`pub(crate)` in `value.rs`, reachable here because this module lives
+    /// at the crate root, same as `value`). That constructor performs no
+    /// width check at all, so these overrides can -- and deliberately do --
+    /// lie about the width of the `stored` payload: they always answer with
+    /// a 64-bit constant, regardless of `W`. Because these are *native*
+    /// overrides (not the trait's delegating default bodies at `folder.rs`),
+    /// `narrow_folded_int` / `narrow_folded_cast_int` never run on this
+    /// path; the only remaining guard is the builder's own
+    /// `accept_folded_int` / `accept_folded_cast_int` type check.
     #[derive(Debug, Clone, Copy)]
     struct HostileTypedFolder<'ctx, B: ModuleBrand + 'ctx> {
         /// Always a 64-bit constant, deliberately the wrong width for any
@@ -8540,20 +8546,75 @@ mod tests {
         ) -> IrResult<Option<IntValue<'ctx, W, B>>> {
             // Bypasses `narrow_folded_int` entirely: this reuses the
             // already-erased `Value` payload behind `self.stored` (a
-            // 64-bit constant) and rewraps it as `IntValue<'ctx, W, B>`
-            // via the unchecked constructor, exactly mirroring the shape
-            // `ConstantFolder::fold_int_bin_op` uses for its (audited,
-            // correct) native override -- except here the "audit" is
-            // deliberately false: the payload's true IR type never
-            // matches `W` when `W` is a 32-bit dyn width.
+            // 64-bit constant) and rewraps it as `IntValue<'ctx, W, B>` via
+            // the unchecked constructor. This is the shape
+            // `ConstantFolder::fold_int_bin_op` used before `bf57e17`, when
+            // a prose "kernel invariant" audit was the only thing standing
+            // between it and a mistyped handle -- written out here by hand
+            // with the audit deliberately false: the payload's true IR type
+            // is `i64` and matches no 32-bit `W`, static or dyn.
+            Ok(Some(IntValue::<W, B>::from_value_unchecked(
+                self.stored.as_value(),
+            )))
+        }
+
+        fn fold_cast_to_int<W: IntWidth>(
+            &self,
+            _opcode: CastOpcode,
+            _value: Value<'ctx, B>,
+            _dest_ty: IntType<'ctx, W, B>,
+        ) -> IrResult<Option<IntValue<'ctx, W, B>>> {
+            // Cast twin of `fold_int_bin_op` above, lying the same way: the
+            // requested destination type is ignored and the 64-bit `stored`
+            // payload is rewrapped as the destination's `W`. Drives
+            // `accept_folded_cast_int`, which checks against `dst_ty`
+            // rather than an operand.
             Ok(Some(IntValue::<W, B>::from_value_unchecked(
                 self.stored.as_value(),
             )))
         }
     }
 
-    /// Locks `accept_folded_int`'s dyn-marker branch (`ir_builder.rs`,
-    /// `W::static_bits().is_none()` arm) as the seam that rejects a
+    /// Float twin of [`HostileTypedFolder`], overriding the typed *float*
+    /// hooks with the same lie: `FloatValue::from_value_unchecked` forges a
+    /// static `K` exactly as freely as `IntValue`'s forges a static `W`, so
+    /// both overrides answer with a `double` payload regardless of the `K`
+    /// asked for. Drives the two float acceptors
+    /// (`accept_folded_fp` / `accept_folded_cast_fp`), which the same
+    /// `bf57e17` change made unconditional.
+    #[derive(Debug, Clone, Copy)]
+    struct HostileTypedFpFolder<'ctx, B: ModuleBrand + 'ctx> {
+        /// Always a `double` constant, deliberately the wrong kind for any
+        /// `float` `K` the builder calls this with.
+        stored: FloatValue<'ctx, f64, B>,
+    }
+
+    impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for HostileTypedFpFolder<'ctx, B> {
+        fn fold_fp_bin_op<K: FloatKind>(
+            &self,
+            _opcode: BinaryOpcode,
+            _lhs: FloatValue<'ctx, K, B>,
+            _rhs: FloatValue<'ctx, K, B>,
+            _fmf: FastMathFlags,
+        ) -> IrResult<Option<FloatValue<'ctx, K, B>>> {
+            Ok(Some(FloatValue::<K, B>::from_value_unchecked(
+                IsValue::as_value(self.stored),
+            )))
+        }
+
+        fn fold_cast_to_fp<K: FloatKind>(
+            &self,
+            _opcode: CastOpcode,
+            _value: Value<'ctx, B>,
+            _dest_ty: FloatType<'ctx, K, B>,
+        ) -> IrResult<Option<FloatValue<'ctx, K, B>>> {
+            Ok(Some(FloatValue::<K, B>::from_value_unchecked(
+                IsValue::as_value(self.stored),
+            )))
+        }
+    }
+
+    /// Locks `accept_folded_int` (`ir_builder.rs`) as the seam that rejects a
     /// wrong-width result from a *native* typed-hook override -- the bug
     /// class external folders are compile-time barred from producing
     /// (see the sibling compile-fail golden
@@ -8570,14 +8631,16 @@ mod tests {
     /// inside the *trait's default* body, which this override replaces).
     /// The native override returns `Ok(Some(wrong_width_value))`
     /// straight back to `build_int_add`, which forwards it to
-    /// `self.accept_folded_int(folded, lhs)`. Inside `accept_folded_int`:
-    /// `W = IntDyn`, so `W::static_bits().is_none()` is `true`
-    /// (`int_width.rs`'s `impl IntWidth for IntDyn`), and
+    /// `self.accept_folded_int(folded, lhs)`. Inside `accept_folded_int`,
     /// `folded.as_value().ty().id() != like.as_value().ty().id()` is
     /// `true` (the stored value's real type is `i64`, `lhs`'s is the
     /// 32-bit custom-width `IntDyn` type) -- so `accept_folded_int`
-    /// returns `Err(IrError::TypeMismatch { .. })`. That is the exact
-    /// line under test; `narrow_folded_int` is never reached on this path.
+    /// returns `Err(IrError::OperandWidthMismatch { lhs: 32, rhs: 64 })`.
+    /// That is the exact line under test; `narrow_folded_int` is never
+    /// reached on this path. The comparison is unconditional -- it no
+    /// longer keys on `W::static_bits().is_none()` -- so `W = IntDyn` no
+    /// longer selects it; the static-`W` sibling test below covers the
+    /// other marker class.
     #[test]
     fn hostile_native_typed_override_wrong_width_rejected_by_accept_folded_int()
     -> Result<(), IrError> {
@@ -8600,7 +8663,178 @@ mod tests {
                 .build_int_add::<IntDyn, _, _, _>(lhs, rhs, "sum")
                 .expect_err("wrong-width native-override fold result is rejected");
 
-            assert!(matches!(err, IrError::TypeMismatch { .. }));
+            // Both sides are integers, so the acceptor reports the widths
+            // rather than a `TypeMismatch { expected: Integer, got: Integer }`
+            // that could not say which width was wrong.
+            assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
+            assert_eq!(b.insert_block().instructions().len(), 0);
+            Ok(())
+        })
+    }
+
+    /// Sibling of the `IntDyn` case above, at a *static* width. This is the
+    /// half `accept_folded_int`'s old `W::static_bits().is_none() &&`
+    /// short-circuit let through: the same `HostileTypedFolder` answers
+    /// `build_int_add::<i32, _, _, _>` with its 64-bit `stored` payload
+    /// rewrapped as `IntValue<'ctx, i32, B>`, and because the guard skipped
+    /// the TypeId compare whenever the marker was static, the builder
+    /// accepted it -- handing back an `IntValue<'_, i32>` whose real IR type
+    /// is `i64`. A mistyped handle escaping into user code.
+    ///
+    /// The static marker is not self-guaranteeing: `from_value_unchecked`
+    /// mints an `IntValue<W>` without ever consulting the payload's runtime
+    /// type, so `W` is only as honest as the in-crate caller that wrote it.
+    /// The acceptor now compares TypeIds for every marker, which is exactly
+    /// what this test locks.
+    #[test]
+    fn hostile_native_typed_override_wrong_width_rejected_at_static_width() -> Result<(), IrError> {
+        Module::with_new("hostile-typed-folder-static", |m| {
+            let i32_ty = m.i32_type();
+            let i64_ty = m.i64_type();
+            let fn_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+
+            // `stored`'s REAL IR type is i64; the folder hands it back as
+            // `IntValue<W>` for whatever `W` the builder asks for -- here i32.
+            // The handle itself is built through the *checked* path: this is
+            // the honest half of the setup (`const_zero()` on an `i64_ty`
+            // genuinely is an i64), and in a test whose whole subject is
+            // `from_value_unchecked` lying, the lie belongs only where it is
+            // under test -- inside the folder's override.
+            let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().as_value())?;
+            let folder = HostileTypedFolder { stored };
+            let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+
+            let lhs = i32_ty.const_int(1_i32);
+            let rhs = i32_ty.const_int(2_i32);
+
+            let err = b
+                .build_int_add::<i32, _, _, _>(lhs, rhs, "sum")
+                .expect_err("wrong-width fold result must be rejected at a static width too");
+
+            assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
+            assert_eq!(b.insert_block().instructions().len(), 0);
+            Ok(())
+        })
+    }
+
+    /// Locks `accept_folded_cast_int` at a *static* destination width --
+    /// the cast sibling of the two `accept_folded_int` tests above, and one
+    /// of the three acceptors `bf57e17` made unconditional without proof.
+    ///
+    /// Casts have no same-type operand to compare against, so the acceptor
+    /// checks the fold result against `dst_ty` instead of a `like` operand.
+    /// `build_trunc::<i64, i32>` asks the folder to narrow an i64 to i32;
+    /// `HostileTypedFolder::fold_cast_to_int` ignores the destination and
+    /// answers with its 64-bit `stored` payload rewrapped as
+    /// `IntValue<'ctx, i32, B>`. Being a native override it bypasses
+    /// `folder::narrow_folded_cast_int`, so `accept_folded_cast_int`'s
+    /// TypeId compare against `dst_ty` is the only thing between that lie
+    /// and a mistyped handle -- and before `bf57e17` it was skipped outright
+    /// for a static `Dst`.
+    #[test]
+    fn hostile_native_typed_override_wrong_width_rejected_by_accept_folded_cast_int()
+    -> Result<(), IrError> {
+        Module::with_new("hostile-typed-folder-cast-int", |m| {
+            let i32_ty = m.i32_type();
+            let i64_ty = m.i64_type();
+            let fn_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+
+            let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().as_value())?;
+            let folder = HostileTypedFolder { stored };
+            let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+
+            let src: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_int(1_i64).as_value())?;
+            let err = b
+                .build_trunc::<i64, i32, _>(src, i32_ty, "narrowed")
+                .expect_err("wrong-width cast fold result must be rejected at a static width");
+
+            assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
+            assert_eq!(b.insert_block().instructions().len(), 0);
+            Ok(())
+        })
+    }
+
+    /// Float twin of `..._rejected_at_static_width`, locking
+    /// `accept_folded_fp` at a *static* kind.
+    ///
+    /// `HostileTypedFpFolder::fold_fp_bin_op` answers `build_fp_add::<f32>`
+    /// with its `double` `stored` payload rewrapped as
+    /// `FloatValue<'ctx, f32, B>`. Unlike the int side, the error names both
+    /// kinds directly: `TypeKindLabel` has a distinct variant per float kind,
+    /// so `TypeMismatch { expected: Float, got: Double }` is already precise
+    /// and needs no width-carrying variant.
+    #[test]
+    fn hostile_native_typed_override_wrong_kind_rejected_by_accept_folded_fp() -> Result<(), IrError>
+    {
+        Module::with_new("hostile-typed-fp-folder", |m| {
+            let f32_ty = m.f32_type();
+            let f64_ty = m.f64_type();
+            let fn_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+
+            let stored: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(0.0).as_value())?;
+            let folder = HostileTypedFpFolder { stored };
+            let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+
+            let lhs = f32_ty.const_float(1.0_f32);
+            let rhs = f32_ty.const_float(2.0_f32);
+
+            let err = b
+                .build_fp_add::<f32, _, _, _>(lhs, rhs, "sum")
+                .expect_err("wrong-kind fold result must be rejected at a static kind");
+
+            assert_eq!(
+                err,
+                IrError::TypeMismatch {
+                    expected: crate::error::TypeKindLabel::Float,
+                    got: crate::error::TypeKindLabel::Double,
+                }
+            );
+            assert_eq!(b.insert_block().instructions().len(), 0);
+            Ok(())
+        })
+    }
+
+    /// Locks `accept_folded_cast_fp` at a *static* destination kind -- the
+    /// last of the four acceptors, and the float twin of
+    /// `..._rejected_by_accept_folded_cast_int`.
+    ///
+    /// `build_fp_trunc::<f64, f32>` asks the folder to narrow a `double` to
+    /// a `float`; `HostileTypedFpFolder::fold_cast_to_fp` ignores the
+    /// destination and answers with the `double` `stored` payload rewrapped
+    /// as `FloatValue<'ctx, f32, B>`, leaving the acceptor's compare against
+    /// `dst_ty` as the only guard.
+    #[test]
+    fn hostile_native_typed_override_wrong_kind_rejected_by_accept_folded_cast_fp()
+    -> Result<(), IrError> {
+        Module::with_new("hostile-typed-fp-folder-cast", |m| {
+            let f32_ty = m.f32_type();
+            let f64_ty = m.f64_type();
+            let fn_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
+            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+
+            let stored: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(0.0).as_value())?;
+            let folder = HostileTypedFpFolder { stored };
+            let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+
+            let src: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(1.0).as_value())?;
+            let err = b
+                .build_fp_trunc::<f64, f32, _>(src, f32_ty, "narrowed")
+                .expect_err("wrong-kind cast fold result must be rejected at a static kind");
+
+            assert_eq!(
+                err,
+                IrError::TypeMismatch {
+                    expected: crate::error::TypeKindLabel::Float,
+                    got: crate::error::TypeKindLabel::Double,
+                }
+            );
             assert_eq!(b.insert_block().instructions().len(), 0);
             Ok(())
         })
