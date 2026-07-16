@@ -22,19 +22,20 @@ Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 Total `#[test]` functions: 1517. Recounted on 2026-07-16 at the
 `feature-22/generic-narrowing` tip via the documented attribute-anchored grep
 below (`crates/llvmkit-ir` 1079 + `crates/llvmkit-asmparser` 430 +
-`crates/llvmkit-support` 8). The prior 1372 header had drifted badly: it was
-genuine on 2026-07-10 but was never updated as the branches between that point
-and here landed their tests, so it understated the tree by 138 before this
-branch added anything. This branch's own contribution: the four
+`crates/llvmkit-support` 8). This branch's own contribution: the four
 `accept_folded_*` hostile-folder tests, the two `def_*_var` forged-handle tests,
 and the pointer address-space rows, all in
 `crates/llvmkit-ir/src/{ir_builder,ssa_builder}.rs::tests`, plus
 `tests/constant_folder_builder.rs::external_narrow_override_wrong_width_rejected_by_accept_folded_int`,
-which drives the same acceptor from outside the crate (rows below). Note both
-the 1513 and the 1516 written earlier *on this same branch* were stale within a
-few commits -- which is the point: treat this line as recount-on-touch, not
-incremental arithmetic. The 138-test gap is exactly what accumulates when a
-count is only ever adjusted by whoever remembers to. The 1372 point was
+which drives the same acceptor from outside the crate (rows below).
+
+**Recount on touch; never do incremental arithmetic.** The evidence that this
+rule is load-bearing, rather than pedantry: the prior 1372 header was genuine on
+2026-07-10 but was never updated as later branches landed their tests, so it
+understated the tree by 138 -- and even on this branch, figures written a few
+commits apart went stale before the branch ended. A count only ever adjusted by
+whoever remembers to is a count that is wrong. Rerun the grep below; do not add.
+The 1372 point was
 recounted on 2026-07-10 via the documented
 attribute-anchored grep below; the 1344 point (2026-07-09,
 `feature-4/pass-api-v2` tip) removed the retired effect-typed
