@@ -6,8 +6,8 @@ error[E0308]: mismatched types
    |                                              |
    |                                              arguments to this method are incorrect
    |
-   = note: expected struct `llvmkit_ir::BasicBlock<'_, (), Unterminated, Brand<'_>>`
-              found struct `llvmkit_ir::BasicBlock<'_, (), Terminated, Brand<'_>>`
+   = note: expected struct `llvmkit_ir::BasicBlock<'_, (), Unterminated, Brand<'_>, BlockParamsDyn>`
+              found struct `llvmkit_ir::BasicBlock<'_, (), Terminated, Brand<'_>, BlockParamsDyn>`
 note: method defined here
   --> src/ir_builder.rs
    |

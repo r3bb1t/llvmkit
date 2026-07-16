@@ -66,6 +66,7 @@ pub mod atomicrmw_binop;
 pub mod attribute_mask;
 pub mod attributes;
 pub mod basic_block;
+pub mod block_params;
 pub mod block_state;
 pub mod calling_conv;
 pub mod cfg;
@@ -165,6 +166,7 @@ pub use attributes::{
     MemoryLocation, ModRefInfo,
 };
 pub use basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
+pub use block_params::{BlockParams, BlockParamsDyn};
 pub use block_state::{BlockTerminationState, Terminated, Unterminated};
 pub use calling_conv::CallingConv;
 pub use cfg::{BasicBlockEdge, FunctionCfg};
