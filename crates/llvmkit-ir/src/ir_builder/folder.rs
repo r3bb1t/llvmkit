@@ -8,7 +8,7 @@
 
 use super::{
     BinaryIntrinsic, BinaryOpcode, Brand, CastOpcode, CmpPredicate, Constant, FastMathFlags,
-    GepNoWrapFlags, InstructionView, IrError, IrResult, ModuleBrand, Type, UnaryOpcode, Value,
+    GepNoWrapFlags, InstructionView, IrResult, ModuleBrand, Type, UnaryOpcode, Value,
 };
 use crate::cmp_predicate::{FloatPredicate, IntPredicate};
 use crate::derived_types::{FloatType, IntType};
@@ -330,6 +330,11 @@ pub trait IRBuilderFolder<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
 /// Re-narrow an erased fold result to the operand's int width by TypeId
 /// equality. Used by the typed hooks' delegating default bodies; native
 /// typed overrides (ConstantFolder) skip this entirely.
+///
+/// Compares against `like`'s *runtime* type, never against `W` — see
+/// [`Type::require_match`] for why that distinction is load-bearing, and
+/// [`narrow_folded_bool`] for the one seam where narrowing to the marker
+/// is in fact correct.
 pub(super) fn narrow_folded_int<'ctx, W, B>(
     folded: Option<Value<'ctx, B>>,
     like: IntValue<'ctx, W, B>,
@@ -339,12 +344,7 @@ where
     B: ModuleBrand + 'ctx,
 {
     let Some(v) = folded else { return Ok(None) };
-    if v.ty().id() != like.as_value().ty().id() {
-        return Err(IrError::TypeMismatch {
-            expected: like.as_value().ty().kind_label(),
-            got: v.ty().kind_label(),
-        });
-    }
+    like.as_value().ty().require_match(v.ty())?;
     Ok(Some(IntValue::from_value_unchecked(v)))
 }
 
@@ -359,17 +359,22 @@ where
     B: ModuleBrand + 'ctx,
 {
     let Some(v) = folded else { return Ok(None) };
-    if v.ty().id() != Typed::ty(like).id() {
-        return Err(IrError::TypeMismatch {
-            expected: Typed::ty(like).kind_label(),
-            got: v.ty().kind_label(),
-        });
-    }
+    Typed::ty(like).require_match(v.ty())?;
     Ok(Some(FloatValue::from_value_unchecked(v)))
 }
 
 /// Re-narrow an erased fold result to `i1` (the fixed result type of every
-/// comparison). Mirrors [`narrow_folded_int`] for the icmp/fcmp typed hooks.
+/// comparison), for the icmp/fcmp typed hooks.
+///
+/// The one seam in this family that narrows to a *marker* rather than
+/// comparing against a runtime type, and the only one where that is sound:
+/// every comparison yields `i1` by definition, so the expected type is a
+/// compile-time constant rather than an operand's. `bool` is a static
+/// marker naming width 1, so `bool::narrow` — unlike `IntDyn::narrow`,
+/// which would accept any integer — checks exactly what the hand-rolled
+/// `TypeData::Integer { bits: 1 }` match checked, and reports width drift
+/// more precisely (see [`Type::require_match`] on why `i1`-vs-`i32` must
+/// not read "expected integer, got integer").
 pub(super) fn narrow_folded_bool<'ctx, B>(
     folded: Option<Value<'ctx, B>>,
 ) -> IrResult<Option<IntValue<'ctx, bool, B>>>
@@ -377,14 +382,7 @@ where
     B: ModuleBrand + 'ctx,
 {
     let Some(v) = folded else { return Ok(None) };
-    let is_i1 = matches!(v.ty().data(), crate::r#type::TypeData::Integer { bits: 1 });
-    if !is_i1 {
-        return Err(IrError::TypeMismatch {
-            expected: crate::error::TypeKindLabel::Integer,
-            got: v.ty().kind_label(),
-        });
-    }
-    Ok(Some(IntValue::<bool, B>::from_value_unchecked(v)))
+    <bool as IntWidth>::narrow(v).map(Some)
 }
 
 /// Re-narrow an erased cast fold result to the destination int type by
@@ -399,12 +397,7 @@ where
     B: ModuleBrand + 'ctx,
 {
     let Some(v) = folded else { return Ok(None) };
-    if v.ty().id() != dest_ty.as_type().id() {
-        return Err(IrError::TypeMismatch {
-            expected: dest_ty.as_type().kind_label(),
-            got: v.ty().kind_label(),
-        });
-    }
+    dest_ty.as_type().require_match(v.ty())?;
     Ok(Some(IntValue::from_value_unchecked(v)))
 }
 
@@ -419,11 +412,6 @@ where
     B: ModuleBrand + 'ctx,
 {
     let Some(v) = folded else { return Ok(None) };
-    if v.ty().id() != dest_ty.as_type().id() {
-        return Err(IrError::TypeMismatch {
-            expected: dest_ty.as_type().kind_label(),
-            got: v.ty().kind_label(),
-        });
-    }
+    dest_ty.as_type().require_match(v.ty())?;
     Ok(Some(FloatValue::from_value_unchecked(v)))
 }

@@ -7683,12 +7683,7 @@ where
         folded: Value<'ctx, B>,
         expected_ty: TypeId,
     ) -> IrResult<Value<'ctx, B>> {
-        if folded.ty != expected_ty {
-            return Err(IrError::TypeMismatch {
-                expected: Type::new(expected_ty, self.module).kind_label(),
-                got: folded.ty().kind_label(),
-            });
-        }
+        Type::new(expected_ty, ModuleRef::<B>::new(self.module)).require_match(folded.ty())?;
         Ok(folded)
     }
 
@@ -7706,49 +7701,16 @@ where
     /// (`hostile_native_typed_override_wrong_width_rejected_at_static_width`
     /// locks the static half; the `..._by_accept_folded_int` sibling the dyn).
     ///
-    /// No false rejections: `llvm_context.rs` memoizes `int_type(bits)` by
-    /// width, so TypeId equality is structural type equality — a correctly
-    /// typed fold result always compares equal. Cost is one `TypeId` compare
-    /// per *successful fold*, not per build.
+    /// For the same reason this compares against `like`'s *runtime* type
+    /// rather than narrowing to `W`: see [`Type::require_match`], which
+    /// carries the error shape and the no-false-rejections argument.
     fn accept_folded_int<W: IntWidth>(
         &self,
         folded: IntValue<'ctx, W, B>,
         like: IntValue<'ctx, W, B>,
     ) -> IrResult<IntValue<'ctx, W, B>> {
-        if folded.as_value().ty().id() != like.as_value().ty().id() {
-            return Err(Self::folded_int_type_error(
-                like.as_value().ty(),
-                folded.as_value().ty(),
-            ));
-        }
+        like.as_value().ty().require_match(folded.as_value().ty())?;
         Ok(folded)
-    }
-
-    /// The error for an int fold result whose runtime type is not `expected`.
-    ///
-    /// Mirrors the split `IntValue`'s `TryFrom<Value>` performs (`value.rs`),
-    /// and exists for the same reason: [`TypeKindLabel::Integer`] is a
-    /// *single* width-less variant, so reporting an i32-vs-i64 fold as
-    /// `TypeMismatch { expected: Integer, got: Integer }` would say "expected
-    /// integer, got integer" — true, and silent about the only fact that
-    /// distinguishes them. Two integers of differing width therefore report
-    /// [`IrError::OperandWidthMismatch`], which carries both widths; a wrong
-    /// *kind* keeps [`IrError::TypeMismatch`], whose labels do separate kinds.
-    ///
-    /// The float acceptors need no counterpart: `TypeKindLabel` has a distinct
-    /// variant per float kind (`Half`/`Float`/`Double`/…), so their
-    /// `TypeMismatch` already names both sides precisely.
-    fn folded_int_type_error(expected: Type<'ctx, B>, got: Type<'ctx, B>) -> IrError {
-        match (expected.data().as_integer(), got.data().as_integer()) {
-            (Some(expected_bits), Some(got_bits)) => IrError::OperandWidthMismatch {
-                lhs: expected_bits,
-                rhs: got_bits,
-            },
-            _ => IrError::TypeMismatch {
-                expected: expected.kind_label(),
-                got: got.kind_label(),
-            },
-        }
     }
 
     /// Mirrors [`Self::accept_folded_int`] for float kinds — including its
@@ -7760,12 +7722,7 @@ where
         folded: FloatValue<'ctx, K, B>,
         like: FloatValue<'ctx, K, B>,
     ) -> IrResult<FloatValue<'ctx, K, B>> {
-        if crate::value::Typed::ty(folded).id() != crate::value::Typed::ty(like).id() {
-            return Err(IrError::TypeMismatch {
-                expected: crate::value::Typed::ty(like).kind_label(),
-                got: crate::value::Typed::ty(folded).kind_label(),
-            });
-        }
+        crate::value::Typed::ty(like).require_match(crate::value::Typed::ty(folded))?;
         Ok(folded)
     }
 
@@ -7779,12 +7736,7 @@ where
         folded: IntValue<'ctx, W, B>,
         dst_ty: IntType<'ctx, W, B>,
     ) -> IrResult<IntValue<'ctx, W, B>> {
-        if folded.as_value().ty().id() != dst_ty.as_type().id() {
-            return Err(Self::folded_int_type_error(
-                dst_ty.as_type(),
-                folded.as_value().ty(),
-            ));
-        }
+        dst_ty.as_type().require_match(folded.as_value().ty())?;
         Ok(folded)
     }
 
@@ -7795,12 +7747,9 @@ where
         folded: FloatValue<'ctx, K, B>,
         dst_ty: FloatType<'ctx, K, B>,
     ) -> IrResult<FloatValue<'ctx, K, B>> {
-        if crate::value::Typed::ty(folded).id() != dst_ty.as_type().id() {
-            return Err(IrError::TypeMismatch {
-                expected: dst_ty.as_type().kind_label(),
-                got: crate::value::Typed::ty(folded).kind_label(),
-            });
-        }
+        dst_ty
+            .as_type()
+            .require_match(crate::value::Typed::ty(folded))?;
         Ok(folded)
     }
 

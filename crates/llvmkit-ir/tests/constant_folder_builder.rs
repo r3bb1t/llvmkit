@@ -757,6 +757,13 @@ fn constant_folder_does_not_simplify_nonconstant_add_zero() -> Result<(), IrErro
 
 /// `llvmkit-specific subset` of `IRBuilderFolder.h`: custom folders may return
 /// an existing value, but the builder rejects a value with the wrong type.
+///
+/// `ReturningFolder` overrides only the erased `fold_bin_op_dyn`, so
+/// `build_int_add::<i32>` reaches it through the typed hook's *default* body
+/// and the wrong-width result is caught by `folder::narrow_folded_int`'s
+/// re-narrow. Both sides are integers, so that seam reports the two widths
+/// rather than a `TypeMismatch { expected: Integer, got: Integer }` that could
+/// not say which width was wrong (`Type::require_match`).
 #[test]
 fn custom_folder_wrong_type_is_rejected() -> Result<(), IrError> {
     Module::with_new("folder-wrong-type", |m| {
@@ -778,7 +785,7 @@ fn custom_folder_wrong_type_is_rejected() -> Result<(), IrError> {
             .build_int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "sum")
             .expect_err("wrong-type folded value is rejected");
 
-        assert!(matches!(err, IrError::TypeMismatch { .. }));
+        assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
         assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
     })
@@ -915,6 +922,14 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B>
 /// `fold_bin_op_dyn` override that answers with a wrong-width replacement
 /// must still be caught by `narrow_folded_int`'s runtime check rather than
 /// silently accepted.
+///
+/// Also the guard on `narrow_folded_int`'s *shape*: this is the case that
+/// makes it irreplaceable by `W::narrow`. Here `W = IntDyn`, and
+/// `IntDyn::narrow` accepts ANY integer width (the marker names none), so
+/// rewriting the seam to narrow-to-the-marker would delete exactly this
+/// check and let the 64-bit replacement through for 32-bit operands.
+/// `narrow_folded_int` compares against `lhs`'s *runtime* type instead --
+/// see `Type::require_match`.
 #[test]
 fn dyn_marker_fold_keeps_runtime_width_check() -> Result<(), IrError> {
     Module::with_new("folder-dyn-widen", |m| {
@@ -935,7 +950,7 @@ fn dyn_marker_fold_keeps_runtime_width_check() -> Result<(), IrError> {
             .build_int_add::<IntDyn, _, _, _>(lhs, rhs, "sum")
             .expect_err("64-bit fold result for 32-bit IntDyn operands is rejected");
 
-        assert!(matches!(err, IrError::TypeMismatch { .. }));
+        assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
         assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
     })
