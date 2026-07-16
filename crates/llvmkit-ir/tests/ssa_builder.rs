@@ -671,10 +671,19 @@ fn switch_to_block_rejects_already_filled_block() -> Result<(), IrError> {
 /// variable's own pinned type -- the type-validation invariant
 /// (`task_ff09d3e3`, Task 17 review follow-up) that the trivial-phi
 /// RAUW path depends on. `IntoIntValue<IntDyn>` happily lifts ANY
-/// width, so this is the one seam that must runtime-check rather than
-/// rely on the type system (mirrors
+/// width, which is the case `def_int_var`'s check was originally written
+/// for (mirrors
 /// `hostile_native_typed_override_wrong_width_rejected_by_accept_folded_int`
 /// in `ir_builder.rs`, the analogous fold-result seam).
+///
+/// The check is no longer keyed on the marker being erased: the static
+/// half is covered by `def_int_var_rejects_forged_static_width_handle`
+/// (`src/ssa_builder.rs`), which needs crate-internal `from_value_unchecked`
+/// to forge its handle and so cannot live out here.
+///
+/// Both sides are integers, so the widths are reported rather than a
+/// `TypeMismatch { expected: Integer, got: Integer }` that could not say
+/// which width was wrong (`Type::require_match`).
 #[test]
 fn dyn_int_var_wrong_width_def_rejected() -> Result<(), IrError> {
     Module::with_new("ssa-dyn-wrong-width", |m| {
@@ -690,9 +699,11 @@ fn dyn_int_var_wrong_width_def_rejected() -> Result<(), IrError> {
         let mut b = b.switch_to_block(entry)?;
         let wrong_width_const = i64_dyn_ty.const_int_checked(1_i64)?;
         match b.def_int_var(x, wrong_width_const) {
-            Err(IrError::TypeMismatch { .. }) => Ok(()),
-            Ok(()) => panic!("expected TypeMismatch, got Ok"),
-            Err(other) => panic!("expected TypeMismatch, got {other:?}"),
+            Err(IrError::OperandWidthMismatch { lhs: 32, rhs: 64 }) => Ok(()),
+            Ok(()) => panic!("expected OperandWidthMismatch {{ lhs: 32, rhs: 64 }}, got Ok"),
+            Err(other) => {
+                panic!("expected OperandWidthMismatch {{ lhs: 32, rhs: 64 }}, got {other:?}")
+            }
         }
     })
 }
@@ -700,9 +711,13 @@ fn dyn_int_var_wrong_width_def_rejected() -> Result<(), IrError> {
 /// Float twin of [`dyn_int_var_wrong_width_def_rejected`]: a dyn-declared
 /// float variable (`declare_float_var_dyn`, marker `FloatDyn`) rejects a
 /// def whose lifted value has a different IEEE kind than the variable's
-/// own pinned type. Keyed on `K::ieee_label().is_none()` rather than
-/// `W::static_bits().is_none()` (`def_float_var`'s doc comment), but the
-/// same invariant.
+/// own pinned type -- the same invariant, one marker family over. The
+/// static half is covered by
+/// `def_float_var_rejects_forged_static_kind_handle` (`src/ssa_builder.rs`).
+///
+/// Stays `TypeMismatch` where the int twin now reports widths:
+/// `TypeKindLabel` has a distinct variant per float kind, so these labels
+/// already name both sides precisely (`Type::require_match`).
 #[test]
 fn dyn_float_var_wrong_kind_def_rejected() -> Result<(), IrError> {
     Module::with_new("ssa-dyn-float-wrong-kind", |m| {
@@ -728,10 +743,11 @@ fn dyn_float_var_wrong_kind_def_rejected() -> Result<(), IrError> {
 /// Pointer twin of [`dyn_int_var_wrong_width_def_rejected`]: a pointer
 /// variable declared in one address space
 /// (`declare_pointer_var_in_addrspace`) rejects a def whose lifted
-/// value is a pointer in a DIFFERENT address space. Unlike the int/float
-/// sides, this check is UNCONDITIONAL (`def_pointer_var`'s doc comment)
-/// -- `PointerValue` never statically pins an address space, so there is
-/// no static-marker case to monomorphize the check away for.
+/// value is a pointer in a DIFFERENT address space. `PointerValue` never
+/// statically pins an address space, so this side never had a static
+/// marker to key on -- it is unconditional for the same reason the int
+/// and float sides now are: nothing between the caller and `current_def`
+/// re-checks the claim otherwise.
 #[test]
 fn pointer_var_wrong_addrspace_def_rejected() -> Result<(), IrError> {
     Module::with_new("ssa-ptr-wrong-addrspace", |m| {

@@ -727,9 +727,24 @@ decl_value_handle!(
     type_predicate |d| matches!(d, TypeData::Pointer { .. })
 );
 impl<'ctx, B: ModuleBrand + 'ctx> PointerValue<'ctx, B> {
-    /// Crate-internal: wrap a [`Value`] known to have a pointer type.
-    /// The IR builder uses this when it just produced a pointer-result
-    /// instruction (cast / GEP / alloca / load).
+    /// Crate-internal: wrap a [`Value`] **claimed** to have a pointer type,
+    /// without checking that it does.
+    ///
+    /// # Callers must guarantee
+    ///
+    /// `v`'s runtime type is a pointer type. As with
+    /// `IntValue::from_value_unchecked` (see it for the full account of the
+    /// obligation), the builder is not the only caller: `ir_builder.rs` wraps
+    /// pointer-result instructions it just produced (cast / GEP / alloca /
+    /// load), `instructions.rs` re-wraps pointer operands read back out of an
+    /// instruction payload, `function_signature.rs` lifts pointer arguments
+    /// and block parameters, and `ssa_builder.rs` wraps arena reads against a
+    /// pointer variable's pinned type.
+    ///
+    /// Carries no address-space marker to contradict — unlike the int/float
+    /// handles, a `PointerValue` never statically pins one — so the claim
+    /// forged here is only "this is a pointer". The checked path is
+    /// `TryFrom<Value>`.
     #[inline]
     pub(super) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
         Self {
@@ -845,11 +860,23 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayValue<'ctx, E, L
         }
     }
 
-    /// Crate-internal: wrap a [`Value`] known to have an array type of the
-    /// claimed element / length. The IR builder uses this when it just
-    /// produced an array-result instruction (`insertvalue`) whose element and
-    /// length markers are pinned by its statically-typed input array. Mirrors
+    /// Crate-internal: wrap a [`Value`] **claimed** to have an array type of
+    /// the given element / length, without checking that it does. Mirrors
     /// [`VectorValue::from_value_unchecked`](VectorValue).
+    ///
+    /// # Callers must guarantee
+    ///
+    /// `v`'s runtime type is an array whose element type and length are
+    /// exactly `E` and `L`. Two markers are forged here rather than one, so
+    /// the obligation is correspondingly wider — see
+    /// `IntValue::from_value_unchecked` for the full account of what it means
+    /// to mint a marker rather than verify it.
+    ///
+    /// Callers: `ir_builder.rs` wraps array-result instructions
+    /// (`insertvalue`) whose `E`/`L` are pinned by the statically-typed input
+    /// array, `instructions.rs` re-wraps array operands read back out of a
+    /// payload, and `function_signature.rs` lifts array arguments and block
+    /// parameters. The checked path is `TryFrom<Value>`.
     #[inline]
     pub(super) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
         Self {
@@ -1045,6 +1072,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> StructValue<'ctx, B> {
         }
     }
 
+    /// Crate-internal: wrap a [`Value`] **claimed** to have a struct type,
+    /// without checking that it does.
+    ///
+    /// # Callers must guarantee
+    ///
+    /// `v`'s runtime type is a struct type. The body stays erased
+    /// (`StructBodyDyn`), so — as with [`PointerValue`] and unlike the
+    /// int/float handles — the only claim forged here is the kind itself; a
+    /// schema-typed wrapper is minted separately against a
+    /// `ValidatedStructValue` witness. See
+    /// `IntValue::from_value_unchecked` for the full account of the
+    /// obligation.
+    ///
+    /// Callers: `ir_builder.rs` wraps struct-result instructions it just
+    /// produced, `instructions.rs` re-wraps struct operands read back out of
+    /// a payload, and `struct_schema.rs` lifts schema-typed values and
+    /// arguments. The checked path is `TryFrom<Value>`.
     #[inline]
     pub(crate) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
         Self {
@@ -1225,10 +1269,24 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> fmt::Debug for VectorVa
 }
 
 impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorValue<'ctx, E, L, B> {
-    /// Crate-internal: wrap a [`Value`] known to have a vector type of the
-    /// claimed element / length. The IR builder uses the erased form when it
-    /// just produced a vector-result instruction (insertelement /
-    /// shufflevector / splat); typed callers pass the pinned `E, L`.
+    /// Crate-internal: wrap a [`Value`] **claimed** to have a vector type of
+    /// the given element / length, without checking that it does.
+    ///
+    /// # Callers must guarantee
+    ///
+    /// `v`'s runtime type is a vector whose element type and length are
+    /// exactly `E` and `L`. As on the array twin, two markers are forged at
+    /// once — see `IntValue::from_value_unchecked` for the full account of
+    /// the obligation.
+    ///
+    /// Callers: `ir_builder.rs` wraps vector-result instructions it just
+    /// produced (insertelement / shufflevector / splat) — using the erased
+    /// form where the shape is not statically known, and passing the pinned
+    /// `E, L` where it is; `instructions.rs` re-wraps vector operands read
+    /// back out of a payload; `function_signature.rs` lifts vector arguments
+    /// and block parameters. `element.rs` gates its own raw wrap behind the
+    /// unforgeable [`WrapWitness`](crate::element::WrapWitness) instead. The
+    /// checked path here is `TryFrom<Value>`.
     #[inline]
     pub(super) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
         Self {
@@ -1511,9 +1569,45 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> fmt::Debug for IntValue<'ctx, W, 
 }
 
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
-    /// Crate-internal: wrap a [`Value`] known to have type `iN` with width `W`.
-    /// The IRBuilder uses this when it just produced an instruction whose
-    /// type matches the operand widths it validated.
+    /// Crate-internal: wrap a [`Value`] **claimed** to have type `iN` with
+    /// width `W`, without checking that it does.
+    ///
+    /// This *mints* the claim `W` makes rather than verifying it, so `W` is
+    /// only ever as honest as the caller. Crate-internal is the entire
+    /// safety story: `pub(crate)` is what keeps external safe code from
+    /// forging an `IntValue<W>` whose marker contradicts its runtime type.
+    /// The checked paths are `TryFrom<Value>` (per concrete marker) and
+    /// `IntWidth::narrow` (from marker-generic code); prefer them anywhere
+    /// the runtime type is not already proven.
+    ///
+    /// # Callers must guarantee
+    ///
+    /// `v`'s runtime type is exactly `W`'s. This is an obligation to
+    /// discharge, not a given — the in-crate callers are not equally safe,
+    /// and they are not all the builder:
+    ///
+    /// - `ir_builder.rs` — the safest: it just produced the instruction and
+    ///   computed its result type from operands it validated.
+    /// - `instructions.rs` — re-wraps an operand read back out of an
+    ///   instruction's own payload, whose type the builder pinned going in.
+    /// - `function_signature.rs` — argument and block-parameter (head-phi)
+    ///   lifts, pinned by the marker the function or block was declared with.
+    /// - `ssa_builder.rs` — arena reads (`use_int_var`) wrap the variable's
+    ///   pinned `ty`; `def_int_var` is what makes that safe, by checking
+    ///   every write against it.
+    /// - `ir_builder/folder.rs` — fold results, but only *after*
+    ///   `Type::require_match` has compared the two runtime types.
+    /// - `int_width.rs` — the `IntoIntValue` lifts, on constants they just
+    ///   built at `W`'s own type.
+    ///
+    /// The riskiest caller is the one this doc used to omit: a folder hook is
+    /// an *extension point*, and an in-crate folder that wraps a wrong-width
+    /// payload here is exactly the bug the builder's `accept_folded_int` /
+    /// `narrow_folded_int` seams exist to catch — see
+    /// `hostile_native_typed_override_wrong_width_rejected_at_static_width`
+    /// (`ir_builder.rs`). Those seams check every marker, static ones
+    /// included, precisely because this method makes a static `W` no more
+    /// trustworthy than the code that wrote it.
     #[inline]
     pub(crate) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
         Self {
@@ -1851,7 +1945,21 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> fmt::Debug for FloatValue<'ctx, 
 }
 
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
-    /// Crate-internal: wrap a [`Value`] known to have a float type of kind `K`.
+    /// Crate-internal: wrap a [`Value`] **claimed** to have a float type of
+    /// kind `K`, without checking that it does.
+    ///
+    /// The float twin of `IntValue::from_value_unchecked` in every respect,
+    /// including its caller classes and the obligation they carry — see that
+    /// method's doc for the full account. It forges a static `K` exactly as
+    /// freely as the int side forges a static `W`, which is why the float
+    /// acceptors (`accept_folded_fp`, `narrow_folded_fp`) and `def_float_var`
+    /// check every marker rather than only the erased `FloatDyn` one.
+    ///
+    /// # Callers must guarantee
+    ///
+    /// `v`'s runtime type is exactly `K`'s. The checked paths are
+    /// `TryFrom<Value>` (per concrete marker) and `FloatKind::narrow` (from
+    /// kind-generic code).
     #[inline]
     pub(crate) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
         Self {
