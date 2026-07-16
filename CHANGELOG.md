@@ -260,6 +260,81 @@ underneath.
   role-named `remove_then` / `remove_else` name the arm, so the collapse to
   `br <survivor>` is unambiguous.
 
+### Phi authoring — typed block parameters
+
+Lifts a block's *parameter shape* into the Rust type system, so a branch that
+carries the wrong number of block-arguments — or a right-count-but-wrong-typed
+argument — is a **compile error** rather than an `IrError::PhiArgArityMismatch`
+/ type mismatch surfaced at the call site. The block analog of the const-generic
+vector/array retrofit below: typing is **opt-in** through a defaulted marker, so
+every existing erased branch/edge call keeps compiling and printing identical IR.
+
+#### Added
+
+- `BlockParams` sealed marker trait and its erased inhabitant `BlockParamsDyn`
+  (`block_params.rs`), plus a **last, defaulted** `Params` type parameter on
+  `BasicBlockLabel` and `BasicBlock` (`…, Params: BlockParams = BlockParamsDyn`).
+  Because the new parameter defaults to the erased marker, every existing handle
+  spelling is unchanged; a label recovered from an untyped `Value` still lands on
+  `BlockParamsDyn`.
+- `IRBuilder::append_block_typed::<Params>(function, name)` — the typed sibling
+  of `append_block_with_params`. `Params` is a `FunctionParamList` tuple (the
+  same schema that types a function's parameter list, e.g. `(i32, Ptr)`); the
+  call returns the block *stamped* with `Params` plus a typed tuple of parameter
+  handles sourced from the block's operandless head-phis (`Params` position `i`
+  is parameter `i`'s handle and carries its IR type). The parameter IR types are
+  built before the block is appended, so a construction failure leaves no
+  half-built block behind.
+- `BlockCall<'ctx, R, B, Params>` — a typed branch edge bundling a typed target
+  label with the block-arguments that seed its head-phis, built via
+  `head.call(args)` (on a typed `BasicBlockLabel` or `BasicBlock`) where `args`
+  satisfies `CallArgs<Params>`. A **wrong arity or a wrong-typed argument
+  position is a compile error**, reusing the exact machinery of a typed
+  `build_call`. `IRBuilder::build_br_call` / `build_cond_br_call` consume a
+  `BlockCall` (the latter one per arm — the two arms may carry different
+  schemas), seed the target's head-phis with the compile-checked arguments, and
+  emit the branch. Any *value-level* lowering failure (e.g. a cross-module
+  constant) is deferred into the `BlockCall` and surfaced as `IrResult` at build
+  time.
+- Typed parameter tuples are capped at **arity 12**: `BlockParams` carries a
+  `Debug` supertrait and the standard library stops deriving `Debug` on tuples
+  past arity 12, so a `>12`-arity tuple is rejected with a `BlockParams`-
+  unsatisfied bound error. Beyond twelve parameters, author the block with the
+  erased `append_block_with_params` (`BlockParamsDyn`) form. The whole erased
+  authoring surface — `append_block_with_params` /
+  `append_block_with_named_params`, `build_br` / `build_br_with_args` /
+  `build_cond_br_with_args` — is **unchanged** and still produces `BlockParamsDyn`
+  handles.
+
+### Typed terminator operands — switch condition width and indirectbr address
+
+Extends the branching type-safety program from a terminator's *edges* to its
+*operands*: the `switch` condition/case integer width and the `indirectbr`
+address type now live in the Rust type system, so a wrong-width case value or a
+non-pointer jump address is a **compile error** rather than a runtime
+`TypeMismatch` / verifier rejection. Typing is **opt-in** — the erased authoring
+surface (`build_switch`, `build_indirectbr` with a runtime-checked `Value`
+address) is untouched and keeps its existing runtime checks.
+
+#### Added
+
+- `SwitchInst<'ctx, P, B, W: IntWidth = IntDyn>` now threads the condition's
+  integer width `W` as a **last, defaulted** type parameter, plus
+  `IRBuilder::build_switch_typed::<W>(cond, default, name)` — the typed sibling
+  of `build_switch` — which pins `W` from the typed condition and returns a
+  `SwitchInst<…, W>`. On such a switch, `SwitchInst::add_case` carries an
+  `IntoIntValue<'ctx, W, B>` bound, so a **wrong-width case value is a compile
+  error** (an `i64` case on a `W = i32` switch has no `IntoIntValue<'_, i32, _>`
+  impl — never narrows). The erased `build_switch` still yields a
+  `SwitchInst<…, IntDyn>` whose `add_case` keeps the runtime `TypeMismatch`
+  check, and the parser / SSA-builder paths are unchanged (they land on the
+  erased form).
+- `IRBuilder::build_indirectbr` tightened its address bound from `IsValue` to
+  `IntoPointerValue<'ctx, B>`, so a **typed non-pointer address is a compile
+  error** (an `IntValue<i32>` has no `IntoPointerValue` impl) — the
+  pointer-ness check moves from `verify()` to build time. An erased `Value`
+  address still works and is pointer-checked at build time as before.
+
 ### Const-generic vector and array types (breaking)
 
 Fixed vectors and arrays now carry their **element type** and **length** in the

@@ -43,7 +43,7 @@ use super::instr_types::{
     LandingPadClauseKind, PhiData, ReturnOpData,
 };
 use super::instruction::{InstructionKindData, InstructionView};
-use super::int_width::{IntDyn, IntWidth, IntoIntValue};
+use super::int_width::{IntDyn, IntWidth, IntoIntValue, StaticIntWidth};
 use super::marker::{Dyn, Ptr, ReturnMarker};
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, Unverified};
 use super::phi_state::{Closed, Open, PhiState};
@@ -2408,21 +2408,40 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
 /// [`Open`](TermOpen)) tracks whether this handle view can edit the case list.
 /// `add_case` is gated to `P = Open`; `finish` moves the open handle and
 /// returns a `Closed` view. Rediscovery through opcode discriminators is closed.
+///
+/// The `W: IntWidth` parameter (default [`IntDyn`]) threads the condition's
+/// integer width. On a statically-typed switch (`W = i32`, …), every case
+/// added through [`add_case`](SwitchInst::add_case) must have the SAME width
+/// `W` — a wrong-width case is a *compile* error (there is no
+/// `IntoIntValue<'ctx, W, B>` impl for the mismatched value). The erased
+/// `W = IntDyn` flavour (produced by the parser / SSA builder via the
+/// width-erased [`build_switch`](crate::IRBuilder::build_switch)) keeps the
+/// runtime [`crate::IrError::TypeMismatch`] check instead. `W` is the LAST parameter
+/// and defaults to `IntDyn`, so width-agnostic `SwitchInst<'ctx, P, B>`
+/// annotations keep resolving to the erased flavour unchanged.
 #[derive(Debug)]
-pub struct SwitchInst<'ctx, P: TermOpenState = TermOpen, B: ModuleBrand = Brand<'ctx>> {
+pub struct SwitchInst<
+    'ctx,
+    P: TermOpenState = TermOpen,
+    B: ModuleBrand = Brand<'ctx>,
+    W: IntWidth = IntDyn,
+> {
     pub(super) id: ValueId,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeId,
     _p: core::marker::PhantomData<P>,
+    _w: core::marker::PhantomData<W>,
 }
 
-impl<'ctx, P: TermOpenState, B: ModuleBrand> PartialEq for SwitchInst<'ctx, P, B> {
+impl<'ctx, P: TermOpenState, B: ModuleBrand, W: IntWidth> PartialEq for SwitchInst<'ctx, P, B, W> {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
     }
 }
-impl<'ctx, P: TermOpenState, B: ModuleBrand> Eq for SwitchInst<'ctx, P, B> {}
-impl<'ctx, P: TermOpenState, B: ModuleBrand> core::hash::Hash for SwitchInst<'ctx, P, B> {
+impl<'ctx, P: TermOpenState, B: ModuleBrand, W: IntWidth> Eq for SwitchInst<'ctx, P, B, W> {}
+impl<'ctx, P: TermOpenState, B: ModuleBrand, W: IntWidth> core::hash::Hash
+    for SwitchInst<'ctx, P, B, W>
+{
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
@@ -2430,7 +2449,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand> core::hash::Hash for SwitchInst<'ct
     }
 }
 
-impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> SwitchInst<'ctx, P, B> {
+impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, P, B, W> {
     #[inline]
     pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
     where
@@ -2441,15 +2460,17 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> SwitchInst<'ctx, P, B> {
             module: module.into(),
             ty,
             _p: core::marker::PhantomData,
+            _w: core::marker::PhantomData,
         }
     }
     #[inline]
-    pub(super) fn retag<P2: TermOpenState>(self) -> SwitchInst<'ctx, P2, B> {
+    pub(super) fn retag<P2: TermOpenState>(self) -> SwitchInst<'ctx, P2, B, W> {
         SwitchInst {
             id: self.id,
             module: self.module,
             ty: self.ty,
             _p: core::marker::PhantomData,
+            _w: core::marker::PhantomData,
         }
     }
     #[inline]
@@ -2516,17 +2537,30 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> SwitchInst<'ctx, P, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> SwitchInst<'ctx, TermOpen, B> {
-    /// Append a `(case_value, target)` entry to the switch. Mirrors
-    /// `SwitchInst::addCase`. Returns `Self` so calls chain.
-    pub fn add_case<V, R, Target>(self, case_value: V, target: Target) -> IrResult<Self>
+impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> {
+    /// Consume the open switch and return its [`Closed`] view, preserving
+    /// the condition width `W`. Mirrors the implicit "switch is finalised"
+    /// convention upstream where the verifier subsequently runs
+    /// `Verifier::visitSwitchInst`.
+    #[inline]
+    pub fn finish(self) -> SwitchInst<'ctx, TermClosed, B, W> {
+        self.retag()
+    }
+
+    /// Shared case-append body: push `(case_value_id, target)` and register
+    /// the switch as a user of the case value. Both `add_case` flavours
+    /// funnel through here once their width discipline (compile-time for
+    /// static `W`, runtime for [`IntDyn`]) has been discharged.
+    fn push_case_checked<R, Target>(self, v: Value<'ctx, B>, target: Target) -> IrResult<Self>
     where
-        V: IsValue<'ctx, B>,
         R: ReturnMarker,
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let module = self.module.module();
-        let v = case_value.as_value();
+        // Defence in depth: the case value's runtime type must still equal
+        // the condition's. For a typed switch this is guaranteed by the
+        // `IntoIntValue<'ctx, W, B>` bound; for the erased switch it is the
+        // primary check (mirrors `Verifier::visitSwitchInst`).
         let cond_ty = self.payload().cond.get();
         let cond_ty = module.context().value_data(cond_ty).ty;
         if v.ty != cond_ty {
@@ -2550,12 +2584,48 @@ impl<'ctx, B: ModuleBrand + 'ctx> SwitchInst<'ctx, TermOpen, B> {
             .push(ValueUse::Instruction(self.id));
         Ok(self)
     }
-    /// Consume the open switch and return its [`Closed`] view. Mirrors
-    /// the implicit "switch is finalised" convention upstream where
-    /// the verifier subsequently runs `Verifier::visitSwitchInst`.
-    #[inline]
-    pub fn finish(self) -> SwitchInst<'ctx, TermClosed, B> {
-        self.retag()
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> SwitchInst<'ctx, TermOpen, B, IntDyn> {
+    /// Append a `(case_value, target)` entry to a width-erased switch.
+    /// Mirrors `SwitchInst::addCase`. Returns `Self` so calls chain.
+    ///
+    /// This is the erased flavour used by the parser and SSA builder: the
+    /// case value is accepted as any [`IsValue`] and its width is checked
+    /// against the condition at RUNTIME (the same
+    /// [`crate::IrError::TypeMismatch`] LLVM's verifier would raise). The typed
+    /// flavour on a `SwitchInst<'ctx, TermOpen, B, W>` for a static `W`
+    /// makes a wrong-width case a compile error instead.
+    pub fn add_case<V, R, Target>(self, case_value: V, target: Target) -> IrResult<Self>
+    where
+        V: IsValue<'ctx, B>,
+        R: ReturnMarker,
+        Target: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let v = case_value.as_value();
+        self.push_case_checked(v, target)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, W: StaticIntWidth> SwitchInst<'ctx, TermOpen, B, W> {
+    /// Append a `(case_value, target)` entry to a statically-typed switch.
+    /// Mirrors `SwitchInst::addCase`. Returns `Self` so calls chain.
+    ///
+    /// The case value must have the SAME width `W` as the condition:
+    /// `V: IntoIntValue<'ctx, W, B>`. An `IntValue<'ctx, i64, B>` (or a
+    /// bare `i64` literal) on a `W = i32` switch has no such impl, so the
+    /// mismatch is a *compile* error rather than the runtime
+    /// [`crate::IrError::TypeMismatch`] the erased flavour reports. A runtime
+    /// type-equality backstop still runs as defence in depth.
+    pub fn add_case<V, R, Target>(self, case_value: V, target: Target) -> IrResult<Self>
+    where
+        V: IntoIntValue<'ctx, W, B>,
+        R: ReturnMarker,
+        Target: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let module_ref = self.module;
+        let v = IsValue::as_value(case_value.into_int_value(module_ref)?);
+        self.push_case_checked(v, target)
     }
 }
 

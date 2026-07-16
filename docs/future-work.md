@@ -384,3 +384,60 @@ typed edit surface — `edit_invoke` → `redirect_normal`/`redirect_unwind`,
 N/A for them: both `invoke` edges and the `callbr` default are mandatory and the
 indirect count is fixed, and that absence is a compile-time guarantee (the
 `InvokeEdit`/`CallBrEdit` handles carry no `remove_*`), not a gap.
+
+**Typed block parameters** have also shipped (`feature-20/typed-block-params`) —
+the block analog of the const-generic vector/array retrofit. A `BlockParams`
+sealed marker with the erased `BlockParamsDyn` default sits as the last,
+defaulted `Params` type parameter on `BasicBlockLabel`/`BasicBlock`, so all
+erased authoring is unchanged; `IRBuilder::append_block_typed::<Params>` appends
+a `Params`-stamped block with typed head-phi parameter handles; and the
+`BlockCall<'ctx, R, B, Params>` edge (`head.call(args)` consumed by
+`build_br_call`/`build_cond_br_call`) makes a wrong-arity or wrong-typed
+block-argument a *compile* error. The erased surface
+(`append_block_with_params`, `build_br_with_args`, `build_cond_br_with_args`) is
+untouched. Two follow-ups remain deferred:
+
+- **Edit-surface `BlockCall` integration.** The reshape edit surface's typed
+  `redirect_*` phi-seeds stay erased (`&[Value]`): passes operate on `Dyn`
+  block labels (`BasicBlockLabel<R, B, BlockParamsDyn>`), so a typed `BlockCall`
+  built from a `Params`-stamped label is rarely usable at a redirect site — the
+  pass would first have to recover (or carry) a typed label. Until a pass surface
+  threads typed labels through, the typed `BlockCall` edge is a construction-time
+  (`IRBuilder`) convenience only, and the edit surface keeps taking erased
+  per-parameter value slices.
+- **Typed params beyond arity 12.** `BlockParams` has a `Debug` supertrait and
+  the standard library stops deriving `Debug` on tuples past arity 12, so a
+  `>12`-arity typed parameter tuple cannot satisfy `BlockParams` even though it
+  is a valid `FunctionParamList`; a block with more than twelve typed parameters
+  must fall back to the erased `BlockParamsDyn` form. Lifting the ceiling needs a
+  `Debug` path for larger tuples (drop the supertrait, or supply a manual `Debug`
+  for a fixed-shape wrapper) — the same std-tuple `Debug` wall that caps typed
+  function parameters.
+
+**Typed terminator operands** have also shipped
+(`feature-21/typed-terminator-operands`) — the program's move from a
+terminator's *edges* to its *operands*. The `switch` condition/case integer
+width is now a last, defaulted `W: IntWidth = IntDyn` parameter on
+`SwitchInst<'ctx, P, B, W>`; `IRBuilder::build_switch_typed::<W>` pins `W` and
+its `add_case` carries an `IntoIntValue<'ctx, W, B>` bound, so a wrong-width
+case value is a **compile error** (the erased `build_switch` keeps the runtime
+`TypeMismatch` check). And `build_indirectbr`'s address bound tightened from
+`IsValue` to `IntoPointerValue`, so a typed non-pointer jump address is a
+**compile error** (the pointer-ness check moves from `verify()` to build time;
+erased `Value` addresses are unchanged). Parser / SSA-builder paths and the
+whole erased authoring surface are untouched.
+
+With the edit surface, typed block parameters, and now operand typing all
+shipped, the **"branching bugs impossible at the type level"** program's typed
+surfaces are largely complete. What remains is deliberately out of scope rather
+than pending:
+
+- **Universal per-function branding** — deferred on feasibility grounds (the
+  full-program lifetime/branding gymnastics do not pay for themselves versus the
+  per-module brand already in place); the locked API decisions from the program's
+  design remain, but this rung is not being pursued.
+- **Whole-graph verifier territory** — phi-incoming completeness against the
+  final predecessor set for builder-constructed IR, and dominance, are permanent
+  residents of `Module::verify()` (defense in depth). These are whole-graph facts
+  that cannot be a local construction- or parse-time guarantee, so they stay the
+  verifier's job by design, not a gap to close.

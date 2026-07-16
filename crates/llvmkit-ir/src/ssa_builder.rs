@@ -289,10 +289,12 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> PartialEq for SsaBlock<'ctx, 
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         // Compare through the erased `Value` rather than `self.label`
-        // directly: `BasicBlockLabel<R, B>`'s derived `PartialEq` needs
-        // `R: PartialEq`, which `ReturnMarker` does not guarantee.
-        // Mirrors how `BasicBlock`'s own manual `PartialEq` (above)
-        // compares `id`/`module`/`ty` instead of the phantom markers.
+        // directly. `BasicBlockLabel`'s hand-written `PartialEq` already
+        // compares only `id`/`module`/`ty` — it deliberately does *not*
+        // bound `R: PartialEq` (which `ReturnMarker` does not guarantee) —
+        // so this mirrors that same `id`/`module`/`ty` comparison through
+        // `as_value`, exactly as `BasicBlock`'s own manual `PartialEq`
+        // (above) does instead of touching the phantom markers.
         self.label.as_value() == other.label.as_value() && self.owner == other.owner
     }
 }
