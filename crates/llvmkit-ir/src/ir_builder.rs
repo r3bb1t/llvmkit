@@ -7692,16 +7692,30 @@ where
         Ok(folded)
     }
 
-    /// Accept a typed fold result. For static markers this is the identity —
-    /// the type system already guarantees the width/kind. For dyn markers
-    /// (IntDyn) the marker doesn't pin the width, so keep a TypeId check.
-    /// The branch monomorphizes away for static W.
+    /// Accept a typed fold result, checking the payload's runtime type
+    /// against the operand's for **every** marker — static ones included.
+    ///
+    /// A static `W` is not self-guaranteeing here. The type system pins `W`
+    /// only as tightly as whoever constructed the handle: the crate-internal
+    /// [`IntValue::from_value_unchecked`] mints an `IntValue<W>` without
+    /// consulting the payload's real type, so an in-crate folder overriding
+    /// the typed `fold_int_bin_op<W>` hook can hand back a value whose IR
+    /// type contradicts `W`. Keying this check on `W::static_bits().is_none()`
+    /// would trust the very claim it exists to verify — the folder's word
+    /// that `W` matches the payload. Both markers are checked instead
+    /// (`hostile_native_typed_override_wrong_width_rejected_at_static_width`
+    /// locks the static half; the `..._by_accept_folded_int` sibling the dyn).
+    ///
+    /// No false rejections: `llvm_context.rs` memoizes `int_type(bits)` by
+    /// width, so TypeId equality is structural type equality — a correctly
+    /// typed fold result always compares equal. Cost is one `TypeId` compare
+    /// per *successful fold*, not per build.
     fn accept_folded_int<W: IntWidth>(
         &self,
         folded: IntValue<'ctx, W, B>,
         like: IntValue<'ctx, W, B>,
     ) -> IrResult<IntValue<'ctx, W, B>> {
-        if W::static_bits().is_none() && folded.as_value().ty().id() != like.as_value().ty().id() {
+        if folded.as_value().ty().id() != like.as_value().ty().id() {
             return Err(IrError::TypeMismatch {
                 expected: like.as_value().ty().kind_label(),
                 got: folded.as_value().ty().kind_label(),
@@ -7710,17 +7724,16 @@ where
         Ok(folded)
     }
 
-    /// Mirrors [`Self::accept_folded_int`] for float kinds, keyed on
-    /// `K::ieee_label().is_none()` (the erased `FloatDyn` marker) instead of
-    /// `W::static_bits()`.
+    /// Mirrors [`Self::accept_folded_int`] for float kinds — including its
+    /// reason for checking every marker rather than only the erased
+    /// `FloatDyn` one: `FloatValue::from_value_unchecked` forges a static
+    /// `K` just as freely as `IntValue`'s does a static `W`.
     fn accept_folded_fp<K: FloatKind>(
         &self,
         folded: FloatValue<'ctx, K, B>,
         like: FloatValue<'ctx, K, B>,
     ) -> IrResult<FloatValue<'ctx, K, B>> {
-        if K::ieee_label().is_none()
-            && crate::value::Typed::ty(folded).id() != crate::value::Typed::ty(like).id()
-        {
+        if crate::value::Typed::ty(folded).id() != crate::value::Typed::ty(like).id() {
             return Err(IrError::TypeMismatch {
                 expected: crate::value::Typed::ty(like).kind_label(),
                 got: crate::value::Typed::ty(folded).kind_label(),
@@ -7732,13 +7745,14 @@ where
     /// Accept a typed cast fold result against the destination int type.
     /// Casts have no same-type operand to compare against (unlike binops),
     /// so this checks against `dst_ty` instead of a `like` operand; otherwise
-    /// mirrors [`Self::accept_folded_int`].
+    /// mirrors [`Self::accept_folded_int`], including its every-marker check
+    /// and the reasoning for it.
     fn accept_folded_cast_int<W: IntWidth>(
         &self,
         folded: IntValue<'ctx, W, B>,
         dst_ty: IntType<'ctx, W, B>,
     ) -> IrResult<IntValue<'ctx, W, B>> {
-        if W::static_bits().is_none() && folded.as_value().ty().id() != dst_ty.as_type().id() {
+        if folded.as_value().ty().id() != dst_ty.as_type().id() {
             return Err(IrError::TypeMismatch {
                 expected: dst_ty.as_type().kind_label(),
                 got: folded.as_value().ty().kind_label(),
@@ -7747,15 +7761,14 @@ where
         Ok(folded)
     }
 
-    /// Mirrors [`Self::accept_folded_cast_int`] for float destination kinds.
+    /// Mirrors [`Self::accept_folded_cast_int`] for float destination kinds,
+    /// checking every marker for the same reason.
     fn accept_folded_cast_fp<K: FloatKind>(
         &self,
         folded: FloatValue<'ctx, K, B>,
         dst_ty: FloatType<'ctx, K, B>,
     ) -> IrResult<FloatValue<'ctx, K, B>> {
-        if K::ieee_label().is_none()
-            && crate::value::Typed::ty(folded).id() != dst_ty.as_type().id()
-        {
+        if crate::value::Typed::ty(folded).id() != dst_ty.as_type().id() {
             return Err(IrError::TypeMismatch {
                 expected: dst_ty.as_type().kind_label(),
                 got: crate::value::Typed::ty(folded).kind_label(),
@@ -8552,8 +8565,7 @@ mod tests {
         }
     }
 
-    /// Locks `accept_folded_int`'s dyn-marker branch (`ir_builder.rs`,
-    /// `W::static_bits().is_none()` arm) as the seam that rejects a
+    /// Locks `accept_folded_int` (`ir_builder.rs`) as the seam that rejects a
     /// wrong-width result from a *native* typed-hook override -- the bug
     /// class external folders are compile-time barred from producing
     /// (see the sibling compile-fail golden
@@ -8570,14 +8582,15 @@ mod tests {
     /// inside the *trait's default* body, which this override replaces).
     /// The native override returns `Ok(Some(wrong_width_value))`
     /// straight back to `build_int_add`, which forwards it to
-    /// `self.accept_folded_int(folded, lhs)`. Inside `accept_folded_int`:
-    /// `W = IntDyn`, so `W::static_bits().is_none()` is `true`
-    /// (`int_width.rs`'s `impl IntWidth for IntDyn`), and
+    /// `self.accept_folded_int(folded, lhs)`. Inside `accept_folded_int`,
     /// `folded.as_value().ty().id() != like.as_value().ty().id()` is
     /// `true` (the stored value's real type is `i64`, `lhs`'s is the
     /// 32-bit custom-width `IntDyn` type) -- so `accept_folded_int`
     /// returns `Err(IrError::TypeMismatch { .. })`. That is the exact
     /// line under test; `narrow_folded_int` is never reached on this path.
+    /// The comparison is unconditional -- it no longer keys on
+    /// `W::static_bits().is_none()` -- so `W = IntDyn` no longer selects it;
+    /// the static-`W` sibling test below covers the other marker class.
     #[test]
     fn hostile_native_typed_override_wrong_width_rejected_by_accept_folded_int()
     -> Result<(), IrError> {
