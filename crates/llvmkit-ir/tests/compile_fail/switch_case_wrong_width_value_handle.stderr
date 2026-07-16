@@ -1,0 +1,23 @@
+error[E0277]: the trait bound `IntValue<'_, i64, Brand<'_>>: IntoIntValue<'_, i32, Brand<'_>>` is not satisfied
+  --> tests/compile_fail/switch_case_wrong_width_value_handle.rs:47:33
+   |
+47 |         let _ = switch.add_case(case, dest_label);
+   |                        -------- ^^^^ the trait `IntoIntValue<'_, i32, Brand<'_>>` is not implemented for `IntValue<'_, i64, Brand<'_>>`
+   |                        |
+   |                        required by a bound introduced by this call
+   |
+help: the trait `IntoIntValue<'_, i32, Brand<'_>>` is not implemented for `IntValue<'_, i64, Brand<'_>>`
+      but trait `IntoIntValue<'_, i64, Brand<'_>>` is implemented for it
+  --> src/int_width.rs
+   |
+   | impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B> for IntValue<'ctx, W, B> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for that trait implementation, expected `i64`, found `i32`
+note: required by a bound in `SwitchInst::<'ctx, llvmkit_ir::term_open_state::Open, B, W>::add_case`
+  --> src/instructions.rs
+   |
+   |     pub fn add_case<V, R, Target>(self, case_value: V, target: Target) -> IrResult<Self>
+   |            -------- required by a bound in this associated function
+   |     where
+   |         V: IntoIntValue<'ctx, W, B>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `SwitchInst::<'ctx, Open, B, W>::add_case`

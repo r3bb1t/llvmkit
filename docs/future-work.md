@@ -413,3 +413,31 @@ untouched. Two follow-ups remain deferred:
   `Debug` path for larger tuples (drop the supertrait, or supply a manual `Debug`
   for a fixed-shape wrapper) — the same std-tuple `Debug` wall that caps typed
   function parameters.
+
+**Typed terminator operands** have also shipped
+(`feature-21/typed-terminator-operands`) — the program's move from a
+terminator's *edges* to its *operands*. The `switch` condition/case integer
+width is now a last, defaulted `W: IntWidth = IntDyn` parameter on
+`SwitchInst<'ctx, P, B, W>`; `IRBuilder::build_switch_typed::<W>` pins `W` and
+its `add_case` carries an `IntoIntValue<'ctx, W, B>` bound, so a wrong-width
+case value is a **compile error** (the erased `build_switch` keeps the runtime
+`TypeMismatch` check). And `build_indirectbr`'s address bound tightened from
+`IsValue` to `IntoPointerValue`, so a typed non-pointer jump address is a
+**compile error** (the pointer-ness check moves from `verify()` to build time;
+erased `Value` addresses are unchanged). Parser / SSA-builder paths and the
+whole erased authoring surface are untouched.
+
+With the edit surface, typed block parameters, and now operand typing all
+shipped, the **"branching bugs impossible at the type level"** program's typed
+surfaces are largely complete. What remains is deliberately out of scope rather
+than pending:
+
+- **Universal per-function branding** — deferred on feasibility grounds (the
+  full-program lifetime/branding gymnastics do not pay for themselves versus the
+  per-module brand already in place); the locked API decisions from the program's
+  design remain, but this rung is not being pursued.
+- **Whole-graph verifier territory** — phi-incoming completeness against the
+  final predecessor set for builder-constructed IR, and dominance, are permanent
+  residents of `Module::verify()` (defense in depth). These are whole-graph facts
+  that cannot be a local construction- or parse-time guarantee, so they stay the
+  verifier's job by design, not a gap to close.
