@@ -130,6 +130,24 @@ pub trait FunctionParam: Sized + 'static {
     ) -> Self::Value<'ctx, B>
     where
         B: ModuleBrand + 'ctx;
+
+    /// Convert a previously-validated raw [`Value`] into the branded value —
+    /// the [`Value`]-sourced analog of [`Self::value_from_argument`]. A
+    /// block's parameters are its leading head-phi *results* (plain
+    /// [`Value`]s), not [`Argument`]s, so the typed block constructor
+    /// [`crate::IRBuilder::append_block_typed`] wraps each head-phi through
+    /// this method. Reuses `from_value_unchecked` exactly as
+    /// [`Self::value_from_argument`] does (that method is precisely this one
+    /// applied to `arg.as_value()`), and carries the same capability gate:
+    /// the token is only minted by this crate after the phi types were built
+    /// from this schema, so the unchecked wrap cannot mistype and safe
+    /// downstream code cannot reach it.
+    fn value_from_value<'ctx, B>(
+        value: Value<'ctx, B>,
+        validated: &ValidatedFunctionParams<'_>,
+    ) -> Self::Value<'ctx, B>
+    where
+        B: ModuleBrand + 'ctx;
 }
 
 /// Lifetime-free tuple schema for a function's parameter list.
@@ -160,6 +178,21 @@ pub trait FunctionParamList: Sized + 'static {
     ) -> Self::Values<'ctx, B>
     where
         R: ReturnMarker,
+        B: ModuleBrand + 'ctx;
+
+    /// Return typed parameter values sourced from a block's leading head-phi
+    /// result [`Value`]s (declaration order) — the block-argument analog of
+    /// [`Self::values`], which sources from a function's [`Argument`]s.
+    /// `phi_values[i]` must be the head-phi built for parameter `i` from this
+    /// schema's [`Self::ir_types`]; [`crate::IRBuilder::append_block_typed`]
+    /// establishes that arity and ordering (one phi per `ir_types` entry, in
+    /// order) before minting the capability token, so the per-position
+    /// unchecked wraps cannot mistype.
+    fn values_from_phi_values<'ctx, B>(
+        phi_values: &[Value<'ctx, B>],
+        validated: &ValidatedFunctionParams<'_>,
+    ) -> Self::Values<'ctx, B>
+    where
         B: ModuleBrand + 'ctx;
 }
 
@@ -588,6 +621,17 @@ impl FunctionParam for Ptr {
     {
         PointerValue::from_value_unchecked(arg.as_value())
     }
+
+    #[inline]
+    fn value_from_value<'ctx, B>(
+        value: Value<'ctx, B>,
+        _validated: &ValidatedFunctionParams<'_>,
+    ) -> Self::Value<'ctx, B>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        PointerValue::from_value_unchecked(value)
+    }
 }
 
 macro_rules! impl_int_signature_marker {
@@ -671,6 +715,17 @@ macro_rules! impl_int_signature_marker {
                 B: ModuleBrand + 'ctx,
             {
                 IntValue::<$marker, B>::from_value_unchecked(arg.as_value())
+            }
+
+            #[inline]
+            fn value_from_value<'ctx, B>(
+                value: Value<'ctx, B>,
+                _validated: &ValidatedFunctionParams<'_>,
+            ) -> Self::Value<'ctx, B>
+            where
+                B: ModuleBrand + 'ctx,
+            {
+                IntValue::<$marker, B>::from_value_unchecked(value)
             }
         }
     };
@@ -763,6 +818,17 @@ impl<const N: u32> FunctionParam for Width<N> {
     {
         IntValue::<Width<N>, B>::from_value_unchecked(arg.as_value())
     }
+
+    #[inline]
+    fn value_from_value<'ctx, B>(
+        value: Value<'ctx, B>,
+        _validated: &ValidatedFunctionParams<'_>,
+    ) -> Self::Value<'ctx, B>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        IntValue::<Width<N>, B>::from_value_unchecked(value)
+    }
 }
 
 macro_rules! impl_float_signature_marker {
@@ -847,6 +913,17 @@ macro_rules! impl_float_signature_marker {
             {
                 FloatValue::<$marker, B>::from_value_unchecked(arg.as_value())
             }
+
+            #[inline]
+            fn value_from_value<'ctx, B>(
+                value: Value<'ctx, B>,
+                _validated: &ValidatedFunctionParams<'_>,
+            ) -> Self::Value<'ctx, B>
+            where
+                B: ModuleBrand + 'ctx,
+            {
+                FloatValue::<$marker, B>::from_value_unchecked(value)
+            }
         }
     };
 }
@@ -903,6 +980,16 @@ impl FunctionParamList for () {
         B: ModuleBrand + 'ctx,
     {
     }
+
+    #[inline]
+    fn values_from_phi_values<'ctx, B>(
+        _phi_values: &[Value<'ctx, B>],
+        _validated: &ValidatedFunctionParams<'_>,
+    ) -> Self::Values<'ctx, B>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+    }
 }
 
 macro_rules! impl_param_list_tuple {
@@ -945,6 +1032,20 @@ macro_rules! impl_param_list_tuple {
             {
                 let mut params = function.params();
                 ($($param::value_from_argument(next_function_param(&mut params), validated),)+)
+            }
+
+            #[inline]
+            fn values_from_phi_values<'ctx, B>(
+                phi_values: &[Value<'ctx, B>],
+                validated: &ValidatedFunctionParams<'_>,
+            ) -> Self::Values<'ctx, B>
+            where
+                B: ModuleBrand + 'ctx,
+            {
+                // `append_block_typed` builds exactly one head-phi per
+                // `ir_types` entry (arity `$arity`) in order, so `$slot` is
+                // always in bounds and names the phi for position `$slot`.
+                ($($param::value_from_value(phi_values[$slot], validated),)+)
             }
         }
     };

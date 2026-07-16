@@ -4,7 +4,7 @@
 
 use llvmkit_ir::function_signature::token::ValidatedFunctionParams;
 use llvmkit_ir::{
-    Argument, FunctionParam, IrResult, Module, ModuleBrand, Type, TypeKindLabel, Unverified,
+    Argument, FunctionParam, IrResult, Module, ModuleBrand, Type, TypeKindLabel, Unverified, Value,
 };
 
 struct Leaker;
@@ -45,6 +45,15 @@ impl FunctionParam for Leaker {
         B: ModuleBrand + 'ctx,
     {
         let _leaked: &'static ValidatedFunctionParams<'static> = validated;
+    }
+
+    fn value_from_value<'ctx, B>(
+        _value: Value<'ctx, B>,
+        _validated: &ValidatedFunctionParams<'_>,
+    ) -> Self::Value<'ctx, B>
+    where
+        B: ModuleBrand + 'ctx,
+    {
     }
 }
 

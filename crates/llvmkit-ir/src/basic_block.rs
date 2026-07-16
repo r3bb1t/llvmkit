@@ -275,7 +275,16 @@ where
 {
     #[inline]
     fn into_basic_block_label(self) -> BasicBlockLabel<'ctx, R, B> {
-        self.label()
+        // `IntoBasicBlockLabel` yields the parameter-erased label (its return
+        // type pins `BlockParamsDyn`), so construct it directly rather than
+        // through `label()`, which now threads this block's `Params`.
+        BasicBlockLabel {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+            _r: PhantomData,
+            _params: PhantomData,
+        }
     }
 }
 
@@ -325,11 +334,13 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 
     /// Copyable label reference for branch targets and PHI predecessors.
     ///
-    /// The returned label carries the parameter-erased [`BlockParamsDyn`]
-    /// marker for now; a later slice threads this block's `Params` through
-    /// so a typed branch target keeps its parameter promise.
+    /// The returned label threads this block's `Params` marker through, so a
+    /// typed block (`BasicBlock<…, Params>`) yields a typed label
+    /// (`BasicBlockLabel<…, Params>`) that keeps the parameter promise; a
+    /// parameter-erased block (the [`BlockParamsDyn`] default) yields the
+    /// erased label form, unchanged.
     #[inline]
-    pub fn label(&self) -> BasicBlockLabel<'ctx, R, B> {
+    pub fn label(&self) -> BasicBlockLabel<'ctx, R, B, Params> {
         BasicBlockLabel {
             id: self.id,
             module: self.module,
@@ -371,6 +382,22 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// an unterminated builder block.
     #[inline]
     pub(super) fn retag_termination<S2: BlockTerminationState>(self) -> BasicBlock<'ctx, R, S2, B> {
+        BasicBlock {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+            _r: PhantomData,
+            _term: PhantomData,
+            _params: PhantomData,
+        }
+    }
+
+    /// Re-tag the block-parameter marker, keeping the return-shape and
+    /// termination markers. Crate-internal: only the typed constructor
+    /// [`crate::IRBuilder::append_block_typed`] stamps a freshly appended
+    /// block with the `Params` schema whose head-phis it just built.
+    #[inline]
+    pub(crate) fn retag_params<P2: BlockParams>(self) -> BasicBlock<'ctx, R, Term, B, P2> {
         BasicBlock {
             id: self.id,
             module: self.module,
