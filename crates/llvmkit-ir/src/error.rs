@@ -539,13 +539,27 @@ pub enum IrError {
         got: TypeKindLabel,
     },
 
-    /// Two integer or vector operands have differing element widths or
-    /// vector lengths.
+    /// Two integer or vector types that were required to agree have
+    /// differing element widths or vector lengths.
+    ///
+    /// The field names are positional, not semantic — `lhs` / `rhs` are
+    /// **not** reliably a left and a right operand. Most producers pass
+    /// `lhs` = the width that was *expected* and `rhs` = the width actually
+    /// *supplied*: `Type::require_match` (the crate's one type compare,
+    /// reached from the fold and variable-def seams) and the per-marker
+    /// `TryFrom<Value>` / constant narrowings all read expected/got. Only
+    /// the genuinely symmetric peer-compares — `ConstantRange`'s
+    /// lower/upper bounds and `KnownBits`' zero/one masks — pass two
+    /// operands in left/right order. The names predate that split and are
+    /// kept for API compatibility.
     #[error("operand widths differ: lhs={lhs} rhs={rhs}")]
     OperandWidthMismatch {
-        /// Element width (or vector length) of the left operand.
+        /// First width: the *expected* element width (or vector length) at
+        /// the expected/got producers; the left peer at the symmetric ones.
         lhs: u32,
-        /// Element width (or vector length) of the right operand.
+        /// Second width: the element width (or vector length) actually
+        /// *supplied* at the expected/got producers; the right peer at the
+        /// symmetric ones.
         rhs: u32,
     },
 

@@ -29,10 +29,17 @@ use crate::value::{FloatValue, IntValue, Typed};
 ///   only a handful of hooks (e.g. [`super::constant_folder::ConstantFolder`]'s
 ///   predecessors before this trait grew) still compiles.
 /// - The typed hooks (below) are called by the statically-typed
-///   `build_*` paths; results are typed handles the builder accepts
-///   without a runtime re-check for static markers. Defaults delegate
-///   to the matching `_dyn` hook and re-narrow by `TypeId`, so a folder
-///   that only overrides the erased surface keeps today's semantics.
+///   `build_*` paths and return typed handles. The builder does **not**
+///   take that static marker on trust: its `accept_folded_*` helpers
+///   re-check the result's runtime type against the operand's (or the
+///   cast's destination) for *every* marker, static ones included. A
+///   static `W` is only as honest as whoever built the handle, and the
+///   crate-internal `IntValue::from_value_unchecked` mints an
+///   `IntValue<W>` without consulting the payload's real type, so the
+///   marker is a claim to verify rather than evidence to trust.
+///   Defaults delegate to the matching `_dyn` hook and re-narrow by
+///   `TypeId`, so a folder that only overrides the erased surface keeps
+///   today's semantics.
 ///   Pointer-, vector-, and aggregate-result folds (`fold_gep_dyn`,
 ///   `fold_select_dyn`, ...) deliberately stay erased: `PointerValue`
 ///   does not statically pin the address space and vector element
@@ -224,9 +231,14 @@ pub trait IRBuilderFolder<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
         Ok(None)
     }
 
-    // ---- Typed hooks. Called by the statically-typed build_* paths;
-    //      results are typed handles the builder accepts without a
-    //      runtime re-check for static markers. Defaults delegate to
+    // ---- Typed hooks. Called by the statically-typed build_* paths and
+    //      return typed handles. The builder does NOT take that static
+    //      marker on trust: its accept_folded_* helpers re-check the
+    //      result's runtime type against the operand's (or the cast's
+    //      destination) for EVERY marker, static ones included -- a
+    //      static W is only as honest as whoever built the handle, and
+    //      IntValue::from_value_unchecked mints an IntValue<W> without
+    //      consulting the payload's real type. Defaults delegate to
     //      the matching _dyn hook and re-narrow by TypeId, so a folder
     //      that only overrides the erased surface keeps today's
     //      semantics. Pointer-, vector-, and aggregate-result folds

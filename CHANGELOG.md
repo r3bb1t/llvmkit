@@ -386,12 +386,18 @@ a check does fire, the error names what actually differs.
   single width-less `Integer` variant. A drift to a wrong *kind* still reports
   `TypeMismatch`. Float seams are unaffected: `TypeKindLabel` has a distinct
   variant per float kind, so their `TypeMismatch` already named both sides.
-- Pointer type drift at `SsaBuilder::def_pointer_var` now reports
+- Pointer type drift at the fold and variable-def seams now reports
   `IrError::AddressSpaceMismatch { expected, got }`, for the identical reason
   applied to the single, address-space-less `Pointer` variant — an
   `addrspace(0)`-vs-`addrspace(1)` def used to report "expected pointer, got
   pointer". It is a separate error rather than a reuse of
   `OperandWidthMismatch` because an address space is not a width.
+  `SsaBuilder::def_pointer_var` is the variable-def seam. The fold seams are
+  every pointer-typed destination a custom folder can answer — among them
+  `build_pointer_cast`, and `build_bitcast_dyn` / `build_select` when the
+  destination or the arms are pointers — all of which funnel through the
+  builder's `checked_folded_value`, hence through the same
+  `Type::require_match`.
 
   Both are **breaking for error matching**: code keying on
   `IrError::TypeMismatch` to catch an integer-width or address-space drift at

@@ -864,14 +864,31 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
 /// `accept_folded_int` is only reachable behind a
 /// *native* override of a typed hook (`fold_int_bin_op<W>` or one of its
 /// siblings) that itself returns `Some(IntValue<'ctx, W, B>)` without going
-/// through `narrow_folded_int`. No such override can be written here: the
-/// trait declares `fn fold_int_bin_op<W: IntWidth>(...) -> IrResult<Option<
-/// IntValue<'ctx, W, B>>>` with only `W: IntWidth` in scope, and this crate
-/// exposes no safe, public construction of `IntValue<'ctx, W, B>` from an
-/// erased value that is generic over arbitrary `W` (every `TryFrom<Value>`/
-/// `IntoIntValue` impl is per concrete marker; the crate-internal
-/// `IntValue::from_value_unchecked` escape hatch `ConstantFolder` uses is
-/// `pub(super)`, unreachable from this external test crate). Confirmed by
+/// through `narrow_folded_int` -- which `WideningDynFolder`, overriding only
+/// the erased hook, deliberately is not.
+///
+/// Such an override *can* now be written from an external crate. Slice 1.1's
+/// `IntWidth::narrow` is a safe, public construction of
+/// `IntValue<'ctx, W, B>` from an erased `Value`, generic over arbitrary `W`
+/// (`tests/generic_narrowing.rs` exercises it from this same external-test
+/// position), so `Ok(Some(W::narrow(v)?))` typechecks inside a generic
+/// `fold_int_bin_op<W>` override. That does not let an external folder forge
+/// a width -- `narrow` checks the payload's real type against `W` -- but at
+/// `W = IntDyn` the marker proves only "some integer", so such a folder
+/// *can* reach `accept_folded_int` with a payload whose width contradicts
+/// the operands'. Nothing breaks, and that reachability is exactly why
+/// Slice 1.2 made `accept_folded_int` check *unconditionally* instead of
+/// only for the erased markers: the acceptor re-checks the fold result's
+/// runtime type against the operand's for every marker, so the wrong-width
+/// payload is rejected there. The unconditional acceptor is what makes the
+/// now-writable override safe.
+///
+/// What stays closed is forging a *static* `W` from outside: every
+/// `TryFrom<Value>` / `IntoIntValue` impl is per concrete marker, and the
+/// crate-internal `IntValue::from_value_unchecked` escape hatch -- the one
+/// unchecked mint, which `ConstantFolder`'s typed hooks no longer use (all
+/// nine route through `W::narrow` / `K::narrow` as of Slice 1.1) -- is
+/// `pub(crate)`, unreachable from this external test crate. Confirmed by
 /// the sibling compile-fail golden
 /// `tests/compile_fail/folder_typed_wrong_width.rs`, which locks exactly
 /// this shape (`Ok(Some(concrete_width_value))` inside a generic
@@ -881,7 +898,11 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
 /// `IntValue<'ctx, W, B>: TryFrom<Value<'ctx, B>>` is not implemented for
 /// generic `W`, and adding it as an extra `where` bound on the impl is
 /// itself rejected -- an impl may not add bounds beyond what the trait
-/// declares for a generic method).
+/// declares for a generic method). `IntWidth::narrow` does not breach that
+/// wall: it is the same per-marker `TryFrom`, reached through a method the
+/// `IntWidth` bound already carries, so the checked narrow rides in on a
+/// bound the trait declares rather than one the impl adds -- what is new is
+/// the bound, not the capability.
 ///
 /// The wrong-width replacement value is built once in the test (where the
 /// owning `Module` is available to mint a 64-bit `IntDyn` constant) and

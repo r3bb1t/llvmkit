@@ -856,7 +856,8 @@ where
     /// would trust the very claim it exists to verify -- the caller's word
     /// that `W` matches the payload -- so the check is unconditional
     /// (`def_int_var_rejects_forged_static_width_handle` locks the static
-    /// half; `def_int_var_rejects_wrong_dyn_width` the dyn one).
+    /// half; `tests/ssa_builder.rs`'s `dyn_int_var_wrong_width_def_rejected`
+    /// the dyn one).
     ///
     /// No false rejections at a static `W`: [`Self::declare_int_var`]
     /// pins `var.ty` to `W::ir_type(..)`, and types are interned by width
