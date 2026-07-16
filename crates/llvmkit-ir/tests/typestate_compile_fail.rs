@@ -124,4 +124,20 @@ fn typestate_compile_fail() {
     // across rustc versions.
     t.compile_fail("tests/compile_fail/block_call_wrong_arity.rs");
     t.compile_fail("tests/compile_fail/block_call_wrong_arg_type.rs");
+    // OP Slice 1 (typed `SwitchInst<W>`): `build_switch_typed` pins the
+    // condition width `W`, so `SwitchInst::add_case` carries an
+    // `IntoIntValue<'ctx, W, B>` bound and a wrong-width case value is a
+    // compile error. The primary error is our own `IntoIntValue<'_, i32, _>`
+    // trait bound, stable across rustc versions. The `_value_handle` companion
+    // passes an already-materialised `IntValue<i64>` handle (which IS `IsValue`
+    // but is NOT `IntoIntValue<'_, i32, _>`) to prove the width bound
+    // *specifically* — it would compile under a hypothetical `IsValue` bound.
+    t.compile_fail("tests/compile_fail/switch_case_wrong_width.rs");
+    t.compile_fail("tests/compile_fail/switch_case_wrong_width_value_handle.rs");
+    // OP Slice 2 (typed `indirectbr` address): `build_indirectbr` binds the
+    // address by `IntoPointerValue<'ctx, B>`, so a typed non-pointer value
+    // handle (an `IntValue<i32>`) is a compile error — the pointer-ness check
+    // moves from `verify()` to build/compile time. The primary error is our
+    // own `IntoPointerValue` trait bound, stable across rustc versions.
+    t.compile_fail("tests/compile_fail/indirectbr_non_pointer_address.rs");
 }
