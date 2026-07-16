@@ -27,6 +27,31 @@ use super::r#type::sealed;
 pub trait FloatKind: sealed::Sealed + Copy + 'static + fmt::Debug {
     /// LangRef keyword for this kind. `None` for [`FloatDyn`].
     fn ieee_label() -> Option<&'static str>;
+
+    /// Narrow an erased [`Value`] to this kind, **proving** the marker.
+    ///
+    /// The generic counterpart of the per-marker
+    /// `TryFrom<Value> for FloatValue<'ctx, K, B>` impls — callable from
+    /// code that is generic over `K`, which `TryFrom` is not (it is
+    /// implemented per concrete marker only). Every implementation
+    /// delegates to the matching `TryFrom`, so a non-matching value
+    /// yields [`IrError::TypeMismatch`] exactly as it does today.
+    ///
+    /// [`FloatDyn`] accepts any float kind.
+    ///
+    /// ```
+    /// # use llvmkit_ir::{FloatKind, FloatValue, IrResult, ModuleBrand, Value};
+    /// fn narrow_generic<'ctx, K: FloatKind, B: ModuleBrand + 'ctx>(
+    ///     v: Value<'ctx, B>,
+    /// ) -> IrResult<FloatValue<'ctx, K, B>> {
+    ///     K::narrow(v)
+    /// }
+    /// ```
+    fn narrow<'ctx, B: ModuleBrand + 'ctx>(
+        v: Value<'ctx, B>,
+    ) -> IrResult<FloatValue<'ctx, Self, B>>
+    where
+        Self: Sized;
 }
 
 impl sealed::Sealed for f32 {}
@@ -35,6 +60,12 @@ impl FloatKind for f32 {
     fn ieee_label() -> Option<&'static str> {
         Some("float")
     }
+    #[inline]
+    fn narrow<'ctx, B: ModuleBrand + 'ctx>(
+        v: Value<'ctx, B>,
+    ) -> IrResult<FloatValue<'ctx, Self, B>> {
+        FloatValue::<'ctx, Self, B>::try_from(v)
+    }
 }
 
 impl sealed::Sealed for f64 {}
@@ -42,6 +73,12 @@ impl FloatKind for f64 {
     #[inline]
     fn ieee_label() -> Option<&'static str> {
         Some("double")
+    }
+    #[inline]
+    fn narrow<'ctx, B: ModuleBrand + 'ctx>(
+        v: Value<'ctx, B>,
+    ) -> IrResult<FloatValue<'ctx, Self, B>> {
+        FloatValue::<'ctx, Self, B>::try_from(v)
     }
 }
 
@@ -55,6 +92,12 @@ macro_rules! decl_struct_kind {
             #[inline]
             fn ieee_label() -> Option<&'static str> {
                 Some($label)
+            }
+            #[inline]
+            fn narrow<'ctx, B: ModuleBrand + 'ctx>(
+                v: Value<'ctx, B>,
+            ) -> IrResult<FloatValue<'ctx, Self, B>> {
+                FloatValue::<'ctx, Self, B>::try_from(v)
             }
         }
     };
@@ -102,6 +145,12 @@ impl FloatKind for FloatDyn {
     #[inline]
     fn ieee_label() -> Option<&'static str> {
         None
+    }
+    #[inline]
+    fn narrow<'ctx, B: ModuleBrand + 'ctx>(
+        v: Value<'ctx, B>,
+    ) -> IrResult<FloatValue<'ctx, Self, B>> {
+        FloatValue::<'ctx, Self, B>::try_from(v)
     }
 }
 
