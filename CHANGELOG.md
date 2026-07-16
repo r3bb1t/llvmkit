@@ -306,6 +306,97 @@ every existing erased branch/edge call keeps compiling and printing identical IR
   `build_cond_br_with_args` — is **unchanged** and still produces `BlockParamsDyn`
   handles.
 
+### No silent erasure — marker-generic narrowing and type checks at every marker
+
+Closes a gap between llvmkit's typed handles and the checks behind them. A typed
+handle (`IntValue<'ctx, i32, B>`, `FloatValue<'ctx, f64, B>`) is a *claim* about
+a value's runtime type; several seams that consume such handles trusted the
+claim instead of checking it, but only when the marker was static — exactly the
+case where a wrong claim is invisible. They now check unconditionally, and where
+a check does fire, the error names what actually differs.
+
+#### Added
+
+- `IntWidth::narrow` / `FloatKind::narrow` — narrow an erased `Value` to a typed
+  `IntValue<'ctx, W, B>` / `FloatValue<'ctx, K, B>` behind a **bare**
+  `W: IntWidth` / `K: FloatKind` bound, returning `IrResult`. Every impl
+  delegates to the matching per-marker `TryFrom<Value>`, so the error split is
+  inherited, not restated (right kind + wrong width → `OperandWidthMismatch`;
+  wrong kind → `TypeMismatch`; `IntDyn` / `FloatDyn` accept any width / kind).
+
+  What is new is the *bound*, not the capability: those `TryFrom` impls could
+  already be reached from generic code by propagating a
+  `where IntValue<'ctx, W, B>: TryFrom<Value<'ctx, B>>` clause through every
+  downstream signature. `narrow` makes the same narrowing callable from a bare
+  marker bound, and is expressible where that route is not — namely inside a
+  trait impl, whose signature is fixed for you and cannot take the extra clause.
+- `IrError::AddressSpaceMismatch { expected, got }` — a pointer-vs-pointer type
+  drift now names both address spaces. `IrError` is `#[non_exhaustive]`, so this
+  is **not** a breaking addition.
+
+#### Fixed
+
+- **Behaviour change:** four fold-result acceptors (`accept_folded_int` /
+  `accept_folded_fp` / `accept_folded_cast_int` / `accept_folded_cast_fp`) and
+  two auto-SSA variable-def seams (`SsaBuilder::def_int_var` /
+  `def_float_var`) compared the value's runtime type against the expected type
+  **only for the erased `IntDyn` / `FloatDyn` markers**. At every static marker
+  the compare was skipped, on the rationale that the handle's type already
+  proved the width — which is circular, since `from_value_unchecked` exists
+  precisely to mint that claim *without* consulting the payload. A wrong-typed
+  fold result or variable def was therefore **silently accepted** at a static
+  width: an `IntValue<'_, i32>` really carrying an `i64` could escape to a
+  caller, or land in an `i32`-pinned variable that a later `use_int_var` reads
+  back at the wrong type. All six now compare at every marker.
+
+  **No released behaviour was wrong.** `from_value_unchecked` is
+  crate-internal, so only in-crate code could mint the contradicting handle:
+  an externally-authored folder cannot reach the hole at all (its typed hooks
+  are compile-time barred — `tests/compile_fail/folder_typed_wrong_width.rs`),
+  and the shipped `ConstantFolder` produced correct types throughout. This
+  closes a **latent in-crate channel**, not an active miscompile. The cost is
+  one interned-`TypeId` compare per accepted fold or def, and no correct
+  program is newly rejected: types are interned by width / kind / address
+  space, so equality of `TypeId` *is* structural type equality.
+
+  Two supporting changes make that claim checkable rather than asserted:
+  `ConstantFolder`'s nine typed hooks now `narrow` the results of their erased
+  siblings instead of re-wrapping them unchecked behind a prose audit of the
+  fold kernel, turning the audit into a proof at the point of construction; and
+  the four hand-rolled "is this the type it claims?" compares collapsed into a
+  single core, `Type::require_match`, which carries the comparison, the error
+  shape and the rationale in one place.
+
+#### Changed
+
+- **Breaking:** `IRBuilder::build_switch` is now the **typed** builder (was
+  `build_switch_typed`), and the width-erased one is `build_switch_dyn` (was
+  `build_switch`). Every other typed/erased pair in the crate suffixes the
+  *erased* variant `_dyn` — `build_call` / `build_call_dyn`, `build_invoke` /
+  `build_invoke_dyn`, `build_int_phi` / `build_int_phi_dyn` — and `switch` was
+  the sole inversion. Migration is a rename: `build_switch` → `build_switch_dyn`,
+  `build_switch_typed` → `build_switch`. Behaviour and return types are
+  unchanged, and the erased form is still what the `.ll` parser and the auto-SSA
+  builder land on. The *Typed terminator operands* section below, which
+  introduced the pair, is written in the new names.
+- Integer type drift at the fold and variable-def seams now reports
+  `IrError::OperandWidthMismatch { lhs, rhs }` where it previously reported
+  `IrError::TypeMismatch { expected: Integer, got: Integer }` — true, and silent
+  about the only fact separating the two sides, since `TypeKindLabel` has a
+  single width-less `Integer` variant. A drift to a wrong *kind* still reports
+  `TypeMismatch`. Float seams are unaffected: `TypeKindLabel` has a distinct
+  variant per float kind, so their `TypeMismatch` already named both sides.
+- Pointer type drift at `SsaBuilder::def_pointer_var` now reports
+  `IrError::AddressSpaceMismatch { expected, got }`, for the identical reason
+  applied to the single, address-space-less `Pointer` variant — an
+  `addrspace(0)`-vs-`addrspace(1)` def used to report "expected pointer, got
+  pointer". It is a separate error rather than a reuse of
+  `OperandWidthMismatch` because an address space is not a width.
+
+  Both are **breaking for error matching**: code keying on
+  `IrError::TypeMismatch` to catch an integer-width or address-space drift at
+  these seams must now match the new variants.
+
 ### Typed terminator operands — switch condition width and indirectbr address
 
 Extends the branching type-safety program from a terminator's *edges* to its
