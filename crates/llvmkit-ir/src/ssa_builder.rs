@@ -848,8 +848,15 @@ where
     /// `IntoIntValue<W>`, and `var` was declared via `W::ir_type`, so
     /// the two `W`s (and therefore the two types) are the same type by
     /// the type system alone; the runtime check below monomorphizes
-    /// away (see the private `IRBuilder::accept_folded_int` helper for
-    /// the same pattern applied to fold results). For a dyn-declared
+    /// away. (The private `IRBuilder::accept_folded_*` helpers once
+    /// short-circuited on this same predicate and no longer do: the value
+    /// they check arrives from a *folder* hook -- an extension point whose
+    /// in-crate implementors can mint a handle through
+    /// `from_value_unchecked` -- so a static marker there is only as
+    /// honest as the folder that wrote it, and the check is unconditional.
+    /// This seam is narrower: its value arrives through an
+    /// `IntoIntValue<W>` lift rather than a folder override.) For a
+    /// dyn-declared
     /// `var` (`declare_int_var_dyn`, `W = IntDyn`) the marker only
     /// proves "some integer width" -- `IntoIntValue<IntDyn>` happily
     /// lifts a DIFFERENT width than `var.ty` pins, so the width must be
@@ -893,10 +900,9 @@ where
     }
 
     /// Float twin of [`Self::def_int_var`]; see that method's doc
-    /// comment for the dyn-width type-check rationale (mirrored here
+    /// comment for the dyn-kind type-check rationale (mirrored here
     /// keyed on `K::ieee_label().is_none()` instead of
-    /// `W::static_bits().is_none()`, matching the private
-    /// `IRBuilder::accept_folded_fp` helper's split).
+    /// `W::static_bits().is_none()`).
     pub fn def_float_var<K: FloatKind, V>(
         &mut self,
         var: FloatVariable<'ctx, K, B>,

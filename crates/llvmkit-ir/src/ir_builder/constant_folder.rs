@@ -363,7 +363,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for ConstantFolder {
     //
     //      Each override delegates to a `*_dyn` hook returning an erased
     //      `Value`, then re-types it with `W::narrow` / `K::narrow`, which
-    //      *checks* the payload's runtime type against the marker.
+    //      *checks* the payload's runtime type against the marker -- as
+    //      tightly as the marker can be checked. For a static `W`/`K` that is
+    //      the full width/kind. For the erased `IntDyn`/`FloatDyn` the marker
+    //      names no width or kind, so `narrow` can only verify the *category*
+    //      (integer, float) and any width is admissible by construction; there
+    //      the builder's `accept_folded_*` acceptors stay load-bearing, since
+    //      only they know the operand/destination type the result must match.
+    //      The two layers are complementary, not redundant.
     //
     //      These sites used to wrap with `from_value_unchecked` and carry a
     //      prose "kernel invariant" per hook, arguing from a reading of
@@ -388,7 +395,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for ConstantFolder {
         // lhs.ty() on every arm (and the ConstantExpr fallback passes lhs.ty()
         // explicitly), so `narrow` should always succeed here. It is checked
         // rather than asserted so a future change to that path surfaces as a
-        // TypeMismatch instead of a mistyped handle.
+        // typed error instead of a mistyped handle: a drifted *width* (the
+        // likeliest shape) as an OperandWidthMismatch carrying both widths, a
+        // drifted *kind* as a TypeMismatch. That is `IntWidth::narrow`'s
+        // documented split (`int_width.rs`), inherited from the per-marker
+        // `TryFrom<Value>` impls, and the same split the builder's
+        // `accept_folded_int` reports for the same drift.
         self.fold_bin_op_dyn(opcode, lhs.as_value(), rhs.as_value())?
             .map(W::narrow)
             .transpose()
