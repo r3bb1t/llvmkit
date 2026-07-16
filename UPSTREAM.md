@@ -19,16 +19,19 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 1513. Recounted on 2026-07-16 at the
+Total `#[test]` functions: 1516. Recounted on 2026-07-16 at the
 `feature-22/generic-narrowing` tip via the documented attribute-anchored grep
-below (`crates/llvmkit-ir` 1075 + `crates/llvmkit-asmparser` 430 +
+below (`crates/llvmkit-ir` 1078 + `crates/llvmkit-asmparser` 430 +
 `crates/llvmkit-support` 8). The prior 1372 header had drifted badly: it was
 genuine on 2026-07-10 but was never updated as the branches between that point
 and here landed their tests, so it understated the tree by 138 before this
-branch added anything. The four `accept_folded_*` hostile-folder tests in
-`crates/llvmkit-ir/src/ir_builder.rs::tests` (rows below) are this branch's own
-contribution to the total. Treat this line as recount-on-touch, not
-incremental arithmetic -- the 138-test gap is exactly what accumulates when a
+branch added anything. This branch's own contribution: the four
+`accept_folded_*` hostile-folder tests, the two `def_*_var` forged-handle tests,
+and the pointer address-space rows, all in
+`crates/llvmkit-ir/src/{ir_builder,ssa_builder}.rs::tests` (rows below). Note
+the 1513 written earlier *on this same branch* was already stale three commits
+later -- which is the point: treat this line as recount-on-touch, not
+incremental arithmetic. The 138-test gap is exactly what accumulates when a
 count is only ever adjusted by whoever remembers to. The 1372 point was
 recounted on 2026-07-10 via the documented
 attribute-anchored grep below; the 1344 point (2026-07-09,

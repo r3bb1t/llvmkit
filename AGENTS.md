@@ -485,7 +485,7 @@ There is no `build.rs`, no Make/CMake, no submodules. `orig_cpp/` is **not** bui
 
 ## Testing & QA
 
-The workspace ships a substantial test suite (1,250+ tests across `crates/*/tests/` plus per-module `#[cfg(test)]` blocks; the exact attribute-anchored count and per-test provenance live in `UPSTREAM.md`). The categories:
+The workspace ships a substantial test suite (1,500+ tests across `crates/*/tests/` plus per-module `#[cfg(test)]` blocks; the exact attribute-anchored count and per-test provenance live in `UPSTREAM.md`). The categories:
 
 **Tests are ported, not invented.** Every new opcode, predicate, or instruction lands with tests sourced from one of the upstream LLVM trees:
 
