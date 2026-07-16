@@ -23,6 +23,7 @@ on user-visible API failure modes; D11's test-provenance rule is tracked in
 | Branch to a block from another module | D7 | Builder accepts `BasicBlock *`; verifier later rejects malformed control flow | Branch target carries the builder module's brand |
 | Global initializer expression tied to another module | D7 | Constructor accepts `Constant *`; type is asserted, module provenance is not statically represented | `add_global` requires `Type<'ctx, B>` and `IsConstant<'ctx, B>` with the same `B` |
 | Custom folder returns a value from the wrong module | D7 | Folder hooks return raw `Value *` | Folder hooks return `IrResult<Option<Value<'ctx, B>>>` |
+| Custom folder returns a wrong-*width* typed fold result | D4 | Folder hooks return raw `Value *`; the builder inserts whatever comes back, and the mistyped constant surfaces later as malformed IR | The typed hook's signature pins the return type, so an external folder cannot spell a **concrete** wrong width (`E0308`, locked by `tests/compile_fail/folder_typed_wrong_width.rs`). Where a signature *cannot* pin it — `W = IntDyn` names no width, and the crate-internal `from_value_unchecked` can mint any marker — the builder re-checks each fold result's runtime type against the operand / cast destination, for **every** marker (see §4; the check was previously skipped for static markers, which was circular) |
 | Insert after a terminated block | D1 | Insertion point is a mutable iterator into a `BasicBlock *` | Terminator builders consume the builder and return a `Terminated` view; retained `Unterminated` block copies remain verifier-backed |
 | Return a value from a `void` function, or `ret void` from a value-returning function | D1, D4 | `CreateRet(Value *)` / `CreateRetVoid()` are just methods; mismatch is verifier/runtime state | `IRBuilder<..., R>` exposes return methods according to the function return marker |
 | Read a typed result from a `void` call | D3, D4 | Caller must inspect the call/function type | `CallInst<'ctx, ()>` exposes no typed result accessor |
@@ -313,9 +314,37 @@ pub trait IRBuilderFolder<'ctx, B: ModuleBrand = Brand<'ctx>> {
 ```
 
 The typed hooks go further: `fold_int_bin_op<W>` returns
-`IrResult<Option<IntValue<'ctx, W, B>>>`, so a custom folder cannot forge a
-wrong *width* either -- the hook's signature pins it, and the builder accepts
-typed fold results with no runtime re-check.
+`IrResult<Option<IntValue<'ctx, W, B>>>`, so an *external* folder cannot spell a
+**concrete** wrong width -- returning an `IntValue<'ctx, i64, B>` where
+`IntValue<'ctx, W, B>` is required is an ordinary `E0308`, locked by
+`tests/compile_fail/folder_typed_wrong_width.rs`.
+
+The signature is not the whole story, though, and this page does not pretend it
+is. Two gaps survive it:
+
+- At `W = IntDyn` the marker names no width at all, so a fold result typed
+  `IntValue<'ctx, IntDyn, B>` can still carry any integer width. `IntWidth::narrow`
+  is public and proves only "some integer" there, so an external folder *can*
+  hand back a wrong-width result.
+- In-crate, the `pub(crate)` `IntValue::from_value_unchecked` mints an
+  `IntValue<'ctx, W, B>` without consulting the payload's real type, so a static
+  `W` is only as honest as whoever built the handle.
+
+So the builder does **not** take the marker on trust. Its `accept_folded_*`
+helpers re-check every fold result's runtime type against the operand's (or the
+cast's destination), for *every* marker, static ones included, and
+`ConstantFolder`'s own typed overrides re-type their erased results through
+`W::narrow` / `K::narrow` at the point of construction rather than rewrapping on
+the authority of a prose invariant.
+
+That check used to be keyed on the marker being erased -- which was circular: it
+trusted precisely the claim it existed to verify, so at any static width a
+wrong-typed fold result was silently accepted. See the CHANGELOG's *"No silent
+erasure"* entry; the seam is locked from both sides by
+`hostile_native_typed_override_wrong_width_rejected_at_static_width`
+(in-crate, via `from_value_unchecked`) and
+`external_narrow_override_wrong_width_rejected_by_accept_folded_int`
+(external, via `narrow` at `IntDyn`).
 
 Bad Rust helper:
 
@@ -858,6 +887,14 @@ The flag overlays `OverflowingBinaryOperator` (add/sub/mul/shl) and
 type system. Runtime verification still owns:
 
 - parsed or otherwise erased `Dyn` forms;
+- **a custom folder's typed fold result** — the hook's signature keeps a
+  *concrete* wrong width out (§4), but `IntDyn` names no width and the
+  crate-internal `from_value_unchecked` can mint any marker, so a marker is only
+  as honest as whoever built the handle. The builder re-checks each fold result's
+  runtime type against the operand / cast destination, for every marker;
+- **an `SsaBuilder` variable definition** — same reason, same shape:
+  `def_int_var` / `def_float_var` re-check the incoming value's runtime type
+  against the variable's, for every marker;
 - dominance and cross-block SSA use checks;
 - phi-incoming completeness against the *complete* CFG predecessor set — the
   whole-graph check. Wave 1 moved the *local* phi facts earlier (placement is
