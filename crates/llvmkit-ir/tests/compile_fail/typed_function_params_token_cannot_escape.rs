@@ -49,11 +49,12 @@ impl FunctionParam for Leaker {
 
     fn value_from_value<'ctx, B>(
         _value: Value<'ctx, B>,
-        _validated: &ValidatedFunctionParams<'_>,
+        validated: &ValidatedFunctionParams<'_>,
     ) -> Self::Value<'ctx, B>
     where
         B: ModuleBrand + 'ctx,
     {
+        let _leaked: &'static ValidatedFunctionParams<'static> = validated;
     }
 }
 

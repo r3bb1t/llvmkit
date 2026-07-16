@@ -15,3 +15,21 @@ error: lifetime may not live long enough
 ...
 47 |         let _leaked: &'static ValidatedFunctionParams<'static> = validated;
    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ type annotation requires that `'2` must outlive `'static`
+
+error: lifetime may not live long enough
+  --> tests/compile_fail/typed_function_params_token_cannot_escape.rs:57:22
+   |
+52 |         validated: &ValidatedFunctionParams<'_>,
+   |                    - let's call the lifetime of this reference `'1`
+...
+57 |         let _leaked: &'static ValidatedFunctionParams<'static> = validated;
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ type annotation requires that `'1` must outlive `'static`
+
+error: lifetime may not live long enough
+  --> tests/compile_fail/typed_function_params_token_cannot_escape.rs:57:22
+   |
+52 |         validated: &ValidatedFunctionParams<'_>,
+   |         --------- has type `&llvmkit_ir::function_signature::token::ValidatedFunctionParams<'2>`
+...
+57 |         let _leaked: &'static ValidatedFunctionParams<'static> = validated;
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ type annotation requires that `'2` must outlive `'static`
