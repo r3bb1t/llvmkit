@@ -30,6 +30,10 @@ on user-visible API failure modes; D11's test-provenance rule is tracked in
 | Recover lifecycle authority from a copyable value, block, or use-list | D2, D9 | Any retained `Instruction *` can be reused for mutation | Copyable rediscovery APIs return `InstructionView`; only builder output, `BlockCursor`, and detached reinsertion produce `Instruction<Attached>` |
 | Add more incoming edges or destinations after a variable-arity instruction is finalized | D1, D2 | Caller discipline plus verifier | `PhiInst<Open>` / `SwitchInst<Open>` / `IndirectBrInst<Open>` / `LandingPadInst<Open>` / `CatchSwitchInst<Open>` are linear; `finish()` returns closed views without mutators |
 | Misplace a phi, mistype a phi incoming, or give one predecessor two different incoming values | D1, D4 | Builder accepts all three; the verifier later reports `PhiNotAtTop` or the type / predecessor mismatch | `build_*_phi` always insert at the block's PHI head (placement correct by construction); `add_incoming` — the typed path *and* the untyped parser/SSA-builder path — type-checks the incoming and rejects a differing duplicate for one predecessor as `IrError::AmbiguousPhiIncoming`; whole-graph incoming-vs-predecessor completeness stays in `Module::verify()` |
+| Branch carries the wrong number of, or wrong-typed, values for its successor's block parameters | D1, D4 | The successor's head-phis are filled `PHINode`-by-`PHINode`; a miscounted or mistyped incoming is an `assert` / verifier concern | A typed successor label carries a `Params` schema; `head.call(args)` (a `BlockCall`) requires `args: CallArgs<Params>`, so a wrong arity or a wrong-typed block-argument position is a compile error, reusing the typed-`build_call` machinery. The erased `append_block_with_params` / `build_*_with_args` path stays call-site-checked (`IrError::PhiArgArityMismatch` / type mismatch) |
+| Add a wrong-width case value to a `switch` | D4 | Builder accepts any `ConstantInt *`; a case whose integer width ≠ the condition is caught later by `Verifier::visitSwitchInst` (`"Switch constants must all be same type as switch value!"`) | `build_switch_typed::<W>` pins the condition width `W`, and `SwitchInst::add_case` then carries an `IntoIntValue<'ctx, W, B>` bound, so a wrong-width case is a compile error; the erased `build_switch` (`IntDyn`) keeps the same rule as a runtime `IrError::TypeMismatch` check for parsed / SSA-builder input |
+| Jump through a non-pointer `indirectbr` address | D4 | `CreateIndirectBr` accepts any `Value *`; a non-pointer address is caught later by `Verifier::visitIndirectBrInst` (`"Indirectbr operand must have pointer type!"`) | `build_indirectbr`'s address is bound `IntoPointerValue<'ctx, B>`, so a typed non-pointer address is a compile error; an erased `Value` address is pointer-checked at build time — the same verifier rule, moved out of `Module::verify()` |
+| Make a structurally-invalid CFG edge edit — remove an `invoke`/`callbr` edge or the sole edge of an unconditional `br`, remove a `switch` default, or collapse a `cond_br` twice | D1, D2 | Edge edits are raw pointer manipulation (`setSuccessor` / `removePredecessor` / branch replacement); an edit that orphans a mandatory edge yields malformed IR the verifier catches later, if at all | `FnReshape::edit_terminator` narrows the terminator into a per-kind typed handle (`BrEdit` / `CondBrEdit` / `SwitchEdit` / `InvokeEdit` / `CallBrEdit`) whose method set fixes the legal edits: a removal that would orphan a mandatory edge has no method to spell (`E0599`), and `remove_then` / `remove_else` consume the handle, so a double collapse is use-after-move (`E0382`). Each redirect/remove maintains the successors' phis mechanically, poison-erasing an emptied phi for `BasicBlock::removePredecessor` parity |
 | Insert a wrong-typed element into a vector or aggregate (`insertelement` / `insertvalue`) | D4, D6 | Builder accepts `Value *`; the verifier later reports the element/field type mismatch | `build_vec_insert` / `build_arr_insert` take a value typed by the handle's element marker `E`, so a wrong element type is a compile error (typed handle); the erased `VectorValue<'ctx>` / `ArrayValue<'ctx>` (`Dyn`) path stays verifier-checked as the escape hatch |
 | Elementwise vector binop on mismatched lane count or element type | D4, D6 | Builder accepts two `Value *`; the verifier later reports the operand type mismatch | `build_vec_int_{add,sub,mul,xor,and,or,shl,lshr,ashr}` take two `VectorValue<E, Len<N>>` with the *same* `E`,`N`, so a mismatched length or element has no matching impl (compile error, typed handle); the erased `_dyn` / `VectorValue<'ctx>` path stays verifier-checked |
 | `<N x T>` / `[N x T]` length mismatch at a typed vector/array op | D6 | Builder accepts the mis-sized operand; the verifier later reports the length/type mismatch | The length marker (`Len<N>` for vectors, `ArrLen<N>` for arrays) is part of the handle type, so a typed op on a wrong-length value is a compile error; the all-`Dyn` `VectorValue<'ctx>` / `ArrayValue<'ctx>` form narrows via `TryFrom` (`OperandWidthMismatch` / `IrError::ArrayLengthMismatch`) as the escape hatch |
@@ -538,6 +542,23 @@ all-or-nothing. The edge and its incomings move together, so an incomplete or
 desynced phi is not merely rejected at `verify()` — it is unrepresentable through
 the public surface. Printed IR is ordinary phis; storage, parser, printer, and
 verifier are unchanged.
+
+The block-argument surface above is width/type-erased: arity and per-argument
+types are checked at the *call site* (runtime `IrError`). A **typed** variant
+lifts the block's *parameter shape* into the type system so those checks move to
+*compile* time. `append_block_typed::<(i32, Ptr)>(f, "hdr")` returns the block
+stamped with that schema plus a typed tuple of parameter handles, and a
+`BlockCall` — `hdr.call((a, b))`, consumed by `build_br_call` /
+`build_cond_br_call` — carries a `CallArgs<Params>` bound (the same machinery a
+typed `build_call` uses), so a wrong-arity or wrong-typed block-argument is a
+compile error rather than the erased path's call-site `IrError::PhiArgArityMismatch`
+/ type mismatch. Both surfaces lower to the identical ordinary phis; the schema is
+an opt-in, last, defaulted `Params` marker (`BlockParamsDyn` by default), so every
+erased spelling is unchanged. In the same spirit, a `switch`'s condition width and
+an `indirectbr`'s address pointer-ness can be pinned in the type
+(`build_switch_typed::<W>` / the `IntoPointerValue`-bound `build_indirectbr`), so a
+wrong-width case or a non-pointer jump address is a compile error too — see the
+summary table above.
 
 Underneath, the incremental editing window still exists — the `PhiInst` handle
 *type* and its read accessors stay public (a `_dyn` builder returns one, and
