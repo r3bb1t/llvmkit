@@ -142,6 +142,23 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   - `build_vec_splat` can't infer its element from the scalar (a Rust
     associated-type-projection limitation), so its callers annotate / turbofish
     the result.
+- **A proof token that *carries* the validated `TypeId`.** The crate has five
+  capability tokens -- `WrapWitness` (`element.rs`), `ValidatedFunctionParams` /
+  `ValidatedCallResult` (`function_signature.rs`), `SelectNarrow`
+  (`ir_builder.rs`), `ValidatedStructValue` (`struct_schema.rs`). Every one
+  defends the *external* boundary (an unforgeable `pub(crate)` constructor stops
+  downstream code minting a handle whose marker contradicts its runtime type),
+  and every one is a *unit* marker: it proves "a check happened", not *which
+  type was checked*. Nothing makes an **in-crate** construction proof legible.
+  That is why ~100 `from_value_unchecked` call sites in the builder remain
+  sound-but-implicit: their proof is real and local (`append_instruction(<the
+  very type the marker names>, ..)` sits one or two lines above the wrap), so a
+  runtime re-check there would cost a compare that provably cannot fire -- but
+  the proof lives in the reader's head, not the type system. A witness carrying
+  the validated `TypeId` would let those sites *state* their proof instead of
+  implying it. This is the honest remaining gap left by the "no silent erasure"
+  cycle, which fixed the ~11 sites whose proof was genuinely absent and
+  deliberately left the ~100 whose proof was merely implicit.
 - `Width<M>`/`Width<N>` `WiderThan` relations blocked on stable
   const-generics (documented at `int_width.rs` ~105-116); revisit when
   `generic_const_exprs` stabilizes.
@@ -195,12 +212,16 @@ deferred it.
   test suite's undefined-variable-read fixture hardcodes `Some(0)` as the
   undefined variable index instead of drawing from `0..var_count`; a one-line
   improvement to widen coverage (noted during Task 19's review).
-- **`accept_folded/narrow_folded` helper-family factoring** -- the typed
-  folder's `accept_folded_int`/`accept_folded_fp`/`narrow_folded_int`/
-  `narrow_folded_fp` helper family (`ir_builder.rs`) is 4 near-identical
-  bodies, kept unfactored deliberately to keep monomorphization legible
-  (reviewer judged factoring optional during Task 5's review). Revisit if a
-  fifth category (e.g. vector) needs the same shape.
+- **`accept_folded/narrow_folded` helper-family factoring -- done**
+  (`feature-22/generic-narrowing`, the "no silent erasure" cycle). The four
+  near-identical bodies were folded into a single compare-and-report core,
+  `Type::require_match` (`type.rs`), which every fold- and variable-def seam
+  now routes through -- so the same type drift reports the same error wherever
+  it is caught. That unification was not the goal but a consequence: the seams
+  had to be touched anyway to delete a marker-keyed short-circuit, and leaving
+  four copies would have meant four places for the error shape to diverge again
+  (it already had -- `narrow_folded_int` reported `TypeMismatch { Integer,
+  Integer }` where the acceptor reported `OperandWidthMismatch`).
 
 ## Upstream-parity review follow-ups (2026-07-06)
 
