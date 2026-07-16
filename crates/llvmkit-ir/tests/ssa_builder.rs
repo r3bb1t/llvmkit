@@ -748,6 +748,13 @@ fn dyn_float_var_wrong_kind_def_rejected() -> Result<(), IrError> {
 /// marker to key on -- it is unconditional for the same reason the int
 /// and float sides now are: nothing between the caller and `current_def`
 /// re-checks the claim otherwise.
+///
+/// The error must NAME both address spaces. `TypeKindLabel::Pointer` carries
+/// no address space, so the `TypeMismatch { expected: Pointer, got: Pointer }`
+/// this used to report was true and useless -- the same defect the int side
+/// sheds by reporting `OperandWidthMismatch`. It gets its own error rather
+/// than borrowing that one because an address space is not a width
+/// (`Type::require_match`).
 #[test]
 fn pointer_var_wrong_addrspace_def_rejected() -> Result<(), IrError> {
     Module::with_new("ssa-ptr-wrong-addrspace", |m| {
@@ -765,11 +772,22 @@ fn pointer_var_wrong_addrspace_def_rejected() -> Result<(), IrError> {
         // The parameter is a pointer in addrspace 1; `px` was declared
         // in addrspace 0.
         let wrong_addrspace_ptr = f.param(0)?;
-        match b.def_pointer_var(px, wrong_addrspace_ptr) {
-            Err(IrError::TypeMismatch { .. }) => Ok(()),
-            Ok(()) => panic!("expected TypeMismatch, got Ok"),
-            Err(other) => panic!("expected TypeMismatch, got {other:?}"),
-        }
+        let err = b
+            .def_pointer_var(px, wrong_addrspace_ptr)
+            .expect_err("a wrong-address-space def must be rejected");
+
+        assert_eq!(
+            err,
+            IrError::AddressSpaceMismatch {
+                expected: 0,
+                got: 1
+            }
+        );
+        assert_eq!(
+            err.to_string(),
+            "pointer address space mismatch: expected addrspace(0), got addrspace(1)"
+        );
+        Ok(())
     })
 }
 

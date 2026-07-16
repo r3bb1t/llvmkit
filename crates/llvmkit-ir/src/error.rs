@@ -561,6 +561,26 @@ pub enum IrError {
         got: u64,
     },
 
+    /// Two pointer types differ only in their address space.
+    ///
+    /// The pointer analogue of
+    /// [`OperandWidthMismatch`](Self::OperandWidthMismatch), and it exists
+    /// for the same reason: [`TypeKindLabel`] has a *single*, address-space-less
+    /// `Pointer` variant, so an `addrspace(0)`-vs-`addrspace(1)` drift would
+    /// otherwise report `TypeMismatch { expected: Pointer, got: Pointer }` —
+    /// true, and silent about the only fact that distinguishes the two. An
+    /// address space is not a width, so `OperandWidthMismatch` cannot stand in
+    /// here; the drift needs fields that say what they mean. Mirrors the
+    /// distinction `LLParser::parseType` draws when it spells the full
+    /// `ptr addrspace(N)` in its diagnostics rather than the bare kind.
+    #[error("pointer address space mismatch: expected addrspace({expected}), got addrspace({got})")]
+    AddressSpaceMismatch {
+        /// Address space the API required.
+        expected: u32,
+        /// Address space actually supplied.
+        got: u32,
+    },
+
     /// `set_struct_body` called twice on the same named struct.
     #[error("named struct {name:?} already has a body")]
     StructBodyAlreadySet {

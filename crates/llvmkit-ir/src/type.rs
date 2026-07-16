@@ -339,33 +339,51 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     /// type is *statically* fixed (e.g. an icmp result is always `i1`),
     /// never where it comes from an operand or a declared variable.
     ///
-    /// Integer width drift reports [`IrError::OperandWidthMismatch`]
-    /// rather than [`IrError::TypeMismatch`] because [`TypeKindLabel`]
-    /// has a *single*, width-less `Integer` variant: an i32-vs-i64 drift
-    /// would otherwise read "expected integer, got integer" — true, and
-    /// silent about the only fact that distinguishes them. This mirrors
-    /// the split `IntValue`'s `TryFrom<Value>` performs (`value.rs`), for
-    /// the same reason. Float kinds need no such special case:
+    /// Two kinds get a dedicated error instead of
+    /// [`IrError::TypeMismatch`], because [`TypeKindLabel`] collapses each
+    /// of them into one variant that omits the only fact distinguishing
+    /// the two sides:
+    ///
+    /// - **Integer width** drift reports
+    ///   [`IrError::OperandWidthMismatch`]: `TypeKindLabel` has a
+    ///   *single*, width-less `Integer` variant, so an i32-vs-i64 drift
+    ///   would otherwise read "expected integer, got integer" — true, and
+    ///   silent about the only fact that distinguishes them. This mirrors
+    ///   the split `IntValue`'s `TryFrom<Value>` performs (`value.rs`),
+    ///   for the same reason.
+    /// - **Pointer address space** drift reports
+    ///   [`IrError::AddressSpaceMismatch`], the identical argument applied
+    ///   to the single, address-space-less `Pointer` variant. It needs its
+    ///   own error rather than reusing `OperandWidthMismatch`: an address
+    ///   space is not a width, and `lhs`/`rhs` bit counts would misname
+    ///   what the numbers are.
+    ///
+    /// Both arms fire only when the two sides *share* the kind. A genuine
+    /// cross-kind drift (`i32` vs `ptr`) falls through to the general arm,
+    /// where the labels are already exactly the right amount of detail --
+    /// never an `AddressSpaceMismatch` about an address space one side
+    /// does not have. Float kinds need no special case either:
     /// `TypeKindLabel` has a distinct variant per kind
     /// (`Half`/`Float`/`Double`/…), so their `TypeMismatch` already names
-    /// both sides precisely — they fall through to the general arm.
+    /// both sides precisely — they too fall through.
     ///
     /// No false rejections: `llvm_context.rs` memoizes `int_type(bits)` by
-    /// width, so `TypeId` equality is structural type equality — a
-    /// correctly typed value always compares equal. Cost is one `TypeId`
-    /// compare.
+    /// width and `ptr_type(addr_space)` by address space, so `TypeId`
+    /// equality is structural type equality — a correctly typed value
+    /// always compares equal. Cost is one `TypeId` compare.
     pub(crate) fn require_match(self, got: Self) -> IrResult<()> {
         if self.id == got.id {
             return Ok(());
         }
-        Err(match (self.data().as_integer(), got.data().as_integer()) {
-            (Some(expected_bits), Some(got_bits)) => IrError::OperandWidthMismatch {
-                lhs: expected_bits,
-                rhs: got_bits,
-            },
-            _ => IrError::TypeMismatch {
-                expected: self.kind_label(),
-                got: got.kind_label(),
+        let (expected_data, got_data) = (self.data(), got.data());
+        Err(match (expected_data.as_integer(), got_data.as_integer()) {
+            (Some(lhs), Some(rhs)) => IrError::OperandWidthMismatch { lhs, rhs },
+            _ => match (expected_data.as_pointer(), got_data.as_pointer()) {
+                (Some(expected), Some(got)) => IrError::AddressSpaceMismatch { expected, got },
+                _ => IrError::TypeMismatch {
+                    expected: self.kind_label(),
+                    got: got.kind_label(),
+                },
             },
         })
     }

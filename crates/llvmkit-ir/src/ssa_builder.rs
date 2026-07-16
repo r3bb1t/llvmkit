@@ -943,27 +943,22 @@ where
     /// a `TypeId` equality compare is negligible next to the rest of the
     /// work, and skipping it would silently accept a wrong-address-space
     /// write. Honest rather than optimised.
+    ///
+    /// A drift here reports [`IrError::AddressSpaceMismatch`], not the
+    /// `TypeMismatch { expected: Pointer, got: Pointer }` that
+    /// [`TypeKindLabel`](crate::TypeKindLabel)'s single, address-space-less
+    /// `Pointer` variant would otherwise force -- the pointer analogue of
+    /// the int side's `OperandWidthMismatch`, and the reason this seam can
+    /// now share `Type::require_match` with its twins instead of spelling
+    /// its own compare (`pointer_var_wrong_addrspace_def_rejected`,
+    /// `tests/ssa_builder.rs`, names both address spaces).
     pub fn def_pointer_var<V>(&mut self, var: PointerVariable<'ctx, B>, value: V) -> IrResult<()>
     where
         V: IntoPointerValue<'ctx, B>,
     {
         self.check_owner_var(var.owner)?;
         let v = value.into_pointer_value(self.module_ref())?;
-        if Typed::ty(v).id() != var.ty {
-            // NOT routed through `Type::require_match` like the int/float
-            // twins: both sides are pointers, so its int-width arm cannot
-            // fire and it would report the same width-less
-            // `TypeMismatch { expected: Pointer, got: Pointer }` this does.
-            // `TypeKindLabel::Pointer` carries no address space, so neither
-            // spelling can name the drift -- reporting it properly needs an
-            // error variant that carries both address spaces, which is out
-            // of scope here. Kept explicit so the gap stays visible rather
-            // than hiding behind a helper whose doc promises precision.
-            return Err(IrError::TypeMismatch {
-                expected: super::r#type::Type::new(var.ty, self.module_ref()).kind_label(),
-                got: Typed::ty(v).kind_label(),
-            });
-        }
+        super::r#type::Type::new(var.ty, self.module_ref()).require_match(Typed::ty(v))?;
         let block = self.current_block_id();
         self.write_variable(var.index, block, v.as_value().id);
         Ok(())
@@ -2263,6 +2258,51 @@ mod tests {
                 IrError::TypeMismatch {
                     expected: crate::TypeKindLabel::Float,
                     got: crate::TypeKindLabel::Double,
+                }
+            );
+            Ok(())
+        })
+    }
+
+    /// Pointer twin of [`def_int_var_rejects_forged_static_width_handle`],
+    /// completing the `def_*_var` trio. `PointerValue` pins no address space
+    /// statically, so its forge lies about the *kind*: an honest non-pointer
+    /// cannot reach [`SsaBuilder::def_pointer_var`] (there is no
+    /// `IntoPointerValue` impl for `IntValue`), and
+    /// `PointerValue::from_value_unchecked` is the only door in --
+    /// crate-internal, and named as an `ssa_builder.rs` caller by that
+    /// method's own doc, which cites `def_pointer_var`'s check as what makes
+    /// the arena read (`use_pointer_var`) safe. This is that check.
+    ///
+    /// Stays [`IrError::TypeMismatch`] rather than the
+    /// [`IrError::AddressSpaceMismatch`] its honest wrong-address-space
+    /// sibling reports (`pointer_var_wrong_addrspace_def_rejected`,
+    /// `tests/ssa_builder.rs`): the address-space arm fires only when BOTH
+    /// sides are pointers, since an `i32` has no address space to name
+    /// (`Type::require_match`). llvmkit-specific for the same reason as its
+    /// int twin: `SSAUpdater` carries no per-variable type to contradict.
+    #[test]
+    fn def_pointer_var_rejects_forged_non_pointer_handle() -> Result<(), IrError> {
+        Module::with_new("ssa-forged-pointer", |m| {
+            let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+            let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+            let mut b = SsaBuilder::for_function(&m, f)?;
+            let entry = b.create_block("entry");
+            let p = b.declare_pointer_var("p");
+
+            let mut b = b.switch_to_block(entry)?;
+            let forged: PointerValue<'_, _> =
+                PointerValue::from_value_unchecked(m.i32_type().const_zero().as_value());
+
+            let err = b
+                .def_pointer_var(p, forged)
+                .expect_err("a forged non-pointer handle must be rejected");
+
+            assert_eq!(
+                err,
+                IrError::TypeMismatch {
+                    expected: crate::TypeKindLabel::Pointer,
+                    got: crate::TypeKindLabel::Integer,
                 }
             );
             Ok(())
