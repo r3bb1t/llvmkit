@@ -27,8 +27,9 @@
 //! (`Type::isIntegerTy` / `Type::isFloatingPointTy` predicate failure).
 
 use llvmkit_ir::{
-    FloatDyn, FloatKind, FloatValue, IntDyn, IntValue, IntWidth, IrError, IrResult, Module,
-    ModuleBrand, TypeKindLabel, Value, Width,
+    ApFloat, ApFloatSemantics, ApFloatSign, BFloat, FloatDyn, FloatKind, FloatValue, Fp128, Half,
+    IntDyn, IntValue, IntWidth, IrError, IrResult, Module, ModuleBrand, PpcFp128, TypeKindLabel,
+    Value, Width, X86Fp80,
 };
 
 // --------------------------------------------------------------------------
@@ -55,29 +56,43 @@ fn narrow_generic_float<'ctx, K: FloatKind, B: ModuleBrand + 'ctx>(
 // Int: the generic helper resolves at every marker family.
 // --------------------------------------------------------------------------
 
-/// Exercises the generic helper at each of the three impl sites:
-/// a Rust-scalar marker (`i32`, `i64`), the erased marker (`IntDyn`),
-/// and the const-generic marker (`Width<7>`).
+/// Exercises the generic helper at **every** `IntWidth` marker, not a
+/// sample: all six the `impl_int_width_scalar!` macro expands
+/// (`bool`, `i8`, `i16`, `i32`, `i64`, `i128`), the erased marker
+/// (`IntDyn`), and the const-generic marker (`Width<7>`) — i.e. all
+/// three impl sites, exhaustively.
 #[test]
 fn narrow_generic_accepts_every_marker_family() -> Result<(), IrError> {
     Module::with_new("c", |m| {
+        let bool_v = m.bool_type().const_zero().as_value();
+        let i8_v = m.i8_type().const_zero().as_value();
+        let i16_v = m.i16_type().const_zero().as_value();
         let i32_v = m.i32_type().const_zero().as_value();
         let i64_v = m.i64_type().const_zero().as_value();
+        let i128_v = m.i128_type().const_zero().as_value();
         let i7_v = m.int_type_n::<7>().const_zero().as_value();
 
-        // Rust-scalar markers.
-        let a: IntValue<'_, i32, _> = narrow_generic::<i32, _>(i32_v)?;
-        assert_eq!(a.as_value(), i32_v);
-        let b: IntValue<'_, i64, _> = narrow_generic::<i64, _>(i64_v)?;
-        assert_eq!(b.as_value(), i64_v);
+        // Rust-scalar markers — every marker the macro expands.
+        let a: IntValue<'_, bool, _> = narrow_generic::<bool, _>(bool_v)?;
+        assert_eq!(a.as_value(), bool_v);
+        let b: IntValue<'_, i8, _> = narrow_generic::<i8, _>(i8_v)?;
+        assert_eq!(b.as_value(), i8_v);
+        let c: IntValue<'_, i16, _> = narrow_generic::<i16, _>(i16_v)?;
+        assert_eq!(c.as_value(), i16_v);
+        let d: IntValue<'_, i32, _> = narrow_generic::<i32, _>(i32_v)?;
+        assert_eq!(d.as_value(), i32_v);
+        let e: IntValue<'_, i64, _> = narrow_generic::<i64, _>(i64_v)?;
+        assert_eq!(e.as_value(), i64_v);
+        let f: IntValue<'_, i128, _> = narrow_generic::<i128, _>(i128_v)?;
+        assert_eq!(f.as_value(), i128_v);
 
         // Erased marker.
-        let c: IntValue<'_, IntDyn, _> = narrow_generic::<IntDyn, _>(i32_v)?;
-        assert_eq!(c.as_value(), i32_v);
+        let g: IntValue<'_, IntDyn, _> = narrow_generic::<IntDyn, _>(i32_v)?;
+        assert_eq!(g.as_value(), i32_v);
 
         // Const-generic marker.
-        let d: IntValue<'_, Width<7>, _> = narrow_generic::<Width<7>, _>(i7_v)?;
-        assert_eq!(d.as_value(), i7_v);
+        let h: IntValue<'_, Width<7>, _> = narrow_generic::<Width<7>, _>(i7_v)?;
+        assert_eq!(h.as_value(), i7_v);
 
         Ok(())
     })
@@ -171,19 +186,54 @@ fn int_dyn_still_rejects_non_integer() {
 #[test]
 fn narrow_generic_float_accepts_every_marker_family() -> Result<(), IrError> {
     Module::with_new("c", |m| {
+        let zero = |sem| ApFloat::zero(sem, ApFloatSign::Positive);
         let f32_v = m.f32_type().const_float(1.5_f32).as_value();
         let f64_v = m.f64_type().const_double(2.5_f64).as_value();
+        // Exotic kinds have no Rust-scalar constant ctor; go through ApFloat.
+        let half_v = m
+            .half_type()
+            .const_ap_float(&zero(ApFloatSemantics::IeeeHalf))?
+            .as_value();
+        let bfloat_v = m
+            .bfloat_type()
+            .const_ap_float(&zero(ApFloatSemantics::BFloat))?
+            .as_value();
+        let fp128_v = m
+            .fp128_type()
+            .const_ap_float(&zero(ApFloatSemantics::IeeeQuad))?
+            .as_value();
+        let x86_v = m
+            .x86_fp80_type()
+            .const_ap_float(&zero(ApFloatSemantics::X87DoubleExtended))?
+            .as_value();
+        let ppc_v = m
+            .ppc_fp128_type()
+            .const_ap_float(&zero(ApFloatSemantics::PpcDoubleDouble))?
+            .as_value();
 
+        // Rust-scalar markers.
         let a: FloatValue<'_, f32, _> = narrow_generic_float::<f32, _>(f32_v)?;
         assert_eq!(a.as_value(), f32_v);
         let b: FloatValue<'_, f64, _> = narrow_generic_float::<f64, _>(f64_v)?;
         assert_eq!(b.as_value(), f64_v);
 
-        // Erased marker accepts either kind.
-        let c: FloatValue<'_, FloatDyn, _> = narrow_generic_float::<FloatDyn, _>(f32_v)?;
-        assert_eq!(c.as_value(), f32_v);
-        let d: FloatValue<'_, FloatDyn, _> = narrow_generic_float::<FloatDyn, _>(f64_v)?;
-        assert_eq!(d.as_value(), f64_v);
+        // Every marker the `decl_struct_kind!` macro expands.
+        let c: FloatValue<'_, Half, _> = narrow_generic_float::<Half, _>(half_v)?;
+        assert_eq!(c.as_value(), half_v);
+        let d: FloatValue<'_, BFloat, _> = narrow_generic_float::<BFloat, _>(bfloat_v)?;
+        assert_eq!(d.as_value(), bfloat_v);
+        let e: FloatValue<'_, Fp128, _> = narrow_generic_float::<Fp128, _>(fp128_v)?;
+        assert_eq!(e.as_value(), fp128_v);
+        let f: FloatValue<'_, X86Fp80, _> = narrow_generic_float::<X86Fp80, _>(x86_v)?;
+        assert_eq!(f.as_value(), x86_v);
+        let g: FloatValue<'_, PpcFp128, _> = narrow_generic_float::<PpcFp128, _>(ppc_v)?;
+        assert_eq!(g.as_value(), ppc_v);
+
+        // Erased marker accepts any kind.
+        let h: FloatValue<'_, FloatDyn, _> = narrow_generic_float::<FloatDyn, _>(f32_v)?;
+        assert_eq!(h.as_value(), f32_v);
+        let i: FloatValue<'_, FloatDyn, _> = narrow_generic_float::<FloatDyn, _>(ppc_v)?;
+        assert_eq!(i.as_value(), ppc_v);
 
         Ok(())
     })

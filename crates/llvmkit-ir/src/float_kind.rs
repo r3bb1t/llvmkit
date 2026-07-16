@@ -53,9 +53,7 @@ pub trait FloatKind: sealed::Sealed + Copy + 'static + fmt::Debug {
     /// ```
     fn narrow<'ctx, B: ModuleBrand + 'ctx>(
         v: Value<'ctx, B>,
-    ) -> IrResult<FloatValue<'ctx, Self, B>>
-    where
-        Self: Sized;
+    ) -> IrResult<FloatValue<'ctx, Self, B>>;
 }
 
 impl sealed::Sealed for f32 {}
@@ -411,9 +409,8 @@ pub trait StaticFloatKind: FloatKind {
     /// Usable as `K::STATIC_BITS` in `const { ... }` assertions.
     const STATIC_BITS: u32;
 
-    fn ir_type<'ctx, B: ModuleBrand + 'ctx>(module: ModuleRef<'ctx, B>) -> FloatType<'ctx, Self, B>
-    where
-        Self: Sized;
+    fn ir_type<'ctx, B: ModuleBrand + 'ctx>(module: ModuleRef<'ctx, B>)
+    -> FloatType<'ctx, Self, B>;
 }
 
 macro_rules! impl_static_float_kind {

@@ -72,9 +72,7 @@ pub trait IntWidth: sealed::Sealed + Copy + 'static + fmt::Debug {
     ///     W::narrow(v)
     /// }
     /// ```
-    fn narrow<'ctx, B: ModuleBrand + 'ctx>(v: Value<'ctx, B>) -> IrResult<IntValue<'ctx, Self, B>>
-    where
-        Self: Sized;
+    fn narrow<'ctx, B: ModuleBrand + 'ctx>(v: Value<'ctx, B>) -> IrResult<IntValue<'ctx, Self, B>>;
 }
 
 macro_rules! impl_int_width_scalar {
@@ -765,9 +763,7 @@ pub trait StaticIntWidth: IntWidth {
     const STATIC_BITS: u32;
     /// Project the marker into the matching [`IntType`] from the
     /// caller's module.
-    fn ir_type<'ctx, B: ModuleBrand + 'ctx>(module: ModuleRef<'ctx, B>) -> IntType<'ctx, Self, B>
-    where
-        Self: Sized;
+    fn ir_type<'ctx, B: ModuleBrand + 'ctx>(module: ModuleRef<'ctx, B>) -> IntType<'ctx, Self, B>;
 }
 
 macro_rules! impl_static_int_width {
