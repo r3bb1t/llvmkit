@@ -928,12 +928,7 @@ where
             return self.accept_folded_int(folded, lhs);
         }
         let payload = BinaryOpData::new(lhs.as_value().id, rhs.as_value().id);
-        let inst = self.append_instruction(
-            lhs.ty().as_type().id(),
-            InstructionKindData::Add(payload),
-            name,
-        );
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_like(lhs, InstructionKindData::Add(payload), name))
     }
 
     /// Produce `sub lhs, rhs`. Mirrors `IRBuilder::CreateSub`.
@@ -955,12 +950,7 @@ where
             return self.accept_folded_int(folded, lhs);
         }
         let payload = BinaryOpData::new(lhs.as_value().id, rhs.as_value().id);
-        let inst = self.append_instruction(
-            lhs.ty().as_type().id(),
-            InstructionKindData::Sub(payload),
-            name,
-        );
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_like(lhs, InstructionKindData::Sub(payload), name))
     }
 
     /// Produce `mul lhs, rhs`. Mirrors `IRBuilder::CreateMul`.
@@ -1492,8 +1482,7 @@ where
         if let Some(folded) = folded {
             return self.accept_folded_int(folded, lhs);
         }
-        let inst = self.append_instruction(lhs.ty().as_type().id(), kind_ctor(payload), name);
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_like(lhs, kind_ctor(payload), name))
     }
 
     /// Crate-internal helper: emit a binary op given a callback that
@@ -1520,8 +1509,7 @@ where
             return self.accept_folded_int(folded, lhs);
         }
         let payload = BinaryOpData::new(lhs.as_value().id, rhs.as_value().id);
-        let inst = self.append_instruction(lhs.ty().as_type().id(), kind_ctor(payload), name);
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_like(lhs, kind_ctor(payload), name))
     }
 
     // ---- Type-erased integer binops (scalar OR integer-vector operands) ----
@@ -1836,9 +1824,7 @@ where
         // `IRBuilderBase::setFPAttrs` in `IRBuilder.h`, which calls
         // `I->setFastMathFlags(FMF)` on every FP-math instruction).
         payload.fmf = self.fmf;
-        let inst =
-            self.append_instruction(crate::value::Typed::ty(lhs).id(), kind_ctor(payload), name);
-        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_fp_like(lhs, kind_ctor(payload), name))
     }
 
     /// Crate-internal helper for float binops with an explicit
@@ -1866,9 +1852,7 @@ where
         }
         let mut payload = BinaryOpData::new(IsValue::as_value(lhs).id, IsValue::as_value(rhs).id);
         payload.fmf = fmf;
-        let inst =
-            self.append_instruction(crate::value::Typed::ty(lhs).id(), kind_ctor(payload), name);
-        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_fp_like(lhs, kind_ctor(payload), name))
     }
 
     /// `fadd` with an explicit [`crate::fmf::FastMathFlags`] parameter.
@@ -2389,13 +2373,11 @@ where
         V: IntoFloatValue<'ctx, K, B>,
     {
         let v = value.into_float_value(ModuleRef::new(self.module))?;
-        let ty = crate::value::Typed::ty(v).id();
         if let Some(folded) = self.folder.fold_fp_un_op(UnaryOpcode::FNeg, v, fmf)? {
             return self.accept_folded_fp(folded, v);
         }
         let payload = FNegInstData::new(IsValue::as_value(v).id, fmf);
-        let inst = self.append_instruction(ty, InstructionKindData::FNeg(payload), name);
-        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_fp_like(v, InstructionKindData::FNeg(payload), name))
     }
 
     /// Produce `freeze <value>`. Mirrors `IRBuilder::CreateFreeze`.
@@ -7586,6 +7568,35 @@ where
             parent_fn.set_local_value_name(id, Some(name));
         }
         Instruction::from_parts(id, ModuleRef::<B>::new(self.module))
+    }
+
+    /// Append `kind` at `like`'s type and wrap the result as width-`W`.
+    ///
+    /// Sound by construction: the instruction is created AT `like.ty()`, and
+    /// `like: IntValue<'ctx, W, B>` is W-typed, so the result is W-typed. This is the
+    /// only sanctioned way to attach an `IntValue<W>` marker to a freshly-appended
+    /// instruction whose type comes from an operand -- it removes the `from_value_unchecked`
+    /// assertion at the call site (see docs/unforgeable-markers-design.md, census pattern 1).
+    fn append_int_like<W: IntWidth, N: AsRef<str>>(
+        &self,
+        like: IntValue<'ctx, W, B>,
+        kind: InstructionKindData,
+        name: N,
+    ) -> IntValue<'ctx, W, B> {
+        let inst = self.append_instruction(like.ty().as_type().id(), kind, name);
+        IntValue::<W, B>::from_value_unchecked(inst.as_value())
+    }
+
+    /// Float analogue of `append_int_like`. Sound by construction: appended at `like.ty()`,
+    /// `like: FloatValue<'ctx, K, B>` is K-typed.
+    fn append_fp_like<K: FloatKind, N: AsRef<str>>(
+        &self,
+        like: FloatValue<'ctx, K, B>,
+        kind: InstructionKindData,
+        name: N,
+    ) -> FloatValue<'ctx, K, B> {
+        let inst = self.append_instruction(like.ty().as_type().id(), kind, name);
+        FloatValue::<K, B>::from_value_unchecked(inst.as_value())
     }
 
     /// Crate-internal: append a freshly-built phi to the insertion block.
