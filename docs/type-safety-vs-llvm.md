@@ -349,8 +349,9 @@ confinement is *audited*, not a compile-time seal: `from_value_unchecked` stays
 modules, and the constructors depend on `ir_builder`-private helpers), so its
 in-crate callers are now a legible handful — the constructor family, the runtime-
 checked fold seams, and a documented residual (result accessors, arena/param lifts,
-the vector/array append wraps) — rather than a hundred scattered wraps, and the fold
-re-checks above remain the backstop.
+the vector/array append wraps, the select-arm re-wrap, and the `ptrtoaddr` `IntDyn`
+re-wrap) — rather than a hundred scattered wraps, and the fold re-checks above remain
+the backstop.
 
 That check used to be keyed on the marker being erased -- which was circular: it
 trusted precisely the claim it existed to verify, so at any static width a
