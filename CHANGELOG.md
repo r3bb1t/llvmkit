@@ -7,6 +7,35 @@ tagged release is cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### Unforgeable markers — the builder's typed-append family (internal)
+
+Internal refactor of *how* an int / float / pointer marker is attached to a
+freshly-appended instruction; **no public API change and byte-identical printed
+IR**. Marker attachment across the builder's append surface now flows through a
+typed-append constructor family — `append_int_like` / `append_int_at` /
+`append_int_load`, the `append_fp_*` trio, and `append_ptr` / `append_ptr_load` —
+each of which appends the instruction *at* a typed type-handle and re-wraps the
+result, so the width / kind / pointer-ness matches the runtime type **by
+construction** rather than by an implicit proof beside each call. This collapses
+~40 scattered `from_value_unchecked` wraps (casts, comparisons, loads, alloca /
+GEP, scalar arithmetic) onto the family.
+
+#### Changed
+
+- `from_value_unchecked`'s in-crate callers in `ir_builder.rs` drop from ~40
+  scattered wraps to the 8 constructor-family bodies plus a legible residual
+  (runtime-checked fold seams, the select-arm re-wrap, the `ptrtoaddr` `IntDyn`
+  re-wrap, and the vector / array append wraps that have no typed constructor
+  yet). The Cycle-1 runtime re-checks (`accept_folded_*` / `narrow_folded_*` /
+  `def_*_var`) stay as defense in depth.
+- **Audited, not sealed.** `from_value_unchecked` remains `pub(crate)` — a hard
+  compile-time seal is infeasible (`value` and `ir_builder` are sibling modules
+  and the constructors need `ir_builder`-private helpers), so the confinement is
+  documented and locally proven, not compiler-enforced. `IntDyn` / `FloatDyn`
+  markers still name no width / kind by design (erasure); the family proves
+  integer- / float-ness structurally, and the width is simply not part of what
+  the erased marker claims.
+
 ### Phi guarantees — wave 1
 
 Pushes the *local*, statically- or parse-time-knowable phi invariants into

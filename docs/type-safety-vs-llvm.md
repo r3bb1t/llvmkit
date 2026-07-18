@@ -337,6 +337,22 @@ cast's destination), for *every* marker, static ones included, and
 `W::narrow` / `K::narrow` at the point of construction rather than rewrapping on
 the authority of a prose invariant.
 
+Beyond folds, the builder's own marker attachment is likewise no longer implicit.
+An int / float / pointer marker reaches a freshly-appended instruction only through
+the typed-append constructor family — `append_int_like` / `_at` / `_load`,
+`append_fp_*`, `append_ptr` / `append_ptr_load` — each of which appends the
+instruction *at* a typed type-handle (`IntType<W>` / `FloatType<K>` / `PointerType`,
+or a `W`-typed operand) and re-wraps the result, so the marker matches the runtime
+type **by construction** rather than by a proof a reader must reconstruct. This
+confinement is *audited*, not a compile-time seal: `from_value_unchecked` stays
+`pub(crate)` (a hard seal is impossible — `value` and `ir_builder` are sibling
+modules, and the constructors depend on `ir_builder`-private helpers), so its
+in-crate callers are now a legible handful — the constructor family, the runtime-
+checked fold seams, and a documented residual (result accessors, arena/param lifts,
+the vector/array append wraps, the select-arm re-wrap, and the `ptrtoaddr` `IntDyn`
+re-wrap) — rather than a hundred scattered wraps, and the fold re-checks above remain
+the backstop.
+
 That check used to be keyed on the marker being erased -- which was circular: it
 trusted precisely the claim it existed to verify, so at any static width a
 wrong-typed fold result was silently accepted. See the CHANGELOG's *"No silent

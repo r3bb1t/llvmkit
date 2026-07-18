@@ -734,9 +734,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerValue<'ctx, B> {
     ///
     /// `v`'s runtime type is a pointer type. As with
     /// `IntValue::from_value_unchecked` (see it for the full account of the
-    /// obligation), the builder is not the only caller: `ir_builder.rs` wraps
-    /// pointer-result instructions it just produced (cast / GEP / alloca /
-    /// load), `instructions.rs` re-wraps pointer operands read back out of an
+    /// obligation), the builder is not the only caller: `ir_builder.rs` attaches
+    /// the pointer marker to a freshly-appended instruction only through the
+    /// `append_ptr` / `append_ptr_load` constructors (which append at a
+    /// `PointerType`, proving pointer-ness by construction) — its other in-file
+    /// callers are the fold seams (runtime-checked) and the select-arm re-wrap;
+    /// `instructions.rs` re-wraps pointer operands read back out of an
     /// instruction payload, `function_signature.rs` lifts pointer arguments
     /// and block parameters, and `ssa_builder.rs` wraps arena reads against a
     /// pointer variable's pinned type.
@@ -1586,8 +1589,17 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
     /// discharge, not a given — the in-crate callers are not equally safe,
     /// and they are not all the builder:
     ///
-    /// - `ir_builder.rs` — the safest: it just produced the instruction and
-    ///   computed its result type from operands it validated.
+    /// - `ir_builder.rs` — as of the unforgeable-markers cycle, an int marker is
+    ///   attached to a freshly-appended instruction *only* through the typed-append
+    ///   constructor family (`append_int_like` / `append_int_at` / `append_int_load`),
+    ///   each of which appends the instruction AT a typed `IntType<W>` (or a `W`-typed
+    ///   operand) and re-wraps the result — so the marker matches the runtime type by
+    ///   construction, not by a proof the reader must reconstruct. The other in-file
+    ///   callers are the fold seams (below) and the `ptrtoaddr` `IntDyn` re-wrap (which
+    ///   claims only integer-ness). This confinement is *audited*, not compiler-enforced:
+    ///   `from_value_unchecked` stays `pub(crate)` — a hard seal is impossible, since
+    ///   `value` and `ir_builder` are sibling modules and the constructors need
+    ///   `ir_builder`-private helpers — so the fold re-checks remain the backstop.
     /// - `instructions.rs` — re-wraps an operand read back out of an
     ///   instruction's own payload, whose type the builder pinned going in.
     /// - `function_signature.rs` — argument and block-parameter (head-phi)
@@ -1950,7 +1962,9 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
     ///
     /// The float twin of `IntValue::from_value_unchecked` in every respect,
     /// including its caller classes and the obligation they carry — see that
-    /// method's doc for the full account. It forges a static `K` exactly as
+    /// method's doc for the full account (the float constructor family through
+    /// which `ir_builder.rs` attaches the marker is `append_fp_like` /
+    /// `append_fp_at` / `append_fp_load`). It forges a static `K` exactly as
     /// freely as the int side forges a static `W`, which is why the float
     /// acceptors (`accept_folded_fp`, `narrow_folded_fp`) and `def_float_var`
     /// check every marker rather than only the erased `FloatDyn` one.
