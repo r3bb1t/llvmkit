@@ -1946,7 +1946,7 @@ mod tests {
             let i32_ty = m.i32_type();
             let ptr1_ty = m.ptr_type(1);
             let ptr_vec_ty = m.vector_type(ptr1_ty.as_type(), 2, false);
-            let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function::<(), _>("f", fn_ty, crate::Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
 

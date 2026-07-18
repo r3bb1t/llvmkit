@@ -45,7 +45,7 @@
 
 use llvmkit_ir::{
     AtomicOrdering, AtomicRMWBinOp, AtomicRMWConfig, IRBuilder, IntValue, IrError, Linkage, Module,
-    PointerValue, SyncScope,
+    Ptr, SyncScope,
 };
 
 pub fn main() -> Result<(), IrError> {
@@ -75,17 +75,20 @@ pub fn main() -> Result<(), IrError> {
 ///    threads' releases.
 pub fn build_atomic_inc<'ctx>(m: &Module<'ctx>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
-    let f = m.add_function::<i32, _>("atomic_inc", fn_ty, Linkage::External)?;
+    // `add_typed_function::<i32, (Ptr,)>` is the typed primary: the turbofish
+    // is the whole schema (returns `i32`, takes one pointer), so there is no
+    // separately built `FunctionType`.
+    let f = m.add_typed_function::<i32, (Ptr,), _>("atomic_inc", Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let b = IRBuilder::at_end(entry);
 
     // fence release
     let _ = b.build_fence(AtomicOrdering::Release, SyncScope::System, "")?;
 
     // %old = atomicrmw add ptr %counter, i32 1 monotonic
-    let counter: PointerValue = f.param(0)?.try_into()?;
+    // `f.params()` hands back the parameter already typed as `PointerValue`
+    // — no `f.param(0)?.try_into()?` narrowing step.
+    let (counter,) = f.params();
     let one = i32_ty.const_int(1_i32);
     let old = b.build_atomicrmw(
         AtomicRMWBinOp::Add,
@@ -111,12 +114,9 @@ pub fn build_atomic_inc<'ctx>(m: &Module<'ctx>) -> Result<(), IrError> {
 /// with `finish()`.
 pub fn build_dispatch<'ctx>(m: &Module<'ctx>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(
-        i32_ty,
-        [i32_ty.as_type(), i32_ty.as_type(), i32_ty.as_type()],
-        false,
-    );
-    let f = m.add_function::<i32, _>("dispatch", fn_ty, Linkage::External)?;
+    // `add_typed_function::<i32, (i32, i32, i32)>` is the typed primary: the
+    // turbofish *is* the signature, so no separate `FunctionType` is built.
+    let f = m.add_typed_function::<i32, (i32, i32, i32), _>("dispatch", Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let do_add = f.append_basic_block(m, "do_add");
     let do_sub = f.append_basic_block(m, "do_sub");
@@ -127,34 +127,34 @@ pub fn build_dispatch<'ctx>(m: &Module<'ctx>) -> Result<(), IrError> {
     let do_mul_label = do_mul.label();
     let default_label = default_bb.label();
 
+    // `f.params()` returns the three arguments already typed as `IntValue<i32>`
+    // in declaration order — no per-argument `f.param(n)?.try_into()?` narrowing.
     // Each case body computes a single arithmetic op and returns.
-    let a: IntValue<i32> = f.param(1)?.try_into()?;
-    let b_op: IntValue<i32> = f.param(2)?.try_into()?;
+    let (op, a, b_op) = f.params();
     {
-        let bb = IRBuilder::new_for::<i32>(m).position_at_end(do_add);
+        let bb = IRBuilder::at_end(do_add);
         let r = bb.build_int_add(a, b_op, "r_add")?;
         bb.build_ret(r)?;
     }
     {
-        let bb = IRBuilder::new_for::<i32>(m).position_at_end(do_sub);
+        let bb = IRBuilder::at_end(do_sub);
         let r = bb.build_int_sub(a, b_op, "r_sub")?;
         bb.build_ret(r)?;
     }
     {
-        let bb = IRBuilder::new_for::<i32>(m).position_at_end(do_mul);
+        let bb = IRBuilder::at_end(do_mul);
         let r = bb.build_int_mul(a, b_op, "r_mul")?;
         bb.build_ret(r)?;
     }
     {
-        let bb = IRBuilder::new_for::<i32>(m).position_at_end(default_bb);
+        let bb = IRBuilder::at_end(default_bb);
         bb.build_ret(0_i32)?;
     }
 
     // Build the entry switch. `add_case` returns the same `Open` handle
     // so the chain reads top-to-bottom; `finish` consumes it to a
     // `Closed` view that no longer accepts new cases at the type level.
-    let op: IntValue<i32> = f.param(0)?.try_into()?;
-    let entry_b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let entry_b = IRBuilder::at_end(entry);
     let (_sealed, sw) = entry_b.build_switch_dyn(op, default_label, "")?;
     let _closed = sw
         .add_case(i32_ty.const_int(0_i32), do_add_label)?

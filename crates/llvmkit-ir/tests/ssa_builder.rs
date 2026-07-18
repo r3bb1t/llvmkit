@@ -19,7 +19,7 @@
 //! Every test below is `llvmkit-specific` per `UPSTREAM.md`'s category
 //! convention unless noted otherwise.
 
-use llvmkit_ir::{IntPredicate, IntValue, IrError, Linkage, Module, NoFolder, SsaBuilder, Type};
+use llvmkit_ir::{IntPredicate, IntValue, IrError, Linkage, Module, NoFolder, SsaBuilder};
 use proptest::prelude::*;
 
 /// llvmkit-specific: locks `SsaBuilder::for_function`'s happy path --
@@ -27,7 +27,7 @@ use proptest::prelude::*;
 #[test]
 fn for_function_succeeds_on_empty_function() -> Result<(), IrError> {
     Module::with_new("ssa-construct", |m| {
-        let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let _b = SsaBuilder::for_function(&m, f)?;
         Ok(())
@@ -40,7 +40,7 @@ fn for_function_succeeds_on_empty_function() -> Result<(), IrError> {
 #[test]
 fn for_function_rejects_function_with_existing_body() -> Result<(), IrError> {
     Module::with_new("ssa-construct-nonempty", |m| {
-        let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let _entry = f.append_basic_block(&m, "entry");
         match SsaBuilder::for_function(&m, f) {
@@ -57,7 +57,7 @@ fn for_function_rejects_function_with_existing_body() -> Result<(), IrError> {
 #[test]
 fn with_folder_for_function_accepts_custom_folder() -> Result<(), IrError> {
     Module::with_new("ssa-construct-folder", |m| {
-        let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let _b = SsaBuilder::with_folder_for_function(&m, f, NoFolder)?;
         Ok(())
@@ -71,7 +71,7 @@ fn with_folder_for_function_accepts_custom_folder() -> Result<(), IrError> {
 #[test]
 fn create_block_appends_named_block_to_function() -> Result<(), IrError> {
     Module::with_new("ssa-create-block", |m| {
-        let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
@@ -93,7 +93,7 @@ fn create_block_appends_named_block_to_function() -> Result<(), IrError> {
 #[test]
 fn seal_block_succeeds_once_then_errors() -> Result<(), IrError> {
     Module::with_new("ssa-seal-once", |m| {
-        let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let _entry = b.create_block("entry");
@@ -115,7 +115,7 @@ fn seal_block_succeeds_once_then_errors() -> Result<(), IrError> {
 #[test]
 fn seal_block_rejects_block_from_different_builder() -> Result<(), IrError> {
     Module::with_new("ssa-foreign-block", |m| {
-        let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f1 = m.add_function::<(), _>("f1", fn_ty, Linkage::External)?;
         let f2 = m.add_function::<(), _>("f2", fn_ty, Linkage::External)?;
 
@@ -141,7 +141,7 @@ fn seal_block_rejects_block_from_different_builder() -> Result<(), IrError> {
 #[test]
 fn declare_var_family_covers_every_category_and_variant() -> Result<(), IrError> {
     Module::with_new("ssa-declare-all", |m| {
-        let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
 
@@ -194,7 +194,7 @@ fn declare_var_family_covers_every_category_and_variant() -> Result<(), IrError>
 #[test]
 fn ssa_block_label_round_trips_to_basic_block_label() -> Result<(), IrError> {
     Module::with_new("ssa-block-label", |m| {
-        let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
@@ -220,7 +220,7 @@ fn ssa_block_label_round_trips_to_basic_block_label() -> Result<(), IrError> {
 fn single_pred_read_emits_no_phi() -> Result<(), IrError> {
     Module::with_new("ssa-single-pred", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
@@ -412,7 +412,7 @@ fn loop_backedge_completes_incomplete_phi_on_seal() -> Result<(), IrError> {
 fn strict_use_before_def_is_typed_error() -> Result<(), IrError> {
     Module::with_new("ssa-strict-undef", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
@@ -437,7 +437,7 @@ fn strict_use_before_def_is_typed_error() -> Result<(), IrError> {
 fn poison_variable_reads_poison_on_undef_path() -> Result<(), IrError> {
     Module::with_new("ssa-poison-undef", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
@@ -482,7 +482,7 @@ fn poison_variable_reads_poison_on_undef_path() -> Result<(), IrError> {
 fn dead_cycle_phi_names_the_actual_strict_variable_not_same_type_poison() -> Result<(), IrError> {
     Module::with_new("ssa-dead-cycle-strict-vs-poison", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
@@ -549,7 +549,7 @@ fn dead_cycle_phi_names_the_actual_strict_variable_not_same_type_poison() -> Res
 #[test]
 fn branch_to_sealed_block_rejected() -> Result<(), IrError> {
     Module::with_new("ssa-branch-sealed", |m| {
-        let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
@@ -575,7 +575,7 @@ fn branch_to_sealed_block_rejected() -> Result<(), IrError> {
 #[test]
 fn double_seal_rejected() -> Result<(), IrError> {
     Module::with_new("ssa-double-seal-public", |m| {
-        let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let _entry = b.create_block("entry");
@@ -596,7 +596,7 @@ fn double_seal_rejected() -> Result<(), IrError> {
 #[test]
 fn foreign_variable_rejected() -> Result<(), IrError> {
     Module::with_new("ssa-foreign-variable", |m| {
-        let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f1 = m.add_function::<(), _>("f1", fn_ty, Linkage::External)?;
         let f2 = m.add_function::<(), _>("f2", fn_ty, Linkage::External)?;
 
@@ -627,7 +627,7 @@ fn foreign_variable_rejected() -> Result<(), IrError> {
 #[test]
 fn finish_reports_unfilled_block() -> Result<(), IrError> {
     Module::with_new("ssa-unfilled", |m| {
-        let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
@@ -650,7 +650,7 @@ fn finish_reports_unfilled_block() -> Result<(), IrError> {
 #[test]
 fn switch_to_block_rejects_already_filled_block() -> Result<(), IrError> {
     Module::with_new("ssa-switch-filled", |m| {
-        let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
@@ -687,7 +687,7 @@ fn switch_to_block_rejects_already_filled_block() -> Result<(), IrError> {
 #[test]
 fn dyn_int_var_wrong_width_def_rejected() -> Result<(), IrError> {
     Module::with_new("ssa-dyn-wrong-width", |m| {
-        let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
@@ -721,7 +721,7 @@ fn dyn_int_var_wrong_width_def_rejected() -> Result<(), IrError> {
 #[test]
 fn dyn_float_var_wrong_kind_def_rejected() -> Result<(), IrError> {
     Module::with_new("ssa-dyn-float-wrong-kind", |m| {
-        let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
@@ -888,7 +888,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
     // Straight-line single-predecessor chain.
     Module::with_new("ssa-verify-straight-line", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
@@ -1059,7 +1059,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
 #[test]
 fn switch_dyn_condition_bad_width_case_rejected_before_emit() -> Result<(), IrError> {
     Module::with_new("ssa-dyn-bad-case-preemit", |m| {
-        let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
@@ -1229,7 +1229,7 @@ where
 /// predecessor-less function entry and must error.
 fn build_straight_line(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
     let mut b = SsaBuilder::for_function(m, f)?;
     let entry = b.create_block("entry");
@@ -1532,7 +1532,7 @@ proptest! {
 fn dead_block_poison_read_user_is_rerouted_to_poison() -> Result<(), IrError> {
     Module::with_new("ssa-dead-poison-user", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
@@ -1573,7 +1573,7 @@ fn dead_block_poison_read_user_is_rerouted_to_poison() -> Result<(), IrError> {
 fn dead_cycle_poison_read_with_live_user_resolves_to_poison() -> Result<(), IrError> {
     Module::with_new("ssa-dead-cycle-poison-user", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
@@ -1614,7 +1614,7 @@ fn dead_cycle_poison_read_with_live_user_resolves_to_poison() -> Result<(), IrEr
 fn sealed_single_pred_cycle_read_errors_for_strict_variable() -> Result<(), IrError> {
     Module::with_new("ssa-sealed-cycle-strict", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
@@ -1655,7 +1655,7 @@ fn sealed_single_pred_cycle_read_errors_for_strict_variable() -> Result<(), IrEr
 fn sealed_single_pred_cycle_read_resolves_poison_variable() -> Result<(), IrError> {
     Module::with_new("ssa-sealed-cycle-poison", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");

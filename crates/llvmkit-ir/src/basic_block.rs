@@ -23,6 +23,8 @@ use super::block_state::{BlockTerminationState, Unterminated};
 use super::function::FunctionValue;
 use super::function_signature::{CallArgs, FunctionParamList};
 use super::instruction::{InstructionKindData, InstructionView};
+use super::ir_builder::constant_folder::ConstantFolder;
+use super::ir_builder::{IRBuilder, Positioned};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::TypeId;
@@ -66,7 +68,7 @@ impl BasicBlockData {
 /// `ty` field carries that label type's id without allocating.
 ///
 /// The `R: ReturnMarker` parameter pins the parent function's return
-/// shape at the type level so a typed [`IRBuilder`](crate::IRBuilder)
+/// shape at the type level so a typed [`IRBuilder`]
 /// positioned inside the block can keep its compile-time `build_ret`
 /// invariant.
 ///
@@ -407,6 +409,19 @@ where
         A: CallArgs<'ctx, Params, B>,
     {
         self.label().call(args)
+    }
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
+    BasicBlock<'ctx, R, Unterminated, B, Params>
+{
+    /// Positioned builder at the end of this block. `bb.builder()` is
+    /// exactly [`IRBuilder::at_end(bb)`](crate::IRBuilder::at_end) — the
+    /// return marker `R` is inferred from the block, so no turbofish is
+    /// needed. Reads better when `bb` is already in hand.
+    #[inline]
+    pub fn builder(self) -> IRBuilder<'ctx, 'ctx, B, ConstantFolder, Positioned, R> {
+        IRBuilder::at_end(self)
     }
 }
 
@@ -927,7 +942,7 @@ mod tests {
     fn erased_block_value_narrows_to_dyn_params_label() {
         Module::with_new("bp-slice1-narrow", |m| {
             let void_ty = m.void_type().as_type();
-            let fn_ty = m.fn_type(void_ty, Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(void_ty, false);
             let f = m
                 .add_function::<(), _>("f", fn_ty, Linkage::External)
                 .unwrap();
@@ -949,7 +964,7 @@ mod tests {
     fn label_as_value_round_trips_to_dyn_params() {
         Module::with_new("bp-slice1-roundtrip", |m| {
             let void_ty = m.void_type().as_type();
-            let fn_ty = m.fn_type(void_ty, Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(void_ty, false);
             let f = m
                 .add_function::<(), _>("f", fn_ty, Linkage::External)
                 .unwrap();

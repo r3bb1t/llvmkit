@@ -170,6 +170,21 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   only).
 - Address-space-typed pointers (`PointerValue` currently erases address
   space; audit item from infra report).
+- **Infallible statically-sized aggregate constants.**
+  `ArrayType<E, ArrLen<N>>::const_array([C; N])` /
+  `VectorType<E, Len<N>>::const_vector([C; N])` could drop the `IrResult`
+  entirely — the length is known at compile time and the elements would be
+  materialized at the type-level element `E` — but this needs typed
+  `ArrayType<E, ArrLen<N>>` / `VectorType<E, Len<N>>` **type constructors**
+  first: today every `const_array`/`const_vector` caller builds an *erased*
+  `ArrayType<ElemDyn, ArrLenDyn>` / `VectorType<ElemDyn, LenDyn>` via
+  `m.array_type(...)` / `m.vector_type(...)`, so an infallible static
+  constructor would be dead code (no statically-typed receiver exists to call
+  it on). The fallible `const_array`/`const_struct`/`const_vector` now accept
+  `impl IntoConstantValue` elements (literals work), but stay `IrResult` — the
+  element-vs-container type check still guards the erased receivers. Bundle the
+  infallible variants with a typed aggregate-**type**-constructor slice; the
+  same applies to a `StructSchema`-keyed tuple-struct constant.
 
 ## Session follow-ups
 

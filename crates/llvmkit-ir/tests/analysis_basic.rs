@@ -14,7 +14,7 @@ use llvmkit_ir::{
     AllAnalysesOnFunction, AllAnalysesOnModule, CFGAnalyses, DominatorTreeAnalysis,
     FunctionAnalysis, FunctionAnalysisManager, FunctionAnalysisResult, FunctionView, IRBuilder,
     IrError, IrResult, Linkage, Module, ModuleAnalysis, ModuleAnalysisManager,
-    ModuleAnalysisResult, ModuleBrand, ModuleView, PreservedAnalyses, Type, Value,
+    ModuleAnalysisResult, ModuleBrand, ModuleView, PreservedAnalyses, Value,
 };
 
 #[derive(Clone)]
@@ -130,7 +130,7 @@ where
 {
     Module::with_new("analysis", |module| {
         let void_ty = module.void_type();
-        let fn_ty = module.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
+        let fn_ty = module.fn_type_no_params(void_ty.as_type(), false);
         let f = module.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let g = module.add_function::<(), _>("g", fn_ty, Linkage::External)?;
         let h = module.add_function::<(), _>("h", fn_ty, Linkage::External)?;

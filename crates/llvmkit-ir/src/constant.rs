@@ -540,3 +540,88 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> IsConstant<'ctx, B> for Constan
         self
     }
 }
+
+// --------------------------------------------------------------------------
+// IntoConstantValue: constant initializers from handles or Rust literals
+// --------------------------------------------------------------------------
+
+/// A value usable as a constant initializer or element: an existing
+/// constant handle, or a Rust scalar literal materialized through the
+/// module's context.
+///
+/// The blanket impl accepts any [`IsConstant`] handle unchanged (its
+/// `module` argument is ignored). The scalar impls — one per exact Rust
+/// width (`bool`, `i8`..=`i128`, `u8`..=`u128`, `f32`, `f64`) — build the
+/// matching IR constant through the module and erase it to [`Constant`].
+/// One literal maps to exactly one IR width, with no widening: `0i32` is
+/// an `i32`, `0i64` an `i64`. Ints route through
+/// [`IntoConstantInt`](crate::IntoConstantInt), floats through
+/// [`IntoConstantFloat`](crate::IntoConstantFloat).
+pub trait IntoConstantValue<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
+    /// Materialize `self` as an erased [`Constant`] owned by `module`.
+    fn into_constant(self, module: ModuleRef<'ctx, B>) -> Constant<'ctx, B>;
+}
+
+impl<'ctx, B: crate::module::ModuleBrand + 'ctx, C: IsConstant<'ctx, B>> IntoConstantValue<'ctx, B>
+    for C
+{
+    #[inline]
+    fn into_constant(self, _module: ModuleRef<'ctx, B>) -> Constant<'ctx, B> {
+        self.as_constant()
+    }
+}
+
+macro_rules! impl_into_constant_value_int {
+    ($rust_ty:ty, $marker:ty, $ty_method:ident) => {
+        impl<'ctx, B: crate::module::ModuleBrand + 'ctx> IntoConstantValue<'ctx, B> for $rust_ty {
+            #[inline]
+            fn into_constant(self, module: ModuleRef<'ctx, B>) -> Constant<'ctx, B> {
+                let ty = crate::derived_types::IntType::<$marker, B>::new(
+                    module.module().$ty_method().as_type().id(),
+                    module,
+                );
+                crate::int_width::IntoConstantInt::into_constant_int(self, ty)
+                    .unwrap_or_else(|_| {
+                        unreachable!("exact-width scalar literal is an infallible IR constant")
+                    })
+                    .as_constant()
+            }
+        }
+    };
+}
+
+// `bool` -> i1; each `iN`/`uN` maps to its exact IR width (no widening).
+impl_into_constant_value_int!(bool, bool, bool_type);
+impl_into_constant_value_int!(i8, i8, i8_type);
+impl_into_constant_value_int!(i16, i16, i16_type);
+impl_into_constant_value_int!(i32, i32, i32_type);
+impl_into_constant_value_int!(i64, i64, i64_type);
+impl_into_constant_value_int!(i128, i128, i128_type);
+impl_into_constant_value_int!(u8, i8, i8_type);
+impl_into_constant_value_int!(u16, i16, i16_type);
+impl_into_constant_value_int!(u32, i32, i32_type);
+impl_into_constant_value_int!(u64, i64, i64_type);
+impl_into_constant_value_int!(u128, i128, i128_type);
+
+macro_rules! impl_into_constant_value_float {
+    ($rust_ty:ty, $marker:ty, $ty_method:ident) => {
+        impl<'ctx, B: crate::module::ModuleBrand + 'ctx> IntoConstantValue<'ctx, B> for $rust_ty {
+            #[inline]
+            fn into_constant(self, module: ModuleRef<'ctx, B>) -> Constant<'ctx, B> {
+                let ty = crate::derived_types::FloatType::<$marker, B>::new(
+                    module.module().$ty_method().as_type().id(),
+                    module,
+                );
+                crate::float_kind::IntoConstantFloat::into_constant_float(self, ty)
+                    .unwrap_or_else(|_| {
+                        unreachable!("exact-width scalar literal is an infallible IR constant")
+                    })
+                    .as_constant()
+            }
+        }
+    };
+}
+
+// `f32`/`f64` map to their exact IR float kind (no widening).
+impl_into_constant_value_float!(f32, f32, f32_type);
+impl_into_constant_value_float!(f64, f64, f64_type);

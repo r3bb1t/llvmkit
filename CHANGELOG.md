@@ -7,6 +7,71 @@ tagged release is cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### Declaration surface — globals derive their type from the initializer
+
+`Module::add_global` / `add_global_constant` no longer take a separate
+`value_type`: the global's type is derived from its initializer, and the
+initializer is now any `IntoConstantValue` — an existing constant handle **or a
+Rust scalar literal**. The motivating call `add_global("marker", 0i32)` now
+compiles with no type handle and no `.as_type()`.
+
+#### Added
+
+- `IntoConstantValue<'ctx, B>` — a value usable as a constant initializer: a
+  blanket impl over every `IsConstant` handle, plus one impl per exact Rust
+  scalar width (`bool`, `i8`..=`i128`, `u8`..=`u128`, `f32`, `f64`). One literal
+  maps to exactly one IR width (no widening): `0i32` is an `i32`, `0i64` an
+  `i64`. The scalar impls reuse the existing `IntoConstantInt` /
+  `IntoConstantFloat` machinery.
+- `Module::add_global_uninitialized(name, value_type)` — the declaration-only
+  case (no initializer to derive from), using the module's default linkage.
+  Accepts `impl Into<Type>`, so a typed handle needn't be widened via
+  `.as_type()`; `add_external_global` gains the same ergonomic.
+- `IrError::DuplicateGlobalName` — installing a global variable, alias, or ifunc
+  whose name is already bound at module scope now reports this instead of the
+  misused `DuplicateFunctionName`. One variant covers all three global-scope
+  symbol kinds (they share the module's global namespace).
+- `IRBuilder::at_end(bb)` and `BasicBlock::builder()` — a builder positioned at a
+  block with the return marker inferred from the block, so
+  `IRBuilder::new_for::<R>(&m).position_at_end(bb)` collapses to
+  `IRBuilder::at_end(bb)` (no turbofish). `new_for` retained for building blocks
+  before positioning.
+- `Module::fn_type_no_params(ret, is_var_arg)` — a no-parameter function type
+  without the empty-`Vec::<Type>::new()` inference cliff of `fn_type` (with an
+  empty iterator the element type can't be inferred). It is exactly
+  `fn_type(ret, [], is_var_arg)` with the element type pinned.
+- `Module::add_function_dyn(name, signature, linkage)` — the honest *erased*
+  function-declaration path: it takes a runtime `FunctionType` and returns a
+  `FunctionValue<Dyn>`, carrying no static return marker and running no
+  return-marker check (`Dyn` matches every signature by definition). This is the
+  path for the `.ll` parser and other runtime-schema-driven tooling. For
+  statically-typed authoring, prefer the typed primary
+  `add_typed_function::<Ret, Params>(name, linkage)`: its turbofish *is* the
+  schema (no separately built `FunctionType`), and the parameters come back
+  already typed through `f.params()`. The erased
+  `add_function::<R>(name, fn_ty, linkage)` — erased signature, typed return —
+  stays; migrating its remaining call sites is deferred to the strict-cut cycle.
+
+#### Changed
+
+- **Breaking:** `add_global` / `add_global_constant` drop the `value_type`
+  parameter and take `initializer: impl IntoConstantValue`. Migrate
+  `add_global("g", ty.as_type(), init)` to `add_global("g", init)`. The
+  redundant creation-time `TypeMismatch` (initializer type vs declared type) is
+  gone — it is now unrepresentable, since the type *is* the initializer's.
+  `GlobalVariable::set_initializer` keeps its type check: a *replacement*
+  initializer must still match the global's frozen type. On the low-level
+  `global_builder(name, ty).initializer(c)` escape hatch — where `ty` and `c`
+  remain independent — a mismatch now surfaces at `verify()`
+  (`GlobalInitializerTypeMismatch`) rather than eagerly at `build()`.
+- Aggregate constant constructors `ArrayType::const_array` /
+  `StructType::const_struct` / `VectorType::const_vector` now accept
+  `impl IntoConstantValue` elements, so Rust literals work
+  (`const_array([1i32, 2, 3])`). The blanket `IntoConstantValue for IsConstant`
+  impl keeps existing constant-handle callers unchanged. They stay **fallible**
+  (`IrResult`): the element-vs-container type check is still needed because the
+  receivers are erased (`ArrayType<ElemDyn, ArrLenDyn>`, etc.).
+
 ### Unforgeable markers — the builder's typed-append family (internal)
 
 Internal refactor of *how* an int / float / pointer marker is attached to a

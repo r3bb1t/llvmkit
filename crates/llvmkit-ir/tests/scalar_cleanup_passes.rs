@@ -1,7 +1,7 @@
 use llvmkit_ir::{
     Align, Analyses, AtomicLoadConfig, AtomicOrdering, DcePass, IRBuilder, InstSimplifyPass,
-    IntPredicate, IntValue, IrError, Linkage, Module, NoFolder, PointerValue, SyncScope, Type,
-    Value, run_function_pass,
+    IntPredicate, IntValue, IrError, Linkage, Module, NoFolder, PointerValue, SyncScope, Value,
+    run_function_pass,
 };
 
 /// Port of `llvm/lib/Transforms/Scalar/InstSimplifyPass.cpp::runImpl` and
@@ -11,7 +11,7 @@ use llvmkit_ir::{
 fn instsimplify_pass_folds_constant_add() -> Result<(), IrError> {
     Module::with_new("instsimplify-pass", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -57,7 +57,7 @@ fn instsimplify_pass_folds_constant_add() -> Result<(), IrError> {
 fn instsimplify_user_cascade_folds_dependent_add_chain() -> Result<(), IrError> {
     Module::with_new("instsimplify-user-cascade", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -101,7 +101,7 @@ fn instsimplify_user_cascade_folds_dependent_add_chain() -> Result<(), IrError> 
 fn dce_pass_erases_dead_integer_chain_and_preserves_store() -> Result<(), IrError> {
     Module::with_new("dce-pass", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(m.void_type().as_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -139,7 +139,7 @@ fn dce_pass_erases_dead_integer_chain_and_preserves_store() -> Result<(), IrErro
 fn instsimplify_and_dce_pipeline_folds_and_erases() -> Result<(), IrError> {
     Module::with_new("scalar-cleanup", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -181,11 +181,10 @@ fn instsimplify_and_dce_pipeline_folds_and_erases() -> Result<(), IrError> {
 fn instsimplify_pass_keeps_load_from_interposable_constant_global() -> Result<(), IrError> {
     Module::with_new("instsimplify-weak-global", |m| {
         let i32_ty = m.i32_type();
-        let weak = m.add_global_constant("weak_g", i32_ty.as_type(), i32_ty.const_int(42_i32))?;
+        let weak = m.add_global_constant("weak_g", i32_ty.const_int(42_i32))?;
         weak.set_linkage(&m, Linkage::WeakAny);
-        let strong =
-            m.add_global_constant("strong_g", i32_ty.as_type(), i32_ty.const_int(7_i32))?;
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let strong = m.add_global_constant("strong_g", i32_ty.const_int(7_i32))?;
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -267,7 +266,7 @@ fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let void_ty = m.void_type().as_type();
-        let sink_ty = m.fn_type(void_ty, Vec::<Type>::new(), false);
+        let sink_ty = m.fn_type_no_params(void_ty, false);
         let sink = m.add_function::<(), _>("sink", sink_ty, Linkage::External)?;
         let fn_ty = m.fn_type(void_ty, [ptr_ty.as_type()], false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
@@ -305,8 +304,8 @@ fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
 fn instsimplify_terminates_on_ordered_atomic_load_from_constant() -> Result<(), IrError> {
     Module::with_new("is-atomic", |m| {
         let i32_ty = m.i32_type();
-        let g = m.add_global_constant("g", i32_ty.as_type(), i32_ty.const_int(7_i32))?;
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let g = m.add_global_constant("g", i32_ty.const_int(7_i32))?;
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);

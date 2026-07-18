@@ -2,7 +2,7 @@
 //! (mirrors LLVM's `InlineAsm`) and the `asm "...", "..."` printer path in
 //! the asm-writer's `CallInst` arm.
 
-use llvmkit_ir::{AsmDialect, IRBuilder, IrError, Linkage, Module, Type};
+use llvmkit_ir::{AsmDialect, IRBuilder, IrError, Linkage, Module};
 
 /// `%r = call i64 asm sideeffect "add $1, $0", "=r,r,r"(i64 %a, i64 %b)`.
 /// Mirrors `AsmWriter.cpp::writeAsOperandInternal(Value*)` inline-asm arm.
@@ -111,12 +111,12 @@ fn inline_asm_multiline_escapes_newline() -> Result<(), IrError> {
     Module::with_new("inline_asm_multiline", |m| {
         let void_ty = m.void_type();
 
-        let host_ty = m.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
+        let host_ty = m.fn_type_no_params(void_ty.as_type(), false);
         let host = m.add_function::<(), _>("fence_via_asm", host_ty, Linkage::External)?;
         let entry = host.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
 
-        let asm_fn_ty = m.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
+        let asm_fn_ty = m.fn_type_no_params(void_ty.as_type(), false);
         // Two instructions separated by a newline in the template.
         let asm = m.inline_asm(
             asm_fn_ty,
@@ -182,11 +182,11 @@ fn indirect_call_rejects_wrong_return_marker() -> Result<(), IrError> {
 fn inline_asm_call_rejects_label_constraint() -> Result<(), IrError> {
     Module::with_new("asm_label_constraint", |m| {
         let void_ty = m.void_type();
-        let host_ty = m.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
+        let host_ty = m.fn_type_no_params(void_ty.as_type(), false);
         let host = m.add_function::<(), _>("host", host_ty, Linkage::External)?;
         let entry = host.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        let asm_ty = m.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
+        let asm_ty = m.fn_type_no_params(void_ty.as_type(), false);
         let asm = m.inline_asm(asm_ty, "", "!i", llvmkit_ir::InlineAsmOptions::new());
         b.build_inline_asm_call::<(), _, _, _>(asm, Vec::<llvmkit_ir::Value>::new(), "")?;
         b.build_ret_void();

@@ -30,7 +30,7 @@ fn simple_global_i32_zero() {
     Module::with_new("m", |m| {
         let i32_ty = m.i32_type();
         let zero = i32_ty.const_int(0i32);
-        m.add_global("g1", i32_ty.as_type(), zero).expect("add");
+        m.add_global("g1", zero).expect("add");
         assert!(
             module_text(&m).contains("@g1 = global i32 0\n"),
             "got:\n{}",
@@ -46,8 +46,7 @@ fn simple_global_constant_i32_zero() {
     Module::with_new("m", |m| {
         let i32_ty = m.i32_type();
         let zero = i32_ty.const_int(0i32);
-        m.add_global_constant("g2", i32_ty.as_type(), zero)
-            .expect("add");
+        m.add_global_constant("g2", zero).expect("add");
         assert!(
             module_text(&m).contains("@g2 = constant i32 0\n"),
             "got:\n{}",
@@ -579,7 +578,7 @@ fn const_struct_initializer() {
                 poison_i64.into(),
             ])
             .expect("struct");
-        m.add_global_constant("c", st.as_type(), s).expect("add");
+        m.add_global_constant("c", s).expect("add");
         let text = module_text(&m);
         assert!(
             text.contains("@c = constant { i32, i8, i64 } { i32 -1, i8 undef, i64 poison }\n"),
@@ -600,8 +599,7 @@ fn const_array_i32_initializer() {
         let a = arr
             .const_array::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([zero, one, zero])
             .expect("array");
-        m.add_global_constant("constant.array.i32", arr.as_type(), a)
-            .expect("add");
+        m.add_global_constant("constant.array.i32", a).expect("add");
         let text = module_text(&m);
         assert!(
             text.contains("@constant.array.i32 = constant [3 x i32] [i32 0, i32 1, i32 0]\n"),
@@ -623,8 +621,7 @@ fn const_array_i8_prints_as_cstring() {
         let a = arr
             .const_array::<llvmkit_ir::ConstantIntValue<'_, i8>, _>([zero, one, zero])
             .expect("array");
-        m.add_global_constant("constant.array.i8", arr.as_type(), a)
-            .expect("add");
+        m.add_global_constant("constant.array.i8", a).expect("add");
         let text = module_text(&m);
         assert!(
             text.contains("@constant.array.i8 = constant [3 x i8] c\"\\00\\01\\00\"\n"),
@@ -675,7 +672,7 @@ fn const_vector_initializer() {
         let v = vec_ty
             .const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([zero, one, zero])
             .expect("vector");
-        m.add_global_constant("constant.vector.i32", vec_ty.as_type(), v)
+        m.add_global_constant("constant.vector.i32", v)
             .expect("add");
         let text = module_text(&m);
         assert!(
@@ -692,11 +689,10 @@ fn const_vector_initializer() {
 fn function_pointer_global_initializer_verifies() -> Result<(), IrError> {
     Module::with_new("fnptr_init", |m| {
         let void_ty = m.void_type();
-        let ptr_ty = m.ptr_type(0);
         let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let callee = m.add_function::<(), _>("callee", callee_ty, Linkage::External)?;
         let init = callee.as_global_constant_ptr();
-        m.add_global_constant("slot", ptr_ty.as_type(), init)?;
+        m.add_global_constant("slot", init)?;
         m.verify_borrowed()?;
         let text = format!("{m}");
         assert!(
@@ -720,7 +716,7 @@ fn function_pointer_aggregate_initializer_prints_ptr_base() -> Result<(), IrErro
         let arr_ty = m.array_type(ptr_ty.as_type(), 1);
         let elem = callee.as_aggregate_ptr(0);
         let init = arr_ty.const_array([elem])?;
-        m.add_global_constant("table", arr_ty.as_type(), init)?;
+        m.add_global_constant("table", init)?;
         let text = format!("{m}");
         assert!(
             text.contains(
@@ -738,11 +734,10 @@ fn function_pointer_aggregate_initializer_prints_ptr_base() -> Result<(), IrErro
 fn global_pointer_global_initializer_verifies() -> Result<(), IrError> {
     Module::with_new("gptr_init", |m| {
         let i8_ty = m.i8_type();
-        let ptr_ty = m.ptr_type(0);
         let zero = i8_ty.const_int(0i8);
-        let target = m.add_global_constant("target", i8_ty.as_type(), zero)?;
+        let target = m.add_global_constant("target", zero)?;
         let init = target.as_global_constant_ptr();
-        m.add_global_constant("slot", ptr_ty.as_type(), init)?;
+        m.add_global_constant("slot", init)?;
         m.verify_borrowed()?;
         let text = format!("{m}");
         assert!(
@@ -760,7 +755,6 @@ fn global_pointer_global_initializer_verifies() -> Result<(), IrError> {
 fn ptr_offset_preserves_global_address_space() -> Result<(), IrError> {
     Module::with_new("gptr_addrspace", |m| {
         let i8_ty = m.i8_type();
-        let ptr1_ty = m.ptr_type(1);
         let zero = i8_ty.const_int(0i8);
         let target = m
             .global_builder("target", i8_ty.as_type())
@@ -768,7 +762,7 @@ fn ptr_offset_preserves_global_address_space() -> Result<(), IrError> {
             .initializer(zero)
             .build()?;
         let init = target.ptr_offset(4);
-        m.add_global_constant("slot", ptr1_ty.as_type(), init)?;
+        m.add_global_constant("slot", init)?;
         m.verify_borrowed()?;
         let text = format!("{m}");
         assert!(
@@ -792,19 +786,13 @@ fn ptr_offset_preserves_global_address_space() -> Result<(), IrError> {
 fn symbol_delta_constexpr_initializer() {
     Module::with_new("m", |m| {
         let i8_ty = m.i8_type();
-        let i64_ty = m.i64_type();
         let zero8 = i8_ty.const_int(0i8);
         // Two real defined symbols: a "real" target and an "anchor".
-        let real = m
-            .add_global_constant("real", i8_ty.as_type(), zero8)
-            .expect("real");
-        let anchor = m
-            .add_global_constant("anchor", i8_ty.as_type(), zero8)
-            .expect("anchor");
+        let real = m.add_global_constant("real", zero8).expect("real");
+        let anchor = m.add_global_constant("anchor", zero8).expect("anchor");
         // @delta = constant i64 sub(ptrtoint(@real), ptrtoint(@anchor)).
         let delta = real.try_delta_from(anchor).expect("delta");
-        m.add_global_constant("delta", i64_ty.as_type(), delta)
-            .expect("delta");
+        m.add_global_constant("delta", delta).expect("delta");
         let text = module_text(&m);
         assert!(
             text.contains(
@@ -823,18 +811,12 @@ fn symbol_delta_constexpr_initializer() {
 fn symbol_delta_plus_constexpr_initializer() {
     Module::with_new("m", |m| {
         let i8_ty = m.i8_type();
-        let i64_ty = m.i64_type();
         let zero8 = i8_ty.const_int(0i8);
-        let real = m
-            .add_global_constant("real", i8_ty.as_type(), zero8)
-            .expect("real");
-        let anchor = m
-            .add_global_constant("anchor", i8_ty.as_type(), zero8)
-            .expect("anchor");
+        let real = m.add_global_constant("real", zero8).expect("real");
+        let anchor = m.add_global_constant("anchor", zero8).expect("anchor");
         // @enc = constant i64 (sub(ptrtoint(@real), ptrtoint(@anchor)) + 12345).
         let enc = real.try_delta_from_plus(anchor, 12345).expect("delta plus");
-        m.add_global_constant("enc", i64_ty.as_type(), enc)
-            .expect("enc");
+        m.add_global_constant("enc", enc).expect("enc");
         let text = module_text(&m);
         assert!(
             text.contains(
@@ -846,8 +828,7 @@ fn symbol_delta_plus_constexpr_initializer() {
 
         // A negative addend prints with a leading minus.
         let enc2 = real.try_delta_from_plus(anchor, -7).expect("delta plus");
-        m.add_global_constant("enc2", i64_ty.as_type(), enc2)
-            .expect("enc2");
+        m.add_global_constant("enc2", enc2).expect("enc2");
         let text2 = module_text(&m);
         assert!(text2.contains(", i64 -7)\n"), "got:\n{text2}");
     })
@@ -859,16 +840,25 @@ fn symbol_delta_plus_constexpr_initializer() {
 
 /// Mirrors `Verifier::visitGlobalVariable` -- the
 /// "Global variable initializer type does not match global variable
-/// type!" check. Construction-time checks fire before the verifier;
-/// this test exercises the construction-time error path.
+/// type!" check. `add_global` now derives the global's type from its
+/// initializer, so a creation-time mismatch is unrepresentable; the
+/// surviving construction-time check lives on
+/// [`GlobalVariable::set_initializer`], which a *replacement* initializer
+/// must still match against the global's frozen type. This test exercises
+/// that path.
 #[test]
-fn initializer_type_mismatch_rejected_at_construction() {
+fn set_initializer_type_mismatch_rejected() {
     Module::with_new("m", |m| {
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
+        // A global frozen at `i32`...
+        let g = m
+            .add_global_uninitialized("g", i32_ty)
+            .expect("declare i32 global");
+        // ...rejects an `i64` replacement initializer.
         let zero64 = i64_ty.const_int(0i64);
-        let err = m
-            .add_global("g", i32_ty.as_type(), zero64)
+        let err = g
+            .set_initializer(&m, zero64)
             .expect_err("expected mismatch");
         assert!(matches!(err, IrError::TypeMismatch { .. }), "got: {err:?}");
     })
@@ -965,7 +955,7 @@ fn module_named_global_lookup_round_trip() {
     Module::with_new("m", |m| {
         let i32_ty = m.i32_type();
         let zero = i32_ty.const_int(0i32);
-        let g = m.add_global("foo", i32_ty.as_type(), zero).expect("add");
+        let g = m.add_global("foo", zero).expect("add");
         let looked_up = m.get_global("foo").expect("found");
         assert_eq!(g, looked_up);
         assert!(m.get_global("missing").is_none());
@@ -980,9 +970,9 @@ fn module_iter_globals_preserves_order() {
     Module::with_new("m", |m| {
         let i32_ty = m.i32_type();
         let zero = i32_ty.const_int(0i32);
-        m.add_global("a", i32_ty.as_type(), zero).expect("a");
-        m.add_global("b", i32_ty.as_type(), zero).expect("b");
-        m.add_global("c", i32_ty.as_type(), zero).expect("c");
+        m.add_global("a", zero).expect("a");
+        m.add_global("b", zero).expect("b");
+        m.add_global("c", zero).expect("c");
         let names: Vec<&str> = m.iter_globals().map(|g| g.name()).collect();
         assert_eq!(names, vec!["a", "b", "c"]);
     })
@@ -1012,9 +1002,7 @@ fn alias_ifunc_partition_clear_apis() {
     Module::with_new("m", |m| {
         let i32_ty = m.i32_type();
         let zero = i32_ty.const_int(0i32);
-        let target = m
-            .add_global("target", i32_ty.as_type(), zero)
-            .expect("target");
+        let target = m.add_global("target", zero).expect("target");
         let alias = m
             .alias_builder("alias", i32_ty.as_type(), target)
             .partition("part")
@@ -1024,9 +1012,7 @@ fn alias_ifunc_partition_clear_apis() {
         alias.clear_partition(&m);
         assert!(alias.partition().is_none());
 
-        let resolver = m
-            .add_global("resolver", i32_ty.as_type(), zero)
-            .expect("resolver");
+        let resolver = m.add_global("resolver", zero).expect("resolver");
         let ifunc = m
             .ifunc_builder("ifunc", i32_ty.as_type(), resolver)
             .partition("part")

@@ -5339,7 +5339,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         } else {
             let f = self
                 .module
-                .add_function::<llvmkit_ir::Dyn, _>(&name, fn_ty, linkage)
+                .add_function_dyn(&name, fn_ty, linkage)
                 .map_err(|e| ParseError::Expected {
                     expected: format!("valid function declaration: {e}"),
                     loc: DiagLoc::span(decl_loc),
@@ -5550,7 +5550,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         } else {
             let f = self
                 .module
-                .add_function::<llvmkit_ir::Dyn, _>(&name, fn_ty, linkage)
+                .add_function_dyn(&name, fn_ty, linkage)
                 .map_err(|e| ParseError::Expected {
                     expected: format!("valid function definition: {e}"),
                     loc: DiagLoc::span(decl_loc),
@@ -7839,11 +7839,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     IntrinsicNameResolution::NonIntrinsic => {
                         let f = self
                             .module
-                            .add_function::<llvmkit_ir::Dyn, _>(
-                                &name,
-                                parsed_fn_ty,
-                                Linkage::External,
-                            )
+                            .add_function_dyn(&name, parsed_fn_ty, Linkage::External)
                             .map_err(|e| ParseError::Expected {
                                 expected: format!("forward function declaration: {e}"),
                                 loc: DiagLoc::span(loc),

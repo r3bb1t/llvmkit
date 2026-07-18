@@ -12,7 +12,7 @@
 //! fixture (`tests/compile_fail/array_insert_wrong_element`); here we only
 //! exercise the well-typed happy path.
 
-use llvmkit_ir::{ArrLen, ArrayValue, IRBuilder, IntValue, Linkage, Module, Type};
+use llvmkit_ir::{ArrLen, ArrayValue, IRBuilder, IntValue, Linkage, Module};
 
 /// `build_arr_extract` at index 2 on a `[4 x i32]` typed `ArrayValue` returns
 /// the element as its statically typed scalar handle — `IntValue<'_, i32>`,
@@ -119,8 +119,7 @@ fn typed_array_type_allocas() {
         let arr_ty = m.array_type_n::<i32, 4>();
         let void_ty = m.void_type();
 
-        let no_params: [Type<'_>; 0] = [];
-        let fn_ty = m.fn_type(void_ty.as_type(), no_params, false);
+        let fn_ty = m.fn_type_no_params(void_ty.as_type(), false);
         let f = m
             .add_function::<(), _>("g", fn_ty, Linkage::External)
             .expect("g");

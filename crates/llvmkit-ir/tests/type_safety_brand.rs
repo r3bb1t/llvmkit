@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use llvmkit_ir::{
     AttrIndex, AttrKind, Attribute, AttributeStorage, FunctionValue, IRBuilder, IntValue, IrResult,
-    Linkage, Module, ModuleBrand, Type, Value,
+    Linkage, Module, ModuleBrand, Value,
 };
 
 fn exercise_tables<'ctx>(module: Module<'ctx>) -> IrResult<()> {
@@ -52,7 +52,7 @@ fn format_generic_function<'ctx, B: ModuleBrand + 'ctx>(
 fn generic_function_display_preserves_brand() -> IrResult<()> {
     Module::with_new::<_, _, _>("function-display-brand", |module| {
         let void_ty = module.void_type();
-        let fn_ty = module.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
+        let fn_ty = module.fn_type_no_params(void_ty.as_type(), false);
         let function = module.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let entry = function.append_basic_block(&module, "entry");
         IRBuilder::new_for::<()>(&module)

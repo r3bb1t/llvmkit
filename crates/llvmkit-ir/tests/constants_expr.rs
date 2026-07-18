@@ -35,7 +35,7 @@ fn constant_expr_bitcast_round_trips() -> Result<(), IrError> {
             [],
             ConstantExprFlags::none(),
         )?;
-        m.add_global("p", ppc_ty.as_type(), bitcast)?;
+        m.add_global("p", bitcast)?;
         let text = module_text(&m);
         assert_line(
             &text,
@@ -54,7 +54,7 @@ fn constant_expr_ptrtoaddr_round_trips() -> Result<(), IrError> {
     Module::with_new("constexpr_ptrtoaddr", |m| {
         let i32_ty = m.i32_type();
         let zero = i32_ty.const_int(0i32);
-        let g = m.add_global("g", i32_ty.as_type(), zero)?;
+        let g = m.add_global("g", zero)?;
         let expr = m.constant_expr(
             m.i64_type().as_type(),
             ConstantExprOpcode::PtrToAddr,
@@ -63,7 +63,7 @@ fn constant_expr_ptrtoaddr_round_trips() -> Result<(), IrError> {
             [],
             ConstantExprFlags::none(),
         )?;
-        m.add_global("addr", m.i64_type().as_type(), expr)?;
+        m.add_global("addr", expr)?;
 
         let text = module_text(&m);
         assert_line(&text, "@addr = global i64 ptrtoaddr (ptr @g to i64)");
@@ -85,7 +85,7 @@ fn blockaddress_constant_round_trips() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let terminator = b.build_ret_void().1;
         assert!(terminator.is_terminator());
-        m.add_global("addr", m.ptr_type(0).as_type(), addr)?;
+        m.add_global("addr", addr)?;
 
         let text = module_text(&m);
         assert_line(&text, "@addr = global ptr blockaddress(@f, %entry)");
@@ -111,7 +111,7 @@ fn blockaddress_constant_uses_function_address_space() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let terminator = b.build_ret_void().1;
         assert!(terminator.is_terminator());
-        m.add_global("addr", m.ptr_type(2).as_type(), addr)?;
+        m.add_global("addr", addr)?;
 
         let text = module_text(&m);
         assert_line(
@@ -202,7 +202,7 @@ fn bitcast_scalar_pointer_and_one_lane_pointer_vector_round_trip() -> Result<(),
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let vec_ptr_ty = m.vector_type(ptr_ty.as_type(), 1, false);
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
         let scalar = g.as_global_constant_ptr();
         let to_vec = m.constant_expr(
             vec_ptr_ty.as_type(),
@@ -221,8 +221,8 @@ fn bitcast_scalar_pointer_and_one_lane_pointer_vector_round_trip() -> Result<(),
             [],
             ConstantExprFlags::none(),
         )?;
-        m.add_global("to_vec", vec_ptr_ty.as_type(), to_vec)?;
-        m.add_global("to_scalar", ptr_ty.as_type(), to_scalar)?;
+        m.add_global("to_vec", to_vec)?;
+        m.add_global("to_scalar", to_scalar)?;
         let text = module_text(&m);
         assert_line(
             &text,
@@ -244,7 +244,7 @@ fn invalid_bitcast_constant_expr_is_rejected() -> Result<(), IrError> {
     Module::with_new("constexpr_invalid_bitcast", |m| {
         let i32_ty = m.i32_type();
         let zero = i32_ty.const_int(0i32);
-        let g = m.add_global("g", i32_ty.as_type(), zero)?;
+        let g = m.add_global("g", zero)?;
         let ptr = g.as_global_constant_ptr().as_value();
 
         let err = m
@@ -285,7 +285,7 @@ fn invalid_gep_constant_expr_indices_are_rejected() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let struct_ty = m.struct_type([i32_ty.as_type()], false);
         let init = struct_ty.const_struct([i32_ty.const_zero().as_constant()])?;
-        let g = m.add_global("g", struct_ty.as_type(), init)?;
+        let g = m.add_global("g", init)?;
         let zero = i32_ty.const_zero();
         let one = i32_ty.const_int(1i32);
 
@@ -426,7 +426,7 @@ fn shufflevector_constant_expr_uses_mask_operand_when_folding() -> Result<(), Ir
             [],
             ConstantExprFlags::none(),
         )?;
-        m.add_global("shuf", result_ty.as_type(), folded)?;
+        m.add_global("shuf", folded)?;
         let text = module_text(&m);
         assert_line(&text, "@shuf = global <3 x i32> <i32 1, i32 4, i32 2>");
         Ok(())
@@ -641,7 +641,7 @@ fn vector_gep_scalar_sequential_indices_are_splatted_before_interning() -> Resul
             [],
             llvmkit_ir::ConstantExprOptions::new().source_ty(source_ty.as_type()),
         )?;
-        m.add_global("slot", result_ty.as_type(), gep)?;
+        m.add_global("slot", gep)?;
 
         let text = format!("{m}");
         assert!(
@@ -702,7 +702,7 @@ fn vector_gep_struct_index_width_mismatch_is_rejected() -> Result<(), IrError> {
 fn constant_expr_gep_inrange_words_are_truncated_before_interning() -> Result<(), IrError> {
     Module::with_new("constexpr_inrange_canonical_words", |m| {
         let i8_ty = m.i8_type();
-        let g = m.add_global("g", i8_ty.as_type(), i8_ty.const_zero())?;
+        let g = m.add_global("g", i8_ty.const_zero())?;
         let ptr = g.as_global_constant_ptr();
         let offset = m.i64_type().const_int(1i64);
         let canonical_range = ConstantExprInRange::new(Box::from([0]), Box::from([1]), 64);
@@ -749,7 +749,7 @@ fn constant_expr_gep_inrange_words_are_truncated_before_interning() -> Result<()
 fn constant_expr_gep_inrange_width_must_match_base_index_width() -> Result<(), IrError> {
     Module::with_new("constexpr_inrange_width", |m| {
         let i8_ty = m.i8_type();
-        let g = m.add_global("g", i8_ty.as_type(), i8_ty.const_zero())?;
+        let g = m.add_global("g", i8_ty.const_zero())?;
         let offset = m.i64_type().const_int(1i64);
         let wrong_width_range = ConstantExprInRange::new(Box::from([0]), Box::from([1]), 32);
 
@@ -829,13 +829,13 @@ fn invalid_gep_constant_expr_address_space_mismatch_is_rejected() -> Result<(), 
 fn ptrauth_constructor_requires_five_operand_shape() -> Result<(), IrError> {
     Module::with_new("ptrauth_constructor", |m| {
         let i8_ty = m.i8_type();
-        let g = m.add_global("g", i8_ty.as_type(), i8_ty.const_zero())?;
+        let g = m.add_global("g", i8_ty.const_zero())?;
         let ptr = g.as_global_constant_ptr();
         let key = m.i32_type().const_zero();
         let disc = m.i64_type().const_int(1i64);
         let addr_disc = m.ptr_type(0).const_null();
         let signed = m.ptr_auth(ptr, key, disc, addr_disc, ptr)?;
-        m.add_global("signed", m.ptr_type(0).as_type(), signed)?;
+        m.add_global("signed", signed)?;
 
         let text = module_text(&m);
         assert_line(
@@ -868,7 +868,7 @@ fn ptrauth_constructor_requires_five_operand_shape() -> Result<(), IrError> {
         );
 
         let defaulted = m.ptr_auth(ptr, key, m.i64_type().const_zero(), addr_disc, addr_disc)?;
-        m.add_global("defaulted", m.ptr_type(0).as_type(), defaulted)?;
+        m.add_global("defaulted", defaulted)?;
         let text = module_text(&m);
         assert_line(&text, "@defaulted = global ptr ptrauth (ptr @g, i32 0)");
         Ok(())

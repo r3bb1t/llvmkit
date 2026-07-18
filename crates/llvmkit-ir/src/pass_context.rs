@@ -29,10 +29,7 @@
 //! impl AddMarkerGlobal {
 //!     fn run(&mut self, cx: ModCx<Self>) -> IrResult<ModReport> {
 //!         let rewrite = cx.mutate(); // consumes `cx`; no all-preserved report left
-//!         let i32_ty = rewrite.module_mut().i32_type();
-//!         rewrite
-//!             .module_mut()
-//!             .add_global("marker", i32_ty.as_type(), i32_ty.const_zero())?;
+//!         rewrite.module_mut().add_global("marker", 0i32)?; // literal initializer
 //!         Ok(rewrite.done()) // RewriteModule floor: nothing preserved
 //!     }
 //! }
@@ -2679,7 +2676,7 @@ mod tests {
     use crate::dominator_tree::DominatorTreeAnalysis;
     use crate::instruction::InstructionView;
     use crate::pass_access::{Inspect, PatchBody, ReshapeCfg, RewriteModule};
-    use crate::{IRBuilder, IntValue, IrError, Linkage, Module, NoFolder, Type};
+    use crate::{IRBuilder, IntValue, IrError, Linkage, Module, NoFolder};
 
     /// The `Requires` list shared by these tests: a single CFG-shaped analysis
     /// so both the infallible accessor and the preservation floors have a
@@ -2695,7 +2692,7 @@ mod tests {
     fn inspect_cx_reads_analysis_and_reports_all() -> Result<(), IrError> {
         Module::with_new("inspect-cx", |m| {
             let i32_ty = m.i32_type();
-            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -2897,7 +2894,7 @@ mod tests {
     fn reshape_cfg_floor_is_none() -> Result<(), IrError> {
         Module::with_new("reshape-cx", |m| {
             let i32_ty = m.i32_type();
-            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -2939,7 +2936,7 @@ mod tests {
     fn reshape_cfg_noop_preserves_everything() -> Result<(), IrError> {
         Module::with_new("reshape-noop", |m| {
             let i32_ty = m.i32_type();
-            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -2975,7 +2972,7 @@ mod tests {
         use crate::CfgUpdate;
         Module::with_new("reshape-cfgupdate", |m| {
             let i32_ty = m.i32_type();
-            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
             let next = f.append_basic_block(&m, "next");
@@ -3042,7 +3039,7 @@ mod tests {
     fn analysis_repaired_reflects_the_edit() -> Result<(), IrError> {
         Module::with_new("reshape-repaired", |m| {
             let i32_ty = m.i32_type();
-            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
             let next = f.append_basic_block(&m, "next");
@@ -3101,7 +3098,7 @@ mod tests {
     fn inspect_modcx_reads_analysis_and_reports_all() -> Result<(), IrError> {
         Module::with_new("inspect-modcx", |m| {
             let i32_ty = m.i32_type();
-            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -3143,7 +3140,7 @@ mod tests {
     fn rewrite_module_mutate_reports_none_floor() -> Result<(), IrError> {
         Module::with_new("rewrite-modcx", |m| {
             let i32_ty = m.i32_type();
-            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -3161,8 +3158,7 @@ mod tests {
             let r = cx.mutate();
 
             // Reach the module's own `add_global` directly through the token.
-            r.module_mut()
-                .add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+            r.module_mut().add_global("g", i32_ty.const_zero())?;
 
             // The mutation is visible on the module.
             assert_eq!(module.iter_globals().len(), 1);

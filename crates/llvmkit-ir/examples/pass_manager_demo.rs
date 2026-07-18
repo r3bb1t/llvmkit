@@ -98,19 +98,17 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
 
     let (cond, x, y) = f.params();
 
-    IRBuilder::new_for::<i32>(m)
-        .position_at_end(entry)
-        .build_cond_br(cond, then_label, else_label)?;
+    IRBuilder::at_end(entry).build_cond_br(cond, then_label, else_label)?;
 
-    let bt = IRBuilder::new_for::<i32>(m).position_at_end(then_bb);
+    let bt = IRBuilder::at_end(then_bb);
     let add_xy = bt.build_int_add(x, y, "add_xy")?;
     bt.build_br_with_args(merge_label, &[add_xy.as_value()])?;
 
-    let be = IRBuilder::new_for::<i32>(m).position_at_end(else_bb);
+    let be = IRBuilder::at_end(else_bb);
     let sub_xy = be.build_int_sub(x, y, "sub_xy")?;
     be.build_br_with_args(merge_label, &[sub_xy.as_value()])?;
 
-    let bm = IRBuilder::new_for::<i32>(m).position_at_end(merge);
+    let bm = IRBuilder::at_end(merge);
     // `params[0]` is `merge`'s head-phi, seeded with `[ %add_xy, %then ]` and
     // `[ %sub_xy, %else ]` by the two block-argument branches above.
     let result: IntValue<i32> = params[0].try_into()?;

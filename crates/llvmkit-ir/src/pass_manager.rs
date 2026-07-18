@@ -27,7 +27,7 @@
 //! ```
 //! use llvmkit_ir::{
 //!     Analyses, Brand, DcePass, DynReadOnlyFunctionPipeline, FnCx, FnReport, FunctionPass,
-//!     IRBuilder, Inspect, InstSimplifyPass, IrError, IrResult, Linkage, Module, Type, Unverified,
+//!     IRBuilder, Inspect, InstSimplifyPass, IrError, IrResult, Linkage, Module, Unverified,
 //!     Verified, function_pipeline, run_function_pass,
 //! };
 //!
@@ -51,10 +51,10 @@
 //!     Module::with_new("pass-doc", |m| {
 //!         // Build `i32 @f()` returning a constant.
 //!         let i32_ty = m.i32_type();
-//!         let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+//!         let fn_ty = m.fn_type_no_params(i32_ty, false);
 //!         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
 //!         let entry = f.append_basic_block(&m, "entry");
-//!         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+//!         let b = IRBuilder::at_end(entry);
 //!         b.build_ret(i32_ty.const_int(1_u32))?;
 //!
 //!         let verified = m.verify()?;

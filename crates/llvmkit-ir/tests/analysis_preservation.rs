@@ -48,7 +48,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for SplitEntryPass {
 fn reshape_pass_preserves_and_repairs_dominator_tree() -> Result<(), IrError> {
     Module::with_new("witnessed-preservation", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let next = f.append_basic_block(&m, "next");

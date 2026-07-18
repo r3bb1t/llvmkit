@@ -719,6 +719,16 @@ pub enum IrError {
         name: String,
     },
 
+    /// Installing a global-scope symbol (global variable, alias, or
+    /// ifunc) saw a name already bound at module scope. Global variables,
+    /// aliases, and ifuncs share the module's global-symbol namespace, so
+    /// this one variant covers all three.
+    #[error("a global named {name:?} already exists in this module")]
+    DuplicateGlobalName {
+        /// The global-scope name that is already bound at module scope.
+        name: String,
+    },
+
     /// A reserved `llvm.*` name is absent from the generated LLVM intrinsic table.
     #[error("unknown intrinsic `{name}`")]
     UnknownIntrinsic {

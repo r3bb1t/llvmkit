@@ -24,7 +24,7 @@ use std::rc::Rc;
 
 use llvmkit_ir::{
     Analyses, FnCx, FnReport, FunctionPass, IRBuilder, Inspect, IrError, IrResult, Linkage, ModCx,
-    ModReport, Module, ModuleBrand, ModulePass, RewriteModule, Type, Unverified, Verified,
+    ModReport, Module, ModuleBrand, ModulePass, RewriteModule, Unverified, Verified,
     run_function_pass, run_module_pass,
 };
 
@@ -60,7 +60,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B> for CountFunctionsPass {
 fn inspect_module_pass_stays_verified_and_runs() -> Result<(), IrError> {
     Module::with_new("inspect-module-pass", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -96,9 +96,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B> for AddGlobalPass {
     fn run(&mut self, cx: ModCx<'_, '_, '_, 'ctx, B, RewriteModule, ()>) -> IrResult<ModReport> {
         let rewrite = cx.mutate();
         let i32_ty = rewrite.module_mut().i32_type();
-        rewrite
-            .module_mut()
-            .add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        rewrite.module_mut().add_global("g", i32_ty.const_zero())?;
         self.ran.set(true);
         Ok(rewrite.done())
     }
@@ -113,7 +111,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B> for AddGlobalPass {
 fn rewrite_module_pass_downgrades_and_mutates() -> Result<(), IrError> {
     Module::with_new("rewrite-module-pass", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -177,7 +175,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InspectFnPass {
 fn inspect_function_pass_stays_verified_and_runs() -> Result<(), IrError> {
     Module::with_new("inspect-function-pass", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);

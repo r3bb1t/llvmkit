@@ -83,7 +83,7 @@ impl<'ctx> IRBuilderFolder<'ctx> for ReturningFolder<'ctx> {
 fn constant_folder_folds_fneg_constant_without_instruction() -> Result<(), IrError> {
     Module::with_new("folder-fneg", |m| {
         let f32_ty = m.f32_type();
-        let fn_ty = m.fn_type(f32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(f32_ty, false);
         let f = m.add_function::<f32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
@@ -103,7 +103,7 @@ fn constant_folder_folds_fneg_constant_without_instruction() -> Result<(), IrErr
 fn constant_folder_folds_udiv_by_zero_to_poison_without_instruction() -> Result<(), IrError> {
     Module::with_new("folder-udiv", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -128,7 +128,7 @@ fn constant_folder_folds_udiv_by_zero_to_poison_without_instruction() -> Result<
 fn constant_folder_exact_udiv_inexact_constants_match_upstream_plain_fold() -> Result<(), IrError> {
     Module::with_new("folder-exact-udiv", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -273,7 +273,7 @@ fn constant_folder_vector_gep_nonzero_index_builds_vector_expr() -> Result<(), I
         let i64_ty = m.i64_type();
         let ptr_vec_ty = m.vector_type(m.ptr_type(0).as_type(), 2, false);
         let index_ty = m.vector_type(i64_ty.as_type(), 2, false);
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
         let index = index_ty.const_vector::<ConstantIntValue<'_, i64>, _>([
             i64_ty.const_int(1_i64),
             i64_ty.const_int(2_i64),
@@ -289,7 +289,7 @@ fn constant_folder_vector_gep_nonzero_index_builds_vector_expr() -> Result<(), I
             .expect("vector GEP constexpr constructed");
         let folded = Constant::try_from(folded)?;
         assert_eq!(folded.ty(), ptr_vec_ty.as_type());
-        m.add_global("gep", ptr_vec_ty.as_type(), folded)?;
+        m.add_global("gep", folded)?;
         let text = format!("{m}");
         assert!(
             text.contains(
@@ -346,7 +346,7 @@ fn constant_folder_scalable_shuffle_builds_scalable_mask_expr() -> Result<(), Ir
             .expect("scalable zero-mask shuffle constexpr constructed");
         let folded = Constant::try_from(folded)?;
         assert_eq!(folded.ty(), vec_ty.as_type());
-        m.add_global("shuf", vec_ty.as_type(), folded)?;
+        m.add_global("shuf", folded)?;
         let text = format!("{m}");
         assert!(
             text.contains("@shuf = global <vscale x 2 x i32> shufflevector (<vscale x 2 x i32> <i32 1, i32 2>, <vscale x 2 x i32> <i32 3, i32 4>, <vscale x 2 x i32> zeroinitializer)"),
@@ -368,7 +368,7 @@ fn constant_folder_pointer_cast_helpers_allow_one_lane_pointer_bitcasts() -> Res
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let vec_ptr_ty = m.vector_type(ptr_ty.as_type(), 1, false);
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
         let scalar = g.as_global_constant_ptr();
 
         let to_vec = ConstantFolder
@@ -386,20 +386,11 @@ fn constant_folder_pointer_cast_helpers_allow_one_lane_pointer_bitcasts() -> Res
             .create_pointer_cast(vector.as_constant(), ptr_ty.as_type())?
             .expect("pointer cast helper uses bitcast for scalar destination");
 
-        m.add_global("to_vec", vec_ptr_ty.as_type(), Constant::try_from(to_vec)?)?;
-        m.add_global(
-            "to_vec_pc",
-            vec_ptr_ty.as_type(),
-            Constant::try_from(to_vec_via_pointer_cast)?,
-        )?;
-        m.add_global(
-            "to_scalar",
-            ptr_ty.as_type(),
-            Constant::try_from(to_scalar)?,
-        )?;
+        m.add_global("to_vec", Constant::try_from(to_vec)?)?;
+        m.add_global("to_vec_pc", Constant::try_from(to_vec_via_pointer_cast)?)?;
+        m.add_global("to_scalar", Constant::try_from(to_scalar)?)?;
         m.add_global(
             "to_scalar_pc",
-            ptr_ty.as_type(),
             Constant::try_from(to_scalar_via_pointer_cast)?,
         )?;
         let text = format!("{m}");
@@ -433,7 +424,7 @@ fn constant_folder_folds_is_null_of_constant_null_without_instruction() -> Resul
     Module::with_new("folder-is-null", |m| {
         let bool_ty = m.bool_type();
         let ptr_ty = m.ptr_type(0);
-        let fn_ty = m.fn_type(bool_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(bool_ty, false);
         let f = m.add_function::<bool, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);
@@ -458,7 +449,7 @@ fn constant_folder_folds_is_not_null_of_constant_null_without_instruction() -> R
     Module::with_new("folder-is-not-null", |m| {
         let bool_ty = m.bool_type();
         let ptr_ty = m.ptr_type(0);
-        let fn_ty = m.fn_type(bool_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(bool_ty, false);
         let f = m.add_function::<bool, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);
@@ -485,9 +476,9 @@ fn constant_folder_folds_pointer_cmp_global_vs_null_without_instruction() -> Res
         let bool_ty = m.bool_type();
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
         let gp = PointerValue::try_from(g.as_global_constant_ptr().as_value())?;
-        let fn_ty = m.fn_type(bool_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(bool_ty, false);
         let f = m.add_function::<bool, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);
@@ -516,7 +507,7 @@ fn default_builder_folds_insert_extract_element_chain() -> Result<(), IrError> {
     Module::with_new("folder-insert-extract-element", |m| {
         let i64_ty = m.i64_type();
         let vec_ty = m.vector_type(i64_ty.as_type(), 4, false);
-        let fn_ty = m.fn_type(i64_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i64_ty, false);
         let f = m.add_function::<i64, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
@@ -553,7 +544,7 @@ fn default_builder_folds_insert_extract_element_chain() -> Result<(), IrError> {
 fn custom_folder_no_wrap_hook_receives_mul() -> Result<(), IrError> {
     Module::with_new("folder-nowrap-hook-mul", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let folded = i32_ty.const_int(99_i32).as_value();
@@ -590,7 +581,7 @@ fn custom_folder_no_wrap_hook_receives_mul() -> Result<(), IrError> {
 fn custom_folder_no_wrap_hook_receives_shl() -> Result<(), IrError> {
     Module::with_new("folder-nowrap-hook-shl", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let folded = i32_ty.const_int(123_i32).as_value();
@@ -626,7 +617,7 @@ fn custom_folder_no_wrap_hook_receives_shl() -> Result<(), IrError> {
 fn no_folder_names_add_instruction_exactly() -> Result<(), IrError> {
     Module::with_new("nofolder-add", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -651,7 +642,7 @@ fn no_folder_names_add_instruction_exactly() -> Result<(), IrError> {
 fn no_folder_emits_udiv_instruction_for_constants() -> Result<(), IrError> {
     Module::with_new("nofolder-udiv", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -714,7 +705,7 @@ fn no_folder_emits_pointer_cmp_instruction_for_constant_nulls() -> Result<(), Ir
     Module::with_new("nofolder-ptr-cmp", |m| {
         let bool_ty = m.bool_type();
         let ptr_ty = m.ptr_type(0);
-        let fn_ty = m.fn_type(bool_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(bool_ty, false);
         let f = m.add_function::<bool, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -769,7 +760,7 @@ fn custom_folder_wrong_type_is_rejected() -> Result<(), IrError> {
     Module::with_new("folder-wrong-type", |m| {
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let folded = i64_ty.const_int(0_i64).as_value();
@@ -803,7 +794,7 @@ fn custom_folder_wrong_type_is_rejected() -> Result<(), IrError> {
 fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
     let typed_text = Module::with_new("folder-typed-add", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -824,7 +815,7 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
 
     let dyn_text = Module::with_new("folder-typed-add", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -960,7 +951,7 @@ fn dyn_marker_fold_keeps_runtime_width_check() -> Result<(), IrError> {
     Module::with_new("folder-dyn-widen", |m| {
         let i32_dyn_ty = m.custom_width_int_type(32)?;
         let i64_dyn_ty = m.custom_width_int_type(64)?;
-        let fn_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.i32_type(), false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let folder = WideningDynFolder {
@@ -1098,7 +1089,7 @@ fn external_narrow_override_wrong_width_rejected_by_accept_folded_int() -> Resul
     Module::with_new("external-narrow-folder", |m| {
         let i32_dyn_ty = m.custom_width_int_type(32)?;
         let i64_dyn_ty = m.custom_width_int_type(64)?;
-        let fn_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.i32_type(), false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
 

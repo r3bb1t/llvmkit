@@ -10,7 +10,7 @@
 
 use llvmkit_ir::{
     Constant, ConstantIntValue, ICmpFlags, IRBuilder, IntPredicate, IntValue, IrError, Linkage,
-    Module, Type,
+    Module,
 };
 
 fn build_eq_module() -> Result<String, IrError> {
@@ -109,7 +109,7 @@ fn build_int_cmp_ule_emits_icmp_ule() -> Result<(), IrError> {
 fn default_constant_folder_folds_integer_compare() -> Result<(), IrError> {
     Module::with_new("cmp-fold", |m| {
         let bool_ty = m.bool_type();
-        let fn_ty = m.fn_type(bool_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(bool_ty, false);
         let f = m.add_function::<bool, _>("cmp", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);

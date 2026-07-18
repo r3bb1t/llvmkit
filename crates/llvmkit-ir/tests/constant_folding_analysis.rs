@@ -13,8 +13,8 @@ use llvmkit_ir::{
     CmpPredicate, ConstantExprOpcode, ConstantExprOptions, ConstantFloatValue, ConstantIntValue,
     DataLayout, DenormalMode, DenormalModeKind, DenormalModeSide, FoldNonDeterminism, IRBuilder,
     InstructionView, IntDyn, IntPredicate, IrError, LibFunc, Linkage, Module, NoFolder,
-    PreservedCastFlags, RoundingMode, TargetLibraryInfo, Type, UnaryOpcode,
-    attributes::AttributeStorage, constant_fold_binary_intrinsic, constant_fold_binary_op_operands,
+    PreservedCastFlags, RoundingMode, TargetLibraryInfo, UnaryOpcode, attributes::AttributeStorage,
+    constant_fold_binary_intrinsic, constant_fold_binary_op_operands,
     constant_fold_compare_inst_operands, constant_fold_constant, constant_fold_fp_inst_operands,
     constant_fold_inst_operands, constant_fold_integer_cast, constant_fold_load_from_uniform_value,
     constant_fold_load_through_bitcast, constant_fold_unary_op_operand,
@@ -35,7 +35,7 @@ fn load_from_const_ptr_uses_little_endian_layout() -> Result<(), IrError> {
             i8_ty.const_int(0x34_i8),
             i8_ty.const_int(0x12_i8),
         ])?;
-        let g = m.add_global_constant("bytes", arr_ty.as_type(), init)?;
+        let g = m.add_global_constant("bytes", init)?;
 
         let folded = constant_fold_load_from_const_ptr(
             g.as_global_constant_ptr(),
@@ -61,7 +61,7 @@ fn load_from_const_ptr_oob_returns_poison() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let arr_ty = m.array_type(i8_ty.as_type(), 1);
         let init = arr_ty.const_array::<ConstantIntValue<'_, i8>, _>([i8_ty.const_int(7_i8)])?;
-        let g = m.add_global_constant("one", arr_ty.as_type(), init)?;
+        let g = m.add_global_constant("one", init)?;
 
         let folded = constant_fold_load_from_const_ptr(
             g.as_global_constant_ptr(),
@@ -151,10 +151,9 @@ fn interposable_constant_global_load_declines_to_fold() -> Result<(), IrError> {
     Module::with_new("analysis-load-interposable", |m| {
         let dl = DataLayout::parse("e-p:64:64:64")?;
         let i32_ty = m.i32_type();
-        let weak = m.add_global_constant("weak_g", i32_ty.as_type(), i32_ty.const_int(42_i32))?;
+        let weak = m.add_global_constant("weak_g", i32_ty.const_int(42_i32))?;
         weak.set_linkage(&m, Linkage::WeakAny);
-        let strong =
-            m.add_global_constant("strong_g", i32_ty.as_type(), i32_ty.const_int(7_i32))?;
+        let strong = m.add_global_constant("strong_g", i32_ty.const_int(7_i32))?;
 
         assert_eq!(
             constant_fold_load_from_const_ptr(
@@ -390,7 +389,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
         let f32_ty = m.f32_type();
         let arr_ty = m.array_type(i8_ty.as_type(), 1);
         let init = arr_ty.const_array::<ConstantIntValue<'_, i8>, _>([i8_ty.const_int(0_i8)])?;
-        let g = m.add_global_constant("api_bytes", arr_ty.as_type(), init)?;
+        let g = m.add_global_constant("api_bytes", init)?;
         let c2_i = i32_ty.const_int(2_i32);
         let c5_i = i32_ty.const_int(5_i32);
         let c7_i = i32_ty.const_int(7_i32);
@@ -492,7 +491,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
         assert_eq!(signed_trunc, i8_ty.const_int(127_i8).as_constant());
         assert_eq!(signed_flags, PreservedCastFlags::none());
 
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("api_fold_inst", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -519,7 +518,7 @@ fn crate_root_constant_offset_from_global_resolves_global_pointer() -> Result<()
     Module::with_new("analysis-offset-root-export", |m| {
         let dl = DataLayout::parse("e-p:64:64:64")?;
         let i8_ty = m.i8_type();
-        let g = m.add_global_constant("root_export", i8_ty.as_type(), i8_ty.const_int(0_i8))?;
+        let g = m.add_global_constant("root_export", i8_ty.const_int(0_i8))?;
 
         let resolved = constant_offset_from_global(g.ptr_offset(3), &dl)
             .expect("global pointer plus constant offset resolves");
@@ -538,7 +537,7 @@ fn freeze_folds_only_non_undef_non_poison_constants() -> Result<(), IrError> {
     Module::with_new("analysis-freeze", |m| {
         let dl = DataLayout::default();
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("freeze_fold", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -577,7 +576,7 @@ fn recursive_gep_load_through_bitcast_from_global_folds() -> Result<(), IrError>
             i32_ty.const_int(0x3f80_0000_i32),
             i32_ty.const_int(0x4000_0000_i32),
         ])?;
-        let g = m.add_global_constant("fp_bits", arr_ty.as_type(), init)?;
+        let g = m.add_global_constant("fp_bits", init)?;
         let zero = i64_ty.const_zero();
         let one = i64_ty.const_int(1_i64);
         let gep = m.constant_expr_with_options(
@@ -650,7 +649,7 @@ fn function_denormal_f32_attribute_overrides_generic_mode() -> Result<(), IrErro
     Module::with_new("analysis-denormal-attrs", |m| {
         let dl = DataLayout::default();
         let f32_ty = m.f32_type();
-        let fn_ty = m.fn_type(f32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(f32_ty, false);
         let f = m.add_function::<f32, _>("denormal_attr", fn_ty, Linkage::External)?;
         f.set_string_attribute(&m, AttrIndex::Function, "denormal-fp-math", "ieee,ieee");
         f.set_string_attribute(
@@ -686,7 +685,7 @@ fn function_denormal_attribute_group_overrides_generic_mode() -> Result<(), IrEr
     Module::with_new("analysis-denormal-attr-group", |m| {
         let dl = DataLayout::default();
         let f32_ty = m.f32_type();
-        let fn_ty = m.fn_type(f32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(f32_ty, false);
         let mut group = AttributeStorage::new();
         group.add(
             AttrIndex::Function,
