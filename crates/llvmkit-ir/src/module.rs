@@ -32,7 +32,8 @@ use super::attributes::AttributeStorage;
 use super::basic_block::BasicBlock;
 use super::comdat::{ComdatData, ComdatId, ComdatRef, SelectionKind};
 use super::constant::{
-    BlockAddressPlaceholder, Constant, ConstantExprFlags, ConstantExprOpcode, IsConstant,
+    BlockAddressPlaceholder, Constant, ConstantExprFlags, ConstantExprOpcode, IntoConstantValue,
+    IsConstant,
 };
 use super::constants::ConstantExprOptions;
 use super::data_layout::DataLayout;
@@ -1366,7 +1367,7 @@ impl<'ctx> ModuleCore {
     ) -> IrResult<GlobalVariable<'ctx, B>> {
         let (name, data, _initializer, address_space, value_type) = builder.into_data();
         if !name.is_empty() && self.global_name_exists(&name) {
-            return Err(IrError::DuplicateFunctionName { name });
+            return Err(IrError::DuplicateGlobalName { name });
         }
         let pointer_ty = self.ctx.ptr_type(address_space);
         // Sanity: value_type must already be in the same context. Use
@@ -1397,7 +1398,7 @@ impl<'ctx> ModuleCore {
     ) -> IrResult<GlobalAlias<'ctx, B>> {
         let (name, data, address_space) = builder.into_data();
         if !name.is_empty() && self.global_name_exists(&name) {
-            return Err(IrError::DuplicateFunctionName { name });
+            return Err(IrError::DuplicateGlobalName { name });
         }
         let pointer_ty = self.ctx.ptr_type(address_space);
         let value_id = self.ctx.push_value(crate::value::ValueData {
@@ -1424,7 +1425,7 @@ impl<'ctx> ModuleCore {
     ) -> IrResult<GlobalIFunc<'ctx, B>> {
         let (name, data, address_space) = builder.into_data();
         if !name.is_empty() && self.global_name_exists(&name) {
-            return Err(IrError::DuplicateFunctionName { name });
+            return Err(IrError::DuplicateGlobalName { name });
         }
         let pointer_ty = self.ctx.ptr_type(address_space);
         let value_id = self.ctx.push_value(crate::value::ValueData {
@@ -2665,57 +2666,88 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         self.get_or_insert_intrinsic_declaration(&descriptor)
     }
 
-    pub fn add_global<N, C>(
-        &self,
-        name: N,
-        value_type: Type<'ctx, B>,
-        initializer: C,
-    ) -> IrResult<GlobalVariable<'ctx, B>>
+    /// Add a `global` whose type is derived from its `initializer`.
+    ///
+    /// The initializer is any [`IntoConstantValue`] — an existing constant
+    /// handle or a Rust scalar literal (`add_global("marker", 0i32)`). The
+    /// global's value type is the constant's type, so a creation-time type
+    /// mismatch is unrepresentable.
+    pub fn add_global<N, C>(&self, name: N, initializer: C) -> IrResult<GlobalVariable<'ctx, B>>
     where
         N: AsRef<str>,
-        C: IsConstant<'ctx, B>,
+        C: IntoConstantValue<'ctx, B>,
     {
+        let constant = initializer.into_constant(self.module_ref());
         crate::global_variable::GlobalBuilder::<B>::new(
             self.module_ref(),
             name.as_ref().to_owned(),
-            value_type,
+            constant.ty(),
         )
-        .initializer(initializer)
+        .initializer(constant)
         .build()
     }
 
+    /// Add a `constant` whose type is derived from its `initializer`.
+    ///
+    /// Like [`add_global`](Self::add_global) but marks the global as
+    /// `constant` rather than mutable.
     pub fn add_global_constant<N, C>(
         &self,
         name: N,
-        value_type: Type<'ctx, B>,
         initializer: C,
     ) -> IrResult<GlobalVariable<'ctx, B>>
     where
         N: AsRef<str>,
-        C: IsConstant<'ctx, B>,
+        C: IntoConstantValue<'ctx, B>,
     {
+        let constant = initializer.into_constant(self.module_ref());
         crate::global_variable::GlobalBuilder::<B>::new(
             self.module_ref(),
             name.as_ref().to_owned(),
-            value_type,
+            constant.ty(),
         )
         .constant(true)
-        .initializer(initializer)
+        .initializer(constant)
         .build()
     }
 
-    pub fn add_external_global<N>(
+    /// Add a global with no initializer, declared at `value_type`.
+    ///
+    /// For the declaration-only case where there is no initializer to
+    /// derive the type from. Unlike [`add_external_global`](Self::add_external_global),
+    /// this uses the module's default linkage. Accepts any
+    /// `impl Into<Type>` so a typed handle needn't be widened via
+    /// `.as_type()`.
+    pub fn add_global_uninitialized<N, T>(
         &self,
         name: N,
-        value_type: Type<'ctx, B>,
+        value_type: T,
     ) -> IrResult<GlobalVariable<'ctx, B>>
     where
         N: AsRef<str>,
+        T: Into<Type<'ctx, B>>,
     {
         crate::global_variable::GlobalBuilder::<B>::new(
             self.module_ref(),
             name.as_ref().to_owned(),
-            value_type,
+            value_type.into(),
+        )
+        .build()
+    }
+
+    pub fn add_external_global<N, T>(
+        &self,
+        name: N,
+        value_type: T,
+    ) -> IrResult<GlobalVariable<'ctx, B>>
+    where
+        N: AsRef<str>,
+        T: Into<Type<'ctx, B>>,
+    {
+        crate::global_variable::GlobalBuilder::<B>::new(
+            self.module_ref(),
+            name.as_ref().to_owned(),
+            value_type.into(),
         )
         .linkage(crate::global_value::Linkage::External)
         .build()

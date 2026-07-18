@@ -29,10 +29,7 @@
 //! impl AddMarkerGlobal {
 //!     fn run(&mut self, cx: ModCx<Self>) -> IrResult<ModReport> {
 //!         let rewrite = cx.mutate(); // consumes `cx`; no all-preserved report left
-//!         let i32_ty = rewrite.module_mut().i32_type();
-//!         rewrite
-//!             .module_mut()
-//!             .add_global("marker", i32_ty.as_type(), i32_ty.const_zero())?;
+//!         rewrite.module_mut().add_global("marker", 0i32)?; // literal initializer
 //!         Ok(rewrite.done()) // RewriteModule floor: nothing preserved
 //!     }
 //! }
@@ -3161,8 +3158,7 @@ mod tests {
             let r = cx.mutate();
 
             // Reach the module's own `add_global` directly through the token.
-            r.module_mut()
-                .add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+            r.module_mut().add_global("g", i32_ty.const_zero())?;
 
             // The mutation is visible on the module.
             assert_eq!(module.iter_globals().len(), 1);

@@ -273,7 +273,7 @@ fn constant_folder_vector_gep_nonzero_index_builds_vector_expr() -> Result<(), I
         let i64_ty = m.i64_type();
         let ptr_vec_ty = m.vector_type(m.ptr_type(0).as_type(), 2, false);
         let index_ty = m.vector_type(i64_ty.as_type(), 2, false);
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
         let index = index_ty.const_vector::<ConstantIntValue<'_, i64>, _>([
             i64_ty.const_int(1_i64),
             i64_ty.const_int(2_i64),
@@ -289,7 +289,7 @@ fn constant_folder_vector_gep_nonzero_index_builds_vector_expr() -> Result<(), I
             .expect("vector GEP constexpr constructed");
         let folded = Constant::try_from(folded)?;
         assert_eq!(folded.ty(), ptr_vec_ty.as_type());
-        m.add_global("gep", ptr_vec_ty.as_type(), folded)?;
+        m.add_global("gep", folded)?;
         let text = format!("{m}");
         assert!(
             text.contains(
@@ -346,7 +346,7 @@ fn constant_folder_scalable_shuffle_builds_scalable_mask_expr() -> Result<(), Ir
             .expect("scalable zero-mask shuffle constexpr constructed");
         let folded = Constant::try_from(folded)?;
         assert_eq!(folded.ty(), vec_ty.as_type());
-        m.add_global("shuf", vec_ty.as_type(), folded)?;
+        m.add_global("shuf", folded)?;
         let text = format!("{m}");
         assert!(
             text.contains("@shuf = global <vscale x 2 x i32> shufflevector (<vscale x 2 x i32> <i32 1, i32 2>, <vscale x 2 x i32> <i32 3, i32 4>, <vscale x 2 x i32> zeroinitializer)"),
@@ -368,7 +368,7 @@ fn constant_folder_pointer_cast_helpers_allow_one_lane_pointer_bitcasts() -> Res
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let vec_ptr_ty = m.vector_type(ptr_ty.as_type(), 1, false);
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
         let scalar = g.as_global_constant_ptr();
 
         let to_vec = ConstantFolder
@@ -386,20 +386,11 @@ fn constant_folder_pointer_cast_helpers_allow_one_lane_pointer_bitcasts() -> Res
             .create_pointer_cast(vector.as_constant(), ptr_ty.as_type())?
             .expect("pointer cast helper uses bitcast for scalar destination");
 
-        m.add_global("to_vec", vec_ptr_ty.as_type(), Constant::try_from(to_vec)?)?;
-        m.add_global(
-            "to_vec_pc",
-            vec_ptr_ty.as_type(),
-            Constant::try_from(to_vec_via_pointer_cast)?,
-        )?;
-        m.add_global(
-            "to_scalar",
-            ptr_ty.as_type(),
-            Constant::try_from(to_scalar)?,
-        )?;
+        m.add_global("to_vec", Constant::try_from(to_vec)?)?;
+        m.add_global("to_vec_pc", Constant::try_from(to_vec_via_pointer_cast)?)?;
+        m.add_global("to_scalar", Constant::try_from(to_scalar)?)?;
         m.add_global(
             "to_scalar_pc",
-            ptr_ty.as_type(),
             Constant::try_from(to_scalar_via_pointer_cast)?,
         )?;
         let text = format!("{m}");
@@ -485,7 +476,7 @@ fn constant_folder_folds_pointer_cmp_global_vs_null_without_instruction() -> Res
         let bool_ty = m.bool_type();
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
         let gp = PointerValue::try_from(g.as_global_constant_ptr().as_value())?;
         let fn_ty = m.fn_type(bool_ty, Vec::<Type>::new(), false);
         let f = m.add_function::<bool, _>("f", fn_ty, Linkage::External)?;

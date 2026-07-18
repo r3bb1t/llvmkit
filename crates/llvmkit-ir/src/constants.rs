@@ -2487,7 +2487,7 @@ mod tests {
         Module::with_new("constexpr-rewrite-fold", |m| {
             let i32_ty = m.i32_type();
             let i64_ty = m.i64_type();
-            let global = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+            let global = m.add_global("g", i32_ty.const_zero())?;
             let ptr_as_int = m.constant_expr(
                 i64_ty.as_type(),
                 ConstantExprOpcode::PtrToInt,

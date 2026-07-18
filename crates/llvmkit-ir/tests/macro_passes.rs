@@ -255,9 +255,7 @@ impl MacroAddGlobal {
     fn run(&mut self, cx: ModCx<Self>) -> IrResult<ModReport> {
         let rewrite = cx.mutate();
         let i32_ty = rewrite.module_mut().i32_type();
-        rewrite
-            .module_mut()
-            .add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        rewrite.module_mut().add_global("g", i32_ty.const_zero())?;
         Ok(rewrite.done())
     }
 }
@@ -274,9 +272,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B> for HandAddGlobal {
     fn run(&mut self, cx: ModCx<'_, '_, '_, 'ctx, B, RewriteModule, ()>) -> IrResult<ModReport> {
         let rewrite = cx.mutate();
         let i32_ty = rewrite.module_mut().i32_type();
-        rewrite
-            .module_mut()
-            .add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        rewrite.module_mut().add_global("g", i32_ty.const_zero())?;
         Ok(rewrite.done())
     }
 }

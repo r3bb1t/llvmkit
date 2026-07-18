@@ -413,7 +413,7 @@ fn scalar_int_bitcast_to_vector_canonicalizes_as_vector_bitcast() -> Result<(), 
             dst_ty.as_type(),
         )?
         .expect("scalar-to-vector bitcast canonicalizes");
-        m.add_global("bits", dst_ty.as_type(), folded)?;
+        m.add_global("bits", folded)?;
         let text = format!("{m}");
         assert!(
             text.contains(
@@ -462,7 +462,7 @@ fn same_lane_vector_ptrtoint_cast_builds_lane_constant_exprs() -> Result<(), IrE
     Module::with_new("fold-vector-ptrtoint-cast", |m| {
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
         let ptr = g.as_global_constant_ptr();
         let src_ty = m.vector_type(ptr.ty(), 2, false);
         let dst_ty = m.vector_type(i64_ty.as_type(), 2, false);
@@ -628,7 +628,7 @@ fn constant_expr_add_folds_before_interning() -> Result<(), IrError> {
         )?;
         let int = ConstantIntValue::<IntDyn>::try_from(expr)?;
         assert_eq!(int.ap_int(), ApInt::from_words(32, &[3]));
-        m.add_global("sum", ty.as_type(), expr)?;
+        m.add_global("sum", expr)?;
         let text = format!("{m}");
         assert!(text.contains("@sum = global i32 3"), "{text}");
         Ok(())
@@ -643,7 +643,7 @@ fn constant_int_refinement_rejects_unfolded_integer_constant_expr() -> Result<()
     Module::with_new("fold-refine", |m| {
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
         let ptr_as_int = m.constant_expr(
             i64_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
@@ -836,7 +836,7 @@ fn constant_expr_extractelement_out_of_range_folds_to_poison() -> Result<(), IrE
 fn constant_expr_empty_gep_folds_before_interning() -> Result<(), IrError> {
     Module::with_new("fold-gep-expr", |m| {
         let ty = m.i32_type();
-        let g = m.add_global("g", ty.as_type(), ty.const_zero())?;
+        let g = m.add_global("g", ty.const_zero())?;
         let base = g.as_global_constant_ptr();
         let expr = m.constant_expr_with_options(
             base.ty(),
@@ -857,7 +857,7 @@ fn constant_expr_empty_gep_folds_before_interning() -> Result<(), IrError> {
 fn gep_empty_indices_fold_to_base_pointer() -> Result<(), IrError> {
     Module::with_new("gep-fold", |m| {
         let ty = m.i32_type();
-        let g = m.add_global("g", ty.as_type(), ty.const_zero())?;
+        let g = m.add_global("g", ty.const_zero())?;
         let base = g.as_global_constant_ptr();
         let folded = constant_fold_get_element_ptr(ty.as_type(), base, &[], None)?
             .expect("empty-index GEP folds");
@@ -1201,7 +1201,7 @@ fn constant_expr_ptrtoaddr_uses_distinct_opcode() -> Result<(), IrError> {
         m.set_data_layout("p1:64:64:64:32")?;
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
-        let i_as0 = m.add_global("i_as0", i32_ty.as_type(), i32_ty.const_zero())?;
+        let i_as0 = m.add_global("i_as0", i32_ty.const_zero())?;
         let cast_as0 = m.constant_expr(
             i64_ty.as_type(),
             ConstantExprOpcode::PtrToAddr,
@@ -1210,7 +1210,7 @@ fn constant_expr_ptrtoaddr_uses_distinct_opcode() -> Result<(), IrError> {
             [],
             ConstantExprFlags::none(),
         )?;
-        m.add_global("global_cast_as0", i64_ty.as_type(), cast_as0)?;
+        m.add_global("global_cast_as0", cast_as0)?;
         let i_as1 = m
             .global_builder("i_as1", i32_ty.as_type())
             .address_space(1)
@@ -1224,7 +1224,7 @@ fn constant_expr_ptrtoaddr_uses_distinct_opcode() -> Result<(), IrError> {
             [],
             ConstantExprFlags::none(),
         )?;
-        m.add_global("global_cast_as1", i32_ty.as_type(), cast_as1)?;
+        m.add_global("global_cast_as1", cast_as1)?;
 
         assert_eq!(
             format!("{m}"),
@@ -1249,7 +1249,7 @@ fn cast_of_cast_ptrtoint_trunc_folds_to_narrow_ptrtoint() -> Result<(), IrError>
     Module::with_new("fold-cast-pair", |m| {
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
         let ptr = g.as_global_constant_ptr();
         let wide = m.constant_expr(
             i64_ty.as_type(),
@@ -1322,7 +1322,7 @@ fn associative_constant_expr_binary_reassociates_folded_rhs() -> Result<(), IrEr
     Module::with_new("fold-assoc-constexpr", |m| {
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
         let ptr_as_int = m.constant_expr(
             i64_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
@@ -1365,7 +1365,7 @@ fn associative_constant_expr_binary_reassociates_folded_rhs() -> Result<(), IrEr
 fn commuted_desirable_binop_with_constant_expr_rhs_builds_swapped_expr() -> Result<(), IrError> {
     Module::with_new("fold-commuted-desirable-constexpr", |m| {
         let i32_ty = m.i32_type();
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
         let ptr_as_i32 = m.constant_expr(
             i32_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
@@ -1612,7 +1612,7 @@ fn compare_constant_expr_edge_cases_fold() -> Result<(), IrError> {
         let i1_ty = m.bool_type();
         let i32_ty = m.i32_type();
         let f32_ty = m.f32_type();
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
         let ptr_as_i32 = m.constant_expr(
             i32_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
@@ -1715,7 +1715,7 @@ fn compare_null_lhs_constant_expr_rhs_commutes_to_rhs_null_shortcut() -> Result<
         let bool_ty = m.bool_type();
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
         let ptr_as_i64 = m.constant_expr(
             i64_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
@@ -1776,8 +1776,8 @@ fn compare_global_pointer_relations_fold() -> Result<(), IrError> {
         let bool_ty = m.bool_type();
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
-        let h = m.add_global("h", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
+        let h = m.add_global("h", i32_ty.const_zero())?;
         let g_ptr = g.as_global_constant_ptr();
         let h_ptr = h.as_global_constant_ptr();
         let null = ptr_ty.const_null().as_constant();
@@ -1870,7 +1870,7 @@ fn compare_ifunc_linkage_relations_match_globalvalue_rules() -> Result<(), IrErr
     Module::with_new("fold-compare-ifunc", |m| {
         let bool_ty = m.bool_type();
         let i32_ty = m.i32_type();
-        let resolver = m.add_global("resolver", i32_ty.as_type(), i32_ty.const_zero())?;
+        let resolver = m.add_global("resolver", i32_ty.const_zero())?;
 
         let internal_a = m
             .ifunc_builder("internal_a", i32_ty.as_type(), resolver)
@@ -1932,16 +1932,8 @@ fn compare_globals_with_recursive_empty_value_type_declines() -> Result<(), IrEr
         let i8_ty = m.i8_type();
         let empty_array_ty = m.array_type(i8_ty.as_type(), 0);
         let nested_array_ty = m.array_type(empty_array_ty.as_type(), 1);
-        let nested_g = m.add_global(
-            "nested_g",
-            nested_array_ty.as_type(),
-            nested_array_ty.as_type().get_undef(),
-        )?;
-        let nested_h = m.add_global(
-            "nested_h",
-            nested_array_ty.as_type(),
-            nested_array_ty.as_type().get_undef(),
-        )?;
+        let nested_g = m.add_global("nested_g", nested_array_ty.as_type().get_undef())?;
+        let nested_h = m.add_global("nested_h", nested_array_ty.as_type().get_undef())?;
         assert!(
             constant_fold_compare_instruction(
                 CmpPredicate::Int(IntPredicate::Ne),
@@ -1952,16 +1944,8 @@ fn compare_globals_with_recursive_empty_value_type_declines() -> Result<(), IrEr
         );
 
         let wrapper_ty = m.struct_type([empty_array_ty.as_type()], false);
-        let wrapper_g = m.add_global(
-            "wrapper_g",
-            wrapper_ty.as_type(),
-            wrapper_ty.as_type().get_undef(),
-        )?;
-        let wrapper_h = m.add_global(
-            "wrapper_h",
-            wrapper_ty.as_type(),
-            wrapper_ty.as_type().get_undef(),
-        )?;
+        let wrapper_g = m.add_global("wrapper_g", wrapper_ty.as_type().get_undef())?;
+        let wrapper_h = m.add_global("wrapper_h", wrapper_ty.as_type().get_undef())?;
         assert!(
             constant_fold_compare_instruction(
                 CmpPredicate::Int(IntPredicate::Ne),
@@ -2063,7 +2047,7 @@ fn select_undef_arm_with_direct_global_arm_folds_to_global() -> Result<(), IrErr
     Module::with_new("fold-select-direct-global", |m| {
         let i1_ty = m.bool_type();
         let i32_ty = m.i32_type();
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
         let cond = m.constant_expr(
             i1_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
@@ -2408,7 +2392,7 @@ fn i1_constant_expr_binary_special_cases_fold() -> Result<(), IrError> {
     Module::with_new("fold-i1-constexpr", |m| {
         let i1_ty = m.bool_type();
         let i32_ty = m.i32_type();
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
         let ptr_as_i1 = m.constant_expr(
             i1_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
@@ -2446,7 +2430,7 @@ fn vector_splat_desirable_binop_builds_splat_constant_expr() -> Result<(), IrErr
     Module::with_new("fold-vector-splat-desirable-binop", |m| {
         let i32_ty = m.i32_type();
         let vec_ty = m.vector_type(i32_ty.as_type(), 2, false);
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
         let ptr_as_i32 = m.constant_expr(
             i32_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
@@ -2573,7 +2557,7 @@ fn constant_fold_gep_poison_undef_and_noop_indices() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
         let ptr_ty = m.ptr_type(0);
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
         let base = g.as_global_constant_ptr();
         let zero = i64_ty.const_zero().as_constant();
         let undef_index = i64_ty.as_type().get_undef().as_constant();
@@ -2645,7 +2629,7 @@ fn constant_fold_gep_inrange_noop_does_not_fold() -> Result<(), IrError> {
     Module::with_new("fold-gep-inrange", |m| {
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
-        let g = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        let g = m.add_global("g", i32_ty.const_zero())?;
         let base = g.as_global_constant_ptr();
         let in_range = ConstantExprInRange::new([0_u64], [1_u64], 64);
         let expr = m.constant_expr_with_options(
@@ -2663,7 +2647,7 @@ fn constant_fold_gep_inrange_noop_does_not_fold() -> Result<(), IrError> {
         )?;
 
         assert_ne!(expr, base);
-        m.add_global("p", base.ty(), expr)?;
+        m.add_global("p", expr)?;
         let text = format!("{m}");
         assert!(
             text.contains("@p = global ptr getelementptr inrange(0, 1) (i32, ptr @g, i64 0)"),

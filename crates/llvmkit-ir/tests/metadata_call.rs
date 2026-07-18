@@ -384,7 +384,7 @@ fn absolute_symbol_zero_zero_is_empty_range() -> Result<(), IrError> {
     Module::with_new("absolute_symbol_bad", |m| {
         let i8_ty = m.i8_type();
         let i64_ty = m.i64_type();
-        let g = m.add_global("absolute_zero_zero", i8_ty.as_type(), i8_ty.const_zero())?;
+        let g = m.add_global("absolute_zero_zero", i8_ty.const_zero())?;
         let lo = m.metadata_constant(i64_ty.const_int(0_i64));
         let hi = m.metadata_constant(i64_ty.const_int(0_i64));
         let range = m.metadata_tuple([MetadataRef(lo), MetadataRef(hi)]);

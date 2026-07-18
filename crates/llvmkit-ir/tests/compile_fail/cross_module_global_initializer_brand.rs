@@ -14,8 +14,7 @@ fn main() {
     Module::with_new::<_, _, _>("left", |left| {
         let left_init = left.i32_type().const_int(1_i32);
         Module::with_new::<_, _, _>("right", |right| {
-            let i32_ty = right.i32_type();
-            let _ = right.add_global("g", i32_ty.as_type(), left_init);
+            let _ = right.add_global("g", left_init);
         });
     });
 }

@@ -181,10 +181,9 @@ fn instsimplify_and_dce_pipeline_folds_and_erases() -> Result<(), IrError> {
 fn instsimplify_pass_keeps_load_from_interposable_constant_global() -> Result<(), IrError> {
     Module::with_new("instsimplify-weak-global", |m| {
         let i32_ty = m.i32_type();
-        let weak = m.add_global_constant("weak_g", i32_ty.as_type(), i32_ty.const_int(42_i32))?;
+        let weak = m.add_global_constant("weak_g", i32_ty.const_int(42_i32))?;
         weak.set_linkage(&m, Linkage::WeakAny);
-        let strong =
-            m.add_global_constant("strong_g", i32_ty.as_type(), i32_ty.const_int(7_i32))?;
+        let strong = m.add_global_constant("strong_g", i32_ty.const_int(7_i32))?;
         let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
@@ -305,7 +304,7 @@ fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
 fn instsimplify_terminates_on_ordered_atomic_load_from_constant() -> Result<(), IrError> {
     Module::with_new("is-atomic", |m| {
         let i32_ty = m.i32_type();
-        let g = m.add_global_constant("g", i32_ty.as_type(), i32_ty.const_int(7_i32))?;
+        let g = m.add_global_constant("g", i32_ty.const_int(7_i32))?;
         let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");

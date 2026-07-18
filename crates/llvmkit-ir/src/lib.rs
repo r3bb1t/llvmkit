@@ -175,7 +175,7 @@ pub use cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 pub use comdat::{ComdatRef, SelectionKind};
 pub use constant::{
     BlockAddressPlaceholder, Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode,
-    ConstantGepFlags, IsConstant, OverflowingConstantExprFlags,
+    ConstantGepFlags, IntoConstantValue, IsConstant, OverflowingConstantExprFlags,
 };
 pub use constant_fold::{
     constant_fold_binary_instruction, constant_fold_cast_instruction,

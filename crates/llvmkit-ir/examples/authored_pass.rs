@@ -50,10 +50,8 @@ struct AddMarkerGlobal;
 impl AddMarkerGlobal {
     fn run(&mut self, cx: ModCx<Self>) -> IrResult<ModReport> {
         let rewrite = cx.mutate();
-        let i32_ty = rewrite.module_mut().i32_type();
-        rewrite
-            .module_mut()
-            .add_global("marker", i32_ty.as_type(), i32_ty.const_zero())?;
+        // A Rust literal initializer: no type handle, no `.as_type()`.
+        rewrite.module_mut().add_global("marker", 0i32)?;
         Ok(rewrite.done())
     }
 }

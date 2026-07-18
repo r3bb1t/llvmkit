@@ -582,7 +582,6 @@ pub struct GlobalBuilder<'ctx, B: ModuleBrand = Brand<'ctx>> {
     is_constant: bool,
     externally_initialized: bool,
     initializer: Option<ValueId>,
-    initializer_type: Option<TypeId>,
     linkage: Linkage,
     visibility: Visibility,
     dll_storage_class: DllStorageClass,
@@ -607,7 +606,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
             is_constant: false,
             externally_initialized: false,
             initializer: None,
-            initializer_type: None,
             linkage: Linkage::External,
             visibility: Visibility::Default,
             dll_storage_class: DllStorageClass::Default,
@@ -704,29 +702,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
         self
     }
 
-    /// Attach an initializer. Errors at build time if the
-    /// initializer's type does not match the value type.
+    /// Attach an initializer.
+    ///
+    /// The builder records the constant's id; callers are responsible for
+    /// supplying an initializer whose type matches the global's value type
+    /// (the higher-level `Module::add_global` derives the value type from
+    /// the initializer, so they always agree by construction).
     pub fn initializer<C: IsConstant<'ctx, B>>(mut self, init: C) -> Self {
         let constant = init.as_constant();
         self.initializer = Some(constant.id);
-        self.initializer_type = Some(constant.ty);
         self
     }
 
     /// Materialise the global. Mirrors the second
     /// `GlobalVariable::GlobalVariable(Module &M, ...)` ctor.
     pub fn build(self) -> IrResult<GlobalVariable<'ctx, B>> {
-        if let Some(init_ty) = self.initializer_type
-            && init_ty != self.value_type
-        {
-            let module = self.module;
-            let want = Type::new(self.value_type, module).kind_label();
-            let got = Type::new(init_ty, module).kind_label();
-            return Err(IrError::TypeMismatch {
-                expected: want,
-                got,
-            });
-        }
         self.module.module().install_global_variable::<B>(self)
     }
 
@@ -739,7 +729,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
             is_constant,
             externally_initialized,
             initializer,
-            initializer_type: _,
             linkage,
             visibility,
             dll_storage_class,
