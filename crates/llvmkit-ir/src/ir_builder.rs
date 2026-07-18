@@ -3586,9 +3586,8 @@ where
             addr_space,
             flags,
         );
-        let ptr_ty = self.module.ptr_type(addr_space).as_type().id();
-        let inst = self.append_instruction(ptr_ty, InstructionKindData::Alloca(payload), name);
-        Ok(PointerValue::from_value_unchecked(inst.as_value()))
+        let ptr_ty = ModuleView::<B>::new(self.module).ptr_type(addr_space);
+        Ok(self.append_ptr(ptr_ty, InstructionKindData::Alloca(payload), name))
     }
 
     /// Erased `alloca` construction (D3 dyn twin of the typed
@@ -3780,7 +3779,7 @@ where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
     {
-        let ty = self.module.ptr_type(0);
+        let ty = ModuleView::<B>::new(self.module).ptr_type(0);
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
@@ -3790,8 +3789,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(payload, name)?;
-        Ok(PointerValue::from_value_unchecked(inst.as_value()))
+        self.append_ptr_load(ty, payload, name)
     }
 
     /// Same as [`Self::build_int_load`] plus an explicit alignment.
@@ -4890,7 +4888,8 @@ where
         // for the scalar (non-vector-of-pointers) case the result type is
         // exactly the base pointer's type, i.e. it lives in the SAME address
         // space as `ptr`, not always address space 0.
-        let result_ty = self.module.ptr_type(p.ty().address_space()).as_type().id();
+        let result_ptr_ty = ModuleView::<B>::new(self.module).ptr_type(p.ty().address_space());
+        let result_ty = result_ptr_ty.as_type().id();
         if let Some(folded) = self
             .folder
             .fold_gep_dyn(source_ty, ptr_value, &idx_values, flags)?
@@ -4904,8 +4903,7 @@ where
             idx_ids.into_boxed_slice(),
             flags,
         );
-        let inst = self.append_instruction(result_ty, InstructionKindData::Gep(payload), name);
-        Ok(PointerValue::from_value_unchecked(inst.as_value()))
+        Ok(self.append_ptr(result_ptr_ty, InstructionKindData::Gep(payload), name))
     }
 
     // ---- Floating-point casts ----
@@ -5271,12 +5269,7 @@ where
             return Ok(PointerValue::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::IntToPtr, v.id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(PointerValue::from_value_unchecked(inst.as_value()))
+        Ok(self.append_ptr(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// Generic bitcast on values of equal bit width. Mirrors
@@ -5472,12 +5465,7 @@ where
             return Ok(PointerValue::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::AddrSpaceCast, v.id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(PointerValue::from_value_unchecked(inst.as_value()))
+        Ok(self.append_ptr(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// Pointer cast: pick `bitcast` for same-addrspace pointer-to-pointer
@@ -5513,12 +5501,7 @@ where
             return Ok(PointerValue::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(opcode, v.id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(PointerValue::from_value_unchecked(inst.as_value()))
+        Ok(self.append_ptr(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// `icmp eq <ptr>, null` -- pointer-null test. Mirrors
@@ -7543,6 +7526,37 @@ where
         payload.pointee_ty = ty.as_type().id();
         let inst = self.build_load_inner(payload, name)?;
         Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
+    }
+
+    /// Append `kind` at `ptr_ty` and wrap the result as a `PointerValue`.
+    ///
+    /// Sound by construction: the instruction is created AT `ptr_ty` (a `PointerType`,
+    /// so provably a pointer type), and `PointerValue` asserts only pointer-ness — which
+    /// `ptr_ty` supplies. The sanctioned constructor for pointer-result builders
+    /// (alloca / GEP / int→ptr / addrspacecast / pointer bitcast); removes the
+    /// `from_value_unchecked` assertion (docs/unforgeable-markers-design.md, census pattern 6).
+    fn append_ptr<N: AsRef<str>>(
+        &self,
+        ptr_ty: PointerType<'ctx, B>,
+        kind: InstructionKindData,
+        name: N,
+    ) -> PointerValue<'ctx, B> {
+        let inst = self.append_instruction(ptr_ty.as_type().id(), kind, name);
+        PointerValue::from_value_unchecked(inst.as_value())
+    }
+
+    /// Pointer load: build+append a `load` whose pointee is `ptr_ty`, routed through
+    /// [`Self::build_load_inner`] so the default-align fill is preserved (a raw append would
+    /// emit `align 0`). Re-stamps `payload.pointee_ty = ptr_ty` — structural.
+    fn append_ptr_load<N: AsRef<str>>(
+        &self,
+        ptr_ty: PointerType<'ctx, B>,
+        mut payload: LoadInstData,
+        name: N,
+    ) -> IrResult<PointerValue<'ctx, B>> {
+        payload.pointee_ty = ptr_ty.as_type().id();
+        let inst = self.build_load_inner(payload, name)?;
+        Ok(PointerValue::from_value_unchecked(inst.as_value()))
     }
 
     /// Crate-internal: append a freshly-built phi to the insertion block.
