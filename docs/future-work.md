@@ -142,23 +142,27 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   - `build_vec_splat` can't infer its element from the scalar (a Rust
     associated-type-projection limitation), so its callers annotate / turbofish
     the result.
-- **A proof token that *carries* the validated `TypeId`.** The crate has five
-  capability tokens -- `WrapWitness` (`element.rs`), `ValidatedFunctionParams` /
-  `ValidatedCallResult` (`function_signature.rs`), `SelectNarrow`
-  (`ir_builder.rs`), `ValidatedStructValue` (`struct_schema.rs`). Every one
-  defends the *external* boundary (an unforgeable `pub(crate)` constructor stops
-  downstream code minting a handle whose marker contradicts its runtime type),
-  and every one is a *unit* marker: it proves "a check happened", not *which
-  type was checked*. Nothing makes an **in-crate** construction proof legible.
-  That is why ~100 `from_value_unchecked` call sites in the builder remain
-  sound-but-implicit: their proof is real and local (`append_instruction(<the
-  very type the marker names>, ..)` sits one or two lines above the wrap), so a
-  runtime re-check there would cost a compare that provably cannot fire -- but
-  the proof lives in the reader's head, not the type system. A witness carrying
-  the validated `TypeId` would let those sites *state* their proof instead of
-  implying it. This is the honest remaining gap left by the "no silent erasure"
-  cycle, which fixed the ~11 sites whose proof was genuinely absent and
-  deliberately left the ~100 whose proof was merely implicit.
+- **A proof token that *carries* the validated `TypeId`** (residual after the
+  unforgeable-markers cycle). The crate has five capability tokens -- `WrapWitness`
+  (`element.rs`), `ValidatedFunctionParams` / `ValidatedCallResult`
+  (`function_signature.rs`), `SelectNarrow` (`ir_builder.rs`), `ValidatedStructValue`
+  (`struct_schema.rs`) -- each defending the *external* boundary and each a *unit*
+  marker that proves "a check happened", not *which* type. The unforgeable-markers
+  cycle made the builder's **int / float / pointer append surface** structural instead:
+  a marker is attached to a freshly-appended instruction only through the typed-append
+  constructor family (`append_int_like` / `_at` / `_load`, `append_fp_*`, `append_ptr`
+  / `append_ptr_load`), each of which appends AT a typed handle so the marker matches
+  the runtime type *by construction* — those ~40 sites no longer carry an implicit proof.
+  What remains implicit is the smaller residual the family does not cover: the `CallInst`
+  / `PhiInst` result accessors in `instructions.rs`, the arena / parameter lifts in
+  `ssa_builder.rs` (`use_*_var`) and `function_signature.rs`, the vector / array append
+  wraps (no `append_vec` / `append_arr` constructor yet), and the `IntoIntValue` /
+  `IntoFloatValue` const-lifts in `int_width.rs` / `float_kind.rs`. A witness carrying the
+  validated `TypeId` would let those *state* their proof instead of implying it. Note the
+  confinement of `from_value_unchecked` is **audited, not compiler-enforced**: it stays
+  `pub(crate)` because a hard seal is impossible (`value` and `ir_builder` are sibling
+  modules and the constructors need `ir_builder`-private helpers), so the builder's fold
+  re-checks remain the runtime backstop.
 - `Width<M>`/`Width<N>` `WiderThan` relations blocked on stable
   const-generics (documented at `int_width.rs` ~105-116); revisit when
   `generic_const_exprs` stabilizes.
