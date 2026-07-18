@@ -63,7 +63,7 @@ fn main() -> Result<(), IrError> {
         let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::at_end(entry);
         b.build_ret(i32_ty.const_int(1_u32))?;
 
         let verified = m.verify()?;

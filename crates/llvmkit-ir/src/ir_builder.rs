@@ -370,6 +370,42 @@ where
     }
 }
 
+impl<'m, 'ctx, B, R> IRBuilder<'m, 'ctx, B, ConstantFolder, Positioned, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: ReturnMarker,
+{
+    /// Create a builder already positioned at the end of `bb`, inferring the
+    /// return marker `R` from the block — the block already pins it, so no
+    /// turbofish is needed. Equivalent to
+    /// `new_for::<R>(module).position_at_end(bb)` but with `R` derived and the
+    /// module taken from `bb` (which carries a `ModuleRef`). Installs the
+    /// default [`ConstantFolder`], matching [`new_for`](Self::new_for).
+    /// [`new_for`](Self::new_for) remains for the unpositioned case (build a
+    /// block first).
+    ///
+    /// Accepts a block carrying any parameter schema `Params` — mirroring
+    /// [`position_at_end`](Self::position_at_end), which erases the parameter
+    /// marker at the insertion point.
+    pub fn at_end<Params>(
+        bb: BasicBlock<'ctx, R, Unterminated, B, Params>,
+    ) -> IRBuilder<'m, 'ctx, B, ConstantFolder, Positioned, R>
+    where
+        Params: BlockParams,
+    {
+        let module = bb.module_ref().module();
+        IRBuilder {
+            module,
+            _module: PhantomData,
+            insert_block: Some(bb.retag_params::<BlockParamsDyn>()),
+            insert_before: None,
+            folder: ConstantFolder,
+            fmf: super::fmf::FastMathFlags::empty(),
+            _state: PhantomData,
+        }
+    }
+}
+
 impl<'m, 'ctx, B, F, R> IRBuilder<'m, 'ctx, B, F, Unpositioned, R>
 where
     B: ModuleBrand + 'ctx,

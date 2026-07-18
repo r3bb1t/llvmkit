@@ -82,7 +82,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     // entry: %is_zero = icmp eq i32 %n, 0; then branch to `base` with no
     // arguments, or into `loop` carrying the header-phis' initial values
     // `[ acc = 1, i = %n ]`.
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let b = IRBuilder::at_end(entry);
     let is_zero = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
     b.build_cond_br_with_args(
         is_zero,
@@ -93,14 +93,14 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     )?;
 
     // base: ret i32 1
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(base);
+    let b = IRBuilder::at_end(base);
     b.build_ret(1_i32)?;
 
     // loop: `params[0]`/`params[1]` are the `%acc`/`%i` head-phis. Compute the
     // back-edge values from them, then re-enter `loop` carrying
     // `[ next_acc, next_i ]`. Those values are defined before the latch
     // terminator, so they dominate the branch that carries them.
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(loop_bb);
+    let b = IRBuilder::at_end(loop_bb);
     let acc: IntValue<i32> = params[0].try_into()?;
     let i: IntValue<i32> = params[1].try_into()?;
     let next_acc = b.build_int_mul(acc, i, "next_acc")?;
@@ -115,7 +115,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     )?;
 
     // exit: ret i32 %next_acc
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(exit);
+    let b = IRBuilder::at_end(exit);
     b.build_ret(next_acc)?;
     Ok(())
 }

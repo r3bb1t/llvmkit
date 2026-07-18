@@ -45,7 +45,7 @@ fn build() -> Result<(), IrError> {
         let fn_ty = m.fn_type(i32_ty.as_type(), [v4i32.as_type(), v4i32.as_type()], false);
         let vadd = m.add_function::<i32, _>("vadd", fn_ty, Linkage::External)?;
         let entry = vadd.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::at_end(entry);
 
         // Narrow the erased `<4 x i32>` params into the statically typed handle.
         // `try_into` checks BOTH element (i32) and lane count (4) at run time,
@@ -84,7 +84,7 @@ fn build() -> Result<(), IrError> {
         let fn_ty = m.fn_type(i32_ty.as_type(), [a4i32.as_type()], false);
         let apack = m.add_function::<i32, _>("apack", fn_ty, Linkage::External)?;
         let entry = apack.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::at_end(entry);
 
         let arr: ArrayValue<'_, i32, ArrLen<4>> = apack
             .param(0)

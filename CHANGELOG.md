@@ -31,6 +31,11 @@ compiles with no type handle and no `.as_type()`.
   whose name is already bound at module scope now reports this instead of the
   misused `DuplicateFunctionName`. One variant covers all three global-scope
   symbol kinds (they share the module's global namespace).
+- `IRBuilder::at_end(bb)` and `BasicBlock::builder()` — a builder positioned at a
+  block with the return marker inferred from the block, so
+  `IRBuilder::new_for::<R>(&m).position_at_end(bb)` collapses to
+  `IRBuilder::at_end(bb)` (no turbofish). `new_for` retained for building blocks
+  before positioning.
 
 #### Changed
 

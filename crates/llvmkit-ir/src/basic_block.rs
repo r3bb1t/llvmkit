@@ -23,6 +23,8 @@ use super::block_state::{BlockTerminationState, Unterminated};
 use super::function::FunctionValue;
 use super::function_signature::{CallArgs, FunctionParamList};
 use super::instruction::{InstructionKindData, InstructionView};
+use super::ir_builder::constant_folder::ConstantFolder;
+use super::ir_builder::{IRBuilder, Positioned};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::TypeId;
@@ -66,7 +68,7 @@ impl BasicBlockData {
 /// `ty` field carries that label type's id without allocating.
 ///
 /// The `R: ReturnMarker` parameter pins the parent function's return
-/// shape at the type level so a typed [`IRBuilder`](crate::IRBuilder)
+/// shape at the type level so a typed [`IRBuilder`]
 /// positioned inside the block can keep its compile-time `build_ret`
 /// invariant.
 ///
@@ -407,6 +409,19 @@ where
         A: CallArgs<'ctx, Params, B>,
     {
         self.label().call(args)
+    }
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
+    BasicBlock<'ctx, R, Unterminated, B, Params>
+{
+    /// Positioned builder at the end of this block. `bb.builder()` is
+    /// exactly [`IRBuilder::at_end(bb)`](crate::IRBuilder::at_end) — the
+    /// return marker `R` is inferred from the block, so no turbofish is
+    /// needed. Reads better when `bb` is already in hand.
+    #[inline]
+    pub fn builder(self) -> IRBuilder<'ctx, 'ctx, B, ConstantFolder, Positioned, R> {
+        IRBuilder::at_end(self)
     }
 }
 
