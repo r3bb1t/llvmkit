@@ -40,6 +40,17 @@ compiles with no type handle and no `.as_type()`.
   without the empty-`Vec::<Type>::new()` inference cliff of `fn_type` (with an
   empty iterator the element type can't be inferred). It is exactly
   `fn_type(ret, [], is_var_arg)` with the element type pinned.
+- `Module::add_function_dyn(name, signature, linkage)` — the honest *erased*
+  function-declaration path: it takes a runtime `FunctionType` and returns a
+  `FunctionValue<Dyn>`, carrying no static return marker and running no
+  return-marker check (`Dyn` matches every signature by definition). This is the
+  path for the `.ll` parser and other runtime-schema-driven tooling. For
+  statically-typed authoring, prefer the typed primary
+  `add_typed_function::<Ret, Params>(name, linkage)`: its turbofish *is* the
+  schema (no separately built `FunctionType`), and the parameters come back
+  already typed through `f.params()`. The erased
+  `add_function::<R>(name, fn_ty, linkage)` — erased signature, typed return —
+  stays; migrating its remaining call sites is deferred to the strict-cut cycle.
 
 #### Changed
 

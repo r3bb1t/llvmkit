@@ -58,10 +58,11 @@ impl AddMarkerGlobal {
 
 fn main() -> Result<(), IrError> {
     Module::with_new("authored-pass-demo", |m| {
-        // Build `i32 @f()` returning a constant.
+        // Build `i32 @f()` returning a constant. `add_typed_function` is the
+        // typed primary: the turbofish `<i32, ()>` *is* the schema (return
+        // `i32`, no parameters) — no separately built `FunctionType`.
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_typed_function::<i32, (), _>("f", Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::at_end(entry);
         b.build_ret(i32_ty.const_int(1_u32))?;
@@ -75,7 +76,7 @@ fn main() -> Result<(), IrError> {
         let verified: Module<'_, _, Verified> = run_function_pass(
             EntryReachable { flag: flag.clone() },
             verified,
-            f,
+            f.as_function(),
             &mut analyses,
         )?;
         println!("entry-reachable = {}", flag.get());
