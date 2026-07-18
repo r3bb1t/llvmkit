@@ -1129,7 +1129,8 @@ impl<'ctx> ModuleCore {
         let ret_data = self.ctx.type_data(signature.return_type().id());
         if !crate::function::signature_matches_marker::<R>(ret_data) {
             return Err(IrError::ReturnTypeMismatch {
-                expected: signature.return_type().kind_label(),
+                expected: crate::marker::marker_kind_label::<R>()
+                    .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
                 got: signature.return_type().kind_label(),
             });
         }
@@ -1929,11 +1930,11 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
             .0;
         let ret_data = self.core.ctx.type_data(ret_id);
         if !crate::function::signature_matches_marker::<R>(ret_data) {
-            let label =
-                crate::r#type::Type::new(ret_id, ModuleRef::<B>::new(self.core)).kind_label();
+            let got = crate::r#type::Type::new(ret_id, ModuleRef::<B>::new(self.core)).kind_label();
             return Err(IrError::ReturnTypeMismatch {
-                expected: label,
-                got: label,
+                expected: crate::marker::marker_kind_label::<R>()
+                    .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
+                got,
             });
         }
         Ok(Some(FunctionValue::<'ctx, R, B>::from_parts_unchecked(
@@ -2600,7 +2601,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         let ret_data = self.core.ctx.type_data(signature.return_type().id());
         if !crate::function::signature_matches_marker::<R>(ret_data) {
             return Err(IrError::ReturnTypeMismatch {
-                expected: signature.return_type().kind_label(),
+                expected: crate::marker::marker_kind_label::<R>()
+                    .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
                 got: signature.return_type().kind_label(),
             });
         }
