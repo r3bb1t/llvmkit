@@ -1994,7 +1994,7 @@ where
     {
         let lhs = lhs.into_float_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
-        let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
+        let i1 = ModuleView::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_fp_cmp(pred, lhs, rhs)? {
             return Ok(folded);
         }
@@ -2004,8 +2004,7 @@ where
             IsValue::as_value(rhs).id,
         );
         payload.fmf = fmf;
-        let inst = self.append_instruction(i1_ty, InstructionKindData::FCmp(payload), name);
-        Ok(IntValue::<bool, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_at(i1, InstructionKindData::FCmp(payload), name))
     }
 
     /// Produce `fcmp <pred> lhs, rhs`. Mirrors
@@ -2025,7 +2024,7 @@ where
     {
         let lhs = lhs.into_float_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
-        let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
+        let i1 = ModuleView::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_fp_cmp(pred, lhs, rhs)? {
             return Ok(folded);
         }
@@ -2036,8 +2035,7 @@ where
         );
         // Apply builder-context FMF (`fcmp` is an `FPMathOperator` upstream).
         payload.fmf = self.fmf;
-        let inst = self.append_instruction(i1_ty, InstructionKindData::FCmp(payload), name);
-        Ok(IntValue::<bool, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_at(i1, InstructionKindData::FCmp(payload), name))
     }
 
     // ---- Per-predicate fcmp wrappers ----
@@ -3702,8 +3700,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(payload, name)?;
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+        self.append_int_load(ty, payload, name)
     }
 
     /// Runtime-width integer load. Takes the type explicitly because
@@ -3727,8 +3724,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(payload, name)?;
-        Ok(IntValue::<IntDyn, B>::from_value_unchecked(inst.as_value()))
+        self.append_int_load(ty, payload, name)
     }
 
     /// Typed float load: `load <fpty>, ptr <ptr>`. Marker-only.
@@ -3748,8 +3744,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(payload, name)?;
-        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
+        self.append_fp_load(ty, payload, name)
     }
 
     /// Runtime-kind float load. Takes the type explicitly because
@@ -3773,10 +3768,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(payload, name)?;
-        Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        self.append_fp_load(ty, payload, name)
     }
 
     /// Pointer-typed load: `load ptr, ptr <ptr>`. Pointer types are
@@ -3824,8 +3816,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(payload, name)?;
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+        self.append_int_load(ty, payload, name)
     }
 
     /// Typed `load`: the result type is derived from the pointer's
@@ -4121,8 +4112,7 @@ where
             config.ordering_value(),
             config.sync_scope_value().clone(),
         );
-        let inst = self.build_load_inner(payload, name)?;
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+        self.append_int_load(ty, payload, name)
     }
 
     /// Erased atomic load. Same upstream constructor as
@@ -5601,9 +5591,8 @@ where
             IsValue::as_value(lhs).id,
             IsValue::as_value(rhs).id,
         );
-        let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
-        let inst = self.append_instruction(i1_ty, InstructionKindData::ICmp(payload), name);
-        Ok(IntValue::<bool, B>::from_value_unchecked(inst.as_value()))
+        let i1 = ModuleView::<B>::new(self.module).bool_type();
+        Ok(self.append_int_at(i1, InstructionKindData::ICmp(payload), name))
     }
 
     // ---- Vector splat / ptr arithmetic / aggregate ret convenience ----
@@ -5725,14 +5714,13 @@ where
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
-        let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
+        let i1 = ModuleView::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_int_cmp(pred, lhs, rhs)? {
             return Ok(folded);
         }
         let payload =
             crate::instr_types::CmpInstData::new(pred, lhs.as_value().id, rhs.as_value().id);
-        let inst = self.append_instruction(i1_ty, InstructionKindData::ICmp(payload), name);
-        Ok(IntValue::<bool, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_at(i1, InstructionKindData::ICmp(payload), name))
     }
 
     /// `icmp samesign` with explicit [`crate::ICmpFlags`]. Mirrors
@@ -5760,15 +5748,14 @@ where
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
-        let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
+        let i1 = ModuleView::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_int_cmp(predicate, lhs, rhs)? {
             return Ok(folded);
         }
         let mut payload =
             crate::instr_types::CmpInstData::new(predicate, lhs.as_value().id, rhs.as_value().id);
         payload.samesign = flags.samesign;
-        let inst = self.append_instruction(i1_ty, InstructionKindData::ICmp(payload), name);
-        Ok(IntValue::<bool, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_at(i1, InstructionKindData::ICmp(payload), name))
     }
 
     /// `icmp samesign` with explicit [`crate::ICmpFlags`]. Both operands
@@ -5785,15 +5772,14 @@ where
     where
         Name: AsRef<str>,
     {
-        let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
+        let i1 = ModuleView::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_int_cmp(pred, lhs, rhs)? {
             return Ok(folded);
         }
         let mut payload =
             crate::instr_types::CmpInstData::new(pred, lhs.as_value().id, rhs.as_value().id);
         payload.samesign = flags.samesign;
-        let inst = self.append_instruction(i1_ty, InstructionKindData::ICmp(payload), name);
-        Ok(IntValue::<bool, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_at(i1, InstructionKindData::ICmp(payload), name))
     }
 
     // Per-predicate convenience wrappers. Mirror the LLVM C++
@@ -7522,6 +7508,41 @@ where
     ) -> FloatValue<'ctx, K, B> {
         let inst = self.append_instruction(ty.as_type().id(), kind, name);
         FloatValue::<K, B>::from_value_unchecked(inst.as_value())
+    }
+
+    /// Build and append a `load`, re-stamping the payload's pointee to `ty` and
+    /// wrapping the result as width-`W`.
+    ///
+    /// Takes the whole [`LoadInstData`] (so the caller sets align/volatile/ordering/
+    /// scope exactly as before) and overwrites `payload.pointee_ty` with `ty` — the
+    /// appended type IS `ty` by construction, so the `W` marker is provably correct.
+    /// Routes through [`Self::build_load_inner`] so the DataLayout default-align fill
+    /// is preserved (a raw `append_int_at` would skip it and emit `align 0`). This
+    /// removes the `from_value_unchecked` assertion at the load site
+    /// (docs/unforgeable-markers-design.md, census pattern 2 -- load variant).
+    fn append_int_load<W: IntWidth, N: AsRef<str>>(
+        &self,
+        ty: IntType<'ctx, W, B>,
+        mut payload: LoadInstData,
+        name: N,
+    ) -> IrResult<IntValue<'ctx, W, B>> {
+        payload.pointee_ty = ty.as_type().id();
+        let inst = self.build_load_inner(payload, name)?;
+        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+    }
+
+    /// Float analogue of `append_int_load`. Re-stamps `payload.pointee_ty` with `ty`
+    /// so the appended type IS `ty` and the `K` marker is provably correct; routed
+    /// through [`Self::build_load_inner`] so the default-align fill is preserved.
+    fn append_fp_load<K: FloatKind, N: AsRef<str>>(
+        &self,
+        ty: FloatType<'ctx, K, B>,
+        mut payload: LoadInstData,
+        name: N,
+    ) -> IrResult<FloatValue<'ctx, K, B>> {
+        payload.pointee_ty = ty.as_type().id();
+        let inst = self.build_load_inner(payload, name)?;
+        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
     }
 
     /// Crate-internal: append a freshly-built phi to the insertion block.
