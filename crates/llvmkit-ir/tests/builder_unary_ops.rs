@@ -3,8 +3,8 @@
 //! Every test cites its upstream source per Doctrine D11.
 
 use llvmkit_ir::{
-    Constant, ConstantFloatValue, FastMathFlags, FloatValue, IRBuilder, IntValue, IrError, Linkage,
-    Module, PointerValue, Ptr, VerifierRule,
+    Constant, ConstantFloatValue, Dyn, FastMathFlags, FloatValue, IRBuilder, IntValue, IrError,
+    Linkage, Module, PointerValue, Ptr, VerifierRule,
 };
 
 // --------------------------------------------------------------------------
@@ -19,9 +19,9 @@ fn build_fneg_round_trip() -> Result<(), IrError> {
     Module::with_new("u", |m| {
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
-        let f = m.add_function::<f32, _>("k", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("k", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: FloatValue<f32> = f.param(0)?.try_into()?;
         let r = b.build_float_neg::<f32, _, _>(x, "y")?;
         b.build_ret(r)?;
@@ -40,9 +40,9 @@ fn fneg_with_fmf_prints_canonical_form() -> Result<(), IrError> {
     Module::with_new("u", |m| {
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
-        let f = m.add_function::<f32, _>("k", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("k", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: FloatValue<f32> = f.param(0)?.try_into()?;
         let nnan_only = FastMathFlags::NO_NANS;
         let n = b.build_float_neg_with_flags::<f32, _, _>(x, nnan_only, "n")?;
@@ -88,9 +88,9 @@ fn default_constant_folder_folds_fneg_to_constant() -> Result<(), IrError> {
     Module::with_new("u-fold", |m| {
         let f64_ty = m.f64_type();
         let fn_ty = m.fn_type(f64_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<f64, _>("neg", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("neg", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<f64>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let result = b.build_float_neg::<f64, _, _>(f64_ty.const_double(1.25), "neg")?;
         let folded = ConstantFloatValue::<f64>::try_from(Constant::try_from(result.as_value())?)?;
         assert!(folded.ap_float().is_exactly_value_f64(-1.25));
@@ -194,9 +194,9 @@ fn va_arg_int_round_trip() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("get_i32", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("get_i32", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let ap: PointerValue = f.param(0)?.try_into()?;
         let v = b.build_va_arg(ap, i32_ty.as_type(), "tmp")?;
         let asv: IntValue<i32> = v.as_value().try_into()?;
@@ -218,9 +218,9 @@ fn va_arg_print_keyword_and_destination_type() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("h", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("h", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let ap: PointerValue = f.param(0)?.try_into()?;
         let v = b.build_va_arg(ap, i32_ty.as_type(), "build_va_arg")?;
         let _ = ap; // silence unused-variable lint when `pop` accessor changes.
