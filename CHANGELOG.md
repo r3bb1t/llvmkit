@@ -36,6 +36,14 @@ Erasure is still available, but it must be **spelled**.
 - As a direct consequence of the above, `build_int_add(2i32, 3i32, "n")` now
   infers its width with **no turbofish** and no annotation: with a single width
   per literal, the operand marker `W` has exactly one solution.
+- The bitcast builders (`build_bitcast_int_to_int`, `build_bitcast_int_to_fp`,
+  `build_bitcast_fp_to_int`, `build_bitcast_fp_to_fp`), `build_atomic_cmpxchg`,
+  and `build_ui_to_fp_with_flags` drop their now-redundant operand-lift generic:
+  with one-literal-one-width and sealed conversions, the lift bought only
+  "accept a bare literal in place of a typed handle", dead weight for these
+  computed-SSA operands. The methods now take the concrete typed operand
+  directly, so e.g. `build_bitcast_int_to_int(v, i8_ty, "bc")` needs no
+  turbofish. Printed IR is unchanged.
 
 ### Declaration surface — globals derive their type from the initializer
 

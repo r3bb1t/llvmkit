@@ -611,8 +611,8 @@ decl_wider_than!(i128: bool, i8, i16, i32, i64);
 /// - Every kept Rust scalar (`bool`, `i8`..`i128`, `u8`..`u128`), each
 ///   mapping to exactly its own `iN` marker.
 ///
-/// The trait is **sealed**. An erased [`Value`] / [`Argument`] /
-/// [`Instruction`] no longer lifts silently: narrow it explicitly with
+/// The trait is **sealed**. An erased [`Value`] / `Argument` /
+/// `Instruction` no longer lifts silently: narrow it explicitly with
 /// [`IntValue::try_from`] (or [`IsValue`]-erased `_dyn` builders). The
 /// `module` argument exists so Rust-scalar inputs can route through the
 /// right [`IntType<'ctx, W>`] constructor; impls for value handles

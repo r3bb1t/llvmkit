@@ -122,11 +122,7 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
         let trunc = b.build_trunc::<i16, i8, _>(trunc_src, i8_ty, "tr")?;
         let zext = b.build_zext::<i8, i16, _>(zext_src, i16_ty, "zext")?;
         let sext = b.build_sext::<i8, i16, _>(sext_src, i16_ty, "sext")?;
-        let bitcast = b.build_bitcast_int_to_int::<i8, Width<8>, _, _>(
-            bitcast_src,
-            m.int_type_n::<8>(),
-            "bc",
-        )?;
+        let bitcast = b.build_bitcast_int_to_int(bitcast_src, m.int_type_n::<8>(), "bc")?;
         let freeze = b.build_freeze(c_aa, "fr")?;
         let cmp = b.build_icmp_eq::<i8, _, _, _>(c_aa, c_aa, "cmp")?;
 

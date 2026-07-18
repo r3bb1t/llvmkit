@@ -3103,19 +3103,18 @@ where
     /// Mirrors `IRBuilder::CreateAtomicCmpXchg`.
     ///
     /// Result type is the literal struct `{ <pointee>, i1 }`.
-    pub fn build_atomic_cmpxchg<P, C, N, Name>(
+    pub fn build_atomic_cmpxchg<P, V, Name>(
         &self,
         ptr: P,
-        cmp: C,
-        new_val: N,
+        cmp: V,
+        new_val: V,
         config: crate::instr_types::AtomicCmpXchgConfig,
         name: Name,
     ) -> IrResult<AtomicCmpXchgInst<'ctx, B>>
     where
         Name: AsRef<str>,
         P: IsValue<'ctx, B>,
-        C: IsValue<'ctx, B>,
-        N: IsValue<'ctx, B>,
+        V: IsValue<'ctx, B>,
     {
         let p = ptr.as_value();
         let c = cmp.as_value();
@@ -5123,9 +5122,9 @@ where
     /// `uitofp nneg` with explicit [`crate::UIToFpFlags`]. Mirrors
     /// `IRBuilder::CreateUIToFP` plus `Instruction::setNonNeg`. The `nneg`
     /// flag asserts the source value is non-negative.
-    pub fn build_ui_to_fp_with_flags<W, K, V, Name>(
+    pub fn build_ui_to_fp_with_flags<W, K, Name>(
         &self,
-        value: V,
+        value: IntValue<'ctx, W, B>,
         dst_ty: FloatType<'ctx, K, B>,
         flags: crate::instr_types::UIToFpFlags,
         name: Name,
@@ -5134,9 +5133,7 @@ where
         Name: AsRef<str>,
         W: IntWidth,
         K: FloatKind,
-        V: IntoIntValue<'ctx, W, B>,
     {
-        let value = value.into_int_value(ModuleRef::new(self.module))?;
         let v = value.as_value();
         if let Some(folded) =
             self.folder
@@ -5316,9 +5313,9 @@ where
     /// [`super::float_kind::StaticFloatKind::STATIC_BITS`]
     /// `const { assert!(...) }` blocks at monomorphisation; under-spec'd
     /// instantiations are *compile* errors.
-    pub fn build_bitcast_int_to_int<Src, Dst, V, Name>(
+    pub fn build_bitcast_int_to_int<Src, Dst, Name>(
         &self,
-        value: V,
+        value: IntValue<'ctx, Src, B>,
         dst_ty: IntType<'ctx, Dst, B>,
         name: Name,
     ) -> IrResult<IntValue<'ctx, Dst, B>>
@@ -5326,7 +5323,6 @@ where
         Name: AsRef<str>,
         Src: super::int_width::StaticIntWidth,
         Dst: super::int_width::StaticIntWidth,
-        V: IntoIntValue<'ctx, Src, B>,
     {
         const {
             assert!(
@@ -5335,8 +5331,7 @@ where
                 "bitcast int->int requires Src::STATIC_BITS == Dst::STATIC_BITS",
             );
         }
-        let v = value.into_int_value(ModuleRef::new(self.module))?;
-        let v_value = IsValue::as_value(v);
+        let v_value = value.as_value();
         if let Some(folded) = self.folder.fold_cast_to_int(
             super::instr_types::CastOpcode::BitCast,
             v_value,
@@ -5352,9 +5347,9 @@ where
     /// `Instruction::BitCast` arm of `CastInst::Create` in
     /// `lib/IR/Instructions.cpp` for the `int -> fp` shape. Width
     /// equality is enforced statically.
-    pub fn build_bitcast_int_to_fp<W, K, V, Name>(
+    pub fn build_bitcast_int_to_fp<W, K, Name>(
         &self,
-        value: V,
+        value: IntValue<'ctx, W, B>,
         dst_ty: FloatType<'ctx, K, B>,
         name: Name,
     ) -> IrResult<FloatValue<'ctx, K, B>>
@@ -5362,7 +5357,6 @@ where
         Name: AsRef<str>,
         W: super::int_width::StaticIntWidth,
         K: super::float_kind::StaticFloatKind,
-        V: IntoIntValue<'ctx, W, B>,
     {
         const {
             assert!(
@@ -5371,8 +5365,7 @@ where
                 "bitcast int->fp requires W::STATIC_BITS == K::STATIC_BITS",
             );
         }
-        let v = value.into_int_value(ModuleRef::new(self.module))?;
-        let v_value = IsValue::as_value(v);
+        let v_value = value.as_value();
         if let Some(folded) =
             self.folder
                 .fold_cast_to_fp(super::instr_types::CastOpcode::BitCast, v_value, dst_ty)?
@@ -5387,9 +5380,9 @@ where
     /// `Instruction::BitCast` arm of `CastInst::Create` in
     /// `lib/IR/Instructions.cpp` for the `fp -> int` shape. Width
     /// equality is enforced statically.
-    pub fn build_bitcast_fp_to_int<K, W, V, Name>(
+    pub fn build_bitcast_fp_to_int<K, W, Name>(
         &self,
-        value: V,
+        value: FloatValue<'ctx, K, B>,
         dst_ty: IntType<'ctx, W, B>,
         name: Name,
     ) -> IrResult<IntValue<'ctx, W, B>>
@@ -5397,7 +5390,6 @@ where
         Name: AsRef<str>,
         K: super::float_kind::StaticFloatKind,
         W: super::int_width::StaticIntWidth,
-        V: IntoFloatValue<'ctx, K, B>,
     {
         const {
             assert!(
@@ -5406,8 +5398,7 @@ where
                 "bitcast fp->int requires K::STATIC_BITS == W::STATIC_BITS",
             );
         }
-        let v = value.into_float_value(ModuleRef::new(self.module))?;
-        let v_value = IsValue::as_value(v);
+        let v_value = value.as_value();
         if let Some(folded) = self.folder.fold_cast_to_int(
             super::instr_types::CastOpcode::BitCast,
             v_value,
@@ -5423,9 +5414,9 @@ where
     /// `bfloat <-> half` (both 16 bits) and `fp128 <-> ppc_fp128` (both
     /// 128 bits). Mirrors `Instruction::BitCast` in
     /// `lib/IR/Instructions.cpp`.
-    pub fn build_bitcast_fp_to_fp<Src, Dst, V, Name>(
+    pub fn build_bitcast_fp_to_fp<Src, Dst, Name>(
         &self,
-        value: V,
+        value: FloatValue<'ctx, Src, B>,
         dst_ty: FloatType<'ctx, Dst, B>,
         name: Name,
     ) -> IrResult<FloatValue<'ctx, Dst, B>>
@@ -5433,7 +5424,6 @@ where
         Name: AsRef<str>,
         Src: super::float_kind::StaticFloatKind,
         Dst: super::float_kind::StaticFloatKind,
-        V: IntoFloatValue<'ctx, Src, B>,
     {
         const {
             assert!(
@@ -5442,8 +5432,7 @@ where
                 "bitcast fp->fp requires Src::STATIC_BITS == Dst::STATIC_BITS",
             );
         }
-        let v = value.into_float_value(ModuleRef::new(self.module))?;
-        let v_value = IsValue::as_value(v);
+        let v_value = value.as_value();
         if let Some(folded) =
             self.folder
                 .fold_cast_to_fp(super::instr_types::CastOpcode::BitCast, v_value, dst_ty)?

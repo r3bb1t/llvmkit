@@ -339,7 +339,7 @@ fn bitcast_int_to_fp_emits_text() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
         let n: IntValue<i32> = f.param(0)?.try_into()?;
-        let bc = b.build_bitcast_int_to_fp::<i32, f32, _, _>(n, f32_ty, "bc")?;
+        let bc = b.build_bitcast_int_to_fp(n, f32_ty, "bc")?;
         b.build_ret(bc)?;
         let text = format!("{m}");
         assert!(
@@ -364,7 +364,7 @@ fn default_constant_folder_folds_bitcast_int_to_fp() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
         let one_bits: IntValue<i32> = i32_ty.const_int(0x3f80_0000_i32).as_value().try_into()?;
-        let result = b.build_bitcast_int_to_fp::<i32, f32, _, _>(one_bits, f32_ty, "bc")?;
+        let result = b.build_bitcast_int_to_fp(one_bits, f32_ty, "bc")?;
         let folded = ConstantFloatValue::<f32>::try_from(Constant::try_from(result.as_value())?)?;
         assert!(folded.ap_float().is_exactly_value_f64(1.0));
         Ok(())
@@ -384,7 +384,7 @@ fn bitcast_fp_to_int_emits_text() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
         let n: llvmkit_ir::FloatValue<f64> = f.param(0)?.try_into()?;
-        let bc = b.build_bitcast_fp_to_int::<f64, i64, _, _>(n, i64_ty, "bc")?;
+        let bc = b.build_bitcast_fp_to_int(n, i64_ty, "bc")?;
         b.build_ret(bc)?;
         let text = format!("{m}");
         assert!(

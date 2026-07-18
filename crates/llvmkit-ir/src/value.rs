@@ -2205,8 +2205,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Value<'ctx, B> {
 /// - [`crate::ConstantPointerNull<'ctx, B>`] (lift via `null`).
 /// - [`crate::TypedPointerValue<'ctx, T, B>`] (drops the schema, identity lift).
 ///
-/// The trait is **sealed**. An erased [`Value`] / [`Argument`] /
-/// [`Instruction`] no longer lifts silently: narrow it explicitly with
+/// The trait is **sealed**. An erased [`Value`] / `Argument` /
+/// `Instruction` no longer lifts silently: narrow it explicitly with
 /// [`PointerValue::try_from`] (or [`IsValue`]-erased `_dyn` builders).
 pub trait IntoPointerValue<'ctx, B: ModuleBrand = Brand<'ctx>>:
     Sized + into_pointer_value_sealed::Sealed
