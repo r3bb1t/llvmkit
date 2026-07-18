@@ -25,12 +25,9 @@ fn cond_br_terminator_terminates_block() -> Result<(), IrError> {
         let else_bb = f.append_basic_block(&m, "else");
 
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        let cond: IntValue<bool> = b.build_int_cmp::<i32, _, _, _>(
-            llvmkit_ir::IntPredicate::Eq,
-            f.param(0)?,
-            0_i32,
-            "cond",
-        )?;
+        let lhs: IntValue<i32> = f.param(0)?.try_into()?;
+        let cond: IntValue<bool> =
+            b.build_int_cmp(llvmkit_ir::IntPredicate::Eq, lhs, 0_i32, "cond")?;
         let (terminated_entry, term) = b.build_cond_br(cond, &then_bb, &else_bb)?;
 
         // Mirrors `EXPECT_EQ(BI, TI)` -- the returned terminator handle

@@ -736,9 +736,9 @@ fn constant_folder_does_not_simplify_nonconstant_add_zero() -> Result<(), IrErro
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let x = f.param(0)?;
+        let x: IntValue<i32> = f.param(0)?.try_into()?;
 
-        let result = b.build_int_add::<i32, _, _, _>(x, i32_ty.const_zero(), "sum")?;
+        let result = b.build_int_add(x, i32_ty.const_zero(), "sum")?;
 
         assert!(InstructionView::try_from(result.as_value()).is_ok());
         assert_eq!(b.insert_block().instructions().len(), 1);

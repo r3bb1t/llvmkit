@@ -10,7 +10,9 @@
 //! per-predicate textual print form is locked by
 //! `test/Assembler/fast-math-flags.ll` (and the LangRef).
 
-use llvmkit_ir::{Constant, ConstantIntValue, FloatPredicate, IRBuilder, IrError, Linkage, Module};
+use llvmkit_ir::{
+    Constant, ConstantIntValue, FloatPredicate, FloatValue, IRBuilder, IrError, Linkage, Module,
+};
 
 fn module_with_pred(pred: FloatPredicate, name: &str) -> Result<String, IrError> {
     Module::with_new("fcmp", |m| {
@@ -20,7 +22,9 @@ fn module_with_pred(pred: FloatPredicate, name: &str) -> Result<String, IrError>
         let f = m.add_function::<bool, _>(name, fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);
-        let r = b.build_fp_cmp::<f64, _, _, _>(pred, f.param(0)?, f.param(1)?, "r")?;
+        let lhs: FloatValue<f64> = f.param(0)?.try_into()?;
+        let rhs: FloatValue<f64> = f.param(1)?.try_into()?;
+        let r = b.build_fp_cmp(pred, lhs, rhs, "r")?;
         b.build_ret(r)?;
         Ok(format!("{m}"))
     })

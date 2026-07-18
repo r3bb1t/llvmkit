@@ -153,8 +153,8 @@ fn build_phi_inserts_at_phi_head_not_cursor() -> Result<(), IrError> {
         let i32_dyn = m.custom_width_int_type(32)?;
         let _phi = b
             .build_int_phi_dyn(i32_dyn, "p")?
-            .add_incoming(f.param(0)?, entry_label)?
-            .add_incoming(f.param(0)?, other_label)?;
+            .add_incoming(a.as_dyn(), entry_label)?
+            .add_incoming(a.as_dyn(), other_label)?;
         b.build_ret(a)?;
 
         let text = format!("{m}");

@@ -2203,11 +2203,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Value<'ctx, B> {
 /// Implemented by:
 /// - [`PointerValue<'ctx, B>`] (identity).
 /// - [`crate::ConstantPointerNull<'ctx, B>`] (lift via `null`).
-/// - [`Argument<'ctx, B>`] (runtime-checked narrow).
-/// - [`Value<'ctx, B>`] (runtime-checked narrow).
-/// - [`Instruction`] (runtime-checked narrow when attached).
-pub trait IntoPointerValue<'ctx, B: ModuleBrand = Brand<'ctx>>: Sized {
+/// - [`crate::TypedPointerValue<'ctx, T, B>`] (drops the schema, identity lift).
+///
+/// The trait is **sealed**. An erased [`Value`] / [`Argument`] /
+/// [`Instruction`] no longer lifts silently: narrow it explicitly with
+/// [`PointerValue::try_from`] (or [`IsValue`]-erased `_dyn` builders).
+pub trait IntoPointerValue<'ctx, B: ModuleBrand = Brand<'ctx>>:
+    Sized + into_pointer_value_sealed::Sealed
+{
     fn into_pointer_value(self, module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>>;
+}
+
+/// Seals [`IntoPointerValue`] to the pointer-value handles below.
+/// [`TypedPointerValue`](crate::TypedPointerValue) also implements it
+/// (its `Sealed` impl lives beside its lift impl).
+pub(crate) mod into_pointer_value_sealed {
+    pub trait Sealed {}
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> into_pointer_value_sealed::Sealed for PointerValue<'ctx, B> {}
+impl<'ctx, B: ModuleBrand + 'ctx> into_pointer_value_sealed::Sealed
+    for ConstantPointerNull<'ctx, B>
+{
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for PointerValue<'ctx, B> {
@@ -2223,26 +2240,5 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for ConstantPointerN
         Ok(PointerValue::from_value_unchecked(
             crate::value::IsValue::as_value(self),
         ))
-    }
-}
-
-impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for Argument<'ctx, B> {
-    #[inline]
-    fn into_pointer_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
-        PointerValue::try_from(self.as_value())
-    }
-}
-
-impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for Value<'ctx, B> {
-    #[inline]
-    fn into_pointer_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
-        PointerValue::try_from(self)
-    }
-}
-
-impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for Instruction<'ctx, Attached, B> {
-    #[inline]
-    fn into_pointer_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
-        PointerValue::try_from(self.as_value())
     }
 }

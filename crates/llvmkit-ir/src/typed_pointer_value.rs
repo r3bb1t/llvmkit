@@ -76,6 +76,11 @@ impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> TypedPointerValue<'ctx, T, B> {
     }
 }
 
+impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> crate::value::into_pointer_value_sealed::Sealed
+    for TypedPointerValue<'ctx, T, B>
+{
+}
+
 impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B>
     for TypedPointerValue<'ctx, T, B>
 {

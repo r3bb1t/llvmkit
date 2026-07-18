@@ -353,9 +353,11 @@ fn indirectbr_erased_value_pointer_address_builds_and_verifies() -> Result<(), I
             let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(dest);
             bb_b.build_ret_void();
         }
-        // Erase the pointer param to a bare `Value` before passing it — the
-        // runtime-checked `IntoPointerValue for Value` impl narrows it back.
-        let addr = f.param(0)?.as_value();
+        // The strict cut removed the silent `IntoPointerValue for Value`
+        // lift, so an erased param must be narrowed to `PointerValue`
+        // explicitly (a runtime-checked `try_into`) before it can fill the
+        // pointer-typed `build_indirectbr` operand.
+        let addr: PointerValue = f.param(0)?.as_value().try_into()?;
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let (_sealed, ibr) = b.build_indirectbr(addr, "")?;
         let _closed = ibr.add_destination(dest_label)?.finish();

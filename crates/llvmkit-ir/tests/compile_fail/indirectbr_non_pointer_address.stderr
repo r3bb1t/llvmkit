@@ -6,13 +6,20 @@ error[E0277]: the trait bound `IntValue<'_, i32, Brand<'_>>: IntoPointerValue<'_
    |                   |
    |                   required by a bound introduced by this call
    |
-   = help: the following other types implement trait `IntoPointerValue<'ctx, B>`:
-             ConstantPointerNull<'ctx, B>
-             PointerValue<'ctx, B>
-             TypedPointerValue<'ctx, T, B>
-             llvmkit_ir::Argument<'ctx, B>
-             llvmkit_ir::Instruction<'ctx, Attached, B>
-             llvmkit_ir::Value<'ctx, B>
+help: the following other types implement trait `IntoPointerValue<'ctx, B>`
+  --> src/value.rs
+   |
+   |   impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for PointerValue<'ctx, B> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `PointerValue<'ctx, B>`
+...
+   |   impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for ConstantPointerNull<'ctx, B> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ConstantPointerNull<'ctx, B>`
+   |
+  ::: src/typed_pointer_value.rs
+   |
+   | / impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B>
+   | |     for TypedPointerValue<'ctx, T, B>
+   | |_____________________________________^ `TypedPointerValue<'ctx, T, B>`
 note: required by a bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_indirectbr`
   --> src/ir_builder.rs
    |

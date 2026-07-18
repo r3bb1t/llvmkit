@@ -7,6 +7,36 @@ tagged release is cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### No silent erasure — the strict cut
+
+An erased `Value` / `Argument` / `Instruction` can no longer *silently* satisfy a
+typed operand position, and a Rust numeric literal maps to exactly one IR width.
+Erasure is still available, but it must be **spelled**.
+
+#### Breaking
+
+- Removed the erased-handle lifts from `IntoIntValue`, `IntoFloatValue`, and
+  `IntoPointerValue`. An erased `Value` / `Argument` / `Instruction` no longer
+  fills a typed operand slot on its own; narrow it explicitly first — e.g.
+  `let p: PointerValue = v.try_into()?;` (or `IntValue::<W>::try_from` /
+  `FloatValue::<K>::try_from`) — or use the erased `_dyn` builder family. The four
+  conversion traits (`IntoIntValue`, `IntoFloatValue`, `IntoPointerValue`, and,
+  transitively, `IntoCallArg`) are now **sealed**: their set of accepted operand
+  sources is closed and cannot be extended downstream.
+- Removed the implicit literal-widening impls. A Rust integer literal now maps to
+  exactly one IR width (`2i32` is `i32`; `2i64` is `i64`) and a Rust float to
+  exactly one kind (`f32` / `f64`), with no silent widening (`i8 -> i32`,
+  `f32 -> f64`). A literal in a wider slot must name its width, e.g. `2_i64`. The
+  Rust-scalar → `Width<N>` lifts were removed for the same reason; a `Width<N>`
+  slot takes a typed `IntValue<Width<N>>` / `ConstantIntValue<Width<N>>`, not a
+  bare literal.
+
+#### Improved
+
+- As a direct consequence of the above, `build_int_add(2i32, 3i32, "n")` now
+  infers its width with **no turbofish** and no annotation: with a single width
+  per literal, the operand marker `W` has exactly one solution.
+
 ### Declaration surface — globals derive their type from the initializer
 
 `Module::add_global` / `add_global_constant` no longer take a separate

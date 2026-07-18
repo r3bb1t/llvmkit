@@ -4836,7 +4836,7 @@ where
         let raw = self.build_gep(
             elem_ty,
             ptr.as_pointer_value(),
-            core::iter::once(IsValue::as_value(idx_value)),
+            core::iter::once(idx_value.as_dyn()),
             name,
         )?;
         Ok(raw.with_pointee::<T>())
@@ -4862,7 +4862,7 @@ where
         let raw = self.build_inbounds_gep(
             elem_ty,
             ptr.as_pointer_value(),
-            core::iter::once(IsValue::as_value(idx_value)),
+            core::iter::once(idx_value.as_dyn()),
             name,
         )?;
         Ok(raw.with_pointee::<T>())
@@ -5685,8 +5685,7 @@ where
         let i8_ty = ModuleView::<B>::new(self.module).i8_type();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let offset_v = offset.into_int_value(ModuleRef::new(self.module))?;
-        let offset_value = IsValue::as_value(offset_v);
-        self.build_gep(i8_ty, p, core::iter::once(offset_value), name)
+        self.build_gep(i8_ty, p, core::iter::once(offset_v.as_dyn()), name)
     }
 
     /// `getelementptr inbounds i8, ptr <ptr>, <offset>`. Mirrors
@@ -5707,8 +5706,7 @@ where
         let i8_ty = ModuleView::<B>::new(self.module).i8_type();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let offset_v = offset.into_int_value(ModuleRef::new(self.module))?;
-        let offset_value = IsValue::as_value(offset_v);
-        self.build_inbounds_gep(i8_ty, p, core::iter::once(offset_value), name)
+        self.build_inbounds_gep(i8_ty, p, core::iter::once(offset_v.as_dyn()), name)
     }
 
     // ---- Integer comparison ----
@@ -7795,11 +7793,16 @@ where
 // return-value lift per concrete marker. Each impl is concrete-typed so
 // no overlap arises. Mirrors `IRBuilder::CreateRet` in `IRBuilder.h`.
 
-/// Sealed: types that can be passed to [`IRBuilder::build_ret`] for a
-/// function carrying [`ReturnMarker`] `R`. Concrete impls are provided
-/// per `(value-shape, R)` pair so a typed builder accepts every Rust
-/// scalar / typed handle that lifts to the correct IR type, while a
-/// runtime-checked [`Dyn`] builder accepts anything that implements
+/// Types that can be passed to [`IRBuilder::build_ret`] for a function
+/// carrying [`ReturnMarker`] `R`. Concrete impls are provided per
+/// `(value-shape, R)` pair: for a typed `R` the impls blanket over the
+/// now-sealed lift traits ([`IntoIntValue`] / [`IntoFloatValue`] /
+/// [`IntoPointerValue`]), so a typed builder accepts every Rust scalar /
+/// typed handle that lifts to the correct IR type and an erased handle is
+/// rejected; the [`Dyn`] builder blankets over [`IsValue`] and accepts any
+/// value handle with a runtime type check. This trait is not itself sealed
+/// with a private supertrait — its extension surface is closed
+/// transitively by those sealed lift-trait bounds plus the sealed
 /// [`IsValue`].
 pub trait IntoReturnValue<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>>: Sized {
     #[doc(hidden)]

@@ -9,7 +9,7 @@
 //! (which exercises `Builder.Create*` flag setters of the same shape).
 //! The shared `module_for` helper above factors module setup.
 
-use llvmkit_ir::{IRBuilder, IrError, Linkage, Module, SDivFlags, UDivFlags};
+use llvmkit_ir::{IRBuilder, IntValue, IrError, Linkage, Module, SDivFlags, UDivFlags};
 
 fn module_for(op: &str) -> Result<String, IrError> {
     Module::with_new("dr", |m| {
@@ -18,13 +18,13 @@ fn module_for(op: &str) -> Result<String, IrError> {
         let f = m.add_function::<i64, _>(op, fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
-        let x = f.param(0)?;
-        let y = f.param(1)?;
+        let x: IntValue<i64> = f.param(0)?.try_into()?;
+        let y: IntValue<i64> = f.param(1)?.try_into()?;
         let r = match op {
-            "udiv" => b.build_int_udiv::<i64, _, _, _>(x, y, "z")?,
-            "sdiv" => b.build_int_sdiv::<i64, _, _, _>(x, y, "z")?,
-            "urem" => b.build_int_urem::<i64, _, _, _>(x, y, "z")?,
-            "srem" => b.build_int_srem::<i64, _, _, _>(x, y, "z")?,
+            "udiv" => b.build_int_udiv(x, y, "z")?,
+            "sdiv" => b.build_int_sdiv(x, y, "z")?,
+            "urem" => b.build_int_urem(x, y, "z")?,
+            "srem" => b.build_int_srem(x, y, "z")?,
             _ => unreachable!(),
         };
         b.build_ret(r)?;
@@ -75,12 +75,9 @@ fn udiv_exact() -> Result<(), IrError> {
         let f = m.add_function::<i64, _>("udiv_exact", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
-        let r = b.build_int_udiv_with_flags::<i64, _, _, _>(
-            f.param(0)?,
-            f.param(1)?,
-            UDivFlags::new().exact(),
-            "z",
-        )?;
+        let lhs: IntValue<i64> = f.param(0)?.try_into()?;
+        let rhs: IntValue<i64> = f.param(1)?.try_into()?;
+        let r = b.build_int_udiv_with_flags(lhs, rhs, UDivFlags::new().exact(), "z")?;
         b.build_ret(r)?;
         let text = format!("{m}");
         assert!(text.contains("%z = udiv exact i64 %0, %1"), "got:\n{text}");
@@ -97,12 +94,9 @@ fn sdiv_exact() -> Result<(), IrError> {
         let f = m.add_function::<i64, _>("sdiv_exact", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
-        let r = b.build_int_sdiv_with_flags::<i64, _, _, _>(
-            f.param(0)?,
-            f.param(1)?,
-            SDivFlags::new().exact(),
-            "z",
-        )?;
+        let lhs: IntValue<i64> = f.param(0)?.try_into()?;
+        let rhs: IntValue<i64> = f.param(1)?.try_into()?;
+        let r = b.build_int_sdiv_with_flags(lhs, rhs, SDivFlags::new().exact(), "z")?;
         b.build_ret(r)?;
         let text = format!("{m}");
         assert!(text.contains("%z = sdiv exact i64 %0, %1"), "got:\n{text}");
