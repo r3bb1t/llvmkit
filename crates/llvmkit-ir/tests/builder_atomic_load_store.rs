@@ -7,7 +7,7 @@
 //! atomic-rule rejection paths.
 
 use llvmkit_ir::{
-    Align, AtomicLoadConfig, AtomicOrdering, AtomicStoreConfig, Constant, ConstantFloatValue,
+    Align, AtomicLoadConfig, AtomicOrdering, AtomicStoreConfig, Constant, ConstantFloatValue, Dyn,
     IRBuilder, IntValue, IrError, Linkage, Module, SyncScope, VerifierRule,
 };
 
@@ -21,9 +21,9 @@ fn load_atomic_monotonic_align4() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let word: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
         let cfg = AtomicLoadConfig::new(
             AtomicOrdering::Monotonic,
@@ -49,9 +49,9 @@ fn load_atomic_volatile_acquire_align8() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let word: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
         let cfg = AtomicLoadConfig::new(
             AtomicOrdering::Acquire,
@@ -78,9 +78,9 @@ fn load_atomic_volatile_singlethread_seq_cst_align16() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let word: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
         let cfg = AtomicLoadConfig::new(
             AtomicOrdering::SequentiallyConsistent,
@@ -111,9 +111,9 @@ fn store_atomic_monotonic_align4() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let word: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
         let val = i32_ty.const_int(23_i32);
         let cfg = AtomicStoreConfig::new(
@@ -122,7 +122,7 @@ fn store_atomic_monotonic_align4() -> Result<(), IrError> {
             Align::new(4).expect("align 4"),
         );
         b.build_store_atomic(val, word, cfg)?;
-        b.build_ret_void();
+        b.build_ret_void()?;
         let text = format!("{m}");
         assert!(
             text.contains("store atomic i32 23, ptr %0 monotonic, align 4\n"),
@@ -140,9 +140,9 @@ fn store_atomic_volatile_monotonic_align4() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let word: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
         let val = i32_ty.const_int(24_i32);
         let cfg = AtomicStoreConfig::new(
@@ -152,7 +152,7 @@ fn store_atomic_volatile_monotonic_align4() -> Result<(), IrError> {
         )
         .volatile();
         b.build_store_atomic(val, word, cfg)?;
-        b.build_ret_void();
+        b.build_ret_void()?;
         let text = format!("{m}");
         assert!(
             text.contains("store atomic volatile i32 24, ptr %0 monotonic, align 4\n"),
@@ -170,9 +170,9 @@ fn store_atomic_volatile_singlethread_monotonic() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let word: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
         let val = i32_ty.const_int(25_i32);
         let cfg = AtomicStoreConfig::new(
@@ -182,7 +182,7 @@ fn store_atomic_volatile_singlethread_monotonic() -> Result<(), IrError> {
         )
         .volatile();
         b.build_store_atomic(val, word, cfg)?;
-        b.build_ret_void();
+        b.build_ret_void()?;
         let text = format!("{m}");
         assert!(
             text.contains(
@@ -204,9 +204,9 @@ fn verifier_rejects_atomic_load_release_ordering() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let word: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
         let cfg = AtomicLoadConfig::new(
             AtomicOrdering::Release,
@@ -233,9 +233,9 @@ fn verifier_rejects_atomic_store_acquire_ordering() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let word: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
         let val = i32_ty.const_int(42_i32);
         let cfg = AtomicStoreConfig::new(
@@ -244,7 +244,7 @@ fn verifier_rejects_atomic_store_acquire_ordering() -> Result<(), IrError> {
             Align::new(4).expect("align 4"),
         );
         b.build_store_atomic(val, word, cfg)?;
-        b.build_ret_void();
+        b.build_ret_void()?;
         let err = m
             .verify_borrowed()
             .expect_err("verifier must reject acquire-ordered atomic store");
@@ -266,9 +266,9 @@ fn verifier_rejects_atomic_load_non_power_of_two_size() -> Result<(), IrError> {
         // through `StaticIntWidth::ir_type`, no separate type binding is needed.
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let word: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
         // i17 → bit width 17, not power-of-two.
         let cfg = AtomicLoadConfig::new(
@@ -277,7 +277,7 @@ fn verifier_rejects_atomic_load_non_power_of_two_size() -> Result<(), IrError> {
             Align::new(4).expect("align 4"),
         );
         let _ = b.build_int_load_atomic::<llvmkit_ir::Width<17>, _, _>(word, cfg, "ld")?;
-        b.build_ret_void();
+        b.build_ret_void()?;
         let err = m
             .verify_borrowed()
             .expect_err("verifier must reject non-power-of-two atomic size");
@@ -300,9 +300,9 @@ fn verifier_rejects_atomic_load_struct_operand() -> Result<(), IrError> {
         let struct_ty = m.struct_type([i32_ty.as_type()], false);
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let ptr: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
         let cfg = AtomicLoadConfig::new(
             AtomicOrdering::Unordered,
@@ -310,7 +310,7 @@ fn verifier_rejects_atomic_load_struct_operand() -> Result<(), IrError> {
             Align::new(8).expect("align 8"),
         );
         let _ = b.build_load_atomic(struct_ty, ptr, cfg, "v")?;
-        b.build_ret_void();
+        b.build_ret_void()?;
         let err = m
             .verify_borrowed()
             .expect_err("verifier must reject atomic load of struct type");
@@ -335,9 +335,9 @@ fn bitcast_int_to_fp_emits_text() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<f32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let n: IntValue<i32> = f.param(0)?.try_into()?;
         let bc = b.build_bitcast_int_to_fp(n, f32_ty, "bc")?;
         b.build_ret(bc)?;
@@ -360,9 +360,9 @@ fn default_constant_folder_folds_bitcast_int_to_fp() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<f32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<f32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let one_bits: IntValue<i32> = i32_ty.const_int(0x3f80_0000_i32).as_value().try_into()?;
         let result = b.build_bitcast_int_to_fp(one_bits, f32_ty, "bc")?;
         let folded = ConstantFloatValue::<f32>::try_from(Constant::try_from(result.as_value())?)?;
@@ -380,9 +380,9 @@ fn bitcast_fp_to_int_emits_text() -> Result<(), IrError> {
         let i64_ty = m.i64_type();
         let f64_ty = m.f64_type();
         let fn_ty = m.fn_type(i64_ty, [f64_ty.as_type()], false);
-        let f = m.add_function::<i64, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let n: llvmkit_ir::FloatValue<f64> = f.param(0)?.try_into()?;
         let bc = b.build_bitcast_fp_to_int(n, i64_ty, "bc")?;
         b.build_ret(bc)?;

@@ -12,7 +12,7 @@
 use llvmkit_ir::metadata::{
     DebugMetadataOperand, DebugRecord, DebugVariableRecord, DebugVariableRecordKind, MetadataRef,
 };
-use llvmkit_ir::{IRBuilder, IntValue, IrError, Linkage, Module, NoFolder, iter::BlockCursor};
+use llvmkit_ir::{Dyn, IRBuilder, IntValue, IrError, Linkage, Module, NoFolder, iter::BlockCursor};
 
 /// Port of `unittests/IR/UseTest.cpp::TEST(UseTest, sort)` setup body.
 /// Upstream:
@@ -40,9 +40,9 @@ fn use_test_sort_setup_registers_eight_users() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(void_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: IntValue<i32> = f.param(0)?.try_into()?;
 
         // Order matches the upstream string -- declaration order, not value index.
@@ -54,7 +54,7 @@ fn use_test_sort_setup_registers_eight_users() -> Result<(), IrError> {
         let v7 = b.build_int_add(x, 7_i32, "v7")?;
         let v6 = b.build_int_add(x, 6_i32, "v6")?;
         let v4 = b.build_int_add(x, 4_i32, "v4")?;
-        b.build_ret_void();
+        b.build_ret_void()?;
 
         // Upstream: `ASSERT_EQ(8u, I)` after iterating `X.users()`.
         assert_eq!(x.as_value().num_uses(), 8);
@@ -87,9 +87,9 @@ fn erase_no_invalidation() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(void_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<(), _>("foo", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("foo", fn_ty, Linkage::External)?;
         let bb = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(bb);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
         let x: IntValue<i32> = f.param(0)?.try_into()?;
 
         let i1 = b.build_int_add(x, 0_i32, "i1")?;
@@ -110,8 +110,8 @@ fn erase_no_invalidation() -> Result<(), IrError> {
         let (i2_inst, cursor) = cursor.next().expect("i2 instruction");
         let bb = cursor.into_block();
         i2_inst.erase_from_parent(&m);
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(bb);
-        let (bb, ret) = b.build_ret_void();
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+        let (bb, ret) = b.build_ret_void()?;
 
         // Post-erase: I1, I3, Ret. Upstream asserts via comesBefore +
         // iterator-equality; we assert the iteration order directly.
@@ -134,9 +134,9 @@ fn erase_releases_local_name_for_reuse() -> Result<(), IrError> {
     Module::with_new("erase-name", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let arg: IntValue<i32> = f.param(0)?.try_into()?;
 
         let _dead = b.build_int_add::<i32, _, _, _>(arg, 1_i32, "tmp")?;
@@ -146,7 +146,7 @@ fn erase_releases_local_name_for_reuse() -> Result<(), IrError> {
             .expect("dead instruction");
         dead_inst.erase_from_parent(&m);
         let block = cursor.into_block();
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(block);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(block);
         let live = b.build_int_add::<i32, _, _, _>(arg, 2_i32, "tmp")?;
         b.build_ret(live)?;
 
@@ -166,7 +166,7 @@ fn detached_append_reinserts_and_uniques_against_destination() -> Result<(), IrE
     Module::with_new("move-name", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let from = m.add_function::<i32, _>("from", fn_ty, Linkage::External)?;
+        let from = m.add_function_dyn("from", fn_ty, Linkage::External)?;
         let from_entry = from.append_basic_block(&m, "entry");
         let from_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(from_entry);
         let _moved_value = from_b.build_int_add::<i32, _, _, _>(
@@ -183,7 +183,7 @@ fn detached_append_reinserts_and_uniques_against_destination() -> Result<(), IrE
         let from_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(from_block);
         from_b.build_ret(i32_ty.const_zero())?;
 
-        let to = m.add_function::<i32, _>("to", fn_ty, Linkage::External)?;
+        let to = m.add_function_dyn("to", fn_ty, Linkage::External)?;
         let to_entry = to.append_basic_block(&m, "entry");
         let to_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(to_entry);
         let existing = to_b.build_int_add::<i32, _, _, _>(
@@ -218,7 +218,7 @@ fn detached_set_name_updates_carried_name_without_old_parent_binding() -> Result
     Module::with_new("detached-rename", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
@@ -267,9 +267,9 @@ fn erase_deregisters_from_operand_use_lists() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(void_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<(), _>("foo", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("foo", fn_ty, Linkage::External)?;
         let bb = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(bb);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
         let x: IntValue<i32> = f.param(0)?.try_into()?;
 
         let i1 = b.build_int_add(x, 0_i32, "i1")?;
@@ -285,7 +285,7 @@ fn erase_deregisters_from_operand_use_lists() -> Result<(), IrError> {
         let (i2_inst, cursor) = cursor.next().expect("i2 instruction");
         let bb = cursor.into_block();
         i2_inst.erase_from_parent(&m);
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(bb);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
         let _ = b.build_ret_void();
 
         // Post-erase: x has 2 users (only the surviving adds).
@@ -328,7 +328,7 @@ fn self_anchored_instruction_moves_are_no_ops() -> Result<(), IrError> {
     Module::with_new("self-move", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let builder = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let a = builder.build_int_add::<i32, _, _, _>(
@@ -368,7 +368,7 @@ fn debug_record_value_operand_counts_as_structural_use_and_erases() -> Result<()
         let void_ty = m.void_type();
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(void_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let x: IntValue<i32> = f.param(0)?.try_into()?;
         assert_eq!(x.as_value().num_uses(), 0);
@@ -412,7 +412,7 @@ fn debug_record_value_operand_is_rewritten_by_rauw() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(void_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<i32> = f.param(0)?.try_into()?;
