@@ -60,7 +60,10 @@ compiles with no type handle and no `.as_type()`.
   redundant creation-time `TypeMismatch` (initializer type vs declared type) is
   gone — it is now unrepresentable, since the type *is* the initializer's.
   `GlobalVariable::set_initializer` keeps its type check: a *replacement*
-  initializer must still match the global's frozen type.
+  initializer must still match the global's frozen type. On the low-level
+  `global_builder(name, ty).initializer(c)` escape hatch — where `ty` and `c`
+  remain independent — a mismatch now surfaces at `verify()`
+  (`GlobalInitializerTypeMismatch`) rather than eagerly at `build()`.
 - Aggregate constant constructors `ArrayType::const_array` /
   `StructType::const_struct` / `VectorType::const_vector` now accept
   `impl IntoConstantValue` elements, so Rust literals work
