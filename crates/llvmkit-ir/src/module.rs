@@ -2630,6 +2630,42 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         )
     }
 
+    /// Add a function whose return marker is erased to [`Dyn`].
+    ///
+    /// The honest erased declaration path: it takes a runtime [`FunctionType`] and
+    /// returns a `FunctionValue<Dyn>`. Unlike [`add_function`](Self::add_function) it
+    /// carries no static return marker and runs no return-marker check — `Dyn` matches
+    /// every signature by definition. Use this for the parser and runtime-schema-driven
+    /// tooling; for statically-typed authoring prefer
+    /// [`add_typed_function`](Self::add_typed_function), whose turbofish *is* the schema
+    /// (no separate `FunctionType`, and its parameters come back typed).
+    pub fn add_function_dyn<Name>(
+        &self,
+        name: Name,
+        signature: FunctionType<'ctx, B>,
+        linkage: crate::global_value::Linkage,
+    ) -> IrResult<FunctionValue<'ctx, crate::marker::Dyn, B>>
+    where
+        Name: AsRef<str>,
+    {
+        let name = name.as_ref();
+        reject_reserved_intrinsic_name(name)?;
+        if !name.is_empty() && self.core.global_name_exists(name) {
+            return Err(IrError::DuplicateFunctionName {
+                name: name.to_owned(),
+            });
+        }
+        // `R = Dyn` matches every signature, so no return-marker check is needed.
+        self.core.push_function(
+            name,
+            signature,
+            linkage,
+            crate::CallingConv::default(),
+            None,
+            None,
+        )
+    }
+
     pub fn intrinsic_descriptor_from_signature(
         &self,
         name: &str,
