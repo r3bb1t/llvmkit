@@ -10,7 +10,6 @@
 
 use crate::{
     FloatDyn, FloatValue, IRBuilder, InstructionKind, IntValue, IrError, Linkage, Module, PhiKind,
-    Type,
 };
 
 /// The `Open -> Closed` finalisation applies to every phi family, not just the
@@ -22,7 +21,7 @@ use crate::{
 fn fp_and_pointer_phi_finish_to_closed() -> Result<(), IrError> {
     Module::with_new("phi_finish_fp_ptr", |m| {
         let f64_ty = m.f64_type();
-        let fn_ty = m.fn_type(f64_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(f64_ty, false);
         let f = m.add_function::<f64, _>("f", fn_ty, Linkage::External)?;
         let bb = f.append_basic_block(&m, "bb");
         let b = IRBuilder::new_for::<f64>(&m).position_at_end(bb);
@@ -93,7 +92,7 @@ fn phi_finishes_after_all_incomings() -> Result<(), IrError> {
 fn rediscovered_phi_narrows_to_result_type() -> Result<(), IrError> {
     Module::with_new("phi_kind_rediscovery", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let bb = f.append_basic_block(&m, "bb");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(bb);

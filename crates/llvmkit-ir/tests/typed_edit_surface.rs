@@ -11,7 +11,7 @@
 use llvmkit_ir::{
     Analyses, BasicBlockLabel, Dyn, FnCx, FnReport, FunctionPass, FunctionValue, IRBuilder,
     IntPredicate, IntValue, IrError, IrResult, Linkage, Module, ModuleBrand, ReshapeCfg, TermEdit,
-    Type, Value, run_function_pass,
+    Value, run_function_pass,
 };
 
 // Fixture return-type aliases. These keep the `build_*` helper signatures under
@@ -84,9 +84,9 @@ fn build_invoke_caller<'ctx>(
     m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
 ) -> IrResult<CallerFixture<'ctx>> {
     let void_ty = m.void_type();
-    let callee_ty = m.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
+    let callee_ty = m.fn_type_no_params(void_ty.as_type(), false);
     let callee = m.add_function::<(), _>("callee", callee_ty, Linkage::External)?;
-    let caller_ty = m.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
+    let caller_ty = m.fn_type_no_params(void_ty.as_type(), false);
     let caller = m.add_function::<(), _>("caller", caller_ty, Linkage::External)?;
 
     let entry = caller.append_basic_block(m, "entry");
@@ -193,9 +193,9 @@ fn build_callbr_caller<'ctx>(
     m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
 ) -> IrResult<CallerFixture<'ctx>> {
     let void_ty = m.void_type();
-    let callee_ty = m.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
+    let callee_ty = m.fn_type_no_params(void_ty.as_type(), false);
     let callee = m.add_function::<(), _>("callee", callee_ty, Linkage::External)?;
-    let caller_ty = m.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
+    let caller_ty = m.fn_type_no_params(void_ty.as_type(), false);
     let caller = m.add_function::<(), _>("caller", caller_ty, Linkage::External)?;
 
     let entry = caller.append_basic_block(m, "entry");
@@ -674,7 +674,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for AssertUneditable {
 fn edit_terminator_ret_is_uneditable() -> Result<(), IrError> {
     Module::with_new("uneditable-ret", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);

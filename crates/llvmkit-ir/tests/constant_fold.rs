@@ -9,13 +9,13 @@ use llvmkit_ir::{
     ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
     ConstantFloatValue, ConstantIntValue, FloatDyn, FloatPredicate, GepNoWrapFlags, IRBuilder,
     InstructionView, IntDyn, IntPredicate, IrError, Linkage, MaybeAlign, Module, NoFolder,
-    RoundingMode, Type, UDivFlags, UnaryOpcode, UnnamedAddr, Width,
-    constant_fold_binary_instruction, constant_fold_cast_instruction,
-    constant_fold_compare_instruction, constant_fold_extract_element_instruction,
-    constant_fold_extract_value_instruction, constant_fold_get_element_ptr,
-    constant_fold_insert_element_instruction, constant_fold_insert_value_instruction,
-    constant_fold_instruction, constant_fold_select_instruction,
-    constant_fold_shuffle_vector_instruction, constant_fold_unary_instruction,
+    RoundingMode, UDivFlags, UnaryOpcode, UnnamedAddr, Width, constant_fold_binary_instruction,
+    constant_fold_cast_instruction, constant_fold_compare_instruction,
+    constant_fold_extract_element_instruction, constant_fold_extract_value_instruction,
+    constant_fold_get_element_ptr, constant_fold_insert_element_instruction,
+    constant_fold_insert_value_instruction, constant_fold_instruction,
+    constant_fold_select_instruction, constant_fold_shuffle_vector_instruction,
+    constant_fold_unary_instruction,
 };
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldBinaryInstruction` APInt `shl` path.
@@ -873,7 +873,7 @@ fn gep_empty_indices_fold_to_base_pointer() -> Result<(), IrError> {
 fn analysis_instruction_fold_uses_apint_binary_folder() -> Result<(), IrError> {
     Module::with_new("analysis-fold", |m| {
         let ty = m.int_type_n::<257>();
-        let fn_ty = m.fn_type(ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(ty, false);
         let f = m.add_function::<Width<257>, _>("wide", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -894,7 +894,7 @@ fn analysis_instruction_fold_uses_apint_binary_folder() -> Result<(), IrError> {
 fn analysis_instruction_fold_exact_udiv_inexact_returns_poison() -> Result<(), IrError> {
     Module::with_new("analysis-exact-fold", |m| {
         let ty = m.i32_type();
-        let fn_ty = m.fn_type(ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(ty, false);
         let f = m.add_function::<i32, _>("exact", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -1814,7 +1814,7 @@ fn compare_global_pointer_relations_fold() -> Result<(), IrError> {
         assert_eq!(same_eq, bool_ty.const_int(true).as_constant());
 
         let void_ty = m.void_type();
-        let fn_ty = m.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(void_ty.as_type(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::Internal)?;
         let f_entry = f.append_basic_block(&m, "entry");
         let f_addr = m.block_address(f, &f_entry)?;
@@ -2841,7 +2841,7 @@ fn function_ptr_and_mask_folds_to_zero(
             m.set_data_layout(layout)?;
         }
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m
             .function_builder::<(), _>("f", fn_ty)
             .align(function_align)

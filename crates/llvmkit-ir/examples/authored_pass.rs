@@ -18,8 +18,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    Analyses, DominatorTreeAnalysis, IRBuilder, IrError, Linkage, Module, Type, Unverified,
-    Verified, function_pass, module_pass, run_function_pass, run_module_pass,
+    Analyses, DominatorTreeAnalysis, IRBuilder, IrError, Linkage, Module, Unverified, Verified,
+    function_pass, module_pass, run_function_pass, run_module_pass,
 };
 
 /// Read-only (`Inspect`) function pass that declares a required analysis and
@@ -60,7 +60,7 @@ fn main() -> Result<(), IrError> {
     Module::with_new("authored-pass-demo", |m| {
         // Build `i32 @f()` returning a constant.
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::at_end(entry);

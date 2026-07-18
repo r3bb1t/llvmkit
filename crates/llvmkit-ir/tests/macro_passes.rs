@@ -21,7 +21,7 @@ use std::rc::Rc;
 use llvmkit_ir::{
     Analyses, DominatorTreeAnalysis, FnCx, FnPatch, FnReport, FunctionPass, FunctionView,
     IRBuilder, InstructionView, IrError, IrResult, Linkage, ModCx, ModReport, Module, ModuleBrand,
-    ModulePass, NoFolder, PatchBody, RewriteModule, Type, Unverified, Verified, function_pass,
+    ModulePass, NoFolder, PatchBody, RewriteModule, Unverified, Verified, function_pass,
     module_pass, run_function_pass, run_module_pass,
 };
 
@@ -36,7 +36,7 @@ fn build_dead_add<'ctx, B: ModuleBrand + 'ctx>(
     m: &Module<'ctx, B, Unverified>,
 ) -> Result<FunctionView<'ctx, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, Vec::<Type<'ctx, B>>::new(), false);
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let b = IRBuilder::with_folder(m, NoFolder).position_at_end(entry);
@@ -54,7 +54,7 @@ fn build_ret_i32<'ctx, B: ModuleBrand + 'ctx>(
     m: &Module<'ctx, B, Unverified>,
 ) -> Result<FunctionView<'ctx, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, Vec::<Type<'ctx, B>>::new(), false);
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);

@@ -20,7 +20,7 @@
 use llvmkit_ir::{
     AShrFlags, AddFlags, Align, AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn,
     FloatPredicate, FloatValue, IRBuilder, IntPredicate, IntValue, IntrinsicId, IrError, LShrFlags,
-    Linkage, MemoryEffects, Module, MulFlags, PointerValue, SDivFlags, ShlFlags, SubFlags, Type,
+    Linkage, MemoryEffects, Module, MulFlags, PointerValue, SDivFlags, ShlFlags, SubFlags,
     UDivFlags, VerifierRule,
 };
 
@@ -198,7 +198,7 @@ fn intrinsic_declaration_used_as_non_callee_operand_is_rejected() -> Result<(), 
         let intrinsic = m.get_or_insert_intrinsic_declaration_by_name("llvm.bswap.i32")?;
         let sink_ty = m.fn_type(void_ty.as_type(), [intrinsic.signature().as_type()], false);
         let sink = m.add_function::<(), _>("sink", sink_ty, Linkage::External)?;
-        let caller_ty = m.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
+        let caller_ty = m.fn_type_no_params(void_ty.as_type(), false);
         let caller = m.add_function::<(), _>("caller", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
@@ -501,8 +501,7 @@ fn verify_void_return_and_unreachable() -> Result<(), IrError> {
 fn verify_consuming_returns_branded_module() -> Result<(), IrError> {
     Module::with_new::<_, _, _>("brand", |m| {
         let i32_ty = m.i32_type();
-        let no_params: [Type<'_>; 0] = [];
-        let fn_ty = m.fn_type(i32_ty, no_params, false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("k", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -546,8 +545,7 @@ fn verifier_rule_matchable() {
 fn verify_function_with_empty_block_fails_missing_terminator() -> Result<(), IrError> {
     Module::with_new::<_, _, _>("nt", |m| {
         let void = m.void_type();
-        let no_params: [Type<'_>; 0] = [];
-        let fn_ty = m.fn_type(void, no_params, false);
+        let fn_ty = m.fn_type_no_params(void, false);
         let f = m.add_function::<(), _>("empty", fn_ty, Linkage::External)?;
         let _entry = f.append_basic_block(&m, "entry");
         // Deliberately no IRBuilder calls -- block stays empty.

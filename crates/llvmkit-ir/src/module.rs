@@ -2449,6 +2449,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         )
     }
 
+    /// A function type with no parameters. Avoids the empty-`Vec::<Type>::new()`
+    /// inference cliff of [`fn_type`](Self::fn_type): with an empty iterator the
+    /// element type `T` cannot be inferred, so callers otherwise have to spell it
+    /// (`fn_type(ret, Vec::<Type>::new(), va)`). This pins the element type for
+    /// them — `fn_type_no_params(ret, is_var_arg)` is exactly
+    /// `fn_type(ret, [], is_var_arg)`.
+    pub fn fn_type_no_params<R>(&self, ret: R, is_var_arg: bool) -> FunctionType<'ctx, B>
+    where
+        R: Into<Type<'ctx, B>>,
+    {
+        self.fn_type(ret, core::iter::empty::<Type<'ctx, B>>(), is_var_arg)
+    }
+
     /// Fixed-arity typed function type: `Ret (Params...)`.
     pub fn typed_function_type<Ret, Params>(&self) -> IrResult<FunctionType<'ctx, B>>
     where

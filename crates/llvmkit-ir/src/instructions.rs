@@ -3412,9 +3412,9 @@ mod tests {
     #[test]
     fn typed_call_inst_result_narrows_to_callresult() -> Result<(), IrError> {
         Module::with_new("typed-call-inst-result", |m| {
-            let fn_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(m.i32_type(), false);
             let callee = m.add_function::<i32, _>("callee", fn_ty, Linkage::External)?;
-            let caller_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
+            let caller_ty = m.fn_type_no_params(m.i32_type(), false);
             let caller = m.add_function::<i32, _>("caller", caller_ty, Linkage::External)?;
             let entry = caller.append_basic_block(&m, "entry");
             let b = crate::IRBuilder::new_for::<i32>(&m).position_at_end(entry);

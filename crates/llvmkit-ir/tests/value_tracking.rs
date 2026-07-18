@@ -3,7 +3,7 @@ use llvmkit_ir::{
     CallAttributeData, ConstantExprOpcode, ConstantExprOptions, DominatorTreeAnalysis,
     FunctionAnalysisManager, IRBuilder, InstructionView, IntValue, IrError, KnownBits,
     KnownBitsAnalysis, LShrFlags, Linkage, MetadataAttachmentKind, MetadataRef, Module, MulFlags,
-    NoFolder, PointerValue, PreservedAnalyses, Ptr, Type, Value, ValueTrackingQuery, Width,
+    NoFolder, PointerValue, PreservedAnalyses, Ptr, Value, ValueTrackingQuery, Width,
     compute_known_bits, is_known_non_zero, is_known_one, is_known_zero,
 };
 
@@ -21,7 +21,7 @@ fn known<'a>(value: Value<'a>, query: &ValueTrackingQuery<'_, 'a>) -> Result<Kno
 fn constants_and_integer_operators_compute_known_bits() -> Result<(), IrError> {
     Module::with_new("vt-int", |m| {
         let i8_ty = m.i8_type();
-        let fn_ty = m.fn_type(i8_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i8_ty, false);
         let f = m.add_function::<i8, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -65,7 +65,7 @@ fn constants_and_integer_operators_compute_known_bits() -> Result<(), IrError> {
 fn signed_division_and_remainder_compute_known_bits() -> Result<(), IrError> {
     Module::with_new("vt-signed-div-rem", |m| {
         let i8_ty = m.i8_type();
-        let fn_ty = m.fn_type(i8_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i8_ty, false);
         let f = m.add_function::<i8, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -203,7 +203,7 @@ fn pointer_null_and_alloca_alignment_compute_low_zero_bits() -> Result<(), IrErr
     Module::with_new("vt-ptr", |m| {
         let ptr_ty = m.ptr_type(0);
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(ptr_ty.as_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(ptr_ty.as_type(), false);
         let f = m.add_function::<Ptr, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -301,9 +301,9 @@ fn call_return_range_attribute_contributes_known_bits() -> Result<(), IrError> {
     Module::with_new("vt-call-range-attr", |m| {
         let i1_ty = m.bool_type();
         let i8_ty = m.i8_type();
-        let callee_ty = m.fn_type(i8_ty, Vec::<Type>::new(), false);
+        let callee_ty = m.fn_type_no_params(i8_ty, false);
         let callee = m.add_function::<i8, _>("callee", callee_ty, Linkage::External)?;
-        let caller_ty = m.fn_type(i1_ty, Vec::<Type>::new(), false);
+        let caller_ty = m.fn_type_no_params(i1_ty, false);
         let caller = m.add_function::<bool, _>("caller", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -356,7 +356,7 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
             AttributeStorage::new(),
         );
 
-        let caller_ty = m.fn_type(void_ty, Vec::<Type>::new(), false);
+        let caller_ty = m.fn_type_no_params(void_ty, false);
         let caller = m.add_function::<(), _>("caller", caller_ty, Linkage::External)?;
         let call_entry = caller.append_basic_block(&m, "call.entry");
         let invoke_entry = caller.append_basic_block(&m, "invoke.entry");
@@ -415,7 +415,7 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
         let i16_ty = m.i16_type();
         let void_ty = m.void_type();
 
-        let caller_ty = m.fn_type(void_ty, Vec::<Type>::new(), false);
+        let caller_ty = m.fn_type_no_params(void_ty, false);
         let caller = m.add_function::<(), _>("caller", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -535,7 +535,7 @@ fn intrinsic_known_bits_ignore_mismatched_declarations() -> Result<(), IrError> 
         let i1_ty = m.bool_type();
         let i16_ty = m.i16_type();
         let void_ty = m.void_type();
-        let caller_ty = m.fn_type(void_ty, Vec::<Type>::new(), false);
+        let caller_ty = m.fn_type_no_params(void_ty, false);
         let caller = m.add_function::<(), _>("caller", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -599,7 +599,7 @@ fn query_carries_context_demanded_elements_and_instr_info_policy() -> Result<(),
 fn function_analysis_caches_known_bits_queries() -> Result<(), IrError> {
     Module::with_new("vt-analysis", |m| {
         let i8_ty = m.i8_type();
-        let fn_ty = m.fn_type(i8_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i8_ty, false);
         let f = m.add_function::<i8, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -631,7 +631,7 @@ fn function_analysis_caches_known_bits_queries() -> Result<(), IrError> {
 fn known_bits_analysis_invalidates_with_dominator_tree_dependency() -> Result<(), IrError> {
     Module::with_new("vt-analysis-invalidate", |m| {
         let i8_ty = m.i8_type();
-        let fn_ty = m.fn_type(i8_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i8_ty, false);
         let f = m.add_function::<i8, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -698,7 +698,7 @@ fn addrspacecast_drops_source_pointer_known_bits() -> Result<(), IrError> {
     Module::with_new("vt-addrspacecast", |m| {
         let i32_ty = m.i32_type();
         let ptr1_ty = m.ptr_type(1);
-        let fn_ty = m.fn_type(ptr1_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(ptr1_ty, false);
         let f = m.add_function::<Ptr, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -718,7 +718,7 @@ fn addrspacecast_drops_source_pointer_known_bits() -> Result<(), IrError> {
 fn freeze_of_exact_shift_that_can_poison_is_unknown() -> Result<(), IrError> {
     Module::with_new("vt-freeze-exact-shift", |m| {
         let i4_ty = m.int_type_n::<4>();
-        let fn_ty = m.fn_type(i4_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i4_ty, false);
         let f = m.add_function::<Width<4>, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -753,7 +753,7 @@ fn gep_and_vector_lane_operations_compute_known_bits() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let vec_ty = m.vector_type(i8_ty.as_type(), 2, false);
         let void_ty = m.void_type();
-        let fn_ty = m.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(void_ty.as_type(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);

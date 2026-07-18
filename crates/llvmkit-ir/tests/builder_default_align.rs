@@ -4,7 +4,7 @@
 //! align-less `alloca`/`load`/`store` materialises the DataLayout default and
 //! prints `, align N` with the exact values the default DataLayout yields.
 
-use llvmkit_ir::{IRBuilder, IrError, Linkage, Module, NoFolder, PointerValue, Type};
+use llvmkit_ir::{IRBuilder, IrError, Linkage, Module, NoFolder, PointerValue};
 
 /// `alloca` materialises `getPrefTypeAlign`. The default DataLayout gives
 /// i32->4, i64->8, double->8, i1->1, and i128->8 (no i128 spec, so the walk
@@ -12,7 +12,7 @@ use llvmkit_ir::{IRBuilder, IrError, Linkage, Module, NoFolder, PointerValue, Ty
 #[test]
 fn alloca_materialises_preferred_align() -> Result<(), IrError> {
     Module::with_new("a", |m| {
-        let fn_ty = m.fn_type(m.void_type().as_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -79,7 +79,7 @@ fn load_store_materialise_abi_align() -> Result<(), IrError> {
 fn alloca_uses_datalayout_alloca_address_space() -> Result<(), IrError> {
     Module::with_new("as", |m| {
         m.set_data_layout("A5")?;
-        let fn_ty = m.fn_type(m.void_type().as_type(), Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
         let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);

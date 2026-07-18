@@ -19,7 +19,7 @@ use std::rc::Rc;
 use llvmkit_ir::{
     Analyses, DcePass, DominatorTreeAnalysis, FnCx, FnReport, FunctionPass, FunctionView,
     IRBuilder, Inspect, IrError, IrResult, Linkage, ModCx, ModReport, Module, ModuleBrand,
-    ModulePass, NoFolder, PatchBody, ReshapeCfg, RewriteModule, Type, Unverified, Verified,
+    ModulePass, NoFolder, PatchBody, ReshapeCfg, RewriteModule, Unverified, Verified,
     for_each_function, function_pipeline, module_pipeline,
 };
 
@@ -33,7 +33,7 @@ fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
     name: &str,
 ) -> Result<FunctionView<'ctx, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, Vec::<Type<'ctx, B>>::new(), false);
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function::<i32, _>(name, fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
@@ -49,7 +49,7 @@ fn build_dead_add_named<'ctx, B: ModuleBrand + 'ctx>(
     name: &str,
 ) -> Result<FunctionView<'ctx, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, Vec::<Type<'ctx, B>>::new(), false);
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function::<i32, _>(name, fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let b = IRBuilder::with_folder(m, NoFolder).position_at_end(entry);
@@ -338,7 +338,7 @@ fn for_each_function_mutating_downgrades_and_visits_defs() -> Result<(), IrError
         let f2 = build_dead_add_named(&m, "f2")?;
         // A declaration (no body) — must be skipped by `for_each_function`.
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let _decl = m.add_function::<i32, _>("ext", fn_ty, Linkage::External)?;
 
         assert_eq!(f1.entry_block().expect("def").instruction_count(), 2);

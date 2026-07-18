@@ -1544,7 +1544,7 @@ impl_module_analysis_list!(8; A0: Idx0 . 0, A1: Idx1 . 1, A2: Idx2 . 2, A3: Idx3
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{IRBuilder, Linkage, Module, Type};
+    use crate::{IRBuilder, Linkage, Module};
 
     /// llvmkit-specific type-machinery lock (no upstream analog): the analysis-list
     /// tuple schema prefetches, collects, and selects by type. Runtime behavior it
@@ -1553,7 +1553,7 @@ mod tests {
     fn analysis_list_prefetch_collect_select() -> IrResult<()> {
         Module::with_new("analysis-list", |m| {
             let i32_ty = m.i32_type();
-            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -1592,7 +1592,7 @@ mod tests {
         use crate::CfgUpdate;
         Module::with_new("domtree-repair", |m| {
             let i32_ty = m.i32_type();
-            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
             let next = f.append_basic_block(&m, "next");
@@ -1679,7 +1679,7 @@ mod tests {
     fn requires_without_default_uses_registered_instance() -> IrResult<()> {
         Module::with_new("requires-no-default", |m| {
             let i32_ty = m.i32_type();
-            let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);

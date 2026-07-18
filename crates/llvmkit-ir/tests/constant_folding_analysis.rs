@@ -13,8 +13,8 @@ use llvmkit_ir::{
     CmpPredicate, ConstantExprOpcode, ConstantExprOptions, ConstantFloatValue, ConstantIntValue,
     DataLayout, DenormalMode, DenormalModeKind, DenormalModeSide, FoldNonDeterminism, IRBuilder,
     InstructionView, IntDyn, IntPredicate, IrError, LibFunc, Linkage, Module, NoFolder,
-    PreservedCastFlags, RoundingMode, TargetLibraryInfo, Type, UnaryOpcode,
-    attributes::AttributeStorage, constant_fold_binary_intrinsic, constant_fold_binary_op_operands,
+    PreservedCastFlags, RoundingMode, TargetLibraryInfo, UnaryOpcode, attributes::AttributeStorage,
+    constant_fold_binary_intrinsic, constant_fold_binary_op_operands,
     constant_fold_compare_inst_operands, constant_fold_constant, constant_fold_fp_inst_operands,
     constant_fold_inst_operands, constant_fold_integer_cast, constant_fold_load_from_uniform_value,
     constant_fold_load_through_bitcast, constant_fold_unary_op_operand,
@@ -491,7 +491,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
         assert_eq!(signed_trunc, i8_ty.const_int(127_i8).as_constant());
         assert_eq!(signed_flags, PreservedCastFlags::none());
 
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("api_fold_inst", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -537,7 +537,7 @@ fn freeze_folds_only_non_undef_non_poison_constants() -> Result<(), IrError> {
     Module::with_new("analysis-freeze", |m| {
         let dl = DataLayout::default();
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function::<i32, _>("freeze_fold", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -649,7 +649,7 @@ fn function_denormal_f32_attribute_overrides_generic_mode() -> Result<(), IrErro
     Module::with_new("analysis-denormal-attrs", |m| {
         let dl = DataLayout::default();
         let f32_ty = m.f32_type();
-        let fn_ty = m.fn_type(f32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(f32_ty, false);
         let f = m.add_function::<f32, _>("denormal_attr", fn_ty, Linkage::External)?;
         f.set_string_attribute(&m, AttrIndex::Function, "denormal-fp-math", "ieee,ieee");
         f.set_string_attribute(
@@ -685,7 +685,7 @@ fn function_denormal_attribute_group_overrides_generic_mode() -> Result<(), IrEr
     Module::with_new("analysis-denormal-attr-group", |m| {
         let dl = DataLayout::default();
         let f32_ty = m.f32_type();
-        let fn_ty = m.fn_type(f32_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(f32_ty, false);
         let mut group = AttributeStorage::new();
         group.add(
             AttrIndex::Function,

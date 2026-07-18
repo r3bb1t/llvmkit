@@ -36,6 +36,10 @@ compiles with no type handle and no `.as_type()`.
   `IRBuilder::new_for::<R>(&m).position_at_end(bb)` collapses to
   `IRBuilder::at_end(bb)` (no turbofish). `new_for` retained for building blocks
   before positioning.
+- `Module::fn_type_no_params(ret, is_var_arg)` — a no-parameter function type
+  without the empty-`Vec::<Type>::new()` inference cliff of `fn_type` (with an
+  empty iterator the element type can't be inferred). It is exactly
+  `fn_type(ret, [], is_var_arg)` with the element type pinned.
 
 #### Changed
 
@@ -46,6 +50,13 @@ compiles with no type handle and no `.as_type()`.
   gone — it is now unrepresentable, since the type *is* the initializer's.
   `GlobalVariable::set_initializer` keeps its type check: a *replacement*
   initializer must still match the global's frozen type.
+- Aggregate constant constructors `ArrayType::const_array` /
+  `StructType::const_struct` / `VectorType::const_vector` now accept
+  `impl IntoConstantValue` elements, so Rust literals work
+  (`const_array([1i32, 2, 3])`). The blanket `IntoConstantValue for IsConstant`
+  impl keeps existing constant-handle callers unchanged. They stay **fallible**
+  (`IrResult`): the element-vs-container type check is still needed because the
+  receivers are erased (`ArrayType<ElemDyn, ArrLenDyn>`, etc.).
 
 ### Unforgeable markers — the builder's typed-append family (internal)
 

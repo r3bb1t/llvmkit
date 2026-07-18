@@ -942,7 +942,7 @@ mod tests {
     fn erased_block_value_narrows_to_dyn_params_label() {
         Module::with_new("bp-slice1-narrow", |m| {
             let void_ty = m.void_type().as_type();
-            let fn_ty = m.fn_type(void_ty, Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(void_ty, false);
             let f = m
                 .add_function::<(), _>("f", fn_ty, Linkage::External)
                 .unwrap();
@@ -964,7 +964,7 @@ mod tests {
     fn label_as_value_round_trips_to_dyn_params() {
         Module::with_new("bp-slice1-roundtrip", |m| {
             let void_ty = m.void_type().as_type();
-            let fn_ty = m.fn_type(void_ty, Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(void_ty, false);
             let f = m
                 .add_function::<(), _>("f", fn_ty, Linkage::External)
                 .unwrap();

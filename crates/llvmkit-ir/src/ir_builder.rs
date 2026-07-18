@@ -8654,7 +8654,7 @@ mod tests {
         Module::with_new("hostile-typed-folder", |m| {
             let i32_dyn_ty = m.custom_width_int_type(32)?;
             let i64_dyn_ty = m.custom_width_int_type(64)?;
-            let fn_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(m.i32_type(), false);
             let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
 
@@ -8698,7 +8698,7 @@ mod tests {
         Module::with_new("hostile-typed-folder-static", |m| {
             let i32_ty = m.i32_type();
             let i64_ty = m.i64_type();
-            let fn_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(m.i32_type(), false);
             let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
 
@@ -8746,7 +8746,7 @@ mod tests {
         Module::with_new("hostile-typed-folder-cast-int", |m| {
             let i32_ty = m.i32_type();
             let i64_ty = m.i64_type();
-            let fn_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(m.i32_type(), false);
             let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
 
@@ -8780,7 +8780,7 @@ mod tests {
         Module::with_new("hostile-typed-fp-folder", |m| {
             let f32_ty = m.f32_type();
             let f64_ty = m.f64_type();
-            let fn_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(m.i32_type(), false);
             let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
 
@@ -8822,7 +8822,7 @@ mod tests {
         Module::with_new("hostile-typed-fp-folder-cast", |m| {
             let f32_ty = m.f32_type();
             let f64_ty = m.f64_type();
-            let fn_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
+            let fn_ty = m.fn_type_no_params(m.i32_type(), false);
             let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
 

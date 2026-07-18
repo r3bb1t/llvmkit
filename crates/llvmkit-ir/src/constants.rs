@@ -27,7 +27,7 @@ use super::basic_block::BasicBlock;
 use super::block_state::BlockTerminationState;
 use super::constant::{
     BlockAddressPlaceholder, Constant, ConstantData, ConstantExprData, ConstantExprFlags,
-    ConstantExprInRange, ConstantExprOpcode, IsConstant,
+    ConstantExprInRange, ConstantExprOpcode, IntoConstantValue, IsConstant,
 };
 use super::constant_fold::{
     constant_fold_binary_instruction, constant_fold_cast_instruction,
@@ -849,13 +849,13 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L,
     pub fn const_array<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx, B>>
     where
         I: IntoIterator<Item = C>,
-        C: IsConstant<'ctx, B>,
+        C: IntoConstantValue<'ctx, B>,
     {
         let elem_ty = self.element().id();
         let expected_len = self.len();
         let mut ids = Vec::new();
-        for c in elements {
-            let value = c.as_value();
+        for elem in elements {
+            let value = elem.into_constant(self.module).as_value();
             if value.ty != elem_ty {
                 return Err(IrError::TypeMismatch {
                     expected: self.element().kind_label(),
@@ -884,14 +884,14 @@ impl<'ctx, Body: crate::struct_body_state::StructBodyState, B: ModuleBrand + 'ct
     pub fn const_struct<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx, B>>
     where
         I: IntoIterator<Item = C>,
-        C: IsConstant<'ctx, B>,
+        C: IntoConstantValue<'ctx, B>,
     {
         // The struct must already have a body (literal structs always
         // do; identified structs need `set_struct_body` first).
         let count = self.field_count();
         let mut ids = Vec::new();
-        for (i, c) in elements.into_iter().enumerate() {
-            let value = c.as_value();
+        for (i, elem) in elements.into_iter().enumerate() {
+            let value = elem.into_constant(self.module).as_value();
             let field = self.field_type(i).ok_or(IrError::OperandWidthMismatch {
                 lhs: u32::try_from(count).unwrap_or(u32::MAX),
                 rhs: u32::try_from(i + 1).unwrap_or(u32::MAX),
@@ -919,12 +919,12 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, 
     pub fn const_vector<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx, B>>
     where
         I: IntoIterator<Item = C>,
-        C: IsConstant<'ctx, B>,
+        C: IntoConstantValue<'ctx, B>,
     {
         let elem_ty = self.element().id();
         let mut ids = Vec::new();
-        for c in elements {
-            let value = c.as_value();
+        for elem in elements {
+            let value = elem.into_constant(self.module).as_value();
             if value.ty != elem_ty {
                 return Err(IrError::TypeMismatch {
                     expected: self.element().kind_label(),

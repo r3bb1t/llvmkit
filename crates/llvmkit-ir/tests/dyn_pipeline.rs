@@ -23,7 +23,7 @@ use llvmkit_ir::{
     Analyses, DCE, DcePass, DynFunctionPipeline, DynModulePipeline, DynReadOnlyFunctionPipeline,
     DynReadOnlyModulePipeline, FnCx, FnReport, FunctionPass, FunctionView, IRBuilder, Inspect,
     IrError, IrResult, Linkage, ModCx, ModReport, Module, ModuleBrand, ModulePass, NoFolder,
-    RewriteModule, Type, Unverified, Verified,
+    RewriteModule, Unverified, Verified,
 };
 
 // ==========================================================================
@@ -36,7 +36,7 @@ fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
     name: &str,
 ) -> Result<FunctionView<'ctx, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, Vec::<Type<'ctx, B>>::new(), false);
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function::<i32, _>(name, fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
@@ -51,7 +51,7 @@ fn build_dead_add_named<'ctx, B: ModuleBrand + 'ctx>(
     name: &str,
 ) -> Result<FunctionView<'ctx, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, Vec::<Type<'ctx, B>>::new(), false);
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function::<i32, _>(name, fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let b = IRBuilder::with_folder(m, NoFolder).position_at_end(entry);

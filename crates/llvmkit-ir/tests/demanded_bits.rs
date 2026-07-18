@@ -1,7 +1,7 @@
 use llvmkit_ir::{
     Analyses, ApInt, DemandedBitsAnalysis, Dyn, FunctionAnalysisManager, IRBuilder, IntValue,
-    IrError, KnownBits, Linkage, Module, NoFolder, SimplifyDemandedBitsPass, Type,
-    ValueTrackingQuery, Width, ZExtFlags, run_function_pass, simplify_demanded_bits,
+    IrError, KnownBits, Linkage, Module, NoFolder, SimplifyDemandedBitsPass, ValueTrackingQuery,
+    Width, ZExtFlags, run_function_pass, simplify_demanded_bits,
 };
 
 fn bits(value: ApInt) -> String {
@@ -544,7 +544,7 @@ fn simplify_demanded_bits_replaces_known_demanded_low_bits() -> Result<(), IrErr
     Module::with_new("demanded-simplify", |m| {
         let i8_ty = m.i8_type();
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i8_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i8_ty, false);
         let f = m.add_function::<i8, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -582,7 +582,7 @@ fn simplify_demanded_bits_pass_folds_known_demanded_low_bits() -> Result<(), IrE
     Module::with_new("demanded-pass", |m| {
         let i8_ty = m.i8_type();
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i8_ty, Vec::<Type>::new(), false);
+        let fn_ty = m.fn_type_no_params(i8_ty, false);
         let f = m.add_function::<i8, _>("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
