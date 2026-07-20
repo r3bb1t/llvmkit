@@ -10,12 +10,12 @@ fn main() {
         let i32_ty = m.i32_type();
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External).unwrap();
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
         let entry = f.append_basic_block(&m, "entry");
         let dest = f.append_basic_block(&m, "dest");
         let dest_label = dest.label();
         let cond = f.param(0).unwrap();
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
         let (sealed, switch) = b.build_switch_dyn(cond, dest_label, "").unwrap();
         let _closed = switch.finish();
 

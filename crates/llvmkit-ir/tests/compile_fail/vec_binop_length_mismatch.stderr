@@ -1,7 +1,7 @@
 error[E0308]: mismatched types
-  --> tests/compile_fail/vec_binop_length_mismatch.rs:30:44
+  --> tests/compile_fail/vec_binop_length_mismatch.rs:28:44
    |
-30 |         let _bad = b.build_vec_int_add(a4, a2, "x").unwrap(); //~ ERROR mismatched types
+28 |         let _bad = b.build_vec_int_add(a4, a2, "x").unwrap(); //~ ERROR mismatched types
    |                      -----------------     ^^ expected `4`, found `2`
    |                      |
    |                      arguments to this method are incorrect

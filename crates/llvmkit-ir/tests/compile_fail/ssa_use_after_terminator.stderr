@@ -1,12 +1,12 @@
 error[E0382]: use of moved value: `positioned`
-  --> tests/compile_fail/ssa_use_after_terminator.rs:28:21
+  --> tests/compile_fail/ssa_use_after_terminator.rs:30:21
    |
-23 |         let positioned = b.switch_to_block(entry).unwrap();
+25 |         let positioned = b.switch_to_block(entry).unwrap();
    |             ---------- move occurs because `positioned` has type `SsaBuilder<'_, '_, Brand<'_>, ConstantFolder, Positioned, ()>`, which does not implement the `Copy` trait
-24 |         let _unpositioned = positioned.br(second).unwrap();
+26 |         let _unpositioned = positioned.br(second).unwrap();
    |                                        ---------- `positioned` moved due to this method call
 ...
-28 |         let _oops = positioned.br(second);
+30 |         let _oops = positioned.br(second);
    |                     ^^^^^^^^^^ value used here after move
    |
 note: `SsaBuilder::<'m, 'ctx, B, F, Positioned, R>::br` takes ownership of the receiver `self`, which moves `positioned`

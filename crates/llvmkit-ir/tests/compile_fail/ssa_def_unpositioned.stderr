@@ -1,7 +1,7 @@
 error[E0599]: no method named `def_int_var` found for struct `SsaBuilder<'_, '_, Brand<'_>, ConstantFolder, Unpositioned, ()>` in the current scope
-  --> tests/compile_fail/ssa_def_unpositioned.rs:26:11
+  --> tests/compile_fail/ssa_def_unpositioned.rs:28:11
    |
-26 |         b.def_int_var(x, 1_i32).unwrap();
+28 |         b.def_int_var(x, 1_i32).unwrap();
    |           ^^^^^^^^^^^
    |
 help: there is a method `declare_int_var` with a similar name, but with different arguments

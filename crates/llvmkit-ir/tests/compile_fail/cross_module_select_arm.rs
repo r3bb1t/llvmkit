@@ -6,14 +6,15 @@
 //! llvmkit pushes the module-provenance part into the Rust type system: both
 //! select arms must carry the builder module's brand.
 
-use llvmkit_ir::{IRBuilder, Linkage, Module, Type};
+use llvmkit_ir::{IRBuilder, Linkage, Module};
 
 fn main() {
     Module::with_new::<_, _, _>("left", |left| {
         let i32_ty = left.i32_type();
-        let params = Vec::<Type<'_, _>>::new();
-        let fn_ty = left.fn_type(i32_ty.as_type(), params, false);
-        let f = left.add_function::<i32, _>("left_f", fn_ty, Linkage::External).unwrap();
+        let f = left
+            .add_typed_function::<i32, (), _>("left_f", Linkage::External)
+            .unwrap()
+            .as_function();
         let entry = f.append_basic_block(&left, "entry");
         let left_builder = IRBuilder::new_for::<i32>(&left).position_at_end(entry);
         let left_arm = left_builder
@@ -23,9 +24,10 @@ fn main() {
             let i1_ty = right.bool_type();
             let i32_ty = right.i32_type();
             let cond = i1_ty.const_int(true);
-            let params = Vec::<Type<'_, _>>::new();
-            let fn_ty = right.fn_type(i32_ty.as_type(), params, false);
-            let f = right.add_function::<i32, _>("f", fn_ty, Linkage::External).unwrap();
+            let f = right
+                .add_typed_function::<i32, (), _>("f", Linkage::External)
+                .unwrap()
+                .as_function();
             let entry = f.append_basic_block(&right, "entry");
             let builder = IRBuilder::new_for::<i32>(&right).position_at_end(entry);
             let right_arm = builder

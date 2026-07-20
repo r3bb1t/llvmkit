@@ -1,19 +1,19 @@
 error[E0599]: no method named `finish` found for struct `SsaBuilder<'_, '_, Brand<'_>, ConstantFolder, Positioned, ()>` in the current scope
-  --> tests/compile_fail/ssa_finish_positioned.rs:31:11
+  --> tests/compile_fail/ssa_finish_positioned.rs:33:11
    |
-31 |         b.finish().unwrap();
+33 |         b.finish().unwrap();
    |           ^^^^^^
    |
 note: there's an earlier shadowed binding `b` of type `SsaBuilder<'_, '_, Brand<'_>, ConstantFolder, Unpositioned, ()>` that has method `finish` available
-  --> tests/compile_fail/ssa_finish_positioned.rs:24:13
+  --> tests/compile_fail/ssa_finish_positioned.rs:26:13
    |
-24 |         let mut b = llvmkit_ir::SsaBuilder::for_function(&m, f).unwrap();
+26 |         let mut b = llvmkit_ir::SsaBuilder::for_function(&m, f).unwrap();
    |             ^^^^^ `b` of type `SsaBuilder<'_, '_, Brand<'_>, ConstantFolder, Unpositioned, ()>` that has method `finish` defined earlier here
 ...
-27 |         let b = b.switch_to_block(entry).unwrap();
+29 |         let b = b.switch_to_block(entry).unwrap();
    |             - earlier `b` shadowed here with type `SsaBuilder<'_, '_, Brand<'_>, ConstantFolder, Positioned, ()>`
 help: there is a method `ins` with a similar name
    |
-31 -         b.finish().unwrap();
-31 +         b.ins().unwrap();
+33 -         b.finish().unwrap();
+33 +         b.ins().unwrap();
    |
