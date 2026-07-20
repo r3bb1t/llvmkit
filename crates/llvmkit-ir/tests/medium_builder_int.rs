@@ -10,8 +10,8 @@
 //! `llvmkit-specific:` (e.g. the Rust-literal coercion that has no C++ analogue).
 
 use llvmkit_ir::{
-    ApInt, Constant, ConstantIntValue, IRBuilder, IntDyn, IntValue, IrError, Linkage, Module,
-    NoFolder, Width,
+    ApInt, Constant, ConstantIntValue, Dyn, IRBuilder, IntDyn, IntValue, IrError, Linkage, Module,
+    NoFolder,
 };
 
 /// llvmkit-specific: exercises `IntoIntValue` for `IntValue` LHS plus a Rust
@@ -24,9 +24,9 @@ fn build_int_add_accepts_int_value_and_rust_literal() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("inc", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("inc", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let n: IntValue<i32> = f.param(0)?.try_into()?;
         // Rust literal as RHS.
         let next = b.build_int_add(n, 1_i32, "next")?;
@@ -47,9 +47,9 @@ fn build_int_ops_unique_duplicate_requested_names() -> Result<(), IrError> {
     Module::with_new("names", |m| {
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type()], false);
-        let f = m.add_function::<i64, _>("names", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("names", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let sp: IntValue<i64> = f.param(0)?.try_into()?;
 
         let first_push = b.build_int_sub::<i64, _, _, _>(sp, 8_i64, "push_sp")?;
@@ -85,9 +85,9 @@ fn build_int_sub_accepts_constant_and_argument() -> Result<(), IrError> {
     Module::with_new("s", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("dec", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("dec", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let n: IntValue<i32> = f.param(0)?.try_into()?;
         let c = i32_ty.const_int(10_i32);
         // ConstantIntValue as LHS, IntValue as RHS.
@@ -111,9 +111,7 @@ fn build_ret_accepts_rust_literal_directly() -> Result<(), IrError> {
     // `i32` builder: `b.build_ret(1_i32)?` works without the
     // caller materialising an `IntValue` first.
     Module::with_new("r", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<i32, _>("one", fn_ty, Linkage::External)?;
+        let f = m.add_typed_function::<i32, (), _>("one", Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         b.build_ret(1_i32)?;
@@ -133,9 +131,9 @@ fn default_constant_folder_preserves_wide_apint_add() -> Result<(), IrError> {
     Module::with_new("wide-fold", |m| {
         let ty = m.int_type_n::<257>();
         let fn_ty = m.fn_type(ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<Width<257>, _>("wide", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("wide", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Width<257>>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let high = ty.const_ap_int(&ApInt::one_bit_set(257, 256))?;
         let result = b.build_int_add(high, ty.const_zero(), "sum")?;
         let folded = ConstantIntValue::<IntDyn>::try_from(Constant::try_from(result.as_value())?)?;
@@ -153,9 +151,9 @@ fn default_constant_folder_folds_udiv_to_constant() -> Result<(), IrError> {
     Module::with_new("udiv-fold", |m| {
         let ty = m.i32_type();
         let fn_ty = m.fn_type(ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<i32, _>("quotient", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("quotient", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let result = b.build_int_udiv(ty.const_int(9_i32), ty.const_int(3_i32), "q")?;
         let folded = ConstantIntValue::<IntDyn>::try_from(Constant::try_from(result.as_value())?)?;
         assert_eq!(folded.ap_int().try_zext_u64(), Some(3));
@@ -179,9 +177,7 @@ fn default_constant_folder_folds_udiv_to_constant() -> Result<(), IrError> {
 #[test]
 fn build_int_add_infers_width_from_literals_no_turbofish() -> Result<(), IrError> {
     Module::with_new("no-turbofish", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<i32, _>("k", fn_ty, Linkage::External)?;
+        let f = m.add_typed_function::<i32, (), _>("k", Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         // `NoFolder` so the all-constant add materializes as a named
         // instruction; the default folder would collapse `2 + 3` to `5`.

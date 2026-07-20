@@ -36,10 +36,10 @@ fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
     Module::with_new("demo", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("add", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("add", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let lhs: IntValue<i32> = f.param(0)?.try_into()?;
         let rhs: IntValue<i32> = f.param(1)?.try_into()?;
@@ -88,9 +88,9 @@ fn mismatched_widths_error_at_runtime_when_dyn() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i64_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("mix", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("mix", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         // Static narrowing rejects the i64 arg as an i32-typed IntValue.
         let _a: IntValue<i32> = f.param(0)?.try_into()?;
@@ -138,7 +138,7 @@ fn argument_to_int_value_narrowing_validates_type() -> Result<(), IrError> {
         let f64_ty = m.f64_type();
         let void = m.void_type();
         let fn_ty = m.fn_type(void.as_type(), [f64_ty.as_type()], false);
-        let f = m.add_function::<(), _>("takes_double", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("takes_double", fn_ty, Linkage::External)?;
         let arg = f.param(0)?;
         let err: Result<IntValue<i32>, IrError> = IntValue::try_from(arg);
         assert!(matches!(err, Err(IrError::TypeMismatch { .. })));
@@ -154,9 +154,9 @@ fn duplicate_function_name_errors() -> Result<(), IrError> {
     Module::with_new("demo", |m| {
         let void = m.void_type();
         let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let _ = m.add_function::<(), _>("once", fn_ty, Linkage::External)?;
+        let _ = m.add_function_dyn("once", fn_ty, Linkage::External)?;
         let err = m
-            .add_function::<(), _>("once", fn_ty, Linkage::External)
+            .add_function_dyn("once", fn_ty, Linkage::External)
             .expect_err("duplicate must error");
         assert!(matches!(err, IrError::DuplicateFunctionName { ref name } if name == "once"));
         Ok(())
@@ -215,7 +215,7 @@ fn dyn_path_keeps_runtime_return_check() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i32_ty, [i64_ty.as_type()], false);
-        let f = m.add_function::<Dyn, _>("mix", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("mix", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new(&m).position_at_end(entry);
         let arg = f.param(0)?; // i64
