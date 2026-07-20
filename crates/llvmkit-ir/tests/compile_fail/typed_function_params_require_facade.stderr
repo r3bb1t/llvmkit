@@ -1,7 +1,7 @@
 error[E0061]: this function takes 2 arguments but 1 argument was supplied
-  --> tests/compile_fail/typed_function_params_require_facade.rs:15:22
+  --> tests/compile_fail/typed_function_params_require_facade.rs:14:22
    |
-15 |         let _value = <i32 as FunctionParam>::value_from_argument(arg);
+14 |         let _value = <i32 as FunctionParam>::value_from_argument(arg);
    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^----- argument #2 of type `&llvmkit_ir::function_signature::token::ValidatedFunctionParams<'_>` is missing
    |
 note: associated function defined here
@@ -11,13 +11,13 @@ note: associated function defined here
    |        ^^^^^^^^^^^^^^^^^^^
 help: provide the argument
    |
-15 |         let _value = <i32 as FunctionParam>::value_from_argument(arg, /* &llvmkit_ir::function_signature::token::ValidatedFunctionParams<'_> */);
+14 |         let _value = <i32 as FunctionParam>::value_from_argument(arg, /* &llvmkit_ir::function_signature::token::ValidatedFunctionParams<'_> */);
    |                                                                     +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 error[E0061]: this function takes 2 arguments but 1 argument was supplied
-  --> tests/compile_fail/typed_function_params_require_facade.rs:16:22
+  --> tests/compile_fail/typed_function_params_require_facade.rs:15:22
    |
-16 |         let _tuple = <(i32,) as FunctionParamList>::values(raw);
+15 |         let _tuple = <(i32,) as FunctionParamList>::values(raw);
    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^----- argument #2 of type `&llvmkit_ir::function_signature::token::ValidatedFunctionParams<'_>` is missing
    |
 note: associated function defined here
@@ -27,5 +27,5 @@ note: associated function defined here
    |        ^^^^^^
 help: provide the argument
    |
-16 |         let _tuple = <(i32,) as FunctionParamList>::values(raw, /* &llvmkit_ir::function_signature::token::ValidatedFunctionParams<'_> */);
+15 |         let _tuple = <(i32,) as FunctionParamList>::values(raw, /* &llvmkit_ir::function_signature::token::ValidatedFunctionParams<'_> */);
    |                                                               +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++

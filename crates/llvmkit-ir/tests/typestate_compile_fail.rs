@@ -21,6 +21,10 @@ fn typestate_compile_fail() {
     let t = trybuild::TestCases::new();
     // Relies on the unblessed `has_pass` workaround (dtolnay/trybuild#258); re-verify this still forces `cargo build` mode after any trybuild version bump.
     t.pass("tests/compile_fail/extract_value_dyn_empty_slice_compiles.rs");
+    // Cycle B (no-silent-erasure) strict cut: the erased-signature +
+    // typed-return `add_function::<R>` constructor is deleted from the
+    // public surface; this lock pins its absence (E0599).
+    t.compile_fail("tests/compile_fail/add_function_removed.rs");
     t.compile_fail("tests/compile_fail/position_at_end_terminated_block.rs");
     t.compile_fail("tests/compile_fail/retained_unterminated_block_cannot_reposition.rs");
     t.compile_fail("tests/compile_fail/terminated_block_cannot_start_cursor.rs");

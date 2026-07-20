@@ -4674,7 +4674,8 @@ where
         let asm_v = asm.as_value();
         let fn_ty = asm.function_type();
         // Reject a return-marker / signature mismatch up front, mirroring
-        // `Module::add_function`'s `signature_matches_marker` gate.
+        // the `signature_matches_marker` gate on the typed lookup path
+        // (`Module::function_by_name_typed`).
         let ret_data = self.module.context().type_data(fn_ty.return_type().id());
         if !crate::function::signature_matches_marker::<R2>(ret_data) {
             return Err(IrError::ReturnTypeMismatch {
@@ -4836,7 +4837,7 @@ where
         let raw = self.build_gep(
             elem_ty,
             ptr.as_pointer_value(),
-            core::iter::once(IsValue::as_value(idx_value)),
+            core::iter::once(idx_value.as_dyn()),
             name,
         )?;
         Ok(raw.with_pointee::<T>())
@@ -4862,7 +4863,7 @@ where
         let raw = self.build_inbounds_gep(
             elem_ty,
             ptr.as_pointer_value(),
-            core::iter::once(IsValue::as_value(idx_value)),
+            core::iter::once(idx_value.as_dyn()),
             name,
         )?;
         Ok(raw.with_pointee::<T>())
@@ -5123,9 +5124,9 @@ where
     /// `uitofp nneg` with explicit [`crate::UIToFpFlags`]. Mirrors
     /// `IRBuilder::CreateUIToFP` plus `Instruction::setNonNeg`. The `nneg`
     /// flag asserts the source value is non-negative.
-    pub fn build_ui_to_fp_with_flags<W, K, V, Name>(
+    pub fn build_ui_to_fp_with_flags<W, K, Name>(
         &self,
-        value: V,
+        value: IntValue<'ctx, W, B>,
         dst_ty: FloatType<'ctx, K, B>,
         flags: crate::instr_types::UIToFpFlags,
         name: Name,
@@ -5134,9 +5135,7 @@ where
         Name: AsRef<str>,
         W: IntWidth,
         K: FloatKind,
-        V: IntoIntValue<'ctx, W, B>,
     {
-        let value = value.into_int_value(ModuleRef::new(self.module))?;
         let v = value.as_value();
         if let Some(folded) =
             self.folder
@@ -5316,9 +5315,9 @@ where
     /// [`super::float_kind::StaticFloatKind::STATIC_BITS`]
     /// `const { assert!(...) }` blocks at monomorphisation; under-spec'd
     /// instantiations are *compile* errors.
-    pub fn build_bitcast_int_to_int<Src, Dst, V, Name>(
+    pub fn build_bitcast_int_to_int<Src, Dst, Name>(
         &self,
-        value: V,
+        value: IntValue<'ctx, Src, B>,
         dst_ty: IntType<'ctx, Dst, B>,
         name: Name,
     ) -> IrResult<IntValue<'ctx, Dst, B>>
@@ -5326,7 +5325,6 @@ where
         Name: AsRef<str>,
         Src: super::int_width::StaticIntWidth,
         Dst: super::int_width::StaticIntWidth,
-        V: IntoIntValue<'ctx, Src, B>,
     {
         const {
             assert!(
@@ -5335,8 +5333,7 @@ where
                 "bitcast int->int requires Src::STATIC_BITS == Dst::STATIC_BITS",
             );
         }
-        let v = value.into_int_value(ModuleRef::new(self.module))?;
-        let v_value = IsValue::as_value(v);
+        let v_value = value.as_value();
         if let Some(folded) = self.folder.fold_cast_to_int(
             super::instr_types::CastOpcode::BitCast,
             v_value,
@@ -5352,9 +5349,9 @@ where
     /// `Instruction::BitCast` arm of `CastInst::Create` in
     /// `lib/IR/Instructions.cpp` for the `int -> fp` shape. Width
     /// equality is enforced statically.
-    pub fn build_bitcast_int_to_fp<W, K, V, Name>(
+    pub fn build_bitcast_int_to_fp<W, K, Name>(
         &self,
-        value: V,
+        value: IntValue<'ctx, W, B>,
         dst_ty: FloatType<'ctx, K, B>,
         name: Name,
     ) -> IrResult<FloatValue<'ctx, K, B>>
@@ -5362,7 +5359,6 @@ where
         Name: AsRef<str>,
         W: super::int_width::StaticIntWidth,
         K: super::float_kind::StaticFloatKind,
-        V: IntoIntValue<'ctx, W, B>,
     {
         const {
             assert!(
@@ -5371,8 +5367,7 @@ where
                 "bitcast int->fp requires W::STATIC_BITS == K::STATIC_BITS",
             );
         }
-        let v = value.into_int_value(ModuleRef::new(self.module))?;
-        let v_value = IsValue::as_value(v);
+        let v_value = value.as_value();
         if let Some(folded) =
             self.folder
                 .fold_cast_to_fp(super::instr_types::CastOpcode::BitCast, v_value, dst_ty)?
@@ -5387,9 +5382,9 @@ where
     /// `Instruction::BitCast` arm of `CastInst::Create` in
     /// `lib/IR/Instructions.cpp` for the `fp -> int` shape. Width
     /// equality is enforced statically.
-    pub fn build_bitcast_fp_to_int<K, W, V, Name>(
+    pub fn build_bitcast_fp_to_int<K, W, Name>(
         &self,
-        value: V,
+        value: FloatValue<'ctx, K, B>,
         dst_ty: IntType<'ctx, W, B>,
         name: Name,
     ) -> IrResult<IntValue<'ctx, W, B>>
@@ -5397,7 +5392,6 @@ where
         Name: AsRef<str>,
         K: super::float_kind::StaticFloatKind,
         W: super::int_width::StaticIntWidth,
-        V: IntoFloatValue<'ctx, K, B>,
     {
         const {
             assert!(
@@ -5406,8 +5400,7 @@ where
                 "bitcast fp->int requires K::STATIC_BITS == W::STATIC_BITS",
             );
         }
-        let v = value.into_float_value(ModuleRef::new(self.module))?;
-        let v_value = IsValue::as_value(v);
+        let v_value = value.as_value();
         if let Some(folded) = self.folder.fold_cast_to_int(
             super::instr_types::CastOpcode::BitCast,
             v_value,
@@ -5423,9 +5416,9 @@ where
     /// `bfloat <-> half` (both 16 bits) and `fp128 <-> ppc_fp128` (both
     /// 128 bits). Mirrors `Instruction::BitCast` in
     /// `lib/IR/Instructions.cpp`.
-    pub fn build_bitcast_fp_to_fp<Src, Dst, V, Name>(
+    pub fn build_bitcast_fp_to_fp<Src, Dst, Name>(
         &self,
-        value: V,
+        value: FloatValue<'ctx, Src, B>,
         dst_ty: FloatType<'ctx, Dst, B>,
         name: Name,
     ) -> IrResult<FloatValue<'ctx, Dst, B>>
@@ -5433,7 +5426,6 @@ where
         Name: AsRef<str>,
         Src: super::float_kind::StaticFloatKind,
         Dst: super::float_kind::StaticFloatKind,
-        V: IntoFloatValue<'ctx, Src, B>,
     {
         const {
             assert!(
@@ -5442,8 +5434,7 @@ where
                 "bitcast fp->fp requires Src::STATIC_BITS == Dst::STATIC_BITS",
             );
         }
-        let v = value.into_float_value(ModuleRef::new(self.module))?;
-        let v_value = IsValue::as_value(v);
+        let v_value = value.as_value();
         if let Some(folded) =
             self.folder
                 .fold_cast_to_fp(super::instr_types::CastOpcode::BitCast, v_value, dst_ty)?
@@ -5685,8 +5676,7 @@ where
         let i8_ty = ModuleView::<B>::new(self.module).i8_type();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let offset_v = offset.into_int_value(ModuleRef::new(self.module))?;
-        let offset_value = IsValue::as_value(offset_v);
-        self.build_gep(i8_ty, p, core::iter::once(offset_value), name)
+        self.build_gep(i8_ty, p, core::iter::once(offset_v.as_dyn()), name)
     }
 
     /// `getelementptr inbounds i8, ptr <ptr>, <offset>`. Mirrors
@@ -5707,8 +5697,7 @@ where
         let i8_ty = ModuleView::<B>::new(self.module).i8_type();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let offset_v = offset.into_int_value(ModuleRef::new(self.module))?;
-        let offset_value = IsValue::as_value(offset_v);
-        self.build_inbounds_gep(i8_ty, p, core::iter::once(offset_value), name)
+        self.build_inbounds_gep(i8_ty, p, core::iter::once(offset_v.as_dyn()), name)
     }
 
     // ---- Integer comparison ----
@@ -7795,11 +7784,16 @@ where
 // return-value lift per concrete marker. Each impl is concrete-typed so
 // no overlap arises. Mirrors `IRBuilder::CreateRet` in `IRBuilder.h`.
 
-/// Sealed: types that can be passed to [`IRBuilder::build_ret`] for a
-/// function carrying [`ReturnMarker`] `R`. Concrete impls are provided
-/// per `(value-shape, R)` pair so a typed builder accepts every Rust
-/// scalar / typed handle that lifts to the correct IR type, while a
-/// runtime-checked [`Dyn`] builder accepts anything that implements
+/// Types that can be passed to [`IRBuilder::build_ret`] for a function
+/// carrying [`ReturnMarker`] `R`. Concrete impls are provided per
+/// `(value-shape, R)` pair: for a typed `R` the impls blanket over the
+/// now-sealed lift traits ([`IntoIntValue`] / [`IntoFloatValue`] /
+/// [`IntoPointerValue`]), so a typed builder accepts every Rust scalar /
+/// typed handle that lifts to the correct IR type and an erased handle is
+/// rejected; the [`Dyn`] builder blankets over [`IsValue`] and accepts any
+/// value handle with a runtime type check. This trait is not itself sealed
+/// with a private supertrait — its extension surface is closed
+/// transitively by those sealed lift-trait bounds plus the sealed
 /// [`IsValue`].
 pub trait IntoReturnValue<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>>: Sized {
     #[doc(hidden)]
@@ -8655,7 +8649,7 @@ mod tests {
             let i32_dyn_ty = m.custom_width_int_type(32)?;
             let i64_dyn_ty = m.custom_width_int_type(64)?;
             let fn_ty = m.fn_type_no_params(m.i32_type(), false);
-            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
 
             let stored: IntValue<'_, i64, _> =
@@ -8699,7 +8693,7 @@ mod tests {
             let i32_ty = m.i32_type();
             let i64_ty = m.i64_type();
             let fn_ty = m.fn_type_no_params(m.i32_type(), false);
-            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
 
             // `stored`'s REAL IR type is i64; the folder hands it back as
@@ -8747,7 +8741,7 @@ mod tests {
             let i32_ty = m.i32_type();
             let i64_ty = m.i64_type();
             let fn_ty = m.fn_type_no_params(m.i32_type(), false);
-            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
 
             let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().as_value())?;
@@ -8781,7 +8775,7 @@ mod tests {
             let f32_ty = m.f32_type();
             let f64_ty = m.f64_type();
             let fn_ty = m.fn_type_no_params(m.i32_type(), false);
-            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
 
             let stored: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(0.0).as_value())?;
@@ -8823,7 +8817,7 @@ mod tests {
             let f32_ty = m.f32_type();
             let f64_ty = m.f64_type();
             let fn_ty = m.fn_type_no_params(m.i32_type(), false);
-            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
 
             let stored: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(0.0).as_value())?;

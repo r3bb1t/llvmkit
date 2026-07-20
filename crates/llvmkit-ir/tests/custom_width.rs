@@ -9,7 +9,7 @@
 //! `stepvector` round-trip lands with the vector / intrinsic phase.
 //! Per-test citations below.
 
-use llvmkit_ir::{Module, Width};
+use llvmkit_ir::{FunctionValue, Linkage, Module, Width};
 
 /// Mirrors the constructive line `Type *I3 = IntegerType::get(Ctx, 3);`
 /// from `IRBuilderTest::CreateStepVectorI3`. Verifies our
@@ -29,17 +29,18 @@ fn int_type_n_constructor_matches_upstream_int3() {
 
 /// Type-level: `Width<N>` participates in the same trait surface as
 /// the Rust-scalar markers. This test just witnesses that
-/// [`crate::Module::add_function::<Width<N>>`] compiles, mirroring
-/// the upstream pattern of using arbitrary-width types in function
-/// signatures (used pervasively in `CodeGen/` and `Transforms/`
-/// tests, e.g. `srem-seteq-illegal-types.ll`).
+/// [`crate::Module::add_typed_function`] accepts `Width<N>` in both the
+/// return and parameter position — and that the resulting handle is a
+/// `FunctionValue<Width<17>>` — mirroring the upstream pattern of using
+/// arbitrary-width types in function signatures (used pervasively in
+/// `CodeGen/` and `Transforms/` tests, e.g.
+/// `srem-seteq-illegal-types.ll`).
 #[test]
 fn width_marker_works_as_return_marker() -> Result<(), llvmkit_ir::IrError> {
     Module::with_new("c", |m| {
-        let i17_ty = m.int_type_n::<17>();
-        let fn_ty = m.fn_type(i17_ty, [i17_ty.as_type()], false);
-        let _f =
-            m.add_function::<Width<17>, _>("identity17", fn_ty, llvmkit_ir::Linkage::External)?;
+        let _f: FunctionValue<'_, Width<17>> = m
+            .add_typed_function::<Width<17>, (Width<17>,), _>("identity17", Linkage::External)?
+            .as_function();
         Ok(())
     })
 }

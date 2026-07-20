@@ -1544,7 +1544,7 @@ impl_module_analysis_list!(8; A0: Idx0 . 0, A1: Idx1 . 1, A2: Idx2 . 2, A3: Idx3
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{IRBuilder, Linkage, Module};
+    use crate::{Dyn, IRBuilder, Linkage, Module};
 
     /// llvmkit-specific type-machinery lock (no upstream analog): the analysis-list
     /// tuple schema prefetches, collects, and selects by type. Runtime behavior it
@@ -1554,9 +1554,9 @@ mod tests {
         Module::with_new("analysis-list", |m| {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
-            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
-            let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+            let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             b.build_ret(i32_ty.const_int(0_u32))?;
             m.verify_borrowed()?;
 
@@ -1593,7 +1593,7 @@ mod tests {
         Module::with_new("domtree-repair", |m| {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
-            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
             let next = f.append_basic_block(&m, "next");
             let entry_id = entry.as_value().id;
@@ -1601,9 +1601,9 @@ mod tests {
             let next_label = next.label();
 
             // entry: br next    next: ret 0
-            let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+            let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             b.build_br(next.label())?;
-            let b2 = IRBuilder::new_for::<i32>(&m).position_at_end(next);
+            let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(next);
             b2.build_ret(i32_ty.const_int(0_u32))?;
 
             let function: FunctionView<'_> = f.into();
@@ -1680,9 +1680,9 @@ mod tests {
         Module::with_new("requires-no-default", |m| {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
-            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
-            let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+            let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             b.build_ret(i32_ty.const_int(0_u32))?;
 
             let function: FunctionView<'_> = f.into();

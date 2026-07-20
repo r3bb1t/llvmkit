@@ -19,9 +19,7 @@ fn main() {
             [arr_i32.as_type(), f32_ty.as_type()],
             false,
         );
-        let f = m
-            .add_function::<llvmkit_ir::marker::Dyn, _>("g", fn_ty, Linkage::External)
-            .unwrap();
+        let f = m.add_function_dyn("g", fn_ty, Linkage::External).unwrap();
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
 

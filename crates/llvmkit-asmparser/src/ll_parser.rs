@@ -8001,8 +8001,11 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let addr_ty = self.parse_type(false)?;
         let addr_v = self.parse_value(state, addr_ty)?;
         self.expect_punct(PunctKind::Comma, "',' after indirectbr address")?;
+        let addr: PointerValue<'ctx, B> = addr_v
+            .try_into()
+            .map_err(|_| self.expected("ptr-typed indirectbr address"))?;
         let (_, mut ibr) = b
-            .build_indirectbr(addr_v, "")
+            .build_indirectbr(addr, "")
             .map_err(|e| self.builder_err("indirectbr", e))?;
         // Destination list: `[ label %dest, ... ]`
         self.expect_punct(

@@ -289,7 +289,7 @@ fn typed_vec() -> Result<(), IrError> {
     Module::with_new("demo", |m| {
         let v4i32 = m.vector_type_n::<i32, 4>(); // VectorType<'_, i32, Len<4>>
         let fn_ty = m.fn_type(m.i32_type().as_type(), [v4i32.as_type(), v4i32.as_type()], false);
-        let f = m.add_function::<i32, _>("vadd", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("vadd", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::at_end(entry);
 

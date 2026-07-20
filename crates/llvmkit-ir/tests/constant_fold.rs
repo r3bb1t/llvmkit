@@ -9,7 +9,7 @@ use llvmkit_ir::{
     ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
     ConstantFloatValue, ConstantIntValue, FloatDyn, FloatPredicate, GepNoWrapFlags, IRBuilder,
     InstructionView, IntDyn, IntPredicate, IrError, Linkage, MaybeAlign, Module, NoFolder,
-    RoundingMode, UDivFlags, UnaryOpcode, UnnamedAddr, Width, constant_fold_binary_instruction,
+    RoundingMode, UDivFlags, UnaryOpcode, UnnamedAddr, constant_fold_binary_instruction,
     constant_fold_cast_instruction, constant_fold_compare_instruction,
     constant_fold_extract_element_instruction, constant_fold_extract_value_instruction,
     constant_fold_get_element_ptr, constant_fold_insert_element_instruction,
@@ -874,7 +874,7 @@ fn analysis_instruction_fold_uses_apint_binary_folder() -> Result<(), IrError> {
     Module::with_new("analysis-fold", |m| {
         let ty = m.int_type_n::<257>();
         let fn_ty = m.fn_type_no_params(ty, false);
-        let f = m.add_function::<Width<257>, _>("wide", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("wide", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let high = ty.const_ap_int(&ApInt::one_bit_set(257, 256))?;
@@ -895,7 +895,7 @@ fn analysis_instruction_fold_exact_udiv_inexact_returns_poison() -> Result<(), I
     Module::with_new("analysis-exact-fold", |m| {
         let ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(ty, false);
-        let f = m.add_function::<i32, _>("exact", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("exact", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let value = b.build_int_udiv_with_flags::<i32, _, _, _>(
@@ -1815,10 +1815,10 @@ fn compare_global_pointer_relations_fold() -> Result<(), IrError> {
 
         let void_ty = m.void_type();
         let fn_ty = m.fn_type_no_params(void_ty.as_type(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::Internal)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::Internal)?;
         let f_entry = f.append_basic_block(&m, "entry");
         let f_addr = m.block_address(f, &f_entry)?;
-        let other = m.add_function::<(), _>("other", fn_ty, Linkage::Internal)?;
+        let other = m.add_function_dyn("other", fn_ty, Linkage::Internal)?;
         let other_entry = other.append_basic_block(&m, "entry");
         let other_addr = m.block_address(other, &other_entry)?;
 

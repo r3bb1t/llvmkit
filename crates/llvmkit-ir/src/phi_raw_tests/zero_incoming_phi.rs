@@ -85,10 +85,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectEmptyEdge<'c
 /// ```
 fn build_single_pred_phi<'ctx>(
     m: &Module<'ctx, crate::Brand<'ctx>, crate::Unverified>,
-) -> IrResult<(crate::FunctionValue<'ctx, i32>, BasicBlockLabel<'ctx, Dyn>)> {
+) -> IrResult<(crate::FunctionValue<'ctx, Dyn>, BasicBlockLabel<'ctx, Dyn>)> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let to = f.append_basic_block(m, "to");
     let other = f.append_basic_block(m, "other");
@@ -99,20 +99,20 @@ fn build_single_pred_phi<'ctx>(
     let to_dyn: BasicBlockLabel<Dyn> = to_lbl.as_value().try_into()?;
 
     // entry: %x = add %a, 7 ; %c = icmp slt %a, 5 ; cond_br %c, to, other
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<i32> = f.param(0)?.try_into()?;
     let x = b.build_int_add(a, 7_i32, "x")?;
     let c = b.build_icmp_slt(a, 5_i32, "c")?;
     b.build_cond_br(c, to_lbl, other_lbl)?;
 
     // to: %p = phi i32 [ %x, entry ] ; %u = add %p, 1 ; ret %u
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(to);
+    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(to);
     let p = b.build_int_phi::<i32, _>("p")?.add_incoming(x, entry_lbl)?;
     let u = b.build_int_add(p.as_int_value(), 1_i32, "u")?;
     b.build_ret(u)?;
 
     // other: ret 0
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(other);
+    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(other);
     b.build_ret(i32_ty.const_int(0_u32))?;
 
     Ok((f, to_dyn))
@@ -175,13 +175,13 @@ fn remove_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
 fn build_redirect_single_pred_phi<'ctx>(
     m: &Module<'ctx, crate::Brand<'ctx>, crate::Unverified>,
 ) -> IrResult<(
-    crate::FunctionValue<'ctx, i32>,
+    crate::FunctionValue<'ctx, Dyn>,
     BasicBlockLabel<'ctx, Dyn>,
     BasicBlockLabel<'ctx, Dyn>,
 )> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let old_to = f.append_basic_block(m, "old_to");
     let other = f.append_basic_block(m, "other");
@@ -195,24 +195,24 @@ fn build_redirect_single_pred_phi<'ctx>(
     let new_to_dyn: BasicBlockLabel<Dyn> = new_to_lbl.as_value().try_into()?;
 
     // entry: %x = add %a, 7 ; %c = icmp slt %a, 5 ; cond_br %c, old_to, other
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<i32> = f.param(0)?.try_into()?;
     let x = b.build_int_add(a, 7_i32, "x")?;
     let c = b.build_icmp_slt(a, 5_i32, "c")?;
     b.build_cond_br(c, old_to_lbl, other_lbl)?;
 
     // old_to: %p = phi i32 [ %x, entry ] ; %u = add %p, 1 ; ret %u
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(old_to);
+    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(old_to);
     let p = b.build_int_phi::<i32, _>("p")?.add_incoming(x, entry_lbl)?;
     let u = b.build_int_add(p.as_int_value(), 1_i32, "u")?;
     b.build_ret(u)?;
 
     // other: ret 0
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(other);
+    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(other);
     b.build_ret(i32_ty.const_int(0_u32))?;
 
     // new_to: ret 1  (no leading phi -> redirect's `phi_values` slice is empty)
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(new_to);
+    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new_to);
     b.build_ret(i32_ty.const_int(1_u32))?;
 
     Ok((f, old_to_dyn, new_to_dyn))
@@ -287,17 +287,17 @@ fn zero_incoming_phi_in_reachable_block_is_rejected() -> Result<(), IrError> {
     Module::with_new("zero_incoming_reachable", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = f.append_basic_block(&m, "b");
         let b_label = b.label();
 
         // entry: br b   (so `b` is reachable from entry)
-        let bld = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         bld.build_br(b_label)?;
 
         // b: %p = phi i32   (no add_incoming) ; ret 0
-        let bld = IRBuilder::new_for::<i32>(&m).position_at_end(b);
+        let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(b);
         let _p = bld.build_int_phi::<i32, _>("p")?.finish();
         bld.build_ret(i32_ty.const_int(0_u32))?;
 
@@ -329,17 +329,17 @@ fn zero_incoming_phi_in_unreachable_block_is_accepted() -> Result<(), IrError> {
     Module::with_new("zero_incoming_unreachable", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         // `u` has no edge into it — unreachable from entry.
         let u = f.append_basic_block(&m, "u");
 
         // entry: ret 0
-        let bld = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         bld.build_ret(i32_ty.const_int(0_u32))?;
 
         // u: %q = phi i32   (no add_incoming) ; ret 0
-        let bld = IRBuilder::new_for::<i32>(&m).position_at_end(u);
+        let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(u);
         let _q = bld.build_int_phi::<i32, _>("q")?.finish();
         bld.build_ret(i32_ty.const_int(0_u32))?;
 

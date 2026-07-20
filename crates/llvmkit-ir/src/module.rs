@@ -834,8 +834,9 @@ pub(super) struct ModuleCore {
     source_filename: core::cell::RefCell<Option<String>>,
     ctx: Context,
     /// Functions defined in this module, in declaration order.
-    /// Stored as a `RefCell<Vec<ValueId>>` so `add_function` can mutate
-    /// while the same `&'ctx self` borrow is held by call sites.
+    /// Stored as a `RefCell<Vec<ValueId>>` so the function-declaring
+    /// constructors can mutate while the same `&'ctx self` borrow is
+    /// held by call sites.
     functions: core::cell::RefCell<Vec<ValueId>>,
     /// Module-level name -> function value-id table.
     function_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueId>>,
@@ -1104,12 +1105,15 @@ impl<'ctx> ModuleCore {
 
     // ---- Function creation ----
 
-    /// Add a function to this module. Mirrors `Function::Create`.
+    /// Crate-internal CHECKED declaration path for
+    /// [`FunctionBuilder::build`](crate::function::FunctionBuilder::build),
+    /// the one constructor where a user-supplied signature and an
+    /// independently chosen `R` meet. Mirrors `Function::Create`.
     /// Returns `Err(IrError::DuplicateFunctionName)` if a function
     /// of the same name already exists, or
     /// [`IrError::ReturnTypeMismatch`] if the signature's return
     /// type does not match the chosen [`ReturnMarker`](crate::marker::ReturnMarker).
-    pub fn add_function<B: ModuleBrand + 'ctx, R, Name>(
+    pub(crate) fn add_function_checked<B: ModuleBrand + 'ctx, R, Name>(
         &'ctx self,
         name: Name,
         signature: FunctionType<'ctx, B>,
@@ -2535,7 +2539,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Name: AsRef<str>,
     {
         let signature = self.typed_function_type::<Ret, Params>()?;
-        let function = self.add_function::<Ret::Marker, _>(name, signature, linkage)?;
+        let function = self.declare_function::<Ret::Marker>(name.as_ref(), signature, linkage)?;
         TypedFunctionValue::<Ret, Params, B>::try_from_function(function)
     }
 
@@ -2549,8 +2553,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Name: AsRef<str>,
     {
         let signature = self.typed_function_type_of::<Sig>()?;
-        let function =
-            self.add_function::<<Sig::Ret as FunctionReturn>::Marker, _>(name, signature, linkage)?;
+        let function = self.declare_function::<<Sig::Ret as FunctionReturn>::Marker>(
+            name.as_ref(),
+            signature,
+            linkage,
+        )?;
         TypedFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(function)
     }
 
@@ -2567,7 +2574,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Name: AsRef<str>,
     {
         let signature = self.typed_varargs_function_type::<Ret, Params>()?;
-        let function = self.add_function::<Ret::Marker, _>(name, signature, linkage)?;
+        let function = self.declare_function::<Ret::Marker>(name.as_ref(), signature, linkage)?;
         crate::function_signature::TypedVarArgsFunctionValue::<Ret, Params, B>::try_from_function(
             function,
         )
@@ -2588,36 +2595,42 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Name: AsRef<str>,
     {
         let signature = self.typed_varargs_function_type_of::<Sig>()?;
-        let function =
-            self.add_function::<<Sig::Ret as FunctionReturn>::Marker, _>(name, signature, linkage)?;
+        let function = self.declare_function::<<Sig::Ret as FunctionReturn>::Marker>(
+            name.as_ref(),
+            signature,
+            linkage,
+        )?;
         crate::function_signature::TypedVarArgsFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(
             function,
         )
     }
 
-    pub fn add_function<R, Name>(
+    /// Shared declaration tail for every public constructor: name
+    /// validation (reserved intrinsic names, duplicate rejection)
+    /// followed by the arena push. Return-marker/signature agreement is
+    /// the CALLER's responsibility — the typed constructors derive the
+    /// signature from their markers so a mismatch is unrepresentable,
+    /// and [`add_function_dyn`](Self::add_function_dyn)'s `Dyn` matches
+    /// every signature by definition. That caller contract stays closed
+    /// because `FunctionReturn` cannot gain downstream impls: the
+    /// `impl<S: StructSchema> FunctionReturn for S` blanket
+    /// coherence-blocks direct external impls (and itself pins
+    /// `Marker = Dyn`), so removing or narrowing that blanket would make
+    /// the dropped marker check load-bearing again — re-add it here if
+    /// that ever changes.
+    fn declare_function<R>(
         &self,
-        name: Name,
+        name: &str,
         signature: FunctionType<'ctx, B>,
         linkage: crate::global_value::Linkage,
     ) -> IrResult<FunctionValue<'ctx, R, B>>
     where
         R: crate::marker::ReturnMarker,
-        Name: AsRef<str>,
     {
-        let name = name.as_ref();
         reject_reserved_intrinsic_name(name)?;
         if !name.is_empty() && self.core.global_name_exists(name) {
             return Err(IrError::DuplicateFunctionName {
                 name: name.to_owned(),
-            });
-        }
-        let ret_data = self.core.ctx.type_data(signature.return_type().id());
-        if !crate::function::signature_matches_marker::<R>(ret_data) {
-            return Err(IrError::ReturnTypeMismatch {
-                expected: crate::marker::marker_kind_label::<R>()
-                    .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
-                got: signature.return_type().kind_label(),
             });
         }
         self.core.push_function(
@@ -2633,7 +2646,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     /// Add a function whose return marker is erased to [`Dyn`].
     ///
     /// The honest erased declaration path: it takes a runtime [`FunctionType`] and
-    /// returns a `FunctionValue<Dyn>`. Unlike [`add_function`](Self::add_function) it
+    /// returns a `FunctionValue<Dyn>`. Unlike [`add_typed_function`](Self::add_typed_function) it
     /// carries no static return marker and runs no return-marker check — `Dyn` matches
     /// every signature by definition. Use this for the parser and runtime-schema-driven
     /// tooling; for statically-typed authoring prefer
@@ -2648,22 +2661,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     where
         Name: AsRef<str>,
     {
-        let name = name.as_ref();
-        reject_reserved_intrinsic_name(name)?;
-        if !name.is_empty() && self.core.global_name_exists(name) {
-            return Err(IrError::DuplicateFunctionName {
-                name: name.to_owned(),
-            });
-        }
         // `R = Dyn` matches every signature, so no return-marker check is needed.
-        self.core.push_function(
-            name,
-            signature,
-            linkage,
-            crate::CallingConv::default(),
-            None,
-            None,
-        )
+        self.declare_function::<crate::marker::Dyn>(name.as_ref(), signature, linkage)
     }
 
     pub fn intrinsic_descriptor_from_signature(

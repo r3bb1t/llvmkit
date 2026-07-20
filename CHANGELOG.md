@@ -7,6 +7,58 @@ tagged release is cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### No silent erasure — the strict cut
+
+An erased `Value` / `Argument` / `Instruction` can no longer *silently* satisfy a
+typed operand position, and a Rust numeric literal maps to exactly one IR width.
+Erasure is still available, but it must be **spelled**.
+
+#### Breaking
+
+- Removed `Module::add_function::<R>(name, fn_ty, linkage)` — the constructor
+  that paired an erased runtime signature with a static return marker, the
+  one place a declaration could silently claim a return type its signature
+  did not have (the marker check caught cross-kind lies at runtime, but the
+  API's shape invited them). Declarations now split honestly:
+  `add_typed_function::<Ret, Params, _>` derives the signature *from* the
+  markers (a mismatch is unrepresentable; parameters come back typed), and
+  `add_function_dyn` takes a runtime `FunctionType` and returns
+  `FunctionValue<Dyn>`. To re-type a function declared erased, use the
+  checked `function_by_name_typed::<R>` lookup. One deliberate escape hatch
+  remains: `function_builder::<R>(name, fn_ty)` (the attribute/linkage-rich
+  declaration path) still pairs a user-supplied signature with a chosen
+  marker and keeps the runtime `ReturnTypeMismatch` gate at `.build()`.
+  Locked by `tests/compile_fail/add_function_removed.rs`.
+- Removed the erased-handle lifts from `IntoIntValue`, `IntoFloatValue`, and
+  `IntoPointerValue`. An erased `Value` / `Argument` / `Instruction` no longer
+  fills a typed operand slot on its own; narrow it explicitly first — e.g.
+  `let p: PointerValue = v.try_into()?;` (or `IntValue::<W>::try_from` /
+  `FloatValue::<K>::try_from`) — or use the erased `_dyn` builder family. The four
+  conversion traits (`IntoIntValue`, `IntoFloatValue`, `IntoPointerValue`, and,
+  transitively, `IntoCallArg`) are now **sealed**: their set of accepted operand
+  sources is closed and cannot be extended downstream.
+- Removed the implicit literal-widening impls. A Rust integer literal now maps to
+  exactly one IR width (`2i32` is `i32`; `2i64` is `i64`) and a Rust float to
+  exactly one kind (`f32` / `f64`), with no silent widening (`i8 -> i32`,
+  `f32 -> f64`). A literal in a wider slot must name its width, e.g. `2_i64`. The
+  Rust-scalar → `Width<N>` lifts were removed for the same reason; a `Width<N>`
+  slot takes a typed `IntValue<Width<N>>` / `ConstantIntValue<Width<N>>`, not a
+  bare literal.
+
+#### Improved
+
+- As a direct consequence of the above, `build_int_add(2i32, 3i32, "n")` now
+  infers its width with **no turbofish** and no annotation: with a single width
+  per literal, the operand marker `W` has exactly one solution.
+- The bitcast builders (`build_bitcast_int_to_int`, `build_bitcast_int_to_fp`,
+  `build_bitcast_fp_to_int`, `build_bitcast_fp_to_fp`), `build_atomic_cmpxchg`,
+  and `build_ui_to_fp_with_flags` drop their now-redundant operand-lift generic:
+  with one-literal-one-width and sealed conversions, the lift bought only
+  "accept a bare literal in place of a typed handle", dead weight for these
+  computed-SSA operands. The methods now take the concrete typed operand
+  directly, so e.g. `build_bitcast_int_to_int(v, i8_ty, "bc")` needs no
+  turbofish. Printed IR is unchanged.
+
 ### Declaration surface — globals derive their type from the initializer
 
 `Module::add_global` / `add_global_constant` no longer take a separate

@@ -18,9 +18,10 @@ use llvmkit_ir::{Linkage, Module};
 
 fn main() {
     Module::with_new("ssa-ret-value-in-void-fn", |m| {
-        let void_ty = m.void_type();
-        let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External).unwrap();
+        let f = m
+            .add_typed_function::<(), (), _>("f", Linkage::External)
+            .unwrap()
+            .as_function();
         let mut b = llvmkit_ir::SsaBuilder::for_function(&m, f).unwrap();
         let entry = b.create_block("entry");
 

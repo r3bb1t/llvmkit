@@ -6,7 +6,7 @@
 //! `#[cfg(test)]` tree.
 
 use crate::constant_folding::constant_fold_instruction;
-use crate::{DataLayout, IRBuilder, InstructionView, IntValue, IrError, Linkage, Module};
+use crate::{DataLayout, Dyn, IRBuilder, InstructionView, IntValue, IrError, Linkage, Module};
 
 /// llvmkit-specific subset of `ConstantFolding.cpp::ConstantFoldInstOperands`:
 /// a PHI whose incoming values are the same constant folds to that constant.
@@ -16,10 +16,10 @@ fn phi_same_constant_folds() -> Result<(), IrError> {
         let dl = DataLayout::default();
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let entry_label = entry.label();
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let phi = b
             .build_int_phi::<i32, _>("p")?
             .add_incoming(7_i32, entry_label)?
@@ -45,12 +45,12 @@ fn phi_poison_and_undef_incomings_fold_to_undef() -> Result<(), IrError> {
         let dl = DataLayout::default();
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let other = f.append_basic_block(&m, "other");
         let entry_label = entry.label();
         let other_label = other.label();
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let poison = IntValue::try_from(i32_ty.as_type().get_poison().as_value())?;
         let undef = IntValue::try_from(i32_ty.as_type().get_undef().as_value())?;
         // Distinct predecessor blocks: a phi with two *different* values from
@@ -78,12 +78,12 @@ fn phi_poison_beside_constant_folds_to_the_constant() -> Result<(), IrError> {
         let dl = DataLayout::default();
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let other = f.append_basic_block(&m, "other");
         let entry_label = entry.label();
         let other_label = other.label();
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let poison = IntValue::try_from(i32_ty.as_type().get_poison().as_value())?;
         // Distinct predecessor blocks: two different values from one block is
         // ill-formed (AmbiguousPhi); the poison-skipping folder arm folds by

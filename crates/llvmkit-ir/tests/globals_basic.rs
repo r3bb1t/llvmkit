@@ -690,7 +690,7 @@ fn function_pointer_global_initializer_verifies() -> Result<(), IrError> {
     Module::with_new("fnptr_init", |m| {
         let void_ty = m.void_type();
         let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let callee = m.add_function::<(), _>("callee", callee_ty, Linkage::External)?;
+        let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
         let init = callee.as_global_constant_ptr();
         m.add_global_constant("slot", init)?;
         m.verify_borrowed()?;
@@ -712,7 +712,7 @@ fn function_pointer_aggregate_initializer_prints_ptr_base() -> Result<(), IrErro
         let void_ty = m.void_type();
         let ptr_ty = m.ptr_type(0);
         let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let callee = m.add_function::<(), _>("callee", callee_ty, Linkage::External)?;
+        let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
         let arr_ty = m.array_type(ptr_ty.as_type(), 1);
         let elem = callee.as_aggregate_ptr(0);
         let init = arr_ty.const_array([elem])?;

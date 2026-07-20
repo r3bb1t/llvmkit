@@ -3239,20 +3239,18 @@ mod tests {
             use_list: core::cell::RefCell::new(Vec::new()),
         })
     }
-    fn skeleton<'ctx, R: crate::marker::ReturnMarker>(
+    fn skeleton<'ctx>(
         m: &Module<'ctx>,
         ret_ty: crate::Type<'ctx>,
         params: &[crate::Type<'ctx>],
         name: &str,
     ) -> (ValueId, ValueId) {
         let fn_ty = m.fn_type(ret_ty, params.iter().copied(), false);
-        let f = m
-            .add_function::<R, _>(name, fn_ty, Linkage::External)
-            .unwrap();
+        let f = m.add_function_dyn(name, fn_ty, Linkage::External).unwrap();
         let bb = f.append_basic_block(m, "entry");
-        // Reach the value-id pair without leaking R into the return.
+        // Reach the value-id pair without leaking the return marker.
         let f_id = {
-            // FunctionValue<R> has a private id field; widen via as_dyn.
+            // FunctionValue<Dyn> has a private id field; widen via as_dyn.
             f.as_dyn().as_value().id
         };
         let bb_id = bb.as_dyn().as_value().id;
@@ -3325,7 +3323,7 @@ mod tests {
         Module::with_new("t", |m| {
             let i32_ty = m.i32_type().as_type();
             let ptr_ty = m.ptr_type(0).as_type();
-            let (_, bb_id) = skeleton::<i32>(&m, i32_ty, &[], "f");
+            let (_, bb_id) = skeleton(&m, i32_ty, &[], "f");
             let null_id = fab_null_ptr_id(&m, ptr_ty.id());
             fabricate_instruction(
                 &m,
@@ -3345,7 +3343,7 @@ mod tests {
         Module::with_new("t", |m| {
             let void_ty = m.void_type().as_type();
             let i32_ty = m.i32_type().as_type();
-            let (_, bb_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            let (_, bb_id) = skeleton(&m, void_ty, &[], "f");
             let zero_id = fab_const_int_id(&m, i32_ty.id(), 0);
             fabricate_instruction(
                 &m,
@@ -3366,7 +3364,7 @@ mod tests {
             let i32_ty = m.i32_type().as_type();
             let i64_ty = m.i64_type().as_type();
             let void_ty = m.void_type().as_type();
-            let (f_id, bb_id) = skeleton::<()>(&m, void_ty, &[i32_ty, i64_ty], "f");
+            let (f_id, bb_id) = skeleton(&m, void_ty, &[i32_ty, i64_ty], "f");
             let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
             let p0 = f.param(0).unwrap();
             let p1 = f.param(1).unwrap();
@@ -3389,7 +3387,7 @@ mod tests {
         Module::with_new("t", |m| {
             let void_ty = m.void_type().as_type();
             let i32_ty = m.i32_type().as_type();
-            let (f_id, entry_id) = skeleton::<()>(&m, void_ty, &[i32_ty], "f");
+            let (f_id, entry_id) = skeleton(&m, void_ty, &[i32_ty], "f");
             let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
             let then_bb = f.append_basic_block(&m, "then");
             let else_bb = f.append_basic_block(&m, "else");
@@ -3419,7 +3417,7 @@ mod tests {
     fn misplaced_terminator() {
         Module::with_new("t", |m| {
             let void_ty = m.void_type().as_type();
-            let (_, bb_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            let (_, bb_id) = skeleton(&m, void_ty, &[], "f");
             for _ in 0..2 {
                 append_ret_void(&m, bb_id);
             }
@@ -3434,7 +3432,7 @@ mod tests {
         Module::with_new("t", |m| {
             let i32_ty = m.i32_type().as_type();
             let void_ty = m.void_type().as_type();
-            let (f_id, entry_id) = skeleton::<()>(&m, void_ty, &[i32_ty, i32_ty], "f");
+            let (f_id, entry_id) = skeleton(&m, void_ty, &[i32_ty, i32_ty], "f");
             let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
             let p0 = f.param(0).unwrap();
             let p1 = f.param(1).unwrap();
@@ -3463,7 +3461,7 @@ mod tests {
         Module::with_new("t", |m| {
             let i32_ty = m.i32_type().as_type();
             let void_ty = m.void_type().as_type();
-            let (_, bb_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            let (_, bb_id) = skeleton(&m, void_ty, &[], "f");
             // Predict the next value-id by pushing a probe and reading
             // its arena index.
             let probe = fab_const_int_id(&m, i32_ty.id(), 0);
@@ -3496,7 +3494,7 @@ mod tests {
         Module::with_new("t", |m| {
             let void_ty = m.void_type().as_type();
             let token_ty = m.token_type().as_type();
-            let (_f_id, entry_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            let (_f_id, entry_id) = skeleton(&m, void_ty, &[], "f");
             fabricate_instruction(
                 &m,
                 entry_id,
@@ -3510,7 +3508,7 @@ mod tests {
         // `void`: not a first-class type, so also not a valid phi result.
         Module::with_new("t", |m| {
             let void_ty = m.void_type().as_type();
-            let (_f_id, entry_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            let (_f_id, entry_id) = skeleton(&m, void_ty, &[], "f");
             fabricate_instruction(
                 &m,
                 entry_id,
@@ -3540,7 +3538,7 @@ mod tests {
             let i32_ty = m.i32_type().as_type();
             let void_ty = m.void_type().as_type();
             let tptr_ty = m.typed_pointer_type(i32_ty, 0).as_type();
-            let (f_id, entry_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            let (f_id, entry_id) = skeleton(&m, void_ty, &[], "f");
             let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
             let dead = f.append_basic_block(&m, "dead");
             let dead_id = dead.as_value().id;
@@ -3565,7 +3563,7 @@ mod tests {
             let i1_ty = m.bool_type().as_type();
             let i32_ty = m.i32_type().as_type();
             let void_ty = m.void_type().as_type();
-            let (f_id, entry_id) = skeleton::<()>(&m, void_ty, &[i1_ty], "f");
+            let (f_id, entry_id) = skeleton(&m, void_ty, &[i1_ty], "f");
             let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
             let target = f.append_basic_block(&m, "target");
             let cond_id = f.param(0).unwrap().as_value().id;
@@ -3608,7 +3606,7 @@ mod tests {
         Module::with_new("t", |m| {
             let i32_ty = m.i32_type().as_type();
             let void_ty = m.void_type().as_type();
-            let (f_id, entry_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            let (f_id, entry_id) = skeleton(&m, void_ty, &[], "f");
             let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
             let target = f.append_basic_block(&m, "target");
             let unrelated = f.append_basic_block(&m, "unrelated");
@@ -3649,7 +3647,7 @@ mod tests {
             // fabricated to make it valid.
             let callee_fn_ty = m.fn_type(i32_ty, [i32_ty, i32_ty], false);
             let callee = m
-                .add_function::<i32, _>("callee", callee_fn_ty, Linkage::External)
+                .add_function_dyn("callee", callee_fn_ty, Linkage::External)
                 .unwrap();
             let cb = callee.append_basic_block(&m, "entry");
             let zero = fab_const_int_id(&m, i32_ty.id(), 0);
@@ -3662,7 +3660,7 @@ mod tests {
             // Caller: passes only ONE arg.
             let caller_fn_ty = m.fn_type(void_ty, [i32_ty], false);
             let caller = m
-                .add_function::<(), _>("caller", caller_fn_ty, Linkage::External)
+                .add_function_dyn("caller", caller_fn_ty, Linkage::External)
                 .unwrap();
             let entry = caller.append_basic_block(&m, "entry");
             let arg_id = caller.param(0).unwrap().as_value().id;
@@ -3692,7 +3690,7 @@ mod tests {
             let void_ty = m.void_type().as_type();
             let i64_ty = m.i64_type().as_type();
             let ptr1_ty = m.ptr_type(1).as_type();
-            let (_f_id, bb_id) = skeleton::<()>(&m, void_ty, &[], "f");
+            let (_f_id, bb_id) = skeleton(&m, void_ty, &[], "f");
             let ptr = fab_null_ptr_id(&m, ptr1_ty.id());
             fabricate_instruction(
                 &m,

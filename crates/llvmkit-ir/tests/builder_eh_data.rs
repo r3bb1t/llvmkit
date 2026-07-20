@@ -2,7 +2,7 @@
 //!
 //! Every test cites its upstream source per Doctrine D11.
 
-use llvmkit_ir::{IRBuilder, IrError, Linkage, Module};
+use llvmkit_ir::{Dyn, IRBuilder, IrError, Linkage, Module};
 
 // --------------------------------------------------------------------------
 // landingpad
@@ -17,17 +17,17 @@ fn landingpad_cleanup_only() -> Result<(), IrError> {
         let i8_ty = m.i8_type();
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("f.no_personality", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f.no_personality", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let exception = f.append_basic_block(&m, "exception");
         {
-            let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-            bb_b.build_ret_void();
+            let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+            bb_b.build_ret_void()?;
         }
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(exception);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(exception);
         let lp = b.build_landingpad(i8_ty.as_type(), true, "cleanup")?;
         let _closed = lp.finish();
-        b.build_ret_void();
+        b.build_ret_void()?;
         let text = format!("{m}");
         // Mirrors `; CHECK: %cleanup = landingpad i8` followed by
         // `; CHECK: cleanup` (compatibility.ll lines 789 + the upstream
@@ -50,18 +50,18 @@ fn landingpad_cleanup_plus_catch() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("instructions.landingpad", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("instructions.landingpad", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let catch3 = f.append_basic_block(&m, "catch3");
         {
-            let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-            bb_b.build_ret_void();
+            let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+            bb_b.build_ret_void()?;
         }
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(catch3);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(catch3);
         let null_ptr = ptr_ty.const_null();
         let lp = b.build_landingpad(i32_ty.as_type(), true, "")?;
         let _closed = lp.add_catch_clause(null_ptr)?.finish();
-        b.build_ret_void();
+        b.build_ret_void()?;
         let text = format!("{m}");
         // Mirrors `landingpad i32\n          cleanup\n          catch ptr null`.
         assert!(
@@ -85,9 +85,9 @@ fn resume_i32_undef() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let exc = f.append_basic_block(&m, "exc");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(exc);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(exc);
         let undef = i32_ty.as_type().get_undef();
         let _ = b.build_resume(undef, "")?;
         let text = format!("{m}");
@@ -106,9 +106,9 @@ fn landingpad_followed_by_resume() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let exc = f.append_basic_block(&m, "exc");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(exc);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(exc);
         let lp = b.build_landingpad(i32_ty.as_type(), true, "cleanup")?;
         let _closed = lp.finish();
         let undef = i32_ty.as_type().get_undef();

@@ -83,11 +83,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectInvokeEdge<'
 fn build_invoke_caller<'ctx>(
     m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
 ) -> IrResult<CallerFixture<'ctx>> {
-    let void_ty = m.void_type();
-    let callee_ty = m.fn_type_no_params(void_ty.as_type(), false);
-    let callee = m.add_function::<(), _>("callee", callee_ty, Linkage::External)?;
-    let caller_ty = m.fn_type_no_params(void_ty.as_type(), false);
-    let caller = m.add_function::<(), _>("caller", caller_ty, Linkage::External)?;
+    let callee = m
+        .add_typed_function::<(), (), _>("callee", Linkage::External)?
+        .as_function();
+    let caller = m
+        .add_typed_function::<(), (), _>("caller", Linkage::External)?
+        .as_function();
 
     let entry = caller.append_basic_block(m, "entry");
     let normal = caller.append_basic_block(m, "normal");
@@ -192,11 +193,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectCallBrEdge<'
 fn build_callbr_caller<'ctx>(
     m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
 ) -> IrResult<CallerFixture<'ctx>> {
-    let void_ty = m.void_type();
-    let callee_ty = m.fn_type_no_params(void_ty.as_type(), false);
-    let callee = m.add_function::<(), _>("callee", callee_ty, Linkage::External)?;
-    let caller_ty = m.fn_type_no_params(void_ty.as_type(), false);
-    let caller = m.add_function::<(), _>("caller", caller_ty, Linkage::External)?;
+    let callee = m
+        .add_typed_function::<(), (), _>("callee", Linkage::External)?
+        .as_function();
+    let caller = m
+        .add_typed_function::<(), (), _>("caller", Linkage::External)?
+        .as_function();
 
     let entry = caller.append_basic_block(m, "entry");
     let cont = caller.append_basic_block(m, "cont");
@@ -299,8 +301,9 @@ fn build_cond_br_fn<'ctx>(
     m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
 ) -> IrResult<FunctionValue<'ctx, i32>> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let f = m
+        .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
+        .as_function();
     let entry = f.append_basic_block(m, "entry");
     let then_bb = f.append_basic_block(m, "then");
     let else_bb = f.append_basic_block(m, "else");
@@ -408,8 +411,9 @@ fn build_switch_fn<'ctx>(
     m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
 ) -> IrResult<SwitchFixture<'ctx>> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let f = m
+        .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
+        .as_function();
     let entry = f.append_basic_block(m, "entry");
     let dflt = f.append_basic_block(m, "dflt");
     let case0 = f.append_basic_block(m, "case0");
@@ -543,8 +547,9 @@ fn build_switch_bogus_fn<'ctx>(
     m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
 ) -> IrResult<SwitchBogusFixture<'ctx>> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let f = m
+        .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
+        .as_function();
     let entry = f.append_basic_block(m, "entry");
     let dflt = f.append_basic_block(m, "dflt");
     let case0 = f.append_basic_block(m, "case0");
@@ -674,8 +679,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for AssertUneditable {
 fn edit_terminator_ret_is_uneditable() -> Result<(), IrError> {
     Module::with_new("uneditable-ret", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m
+            .add_typed_function::<i32, (), _>("f", Linkage::External)?
+            .as_function();
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         b.build_ret(i32_ty.const_int(0_u32))?;

@@ -33,9 +33,7 @@
 
 use core::fmt;
 
-use super::argument::Argument;
 use super::constants::ConstantIntValue;
-use super::instruction::{Instruction, state::Attached};
 use super::module::{Brand, ModuleBrand, ModuleRef};
 use super::r#type::sealed;
 use super::value::{IntValue, IsValue, Value};
@@ -610,17 +608,43 @@ decl_wider_than!(i128: bool, i8, i16, i32, i64);
 /// Implemented by:
 /// - [`IntValue<'ctx, W>`] (identity).
 /// - [`crate::ConstantIntValue<'ctx, W>`] (lift).
-/// - Every Rust scalar that already implements
-///   [`IntoConstantInt<'ctx, W>`] for the matching marker.
+/// - Every kept Rust scalar (`bool`, `i8`..`i128`, `u8`..`u128`), each
+///   mapping to exactly its own `iN` marker.
 ///
-/// The trait shape mirrors LLVM IRBuilder's `Value*`-typed operand
-/// slots: anything that can spell an `iN` value at the call site is
-/// accepted. The `module` argument exists so Rust-scalar inputs can
-/// route through the right [`IntType<'ctx, W>`] constructor; impls
-/// for value handles ignore it.
-pub trait IntoIntValue<'ctx, W: IntWidth, B: ModuleBrand = Brand<'ctx>>: Sized {
+/// The trait is **sealed**. An erased [`Value`] / `Argument` /
+/// `Instruction` no longer lifts silently: narrow it explicitly with
+/// [`IntValue::try_from`] (or [`IsValue`]-erased `_dyn` builders). The
+/// `module` argument exists so Rust-scalar inputs can route through the
+/// right [`IntType<'ctx, W>`] constructor; impls for value handles
+/// ignore it.
+pub trait IntoIntValue<'ctx, W: IntWidth, B: ModuleBrand = Brand<'ctx>>:
+    Sized + into_int_value_sealed::Sealed
+{
     fn into_int_value(self, module: ModuleRef<'ctx, B>) -> IrResult<IntValue<'ctx, W, B>>;
 }
+
+/// Seals [`IntoIntValue`] to the identity/lift handles plus the kept
+/// exact-width Rust scalars. Erased `Value`/`Argument`/`Instruction` are
+/// deliberately absent.
+mod into_int_value_sealed {
+    pub trait Sealed {}
+}
+
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> into_int_value_sealed::Sealed
+    for IntValue<'ctx, W, B>
+{
+}
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> into_int_value_sealed::Sealed
+    for ConstantIntValue<'ctx, W, B>
+{
+}
+
+macro_rules! impl_into_int_value_sealed_scalar {
+    ($($t:ty),+ $(,)?) => { $(
+        impl into_int_value_sealed::Sealed for $t {}
+    )+ };
+}
+impl_into_int_value_sealed_scalar!(bool, i8, i16, i32, i64, i128, u8, u16, u32, u64, u128);
 
 // ---- Identity ---------------------------------------------------------
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B> for IntValue<'ctx, W, B> {
@@ -641,41 +665,6 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B>
         )))
     }
 }
-
-// ---- Erased / heterogeneous handles --------------------------------------
-// Anything that already has a `TryFrom<...> for IntValue<W>` impl lifts
-// to the trait via the same path. These impls eliminate the
-// `try_into()?` boilerplate at call sites: `b.build_int_add(f.param(0)?,
-// 1_i32, "r")` reads the `Argument` directly.
-//
-// Per-W expansion (no W-blanket) so coherence with the identity blanket
-// `impl<W: IntWidth> IntoIntValue<W> for IntValue<W>` stays sane: each
-// concrete impl below fixes a distinct `Self` type, so no overlap.
-macro_rules! impl_into_int_value_via_try_from {
-    ($source:ty, $($w:ty),+ $(,)?) => { $(
-        impl<'ctx, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, $w, B> for $source {
-            #[inline]
-            fn into_int_value(
-                self,
-                _module: ModuleRef<'ctx, B>,
-            ) -> IrResult<IntValue<'ctx, $w, B>> {
-                IntValue::<'ctx, $w, B>::try_from(self)
-            }
-        }
-    )+ };
-}
-impl_into_int_value_via_try_from!(Argument<'ctx, B>, bool, i8, i16, i32, i64, i128, IntDyn);
-impl_into_int_value_via_try_from!(Value<'ctx, B>, bool, i8, i16, i32, i64, i128, IntDyn);
-impl_into_int_value_via_try_from!(
-    Instruction<'ctx, Attached, B>,
-    bool,
-    i8,
-    i16,
-    i32,
-    i64,
-    i128,
-    IntDyn
-);
 
 // ---- Rust scalar -> typed IntValue (via IntoConstantInt) -------------
 //
@@ -708,37 +697,19 @@ macro_rules! impl_into_int_value_static {
 
 // `bool` -> bool marker
 impl_into_int_value_static!(bool, bool, bool_type);
-// signed exact + widening
+// signed exact: each Rust width maps to exactly its own `iN` marker.
+// (Widening removed in the "no silent erasure" strict cut: a literal in a
+// wider slot must name its width, e.g. `2_i64` rather than `2_i32`.)
 impl_into_int_value_static!(i8, i8, i8_type);
-impl_into_int_value_static!(i8, i16, i16_type);
-impl_into_int_value_static!(i8, i32, i32_type);
-impl_into_int_value_static!(i8, i64, i64_type);
-impl_into_int_value_static!(i8, i128, i128_type);
 impl_into_int_value_static!(i16, i16, i16_type);
-impl_into_int_value_static!(i16, i32, i32_type);
-impl_into_int_value_static!(i16, i64, i64_type);
-impl_into_int_value_static!(i16, i128, i128_type);
 impl_into_int_value_static!(i32, i32, i32_type);
-impl_into_int_value_static!(i32, i64, i64_type);
-impl_into_int_value_static!(i32, i128, i128_type);
 impl_into_int_value_static!(i64, i64, i64_type);
-impl_into_int_value_static!(i64, i128, i128_type);
 impl_into_int_value_static!(i128, i128, i128_type);
-// unsigned widening (zero-extend)
+// unsigned exact: same bit width as the matching signed `iN` marker.
 impl_into_int_value_static!(u8, i8, i8_type);
-impl_into_int_value_static!(u8, i16, i16_type);
-impl_into_int_value_static!(u8, i32, i32_type);
-impl_into_int_value_static!(u8, i64, i64_type);
-impl_into_int_value_static!(u8, i128, i128_type);
 impl_into_int_value_static!(u16, i16, i16_type);
-impl_into_int_value_static!(u16, i32, i32_type);
-impl_into_int_value_static!(u16, i64, i64_type);
-impl_into_int_value_static!(u16, i128, i128_type);
 impl_into_int_value_static!(u32, i32, i32_type);
-impl_into_int_value_static!(u32, i64, i64_type);
-impl_into_int_value_static!(u32, i128, i128_type);
 impl_into_int_value_static!(u64, i64, i64_type);
-impl_into_int_value_static!(u64, i128, i128_type);
 impl_into_int_value_static!(u128, i128, i128_type);
 
 // --------------------------------------------------------------------------
@@ -797,52 +768,10 @@ impl<const N: u32> StaticIntWidth for Width<N> {
     }
 }
 
-// IntoIntValue for Width<N>: each Rust scalar lifts when N >= bit_width(scalar).
-// Each impl carries a `const { assert!(N >= ...) }` so an under-sized N
-// is a compile error at the call site.
-macro_rules! impl_into_int_value_width {
-    ($rust_ty:ty, $min_bits:literal) => {
-        impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoIntValue<'ctx, Width<N>, B>
-            for $rust_ty
-        {
-            fn into_int_value(
-                self,
-                module: ModuleRef<'ctx, B>,
-            ) -> IrResult<IntValue<'ctx, Width<N>, B>> {
-                const {
-                    assert!(
-                        N >= $min_bits,
-                        concat!(
-                            stringify!($rust_ty),
-                            " lift to Width<N> requires N >= ",
-                            stringify!($min_bits),
-                        ),
-                    );
-                }
-                let ty: IntType<'ctx, Width<N>, B> = IntType::<Width<N>, B>::new(
-                    module.module().int_type_n::<N>().as_type().id(),
-                    module,
-                );
-                match self.into_constant_int(ty) {
-                    Ok(c) => Ok(IntValue::<Width<N>, B>::from_value_unchecked(
-                        IsValue::as_value(c),
-                    )),
-                    Err(_) => unreachable!(
-                        "IntoConstantInt for Width<N> with N >= min_bits is infallible"
-                    ),
-                }
-            }
-        }
-    };
-}
-impl_into_int_value_width!(bool, 1);
-impl_into_int_value_width!(i8, 8);
-impl_into_int_value_width!(i16, 16);
-impl_into_int_value_width!(i32, 32);
-impl_into_int_value_width!(i64, 64);
-impl_into_int_value_width!(i128, 128);
-impl_into_int_value_width!(u8, 8);
-impl_into_int_value_width!(u16, 16);
-impl_into_int_value_width!(u32, 32);
-impl_into_int_value_width!(u64, 64);
-impl_into_int_value_width!(u128, 128);
+// NOTE: the `impl<const N> IntoIntValue<Width<N>> for <rust scalar>` lifts
+// were removed in the "no silent erasure" strict cut (task #72). A Rust
+// scalar now maps to exactly its own `iN` marker, so `W` in
+// `build_int_add(2i32, 3i32, "n")` infers uniquely with no turbofish; a
+// `Width<N>` slot must be fed a typed `IntValue<Width<N>>` /
+// `ConstantIntValue<Width<N>>` (both still lift via the identity/const
+// impls above), not a bare Rust literal.

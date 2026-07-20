@@ -151,9 +151,7 @@ Module::with_new::<_, _, _>("left", |left| {
     let left_value = left.i64_type().const_int(1_i64);
 
     Module::with_new::<_, _, _>("right", |right| {
-        let i64_ty = right.i64_type();
-        let fn_ty = right.fn_type(i64_ty.as_type(), Vec::<Type<'_, _>>::new(), false);
-        let function = right.add_function::<i64, _>("f", fn_ty, Linkage::External).unwrap();
+        let function = right.add_typed_function::<i64, (), _>("f", Linkage::External).unwrap();
         let entry = function.append_basic_block(&right, "entry");
         let builder = IRBuilder::new_for::<i64>(&right).position_at_end(entry);
 
@@ -200,15 +198,11 @@ Bad Rust program:
 
 ```rust
 Module::with_new::<_, _, _>("left", |left| {
-    let void_ty = left.void_type();
-    let fn_ty = left.fn_type(void_ty.as_type(), Vec::<Type<'_, _>>::new(), false);
-    let f = left.add_function::<(), _>("left_f", fn_ty, Linkage::External).unwrap();
+    let f = left.add_typed_function::<(), (), _>("left_f", Linkage::External).unwrap();
     let left_target = f.append_basic_block(&left, "target");
 
     Module::with_new::<_, _, _>("right", |right| {
-        let void_ty = right.void_type();
-        let fn_ty = right.fn_type(void_ty.as_type(), Vec::<Type<'_, _>>::new(), false);
-        let f = right.add_function::<(), _>("right_f", fn_ty, Linkage::External).unwrap();
+        let f = right.add_typed_function::<(), (), _>("right_f", Linkage::External).unwrap();
         let entry = f.append_basic_block(&right, "entry");
         let builder = IRBuilder::new_for::<()>(&right).position_at_end(entry);
 

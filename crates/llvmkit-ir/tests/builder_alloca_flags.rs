@@ -13,7 +13,7 @@ use llvmkit_ir::{
 fn swifterror_pointer_alloca_verifies_and_prints() -> Result<(), IrError> {
     Module::with_new("se", |m| {
         let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         b.build_alloca_dyn(
@@ -24,7 +24,7 @@ fn swifterror_pointer_alloca_verifies_and_prints() -> Result<(), IrError> {
             AllocaFlags::none().with_swifterror(),
             "e",
         )?;
-        b.build_ret_void();
+        b.build_ret_void()?;
         m.verify_borrowed()?;
         let text = format!("{m}");
         assert!(
@@ -40,7 +40,7 @@ fn swifterror_pointer_alloca_verifies_and_prints() -> Result<(), IrError> {
 fn inalloca_alloca_prints() -> Result<(), IrError> {
     Module::with_new("ia", |m| {
         let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         b.build_alloca_dyn(
@@ -51,7 +51,7 @@ fn inalloca_alloca_prints() -> Result<(), IrError> {
             AllocaFlags::none().with_inalloca(),
             "i",
         )?;
-        b.build_ret_void();
+        b.build_ret_void()?;
         let text = format!("{m}");
         assert!(text.contains("%i = alloca inalloca i32, align 4"), "{text}");
         Ok(())
@@ -63,7 +63,7 @@ fn inalloca_alloca_prints() -> Result<(), IrError> {
 fn swifterror_non_pointer_alloca_rejected() -> Result<(), IrError> {
     Module::with_new("se", |m| {
         let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         b.build_alloca_dyn(
@@ -74,7 +74,7 @@ fn swifterror_non_pointer_alloca_rejected() -> Result<(), IrError> {
             AllocaFlags::none().with_swifterror(),
             "e",
         )?;
-        b.build_ret_void();
+        b.build_ret_void()?;
         let err = m
             .verify_borrowed()
             .expect_err("swifterror i32 alloca must be rejected");
@@ -93,7 +93,7 @@ fn swifterror_array_alloca_rejected() -> Result<(), IrError> {
     Module::with_new("se", |m| {
         let i32_ty = m.custom_width_int_type(32)?;
         let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let count: IntValue<IntDyn, _> = i32_ty.const_int_checked(4_i64)?.as_value().try_into()?;
@@ -105,7 +105,7 @@ fn swifterror_array_alloca_rejected() -> Result<(), IrError> {
             AllocaFlags::none().with_swifterror(),
             "e",
         )?;
-        b.build_ret_void();
+        b.build_ret_void()?;
         let err = m
             .verify_borrowed()
             .expect_err("array swifterror alloca must be rejected");
@@ -125,7 +125,7 @@ fn swifterror_size_one_alloca_verifies_and_drops_canonical_size() -> Result<(), 
     Module::with_new("se1", |m| {
         let i32_ty = m.custom_width_int_type(32)?;
         let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let one: IntValue<IntDyn, _> = i32_ty.const_int_checked(1_i64)?.as_value().try_into()?;
@@ -137,7 +137,7 @@ fn swifterror_size_one_alloca_verifies_and_drops_canonical_size() -> Result<(), 
             AllocaFlags::none().with_swifterror(),
             "e",
         )?;
-        b.build_ret_void();
+        b.build_ret_void()?;
         m.verify_borrowed()?;
         let text = format!("{m}");
         assert!(

@@ -13,17 +13,15 @@
 //! guarantee: the three marker-form `build_*_phi` builders are unnameable from
 //! outside the crate.
 
-use llvmkit_ir::{IRBuilder, Linkage, Module};
+use llvmkit_ir::{Dyn, IRBuilder, Linkage, Module};
 
 fn main() {
     Module::with_new("c", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m
-            .add_function::<i32, _>("f", fn_ty, Linkage::External)
-            .unwrap();
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
         let bb = f.append_basic_block(&m, "bb");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(bb);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
         // The three marker-form `build_*_phi` builders are `pub(crate)` since
         // slice 7 -- none are nameable here. The public path is
         // `b.append_block_with_params(f, &[i32_ty], "bb")`.

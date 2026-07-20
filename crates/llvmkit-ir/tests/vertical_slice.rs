@@ -22,7 +22,7 @@
 //!   equal handles.
 //! - Cross-value-category narrowing (`Argument -> IntValue<i32>`) errors
 //!   cleanly when the argument's type is not integral.
-//! - The typed `m.add_function::<i32, _, _>(...)` path produces a
+//! - The typed `m.add_typed_function::<i32, (), _>(...)` path produces a
 //!   `FunctionValue<i32>` whose IRBuilder accepts only matching
 //!   `IntValue<i32>` operands at `build_ret` (compile-time enforced).
 
@@ -36,10 +36,10 @@ fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
     Module::with_new("demo", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("add", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("add", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let lhs: IntValue<i32> = f.param(0)?.try_into()?;
         let rhs: IntValue<i32> = f.param(1)?.try_into()?;
@@ -88,9 +88,9 @@ fn mismatched_widths_error_at_runtime_when_dyn() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i64_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("mix", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("mix", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         // Static narrowing rejects the i64 arg as an i32-typed IntValue.
         let _a: IntValue<i32> = f.param(0)?.try_into()?;
@@ -138,7 +138,7 @@ fn argument_to_int_value_narrowing_validates_type() -> Result<(), IrError> {
         let f64_ty = m.f64_type();
         let void = m.void_type();
         let fn_ty = m.fn_type(void.as_type(), [f64_ty.as_type()], false);
-        let f = m.add_function::<(), _>("takes_double", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("takes_double", fn_ty, Linkage::External)?;
         let arg = f.param(0)?;
         let err: Result<IntValue<i32>, IrError> = IntValue::try_from(arg);
         assert!(matches!(err, Err(IrError::TypeMismatch { .. })));
@@ -154,9 +154,9 @@ fn duplicate_function_name_errors() -> Result<(), IrError> {
     Module::with_new("demo", |m| {
         let void = m.void_type();
         let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let _ = m.add_function::<(), _>("once", fn_ty, Linkage::External)?;
+        let _ = m.add_function_dyn("once", fn_ty, Linkage::External)?;
         let err = m
-            .add_function::<(), _>("once", fn_ty, Linkage::External)
+            .add_function_dyn("once", fn_ty, Linkage::External)
             .expect_err("duplicate must error");
         assert!(matches!(err, IrError::DuplicateFunctionName { ref name } if name == "once"));
         Ok(())
@@ -187,22 +187,18 @@ fn function_builder_chains_options() -> Result<(), IrError> {
     })
 }
 
-/// llvmkit-specific: typestate `add_function::<i32>` rejects `void`-returning
-/// signatures with `IrError::ReturnTypeMismatch`. No upstream analog.
-#[test]
-fn typed_add_function_rejects_mismatched_return_marker() -> Result<(), IrError> {
-    Module::with_new("demo", |m| {
-        // `i32` against a `void`-returning signature errors at
-        // `add_function` time (no need to reach the IRBuilder).
-        let void = m.void_type();
-        let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let err = m
-            .add_function::<i32, _>("bad", fn_ty, Linkage::External)
-            .expect_err("i32 against void must error");
-        assert!(matches!(err, IrError::ReturnTypeMismatch { .. }));
-        Ok(())
-    })
-}
+// NOTE: the former `typed_add_function_rejects_mismatched_return_marker` test
+// is deliberately GONE, superseded by something stronger. It asserted that
+// `add_function::<i32>` returned `ReturnTypeMismatch` against a `void`
+// signature -- a runtime rejection. After the strict cut the typed
+// constructors derive the signature FROM the markers
+// (`add_typed_function::<Ret, Params, _>`), so a marker/signature mismatch
+// cannot be expressed through them; the compile-fail lock
+// `tests/compile_fail/add_function_removed.rs` pins the erased+typed
+// constructor's absence. The one deliberate escape hatch --
+// `function_builder::<R>`, where a user-supplied signature still meets an
+// independent `R` -- keeps its runtime gate, locked by
+// `return_marker_mismatch_diagnostic.rs::function_builder_rejects_mismatched_return_marker`.
 
 /// llvmkit-specific: runtime-checked `Dyn` builder still validates `build_ret`
 /// types. Closest upstream reference: assertion in `IRBuilderBase::CreateRet`.
@@ -215,7 +211,7 @@ fn dyn_path_keeps_runtime_return_check() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i32_ty, [i64_ty.as_type()], false);
-        let f = m.add_function::<Dyn, _>("mix", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("mix", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new(&m).position_at_end(entry);
         let arg = f.param(0)?; // i64

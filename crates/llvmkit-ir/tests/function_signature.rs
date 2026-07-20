@@ -77,9 +77,9 @@ fn typed_function_facade_supports_pointer_and_float_params() -> Result<(), IrErr
 #[test]
 fn typed_function_facade_rejects_wrong_arity_when_wrapping_raw_function() -> Result<(), IrError> {
     Module::with_new("arity", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let raw = m.add_function::<i32, _>("one", fn_ty, Linkage::External)?;
+        let raw = m
+            .add_typed_function::<i32, (i32,), _>("one", Linkage::External)?
+            .as_function();
 
         let err = TypedFunctionValue::<i32, (i32, i32), _>::try_from_function(raw)
             .expect_err("wrong arity must be rejected");
@@ -101,10 +101,9 @@ fn typed_function_facade_rejects_wrong_arity_when_wrapping_raw_function() -> Res
 #[test]
 fn typed_function_facade_rejects_wrong_raw_param_type() -> Result<(), IrError> {
     Module::with_new("wrong_param", |m| {
-        let i32_ty = m.i32_type();
-        let f64_ty = m.f64_type();
-        let fn_ty = m.fn_type(i32_ty, [f64_ty.as_type()], false);
-        let raw = m.add_function::<i32, _>("double_param", fn_ty, Linkage::External)?;
+        let raw = m
+            .add_typed_function::<i32, (f64,), _>("double_param", Linkage::External)?
+            .as_function();
 
         let err = TypedFunctionValue::<i32, (i32,), _>::try_from_function(raw)
             .expect_err("wrong parameter kind must be rejected");
@@ -172,9 +171,9 @@ fn extern_system_signature_alias_builds_pointer_return_function() -> Result<(), 
 #[test]
 fn raw_function_can_be_wrapped_with_function_pointer_signature() -> Result<(), IrError> {
     Module::with_new("raw", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-        let raw = m.add_function::<i32, _>("add", fn_ty, Linkage::External)?;
+        let raw = m
+            .add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?
+            .as_function();
         let typed = raw.with_typed_signature::<AddSig>()?;
         let (lhs, rhs) = typed.params();
         let _: IntValue<'_, i32, _> = lhs;

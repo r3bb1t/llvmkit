@@ -1,7 +1,7 @@
 error[E0277]: the trait bound `i32: IntoReturnValue<'_, (), Brand<'_>>` is not satisfied
-  --> tests/compile_fail/ssa_ret_value_in_void_fn.rs:31:27
+  --> tests/compile_fail/ssa_ret_value_in_void_fn.rs:32:27
    |
-31 |         let _oops = b.ret(1_i32).unwrap();
+32 |         let _oops = b.ret(1_i32).unwrap();
    |                       --- ^^^^^ the trait `IntoReturnValue<'_, (), Brand<'_>>` is not implemented for `i32`
    |                       |
    |                       required by a bound introduced by this call

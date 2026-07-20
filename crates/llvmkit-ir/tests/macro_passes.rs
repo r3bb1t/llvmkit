@@ -19,7 +19,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    Analyses, DominatorTreeAnalysis, FnCx, FnPatch, FnReport, FunctionPass, FunctionView,
+    Analyses, DominatorTreeAnalysis, Dyn, FnCx, FnPatch, FnReport, FunctionPass, FunctionView,
     IRBuilder, InstructionView, IrError, IrResult, Linkage, ModCx, ModReport, Module, ModuleBrand,
     ModulePass, NoFolder, PatchBody, RewriteModule, Unverified, Verified, function_pass,
     module_pass, run_function_pass, run_module_pass,
@@ -37,7 +37,7 @@ fn build_dead_add<'ctx, B: ModuleBrand + 'ctx>(
 ) -> Result<FunctionView<'ctx, B>, IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type_no_params(i32_ty, false);
-    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let b = IRBuilder::with_folder(m, NoFolder).position_at_end(entry);
     let _dead = b.build_int_add::<i32, _, _, _>(
@@ -55,9 +55,9 @@ fn build_ret_i32<'ctx, B: ModuleBrand + 'ctx>(
 ) -> Result<FunctionView<'ctx, B>, IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type_no_params(i32_ty, false);
-    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
     b.build_ret(i32_ty.const_int(1_u32))?;
     Ok(f.into())
 }

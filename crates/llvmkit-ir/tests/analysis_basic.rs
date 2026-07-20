@@ -129,11 +129,15 @@ where
     F: for<'ctx> FnOnce(Module<'ctx>) -> Result<R, IrError>,
 {
     Module::with_new("analysis", |module| {
-        let void_ty = module.void_type();
-        let fn_ty = module.fn_type_no_params(void_ty.as_type(), false);
-        let f = module.add_function::<(), _>("f", fn_ty, Linkage::External)?;
-        let g = module.add_function::<(), _>("g", fn_ty, Linkage::External)?;
-        let h = module.add_function::<(), _>("h", fn_ty, Linkage::External)?;
+        let f = module
+            .add_typed_function::<(), (), _>("f", Linkage::External)?
+            .as_function();
+        let g = module
+            .add_typed_function::<(), (), _>("g", Linkage::External)?
+            .as_function();
+        let h = module
+            .add_typed_function::<(), (), _>("h", Linkage::External)?
+            .as_function();
 
         let entry = f.append_basic_block(&module, "entry");
         let b = IRBuilder::new_for::<()>(&module).position_at_end(entry);

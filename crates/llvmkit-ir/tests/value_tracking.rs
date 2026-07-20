@@ -1,9 +1,9 @@
 use llvmkit_ir::{
     Align, ApInt, AttrIndex, AttrKind, Attribute, AttributeStorage, Brand, CFGAnalyses,
-    CallAttributeData, ConstantExprOpcode, ConstantExprOptions, DominatorTreeAnalysis,
+    CallAttributeData, ConstantExprOpcode, ConstantExprOptions, DominatorTreeAnalysis, Dyn,
     FunctionAnalysisManager, IRBuilder, InstructionView, IntValue, IrError, KnownBits,
     KnownBitsAnalysis, LShrFlags, Linkage, MetadataAttachmentKind, MetadataRef, Module, MulFlags,
-    NoFolder, PointerValue, PreservedAnalyses, Ptr, Value, ValueTrackingQuery, Width,
+    NoFolder, PointerValue, PreservedAnalyses, Value, ValueTrackingQuery, Width,
     compute_known_bits, is_known_non_zero, is_known_one, is_known_zero,
 };
 
@@ -22,7 +22,7 @@ fn constants_and_integer_operators_compute_known_bits() -> Result<(), IrError> {
     Module::with_new("vt-int", |m| {
         let i8_ty = m.i8_type();
         let fn_ty = m.fn_type_no_params(i8_ty, false);
-        let f = m.add_function::<i8, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
@@ -66,7 +66,7 @@ fn signed_division_and_remainder_compute_known_bits() -> Result<(), IrError> {
     Module::with_new("vt-signed-div-rem", |m| {
         let i8_ty = m.i8_type();
         let fn_ty = m.fn_type_no_params(i8_ty, false);
-        let f = m.add_function::<i8, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
@@ -92,12 +92,12 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
         let i8_ty = m.i8_type();
         let i16_ty = m.i16_type();
         let fn_ty = m.fn_type(i8_ty, [i1_ty.as_type()], false);
-        let f = m.add_function::<i8, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let other = f.append_basic_block(&m, "other");
         // join(%p: i8): the phi is the block's head-phi parameter, seeded from
         // each predecessor by a block-argument `br`.
-        let bwp = IRBuilder::new_for::<i8>(&m);
+        let bwp = IRBuilder::new_for::<Dyn>(&m);
         let (join, params) = bwp.append_block_with_params(f, &[i8_ty.as_type()], "join")?;
         let join_label = join.label();
 
@@ -122,11 +122,7 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
         let trunc = b.build_trunc::<i16, i8, _>(trunc_src, i8_ty, "tr")?;
         let zext = b.build_zext::<i8, i16, _>(zext_src, i16_ty, "zext")?;
         let sext = b.build_sext::<i8, i16, _>(sext_src, i16_ty, "sext")?;
-        let bitcast = b.build_bitcast_int_to_int::<i8, Width<8>, _, _>(
-            bitcast_src,
-            m.int_type_n::<8>(),
-            "bc",
-        )?;
+        let bitcast = b.build_bitcast_int_to_int(bitcast_src, m.int_type_n::<8>(), "bc")?;
         let freeze = b.build_freeze(c_aa, "fr")?;
         let cmp = b.build_icmp_eq::<i8, _, _, _>(c_aa, c_aa, "cmp")?;
 
@@ -158,7 +154,7 @@ fn bitwise_with_self_plus_odd_refines_low_bit() -> Result<(), IrError> {
     Module::with_new("vt-bitwise-odd", |m| {
         let i8_ty = m.i8_type();
         let fn_ty = m.fn_type(i8_ty, [i8_ty.as_type()], false);
-        let f = m.add_function::<i8, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<i8> = f.param(0)?.try_into()?;
@@ -183,7 +179,7 @@ fn mul_nsw_self_product_is_non_negative() -> Result<(), IrError> {
     Module::with_new("vt-mul-nsw", |m| {
         let i8_ty = m.i8_type();
         let fn_ty = m.fn_type(i8_ty, [i8_ty.as_type()], false);
-        let f = m.add_function::<i8, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<i8> = f.param(0)?.try_into()?;
@@ -204,7 +200,7 @@ fn pointer_null_and_alloca_alignment_compute_low_zero_bits() -> Result<(), IrErr
         let ptr_ty = m.ptr_type(0);
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(ptr_ty.as_type(), false);
-        let f = m.add_function::<Ptr, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let alloca = b.build_alloca_with_align(i32_ty, Align::new(16)?, "slot")?;
@@ -237,7 +233,7 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i1_ty, [ptr_ty.as_type()], false);
 
-        let f0 = m.add_function::<bool, _>("test0", fn_ty, Linkage::External)?;
+        let f0 = m.add_function_dyn("test0", fn_ty, Linkage::External)?;
         let entry0 = f0.append_basic_block(&m, "entry");
         let b0 = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry0);
         let p0: PointerValue = f0.param(0)?.try_into()?;
@@ -252,7 +248,7 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         let cmp0 = b0.build_icmp_eq::<i8, _, _, _>(and0, mask128, "is.eq")?;
         b0.build_ret(cmp0)?;
 
-        let f1 = m.add_function::<bool, _>("test1", fn_ty, Linkage::External)?;
+        let f1 = m.add_function_dyn("test1", fn_ty, Linkage::External)?;
         let entry1 = f1.append_basic_block(&m, "entry");
         let b1 = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry1);
         let p1: PointerValue = f1.param(0)?.try_into()?;
@@ -267,7 +263,7 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         let cmp1 = b1.build_icmp_eq::<i8, _, _, _>(and1, mask64, "is.eq")?;
         b1.build_ret(cmp1)?;
 
-        let f2 = m.add_function::<bool, _>("test2", fn_ty, Linkage::External)?;
+        let f2 = m.add_function_dyn("test2", fn_ty, Linkage::External)?;
         let entry2 = f2.append_basic_block(&m, "entry");
         let b2 = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry2);
         let p2: PointerValue = f2.param(0)?.try_into()?;
@@ -301,10 +297,11 @@ fn call_return_range_attribute_contributes_known_bits() -> Result<(), IrError> {
     Module::with_new("vt-call-range-attr", |m| {
         let i1_ty = m.bool_type();
         let i8_ty = m.i8_type();
-        let callee_ty = m.fn_type_no_params(i8_ty, false);
-        let callee = m.add_function::<i8, _>("callee", callee_ty, Linkage::External)?;
+        let callee = m
+            .add_typed_function::<i8, (), _>("callee", Linkage::External)?
+            .as_function();
         let caller_ty = m.fn_type_no_params(i1_ty, false);
-        let caller = m.add_function::<bool, _>("caller", caller_ty, Linkage::External)?;
+        let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
@@ -342,8 +339,9 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
     Module::with_new("vt-returned-arg", |m| {
         let i8_ty = m.i8_type();
         let void_ty = m.void_type();
-        let callee_ty = m.fn_type(i8_ty, [i8_ty.as_type()], false);
-        let callee = m.add_function::<i8, _>("identity", callee_ty, Linkage::External)?;
+        let callee = m
+            .add_typed_function::<i8, (i8,), _>("identity", Linkage::External)?
+            .as_function();
 
         let mut arg_attr = AttributeStorage::new();
         arg_attr.add(
@@ -357,7 +355,7 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
         );
 
         let caller_ty = m.fn_type_no_params(void_ty, false);
-        let caller = m.add_function::<(), _>("caller", caller_ty, Linkage::External)?;
+        let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let call_entry = caller.append_basic_block(&m, "call.entry");
         let invoke_entry = caller.append_basic_block(&m, "invoke.entry");
         let invoke_normal = caller.append_basic_block(&m, "invoke.normal");
@@ -387,12 +385,12 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
             )?;
         let invoke_value: IntValue<i8> = invoke.as_value().try_into()?;
 
-        IRBuilder::new_for::<()>(&m)
+        IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(invoke_unwind)
             .build_unreachable();
-        IRBuilder::new_for::<()>(&m)
+        IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(invoke_normal)
-            .build_ret_void();
+            .build_ret_void()?;
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
@@ -416,7 +414,7 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
         let void_ty = m.void_type();
 
         let caller_ty = m.fn_type_no_params(void_ty, false);
-        let caller = m.add_function::<(), _>("caller", caller_ty, Linkage::External)?;
+        let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
@@ -536,13 +534,12 @@ fn intrinsic_known_bits_ignore_mismatched_declarations() -> Result<(), IrError> 
         let i16_ty = m.i16_type();
         let void_ty = m.void_type();
         let caller_ty = m.fn_type_no_params(void_ty, false);
-        let caller = m.add_function::<(), _>("caller", caller_ty, Linkage::External)?;
+        let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
         let malformed_ty = m.fn_type(i16_ty, [i16_ty.as_type(), i1_ty.as_type()], false);
-        let malformed =
-            m.add_function::<i16, _>("not.llvm.abs.i8", malformed_ty, Linkage::External)?;
+        let malformed = m.add_function_dyn("not.llvm.abs.i8", malformed_ty, Linkage::External)?;
         let call: IntValue<i16> = b
             .call_builder(malformed)
             .arg(i16_ty.const_int(-5_i16))
@@ -572,7 +569,7 @@ fn query_carries_context_demanded_elements_and_instr_info_policy() -> Result<(),
         let i8_ty = m.i8_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i8_ty, [ptr_ty.as_type()], false);
-        let f = m.add_function::<i8, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let p: PointerValue = f.param(0)?.try_into()?;
@@ -600,7 +597,7 @@ fn function_analysis_caches_known_bits_queries() -> Result<(), IrError> {
     Module::with_new("vt-analysis", |m| {
         let i8_ty = m.i8_type();
         let fn_ty = m.fn_type_no_params(i8_ty, false);
-        let f = m.add_function::<i8, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
@@ -632,7 +629,7 @@ fn known_bits_analysis_invalidates_with_dominator_tree_dependency() -> Result<()
     Module::with_new("vt-analysis-invalidate", |m| {
         let i8_ty = m.i8_type();
         let fn_ty = m.fn_type_no_params(i8_ty, false);
-        let f = m.add_function::<i8, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let value = b.build_int_and::<i8, _, _, _>(
@@ -674,7 +671,7 @@ fn shift_with_possible_invalid_amount_is_unknown_after_freeze() -> Result<(), Ir
     Module::with_new("vt-shift-poison", |m| {
         let i4_ty = m.int_type_n::<4>();
         let fn_ty = m.fn_type(i4_ty, [i4_ty.as_type()], false);
-        let f = m.add_function::<Width<4>, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<Width<4>> = f.param(0)?.try_into()?;
@@ -699,7 +696,7 @@ fn addrspacecast_drops_source_pointer_known_bits() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr1_ty = m.ptr_type(1);
         let fn_ty = m.fn_type_no_params(ptr1_ty, false);
-        let f = m.add_function::<Ptr, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let slot = b.build_alloca_with_align(i32_ty, Align::new(16)?, "slot")?;
@@ -719,7 +716,7 @@ fn freeze_of_exact_shift_that_can_poison_is_unknown() -> Result<(), IrError> {
     Module::with_new("vt-freeze-exact-shift", |m| {
         let i4_ty = m.int_type_n::<4>();
         let fn_ty = m.fn_type_no_params(i4_ty, false);
-        let f = m.add_function::<Width<4>, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let one = i4_ty.const_ap_int(&ApInt::from_words(4, &[1]))?;
@@ -754,7 +751,7 @@ fn gep_and_vector_lane_operations_compute_known_bits() -> Result<(), IrError> {
         let vec_ty = m.vector_type(i8_ty.as_type(), 2, false);
         let void_ty = m.void_type();
         let fn_ty = m.fn_type_no_params(void_ty.as_type(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 

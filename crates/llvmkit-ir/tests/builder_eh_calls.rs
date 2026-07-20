@@ -3,7 +3,8 @@
 //! Every test cites its upstream source per Doctrine D11.
 
 use llvmkit_ir::{
-    CallSiteConfig, CallingConv, IRBuilder, InlineAsmOptions, IntValue, IrError, Linkage, Module,
+    CallSiteConfig, CallingConv, Dyn, IRBuilder, InlineAsmOptions, IntValue, IrError, Linkage,
+    Module,
 };
 
 // --------------------------------------------------------------------------
@@ -20,25 +21,25 @@ fn invoke_void_to_unwind() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let void_ty = m.void_type();
         let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let callee = m.add_function::<(), _>("f.fastcc", callee_ty, Linkage::External)?;
+        let callee = m.add_function_dyn("f.fastcc", callee_ty, Linkage::External)?;
         callee.set_calling_conv(&m, CallingConv::FAST);
         let caller_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let caller =
-            m.add_function::<(), _>("instructions.terminators", caller_ty, Linkage::External)?;
+            m.add_function_dyn("instructions.terminators", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
         let normal = caller.append_basic_block(&m, "defaultdest");
         let unwind = caller.append_basic_block(&m, "exc");
         let normal_label = normal.label();
         let unwind_label = unwind.label();
         {
-            let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(normal);
-            bb_b.build_ret_void();
+            let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(normal);
+            bb_b.build_ret_void()?;
         }
         {
-            let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(unwind);
-            bb_b.build_ret_void();
+            let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(unwind);
+            bb_b.build_ret_void()?;
         }
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let _ = b.build_invoke_dyn_with_config(
             callee,
             Vec::<llvmkit_ir::Value>::new(),
@@ -111,21 +112,21 @@ fn callbr_void_with_one_indirect_dest() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let callee = m.get_or_insert_intrinsic_declaration_by_name("llvm.amdgcn.kill")?;
         let caller_ty = m.fn_type(void_ty.as_type(), [bool_ty.as_type()], false);
-        let caller = m.add_function::<(), _>("test_kill", caller_ty, Linkage::External)?;
+        let caller = m.add_function_dyn("test_kill", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
         let kill = caller.append_basic_block(&m, "kill");
         let cont = caller.append_basic_block(&m, "cont");
         let kill_label = kill.label();
         let cont_label = cont.label();
         {
-            let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(kill);
+            let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(kill);
             bb_b.build_unreachable();
         }
         {
-            let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(cont);
-            bb_b.build_ret_void();
+            let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(cont);
+            bb_b.build_ret_void()?;
         }
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let c: llvmkit_ir::IntValue<bool> = caller.param(0)?.try_into()?;
         let _ = b.build_callbr(callee, [c.as_value()], cont_label, [kill_label], "")?;
         let text = format!("{m}");
@@ -159,17 +160,17 @@ fn callbr_two_indirect_dests_print_form() -> Result<(), IrError> {
             InlineAsmOptions::new().side_effects(true),
         );
         let caller_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let caller = m.add_function::<(), _>("foo", caller_ty, Linkage::External)?;
+        let caller = m.add_function_dyn("foo", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
         let bb1 = caller.append_basic_block(&m, "1");
         let bb2 = caller.append_basic_block(&m, "2");
         let bb1_label = bb1.label();
         let bb2_label = bb2.label();
         for bb in [bb1, bb2] {
-            let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(bb);
-            bb_b.build_ret_void();
+            let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+            bb_b.build_ret_void()?;
         }
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let _ = b.build_inline_asm_callbr::<(), _, _, _, _, _, _>(
             asm,
             Vec::<llvmkit_ir::Value>::new(),

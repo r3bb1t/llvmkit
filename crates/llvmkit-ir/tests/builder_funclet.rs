@@ -3,7 +3,7 @@
 //!
 //! Every test cites its upstream source per Doctrine D11.
 
-use llvmkit_ir::{IRBuilder, IrError, Linkage, Module};
+use llvmkit_ir::{Dyn, IRBuilder, IrError, Linkage, Module};
 
 // --------------------------------------------------------------------------
 // catchswitch + catchpad
@@ -18,16 +18,16 @@ fn catchswitch_within_none_unwind_to_caller() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("instructions.funclets", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("instructions.funclets", fn_ty, Linkage::External)?;
         let cs1_block = f.append_basic_block(&m, "catchswitch1");
         let cp1_block = f.append_basic_block(&m, "catchpad1");
         let cp1_label = cp1_block.label();
         {
             // Stub a terminator on the handler so the block is well-formed.
-            let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(cp1_block);
+            let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(cp1_block);
             bb_b.build_unreachable();
         }
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(cs1_block);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(cs1_block);
         let (_sealed, cs) = b.build_catch_switch_within_none_to_caller("cs1")?;
         let _closed = cs.add_handler(cp1_label)?.finish();
         let text = format!("{m}");
@@ -46,20 +46,20 @@ fn catchpad_within_catchswitch_empty_args() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let cs_block = f.append_basic_block(&m, "cs");
         let cp_block = f.append_basic_block(&m, "cp");
         let exit = f.append_basic_block(&m, "exit");
         let cp_label = cp_block.label();
         {
-            let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(exit);
-            bb_b.build_ret_void();
+            let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(exit);
+            bb_b.build_ret_void()?;
         }
-        let b_cs = IRBuilder::new_for::<()>(&m).position_at_end(cs_block);
+        let b_cs = IRBuilder::new_for::<Dyn>(&m).position_at_end(cs_block);
         let (_sealed, cs) = b_cs.build_catch_switch_within_none_to_caller("cs1")?;
         let cs_closed = cs.add_handler(cp_label)?.finish();
         let cs_value = cs_closed.as_value();
-        let b_cp = IRBuilder::new_for::<()>(&m).position_at_end(cp_block);
+        let b_cp = IRBuilder::new_for::<Dyn>(&m).position_at_end(cp_block);
         let _cp = b_cp.build_catch_pad(cs_value, Vec::<llvmkit_ir::value::Value>::new(), "")?;
         b_cp.build_unreachable();
         let text = format!("{m}");
@@ -79,9 +79,9 @@ fn cleanuppad_within_none_empty_args() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let _ =
             b.build_cleanup_pad_within_none(Vec::<llvmkit_ir::value::Value>::new(), "clean.1")?;
         b.build_unreachable();
@@ -102,9 +102,9 @@ fn cleanupret_unwind_to_caller() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let cp =
             b.build_cleanup_pad_within_none(Vec::<llvmkit_ir::value::Value>::new(), "clean")?;
         let _ = b.build_cleanup_ret_to_caller(cp.as_value(), "")?;
@@ -130,21 +130,21 @@ fn catchret_to_label() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let cs_block = f.append_basic_block(&m, "cs_block");
         let cp_block = f.append_basic_block(&m, "cp_block");
         let return_block = f.append_basic_block(&m, "return");
         let cp_label = cp_block.label();
         let return_label = return_block.label();
         {
-            let bb_b = IRBuilder::new_for::<()>(&m).position_at_end(return_block);
-            bb_b.build_ret_void();
+            let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(return_block);
+            bb_b.build_ret_void()?;
         }
-        let b_cs = IRBuilder::new_for::<()>(&m).position_at_end(cs_block);
+        let b_cs = IRBuilder::new_for::<Dyn>(&m).position_at_end(cs_block);
         let (_sealed, cs) = b_cs.build_catch_switch_within_none_to_caller("cs")?;
         let cs_closed = cs.add_handler(cp_label)?.finish();
         let cs_value = cs_closed.as_value();
-        let b_cp = IRBuilder::new_for::<()>(&m).position_at_end(cp_block);
+        let b_cp = IRBuilder::new_for::<Dyn>(&m).position_at_end(cp_block);
         let cp = b_cp.build_catch_pad(cs_value, Vec::<llvmkit_ir::value::Value>::new(), "catch")?;
         let _ = b_cp.build_catch_ret(cp.as_value(), return_label, "")?;
         let text = format!("{m}");

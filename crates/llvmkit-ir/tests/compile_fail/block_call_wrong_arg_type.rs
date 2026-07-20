@@ -22,11 +22,9 @@ fn main() {
     Module::with_new("c", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
-        let f = m
-            .add_function::<i32, _>("f", fn_ty, Linkage::External)
-            .unwrap();
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
 
-        let b = IRBuilder::new_for::<i32>(&m);
+        let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m);
         // `head`'s single parameter schema is `i32`.
         let (head, _params) = b.append_block_typed::<(i32,), _>(f, "head").unwrap();
 

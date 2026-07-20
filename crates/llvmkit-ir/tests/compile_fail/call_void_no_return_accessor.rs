@@ -12,16 +12,14 @@ use llvmkit_ir::{IRBuilder, Linkage, Module};
 fn main() {
     Module::with_new("c", |m| {
         let void_ty = m.void_type();
-        let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let callee = m
-            .add_function::<(), _>("sink", callee_ty, Linkage::External)
-            .unwrap();
+            .add_typed_function::<(), (), _>("sink", Linkage::External)
+            .unwrap()
+            .as_function();
         let caller_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let caller = m
-            .add_function::<(), _>("c", caller_ty, Linkage::External)
-            .unwrap();
+        let caller = m.add_function_dyn("c", caller_ty, Linkage::External).unwrap();
         let entry = caller.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
         let inst = b
             .build_call_dyn(callee, Vec::<llvmkit_ir::Value>::new(), "")
             .unwrap();
