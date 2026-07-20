@@ -102,7 +102,7 @@ macro_rules! decl_binop_handle {
 
             /// Widen to the erased [`Value`] handle.
             #[inline]
-            pub fn as_value(&self) -> Value<'ctx, B> {
+            pub fn into_erased(&self) -> Value<'ctx, B> {
                 Value::from_parts(self.id, self.module, self.ty)
             }
 
@@ -307,7 +307,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> BinaryOp<'ctx, B> {
     }
     /// Widen to the erased [`Value`] handle (the result).
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn into_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 }
@@ -389,7 +389,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Cmp<'ctx, B> {
     }
     /// Widen to the erased [`Value`] handle (the `i1`/vector result).
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn into_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 }
@@ -418,7 +418,7 @@ macro_rules! decl_handle_scaffold {
 
             /// Widen to the erased [`Value`] handle.
             #[inline]
-            pub fn as_value(&self) -> Value<'ctx, B> {
+            pub fn into_erased(&self) -> Value<'ctx, B> {
                 Value::from_parts(self.id, self.module, self.ty)
             }
         }
@@ -707,7 +707,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn into_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
@@ -927,8 +927,8 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> TypedCallInst<'ctx, Ret, 
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
-        self.inner.as_value()
+    pub fn into_erased(self) -> Value<'ctx, B> {
+        self.inner.into_erased()
     }
 }
 
@@ -1366,15 +1366,15 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
     }
 
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn into_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
     /// Opaque arena id of the underlying value (same id as
-    /// [`as_value`](Self::as_value)).
+    /// [`into_erased`](Self::into_erased)).
     #[inline]
     pub fn id(&self) -> ValueId {
-        self.as_value().id
+        self.into_erased().id
     }
 
     /// Result handle for the phi node, narrowed to the static width
@@ -1471,7 +1471,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, Open, B> {
     {
         let module = self.module.module();
         let value = value.into_int_value(self.module)?;
-        if value.as_value().ty == self.ty {
+        if value.into_erased().ty == self.ty {
             let value_id = value.id();
             let block_id = block.into_basic_block_label().id();
             if self
@@ -1500,7 +1500,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, Open, B> {
         } else {
             Err(crate::IrError::TypeMismatch {
                 expected: Type::new(self.ty, module).kind_label(),
-                got: value.as_value().ty().kind_label(),
+                got: value.into_erased().ty().kind_label(),
             })
         }
     }
@@ -1592,15 +1592,15 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
     }
 
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn into_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
     /// Opaque arena id of the underlying value (same id as
-    /// [`as_value`](Self::as_value)).
+    /// [`into_erased`](Self::into_erased)).
     #[inline]
     pub fn id(&self) -> ValueId {
-        self.as_value().id
+        self.into_erased().id
     }
 
     /// Result handle for the phi, narrowed to the static kind `K`.
@@ -1691,7 +1691,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
     {
         let module = self.module.module();
         let value = value.into_float_value(self.module)?;
-        if value.as_value().ty == self.ty {
+        if value.into_erased().ty == self.ty {
             let value_id = value.id();
             let block_id = block.into_basic_block_label().id();
             if self
@@ -1719,7 +1719,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
         } else {
             Err(crate::IrError::TypeMismatch {
                 expected: Type::new(self.ty, module).kind_label(),
-                got: value.as_value().ty().kind_label(),
+                got: value.into_erased().ty().kind_label(),
             })
         }
     }
@@ -1804,15 +1804,15 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
     }
 
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn into_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
     /// Opaque arena id of the underlying value (same id as
-    /// [`as_value`](Self::as_value)).
+    /// [`into_erased`](Self::into_erased)).
     #[inline]
     pub fn id(&self) -> ValueId {
-        self.as_value().id
+        self.into_erased().id
     }
 
     /// Result handle for the phi, narrowed to a [`PointerValue`].
@@ -1898,7 +1898,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, Open, B> {
     {
         let module = self.module.module();
         let value = value.into_pointer_value(self.module)?;
-        if value.as_value().ty == self.ty {
+        if value.into_erased().ty == self.ty {
             let value_id = value.id();
             let block_id = block.into_basic_block_label().id();
             if self
@@ -1926,7 +1926,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, Open, B> {
         } else {
             Err(crate::IrError::TypeMismatch {
                 expected: Type::new(self.ty, module).kind_label(),
-                got: IsValue::as_value(value).ty().kind_label(),
+                got: IsValue::into_erased(value).ty().kind_label(),
             })
         }
     }
@@ -2632,7 +2632,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx
     }
 
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn into_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     fn payload(&self) -> &'ctx crate::instr_types::SwitchInstData {
@@ -2758,7 +2758,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> SwitchInst<'ctx, TermOpen, B, IntDyn> {
         R: ReturnMarker,
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let v = case_value.as_value();
+        let v = case_value.into_erased();
         self.push_case_checked(v, target)
     }
 }
@@ -2780,7 +2780,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: StaticIntWidth> SwitchInst<'ctx, TermOpen, 
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let module_ref = self.module;
-        let v = IsValue::as_value(case_value.into_int_value(module_ref)?);
+        let v = IsValue::into_erased(case_value.into_int_value(module_ref)?);
         self.push_case_checked(v, target)
     }
 }
@@ -2838,7 +2838,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
     }
 
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn into_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     fn payload(&self) -> &'ctx crate::instr_types::IndirectBrInstData {
@@ -2955,7 +2955,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     }
 
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn into_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     /// Re-tag the return marker. Crate-internal: both
@@ -3166,7 +3166,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, P, B> {
     }
 
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn into_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     fn payload(&self) -> &'ctx crate::instr_types::LandingPadInstData {
@@ -3222,7 +3222,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
     /// for `Catch`.
     pub fn add_catch_clause<V: IsValue<'ctx, B>>(self, type_info: V) -> IrResult<Self> {
         let module = self.module.module();
-        let v = type_info.as_value();
+        let v = type_info.into_erased();
         self.payload()
             .clauses
             .borrow_mut()
@@ -3238,7 +3238,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
     /// Append a `filter <ty> <val>` clause.
     pub fn add_filter_clause<V: IsValue<'ctx, B>>(self, filter_array: V) -> IrResult<Self> {
         let module = self.module.module();
-        let v = filter_array.as_value();
+        let v = filter_array.into_erased();
         self.payload()
             .clauses
             .borrow_mut()
@@ -3504,7 +3504,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
     }
 
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn into_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     fn payload(&self) -> &'ctx crate::instr_types::CatchSwitchInstData {
@@ -3604,7 +3604,7 @@ mod tests {
 
             let call: CallInst<'_, i32, _> =
                 b.build_call_dyn(callee, Vec::<Value<'_, _>>::new(), "call")?;
-            let call_id = call.as_value().id();
+            let call_id = call.into_erased().id();
 
             let typed = TypedCallInst::<i32, _> {
                 inner: call,

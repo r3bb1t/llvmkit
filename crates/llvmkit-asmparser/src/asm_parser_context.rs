@@ -31,7 +31,7 @@
 //! 3. `FunctionValue<'ctx, R, B>` carries a return marker that the parser
 //!    cannot pin statically.
 //!
-//! Each typed accessor lifts to the erased identity through `as_value()`.
+//! Each typed accessor lifts to the erased identity through `into_erased()`.
 
 use std::collections::HashMap;
 
@@ -159,7 +159,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
         &self,
         f: FunctionValue<'ctx, R, B>,
     ) -> Option<FileLocRange> {
-        self.functions.location_of(f.as_value())
+        self.functions.location_of(f.into_erased())
     }
 
     /// Source range of a recorded basic block. Mirrors
@@ -169,14 +169,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
         &self,
         b: &BasicBlock<'ctx, R, S, B>,
     ) -> Option<FileLocRange> {
-        self.blocks.location_of(b.as_value())
+        self.blocks.location_of(b.into_erased())
     }
 
     /// Source range of a recorded instruction. Mirrors
     /// `getInstructionLocation(const Instruction *)`.
     #[inline]
     pub fn instruction_location(&self, i: &InstructionView<'ctx, B>) -> Option<FileLocRange> {
-        self.instructions.location_of(i.as_value())
+        self.instructions.location_of(i.into_erased())
     }
 
     // ── Reverse queries ────────────────────────────────────────────────
@@ -243,7 +243,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
         f: FunctionValue<'ctx, R, B>,
         loc: FileLocRange,
     ) -> Result<(), LocationError> {
-        self.functions.add(f.as_value(), loc)
+        self.functions.add(f.into_erased(), loc)
     }
 
     /// Record `b`'s location. Mirrors `addBlockLocation`.
@@ -253,7 +253,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
         b: &BasicBlock<'ctx, R, S, B>,
         loc: FileLocRange,
     ) -> Result<(), LocationError> {
-        self.blocks.add(b.as_value(), loc)
+        self.blocks.add(b.into_erased(), loc)
     }
 
     /// Record `i`'s location. Mirrors `addInstructionLocation`.
@@ -263,7 +263,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
         i: &InstructionView<'ctx, B>,
         loc: FileLocRange,
     ) -> Result<(), LocationError> {
-        self.instructions.add(i.as_value(), loc)
+        self.instructions.add(i.into_erased(), loc)
     }
 }
 
@@ -287,10 +287,10 @@ mod tests {
 
             let mut map: LocMap<'_> = LocMap::default();
             let r = FileLocRange::new(FileLoc::new(2, 0), FileLoc::new(4, 0));
-            map.add(g.as_value(), r).unwrap();
-            assert_eq!(map.location_of(g.as_value()), Some(r));
+            map.add(g.into_erased(), r).unwrap();
+            assert_eq!(map.location_of(g.into_erased()), Some(r));
             assert_eq!(
-                map.add(g.as_value(), r),
+                map.add(g.into_erased(), r),
                 Err(LocationError::DuplicateHandle)
             );
         });
@@ -309,10 +309,10 @@ mod tests {
 
             let mut map: LocMap<'_> = LocMap::default();
             let r = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(1, 5));
-            map.add(g.as_value(), r).unwrap();
+            map.add(g.into_erased(), r).unwrap();
 
-            assert_eq!(map.handle_at(FileLoc::new(1, 0)), Some(g.as_value()));
-            assert_eq!(map.handle_at(FileLoc::new(1, 4)), Some(g.as_value()));
+            assert_eq!(map.handle_at(FileLoc::new(1, 0)), Some(g.into_erased()));
+            assert_eq!(map.handle_at(FileLoc::new(1, 4)), Some(g.into_erased()));
             assert_eq!(map.handle_at(FileLoc::new(1, 5)), None);
             assert_eq!(map.handle_at(FileLoc::new(0, 0)), None);
         });
@@ -335,11 +335,11 @@ mod tests {
             let mut map: LocMap<'_> = LocMap::default();
             let inner = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(2, 0));
             let far = FileLocRange::new(FileLoc::new(5, 0), FileLoc::new(6, 0));
-            map.add(g_inner.as_value(), inner).unwrap();
-            map.add(g_far.as_value(), far).unwrap();
+            map.add(g_inner.into_erased(), inner).unwrap();
+            map.add(g_far.into_erased(), far).unwrap();
 
             let outer = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(3, 0));
-            assert_eq!(map.handle_at_range(outer), Some(g_inner.as_value()));
+            assert_eq!(map.handle_at_range(outer), Some(g_inner.into_erased()));
 
             // Mismatched start — no hit.
             let shifted = FileLocRange::new(FileLoc::new(1, 1), FileLoc::new(3, 0));

@@ -171,7 +171,7 @@ fn produces_named_result(inst: &InstructionView<'_, impl ModuleBrand>) -> bool {
 fn inst_kind_data<'ctx, B: ModuleBrand + 'ctx>(
     inst: &InstructionView<'ctx, B>,
 ) -> &'ctx InstructionKindData {
-    match &inst.as_value().data().kind {
+    match &inst.into_erased().data().kind {
         ValueKindData::Instruction(i) => &i.kind,
         _ => unreachable!("Instruction handle invariant: kind is Instruction"),
     }
@@ -768,7 +768,7 @@ fn fmt_global_value_ref<'ctx, B: ModuleBrand + 'ctx>(
 fn module_global_slot(module: &ModuleCore, id: ValueId) -> Option<u32> {
     let mut next = 0_u32;
     for global in module.iter_globals::<crate::module::Brand<'_>>() {
-        if global.as_value().name().is_none() {
+        if global.into_erased().name().is_none() {
             if global.id() == id {
                 return Some(next);
             }
@@ -776,7 +776,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueId) -> Option<u32> {
         }
     }
     for alias in module.iter_aliases::<crate::module::Brand<'_>>() {
-        if alias.as_value().name().is_none() {
+        if alias.into_erased().name().is_none() {
             if alias.id() == id {
                 return Some(next);
             }
@@ -784,7 +784,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueId) -> Option<u32> {
         }
     }
     for ifunc in module.iter_ifuncs::<crate::module::Brand<'_>>() {
-        if ifunc.as_value().name().is_none() {
+        if ifunc.into_erased().name().is_none() {
             if ifunc.id() == id {
                 return Some(next);
             }
@@ -792,7 +792,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueId) -> Option<u32> {
         }
     }
     for function in module.iter_functions::<crate::module::Brand<'_>>() {
-        if function.as_value().name().is_none() {
+        if function.into_erased().name().is_none() {
             if function.id() == id {
                 return Some(next);
             }
@@ -1652,14 +1652,14 @@ fn fmt_call(
     // trailing `...` (AsmWriter's CallInst arm:
     // `isMustTailCall() && getParent()->getParent()->isVarArg()`).
     if matches!(c.tail_kind, crate::instr_types::TailCallKind::MustTail) {
-        let enclosing_varargs = inst
-            .as_value()
-            .local_parent_function_id()
-            .is_some_and(|fn_id| {
-                FunctionValue::<Dyn, _>::from_parts_unchecked(fn_id, module)
-                    .signature()
-                    .is_var_arg()
-            });
+        let enclosing_varargs =
+            inst.into_erased()
+                .local_parent_function_id()
+                .is_some_and(|fn_id| {
+                    FunctionValue::<Dyn, _>::from_parts_unchecked(fn_id, module)
+                        .signature()
+                        .is_var_arg()
+                });
         if enclosing_varargs {
             if !c.args.is_empty() {
                 f.write_str(", ")?;
@@ -2508,7 +2508,7 @@ pub(super) fn fmt_function<B: ModuleBrand>(
         f.write_str(" ")?;
     }
     write!(f, "{} ", sig.return_type())?;
-    fmt_global_value_ref(f, func.as_value())?;
+    fmt_global_value_ref(f, func.into_erased())?;
     f.write_str("(")?;
     let mut first = true;
     for arg in func.params() {
@@ -2582,15 +2582,15 @@ pub(super) fn fmt_function<B: ModuleBrand>(
     }
     if let Some(prefix) = func.prefix_data() {
         f.write_str(" prefix ")?;
-        fmt_operand(f, prefix.as_value(), None)?;
+        fmt_operand(f, prefix.into_erased(), None)?;
     }
     if let Some(prologue) = func.prologue_data() {
         f.write_str(" prologue ")?;
-        fmt_operand(f, prologue.as_value(), None)?;
+        fmt_operand(f, prologue.into_erased(), None)?;
     }
     if let Some(personality) = func.personality_fn() {
         f.write_str(" personality ")?;
-        fmt_operand(f, personality.as_value(), None)?;
+        fmt_operand(f, personality.into_erased(), None)?;
     }
     {
         let module_view = func.module();
@@ -2998,7 +2998,7 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
 ) -> fmt::Result {
     // Mirrors `AssemblyWriter::printGlobal` in
     // `lib/IR/AsmWriter.cpp`.
-    fmt_global_value_ref(f, g.as_value())?;
+    fmt_global_value_ref(f, g.into_erased())?;
     f.write_str(" = ")?;
 
     // `external` keyword in front of decl-only globals with
@@ -3052,7 +3052,7 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
     // Initializer.
     if let Some(init) = g.initializer() {
         f.write_str(" ")?;
-        let v = init.as_value();
+        let v = init.into_erased();
         fmt_operand_ref(f, v, None)?;
     }
 
@@ -3093,7 +3093,7 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
     a: GlobalAlias<'ctx, B>,
 ) -> fmt::Result {
-    fmt_global_value_ref(f, a.as_value())?;
+    fmt_global_value_ref(f, a.into_erased())?;
     f.write_str(" = ")?;
     let linkage_kw = a.linkage().keyword();
     if !linkage_kw.is_empty() {
@@ -3118,7 +3118,7 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
     }
     f.write_str("alias ")?;
     write!(f, "{}, ", a.value_type())?;
-    fmt_operand(f, a.aliasee().as_value(), None)?;
+    fmt_operand(f, a.aliasee().into_erased(), None)?;
     if let Some(partition) = a.partition() {
         f.write_str(", partition \"")?;
         print_escaped_string(f, partition.as_bytes())?;
@@ -3135,7 +3135,7 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
     i: GlobalIFunc<'ctx, B>,
 ) -> fmt::Result {
-    fmt_global_value_ref(f, i.as_value())?;
+    fmt_global_value_ref(f, i.into_erased())?;
     f.write_str(" = ")?;
     let linkage_kw = i.linkage().keyword();
     if !linkage_kw.is_empty() {
@@ -3148,7 +3148,7 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
     }
     f.write_str("ifunc ")?;
     write!(f, "{}, ", i.value_type())?;
-    fmt_operand(f, i.resolver().as_value(), None)?;
+    fmt_operand(f, i.resolver().into_erased(), None)?;
     if let Some(partition) = i.partition() {
         f.write_str(", partition \"")?;
         print_escaped_string(f, partition.as_bytes())?;

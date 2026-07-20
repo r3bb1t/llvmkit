@@ -23,9 +23,9 @@ fn phi_add_incoming_from_value_rejects_type_mismatch() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let phi = b.build_int_phi::<i32, _>("p")?;
-        let phi_val = phi.as_int_value().as_value();
+        let phi_val = phi.as_int_value().into_erased();
         // f64 incoming value against an i32 phi -> result-type mismatch.
-        let f64_val = f64_ty.const_double(1.0).as_value();
+        let f64_val = f64_ty.const_double(1.0).into_erased();
         let block = f.basic_blocks().next().expect("entry block handle");
         let raw = IRBuilder::new(&m);
         let err = raw
@@ -52,9 +52,9 @@ fn phi_add_incoming_from_value_rejects_differing_duplicate() -> Result<(), IrErr
         let _a = f.append_basic_block(&m, "a");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let phi = b.build_int_phi::<i32, _>("p")?;
-        let phi_val = phi.as_int_value().as_value();
-        let c1 = i32_ty.const_int(1_i32).as_value();
-        let c2 = i32_ty.const_int(2_i32).as_value();
+        let phi_val = phi.as_int_value().into_erased();
+        let c1 = i32_ty.const_int(1_i32).into_erased();
+        let c2 = i32_ty.const_int(2_i32).into_erased();
         let raw = IRBuilder::new(&m);
         // First edge from block `a` (index 1) is accepted.
         let block_a = f.basic_blocks().nth(1).expect("block a handle");

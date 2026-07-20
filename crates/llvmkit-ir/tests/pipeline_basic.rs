@@ -160,7 +160,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for MutatingReshape {
             .function()
             .basic_blocks()
             .flat_map(|block| block.instructions().collect::<Vec<_>>())
-            .filter(|view| !view.is_terminator() && !view.as_value().has_uses())
+            .filter(|view| !view.is_terminator() && !view.into_erased().has_uses())
             .collect();
         for view in &dead {
             reshape.erase(

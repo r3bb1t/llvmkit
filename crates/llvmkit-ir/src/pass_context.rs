@@ -738,7 +738,7 @@ where
         // later `borrow_mut()`. Users must be captured *before* the RAUW rewires
         // them.
         let users: Vec<ValueId> = if self.worklist.borrow().is_some() {
-            view.as_value().users().map(|u| u.id()).collect()
+            view.into_erased().users().map(|u| u.id()).collect()
         } else {
             Vec::new()
         };
@@ -2872,7 +2872,7 @@ mod tests {
             b.build_ret(x)?;
 
             let function = FunctionView::from(f);
-            let dead_view = InstructionView::try_from(dead.as_value())?;
+            let dead_view = InstructionView::try_from(dead.into_erased())?;
 
             let mut fam = FunctionAnalysisManager::new();
             Reqs::prefetch(&mut fam, function)?;
@@ -3046,7 +3046,7 @@ mod tests {
             let reshape = cx.mutate();
             // Erase the dead instruction so the dirty flag is set; only then
             // does `done()` report the ReshapeCfg floor.
-            let dead_view = InstructionView::try_from(dead.as_value())?;
+            let dead_view = InstructionView::try_from(dead.into_erased())?;
             reshape.erase(
                 &dead_view
                     .as_non_terminator()
@@ -3337,8 +3337,8 @@ mod tests {
             let fv1 = FunctionView::from(f1);
             let fv2 = FunctionView::from(f2);
             let decl_view = FunctionView::from(decl);
-            let dead1_view = InstructionView::try_from(dead1.as_value())?;
-            let dead2_view = InstructionView::try_from(dead2.as_value())?;
+            let dead1_view = InstructionView::try_from(dead1.into_erased())?;
+            let dead2_view = InstructionView::try_from(dead2.into_erased())?;
 
             // Each def starts with `dead` + `ret`.
             assert_eq!(fv1.entry_block().expect("def").instruction_count(), 2);

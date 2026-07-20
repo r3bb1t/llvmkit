@@ -197,7 +197,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
 {
     /// Widen this copyable label reference to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn into_erased(&self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -206,10 +206,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     }
 
     /// Opaque arena id of the underlying value (same id as
-    /// [`as_value`](Self::as_value)).
+    /// [`into_erased`](Self::into_erased)).
     #[inline]
     pub fn id(&self) -> ValueId {
-        self.as_value().id
+        self.into_erased().id
     }
 
     /// Drop the typed parameter marker, yielding the parameter-erased
@@ -495,7 +495,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn into_erased(&self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -504,10 +504,10 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     }
 
     /// Opaque arena id of the underlying value (same id as
-    /// [`as_value`](Self::as_value)).
+    /// [`into_erased`](Self::into_erased)).
     #[inline]
     pub fn id(&self) -> ValueId {
-        self.as_value().id
+        self.into_erased().id
     }
 
     /// Erase the return-shape marker (and the parameter marker), producing
@@ -560,7 +560,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 
     /// Borrow the storage payload.
     fn data(&self) -> &'ctx BasicBlockData {
-        match &self.as_value().data().kind {
+        match &self.into_erased().data().kind {
             ValueKindData::BasicBlock(b) => b,
             // The handle was produced by a constructor that pushed a
             // BasicBlock variant; the kind cannot have changed.
@@ -571,7 +571,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// Optional textual name. Mirrors `BasicBlock::getName`.
     #[inline]
     pub fn name(&self) -> Option<String> {
-        self.as_value().name()
+        self.into_erased().name()
     }
 
     /// Set or clear the textual name.
@@ -581,13 +581,13 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     where
         Name: Into<String>,
     {
-        self.as_value().set_name(module_token, name);
+        self.into_erased().set_name(module_token, name);
     }
 
     /// Clear the textual name.
     #[inline]
     pub fn clear_name(&self, module_token: &Module<'ctx, B, Unverified>) {
-        self.as_value().clear_name(module_token);
+        self.into_erased().clear_name(module_token);
     }
 
     /// Owning module reference.
@@ -857,7 +857,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {
-        self.as_value().ty()
+        self.into_erased().ty()
     }
 }
 impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, Params: BlockParams>
@@ -884,7 +884,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
-        self.as_value().debug_loc()
+        self.into_erased().debug_loc()
     }
 }
 
@@ -893,7 +893,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 {
     #[inline]
     fn from(b: BasicBlock<'ctx, R, Term, B, Params>) -> Self {
-        b.as_value()
+        b.into_erased()
     }
 }
 
@@ -967,7 +967,7 @@ mod tests {
             // A label recovered from an untyped `Value` carries no static
             // parameter promise, so it must land in the `BlockParamsDyn`
             // form (proved at compile time by `assert_dyn_params`).
-            let v: Value<'_, _> = bb.as_value();
+            let v: Value<'_, _> = bb.into_erased();
             let recovered: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = v
                 .try_into()
                 .expect("a basic-block value narrows to a label");
@@ -986,7 +986,7 @@ mod tests {
             let label = bb.label();
 
             let round: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = label
-                .as_value()
+                .into_erased()
                 .try_into()
                 .expect("a label's value round-trips to a label");
             assert_eq!(round.id(), label.id());
@@ -997,7 +997,7 @@ mod tests {
     #[test]
     fn non_block_value_is_rejected() {
         Module::with_new("bp-slice1-reject", |m| {
-            let v = m.i32_type().const_zero().as_value();
+            let v = m.i32_type().const_zero().into_erased();
             let narrowed: IrResult<BasicBlockLabel<'_, Dyn, _, BlockParamsDyn>> = v.try_into();
             assert!(
                 narrowed.is_err(),

@@ -102,11 +102,11 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
 
     let bt = IRBuilder::at_end(then_bb);
     let add_xy = bt.build_int_add(x, y, "add_xy")?;
-    bt.build_br_with_args(merge_label, &[add_xy.as_value()])?;
+    bt.build_br_with_args(merge_label, &[add_xy.into_erased()])?;
 
     let be = IRBuilder::at_end(else_bb);
     let sub_xy = be.build_int_sub(x, y, "sub_xy")?;
-    be.build_br_with_args(merge_label, &[sub_xy.as_value()])?;
+    be.build_br_with_args(merge_label, &[sub_xy.into_erased()])?;
 
     let bm = IRBuilder::at_end(merge);
     // `params[0]` is `merge`'s head-phi, seeded with `[ %add_xy, %then ]` and

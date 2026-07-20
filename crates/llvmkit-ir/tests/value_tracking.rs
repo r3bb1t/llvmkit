@@ -44,17 +44,17 @@ fn constants_and_integer_operators_compute_known_bits() -> Result<(), IrError> {
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
 
-        assert_eq!(known(c_aa.as_value(), &query)?.to_string(), "10101010");
-        assert_eq!(known(and_v.as_value(), &query)?.to_string(), "00001010");
-        assert_eq!(known(or_v.as_value(), &query)?.to_string(), "10101111");
-        assert_eq!(known(xor_v.as_value(), &query)?.to_string(), "10100101");
-        assert_eq!(known(add_v.as_value(), &query)?.to_string(), "10101011");
-        assert_eq!(known(mul_v.as_value(), &query)?.to_string(), "00001100");
-        assert_eq!(known(shl_v.as_value(), &query)?.to_string(), "00000110");
-        assert_eq!(known(lshr_v.as_value(), &query)?.to_string(), "00000100");
-        assert!(is_known_non_zero(c_aa.as_value(), &query)?);
-        assert!(!is_known_zero(c_aa.as_value(), &query)?);
-        assert!(is_known_one(c_aa.as_value(), 7, &query)?);
+        assert_eq!(known(c_aa.into_erased(), &query)?.to_string(), "10101010");
+        assert_eq!(known(and_v.into_erased(), &query)?.to_string(), "00001010");
+        assert_eq!(known(or_v.into_erased(), &query)?.to_string(), "10101111");
+        assert_eq!(known(xor_v.into_erased(), &query)?.to_string(), "10100101");
+        assert_eq!(known(add_v.into_erased(), &query)?.to_string(), "10101011");
+        assert_eq!(known(mul_v.into_erased(), &query)?.to_string(), "00001100");
+        assert_eq!(known(shl_v.into_erased(), &query)?.to_string(), "00000110");
+        assert_eq!(known(lshr_v.into_erased(), &query)?.to_string(), "00000100");
+        assert!(is_known_non_zero(c_aa.into_erased(), &query)?);
+        assert!(!is_known_zero(c_aa.into_erased(), &query)?);
+        assert!(is_known_one(c_aa.into_erased(), 7, &query)?);
         Ok(())
     })
 }
@@ -77,8 +77,8 @@ fn signed_division_and_remainder_compute_known_bits() -> Result<(), IrError> {
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert_eq!(known(sdiv.as_value(), &query)?.to_string(), "111?????");
-        assert_eq!(known(srem.as_value(), &query)?.to_string(), "00000011");
+        assert_eq!(known(sdiv.into_erased(), &query)?.to_string(), "111?????");
+        assert_eq!(known(srem.into_erased(), &query)?.to_string(), "00000011");
         Ok(())
     })
 }
@@ -108,10 +108,10 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
         let c_aa_val: IntValue<i8> = c_aa.as_constant().try_into()?;
         let c_ae_val: IntValue<i8> = c_ae.as_constant().try_into()?;
         let select = b.build_select(cond, c_aa_val, c_ae_val, "sel")?;
-        b.build_br_with_args(join_label, &[i8_ty.const_int(0x03_u8).as_value()])?;
+        b.build_br_with_args(join_label, &[i8_ty.const_int(0x03_u8).into_erased()])?;
 
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(other);
-        b.build_br_with_args(join_label, &[i8_ty.const_int(0x07_u8).as_value()])?;
+        b.build_br_with_args(join_label, &[i8_ty.const_int(0x07_u8).into_erased()])?;
 
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(join);
         let phi = params[0];
@@ -129,20 +129,23 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
 
-        assert_eq!(known(select.as_value(), &query)?.to_string(), "10101?10");
+        assert_eq!(known(select.into_erased(), &query)?.to_string(), "10101?10");
         assert_eq!(known(phi, &query)?.to_string(), "00000?11");
-        assert_eq!(known(trunc.as_value(), &query)?.to_string(), "11110000");
+        assert_eq!(known(trunc.into_erased(), &query)?.to_string(), "11110000");
         assert_eq!(
-            known(zext.as_value(), &query)?.to_string(),
+            known(zext.into_erased(), &query)?.to_string(),
             "0000000010101010"
         );
         assert_eq!(
-            known(sext.as_value(), &query)?.to_string(),
+            known(sext.into_erased(), &query)?.to_string(),
             "1111111110101010"
         );
-        assert_eq!(known(bitcast.as_value(), &query)?.to_string(), "01011010");
-        assert_eq!(known(freeze.as_value(), &query)?.to_string(), "10101010");
-        assert_eq!(known(cmp.as_value(), &query)?.to_string(), "1");
+        assert_eq!(
+            known(bitcast.into_erased(), &query)?.to_string(),
+            "01011010"
+        );
+        assert_eq!(known(freeze.into_erased(), &query)?.to_string(), "10101010");
+        assert_eq!(known(cmp.into_erased(), &query)?.to_string(), "1");
         Ok(())
     })
 }
@@ -165,9 +168,9 @@ fn bitwise_with_self_plus_odd_refines_low_bit() -> Result<(), IrError> {
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert!(known(and_v.as_value(), &query)?.is_known_zero(0));
-        assert!(known(or_v.as_value(), &query)?.is_known_one(0));
-        assert!(known(xor_v.as_value(), &query)?.is_known_one(0));
+        assert!(known(and_v.into_erased(), &query)?.is_known_zero(0));
+        assert!(known(or_v.into_erased(), &query)?.is_known_one(0));
+        assert!(known(xor_v.into_erased(), &query)?.is_known_one(0));
         Ok(())
     })
 }
@@ -187,7 +190,7 @@ fn mul_nsw_self_product_is_non_negative() -> Result<(), IrError> {
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert!(known(square.as_value(), &query)?.is_known_zero(7));
+        assert!(known(square.into_erased(), &query)?.is_known_zero(7));
         Ok(())
     })
 }
@@ -207,11 +210,11 @@ fn pointer_null_and_alloca_alignment_compute_low_zero_bits() -> Result<(), IrErr
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        let null_bits = known(ptr_ty.const_null().as_value(), &query)?;
+        let null_bits = known(ptr_ty.const_null().into_erased(), &query)?;
         let ptr_width = usize::try_from(dl.pointer_size_in_bits(0)).expect("u32 fits usize");
         assert_eq!(null_bits.to_string(), zeros(ptr_width));
 
-        let alloca_bits = known(alloca.as_value(), &query)?;
+        let alloca_bits = known(alloca.into_erased(), &query)?;
         for bit in 0..4 {
             assert!(
                 alloca_bits.is_known_zero(bit),
@@ -241,7 +244,7 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         let lo0 = m.metadata_constant(i8_ty.const_int(-50_i8));
         let hi0 = m.metadata_constant(i8_ty.const_int(0_i8));
         let range0 = m.metadata_tuple([MetadataRef(lo0), MetadataRef(hi0)]);
-        let val0_inst = InstructionView::try_from(val0.as_value())?;
+        let val0_inst = InstructionView::try_from(val0.into_erased())?;
         val0_inst.set_metadata(MetadataAttachmentKind::Range, range0);
         let mask128 = i8_ty.const_ap_int(&ApInt::from_words(8, &[128]))?;
         let and0 = b0.build_int_and::<i8, _, _, _>(val0, mask128, "and")?;
@@ -256,7 +259,7 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         let lo1 = m.metadata_constant(i8_ty.const_int(64_i8));
         let hi1 = m.metadata_constant(i8_ty.const_ap_int(&ApInt::from_words(8, &[128]))?);
         let range1 = m.metadata_tuple([MetadataRef(lo1), MetadataRef(hi1)]);
-        let val1_inst = InstructionView::try_from(val1.as_value())?;
+        let val1_inst = InstructionView::try_from(val1.into_erased())?;
         val1_inst.set_metadata(MetadataAttachmentKind::Range, range1);
         let mask64 = i8_ty.const_int(64_i8);
         let and1 = b1.build_int_and::<i8, _, _, _>(val1, mask64, "and")?;
@@ -271,7 +274,7 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         let lo2 = m.metadata_constant(i8_ty.const_int(64_i8));
         let hi2 = m.metadata_constant(i8_ty.const_ap_int(&ApInt::from_words(8, &[129]))?);
         let range2 = m.metadata_tuple([MetadataRef(lo2), MetadataRef(hi2)]);
-        let val2_inst = InstructionView::try_from(val2.as_value())?;
+        let val2_inst = InstructionView::try_from(val2.into_erased())?;
         val2_inst.set_metadata(MetadataAttachmentKind::Range, range2);
         let and2 = b2.build_int_and::<i8, _, _, _>(val2, mask64, "and")?;
         let cmp2 = b2.build_icmp_eq::<i8, _, _, _>(and2, mask64, "is.eq")?;
@@ -280,11 +283,11 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         m.verify_borrowed()?;
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert_eq!(known(cmp0.as_value(), &query)?.to_string(), "1");
-        assert_eq!(known(cmp1.as_value(), &query)?.to_string(), "1");
-        assert_eq!(known(cmp2.as_value(), &query)?.to_string(), "?");
+        assert_eq!(known(cmp0.into_erased(), &query)?.to_string(), "1");
+        assert_eq!(known(cmp1.into_erased(), &query)?.to_string(), "1");
+        assert_eq!(known(cmp2.into_erased(), &query)?.to_string(), "?");
         let query_without_instr_info = ValueTrackingQuery::new(&dl).without_instruction_info();
-        assert!(known(cmp0.as_value(), &query_without_instr_info)?.is_unknown());
+        assert!(known(cmp0.into_erased(), &query_without_instr_info)?.is_unknown());
         Ok(())
     })
 }
@@ -325,7 +328,7 @@ fn call_return_range_attribute_contributes_known_bits() -> Result<(), IrError> {
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert_eq!(known(cmp.as_value(), &query)?.to_string(), "1");
+        assert_eq!(known(cmp.into_erased(), &query)?.to_string(), "1");
         let text = format!("{m}");
         assert!(text.contains("call range(i8 0, 64) i8 @callee()"), "{text}");
         Ok(())
@@ -383,7 +386,7 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
                 invoke_unwind_label,
                 llvmkit_ir::CallSiteConfig::new("invoke").attrs(attrs),
             )?;
-        let invoke_value: IntValue<i8> = invoke.as_value().try_into()?;
+        let invoke_value: IntValue<i8> = invoke.into_erased().try_into()?;
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(invoke_unwind)
@@ -394,9 +397,9 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert_eq!(known(call.as_value(), &query)?.to_string(), "10100101");
+        assert_eq!(known(call.into_erased(), &query)?.to_string(), "10100101");
         assert_eq!(
-            known(invoke_value.as_value(), &query)?.to_string(),
+            known(invoke_value.into_erased(), &query)?.to_string(),
             "00111100"
         );
         Ok(())
@@ -506,20 +509,23 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert_eq!(known(abs.as_value(), &query)?.to_string(), "00000101");
+        assert_eq!(known(abs.into_erased(), &query)?.to_string(), "00000101");
         assert_eq!(
-            known(bitreverse.as_value(), &query)?.to_string(),
+            known(bitreverse.into_erased(), &query)?.to_string(),
             "00001000"
         );
-        assert_eq!(known(ctlz.as_value(), &query)?.to_string(), "000000??");
-        assert_eq!(known(ctpop.as_value(), &query)?.to_string(), "00000???");
-        assert_eq!(known(uadd_sat.as_value(), &query)?.to_string(), "11111111");
-        assert_eq!(known(smax.as_value(), &query)?.to_string(), "00000111");
+        assert_eq!(known(ctlz.into_erased(), &query)?.to_string(), "000000??");
+        assert_eq!(known(ctpop.into_erased(), &query)?.to_string(), "00000???");
         assert_eq!(
-            known(bswap.as_value(), &query)?.to_string(),
+            known(uadd_sat.into_erased(), &query)?.to_string(),
+            "11111111"
+        );
+        assert_eq!(known(smax.into_erased(), &query)?.to_string(), "00000111");
+        assert_eq!(
+            known(bswap.into_erased(), &query)?.to_string(),
             "0011010000010010"
         );
-        assert_eq!(known(fshl.as_value(), &query)?.to_string(), "00100011");
+        assert_eq!(known(fshl.into_erased(), &query)?.to_string(), "00100011");
         Ok(())
     })
 }
@@ -553,7 +559,7 @@ fn intrinsic_known_bits_ignore_mismatched_declarations() -> Result<(), IrError> 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
         assert_eq!(
-            known(call.as_value(), &query)?.to_string(),
+            known(call.into_erased(), &query)?.to_string(),
             "????????????????"
         );
         Ok(())
@@ -574,7 +580,7 @@ fn query_carries_context_demanded_elements_and_instr_info_policy() -> Result<(),
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let p: PointerValue = f.param(0)?.try_into()?;
         let load = b.build_int_load::<i8, _, _>(p, "load")?;
-        let load_inst = InstructionView::try_from(load.as_value())?;
+        let load_inst = InstructionView::try_from(load.into_erased())?;
         let demanded = ApInt::from_words(1, &[1]);
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl)
@@ -582,7 +588,7 @@ fn query_carries_context_demanded_elements_and_instr_info_policy() -> Result<(),
             .with_demanded_elements(&demanded)
             .without_instruction_info();
 
-        assert_eq!(query.context_instruction(), Some(load_inst.as_value()));
+        assert_eq!(query.context_instruction(), Some(load_inst.into_erased()));
         assert_eq!(query.demanded_elements(), Some(&demanded));
         assert!(!query.uses_instruction_info());
         assert!(query.with_instruction_info().uses_instruction_info());
@@ -612,10 +618,10 @@ fn function_analysis_caches_known_bits_queries() -> Result<(), IrError> {
 
         let result = fam.get_result::<KnownBitsAnalysis, _>(f)?;
         assert_eq!(
-            result.compute_known_bits(value.as_value())?.to_string(),
+            result.compute_known_bits(value.into_erased())?.to_string(),
             "10100000"
         );
-        assert!(result.is_known_non_zero(value.as_value())?);
+        assert!(result.is_known_non_zero(value.into_erased())?);
         assert!(fam.get_cached_result::<KnownBitsAnalysis, _>(f).is_some());
         Ok(())
     })
@@ -683,7 +689,7 @@ fn shift_with_possible_invalid_amount_is_unknown_after_freeze() -> Result<(), Ir
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert!(known(frozen.as_value(), &query)?.is_unknown());
+        assert!(known(frozen.into_erased(), &query)?.is_unknown());
         Ok(())
     })
 }
@@ -704,7 +710,7 @@ fn addrspacecast_drops_source_pointer_known_bits() -> Result<(), IrError> {
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert!(known(cast.as_value(), &query)?.is_unknown());
+        assert!(known(cast.into_erased(), &query)?.is_unknown());
         Ok(())
     })
 }
@@ -730,10 +736,10 @@ fn freeze_of_exact_shift_that_can_poison_is_unknown() -> Result<(), IrError> {
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert!(known(frozen.as_value(), &query)?.is_unknown());
+        assert!(known(frozen.into_erased(), &query)?.is_unknown());
         let query_without_instr_info = ValueTrackingQuery::new(&dl).without_instruction_info();
         assert_eq!(
-            known(frozen.as_value(), &query_without_instr_info)?.to_string(),
+            known(frozen.into_erased(), &query_without_instr_info)?.to_string(),
             "0000"
         );
         Ok(())
@@ -783,7 +789,7 @@ fn gep_and_vector_lane_operations_compute_known_bits() -> Result<(), IrError> {
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        let ptr_bits = known(ptr.as_value(), &query)?;
+        let ptr_bits = known(ptr.into_erased(), &query)?;
         assert!(ptr_bits.is_known_zero(0), "{ptr_bits}");
         assert!(ptr_bits.is_known_zero(1), "{ptr_bits}");
         assert!(ptr_bits.is_known_zero(2), "{ptr_bits}");
@@ -814,7 +820,7 @@ fn vector_gep_known_bits_use_element_pointer_address_space_index_width() -> Resu
         let gep = m.constant_expr_with_options(
             ptr_vec_ty.as_type(),
             ConstantExprOpcode::GetElementPtr,
-            [base.as_value(), index.as_value()],
+            [base.into_erased(), index.into_erased()],
             [],
             [],
             ConstantExprOptions::new().source_ty(i8_ty.as_type()),
@@ -823,7 +829,7 @@ fn vector_gep_known_bits_use_element_pointer_address_space_index_width() -> Resu
         let query = ValueTrackingQuery::new(&dl);
 
         assert_eq!(
-            known(gep.as_value(), &query)?.to_string(),
+            known(gep.into_erased(), &query)?.to_string(),
             "0000000000000000000000000000000011111111111111111111111111111111"
         );
         Ok(())

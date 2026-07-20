@@ -136,7 +136,8 @@ fn default_constant_folder_preserves_wide_apint_add() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let high = ty.const_ap_int(&ApInt::one_bit_set(257, 256))?;
         let result = b.build_int_add(high, ty.const_zero(), "sum")?;
-        let folded = ConstantIntValue::<IntDyn>::try_from(Constant::try_from(result.as_value())?)?;
+        let folded =
+            ConstantIntValue::<IntDyn>::try_from(Constant::try_from(result.into_erased())?)?;
         assert_eq!(folded.ap_int(), ApInt::one_bit_set(257, 256));
         Ok(())
     })
@@ -155,7 +156,8 @@ fn default_constant_folder_folds_udiv_to_constant() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let result = b.build_int_udiv(ty.const_int(9_i32), ty.const_int(3_i32), "q")?;
-        let folded = ConstantIntValue::<IntDyn>::try_from(Constant::try_from(result.as_value())?)?;
+        let folded =
+            ConstantIntValue::<IntDyn>::try_from(Constant::try_from(result.into_erased())?)?;
         assert_eq!(folded.ap_int().try_zext_u64(), Some(3));
         Ok(())
     })

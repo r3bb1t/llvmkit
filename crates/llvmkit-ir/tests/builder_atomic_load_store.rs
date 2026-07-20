@@ -363,9 +363,10 @@ fn default_constant_folder_folds_bitcast_int_to_fp() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let one_bits: IntValue<i32> = i32_ty.const_int(0x3f80_0000_i32).as_value().try_into()?;
+        let one_bits: IntValue<i32> = i32_ty.const_int(0x3f80_0000_i32).into_erased().try_into()?;
         let result = b.build_bitcast_int_to_fp(one_bits, f32_ty, "bc")?;
-        let folded = ConstantFloatValue::<f32>::try_from(Constant::try_from(result.as_value())?)?;
+        let folded =
+            ConstantFloatValue::<f32>::try_from(Constant::try_from(result.into_erased())?)?;
         assert!(folded.ap_float().is_exactly_value_f64(1.0));
         Ok(())
     })

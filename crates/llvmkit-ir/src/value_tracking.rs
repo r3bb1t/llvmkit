@@ -239,7 +239,7 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ValueTrackingQuery<'a, 'ctx, B> {
 
     #[inline]
     pub fn with_context_instruction(mut self, instruction: &InstructionView<'ctx, B>) -> Self {
-        self.context_instruction = Some(instruction.as_value());
+        self.context_instruction = Some(instruction.into_erased());
         self
     }
 

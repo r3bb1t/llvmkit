@@ -225,7 +225,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// LLVM 17+ pointers are opaque (so the signature is the only
     /// useful per-value type-side information).
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn into_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -253,7 +253,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 
     /// Borrow the storage payload.
     pub(super) fn data(self) -> &'ctx FunctionData {
-        match &self.as_value().data().kind {
+        match &self.into_erased().data().kind {
             ValueKindData::Function(f) => f,
             _ => unreachable!("FunctionValue handle invariant: kind is Function"),
         }
@@ -810,10 +810,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         S2: BlockTerminationState,
     {
         let _ = module;
-        let ValueKindData::BasicBlock(data) = &block.as_value().data().kind else {
+        let ValueKindData::BasicBlock(data) = &block.into_erased().data().kind else {
             return Err(IrError::ValueCategoryMismatch {
                 expected: ValueCategoryLabel::BasicBlock,
-                got: block.as_value().category().into(),
+                got: block.into_erased().category().into(),
             });
         };
         if *data.parent.borrow() != Some(self.id) {
@@ -1081,8 +1081,8 @@ pub(super) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool 
 impl<'ctx, R: ReturnMarker, B: ModuleBrand> sealed::Sealed for FunctionValue<'ctx, R, B> {}
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for FunctionValue<'ctx, R, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
-        FunctionValue::as_value(self)
+    fn into_erased(self) -> Value<'ctx, B> {
+        FunctionValue::into_erased(self)
     }
 }
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Typed<'ctx, B> for FunctionValue<'ctx, R, B> {
@@ -1094,7 +1094,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Typed<'ctx, B> for FunctionVa
 impl<'ctx, R: ReturnMarker, B: ModuleBrand> HasName<'ctx, B> for FunctionValue<'ctx, R, B> {
     #[inline]
     fn name(self) -> Option<String> {
-        self.as_value().name()
+        self.into_erased().name()
     }
     #[inline]
     fn set_name<Name>(self, _module_token: &Module<'ctx, B, Unverified>, _name: Name)
@@ -1111,7 +1111,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand> HasName<'ctx, B> for FunctionValue<'
 impl<R: ReturnMarker, B: ModuleBrand> HasDebugLoc for FunctionValue<'_, R, B> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
-        self.as_value().debug_loc()
+        self.into_erased().debug_loc()
     }
 }
 
@@ -1120,7 +1120,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> From<FunctionValue<'ctx, R, B
 {
     #[inline]
     fn from(f: FunctionValue<'ctx, R, B>) -> Self {
-        f.as_value()
+        f.into_erased()
     }
 }
 
@@ -1457,7 +1457,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> core::fmt::Display
     ///
     /// Note this is the *definition*, not the operand form: to print a
     /// function the way it appears as a call operand (`ptr @name`), go
-    /// through [`FunctionValue::as_value`] instead.
+    /// through [`FunctionValue::into_erased`] instead.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         crate::asm_writer::fmt_function(f, self.as_dyn())
     }

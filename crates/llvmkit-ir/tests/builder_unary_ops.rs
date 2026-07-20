@@ -92,7 +92,8 @@ fn default_constant_folder_folds_fneg_to_constant() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let result = b.build_float_neg::<f64, _, _>(f64_ty.const_double(1.25), "neg")?;
-        let folded = ConstantFloatValue::<f64>::try_from(Constant::try_from(result.as_value())?)?;
+        let folded =
+            ConstantFloatValue::<f64>::try_from(Constant::try_from(result.into_erased())?)?;
         assert!(folded.ap_float().is_exactly_value_f64(-1.25));
         assert!(
             !format!("{m}").contains("fneg"),
@@ -199,7 +200,7 @@ fn va_arg_int_round_trip() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let ap: PointerValue = f.param(0)?.try_into()?;
         let v = b.build_va_arg(ap, i32_ty.as_type(), "tmp")?;
-        let asv: IntValue<i32> = v.as_value().try_into()?;
+        let asv: IntValue<i32> = v.into_erased().try_into()?;
         b.build_ret(asv)?;
         let text = format!("{m}");
         // Mirrors the upstream `%tmp = va_arg ptr %ap, i32` form.
@@ -225,7 +226,7 @@ fn va_arg_print_keyword_and_destination_type() -> Result<(), IrError> {
         let v = b.build_va_arg(ap, i32_ty.as_type(), "build_va_arg")?;
         let _ = ap; // silence unused-variable lint when `pop` accessor changes.
         assert_eq!(v.result_type(), i32_ty.as_type());
-        let asv: IntValue<i32> = v.as_value().try_into()?;
+        let asv: IntValue<i32> = v.into_erased().try_into()?;
         b.build_ret(asv)?;
         Ok(())
     })

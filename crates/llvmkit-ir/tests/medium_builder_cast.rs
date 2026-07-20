@@ -152,9 +152,9 @@ fn default_constant_folder_folds_zext_to_constant() -> Result<(), IrError> {
         let f = m.add_function_dyn("widen", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let value: IntValue<i32> = i32_ty.const_int(42_i32).as_value().try_into()?;
+        let value: IntValue<i32> = i32_ty.const_int(42_i32).into_erased().try_into()?;
         let result = b.build_zext(value, i64_ty, "z")?;
-        let folded = ConstantIntValue::<i64>::try_from(Constant::try_from(result.as_value())?)?;
+        let folded = ConstantIntValue::<i64>::try_from(Constant::try_from(result.into_erased())?)?;
         assert_eq!(folded.ap_int().try_zext_u64(), Some(42));
         Ok(())
     })

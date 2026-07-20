@@ -1581,7 +1581,7 @@ where
         }
         let payload = BinaryOpData::new(lhs.id, rhs.id);
         let inst = self.append_instruction(lhs.ty().id(), kind_ctor(payload), name);
-        Ok(inst.as_value())
+        Ok(inst.into_erased())
     }
 
     /// `add lhs, rhs` on erased operands (scalar or integer vector).
@@ -2414,7 +2414,7 @@ where
         Name: AsRef<str>,
         V: IsValue<'ctx, B>,
     {
-        let v = value.as_value();
+        let v = value.into_erased();
         let payload = crate::instr_types::FreezeInstData::new(v.id);
         let inst = self.append_instruction(v.ty, InstructionKindData::Freeze(payload), name);
         Ok(FreezeInst::<B>::from_raw(
@@ -2436,7 +2436,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let v = IsValue::as_value(list_ptr);
+        let v = IsValue::into_erased(list_ptr);
         let payload = crate::instr_types::VAArgInstData::new(v.id);
         let inst = self.append_instruction(result_ty.id, InstructionKindData::VAArg(payload), name);
         Ok(VAArgInst::<B>::from_raw(
@@ -2492,7 +2492,7 @@ where
         Name: AsRef<str>,
         V: IsValue<'ctx, B>,
     {
-        let agg = aggregate.as_value();
+        let agg = aggregate.into_erased();
         if indices.is_empty() {
             return Err(IrError::InvalidOperation {
                 message: "extractvalue indices must not be empty",
@@ -2505,7 +2505,7 @@ where
         let payload = crate::instr_types::ExtractValueInstData::new(agg.id, indices.to_vec());
         let inst =
             self.append_instruction(leaf_ty, InstructionKindData::ExtractValue(payload), name);
-        Ok(inst.as_value())
+        Ok(inst.into_erased())
     }
 
     /// Produce `insertvalue <agg-ty> <agg>, <elt-ty> <elt>, idx0, ...`.
@@ -2558,8 +2558,8 @@ where
         A: IsValue<'ctx, B>,
         V: IsValue<'ctx, B>,
     {
-        let agg = aggregate.as_value();
-        let val = value.as_value();
+        let agg = aggregate.into_erased();
+        let val = value.into_erased();
         if indices.is_empty() {
             return Err(IrError::InvalidOperation {
                 message: "insertvalue indices must not be empty",
@@ -2578,7 +2578,7 @@ where
         let payload =
             crate::instr_types::InsertValueInstData::new(agg.id, val.id, indices.to_vec());
         let inst = self.append_instruction(agg.ty, InstructionKindData::InsertValue(payload), name);
-        Ok(inst.as_value())
+        Ok(inst.into_erased())
     }
 
     /// Extract a named-struct schema field and return the field's typed wrapper.
@@ -2646,9 +2646,9 @@ where
         W: crate::int_width::IntWidth,
         I: IntoIntValue<'ctx, W, B>,
     {
-        let vec = vector.as_value();
+        let vec = vector.into_erased();
         let idx_v = index.into_int_value(ModuleRef::new(self.module))?;
-        let idx = IsValue::as_value(idx_v);
+        let idx = IsValue::into_erased(idx_v);
         let elem_ty = match self.module.context().type_data(vec.ty).as_vector() {
             Some((e, _, _)) => e,
             None => {
@@ -2664,7 +2664,7 @@ where
         let payload = crate::instr_types::ExtractElementInstData::new(vec.id, idx.id);
         let inst =
             self.append_instruction(elem_ty, InstructionKindData::ExtractElement(payload), name);
-        Ok(inst.as_value())
+        Ok(inst.into_erased())
     }
 
     /// Produce `insertelement <vec-ty> <vec>, <elt-ty> <elt>, <idx-ty> <idx>`.
@@ -2683,17 +2683,17 @@ where
         W: crate::int_width::IntWidth,
         I: IntoIntValue<'ctx, W, B>,
     {
-        let vec = vector.as_value();
-        let val = elt.as_value();
+        let vec = vector.into_erased();
+        let val = elt.into_erased();
         let idx_v = index.into_int_value(ModuleRef::new(self.module))?;
-        let idx = IsValue::as_value(idx_v);
+        let idx = IsValue::into_erased(idx_v);
         if let Some(folded) = self.folder.fold_insert_element_dyn(vec, val, idx)? {
             return self.checked_folded_value(folded, vec.ty);
         }
         let payload = crate::instr_types::InsertElementInstData::new(vec.id, val.id, idx.id);
         let inst =
             self.append_instruction(vec.ty, InstructionKindData::InsertElement(payload), name);
-        Ok(inst.as_value())
+        Ok(inst.into_erased())
     }
 
     /// Produce `shufflevector <ty> <v1>, <ty> <v2>, <mask>`. Mirrors
@@ -2712,8 +2712,8 @@ where
         L: IsValue<'ctx, B>,
         Rhs2: IsValue<'ctx, B>,
     {
-        let l = lhs.as_value();
-        let r = rhs.as_value();
+        let l = lhs.into_erased();
+        let r = rhs.into_erased();
         if l.ty != r.ty {
             return Err(IrError::TypeMismatch {
                 expected: l.ty().kind_label(),
@@ -2750,7 +2750,7 @@ where
             InstructionKindData::ShuffleVector(payload),
             name,
         );
-        Ok(inst.as_value())
+        Ok(inst.into_erased())
     }
 
     // ---- Typed vector ops: element/length-checked siblings ----
@@ -2785,8 +2785,13 @@ where
         Name: AsRef<str>,
         F2: FnOnce(BinaryOpData) -> InstructionKindData,
     {
-        let r =
-            self.build_int_binop_dyn(opcode, lhs.as_value(), rhs.as_value(), name, kind_ctor)?;
+        let r = self.build_int_binop_dyn(
+            opcode,
+            lhs.into_erased(),
+            rhs.into_erased(),
+            name,
+            kind_ctor,
+        )?;
         Ok(VectorValue::from_value_unchecked(r))
     }
 
@@ -3008,7 +3013,7 @@ where
         Name: AsRef<str>,
     {
         let erased = self.build_vector_splat(L::STATIC_LEN, scalar, name)?;
-        Ok(VectorValue::from_value_unchecked(erased.as_value()))
+        Ok(VectorValue::from_value_unchecked(erased.into_erased()))
     }
 
     // ---- Typed array ops: extractvalue / insertvalue ----
@@ -3109,9 +3114,9 @@ where
         C: IsValue<'ctx, B>,
         N: IsValue<'ctx, B>,
     {
-        let p = ptr.as_value();
-        let c = cmp.as_value();
-        let n = new_val.as_value();
+        let p = ptr.into_erased();
+        let c = cmp.into_erased();
+        let n = new_val.into_erased();
         if c.ty != n.ty {
             return Err(IrError::TypeMismatch {
                 expected: c.ty().kind_label(),
@@ -3149,8 +3154,8 @@ where
         P: IsValue<'ctx, B>,
         V: IsValue<'ctx, B>,
     {
-        let p = ptr.as_value();
-        let v = value.as_value();
+        let p = ptr.into_erased();
+        let v = value.into_erased();
         let payload = crate::instr_types::AtomicRMWInstData::new(op, p.id, v.id, config);
         let inst = self.append_instruction(v.ty, InstructionKindData::AtomicRMW(payload), name);
         Ok(AtomicRMWInst::<B>::from_raw(
@@ -3185,7 +3190,7 @@ where
     {
         if let Some(folded) = self.folder.fold_cast_to_int(
             crate::instr_types::CastOpcode::Trunc,
-            value.as_value(),
+            value.into_erased(),
             dst_ty,
         )? {
             return self.accept_folded_cast_int(folded, dst_ty);
@@ -3220,7 +3225,7 @@ where
     {
         if let Some(folded) = self.folder.fold_cast_to_int(
             crate::instr_types::CastOpcode::Trunc,
-            value.as_value(),
+            value.into_erased(),
             dst_ty,
         )? {
             return self.accept_folded_cast_int(folded, dst_ty);
@@ -3250,7 +3255,7 @@ where
     {
         if let Some(folded) = self.folder.fold_cast_to_int(
             crate::instr_types::CastOpcode::ZExt,
-            value.as_value(),
+            value.into_erased(),
             dst_ty,
         )? {
             return self.accept_folded_cast_int(folded, dst_ty);
@@ -3279,7 +3284,7 @@ where
     {
         if let Some(folded) = self.folder.fold_cast_to_int(
             crate::instr_types::CastOpcode::ZExt,
-            value.as_value(),
+            value.into_erased(),
             dst_ty,
         )? {
             return self.accept_folded_cast_int(folded, dst_ty);
@@ -3308,7 +3313,7 @@ where
     {
         if let Some(folded) = self.folder.fold_cast_to_int(
             crate::instr_types::CastOpcode::SExt,
-            value.as_value(),
+            value.into_erased(),
             dst_ty,
         )? {
             return self.accept_folded_cast_int(folded, dst_ty);
@@ -3341,7 +3346,7 @@ where
         }
         if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::Trunc,
-            value.as_value(),
+            value.into_erased(),
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
@@ -3374,7 +3379,7 @@ where
         }
         if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::Trunc,
-            value.as_value(),
+            value.into_erased(),
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
@@ -3424,7 +3429,7 @@ where
         }
         if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::ZExt,
-            src.as_value(),
+            src.into_erased(),
             dst.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst.as_type().id())?;
@@ -3468,7 +3473,7 @@ where
         }
         if let Some(folded) =
             self.folder
-                .fold_cast_dyn(opcode, value.as_value(), dst_ty.as_type())?
+                .fold_cast_dyn(opcode, value.into_erased(), dst_ty.as_type())?
         {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
@@ -3677,7 +3682,7 @@ where
             SyncScope::System,
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.as_value())
+        Ok(inst.into_erased())
     }
 
     /// `load <ty>, ptr <ptr>, align N`. Non-volatile non-atomic load with explicit
@@ -3705,7 +3710,7 @@ where
             SyncScope::System,
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.as_value())
+        Ok(inst.into_erased())
     }
 
     /// Typed integer load: `load iN, ptr <ptr>`. Marker-only form:
@@ -3917,7 +3922,7 @@ where
             SyncScope::System,
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.as_value())
+        Ok(inst.into_erased())
     }
 
     /// `load volatile <ty>, ptr <ptr>, align N`. Volatile load with explicit
@@ -3945,7 +3950,7 @@ where
             SyncScope::System,
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.as_value())
+        Ok(inst.into_erased())
     }
 
     /// Produce `store <value>, ptr <ptr>`. Mirrors
@@ -4086,7 +4091,7 @@ where
         V: IsValue<'ctx, B>,
         P: IntoPointerValue<'ctx, B>,
     {
-        let v = value.as_value();
+        let v = value.into_erased();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         // Materialise the DataLayout default off the stored value's type,
         // like upstream (`computeLoadStoreDefaultAlign` /
@@ -4167,7 +4172,7 @@ where
             config.sync_scope_value().clone(),
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.as_value())
+        Ok(inst.into_erased())
     }
 
     /// Atomic store: `store atomic [volatile] <ty> <val>, ptr <ptr>
@@ -4562,7 +4567,7 @@ where
         let ret = <Sig::Ret as FunctionReturn>::ir_type(&module)?;
         let params = <Sig::Params as FunctionParamList>::ir_types(&module)?;
         let fn_ty = module.fn_type(ret, params, false);
-        let callee_v = IsValue::as_value(callee);
+        let callee_v = IsValue::into_erased(callee);
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let payload = crate::instr_types::CallInstData::new(
             callee_v.id,
@@ -4605,7 +4610,7 @@ where
         I: IntoIterator<Item = V>,
         V: IsValue<'ctx, B>,
     {
-        let callee_v = IsValue::as_value(callee);
+        let callee_v = IsValue::into_erased(callee);
         let ret_data = self.module.context().type_data(fn_ty.return_type().id());
         if !crate::function::signature_matches_marker::<R2>(ret_data) {
             return Err(IrError::ReturnTypeMismatch {
@@ -4616,7 +4621,7 @@ where
         }
         let mut arg_ids: Vec<ValueId> = Vec::new();
         for arg in args {
-            let v = arg.as_value();
+            let v = arg.into_erased();
             arg_ids.push(v.id);
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
@@ -4663,7 +4668,7 @@ where
         I: IntoIterator<Item = V>,
         V: IsValue<'ctx, B>,
     {
-        let asm_v = asm.as_value();
+        let asm_v = asm.into_erased();
         let fn_ty = asm.function_type();
         // Reject a return-marker / signature mismatch up front, mirroring
         // the `signature_matches_marker` gate on the typed lookup path
@@ -4678,7 +4683,7 @@ where
         }
         let mut arg_ids: Vec<ValueId> = Vec::new();
         for arg in args {
-            let v = arg.as_value();
+            let v = arg.into_erased();
             arg_ids.push(v.id);
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
@@ -4899,12 +4904,12 @@ where
         let source_ty = source_ty.as_type();
         let source_ty_id = source_ty.id();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
-        let ptr_value = IsValue::as_value(p);
+        let ptr_value = IsValue::into_erased(p);
         let mut idx_ids = Vec::new();
         let mut idx_values = Vec::new();
         for index in indices {
             let iv = index.into_int_value(ModuleRef::new(self.module))?;
-            idx_values.push(iv.as_value());
+            idx_values.push(iv.into_erased());
             idx_ids.push(iv.id());
         }
         // Reject index sequences that do not index into the source element
@@ -4985,7 +4990,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let v = IsValue::as_value(value);
+        let v = IsValue::into_erased(value);
         if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::FpTrunc,
             v,
@@ -5014,7 +5019,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let v = IsValue::as_value(value);
+        let v = IsValue::into_erased(value);
         if let Some(folded) =
             self.folder
                 .fold_cast_dyn(crate::instr_types::CastOpcode::FpExt, v, dst_ty.as_type())?
@@ -5038,7 +5043,7 @@ where
         Src: FloatKind,
         Dst: FloatKind,
     {
-        let v = IsValue::as_value(value);
+        let v = IsValue::into_erased(value);
         if let Some(folded) = self.folder.fold_cast_to_fp(opcode, v, dst_ty)? {
             return self.accept_folded_cast_fp(folded, dst_ty);
         }
@@ -5089,7 +5094,7 @@ where
         K: FloatKind,
         W: IntWidth,
     {
-        let v = IsValue::as_value(value);
+        let v = IsValue::into_erased(value);
         if let Some(folded) = self.folder.fold_cast_to_int(opcode, v, dst_ty)? {
             return self.accept_folded_cast_int(folded, dst_ty);
         }
@@ -5128,7 +5133,7 @@ where
         W: IntWidth,
         K: FloatKind,
     {
-        let v = value.as_value();
+        let v = value.into_erased();
         if let Some(folded) =
             self.folder
                 .fold_cast_to_fp(crate::instr_types::CastOpcode::UIToFp, v, dst_ty)?
@@ -5171,7 +5176,7 @@ where
     {
         if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::UIToFp,
-            src.as_value(),
+            src.into_erased(),
             dst.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst.as_type().id())?;
@@ -5193,7 +5198,7 @@ where
         W: IntWidth,
         K: FloatKind,
     {
-        let v = value.as_value();
+        let v = value.into_erased();
         if let Some(folded) = self.folder.fold_cast_to_fp(opcode, v, dst_ty)? {
             return self.accept_folded_cast_fp(folded, dst_ty);
         }
@@ -5215,7 +5220,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let value = value.as_value();
+        let value = value.into_erased();
         let dst_ty = self.ptr_to_addr_result_type(value.ty())?;
         let result = self.build_ptr_to_addr_dyn(value, dst_ty, name)?;
         Ok(IntValue::<IntDyn, B>::from_value_unchecked(result))
@@ -5248,7 +5253,7 @@ where
         }
         let payload = CastOpData::new(CastOpcode::PtrToAddr, value.id);
         let inst = self.append_instruction(dst_ty.id(), InstructionKindData::Cast(payload), name);
-        Ok(inst.as_value())
+        Ok(inst.into_erased())
     }
 
     /// Produce `ptrtoint <value> to <dst>`. Mirrors
@@ -5263,7 +5268,7 @@ where
         Name: AsRef<str>,
         W: IntWidth,
     {
-        let v = IsValue::as_value(value);
+        let v = IsValue::into_erased(value);
         if let Some(folded) =
             self.folder
                 .fold_cast_to_int(crate::instr_types::CastOpcode::PtrToInt, v, dst_ty)?
@@ -5286,7 +5291,7 @@ where
         Name: AsRef<str>,
         W: IntWidth,
     {
-        let v = value.as_value();
+        let v = value.into_erased();
         if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::IntToPtr,
             v,
@@ -5325,7 +5330,7 @@ where
                 "bitcast int->int requires Src::STATIC_BITS == Dst::STATIC_BITS",
             );
         }
-        let v_value = value.as_value();
+        let v_value = value.into_erased();
         if let Some(folded) = self.folder.fold_cast_to_int(
             super::instr_types::CastOpcode::BitCast,
             v_value,
@@ -5359,7 +5364,7 @@ where
                 "bitcast int->fp requires W::STATIC_BITS == K::STATIC_BITS",
             );
         }
-        let v_value = value.as_value();
+        let v_value = value.into_erased();
         if let Some(folded) =
             self.folder
                 .fold_cast_to_fp(super::instr_types::CastOpcode::BitCast, v_value, dst_ty)?
@@ -5392,7 +5397,7 @@ where
                 "bitcast fp->int requires K::STATIC_BITS == W::STATIC_BITS",
             );
         }
-        let v_value = value.as_value();
+        let v_value = value.into_erased();
         if let Some(folded) = self.folder.fold_cast_to_int(
             super::instr_types::CastOpcode::BitCast,
             v_value,
@@ -5426,7 +5431,7 @@ where
                 "bitcast fp->fp requires Src::STATIC_BITS == Dst::STATIC_BITS",
             );
         }
-        let v_value = value.as_value();
+        let v_value = value.into_erased();
         if let Some(folded) =
             self.folder
                 .fold_cast_to_fp(super::instr_types::CastOpcode::BitCast, v_value, dst_ty)?
@@ -5460,7 +5465,7 @@ where
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, value.id);
         let inst = self.append_instruction(dst_ty.id(), InstructionKindData::Cast(payload), name);
-        Ok(inst.as_value())
+        Ok(inst.into_erased())
     }
 
     /// Produce `addrspacecast <value> to <dst>`. Mirrors
@@ -5474,7 +5479,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let v = IsValue::as_value(value);
+        let v = IsValue::into_erased(value);
         if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::AddrSpaceCast,
             v,
@@ -5501,7 +5506,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let v = IsValue::as_value(value);
+        let v = IsValue::into_erased(value);
         let opcode = if value.ty().address_space() == dst_ty.address_space() {
             super::instr_types::CastOpcode::BitCast
         } else {
@@ -5582,8 +5587,8 @@ where
         let rhs = rhs.into_pointer_value(ModuleRef::new(self.module))?;
         let folded = self.folder.fold_cmp_dyn(
             pred.into(),
-            IsValue::as_value(lhs),
-            IsValue::as_value(rhs),
+            IsValue::into_erased(lhs),
+            IsValue::into_erased(rhs),
         )?;
         if let Some(folded) = folder::narrow_folded_bool(folded)? {
             return Ok(folded);
@@ -5617,7 +5622,7 @@ where
                 message: "build_vector_splat requires at least one lane",
             });
         }
-        let scalar_value = scalar.as_value();
+        let scalar_value = scalar.into_erased();
         let elem_ty = scalar_value.ty();
         let vec_ty = ModuleView::<B>::new(self.module).vector_type(elem_ty, count, false);
         let poison = vec_ty.as_type().get_poison();
@@ -6608,7 +6613,7 @@ where
         DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let default_target = default_target.into_basic_block_label();
-        let cond_v = cond.as_value();
+        let cond_v = cond.into_erased();
         let void_ty = self.module.void_type().as_type().id();
         let payload = crate::instr_types::SwitchInstData::new(cond_v.id, default_target.id());
         let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
@@ -6644,7 +6649,7 @@ where
         Name: AsRef<str>,
         A: IntoPointerValue<'ctx, B>,
     {
-        let addr_v = IsValue::as_value(address.into_pointer_value(ModuleRef::new(self.module))?);
+        let addr_v = IsValue::into_erased(address.into_pointer_value(ModuleRef::new(self.module))?);
         let void_ty = self.module.void_type().as_type().id();
         let payload = crate::instr_types::IndirectBrInstData::new(addr_v.id);
         let inst = self.append_instruction(void_ty, InstructionKindData::IndirectBr(payload), name);
@@ -6790,7 +6795,7 @@ where
     {
         let normal_dest = normal_dest.into_basic_block_label();
         let unwind_dest = unwind_dest.into_basic_block_label();
-        let callee_v = callee.as_value();
+        let callee_v = callee.into_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
         let (name, calling_conv, attrs) = config.into_parts();
         let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.id()).collect();
@@ -6836,7 +6841,7 @@ where
     {
         let normal_dest = normal_dest.into_basic_block_label();
         let unwind_dest = unwind_dest.into_basic_block_label();
-        let callee_v = IsValue::as_value(callee);
+        let callee_v = IsValue::into_erased(callee);
         let ret_ty = fn_ty.return_type().id();
         let (name, calling_conv, attrs) = config.into_parts();
         let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.id()).collect();
@@ -6903,7 +6908,7 @@ where
     {
         let normal_dest = normal_dest.into_basic_block_label();
         let unwind_dest = unwind_dest.into_basic_block_label();
-        let asm_v = asm.as_value();
+        let asm_v = asm.into_erased();
         let fn_ty = asm.function_type();
         let ret_ty = fn_ty.return_type().id();
         let ret_data = self.module.context().type_data(ret_ty);
@@ -6916,7 +6921,7 @@ where
         }
         let mut arg_ids: Vec<ValueId> = Vec::new();
         for arg in args {
-            let v = arg.as_value();
+            let v = arg.into_erased();
             arg_ids.push(v.id);
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
@@ -6985,7 +6990,7 @@ where
         Indirect: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let default_dest = default_dest.into_basic_block_label();
-        let callee_v = callee.as_value();
+        let callee_v = callee.into_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
         let (name, calling_conv, attrs) = config.into_parts();
         let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.id()).collect();
@@ -7057,7 +7062,7 @@ where
         Indirect: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let default_dest = default_dest.into_basic_block_label();
-        let asm_v = asm.as_value();
+        let asm_v = asm.into_erased();
         let fn_ty = asm.function_type();
         let ret_ty = fn_ty.return_type().id();
         let ret_data = self.module.context().type_data(ret_ty);
@@ -7070,7 +7075,7 @@ where
         }
         let mut arg_ids: Vec<ValueId> = Vec::new();
         for arg in args {
-            let v = arg.as_value();
+            let v = arg.into_erased();
             arg_ids.push(v.id);
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
@@ -7134,7 +7139,7 @@ where
         Name: AsRef<str>,
         V: IsValue<'ctx, B>,
     {
-        let v = value.as_value();
+        let v = value.into_erased();
         let void_ty = self.module.void_type().as_type().id();
         let payload = crate::instr_types::ResumeInstData::new(v.id);
         let inst = self.append_instruction(void_ty, InstructionKindData::Resume(payload), name);
@@ -7451,7 +7456,7 @@ where
         name: N,
     ) -> IntValue<'ctx, W, B> {
         let inst = self.append_instruction(like.ty().as_type().id(), kind, name);
-        IntValue::<W, B>::from_value_unchecked(inst.as_value())
+        IntValue::<W, B>::from_value_unchecked(inst.into_erased())
     }
 
     /// Float analogue of `append_int_like`. Sound by construction: appended at `like.ty()`,
@@ -7463,7 +7468,7 @@ where
         name: N,
     ) -> FloatValue<'ctx, K, B> {
         let inst = self.append_instruction(like.ty().as_type().id(), kind, name);
-        FloatValue::<K, B>::from_value_unchecked(inst.as_value())
+        FloatValue::<K, B>::from_value_unchecked(inst.into_erased())
     }
 
     /// Append `kind` at `ty` and wrap the result as width-`W`.
@@ -7481,7 +7486,7 @@ where
         name: N,
     ) -> IntValue<'ctx, W, B> {
         let inst = self.append_instruction(ty.as_type().id(), kind, name);
-        IntValue::<W, B>::from_value_unchecked(inst.as_value())
+        IntValue::<W, B>::from_value_unchecked(inst.into_erased())
     }
 
     /// Float analogue of `append_int_at`. Sound: appended at `ty`, `ty: FloatType<'ctx, K, B>`
@@ -7493,7 +7498,7 @@ where
         name: N,
     ) -> FloatValue<'ctx, K, B> {
         let inst = self.append_instruction(ty.as_type().id(), kind, name);
-        FloatValue::<K, B>::from_value_unchecked(inst.as_value())
+        FloatValue::<K, B>::from_value_unchecked(inst.into_erased())
     }
 
     /// Build and append a `load`, re-stamping the payload's pointee to `ty` and
@@ -7514,7 +7519,7 @@ where
     ) -> IrResult<IntValue<'ctx, W, B>> {
         payload.pointee_ty = ty.as_type().id();
         let inst = self.build_load_inner(payload, name)?;
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+        Ok(IntValue::<W, B>::from_value_unchecked(inst.into_erased()))
     }
 
     /// Float analogue of `append_int_load`. Re-stamps `payload.pointee_ty` with `ty`
@@ -7528,7 +7533,7 @@ where
     ) -> IrResult<FloatValue<'ctx, K, B>> {
         payload.pointee_ty = ty.as_type().id();
         let inst = self.build_load_inner(payload, name)?;
-        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
+        Ok(FloatValue::<K, B>::from_value_unchecked(inst.into_erased()))
     }
 
     /// Append `kind` at `ptr_ty` and wrap the result as a `PointerValue`.
@@ -7545,7 +7550,7 @@ where
         name: N,
     ) -> PointerValue<'ctx, B> {
         let inst = self.append_instruction(ptr_ty.as_type().id(), kind, name);
-        PointerValue::from_value_unchecked(inst.as_value())
+        PointerValue::from_value_unchecked(inst.into_erased())
     }
 
     /// Pointer load: build+append a `load` whose pointee is `ptr_ty`, routed through
@@ -7559,7 +7564,7 @@ where
     ) -> IrResult<PointerValue<'ctx, B>> {
         payload.pointee_ty = ptr_ty.as_type().id();
         let inst = self.build_load_inner(payload, name)?;
-        Ok(PointerValue::from_value_unchecked(inst.as_value()))
+        Ok(PointerValue::from_value_unchecked(inst.into_erased()))
     }
 
     /// Crate-internal: append a freshly-built phi to the insertion block.
@@ -7698,7 +7703,9 @@ where
         folded: IntValue<'ctx, W, B>,
         like: IntValue<'ctx, W, B>,
     ) -> IrResult<IntValue<'ctx, W, B>> {
-        like.as_value().ty().require_match(folded.as_value().ty())?;
+        like.into_erased()
+            .ty()
+            .require_match(folded.into_erased().ty())?;
         Ok(folded)
     }
 
@@ -7725,7 +7732,7 @@ where
         folded: IntValue<'ctx, W, B>,
         dst_ty: IntType<'ctx, W, B>,
     ) -> IrResult<IntValue<'ctx, W, B>> {
-        dst_ty.as_type().require_match(folded.as_value().ty())?;
+        dst_ty.as_type().require_match(folded.into_erased().ty())?;
         Ok(folded)
     }
 
@@ -7792,7 +7799,7 @@ macro_rules! impl_into_return_value_int {
                 self,
                 module: ModuleRef<'ctx, B>,
             ) -> IrResult<Value<'ctx, B>> {
-                Ok(IsValue::as_value(self.into_int_value(module)?))
+                Ok(IsValue::into_erased(self.into_int_value(module)?))
             }
         }
     )+ };
@@ -7815,7 +7822,7 @@ macro_rules! impl_into_return_value_float {
                 self,
                 module: ModuleRef<'ctx, B>,
             ) -> IrResult<Value<'ctx, B>> {
-                Ok(IsValue::as_value(self.into_float_value(module)?))
+                Ok(IsValue::into_erased(self.into_float_value(module)?))
             }
         }
     )+ };
@@ -7838,7 +7845,7 @@ where
 {
     #[inline]
     fn into_return_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(IsValue::as_value(self.into_pointer_value(module)?))
+        Ok(IsValue::into_erased(self.into_pointer_value(module)?))
     }
 }
 
@@ -7849,7 +7856,7 @@ where
 {
     #[inline]
     fn into_return_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(self.as_value())
+        Ok(self.into_erased())
     }
 }
 
@@ -7985,7 +7992,7 @@ where
     /// Add an argument. Statically dispatched per `V: IsValue` so
     /// mixed-type argument lists work without homogeneity.
     pub fn arg<V: IsValue<'ctx, B>>(mut self, value: V) -> Self {
-        let v = value.as_value();
+        let v = value.into_erased();
         self.args.push(v.id);
         self
     }
@@ -8337,7 +8344,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for IntValue<'
     }
     #[inline]
     fn arm_value(self) -> Value<'ctx, B> {
-        IsValue::as_value(self)
+        IsValue::into_erased(self)
     }
 }
 
@@ -8349,7 +8356,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for FloatValu
     }
     #[inline]
     fn arm_value(self) -> Value<'ctx, B> {
-        IsValue::as_value(self)
+        IsValue::into_erased(self)
     }
 }
 
@@ -8361,7 +8368,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for PointerValue<'ctx, B> {
     }
     #[inline]
     fn arm_value(self) -> Value<'ctx, B> {
-        IsValue::as_value(self)
+        IsValue::into_erased(self)
     }
 }
 
@@ -8400,13 +8407,19 @@ where
                 got: false_v.ty().kind_label(),
             });
         }
-        if let Some(folded) = self.folder.fold_select_dyn(c.as_value(), true_v, false_v)? {
+        if let Some(folded) = self
+            .folder
+            .fold_select_dyn(c.into_erased(), true_v, false_v)?
+        {
             let folded = self.checked_folded_value(folded, true_ty)?;
             return Ok(A::from_select_value(folded, &SelectNarrow::new()));
         }
         let payload = crate::instr_types::SelectInstData::new(c.id(), true_v.id, false_v.id);
         let inst = self.append_instruction(true_ty, InstructionKindData::Select(payload), name);
-        Ok(A::from_select_value(inst.as_value(), &SelectNarrow::new()))
+        Ok(A::from_select_value(
+            inst.into_erased(),
+            &SelectNarrow::new(),
+        ))
     }
 }
 
@@ -8532,7 +8545,7 @@ mod tests {
             // with the audit deliberately false: the payload's true IR type
             // is `i64` and matches no 32-bit `W`, static or dyn.
             Ok(Some(IntValue::<W, B>::from_value_unchecked(
-                self.stored.as_value(),
+                self.stored.into_erased(),
             )))
         }
 
@@ -8548,7 +8561,7 @@ mod tests {
             // `accept_folded_cast_int`, which checks against `dst_ty`
             // rather than an operand.
             Ok(Some(IntValue::<W, B>::from_value_unchecked(
-                self.stored.as_value(),
+                self.stored.into_erased(),
             )))
         }
     }
@@ -8576,7 +8589,7 @@ mod tests {
             _fmf: FastMathFlags,
         ) -> IrResult<Option<FloatValue<'ctx, K, B>>> {
             Ok(Some(FloatValue::<K, B>::from_value_unchecked(
-                IsValue::as_value(self.stored),
+                IsValue::into_erased(self.stored),
             )))
         }
 
@@ -8587,7 +8600,7 @@ mod tests {
             _dest_ty: FloatType<'ctx, K, B>,
         ) -> IrResult<Option<FloatValue<'ctx, K, B>>> {
             Ok(Some(FloatValue::<K, B>::from_value_unchecked(
-                IsValue::as_value(self.stored),
+                IsValue::into_erased(self.stored),
             )))
         }
     }
@@ -8610,7 +8623,7 @@ mod tests {
     /// The native override returns `Ok(Some(wrong_width_value))`
     /// straight back to `build_int_add`, which forwards it to
     /// `self.accept_folded_int(folded, lhs)`. Inside `accept_folded_int`,
-    /// `folded.as_value().ty().id() != like.as_value().ty().id()` is
+    /// `folded.into_erased().ty().id() != like.into_erased().ty().id()` is
     /// `true` (the stored value's real type is `i64`, `lhs`'s is the
     /// 32-bit custom-width `IntDyn` type) -- so `accept_folded_int`
     /// returns `Err(IrError::OperandWidthMismatch { lhs: 32, rhs: 64 })`.
@@ -8630,7 +8643,7 @@ mod tests {
             let entry = f.append_basic_block(&m, "entry");
 
             let stored: IntValue<'_, i64, _> =
-                IntValue::from_value_unchecked(i64_dyn_ty.const_zero().as_value());
+                IntValue::from_value_unchecked(i64_dyn_ty.const_zero().into_erased());
             let folder = HostileTypedFolder { stored };
             let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
 
@@ -8680,7 +8693,7 @@ mod tests {
             // genuinely is an i64), and in a test whose whole subject is
             // `from_value_unchecked` lying, the lie belongs only where it is
             // under test -- inside the folder's override.
-            let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().as_value())?;
+            let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().into_erased())?;
             let folder = HostileTypedFolder { stored };
             let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
 
@@ -8721,11 +8734,11 @@ mod tests {
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
 
-            let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().as_value())?;
+            let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().into_erased())?;
             let folder = HostileTypedFolder { stored };
             let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
 
-            let src: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_int(1_i64).as_value())?;
+            let src: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_int(1_i64).into_erased())?;
             let err = b
                 .build_trunc::<i64, i32, _>(src, i32_ty, "narrowed")
                 .expect_err("wrong-width cast fold result must be rejected at a static width");
@@ -8755,7 +8768,8 @@ mod tests {
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
 
-            let stored: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(0.0).as_value())?;
+            let stored: FloatValue<'_, f64, _> =
+                f64::narrow(f64_ty.const_double(0.0).into_erased())?;
             let folder = HostileTypedFpFolder { stored };
             let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
 
@@ -8797,11 +8811,12 @@ mod tests {
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
 
-            let stored: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(0.0).as_value())?;
+            let stored: FloatValue<'_, f64, _> =
+                f64::narrow(f64_ty.const_double(0.0).into_erased())?;
             let folder = HostileTypedFpFolder { stored };
             let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
 
-            let src: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(1.0).as_value())?;
+            let src: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(1.0).into_erased())?;
             let err = b
                 .build_fp_trunc::<f64, f32, _>(src, f32_ty, "narrowed")
                 .expect_err("wrong-kind cast fold result must be rejected at a static kind");

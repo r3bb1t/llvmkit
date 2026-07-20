@@ -56,7 +56,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoIrField<'ctx, Point, B> for PointValue<'ct
         self,
         _module: llvmkit_ir::ModuleRef<'ctx, B>,
     ) -> Result<Value<'ctx, B>, IrError> {
-        Ok(self.raw.as_value())
+        Ok(self.raw.into_erased())
     }
 }
 
@@ -241,7 +241,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoIrField<'ctx, Rect, B> for RectValue<'ctx,
         self,
         _module: llvmkit_ir::ModuleRef<'ctx, B>,
     ) -> Result<Value<'ctx, B>, IrError> {
-        Ok(self.raw.as_value())
+        Ok(self.raw.into_erased())
     }
 }
 

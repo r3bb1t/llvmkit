@@ -454,7 +454,7 @@ impl<'ctx> Verifier<'ctx> {
                 message: "intrinsic declaration modifier",
             });
         }
-        let intrinsic_value = f.as_value();
+        let intrinsic_value = f.into_erased();
         for user in intrinsic_value.users() {
             let used_as_callee = match user.kind() {
                 Some(crate::instruction::InstructionKind::Call(call)) => {
@@ -603,7 +603,7 @@ impl<'ctx> Verifier<'ctx> {
         // directly because every typed handle re-narrows the same
         // payload anyway; one match arm per opcode keeps the dispatch
         // table local.
-        let kind = match &inst.as_value().data().kind {
+        let kind = match &inst.into_erased().data().kind {
             ValueKindData::Instruction(i) => &i.kind,
             // Instruction's invariant (asserted at handle construction)
             // is that the value-kind is Instruction.
@@ -2786,7 +2786,7 @@ impl<'ctx> Verifier<'ctx> {
             let operand = crate::Value::from_parts(op_id, self.module, op_data.ty);
             let index = u32::try_from(index)
                 .unwrap_or_else(|_| unreachable!("instruction operand index exceeds u32::MAX"));
-            let use_edge = crate::Use::new(inst.as_value(), operand, index);
+            let use_edge = crate::Use::new(inst.into_erased(), operand, index);
             if !dom_tree.dominates_use(operand, use_edge) {
                 return Err(self.fail(
                     f,
@@ -2822,7 +2822,7 @@ impl<'ctx> Verifier<'ctx> {
         if is_phi {
             return Ok(());
         }
-        let kind = match &inst.as_value().data().kind {
+        let kind = match &inst.into_erased().data().kind {
             ValueKindData::Instruction(i) => &i.kind,
             _ => unreachable!("instruction handle invariant: value kind is Instruction"),
         };

@@ -72,7 +72,7 @@ fn erase_dead_instructions<'ctx, B: ModuleBrand + 'ctx>(
     let mut dead: Vec<InstructionView<'ctx, B>> = Vec::new();
     for block in patch.function_mut().basic_blocks() {
         for view in block.instructions() {
-            if !view.as_value().has_uses() && !view.is_terminator() {
+            if !view.into_erased().has_uses() && !view.is_terminator() {
                 dead.push(view);
             }
         }

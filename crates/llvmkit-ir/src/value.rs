@@ -507,14 +507,14 @@ pub trait IsValue<'ctx, B: ModuleBrand = Brand<'ctx>>:
     sealed::Sealed + Copy + Sized + core::fmt::Debug
 {
     /// Widen to the erased [`Value`] handle.
-    fn as_value(self) -> Value<'ctx, B>;
+    fn into_erased(self) -> Value<'ctx, B>;
 
     /// Opaque arena id of the underlying value. Every handle shares the
     /// id of its erased [`Value`], so `x.id()` replaces the
-    /// `x.as_value().id` widen-then-project chain.
+    /// `x.into_erased().id` widen-then-project chain.
     #[inline]
     fn id(self) -> ValueId {
-        self.as_value().id
+        self.into_erased().id
     }
 }
 
@@ -543,7 +543,7 @@ pub trait HasDebugLoc: sealed::Sealed {
 impl<'ctx, B: ModuleBrand> sealed::Sealed for Value<'ctx, B> {}
 impl<'ctx, B: ModuleBrand> IsValue<'ctx, B> for Value<'ctx, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
+    fn into_erased(self) -> Value<'ctx, B> {
         self
     }
 }
@@ -603,7 +603,7 @@ macro_rules! decl_value_handle {
         impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
             /// Widen to the erased [`Value`] handle.
             #[inline]
-            pub fn as_value(self) -> Value<'ctx, B> {
+            pub fn into_erased(self) -> Value<'ctx, B> {
                 Value { id: self.id, module: self.module, ty: self.ty }
             }
 
@@ -621,7 +621,7 @@ macro_rules! decl_value_handle {
 
             /// Optional textual name.
             pub fn name(self) -> Option<String> {
-                self.as_value().name()
+                self.into_erased().name()
             }
 
             /// Set the textual name.
@@ -629,33 +629,33 @@ macro_rules! decl_value_handle {
             where
                 Name: Into<String>,
             {
-                self.as_value().set_name(module_token, name);
+                self.into_erased().set_name(module_token, name);
             }
 
             /// Clear the textual name.
             pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-                self.as_value().clear_name(module_token);
+                self.into_erased().clear_name(module_token);
             }
 
             /// Optional debug-location.
             #[inline]
             pub fn debug_loc(self) -> Option<DebugLoc> {
-                self.as_value().debug_loc()
+                self.into_erased().debug_loc()
             }
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for $name<'ctx, B> {
             /// Print the operand form `<type> <ref>`, identical to what the
-            /// erased [`Value`] handle from `as_value` prints.
+            /// erased [`Value`] handle from `into_erased` prints.
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                fmt::Display::fmt(&Self::as_value(*self), f)
+                fmt::Display::fmt(&Self::into_erased(*self), f)
             }
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for $name<'ctx, B> {}
         impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for $name<'ctx, B> {
             #[inline]
-            fn as_value(self) -> Value<'ctx, B> { Self::as_value(self) }
+            fn into_erased(self) -> Value<'ctx, B> { Self::into_erased(self) }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for $name<'ctx, B> {
             #[inline]
@@ -685,7 +685,7 @@ macro_rules! decl_value_handle {
 
         impl<'ctx, B: ModuleBrand + 'ctx> From<$name<'ctx, B>> for Value<'ctx, B> {
             #[inline]
-            fn from(v: $name<'ctx, B>) -> Self { v.as_value() }
+            fn from(v: $name<'ctx, B>) -> Self { v.into_erased() }
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for $name<'ctx, B> {
@@ -710,7 +710,7 @@ macro_rules! decl_value_handle {
             type Error = IrError;
             #[inline]
             fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
             }
         }
 
@@ -720,7 +720,7 @@ macro_rules! decl_value_handle {
             type Error = IrError;
             #[inline]
             fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
             }
         }
 
@@ -734,7 +734,7 @@ macro_rules! decl_value_handle {
                 i: Instruction<'ctx, Attached, B>,
             ) -> IrResult<Self> {
                 <Self as TryFrom<Value<'ctx, B>>>::try_from(
-                    Instruction::as_value(&i),
+                    Instruction::into_erased(&i),
                 )
             }
         }
@@ -837,16 +837,16 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> fmt::Display
     for ArrayValue<'ctx, E, L, B>
 {
     /// Print the operand form `[N x T] <ref>`, identical to what the erased
-    /// [`Value`] handle from [`ArrayValue::as_value`] prints.
+    /// [`Value`] handle from [`ArrayValue::into_erased`] prints.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&Self::as_value(*self), f)
+        fmt::Display::fmt(&Self::into_erased(*self), f)
     }
 }
 
 impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayValue<'ctx, E, L, B> {
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn into_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -865,23 +865,23 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayValue<'ctx, E, L
     }
     /// Optional textual name.
     pub fn name(self) -> Option<String> {
-        self.as_value().name()
+        self.into_erased().name()
     }
     /// Set the textual name.
     pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
-        self.as_value().set_name(module_token, name);
+        self.into_erased().set_name(module_token, name);
     }
     /// Clear the textual name.
     pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-        self.as_value().clear_name(module_token);
+        self.into_erased().clear_name(module_token);
     }
     /// Optional debug-location.
     #[inline]
     pub fn debug_loc(self) -> Option<DebugLoc> {
-        self.as_value().debug_loc()
+        self.into_erased().debug_loc()
     }
     /// Erase both markers; preserves the runtime element type / element count.
     #[inline]
@@ -932,8 +932,8 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> IsValue<'ctx, B>
     for ArrayValue<'ctx, E, L, B>
 {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
-        Self::as_value(self)
+    fn into_erased(self) -> Value<'ctx, B> {
+        Self::into_erased(self)
     }
 }
 impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> Typed<'ctx, B>
@@ -976,7 +976,7 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> From<ArrayValue<'ctx,
 {
     #[inline]
     fn from(v: ArrayValue<'ctx, E, L, B>) -> Self {
-        v.as_value()
+        v.into_erased()
     }
 }
 
@@ -1009,7 +1009,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>>
     type Error = IrError;
     #[inline]
     fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
@@ -1018,7 +1018,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
     type Error = IrError;
     #[inline]
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
@@ -1027,7 +1027,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
     type Error = IrError;
     #[inline]
     fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::into_erased(&i))
     }
 }
 
@@ -1099,7 +1099,7 @@ pub struct StructValue<'ctx, B: ModuleBrand = Brand<'ctx>> {
 impl<'ctx, B: ModuleBrand + 'ctx> StructValue<'ctx, B> {
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn into_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -1147,7 +1147,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> StructValue<'ctx, B> {
 
     /// Optional textual name.
     pub fn name(self) -> Option<String> {
-        self.as_value().name()
+        self.into_erased().name()
     }
 
     /// Set the textual name.
@@ -1155,34 +1155,34 @@ impl<'ctx, B: ModuleBrand + 'ctx> StructValue<'ctx, B> {
     where
         Name: Into<String>,
     {
-        self.as_value().set_name(module_token, name);
+        self.into_erased().set_name(module_token, name);
     }
 
     /// Clear the textual name.
     pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-        self.as_value().clear_name(module_token);
+        self.into_erased().clear_name(module_token);
     }
 
     /// Optional debug-location.
     #[inline]
     pub fn debug_loc(self) -> Option<DebugLoc> {
-        self.as_value().debug_loc()
+        self.into_erased().debug_loc()
     }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for StructValue<'ctx, B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for StructValue<'ctx, B> {
     /// Print the operand form `{ ... } <ref>`, identical to what the erased
-    /// [`Value`] handle from [`StructValue::as_value`] prints.
+    /// [`Value`] handle from [`StructValue::into_erased`] prints.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&Self::as_value(*self), f)
+        fmt::Display::fmt(&Self::into_erased(*self), f)
     }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for StructValue<'ctx, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
-        Self::as_value(self)
+    fn into_erased(self) -> Value<'ctx, B> {
+        Self::into_erased(self)
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for StructValue<'ctx, B> {
@@ -1218,7 +1218,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasDebugLoc for StructValue<'ctx, B> {
 impl<'ctx, B: ModuleBrand + 'ctx> From<StructValue<'ctx, B>> for Value<'ctx, B> {
     #[inline]
     fn from(v: StructValue<'ctx, B>) -> Self {
-        v.as_value()
+        v.into_erased()
     }
 }
 
@@ -1245,7 +1245,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>> for StructValue<'ct
     type Error = IrError;
     #[inline]
     fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
     }
 }
 
@@ -1253,7 +1253,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>> for StructValue<'ct
     type Error = IrError;
     #[inline]
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
     }
 }
 
@@ -1261,7 +1261,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>> for St
     type Error = IrError;
     #[inline]
     fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::into_erased(&i))
     }
 }
 
@@ -1315,9 +1315,9 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> fmt::Display
     for VectorValue<'ctx, E, L, B>
 {
     /// Print the operand form `<N x T> <ref>`, identical to what the erased
-    /// [`Value`] handle from [`VectorValue::as_value`] prints.
+    /// [`Value`] handle from [`VectorValue::into_erased`] prints.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&Self::as_value(*self), f)
+        fmt::Display::fmt(&Self::into_erased(*self), f)
     }
 }
 
@@ -1353,7 +1353,7 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorValue<'ctx, E, L,
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn into_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -1372,23 +1372,23 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorValue<'ctx, E, L,
     }
     /// Optional textual name.
     pub fn name(self) -> Option<String> {
-        self.as_value().name()
+        self.into_erased().name()
     }
     /// Set the textual name.
     pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
-        self.as_value().set_name(module_token, name);
+        self.into_erased().set_name(module_token, name);
     }
     /// Clear the textual name.
     pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-        self.as_value().clear_name(module_token);
+        self.into_erased().clear_name(module_token);
     }
     /// Optional debug-location.
     #[inline]
     pub fn debug_loc(self) -> Option<DebugLoc> {
-        self.as_value().debug_loc()
+        self.into_erased().debug_loc()
     }
     /// Erase both markers; preserves the runtime element type / lane count.
     #[inline]
@@ -1411,8 +1411,8 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> IsValue<'ctx, B>
     for VectorValue<'ctx, E, L, B>
 {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
-        Self::as_value(self)
+    fn into_erased(self) -> Value<'ctx, B> {
+        Self::into_erased(self)
     }
 }
 impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> Typed<'ctx, B>
@@ -1455,7 +1455,7 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> From<VectorValue<'ctx, 
 {
     #[inline]
     fn from(v: VectorValue<'ctx, E, L, B>) -> Self {
-        v.as_value()
+        v.into_erased()
     }
 }
 
@@ -1491,7 +1491,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>>
     type Error = IrError;
     #[inline]
     fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
@@ -1500,7 +1500,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
     type Error = IrError;
     #[inline]
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
@@ -1509,7 +1509,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
     type Error = IrError;
     #[inline]
     fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::into_erased(&i))
     }
 }
 
@@ -1682,7 +1682,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn into_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -1701,23 +1701,23 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
     }
     /// Optional textual name.
     pub fn name(self) -> Option<String> {
-        self.as_value().name()
+        self.into_erased().name()
     }
     /// Set the textual name.
     pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
-        self.as_value().set_name(module_token, name);
+        self.into_erased().set_name(module_token, name);
     }
     /// Clear the textual name.
     pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-        self.as_value().clear_name(module_token);
+        self.into_erased().clear_name(module_token);
     }
     /// Optional debug-location.
     #[inline]
     pub fn debug_loc(self) -> Option<DebugLoc> {
-        self.as_value().debug_loc()
+        self.into_erased().debug_loc()
     }
     /// Erase the width marker; preserves the runtime width.
     #[inline]
@@ -1734,17 +1734,17 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> sealed::Sealed for IntValue<'ctx, W, B> {}
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> fmt::Display for IntValue<'ctx, W, B> {
     /// Print the operand form `i<N> <ref>`, identical to what the erased
-    /// [`Value`] handle from [`IntValue::as_value`] prints. A constant
+    /// [`Value`] handle from [`IntValue::into_erased`] prints. A constant
     /// operand prints its signed-decimal literal in place of the `<ref>`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&Self::as_value(*self), f)
+        fmt::Display::fmt(&Self::into_erased(*self), f)
     }
 }
 
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for IntValue<'ctx, W, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
-        Self::as_value(self)
+    fn into_erased(self) -> Value<'ctx, B> {
+        Self::into_erased(self)
     }
 }
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> Typed<'ctx, B> for IntValue<'ctx, W, B> {
@@ -1779,7 +1779,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> HasDebugLoc for IntValue<'ctx, W,
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> From<IntValue<'ctx, W, B>> for Value<'ctx, B> {
     #[inline]
     fn from(v: IntValue<'ctx, W, B>) -> Self {
-        v.as_value()
+        v.into_erased()
     }
 }
 
@@ -1806,14 +1806,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>> for IntValue<'ctx, 
     type Error = IrError;
     #[inline]
     fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>> for IntValue<'ctx, IntDyn, B> {
     type Error = IrError;
     #[inline]
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
@@ -1822,7 +1822,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
     type Error = IrError;
     #[inline]
     fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::into_erased(&i))
     }
 }
 
@@ -1857,7 +1857,7 @@ macro_rules! impl_int_value_static_try_from {
             type Error = IrError;
             #[inline]
             fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
@@ -1866,7 +1866,7 @@ macro_rules! impl_int_value_static_try_from {
             type Error = IrError;
             #[inline]
             fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
@@ -1875,7 +1875,7 @@ macro_rules! impl_int_value_static_try_from {
             type Error = IrError;
             #[inline]
             fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::into_erased(&i))
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<IntValue<'ctx, IntDyn, B>>
@@ -1883,7 +1883,7 @@ macro_rules! impl_int_value_static_try_from {
         {
             type Error = IrError;
             fn try_from(v: IntValue<'ctx, IntDyn, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(v.as_value())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(v.into_erased())
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> From<IntValue<'ctx, $marker, B>>
@@ -1934,7 +1934,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<Argument<'ctx, B>>
     type Error = IrError;
     #[inline]
     fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<Constant<'ctx, B>>
@@ -1943,7 +1943,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<Constant<'ctx, B>>
     type Error = IrError;
     #[inline]
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<Instruction<'ctx, Attached, B>>
@@ -1952,7 +1952,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<Instruction<'ctx, Attach
     type Error = IrError;
     #[inline]
     fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::into_erased(&i))
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<IntValue<'ctx, IntDyn, B>>
@@ -1961,7 +1961,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<IntValue<'ctx, IntDyn, B
     type Error = IrError;
     #[inline]
     fn try_from(v: IntValue<'ctx, IntDyn, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(v.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(v.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> From<IntValue<'ctx, Width<N>, B>>
@@ -2044,7 +2044,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
     }
 
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn into_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -2060,20 +2060,20 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
         FloatType::new(self.ty, self.module)
     }
     pub fn name(self) -> Option<String> {
-        self.as_value().name()
+        self.into_erased().name()
     }
     pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
-        self.as_value().set_name(module_token, name);
+        self.into_erased().set_name(module_token, name);
     }
     pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-        self.as_value().clear_name(module_token);
+        self.into_erased().clear_name(module_token);
     }
     #[inline]
     pub fn debug_loc(self) -> Option<DebugLoc> {
-        self.as_value().debug_loc()
+        self.into_erased().debug_loc()
     }
     #[inline]
     pub fn as_dyn(self) -> FloatValue<'ctx, FloatDyn, B> {
@@ -2089,16 +2089,16 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> sealed::Sealed for FloatValue<'ctx, K, B> {}
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> fmt::Display for FloatValue<'ctx, K, B> {
     /// Print the operand form `<float-type> <ref>`, identical to what the
-    /// erased [`Value`] handle from [`FloatValue::as_value`] prints.
+    /// erased [`Value`] handle from [`FloatValue::into_erased`] prints.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&Self::as_value(*self), f)
+        fmt::Display::fmt(&Self::into_erased(*self), f)
     }
 }
 
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for FloatValue<'ctx, K, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
-        Self::as_value(self)
+    fn into_erased(self) -> Value<'ctx, B> {
+        Self::into_erased(self)
     }
 }
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> Typed<'ctx, B> for FloatValue<'ctx, K, B> {
@@ -2129,7 +2129,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> HasDebugLoc for FloatValue<'ctx,
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> From<FloatValue<'ctx, K, B>> for Value<'ctx, B> {
     #[inline]
     fn from(v: FloatValue<'ctx, K, B>) -> Self {
-        v.as_value()
+        v.into_erased()
     }
 }
 
@@ -2164,13 +2164,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for FloatValue<'ctx, F
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>> for FloatValue<'ctx, FloatDyn, B> {
     type Error = IrError;
     fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>> for FloatValue<'ctx, FloatDyn, B> {
     type Error = IrError;
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
@@ -2178,7 +2178,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
 {
     type Error = IrError;
     fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::into_erased(&i))
     }
 }
 
@@ -2207,7 +2207,7 @@ macro_rules! impl_float_value_static_try_from {
         {
             type Error = IrError;
             fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
@@ -2215,7 +2215,7 @@ macro_rules! impl_float_value_static_try_from {
         {
             type Error = IrError;
             fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
@@ -2223,7 +2223,7 @@ macro_rules! impl_float_value_static_try_from {
         {
             type Error = IrError;
             fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::into_erased(&i))
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<FloatValue<'ctx, FloatDyn, B>>
@@ -2231,7 +2231,7 @@ macro_rules! impl_float_value_static_try_from {
         {
             type Error = IrError;
             fn try_from(v: FloatValue<'ctx, FloatDyn, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(v.as_value())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(v.into_erased())
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> From<FloatValue<'ctx, $marker, B>>
@@ -2305,7 +2305,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for ConstantPointerN
     #[inline]
     fn into_pointer_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
         Ok(PointerValue::from_value_unchecked(
-            crate::value::IsValue::as_value(self),
+            crate::value::IsValue::into_erased(self),
         ))
     }
 }

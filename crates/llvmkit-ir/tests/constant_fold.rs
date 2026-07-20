@@ -476,7 +476,7 @@ fn same_lane_vector_ptrtoint_cast_builds_lane_constant_exprs() -> Result<(), IrE
         let scalar = m.constant_expr(
             i64_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [ptr.as_value()],
+            [ptr.into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -621,7 +621,7 @@ fn constant_expr_add_folds_before_interning() -> Result<(), IrError> {
         let expr = m.constant_expr(
             ty.as_type(),
             ConstantExprOpcode::Add,
-            [lhs.as_value(), rhs.as_value()],
+            [lhs.into_erased(), rhs.into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -647,7 +647,7 @@ fn constant_int_refinement_rejects_unfolded_integer_constant_expr() -> Result<()
         let ptr_as_int = m.constant_expr(
             i64_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [g.as_global_constant_ptr().as_value()],
+            [g.as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -655,7 +655,10 @@ fn constant_int_refinement_rejects_unfolded_integer_constant_expr() -> Result<()
         let expr = m.constant_expr(
             i64_ty.as_type(),
             ConstantExprOpcode::Add,
-            [ptr_as_int.as_value(), i64_ty.const_int(1_i64).as_value()],
+            [
+                ptr_as_int.into_erased(),
+                i64_ty.const_int(1_i64).into_erased(),
+            ],
             [],
             [],
             ConstantExprFlags::none(),
@@ -677,7 +680,7 @@ fn extractelement_from_insertelement_constant_expr_folds_inserted_lane() -> Resu
         let base = m.constant_expr(
             vec_ty.as_type(),
             ConstantExprOpcode::BitCast,
-            [i64_ty.const_int(42_i64).as_value()],
+            [i64_ty.const_int(42_i64).into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -687,7 +690,11 @@ fn extractelement_from_insertelement_constant_expr_folds_inserted_lane() -> Resu
         let insert_expr = m.constant_expr(
             vec_ty.as_type(),
             ConstantExprOpcode::InsertElement,
-            [base.as_value(), inserted.as_value(), index.as_value()],
+            [
+                base.into_erased(),
+                inserted.into_erased(),
+                index.into_erased(),
+            ],
             [],
             [],
             ConstantExprFlags::none(),
@@ -716,9 +723,9 @@ fn extractelement_from_insertelement_matches_indices_across_widths() -> Result<(
             vec_ty.as_type(),
             ConstantExprOpcode::InsertElement,
             [
-                base.as_value(),
-                inserted.as_value(),
-                insert_index.as_value(),
+                base.into_erased(),
+                inserted.into_erased(),
+                insert_index.into_erased(),
             ],
             [],
             [],
@@ -750,7 +757,11 @@ fn extractelement_from_insertelement_matches_wide_indices() -> Result<(), IrErro
         let insert_expr = m.constant_expr(
             vec_ty.as_type(),
             ConstantExprOpcode::InsertElement,
-            [base.as_value(), inserted.as_value(), wide_index.as_value()],
+            [
+                base.into_erased(),
+                inserted.into_erased(),
+                wide_index.into_erased(),
+            ],
             [],
             [],
             ConstantExprFlags::none(),
@@ -820,7 +831,7 @@ fn constant_expr_extractelement_out_of_range_folds_to_poison() -> Result<(), IrE
         let expr = m.constant_expr(
             i32_ty.as_type(),
             ConstantExprOpcode::ExtractElement,
-            [vector.as_value(), out_of_range.as_value()],
+            [vector.into_erased(), out_of_range.into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -841,7 +852,7 @@ fn constant_expr_empty_gep_folds_before_interning() -> Result<(), IrError> {
         let expr = m.constant_expr_with_options(
             base.ty(),
             ConstantExprOpcode::GetElementPtr,
-            [base.as_value()],
+            [base.into_erased()],
             [],
             [],
             ConstantExprOptions::new().source_ty(ty.as_type()),
@@ -879,7 +890,7 @@ fn analysis_instruction_fold_uses_apint_binary_folder() -> Result<(), IrError> {
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let high = ty.const_ap_int(&ApInt::one_bit_set(257, 256))?;
         let value = b.build_int_add(high, ty.const_zero(), "sum")?;
-        let instruction = InstructionView::try_from(value.as_value())?;
+        let instruction = InstructionView::try_from(value.into_erased())?;
         let folded = constant_fold_instruction(&instruction)?.expect("constant add folds");
         let int = ConstantIntValue::<IntDyn>::try_from(folded)?;
         assert_eq!(int.ap_int(), ApInt::one_bit_set(257, 256));
@@ -904,7 +915,7 @@ fn analysis_instruction_fold_exact_udiv_inexact_returns_poison() -> Result<(), I
             UDivFlags::new().exact(),
             "q",
         )?;
-        let instruction = InstructionView::try_from(value.as_value())?;
+        let instruction = InstructionView::try_from(value.into_erased())?;
 
         let folded = constant_fold_instruction(&instruction)?.expect("exact udiv folds");
 
@@ -1181,7 +1192,7 @@ fn constant_expr_trunc_folds_before_interning() -> Result<(), IrError> {
         let expr = m.constant_expr(
             i8_ty.as_type(),
             ConstantExprOpcode::Trunc,
-            [wide.as_value()],
+            [wide.into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1205,7 +1216,7 @@ fn constant_expr_ptrtoaddr_uses_distinct_opcode() -> Result<(), IrError> {
         let cast_as0 = m.constant_expr(
             i64_ty.as_type(),
             ConstantExprOpcode::PtrToAddr,
-            [i_as0.as_global_constant_ptr().as_value()],
+            [i_as0.as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1219,7 +1230,7 @@ fn constant_expr_ptrtoaddr_uses_distinct_opcode() -> Result<(), IrError> {
         let cast_as1 = m.constant_expr(
             i32_ty.as_type(),
             ConstantExprOpcode::PtrToAddr,
-            [i_as1.as_global_constant_ptr().as_value()],
+            [i_as1.as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1254,7 +1265,7 @@ fn cast_of_cast_ptrtoint_trunc_folds_to_narrow_ptrtoint() -> Result<(), IrError>
         let wide = m.constant_expr(
             i64_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [ptr.as_value()],
+            [ptr.into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1264,7 +1275,7 @@ fn cast_of_cast_ptrtoint_trunc_folds_to_narrow_ptrtoint() -> Result<(), IrError>
         let expected = m.constant_expr(
             i32_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [ptr.as_value()],
+            [ptr.into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1326,7 +1337,7 @@ fn associative_constant_expr_binary_reassociates_folded_rhs() -> Result<(), IrEr
         let ptr_as_int = m.constant_expr(
             i64_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [g.as_global_constant_ptr().as_value()],
+            [g.as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1337,7 +1348,7 @@ fn associative_constant_expr_binary_reassociates_folded_rhs() -> Result<(), IrEr
         let inner = m.constant_expr(
             i64_ty.as_type(),
             ConstantExprOpcode::Add,
-            [ptr_as_int.as_value(), one.as_value()],
+            [ptr_as_int.into_erased(), one.into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1348,7 +1359,7 @@ fn associative_constant_expr_binary_reassociates_folded_rhs() -> Result<(), IrEr
         let expected = m.constant_expr(
             i64_ty.as_type(),
             ConstantExprOpcode::Add,
-            [ptr_as_int.as_value(), three.as_value()],
+            [ptr_as_int.into_erased(), three.into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1369,7 +1380,7 @@ fn commuted_desirable_binop_with_constant_expr_rhs_builds_swapped_expr() -> Resu
         let ptr_as_i32 = m.constant_expr(
             i32_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [g.as_global_constant_ptr().as_value()],
+            [g.as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1381,7 +1392,7 @@ fn commuted_desirable_binop_with_constant_expr_rhs_builds_swapped_expr() -> Resu
         let expected = m.constant_expr(
             i32_ty.as_type(),
             ConstantExprOpcode::Xor,
-            [ptr_as_i32.as_value(), one.as_value()],
+            [ptr_as_i32.into_erased(), one.into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1616,7 +1627,7 @@ fn compare_constant_expr_edge_cases_fold() -> Result<(), IrError> {
         let ptr_as_i32 = m.constant_expr(
             i32_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [g.as_global_constant_ptr().as_value()],
+            [g.as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1642,7 +1653,7 @@ fn compare_constant_expr_edge_cases_fold() -> Result<(), IrError> {
         let ptr_as_i1 = m.constant_expr(
             i1_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [g.as_global_constant_ptr().as_value()],
+            [g.as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1665,7 +1676,7 @@ fn compare_constant_expr_edge_cases_fold() -> Result<(), IrError> {
         let expected_ne = m.constant_expr(
             i1_ty.as_type(),
             ConstantExprOpcode::Xor,
-            [ptr_as_i1.as_value(), true_i1.as_value()],
+            [ptr_as_i1.into_erased(), true_i1.into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1675,7 +1686,7 @@ fn compare_constant_expr_edge_cases_fold() -> Result<(), IrError> {
         let fp_bits = m.constant_expr(
             i32_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [g.as_global_constant_ptr().as_value()],
+            [g.as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1683,7 +1694,7 @@ fn compare_constant_expr_edge_cases_fold() -> Result<(), IrError> {
         let fp_expr = m.constant_expr(
             f32_ty.as_type(),
             ConstantExprOpcode::BitCast,
-            [fp_bits.as_value()],
+            [fp_bits.into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1719,7 +1730,7 @@ fn compare_null_lhs_constant_expr_rhs_commutes_to_rhs_null_shortcut() -> Result<
         let ptr_as_i64 = m.constant_expr(
             i64_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [g.as_global_constant_ptr().as_value()],
+            [g.as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1750,7 +1761,7 @@ fn compare_vector_constant_expr_operands_fold_by_extracting_lanes() -> Result<()
         let vector = m.constant_expr(
             vec_ty.as_type(),
             ConstantExprOpcode::BitCast,
-            [i64_ty.const_int(42_i64).as_value()],
+            [i64_ty.const_int(42_i64).into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1846,7 +1857,10 @@ fn compare_global_pointer_relations_fold() -> Result<(), IrError> {
         let gep = m.constant_expr_with_options(
             ptr_ty.as_type(),
             ConstantExprOpcode::GetElementPtr,
-            [g_ptr.as_value(), m.i64_type().const_int(1_i64).as_value()],
+            [
+                g_ptr.into_erased(),
+                m.i64_type().const_int(1_i64).into_erased(),
+            ],
             [],
             [],
             ConstantExprOptions::new()
@@ -2051,7 +2065,7 @@ fn select_undef_arm_with_direct_global_arm_folds_to_global() -> Result<(), IrErr
         let cond = m.constant_expr(
             i1_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [g.as_global_constant_ptr().as_value()],
+            [g.as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -2160,7 +2174,7 @@ fn select_vector_shortcuts_and_constant_expr_arms_fold() -> Result<(), IrError> 
         let true_expr = m.constant_expr(
             vec_ty.as_type(),
             ConstantExprOpcode::BitCast,
-            [i64_ty.const_int(42_i64).as_value()],
+            [i64_ty.const_int(42_i64).into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -2179,7 +2193,7 @@ fn select_vector_shortcuts_and_constant_expr_arms_fold() -> Result<(), IrError> 
         let lane_zero = m.constant_expr(
             i32_ty.as_type(),
             ConstantExprOpcode::ExtractElement,
-            [true_expr.as_value(), zero.as_value()],
+            [true_expr.into_erased(), zero.into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -2281,7 +2295,7 @@ fn vector_rebuilders_extract_lanes_from_non_aggregate_constants() -> Result<(), 
         let base = m.constant_expr(
             vec_ty.as_type(),
             ConstantExprOpcode::BitCast,
-            [i64_ty.const_int(42_i64).as_value()],
+            [i64_ty.const_int(42_i64).into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -2297,7 +2311,7 @@ fn vector_rebuilders_extract_lanes_from_non_aggregate_constants() -> Result<(), 
         let expected_lane_one = m.constant_expr(
             i32_ty.as_type(),
             ConstantExprOpcode::ExtractElement,
-            [base.as_value(), lane_one_index.as_value()],
+            [base.into_erased(), lane_one_index.into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -2338,7 +2352,7 @@ fn constants_test_integer_i1_binary_folds() -> Result<(), IrError> {
             let expr = m.constant_expr(
                 i1_ty.as_type(),
                 opcode,
-                [lhs.as_value(), rhs.as_value()],
+                [lhs.into_erased(), rhs.into_erased()],
                 [],
                 [],
                 ConstantExprFlags::none(),
@@ -2396,7 +2410,7 @@ fn i1_constant_expr_binary_special_cases_fold() -> Result<(), IrError> {
         let ptr_as_i1 = m.constant_expr(
             i1_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [g.as_global_constant_ptr().as_value()],
+            [g.as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -2408,7 +2422,7 @@ fn i1_constant_expr_binary_special_cases_fold() -> Result<(), IrError> {
         let expected_add = m.constant_expr(
             i1_ty.as_type(),
             ConstantExprOpcode::Xor,
-            [ptr_as_i1.as_value(), one.as_value()],
+            [ptr_as_i1.into_erased(), one.into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -2434,7 +2448,7 @@ fn vector_splat_desirable_binop_builds_splat_constant_expr() -> Result<(), IrErr
         let ptr_as_i32 = m.constant_expr(
             i32_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [g.as_global_constant_ptr().as_value()],
+            [g.as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -2452,7 +2466,7 @@ fn vector_splat_desirable_binop_builds_splat_constant_expr() -> Result<(), IrErr
         let scalar = m.constant_expr(
             i32_ty.as_type(),
             ConstantExprOpcode::Add,
-            [ptr_as_i32.as_value(), one.as_value()],
+            [ptr_as_i32.into_erased(), one.into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -2635,7 +2649,7 @@ fn constant_fold_gep_inrange_noop_does_not_fold() -> Result<(), IrError> {
         let expr = m.constant_expr_with_options(
             base.ty(),
             ConstantExprOpcode::GetElementPtr,
-            [base.as_value(), i64_ty.const_zero().as_value()],
+            [base.into_erased(), i64_ty.const_zero().into_erased()],
             [],
             [],
             ConstantExprOptions::new()
@@ -2725,7 +2739,7 @@ fn commuted_global_pointer_mask_folds_to_null() -> Result<(), IrError> {
         let ptr_as_int = m.constant_expr(
             i32_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [g.as_global_constant_ptr().as_value()],
+            [g.as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -2755,7 +2769,7 @@ fn global_pointer_zero_mask_folds_without_alignment() -> Result<(), IrError> {
         let ptr_as_int = m.constant_expr(
             i32_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [g.as_global_constant_ptr().as_value()],
+            [g.as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -2787,7 +2801,7 @@ fn global_variable_ptrtoint_and_ptrtoaddr_and_mask_fold_to_null() -> Result<(), 
             let ptr_as_int = m.constant_expr(
                 i32_ty.as_type(),
                 opcode,
-                [g.as_global_constant_ptr().as_value()],
+                [g.as_global_constant_ptr().into_erased()],
                 [],
                 [],
                 ConstantExprFlags::none(),
@@ -2815,7 +2829,7 @@ fn global_variable_ptrtoint_mask_uses_implicit_datalayout_alignment() -> Result<
         let ptr_as_int = m.constant_expr(
             i32_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [g.as_global_constant_ptr().as_value()],
+            [g.as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -2849,7 +2863,7 @@ fn function_ptr_and_mask_folds_to_zero(
         let ptr_as_int = m.constant_expr(
             i32_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [f.as_global_constant_ptr().as_value()],
+            [f.as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),

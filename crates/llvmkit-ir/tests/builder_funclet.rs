@@ -58,7 +58,7 @@ fn catchpad_within_catchswitch_empty_args() -> Result<(), IrError> {
         let b_cs = IRBuilder::new_for::<Dyn>(&m).position_at_end(cs_block);
         let (_sealed, cs) = b_cs.build_catch_switch_within_none_to_caller("cs1")?;
         let cs_closed = cs.add_handler(cp_label)?.finish();
-        let cs_value = cs_closed.as_value();
+        let cs_value = cs_closed.into_erased();
         let b_cp = IRBuilder::new_for::<Dyn>(&m).position_at_end(cp_block);
         let _cp = b_cp.build_catch_pad(cs_value, Vec::<llvmkit_ir::value::Value>::new(), "")?;
         b_cp.build_unreachable();
@@ -107,7 +107,7 @@ fn cleanupret_unwind_to_caller() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let cp =
             b.build_cleanup_pad_within_none(Vec::<llvmkit_ir::value::Value>::new(), "clean")?;
-        let _ = b.build_cleanup_ret_to_caller(cp.as_value(), "")?;
+        let _ = b.build_cleanup_ret_to_caller(cp.into_erased(), "")?;
         let text = format!("{m}");
         assert!(
             text.contains("cleanupret from %clean unwind to caller"),
@@ -143,10 +143,10 @@ fn catchret_to_label() -> Result<(), IrError> {
         let b_cs = IRBuilder::new_for::<Dyn>(&m).position_at_end(cs_block);
         let (_sealed, cs) = b_cs.build_catch_switch_within_none_to_caller("cs")?;
         let cs_closed = cs.add_handler(cp_label)?.finish();
-        let cs_value = cs_closed.as_value();
+        let cs_value = cs_closed.into_erased();
         let b_cp = IRBuilder::new_for::<Dyn>(&m).position_at_end(cp_block);
         let cp = b_cp.build_catch_pad(cs_value, Vec::<llvmkit_ir::value::Value>::new(), "catch")?;
-        let _ = b_cp.build_catch_ret(cp.as_value(), return_label, "")?;
+        let _ = b_cp.build_catch_ret(cp.into_erased(), return_label, "")?;
         let text = format!("{m}");
         assert!(
             text.contains("catchret from %catch to label %return"),

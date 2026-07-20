@@ -92,7 +92,7 @@ impl Worklist {
             // the `TryFrom` then confirms it is really an instruction before we
             // touch the instruction payload, so a constant/parameter id is
             // skipped rather than hitting the `unreachable!` kind check.
-            let value = InstructionView::from_parts(id, module).as_value();
+            let value = InstructionView::from_parts(id, module).into_erased();
             if let Some(nt) = InstructionView::try_from(value)
                 .ok()
                 .and_then(InstructionView::as_non_terminator)

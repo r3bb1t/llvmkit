@@ -1,8 +1,8 @@
 error[E0061]: this method takes 2 arguments but 1 argument was supplied
   --> tests/compile_fail/atomicrmw_set_value_requires_token.rs:35:14
    |
-35 |         armw.set_value_operand(replacement.as_value())?;
-   |              ^^^^^^^^^^^^^^^^^ ---------------------- argument #1 of type `&Module<'_, Brand<'_>>` is missing
+35 |         armw.set_value_operand(replacement.into_erased())?;
+   |              ^^^^^^^^^^^^^^^^^ ------------------------- argument #1 of type `&Module<'_, Brand<'_>>` is missing
    |
 note: method defined here
   --> src/instructions.rs
@@ -11,5 +11,5 @@ note: method defined here
    |            ^^^^^^^^^^^^^^^^^
 help: provide the argument
    |
-35 |         armw.set_value_operand(/* &Module<'_, Brand<'_>> */, replacement.as_value())?;
+35 |         armw.set_value_operand(/* &Module<'_, Brand<'_>> */, replacement.into_erased())?;
    |                                +++++++++++++++++++++++++++++

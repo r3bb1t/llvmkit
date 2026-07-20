@@ -293,15 +293,15 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> PartialEq for SsaBlock<'ctx, 
         // compares only `id`/`module`/`ty` — it deliberately does *not*
         // bound `R: PartialEq` (which `ReturnMarker` does not guarantee) —
         // so this mirrors that same `id`/`module`/`ty` comparison through
-        // `as_value`, exactly as `BasicBlock`'s own manual `PartialEq`
+        // `into_erased`, exactly as `BasicBlock`'s own manual `PartialEq`
         // (above) does instead of touching the phantom markers.
-        self.label.as_value() == other.label.as_value() && self.owner == other.owner
+        self.label.into_erased() == other.label.into_erased() && self.owner == other.owner
     }
 }
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Eq for SsaBlock<'ctx, R, B> {}
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> core::hash::Hash for SsaBlock<'ctx, R, B> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
-        self.label.as_value().hash(h);
+        self.label.into_erased().hash(h);
         self.owner.hash(h);
     }
 }
@@ -323,7 +323,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> SsaBlock<'ctx, R, B> {
 /// Resolve a block label to the [`ValueId`] the Braun engine's block-keyed
 /// maps use. Blocks are values (`LabelType`), so the label's own value-id
 /// *is* the block id -- this mirrors how [`crate::cfg`] keys its
-/// successor/predecessor maps off `block.as_value().id`.
+/// successor/predecessor maps off `block.into_erased().id`.
 #[inline]
 fn label_value_id<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx>(
     label: &BasicBlockLabel<'ctx, R, B>,
@@ -341,7 +341,7 @@ fn block_name<'ctx, B: ModuleBrand + 'ctx>(
     let label_ty = module.module().label_type().as_type().id();
     let label = BasicBlock::<Dyn, Unterminated, B>::from_parts(block_id, module, label_ty).label();
     label
-        .as_value()
+        .into_erased()
         .name()
         .unwrap_or_else(|| format!("<block {block_id:?}>"))
 }
@@ -877,7 +877,7 @@ where
     {
         self.check_owner_var(var.owner)?;
         let v = value.into_int_value(self.module_ref())?;
-        super::r#type::Type::new(var.ty, self.module_ref()).require_match(v.as_value().ty())?;
+        super::r#type::Type::new(var.ty, self.module_ref()).require_match(v.into_erased().ty())?;
         let block = self.current_block_id();
         self.write_variable(var.index, block, v.id());
         Ok(())
@@ -1773,7 +1773,7 @@ where
                 )
             });
             handle
-                .replace_all_uses_with(self.module, poison.as_value())
+                .replace_all_uses_with(self.module, poison.into_erased())
                 .unwrap_or_else(|_| {
                     unreachable!(
                         "SsaBuilder invariant: the poison constant is built from the phi's own \
@@ -2207,7 +2207,7 @@ mod tests {
 
             let mut b = b.switch_to_block(entry)?;
             let forged: IntValue<'_, i32, _> =
-                IntValue::from_value_unchecked(m.i64_type().const_zero().as_value());
+                IntValue::from_value_unchecked(m.i64_type().const_zero().into_erased());
 
             let err = b
                 .def_int_var(x, forged)
@@ -2245,7 +2245,7 @@ mod tests {
 
             let mut b = b.switch_to_block(entry)?;
             let forged: FloatValue<'_, f32, _> =
-                FloatValue::from_value_unchecked(m.f64_type().const_from_bits(0).as_value());
+                FloatValue::from_value_unchecked(m.f64_type().const_from_bits(0).into_erased());
 
             let err = b
                 .def_float_var(x, forged)
@@ -2290,7 +2290,7 @@ mod tests {
 
             let mut b = b.switch_to_block(entry)?;
             let forged: PointerValue<'_, _> =
-                PointerValue::from_value_unchecked(m.i32_type().const_zero().as_value());
+                PointerValue::from_value_unchecked(m.i32_type().const_zero().into_erased());
 
             let err = b
                 .def_pointer_var(p, forged)

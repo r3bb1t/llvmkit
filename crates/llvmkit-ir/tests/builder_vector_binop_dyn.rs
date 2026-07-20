@@ -26,8 +26,8 @@ fn vector_binops_emit_elementwise_ir() {
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let a = f.param(0).expect("p0").as_value();
-        let c = f.param(1).expect("p1").as_value();
+        let a = f.param(0).expect("p0").into_erased();
+        let c = f.param(1).expect("p1").into_erased();
 
         let x = b.build_int_xor_dyn(a, c, "x").expect("xor vec");
         let s = b.build_int_add_dyn(x, a, "s").expect("add vec");
@@ -36,7 +36,7 @@ fn vector_binops_emit_elementwise_ir() {
             .const_vector::<llvmkit_ir::ConstantIntValue<'_, i64>, _>([two, two])
             .expect("shamt vec");
         let _sh = b
-            .build_int_shl_dyn(s, shamt.as_value(), "sh")
+            .build_int_shl_dyn(s, shamt.into_erased(), "sh")
             .expect("shl vec");
 
         b.build_ret_void().expect("ret void");
@@ -76,8 +76,8 @@ fn scalar_binop_dyn_still_works() {
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let a = f.param(0).expect("p0").as_value();
-        let c = f.param(1).expect("p1").as_value();
+        let a = f.param(0).expect("p0").into_erased();
+        let c = f.param(1).expect("p1").into_erased();
         let x = b.build_int_xor_dyn(a, c, "x").expect("xor scalar");
         let r: llvmkit_ir::IntValue<'_, i64> = x.try_into().expect("i64 result");
         b.build_ret(r).expect("ret");

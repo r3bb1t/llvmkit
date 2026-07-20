@@ -272,7 +272,7 @@ macro_rules! impl_int_field {
         {
             #[inline]
             fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(self.into_int_value(module)?.as_value())
+                Ok(self.into_int_value(module)?.into_erased())
             }
         }
     )+};
@@ -329,7 +329,7 @@ where
 {
     #[inline]
     fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(self.into_int_value(module)?.as_value())
+        Ok(self.into_int_value(module)?.into_erased())
     }
 }
 
@@ -373,7 +373,7 @@ where
 {
     #[inline]
     fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(self.into_int_value(module)?.as_value())
+        Ok(self.into_int_value(module)?.into_erased())
     }
 }
 
@@ -419,7 +419,7 @@ macro_rules! impl_float_field {
         {
             #[inline]
             fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(self.into_float_value(module)?.as_value())
+                Ok(self.into_float_value(module)?.into_erased())
             }
         }
     )+};
@@ -475,7 +475,7 @@ where
 {
     #[inline]
     fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(self.into_pointer_value(module)?.as_value())
+        Ok(self.into_pointer_value(module)?.into_erased())
     }
 }
 
@@ -487,7 +487,7 @@ macro_rules! impl_struct_into_field {
             B: ModuleBrand + 'ctx,
         {
             fn into_ir_field(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(S::try_value_from_ir(self)?.as_struct_value().as_value())
+                Ok(S::try_value_from_ir(self)?.as_struct_value().into_erased())
             }
         }
     };
@@ -506,7 +506,7 @@ macro_rules! impl_struct_into_call_arg {
             B: ModuleBrand + 'ctx,
         {
             fn into_call_arg(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(S::try_value_from_ir(self)?.as_struct_value().as_value())
+                Ok(S::try_value_from_ir(self)?.as_struct_value().into_erased())
             }
         }
     };
@@ -731,7 +731,7 @@ where
     {
         let validated = ValidatedStructValue::new();
         S::Value::from_struct_value(
-            StructValue::from_value_unchecked(arg.as_value()),
+            StructValue::from_value_unchecked(arg.into_erased()),
             &validated,
         )
     }

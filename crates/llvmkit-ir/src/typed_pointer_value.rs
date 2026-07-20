@@ -81,8 +81,8 @@ impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> TypedPointerValue<'ctx, T, B> {
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
-        self.ptr.as_value()
+    pub fn into_erased(self) -> Value<'ctx, B> {
+        self.ptr.into_erased()
     }
 }
 

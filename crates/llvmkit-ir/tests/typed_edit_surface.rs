@@ -97,7 +97,7 @@ fn build_invoke_caller<'ctx>(
     // Capture the labels before `position_at_end` consumes the block handles.
     let normal_lbl = normal.label();
     let unwind_lbl = unwind.label();
-    let new_dyn: BasicBlockLabel<Dyn> = new.label().as_value().try_into()?;
+    let new_dyn: BasicBlockLabel<Dyn> = new.label().into_erased().try_into()?;
 
     let bn = IRBuilder::new_for::<()>(m).position_at_end(normal);
     bn.build_ret_void();
@@ -207,7 +207,7 @@ fn build_callbr_caller<'ctx>(
     // Capture the labels before `position_at_end` consumes the block handles.
     let cont_lbl = cont.label();
     let ind_lbl = ind.label();
-    let new_dyn: BasicBlockLabel<Dyn> = new.label().as_value().try_into()?;
+    let new_dyn: BasicBlockLabel<Dyn> = new.label().into_erased().try_into()?;
 
     let bc = IRBuilder::new_for::<()>(m).position_at_end(cont);
     bc.build_ret_void();
@@ -423,8 +423,8 @@ fn build_switch_fn<'ctx>(
     let dflt_lbl = dflt.label();
     let case0_lbl = case0.label();
     let case1_lbl = case1.label();
-    let case0_dyn: BasicBlockLabel<Dyn> = case0.label().as_value().try_into()?;
-    let new_dyn: BasicBlockLabel<Dyn> = new.label().as_value().try_into()?;
+    let case0_dyn: BasicBlockLabel<Dyn> = case0.label().into_erased().try_into()?;
+    let new_dyn: BasicBlockLabel<Dyn> = new.label().into_erased().try_into()?;
 
     for (bb, k) in [(dflt, 0_u32), (case0, 1), (case1, 2), (new, 3)] {
         let bb_b = IRBuilder::new_for::<i32>(m).position_at_end(bb);
@@ -561,8 +561,8 @@ fn build_switch_bogus_fn<'ctx>(
     let dflt_lbl = dflt.label();
     let case0_lbl = case0.label();
     let new_lbl = new.label();
-    let bogus_dyn: BasicBlockLabel<Dyn> = bogus.label().as_value().try_into()?;
-    let new_dyn: BasicBlockLabel<Dyn> = new_lbl.as_value().try_into()?;
+    let bogus_dyn: BasicBlockLabel<Dyn> = bogus.label().into_erased().try_into()?;
+    let new_dyn: BasicBlockLabel<Dyn> = new_lbl.into_erased().try_into()?;
 
     // entry: %ev = add %a, 3 ; switch %a, default %dflt [ 0 -> case0 ]
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
@@ -575,7 +575,7 @@ fn build_switch_bogus_fn<'ctx>(
     let b = IRBuilder::new_for::<i32>(m).position_at_end(dflt);
     let a: IntValue<i32> = f.param(0)?.try_into()?;
     let nd = b.build_int_add(a, 5_i32, "nd")?;
-    b.build_br_with_args(new_lbl, &[nd.as_value()])?;
+    b.build_br_with_args(new_lbl, &[nd.into_erased()])?;
 
     // case0: ret 0
     let b = IRBuilder::new_for::<i32>(m).position_at_end(case0);
@@ -590,7 +590,7 @@ fn build_switch_bogus_fn<'ctx>(
     let np: IntValue<i32> = new_params[0].try_into()?;
     b.build_ret(np)?;
 
-    Ok((f, bogus_dyn, new_dyn, ev.as_value()))
+    Ok((f, bogus_dyn, new_dyn, ev.into_erased()))
 }
 
 /// `redirect_successor` rejects an `old_to` that is not a case successor of the

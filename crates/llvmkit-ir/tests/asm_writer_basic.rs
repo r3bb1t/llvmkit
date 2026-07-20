@@ -183,8 +183,8 @@ fn module_prints_const_folded_arithmetic() -> Result<(), IrError> {
         // folded value reaches the `ret` operand directly with no `add`
         // instruction emitted.
         let folded = b.build_int_add(
-            IntValue::<i32>::try_from(a.as_value())?,
-            IntValue::<i32>::try_from(bb.as_value())?,
+            IntValue::<i32>::try_from(a.into_erased())?,
+            IntValue::<i32>::try_from(bb.into_erased())?,
             "sum",
         )?;
         b.build_ret(folded)?;

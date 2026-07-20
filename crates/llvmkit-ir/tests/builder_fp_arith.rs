@@ -117,7 +117,8 @@ fn default_constant_folder_folds_fadd_to_constant() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let result =
             b.build_fp_add::<f64, _, _, _>(ty.const_double(1.5), ty.const_double(2.25), "sum")?;
-        let folded = ConstantFloatValue::<f64>::try_from(Constant::try_from(result.as_value())?)?;
+        let folded =
+            ConstantFloatValue::<f64>::try_from(Constant::try_from(result.into_erased())?)?;
         assert!(folded.ap_float().is_exactly_value_f64(3.75));
         Ok(())
     })

@@ -179,8 +179,8 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             }
 
             #[inline]
-            #vis fn as_value(self) -> #ir::Value<'ctx, B> {
-                self.raw.as_value()
+            #vis fn into_erased(self) -> #ir::Value<'ctx, B> {
+                self.raw.into_erased()
             }
 
             #(#accessors)*
@@ -317,7 +317,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
                 self,
                 _module: #ir::ModuleRef<'ctx, B>,
             ) -> #ir::IrResult<#ir::Value<'ctx, B>> {
-                Ok(self.raw.as_value())
+                Ok(self.raw.into_erased())
             }
         }
 
@@ -329,7 +329,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
                 self,
                 _module: #ir::ModuleRef<'ctx, B>,
             ) -> #ir::IrResult<#ir::Value<'ctx, B>> {
-                Ok(self.as_struct_value().as_value())
+                Ok(self.as_struct_value().into_erased())
             }
         }
 
@@ -342,7 +342,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
                 self,
                 _module: #ir::ModuleRef<'ctx, B>,
             ) -> #ir::IrResult<#ir::Value<'ctx, B>> {
-                Ok(self.raw.as_value())
+                Ok(self.raw.into_erased())
             }
         }
     })

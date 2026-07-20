@@ -25,9 +25,9 @@ fn main() {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let a: VectorValue<'_, i32, Len<4>> =
-            f.param(0).unwrap().as_value().try_into().unwrap();
+            f.param(0).unwrap().into_erased().try_into().unwrap();
         let c: VectorValue<'_, i64, Len<4>> =
-            f.param(1).unwrap().as_value().try_into().unwrap();
+            f.param(1).unwrap().into_erased().try_into().unwrap();
 
         // `i32` and `i64` cannot unify the single `E` the binop demands.
         let _bad = b.build_vec_int_add(a, c, "x").unwrap(); //~ ERROR mismatched types

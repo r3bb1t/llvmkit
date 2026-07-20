@@ -192,7 +192,7 @@ pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
         for inst in block.instructions() {
             // Phi nodes are grouped at the top of the block; stop at the
             // first non-phi.
-            let phi = match &inst.as_value().data().kind {
+            let phi = match &inst.into_erased().data().kind {
                 ValueKindData::Instruction(i) => match &i.kind {
                     InstructionKindData::Phi(p) => p,
                     _ => break,

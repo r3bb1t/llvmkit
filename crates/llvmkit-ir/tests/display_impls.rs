@@ -4,7 +4,7 @@
 //! module-level globals, prints its own definition line). This file locks the
 //! invariant that a handle's `Display` **agrees** with the path it delegates
 //! to -- printing through `IntValue<i32>` must produce the same bytes as
-//! printing through its `.as_value()`, and printing a `FunctionValue` or
+//! printing through its `.into_erased()`, and printing a `FunctionValue` or
 //! `GlobalVariable` must produce exactly the text that appears for it in
 //! `format!("{m}")` module output. Non-empty output is not the property under
 //! test; byte-for-byte agreement is.
@@ -94,13 +94,13 @@ fn global_variable_prints_definition_line() -> Result<(), IrError> {
 
         // The operand form stays available through the erased handle and is
         // deliberately different from the definition form.
-        assert_eq!(format!("{}", g.as_value()), "ptr @g1");
+        assert_eq!(format!("{}", g.into_erased()), "ptr @g1");
         Ok(())
     })
 }
 
 // --------------------------------------------------------------------------
-// Value handles -- Display must agree with the erased `.as_value()` path
+// Value handles -- Display must agree with the erased `.into_erased()` path
 // --------------------------------------------------------------------------
 
 /// The core invariant: each typed handle prints exactly what its erased
@@ -123,36 +123,36 @@ fn typed_handles_agree_with_erased_value() -> Result<(), IrError> {
 
         // Argument.
         let arg = f.param(0)?;
-        assert_eq!(format!("{arg}"), format!("{}", arg.as_value()));
+        assert_eq!(format!("{arg}"), format!("{}", arg.into_erased()));
 
         // IntValue<W> -- both an instruction result and a parameter.
-        assert_eq!(format!("{doubled}"), format!("{}", doubled.as_value()));
-        assert_eq!(format!("{x}"), format!("{}", x.as_value()));
+        assert_eq!(format!("{doubled}"), format!("{}", doubled.into_erased()));
+        assert_eq!(format!("{x}"), format!("{}", x.into_erased()));
 
         // ConstantIntValue<W>.
         let c_int = i32_ty.const_int(42_i32);
-        assert_eq!(format!("{c_int}"), format!("{}", c_int.as_value()));
+        assert_eq!(format!("{c_int}"), format!("{}", c_int.into_erased()));
 
         // ConstantFloatValue<K>.
         let c_float = f32_ty.const_float(3.5_f32);
-        assert_eq!(format!("{c_float}"), format!("{}", c_float.as_value()));
+        assert_eq!(format!("{c_float}"), format!("{}", c_float.into_erased()));
 
         // ConstantPointerNull / UndefValue / PoisonValue -- the
         // `decl_constant_handle!` family.
         let null = ptr_ty.const_null();
-        assert_eq!(format!("{null}"), format!("{}", null.as_value()));
+        assert_eq!(format!("{null}"), format!("{}", null.into_erased()));
         let undef = i32_ty.as_type().get_undef();
-        assert_eq!(format!("{undef}"), format!("{}", undef.as_value()));
+        assert_eq!(format!("{undef}"), format!("{}", undef.into_erased()));
         let poison = i32_ty.as_type().get_poison();
-        assert_eq!(format!("{poison}"), format!("{}", poison.as_value()));
+        assert_eq!(format!("{poison}"), format!("{}", poison.into_erased()));
 
         // PointerValue -- the `decl_value_handle!` family.
-        let p = PointerValue::try_from(null.as_value())?;
-        assert_eq!(format!("{p}"), format!("{}", p.as_value()));
+        let p = PointerValue::try_from(null.into_erased())?;
+        assert_eq!(format!("{p}"), format!("{}", p.into_erased()));
 
         // The erased `Constant` handle agrees with the erased `Value` too.
         let c_erased = c_int.as_constant();
-        assert_eq!(format!("{c_erased}"), format!("{}", c_erased.as_value()));
+        assert_eq!(format!("{c_erased}"), format!("{}", c_erased.into_erased()));
         Ok(())
     })
 }

@@ -114,7 +114,7 @@ fn default_constant_folder_folds_integer_compare() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let result = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ugt, 9_i32, 3_i32, "is_gt")?;
-        let folded = ConstantIntValue::<bool>::try_from(Constant::try_from(result.as_value())?)?;
+        let folded = ConstantIntValue::<bool>::try_from(Constant::try_from(result.into_erased())?)?;
         assert!(folded.ap_int().try_zext_u64() == Some(1));
         Ok(())
     })

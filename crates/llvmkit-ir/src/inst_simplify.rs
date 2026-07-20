@@ -37,7 +37,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InstSimplifyPass {
             // Upstream runImpl only simplifies instructions with uses (!use_empty);
             // this also makes the ordered-atomic-load-from-constant-global case
             // terminate (folded once, kept, then use-empty on any re-visit).
-            if !view.as_value().has_uses() {
+            if !view.into_erased().has_uses() {
                 continue;
             }
             if let Some(replacement) = constant_fold_instruction(&view, &data_layout, None)? {
@@ -75,7 +75,7 @@ fn uniform_phi_value<'ctx, B: ModuleBrand + 'ctx>(
     let crate::instruction::InstructionKind::Phi(kind) = view.kind()? else {
         return None;
     };
-    let self_value = view.as_value();
+    let self_value = view.into_erased();
     let mut common: Option<crate::value::Value<'ctx, B>> = None;
     for (value, _block) in kind.incomings() {
         if value == self_value {

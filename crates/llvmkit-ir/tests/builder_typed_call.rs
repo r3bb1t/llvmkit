@@ -177,7 +177,7 @@ fn typed_invoke_wires_multiple_argument_operands_in_order() -> Result<(), IrErro
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let (_sealed, invoke) =
             b.build_invoke(callee, (a, b_arg, p), normal_label, unwind_label, "iv")?;
-        let result: IntValue<i32> = invoke.as_value().try_into()?;
+        let result: IntValue<i32> = invoke.into_erased().try_into()?;
         let bn = IRBuilder::new_for::<i32>(&m).position_at_end(normal);
         bn.build_ret(result)?;
         let text = format!("{m}");
@@ -225,7 +225,7 @@ fn build_varargs_call_printf_shape_two_fixed_args_and_int_tail() -> Result<(), I
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let (fmt, level) = caller.params();
         let extra = i32_ty.const_int(7_i32);
-        let call = b.build_varargs_call(callee, (fmt, level), [extra.as_value()], "r")?;
+        let call = b.build_varargs_call(callee, (fmt, level), [extra.into_erased()], "r")?;
         b.build_ret(call.result())?;
         let text = format!("{m}");
         assert!(
@@ -275,7 +275,11 @@ fn typed_call_full_module_print_equals_dyn_call_full_module_print() -> Result<()
         let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
         let x: IntValue<i32> = caller.param(0)?.try_into()?;
         let y: IntValue<i32> = caller.param(1)?.try_into()?;
-        let inst = b.build_call_dyn(callee.as_function(), [x.as_value(), y.as_value()], "r")?;
+        let inst = b.build_call_dyn(
+            callee.as_function(),
+            [x.into_erased(), y.into_erased()],
+            "r",
+        )?;
         b.build_ret(inst.return_int_value())?;
         Ok(())
     }
@@ -333,7 +337,7 @@ fn typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_pr
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let x = i32_ty.const_int(7_i32);
         let inst =
-            b.build_indirect_call_dyn::<i32, _, _, _>(fn_ty, callee_ptr, [x.as_value()], "r")?;
+            b.build_indirect_call_dyn::<i32, _, _, _>(fn_ty, callee_ptr, [x.into_erased()], "r")?;
         b.build_ret(inst.return_int_value())?;
         Ok(())
     }
@@ -381,7 +385,7 @@ fn build_call_dyn_rejects_wrong_argument_count() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: IntValue<i32> = caller.param(0)?.try_into()?;
         let err = b
-            .build_call_dyn(callee, [x.as_value()], "bad")
+            .build_call_dyn(callee, [x.into_erased()], "bad")
             .expect_err("one argument against a two-parameter callee must be rejected");
         assert_eq!(
             err,
@@ -414,7 +418,7 @@ fn build_call_dyn_rejects_wrong_argument_type() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: llvmkit_ir::FloatValue<f64> = caller.param(0)?.try_into()?;
         let err = b
-            .build_call_dyn(callee, [x.as_value()], "bad")
+            .build_call_dyn(callee, [x.into_erased()], "bad")
             .expect_err("an f64 argument against an i32 parameter must be rejected");
         assert_eq!(
             err,

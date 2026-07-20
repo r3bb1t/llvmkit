@@ -47,7 +47,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn into_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -77,7 +77,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
     /// Optional textual name.
     #[inline]
     pub fn name(self) -> Option<String> {
-        self.as_value().name()
+        self.into_erased().name()
     }
 
     /// Set the textual name.
@@ -86,31 +86,31 @@ impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
     where
         Name: Into<String>,
     {
-        self.as_value().set_name(module_token, name);
+        self.into_erased().set_name(module_token, name);
     }
 
     /// Clear the textual name.
     #[inline]
     pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-        self.as_value().clear_name(module_token);
+        self.into_erased().clear_name(module_token);
     }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for Argument<'ctx, B> {
     /// Print the operand form `<type> %name`, identical to what the erased
-    /// [`Argument::as_value`] handle prints. An unnamed parameter has no
+    /// [`Argument::into_erased`] handle prints. An unnamed parameter has no
     /// slot number outside a function-wide numbering pass, so it prints as
     /// `%<unnumbered>` here.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(&Argument::as_value(*self), f)
+        core::fmt::Display::fmt(&Argument::into_erased(*self), f)
     }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for Argument<'ctx, B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for Argument<'ctx, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
-        Argument::as_value(self)
+    fn into_erased(self) -> Value<'ctx, B> {
+        Argument::into_erased(self)
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for Argument<'ctx, B> {
@@ -139,14 +139,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Argument<'ctx, B> {
 impl<'ctx, B: ModuleBrand + 'ctx> HasDebugLoc for Argument<'ctx, B> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
-        self.as_value().debug_loc()
+        self.into_erased().debug_loc()
     }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> From<Argument<'ctx, B>> for Value<'ctx, B> {
     #[inline]
     fn from(a: Argument<'ctx, B>) -> Self {
-        a.as_value()
+        a.into_erased()
     }
 }
 

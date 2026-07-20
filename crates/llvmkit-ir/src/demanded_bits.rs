@@ -228,11 +228,11 @@ impl DemandedBits {
     ) -> IrResult<()> {
         let mut worklist = VecDeque::new();
         let mut queued = HashSet::new();
-        let anchor = function.as_function().as_value();
+        let anchor = function.as_function().into_erased();
 
         for block in function.as_function().basic_blocks() {
             for inst in block.instructions() {
-                let value = inst.as_value();
+                let value = inst.into_erased();
                 let ValueKindData::Instruction(data) = &value.data().kind else {
                     continue;
                 };
@@ -939,7 +939,7 @@ fn simplify_demanded_bits_iteration<'ctx>(
         let instruction_ids = block.instruction_ids();
         for id in instruction_ids {
             let inst = Instruction::<state::Attached>::from_parts(id, module_token.module_ref());
-            let value = inst.as_value();
+            let value = inst.into_erased();
             if !is_simplify_candidate(value) {
                 continue;
             }
@@ -977,7 +977,7 @@ fn simplify_demanded_bits_iteration<'ctx>(
 
     for id in dead_to_erase.into_iter().rev() {
         let erased = Instruction::<state::Attached>::from_parts(id, module_token.module_ref());
-        if erased.as_value().has_uses() {
+        if erased.into_erased().has_uses() {
             continue;
         }
         erased.erase_from_parent(module_token);
@@ -1102,7 +1102,7 @@ fn drop_zext_nneg_for_replaced_uses_recursive<'ctx, B: ModuleBrand + 'ctx>(
         return;
     }
     for user in value.users() {
-        let user = user.as_value();
+        let user = user.into_erased();
         drop_zext_nneg_for_replaced_operand(user, value.id());
         drop_zext_nneg_for_replaced_uses_recursive(user, visited);
     }
@@ -1180,7 +1180,7 @@ fn simplify_xor_constant_operand<'ctx, B: ModuleBrand + 'ctx>(
     if rhs_bits.bitor(&demanded.not()).is_all_ones() {
         let int_ty = crate::derived_types::IntType::<IntDyn, B>::try_from(rhs.ty())?;
         let all_ones = int_ty.const_ap_int(&ApInt::all_ones(demanded.bit_width()))?;
-        return replace_instruction_operand(value, &bin.rhs, all_ones.as_value());
+        return replace_instruction_operand(value, &bin.rhs, all_ones.into_erased());
     }
     shrink_demanded_constant_operand(value, &bin.rhs, demanded)
 }
@@ -1201,7 +1201,7 @@ fn shrink_demanded_constant_operand<'ctx, B: ModuleBrand + 'ctx>(
     }
     let int_ty = crate::derived_types::IntType::<IntDyn, B>::try_from(current.ty())?;
     let replacement = int_ty.const_ap_int(&shrunk)?;
-    replace_instruction_operand(user, operand, replacement.as_value())
+    replace_instruction_operand(user, operand, replacement.into_erased())
 }
 
 fn replace_instruction_operand<'ctx, B: ModuleBrand + 'ctx>(
