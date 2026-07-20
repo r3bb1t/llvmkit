@@ -9,7 +9,8 @@
 //! `#[cfg(test)]` tree.
 
 use crate::{
-    FloatDyn, FloatValue, IRBuilder, InstructionKind, IntValue, IrError, Linkage, Module, PhiKind,
+    Dyn, FloatDyn, FloatValue, IRBuilder, InstructionKind, IntValue, IrError, Linkage, Module,
+    PhiKind,
 };
 
 /// The `Open -> Closed` finalisation applies to every phi family, not just the
@@ -22,9 +23,9 @@ fn fp_and_pointer_phi_finish_to_closed() -> Result<(), IrError> {
     Module::with_new("phi_finish_fp_ptr", |m| {
         let f64_ty = m.f64_type();
         let fn_ty = m.fn_type_no_params(f64_ty, false);
-        let f = m.add_function::<f64, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let bb = f.append_basic_block(&m, "bb");
-        let b = IRBuilder::new_for::<f64>(&m).position_at_end(bb);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
 
         // `finish()` consumes the Open handle for the fp and pointer families
         // exactly as it does for the int family. No incomings are added, so the
@@ -47,19 +48,19 @@ fn phi_finishes_after_all_incomings() -> Result<(), IrError> {
     Module::with_new("phi_finish", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let other = f.append_basic_block(&m, "other");
         let join = f.append_basic_block(&m, "join");
         let entry_label = entry.label();
         let other_label = other.label();
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_br(&join)?;
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(other);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(other);
         b.build_br(&join)?;
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
         let phi_open = b.build_int_phi::<i32, _>("p")?;
         let phi_closed = phi_open
             .add_incoming(1_i32, entry_label)?
@@ -93,9 +94,9 @@ fn rediscovered_phi_narrows_to_result_type() -> Result<(), IrError> {
     Module::with_new("phi_kind_rediscovery", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let bb = f.append_basic_block(&m, "bb");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(bb);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
 
         let int_phi = b.build_int_phi::<i32, _>("ip")?;
         let fp_phi = b.build_fp_phi::<f64, _>("fp")?;
@@ -130,7 +131,7 @@ fn build_phi_inserts_at_phi_head_not_cursor() -> Result<(), IrError> {
     Module::with_new("phi_head", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let other = f.append_basic_block(&m, "other");
         let join = f.append_basic_block(&m, "join");
@@ -139,15 +140,15 @@ fn build_phi_inserts_at_phi_head_not_cursor() -> Result<(), IrError> {
         let join_label = join.label();
 
         // Two predecessors so the join phi has a full incoming set.
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_br(join_label)?;
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(other);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(other);
         b.build_br(join_label)?;
 
         // In `join`, emit a NON-phi first (`%x = add`), THEN build the phi
         // while the cursor sits at the end of the block. The phi must still
         // land at the block's phi head, ahead of the add.
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
         let a: IntValue<i32> = f.param(0)?.try_into()?;
         let _x = b.build_int_add(a, 1_i32, "x")?;
         let i32_dyn = m.custom_width_int_type(32)?;
@@ -183,7 +184,7 @@ fn two_phis_built_after_nonphi_keep_relative_order() -> Result<(), IrError> {
     Module::with_new("phi_head_order", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let other = f.append_basic_block(&m, "other");
         let join = f.append_basic_block(&m, "join");
@@ -191,12 +192,12 @@ fn two_phis_built_after_nonphi_keep_relative_order() -> Result<(), IrError> {
         let other_label = other.label();
         let join_label = join.label();
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_br(join_label)?;
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(other);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(other);
         b.build_br(join_label)?;
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
         let a: IntValue<i32> = f.param(0)?.try_into()?;
         let _x = b.build_int_add(a, 1_i32, "x")?;
         // p1 then p2, both after the add. Head placement must not reverse
@@ -244,11 +245,11 @@ fn phi_range_iterates_three_phis() -> Result<(), IrError> {
     Module::with_new("p", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, Vec::<crate::Type>::new(), false);
-        let f = m.add_function::<i32, _>("p", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("p", fn_ty, Linkage::External)?;
         let bb = f.append_basic_block(&m, "bb");
         let bb_label = bb.label();
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(bb);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
         let p1 = b.build_int_phi::<i32, _>("phi.1")?;
         let p2 = b.build_int_phi::<i32, _>("phi.2")?;
         let p3 = b.build_int_phi::<i32, _>("phi.3")?;

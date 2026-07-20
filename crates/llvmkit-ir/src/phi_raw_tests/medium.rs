@@ -8,7 +8,7 @@
 //! `unittests/IR/BasicBlockTest.cpp::TEST(BasicBlockTest, PhiRange)` for the
 //! phi-incoming-value structure under test.
 
-use crate::{IRBuilder, IrError, Linkage, Module};
+use crate::{Dyn, IRBuilder, IrError, Linkage, Module};
 
 /// Mirrors `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)`
 /// (multi-block scaffolding) plus
@@ -19,7 +19,7 @@ fn build_int_phi_two_predecessors_emits_phi() -> Result<(), IrError> {
     Module::with_new("p", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("phi2", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("phi2", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let other = f.append_basic_block(&m, "other");
         let join = f.append_basic_block(&m, "join");
@@ -28,15 +28,15 @@ fn build_int_phi_two_predecessors_emits_phi() -> Result<(), IrError> {
         let join_label = join.label();
 
         // entry: br label %join
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_br(join_label)?;
 
         // other: br label %join
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(other);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(other);
         b.build_br(join_label)?;
 
         // join: phi i32 [ 1, %entry ], [ 2, %other ]; ret i32 %p
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
         let phi = b
             .build_int_phi::<i32, _>("p")?
             .add_incoming(1_i32, entry_label)?
@@ -63,7 +63,7 @@ fn phi_with_post_creation_add_incoming() -> Result<(), IrError> {
     Module::with_new("p", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("late", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("late", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let other = f.append_basic_block(&m, "other");
         let join = f.append_basic_block(&m, "join");
@@ -71,12 +71,12 @@ fn phi_with_post_creation_add_incoming() -> Result<(), IrError> {
         let other_label = other.label();
         let join_label = join.label();
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_br(join_label)?;
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(other);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(other);
         b.build_br(join_label)?;
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(join);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
         let phi = b.build_int_phi::<i32, _>("p")?;
         let phi = phi
             .add_incoming(10_i32, entry_label)?

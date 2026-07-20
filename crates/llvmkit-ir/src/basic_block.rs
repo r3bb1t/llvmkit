@@ -943,9 +943,7 @@ mod tests {
         Module::with_new("bp-slice1-narrow", |m| {
             let void_ty = m.void_type().as_type();
             let fn_ty = m.fn_type_no_params(void_ty, false);
-            let f = m
-                .add_function::<(), _>("f", fn_ty, Linkage::External)
-                .unwrap();
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
             let bb = f.append_basic_block(&m, "entry");
 
             // A label recovered from an untyped `Value` carries no static
@@ -965,9 +963,7 @@ mod tests {
         Module::with_new("bp-slice1-roundtrip", |m| {
             let void_ty = m.void_type().as_type();
             let fn_ty = m.fn_type_no_params(void_ty, false);
-            let f = m
-                .add_function::<(), _>("f", fn_ty, Linkage::External)
-                .unwrap();
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
             let bb = f.append_basic_block(&m, "entry");
             let label = bb.label();
 
