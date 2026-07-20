@@ -297,8 +297,9 @@ fn call_return_range_attribute_contributes_known_bits() -> Result<(), IrError> {
     Module::with_new("vt-call-range-attr", |m| {
         let i1_ty = m.bool_type();
         let i8_ty = m.i8_type();
-        let callee_ty = m.fn_type_no_params(i8_ty, false);
-        let callee = m.add_function::<i8, _>("callee", callee_ty, Linkage::External)?;
+        let callee = m
+            .add_typed_function::<i8, (), _>("callee", Linkage::External)?
+            .as_function();
         let caller_ty = m.fn_type_no_params(i1_ty, false);
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
@@ -338,8 +339,9 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
     Module::with_new("vt-returned-arg", |m| {
         let i8_ty = m.i8_type();
         let void_ty = m.void_type();
-        let callee_ty = m.fn_type(i8_ty, [i8_ty.as_type()], false);
-        let callee = m.add_function::<i8, _>("identity", callee_ty, Linkage::External)?;
+        let callee = m
+            .add_typed_function::<i8, (i8,), _>("identity", Linkage::External)?
+            .as_function();
 
         let mut arg_attr = AttributeStorage::new();
         arg_attr.add(

@@ -464,9 +464,9 @@ fn indirect_call_rejects_too_many_arguments() -> Result<(), IrError> {
 #[test]
 fn fixed_arity_facade_rejects_variadic_function() -> Result<(), IrError> {
     Module::with_new("c", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], true);
-        let raw = m.add_function::<i32, _>("printf_like", fn_ty, Linkage::External)?;
+        let raw = m
+            .add_typed_varargs_function::<i32, (i32,), _>("printf_like", Linkage::External)?
+            .as_function();
         let err = llvmkit_ir::TypedFunctionValue::<i32, (i32,), _>::try_from_function(raw)
             .expect_err("variadic signature must be rejected by the fixed-arity facade");
         assert_eq!(err, IrError::UnexpectedVarArgsSignature);
@@ -479,9 +479,9 @@ fn fixed_arity_facade_rejects_variadic_function() -> Result<(), IrError> {
 #[test]
 fn varargs_facade_rejects_non_variadic_function() -> Result<(), IrError> {
     Module::with_new("c", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let raw = m.add_function::<i32, _>("plain", fn_ty, Linkage::External)?;
+        let raw = m
+            .add_typed_function::<i32, (i32,), _>("plain", Linkage::External)?
+            .as_function();
         let err = llvmkit_ir::TypedVarArgsFunctionValue::<i32, (i32,), _>::try_from_function(raw)
             .expect_err("non-variadic signature must be rejected by the varargs facade");
         assert_eq!(err, IrError::MissingVarArgsSignature);

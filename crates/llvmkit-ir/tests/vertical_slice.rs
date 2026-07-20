@@ -22,7 +22,7 @@
 //!   equal handles.
 //! - Cross-value-category narrowing (`Argument -> IntValue<i32>`) errors
 //!   cleanly when the argument's type is not integral.
-//! - The typed `m.add_function::<i32, _, _>(...)` path produces a
+//! - The typed `m.add_typed_function::<i32, (), _>(...)` path produces a
 //!   `FunctionValue<i32>` whose IRBuilder accepts only matching
 //!   `IntValue<i32>` operands at `build_ret` (compile-time enforced).
 
@@ -187,22 +187,15 @@ fn function_builder_chains_options() -> Result<(), IrError> {
     })
 }
 
-/// llvmkit-specific: typestate `add_function::<i32>` rejects `void`-returning
-/// signatures with `IrError::ReturnTypeMismatch`. No upstream analog.
-#[test]
-fn typed_add_function_rejects_mismatched_return_marker() -> Result<(), IrError> {
-    Module::with_new("demo", |m| {
-        // `i32` against a `void`-returning signature errors at
-        // `add_function` time (no need to reach the IRBuilder).
-        let void = m.void_type();
-        let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let err = m
-            .add_function::<i32, _>("bad", fn_ty, Linkage::External)
-            .expect_err("i32 against void must error");
-        assert!(matches!(err, IrError::ReturnTypeMismatch { .. }));
-        Ok(())
-    })
-}
+// NOTE: the former `typed_add_function_rejects_mismatched_return_marker` test
+// is deliberately GONE, superseded by something stronger. It asserted that
+// `add_function::<i32>` returned `ReturnTypeMismatch` against a `void`
+// signature -- a runtime rejection. After the strict cut the typed
+// constructors derive the signature FROM the markers
+// (`add_typed_function::<Ret, Params, _>`), so a marker/signature mismatch
+// cannot be expressed at all; the compile-fail lock
+// `tests/compile_fail/add_function_removed.rs` pins the erased+typed
+// constructor's absence.
 
 /// llvmkit-specific: runtime-checked `Dyn` builder still validates `build_ret`
 /// types. Closest upstream reference: assertion in `IRBuilderBase::CreateRet`.

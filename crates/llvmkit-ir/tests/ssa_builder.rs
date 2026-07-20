@@ -20,7 +20,7 @@
 //! convention unless noted otherwise.
 
 use llvmkit_ir::{
-    FloatValue, IntPredicate, IntValue, IrError, Linkage, Module, NoFolder, PointerValue,
+    FloatValue, IntPredicate, IntValue, IrError, Linkage, Module, NoFolder, PointerValue, Ptr,
     SsaBuilder,
 };
 use proptest::prelude::*;
@@ -630,8 +630,9 @@ fn foreign_variable_rejected() -> Result<(), IrError> {
 #[test]
 fn finish_reports_unfilled_block() -> Result<(), IrError> {
     Module::with_new("ssa-unfilled", |m| {
-        let fn_ty = m.fn_type_no_params(m.void_type(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m
+            .add_typed_function::<(), (), _>("f", Linkage::External)?
+            .as_function();
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
         let _unfilled = b.create_block("unfilled");
@@ -653,8 +654,9 @@ fn finish_reports_unfilled_block() -> Result<(), IrError> {
 #[test]
 fn switch_to_block_rejects_already_filled_block() -> Result<(), IrError> {
     Module::with_new("ssa-switch-filled", |m| {
-        let fn_ty = m.fn_type_no_params(m.void_type(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m
+            .add_typed_function::<(), (), _>("f", Linkage::External)?
+            .as_function();
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
 
@@ -1004,16 +1006,9 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
     // and every def/use category this session's Positioned surface
     // exposes.
     Module::with_new("ssa-verify-switch-mixed", |m| {
-        let void_ty = m.void_type();
-        let i32_ty = m.i32_type();
-        let f64_ty = m.f64_type();
-        let ptr_ty = m.ptr_type(0);
-        let fn_ty = m.fn_type(
-            void_ty,
-            [i32_ty.as_type(), f64_ty.as_type(), ptr_ty.as_type()],
-            false,
-        );
-        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
+        let f = m
+            .add_typed_function::<(), (i32, f64, Ptr), _>("g", Linkage::External)?
+            .as_function();
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
         let case_bb = b.create_block("case_bb");

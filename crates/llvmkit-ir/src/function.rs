@@ -585,7 +585,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// Mirrors `Function::addAttributeAtIndex`. Complements the
     /// build-time [`function_builder().attribute`](crate::function::FunctionBuilder::attribute)
     /// path for the common case where a function is forward-declared
-    /// with [`add_function`](crate::Module::add_function) and gains
+    /// with [`add_function_dyn`](crate::Module::add_function_dyn) (or
+    /// [`add_typed_function`](crate::Module::add_typed_function)) and gains
     /// attributes only once its body is being emitted. De-duplicates by
     /// structural equality.
     #[inline]
@@ -1290,7 +1291,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     /// Returns [`IrError::ReturnTypeMismatch`] if the signature's
     /// return type does not match the chosen [`ReturnMarker`].
     pub fn build(self) -> IrResult<FunctionValue<'ctx, R, B>> {
-        let f = self.module.module().add_function::<B, R, _>(
+        let f = self.module.module().add_function_checked::<B, R, _>(
             &self.name,
             self.signature,
             self.linkage,

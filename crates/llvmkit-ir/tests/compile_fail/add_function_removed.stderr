@@ -1,0 +1,10 @@
+error[E0599]: no method named `add_function` found for struct `Module<'ctx, B, S>` in the current scope
+  --> tests/compile_fail/add_function_removed.rs:19:19
+   |
+19 |         let _ = m.add_function::<i32, _>("bad", fn_ty, Linkage::External);
+   |                   ^^^^^^^^^^^^
+   |
+help: there is a method `add_function_dyn` with a similar name
+   |
+19 |         let _ = m.add_function_dyn::<i32, _>("bad", fn_ty, Linkage::External);
+   |                               ++++

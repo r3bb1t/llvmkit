@@ -712,7 +712,8 @@ pub enum IrError {
     #[error("varargs typed function facade requires a variadic signature")]
     MissingVarArgsSignature,
 
-    /// `Module::add_function` saw a name already bound at module scope.
+    /// A function-declaring constructor (`add_typed_function`,
+    /// `add_function_dyn`, …) saw a name already bound at module scope.
     #[error("a function named {name:?} already exists in this module")]
     DuplicateFunctionName {
         /// The function name that is already bound at module scope.

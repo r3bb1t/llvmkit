@@ -15,6 +15,17 @@ Erasure is still available, but it must be **spelled**.
 
 #### Breaking
 
+- Removed `Module::add_function::<R>(name, fn_ty, linkage)` — the constructor
+  that paired an erased runtime signature with a static return marker, the
+  one place a declaration could silently claim a return type its signature
+  did not have (the marker check caught cross-kind lies at runtime, but the
+  API's shape invited them). Declarations now split honestly:
+  `add_typed_function::<Ret, Params, _>` derives the signature *from* the
+  markers (a mismatch is unrepresentable; parameters come back typed), and
+  `add_function_dyn` takes a runtime `FunctionType` and returns
+  `FunctionValue<Dyn>`. To re-type a function declared erased, use the
+  checked `function_by_name_typed::<R>` lookup. Locked by
+  `tests/compile_fail/add_function_removed.rs`.
 - Removed the erased-handle lifts from `IntoIntValue`, `IntoFloatValue`, and
   `IntoPointerValue`. An erased `Value` / `Argument` / `Instruction` no longer
   fills a typed operand slot on its own; narrow it explicitly first — e.g.
