@@ -1,8 +1,8 @@
 //! Constant-expression, blockaddress, and token-none tests.
 
 use llvmkit_ir::{
-    ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, GepNoWrapFlags, IRBuilder, IrError,
-    Linkage, Module, ModuleBrand, OverflowingConstantExprFlags,
+    ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, Dyn, GepNoWrapFlags, IRBuilder,
+    IrError, Linkage, Module, ModuleBrand, OverflowingConstantExprFlags,
 };
 
 fn module_text<'ctx, B: ModuleBrand, S>(m: &Module<'ctx, B, S>) -> String {
@@ -79,11 +79,11 @@ fn blockaddress_constant_round_trips() -> Result<(), IrError> {
     Module::with_new("blockaddress_const", |m| {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let addr = m.block_address(f, &entry)?;
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        let terminator = b.build_ret_void().1;
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let terminator = b.build_ret_void()?.1;
         assert!(terminator.is_terminator());
         m.add_global("addr", addr)?;
 

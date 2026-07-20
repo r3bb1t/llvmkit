@@ -53,14 +53,14 @@ fn position_past_allocas_anchors_after_alloca_prefix() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let slot = b.build_alloca(i32_ty, "slot")?;
         let zero = i32_ty.const_int(0_i32);
         b.build_store(zero, slot)?;
-        b.build_ret_void();
-        let b2 = IRBuilder::new_for::<()>(&m).position_past_allocas(f);
+        b.build_ret_void()?;
+        let b2 = IRBuilder::new_for::<Dyn>(&m).position_past_allocas(f);
         let _hoisted = b2.build_alloca(i32_ty, "hoisted")?;
         let text = format!("{m}");
         let pos_slot = text.find("%slot = alloca").expect("slot present");

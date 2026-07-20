@@ -23,8 +23,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    Analyses, FnCx, FnReport, FunctionPass, IRBuilder, Inspect, IrError, IrResult, Linkage, ModCx,
-    ModReport, Module, ModuleBrand, ModulePass, RewriteModule, Unverified, Verified,
+    Analyses, Dyn, FnCx, FnReport, FunctionPass, IRBuilder, Inspect, IrError, IrResult, Linkage,
+    ModCx, ModReport, Module, ModuleBrand, ModulePass, RewriteModule, Unverified, Verified,
     run_function_pass, run_module_pass,
 };
 
@@ -61,9 +61,9 @@ fn inspect_module_pass_stays_verified_and_runs() -> Result<(), IrError> {
     Module::with_new("inspect-module-pass", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_ret(i32_ty.const_int(1_u32))?;
 
         let verified = m.verify()?;
@@ -112,9 +112,9 @@ fn rewrite_module_pass_downgrades_and_mutates() -> Result<(), IrError> {
     Module::with_new("rewrite-module-pass", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_ret(i32_ty.const_int(0_u32))?;
 
         let verified = m.verify()?;
@@ -176,9 +176,9 @@ fn inspect_function_pass_stays_verified_and_runs() -> Result<(), IrError> {
     Module::with_new("inspect-function-pass", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_ret(i32_ty.const_int(1_u32))?;
 
         let verified = m.verify()?;

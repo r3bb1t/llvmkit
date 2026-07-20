@@ -67,12 +67,12 @@ fn fneg_double_no_flags_unnamed_result() -> Result<(), IrError> {
         let f64_ty = m.f64_type();
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [f64_ty.as_type()], false);
-        let f = m.add_function::<(), _>("instructions.unops", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("instructions.unops", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: FloatValue<f64> = f.param(0)?.try_into()?;
         let _ = b.build_float_neg::<f64, _, _>(x, "")?;
-        b.build_ret_void();
+        b.build_ret_void()?;
         let text = format!("{m}");
         // Mirrors `; CHECK: fneg double %op1` (compatibility.ll line 1445).
         assert!(text.contains("fneg double %0\n"), "got:\n{text}");
@@ -115,12 +115,12 @@ fn freeze_i8_round_trip() -> Result<(), IrError> {
         let i8_ty = m.i8_type();
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [i8_ty.as_type()], false);
-        let f = m.add_function::<(), _>("foo", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("foo", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let arg: IntValue<i8> = f.param(0)?.try_into()?;
         let _ = b.build_freeze(arg, "")?;
-        b.build_ret_void();
+        b.build_ret_void()?;
         let text = format!("{m}");
         // Mirrors the upstream textual fixture in `TEST(InstructionsTest, FreezeInst)`:
         //   `freeze i8 %arg` (the result is discarded — void function).
@@ -143,14 +143,14 @@ fn freeze_int_and_pointer_print_forms() -> Result<(), IrError> {
             [i32_ty.as_type(), ptr_ty.as_type()],
             false,
         );
-        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let iop: IntValue<i32> = f.param(0)?.try_into()?;
         let pop: PointerValue = f.param(1)?.try_into()?;
         let _ = b.build_freeze(iop, "")?;
         let _ = b.build_freeze(pop, "")?;
-        b.build_ret_void();
+        b.build_ret_void()?;
         let text = format!("{m}");
         // Mirrors `; CHECK: freeze i32 %op1` (compatibility.ll line 1733).
         assert!(text.contains("freeze i32 %0\n"), "got:\n{text}");
@@ -169,12 +169,12 @@ fn verifier_accepts_freeze_int() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("foo", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("foo", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let zero = i32_ty.const_int(0_i32);
         let _ = b.build_freeze(zero, "")?;
-        b.build_ret_void();
+        b.build_ret_void()?;
         m.verify_borrowed()?;
         Ok(())
     })
@@ -241,12 +241,12 @@ fn verifier_accepts_va_arg_pointer_source() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<(), _>("foo", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("foo", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let ap: PointerValue = f.param(0)?.try_into()?;
         let _ = b.build_va_arg(ap, i8_ty.as_type(), "argval")?;
-        b.build_ret_void();
+        b.build_ret_void()?;
         m.verify_borrowed()?;
         Ok(())
     })

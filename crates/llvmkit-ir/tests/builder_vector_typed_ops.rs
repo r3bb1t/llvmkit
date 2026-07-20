@@ -10,7 +10,7 @@
 //! fixtures (`tests/compile_fail/vec_binop_*` / `vec_insert_wrong_element`);
 //! here we only exercise the well-typed happy path.
 
-use llvmkit_ir::{IRBuilder, IntValue, Len, Linkage, Module, VectorValue};
+use llvmkit_ir::{Dyn, IRBuilder, IntValue, Len, Linkage, Module, VectorValue};
 
 /// The typed `<2 x i64>` binops emit the same element-wise IR as the erased
 /// `build_int_*_dyn` family (golden strings ported from
@@ -30,10 +30,10 @@ fn typed_vector_binops_match_dyn_golden() {
             false,
         );
         let f = m
-            .add_function::<(), _>("g", fn_ty, Linkage::External)
+            .add_function_dyn("g", fn_ty, Linkage::External)
             .expect("g");
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         // Narrow the erased `<2 x i64>` params into the statically typed handle.
         let a: VectorValue<'_, i64, Len<2>> = f
@@ -62,7 +62,7 @@ fn typed_vector_binops_match_dyn_golden() {
             shamt_const.as_value().try_into().expect("narrow shamt");
         let _sh = b.build_vec_int_shl(s, shamt, "sh").expect("shl vec");
 
-        b.build_ret_void();
+        b.build_ret_void().expect("ret void");
 
         let txt = format!("{m}");
         assert!(
@@ -92,10 +92,10 @@ fn typed_extract_returns_typed_element() {
 
         let fn_ty = m.fn_type(i64_ty.as_type(), [vec_ty.as_type()], false);
         let f = m
-            .add_function::<i64, _>("g", fn_ty, Linkage::External)
+            .add_function_dyn("g", fn_ty, Linkage::External)
             .expect("g");
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let a: VectorValue<'_, i64, Len<2>> = f
             .param(0)
@@ -131,10 +131,10 @@ fn typed_splat_element_from_scalar_length_free() {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [i32_ty.as_type()], false);
         let f = m
-            .add_function::<(), _>("g", fn_ty, Linkage::External)
+            .add_function_dyn("g", fn_ty, Linkage::External)
             .expect("g");
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let scalar: IntValue<'_, i32> = f.param(0).expect("p0").try_into().expect("i32 scalar");
 
@@ -143,7 +143,7 @@ fn typed_splat_element_from_scalar_length_free() {
         let sp: VectorValue<'_, i32, Len<4>> = b.build_vec_splat(scalar, "sp").expect("splat");
         let _ = sp.as_value();
 
-        b.build_ret_void();
+        b.build_ret_void().expect("ret void");
 
         let txt = format!("{m}");
         assert!(

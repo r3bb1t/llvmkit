@@ -11,7 +11,8 @@
 //! `test/Assembler/fast-math-flags.ll` (and the LangRef).
 
 use llvmkit_ir::{
-    Constant, ConstantIntValue, FloatPredicate, FloatValue, IRBuilder, IrError, Linkage, Module,
+    Constant, ConstantIntValue, Dyn, FloatPredicate, FloatValue, IRBuilder, IrError, Linkage,
+    Module,
 };
 
 fn module_with_pred(pred: FloatPredicate, name: &str) -> Result<String, IrError> {
@@ -19,9 +20,9 @@ fn module_with_pred(pred: FloatPredicate, name: &str) -> Result<String, IrError>
         let f64_ty = m.f64_type();
         let bool_ty = m.bool_type();
         let fn_ty = m.fn_type(bool_ty, [f64_ty.as_type(), f64_ty.as_type()], false);
-        let f = m.add_function::<bool, _>(name, fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let lhs: FloatValue<f64> = f.param(0)?.try_into()?;
         let rhs: FloatValue<f64> = f.param(1)?.try_into()?;
         let r = b.build_fp_cmp(pred, lhs, rhs, "r")?;
@@ -96,9 +97,9 @@ fn default_constant_folder_folds_float_compare() -> Result<(), IrError> {
         let f64_ty = m.f64_type();
         let bool_ty = m.bool_type();
         let fn_ty = m.fn_type(bool_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<bool, _>("cmp", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("cmp", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<bool>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let result = b.build_fp_cmp::<f64, _, _, _>(
             FloatPredicate::Olt,
             f64_ty.const_double(1.0),

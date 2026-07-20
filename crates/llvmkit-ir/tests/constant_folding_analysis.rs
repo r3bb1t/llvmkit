@@ -492,7 +492,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
         assert_eq!(signed_flags, PreservedCastFlags::none());
 
         let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function::<i32, _>("api_fold_inst", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("api_fold_inst", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let add = b.build_int_add::<i32, _, _, _>(c2_i, c5_i, "sum")?;
@@ -538,7 +538,7 @@ fn freeze_folds_only_non_undef_non_poison_constants() -> Result<(), IrError> {
         let dl = DataLayout::default();
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function::<i32, _>("freeze_fold", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("freeze_fold", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
@@ -650,7 +650,7 @@ fn function_denormal_f32_attribute_overrides_generic_mode() -> Result<(), IrErro
         let dl = DataLayout::default();
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type_no_params(f32_ty, false);
-        let f = m.add_function::<f32, _>("denormal_attr", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("denormal_attr", fn_ty, Linkage::External)?;
         f.set_string_attribute(&m, AttrIndex::Function, "denormal-fp-math", "ieee,ieee");
         f.set_string_attribute(
             &m,

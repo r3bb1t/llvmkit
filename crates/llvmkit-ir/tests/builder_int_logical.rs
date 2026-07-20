@@ -9,15 +9,15 @@
 //! family that exercises `Builder.CreateAnd` / `CreateOr` / `CreateXor`
 //! indirectly. The shared `module_with` helper factors module setup.
 
-use llvmkit_ir::{IRBuilder, IntValue, IrError, Linkage, Module};
+use llvmkit_ir::{Dyn, IRBuilder, IntValue, IrError, Linkage, Module};
 
 fn module_with(op: &str) -> Result<String, IrError> {
     Module::with_new("logical", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>(op, fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn(op, fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: IntValue<i32> = f.param(0)?.try_into()?;
         let y: IntValue<i32> = f.param(1)?.try_into()?;
         let r = match op {

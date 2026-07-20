@@ -5,14 +5,14 @@
 use std::collections::HashMap;
 
 use llvmkit_ir::{
-    AttrIndex, AttrKind, Attribute, AttributeStorage, FunctionValue, IRBuilder, IntValue, IrResult,
-    Linkage, Module, ModuleBrand, Value,
+    AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn, FunctionValue, IRBuilder, IntValue,
+    IrResult, Linkage, Module, ModuleBrand, Value,
 };
 
 fn exercise_tables<'ctx>(module: Module<'ctx>) -> IrResult<()> {
     let i64_ty = module.i64_type();
     let fn_ty = module.fn_type(i64_ty.as_type(), [i64_ty.as_type()], false);
-    let function = module.add_function::<i64, _>("f", fn_ty, Linkage::External)?;
+    let function = module.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = function.append_basic_block(&module, "entry");
     let parameter: IntValue<'ctx, i64> = function.param(0)?.try_into()?;
 
@@ -23,7 +23,7 @@ fn exercise_tables<'ctx>(module: Module<'ctx>) -> IrResult<()> {
 
     let lhs = *integers.get("parameter").expect("int value");
     let rhs: IntValue<'ctx, i64> = (*values.get("parameter").expect("value")).try_into()?;
-    let builder = IRBuilder::new_for::<i64>(&module).position_at_end(entry);
+    let builder = IRBuilder::new_for::<Dyn>(&module).position_at_end(entry);
     let sum = builder.build_int_add(lhs, rhs, "sum")?;
     builder.build_ret(sum)?;
 
@@ -51,9 +51,9 @@ fn format_generic_function<'ctx, B: ModuleBrand + 'ctx>(
 #[test]
 fn generic_function_display_preserves_brand() -> IrResult<()> {
     Module::with_new::<_, _, _>("function-display-brand", |module| {
-        let void_ty = module.void_type();
-        let fn_ty = module.fn_type_no_params(void_ty.as_type(), false);
-        let function = module.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let function = module
+            .add_typed_function::<(), (), _>("f", Linkage::External)?
+            .as_function();
         let entry = function.append_basic_block(&module, "entry");
         IRBuilder::new_for::<()>(&module)
             .position_at_end(entry)

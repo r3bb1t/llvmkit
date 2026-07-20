@@ -13,7 +13,7 @@ use llvmkit_ir::{IRBuilder, IrError, Linkage, Module, NoFolder, PointerValue};
 fn alloca_materialises_preferred_align() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         b.build_alloca(m.i32_type(), "a32")?;
@@ -21,7 +21,7 @@ fn alloca_materialises_preferred_align() -> Result<(), IrError> {
         b.build_alloca(m.f64_type(), "af64")?;
         b.build_alloca(m.bool_type(), "a1")?;
         b.build_alloca(m.int_type_n::<128>(), "a128")?;
-        b.build_ret_void();
+        b.build_ret_void()?;
 
         let text = format!("{m}");
         assert!(text.contains("%a32 = alloca i32, align 4\n"), "{text}");
@@ -43,7 +43,7 @@ fn load_store_materialise_abi_align() -> Result<(), IrError> {
     Module::with_new("ls", |m| {
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(m.void_type().as_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let p: PointerValue = f.param(0)?.try_into()?;
@@ -52,7 +52,7 @@ fn load_store_materialise_abi_align() -> Result<(), IrError> {
         // Store default keys off the *stored value's* type (f32 -> align 4),
         // not the pointer.
         b.build_store(m.f32_type().const_float(0.0), p)?;
-        b.build_ret_void();
+        b.build_ret_void()?;
 
         let text = format!("{m}");
         assert!(
@@ -80,12 +80,12 @@ fn alloca_uses_datalayout_alloca_address_space() -> Result<(), IrError> {
     Module::with_new("as", |m| {
         m.set_data_layout("A5")?;
         let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let p = b.build_alloca(m.i32_type(), "p")?;
         assert_eq!(p.ty().address_space(), 5);
-        b.build_ret_void();
+        b.build_ret_void()?;
 
         let text = format!("{m}");
         assert!(

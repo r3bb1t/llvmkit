@@ -21,9 +21,9 @@ fn append_block_typed_yields_typed_params_from_head_phis() -> Result<(), IrError
     Module::with_new("block_params_typed", |m| {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
-        let void_ty = m.void_type().as_type();
-        let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m
+            .add_typed_function::<(), (), _>("f", Linkage::External)?
+            .as_function();
 
         let b = IRBuilder::new_for::<()>(&m);
 
@@ -65,9 +65,9 @@ fn append_block_typed_yields_typed_params_from_head_phis() -> Result<(), IrError
 fn append_block_with_params_stays_erased() -> Result<(), IrError> {
     Module::with_new("block_params_erased", |m| {
         let i32_ty = m.i32_type();
-        let void_ty = m.void_type().as_type();
-        let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m
+            .add_typed_function::<(), (), _>("f", Linkage::External)?
+            .as_function();
 
         let b = IRBuilder::new_for::<()>(&m);
 
@@ -91,9 +91,9 @@ fn append_block_with_params_stays_erased() -> Result<(), IrError> {
 #[test]
 fn append_block_typed_unit_params() -> Result<(), IrError> {
     Module::with_new("block_params_unit", |m| {
-        let void_ty = m.void_type().as_type();
-        let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m
+            .add_typed_function::<(), (), _>("f", Linkage::External)?
+            .as_function();
 
         let b = IRBuilder::new_for::<()>(&m);
 

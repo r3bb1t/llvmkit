@@ -2,7 +2,7 @@
 //! (`build_int_xor_dyn` & friends), which accept integer-*vector* operands
 //! that the scalar-only typed `build_int_*` family rejects.
 
-use llvmkit_ir::{IRBuilder, Linkage, Module};
+use llvmkit_ir::{Dyn, IRBuilder, Linkage, Module};
 
 /// llvmkit-specific: `xor`/`add`/`shl` on `<2 x i64>` vector operands emit
 /// element-wise vector IR through llvmkit's type-erased builders. Closest
@@ -21,10 +21,10 @@ fn vector_binops_emit_elementwise_ir() {
             false,
         );
         let f = m
-            .add_function::<(), _>("g", fn_ty, Linkage::External)
+            .add_function_dyn("g", fn_ty, Linkage::External)
             .expect("g");
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let a = f.param(0).expect("p0").as_value();
         let c = f.param(1).expect("p1").as_value();
@@ -39,7 +39,7 @@ fn vector_binops_emit_elementwise_ir() {
             .build_int_shl_dyn(s, shamt.as_value(), "sh")
             .expect("shl vec");
 
-        b.build_ret_void();
+        b.build_ret_void().expect("ret void");
 
         let txt = format!("{m}");
         assert!(
@@ -71,10 +71,10 @@ fn scalar_binop_dyn_still_works() {
             false,
         );
         let f = m
-            .add_function::<i64, _>("h", fn_ty, Linkage::External)
+            .add_function_dyn("h", fn_ty, Linkage::External)
             .expect("h");
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let a = f.param(0).expect("p0").as_value();
         let c = f.param(1).expect("p1").as_value();

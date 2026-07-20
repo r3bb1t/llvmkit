@@ -1,7 +1,7 @@
 use llvmkit_ir::{
-    Analyses, ApInt, DemandedBitsAnalysis, Dyn, FunctionAnalysisManager, IRBuilder, IntValue,
-    IrError, KnownBits, Linkage, Module, NoFolder, SimplifyDemandedBitsPass, ValueTrackingQuery,
-    Width, ZExtFlags, run_function_pass, simplify_demanded_bits,
+    Analyses, ApInt, DemandedBitsAnalysis, FunctionAnalysisManager, IRBuilder, IntValue, IrError,
+    KnownBits, Linkage, Module, NoFolder, SimplifyDemandedBitsPass, ValueTrackingQuery, Width,
+    ZExtFlags, run_function_pass, simplify_demanded_bits,
 };
 
 fn bits(value: ApInt) -> String {
@@ -613,7 +613,7 @@ fn simplify_demanded_bits_pass_ports_and_zext_and() -> Result<(), IrError> {
         let i3_ty = m.int_type_n::<3>();
         let i5_ty = m.int_type_n::<5>();
         let fn_ty = m.fn_type(i5_ty, [i3_ty.as_type()], false);
-        let f = m.add_function::<Dyn, _>("AndZextAnd", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("AndZextAnd", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let a: IntValue<Width<3>> = f.param(0)?.try_into()?;
@@ -661,7 +661,7 @@ fn simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement()
         let i3_ty = m.int_type_n::<3>();
         let i5_ty = m.int_type_n::<5>();
         let fn_ty = m.fn_type(i5_ty, [i3_ty.as_type()], false);
-        let f = m.add_function::<Dyn, _>("DropStaleZextNNeg", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("DropStaleZextNNeg", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let a: IntValue<Width<3>> = f.param(0)?.try_into()?;
@@ -679,7 +679,7 @@ fn simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement()
 
         let mutate_fn_ty = m.fn_type(i5_ty, [i3_ty.as_type()], false);
         let mutate_f =
-            m.add_function::<Dyn, _>("DropStaleZextNNegMutate", mutate_fn_ty, Linkage::External)?;
+            m.add_function_dyn("DropStaleZextNNegMutate", mutate_fn_ty, Linkage::External)?;
         let mutate_entry = mutate_f.append_basic_block(&m, "entry");
         let mutate_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(mutate_entry);
         let mutate_arg: IntValue<Width<3>> = mutate_f.param(0)?.try_into()?;

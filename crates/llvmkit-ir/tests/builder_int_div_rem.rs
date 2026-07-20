@@ -9,15 +9,15 @@
 //! (which exercises `Builder.Create*` flag setters of the same shape).
 //! The shared `module_for` helper above factors module setup.
 
-use llvmkit_ir::{IRBuilder, IntValue, IrError, Linkage, Module, SDivFlags, UDivFlags};
+use llvmkit_ir::{Dyn, IRBuilder, IntValue, IrError, Linkage, Module, SDivFlags, UDivFlags};
 
 fn module_for(op: &str) -> Result<String, IrError> {
     Module::with_new("dr", |m| {
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
-        let f = m.add_function::<i64, _>(op, fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn(op, fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: IntValue<i64> = f.param(0)?.try_into()?;
         let y: IntValue<i64> = f.param(1)?.try_into()?;
         let r = match op {
@@ -72,9 +72,9 @@ fn udiv_exact() -> Result<(), IrError> {
     Module::with_new("ex", |m| {
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
-        let f = m.add_function::<i64, _>("udiv_exact", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("udiv_exact", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let lhs: IntValue<i64> = f.param(0)?.try_into()?;
         let rhs: IntValue<i64> = f.param(1)?.try_into()?;
         let r = b.build_int_udiv_with_flags(lhs, rhs, UDivFlags::new().exact(), "z")?;
@@ -91,9 +91,9 @@ fn sdiv_exact() -> Result<(), IrError> {
     Module::with_new("ex", |m| {
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
-        let f = m.add_function::<i64, _>("sdiv_exact", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("sdiv_exact", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i64>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let lhs: IntValue<i64> = f.param(0)?.try_into()?;
         let rhs: IntValue<i64> = f.param(1)?.try_into()?;
         let r = b.build_int_sdiv_with_flags(lhs, rhs, SDivFlags::new().exact(), "z")?;

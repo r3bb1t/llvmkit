@@ -43,7 +43,7 @@ fn build() -> Result<(), IrError> {
         let v4i32 = m.vector_type_n::<i32, 4>();
 
         let fn_ty = m.fn_type(i32_ty.as_type(), [v4i32.as_type(), v4i32.as_type()], false);
-        let vadd = m.add_function::<i32, _>("vadd", fn_ty, Linkage::External)?;
+        let vadd = m.add_function_dyn("vadd", fn_ty, Linkage::External)?;
         let entry = vadd.append_basic_block(&m, "entry");
         let b = IRBuilder::at_end(entry);
 
@@ -82,7 +82,7 @@ fn build() -> Result<(), IrError> {
         let a4i32 = m.array_type_n::<i32, 4>();
 
         let fn_ty = m.fn_type(i32_ty.as_type(), [a4i32.as_type()], false);
-        let apack = m.add_function::<i32, _>("apack", fn_ty, Linkage::External)?;
+        let apack = m.add_function_dyn("apack", fn_ty, Linkage::External)?;
         let entry = apack.append_basic_block(&m, "entry");
         let b = IRBuilder::at_end(entry);
 
