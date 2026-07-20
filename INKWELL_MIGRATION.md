@@ -128,7 +128,7 @@ shapes and is distinct from `IntDyn` / `FloatDyn`.
 |`float_type.const_float(d)` (f64)|`f64_ty.const_double(value)` / `f32_ty.const_float(value)`|infallible; `const_from_bits(u128)` covers the half / bfloat / fp128 / x86_fp80 / ppc_fp128 kinds|
 |`pointer_type.const_null()`|`pointer_type.const_null()`|same; also `const_zero()`|
 |`type.get_undef()` / `get_poison()`|`ty.get_undef()` / `get_poison()`|same|
-|`module.add_function(name, fn_ty, linkage)`|`module.add_function::<Dyn, _>(name, fn_ty, linkage)?`|fallible (`Err(DuplicateFunctionName)`); the `R` generic names the typed-return marker — `Dyn` is the runtime-checked shape|
+|`module.add_function(name, fn_ty, linkage)`|`module.add_function_dyn(name, fn_ty, linkage)?`|fallible (`Err(DuplicateFunctionName)`); returns `FunctionValue<'ctx, Dyn>` — the runtime-checked shape. Re-type later with the checked `module.function_by_name_typed::<R>(name)?`|
 |`module.get_function(name)`|`module.function_by_name(name)`|`Option<FunctionValue<'ctx, Dyn>>`|
 |`module.get_functions()`|`module.as_view().iter_functions()`|`ExactSizeIterator<Item = FunctionView>` on the read-only module view|
 |—|`module.function_builder::<Dyn, _>(name, fn_ty)`|new — chainable `.linkage()` / `.calling_conv()` / `.attribute()` / `.build()?`|
@@ -145,7 +145,7 @@ shapes and is distinct from `IntDyn` / `FloatDyn`.
 |`Builder::build_return(None)`|`b.build_ret_void()` (`R = ()`) or `b.build_ret_void()?` (`Dyn`)|typed `void` builders are infallible; the `Dyn` path errors if the function does not return `void`|
 |`Builder::position_at_end(bb)`|`IRBuilder::new(&m).position_at_end(bb)`|consumes `self` and transitions `Unpositioned` → `Positioned`; `build_*` methods are only reachable in `Positioned`. Accepts only `Unterminated` blocks|
 |—|`IRBuilder::new_for::<R>(&m)`|new — produces a return-marker-tagged builder for compile-time-checked `build_ret`|
-|—|`m.add_function::<i32, _>(name, fn_ty, linkage)?`|typed-return form of the same method; errors with `IrError::ReturnTypeMismatch` if the signature's return type does not match the marker|
+|—|`m.add_typed_function::<i32, (), _>(name, linkage)?`|typed form — the signature is *derived from* the `Ret`/`Params` markers (no separate `fn_ty`, a marker/signature mismatch is unrepresentable); parameters come back typed via `.params()`|
 |—|`m.function_builder::<R, _>(name, fn_ty)`|chainable: `.linkage()` / `.calling_conv()` / `.unnamed_addr()` / `.attribute()` / `.return_attribute(kind)` / `.param_attribute(slot, kind)` / `.param_name(slot, name)` / `.build()?`|
 ||`f.with_typed_params::<Params>()?`|wraps functions built through the existing `function_builder` path|
 ||`f.with_typed_signature::<fn(i32) -> i32>()?`|wraps an existing raw function with a function-pointer schema|

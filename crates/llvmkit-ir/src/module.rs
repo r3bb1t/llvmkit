@@ -834,8 +834,9 @@ pub(super) struct ModuleCore {
     source_filename: core::cell::RefCell<Option<String>>,
     ctx: Context,
     /// Functions defined in this module, in declaration order.
-    /// Stored as a `RefCell<Vec<ValueId>>` so `add_function` can mutate
-    /// while the same `&'ctx self` borrow is held by call sites.
+    /// Stored as a `RefCell<Vec<ValueId>>` so the function-declaring
+    /// constructors can mutate while the same `&'ctx self` borrow is
+    /// held by call sites.
     functions: core::cell::RefCell<Vec<ValueId>>,
     /// Module-level name -> function value-id table.
     function_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueId>>,
@@ -2610,7 +2611,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     /// the CALLER's responsibility — the typed constructors derive the
     /// signature from their markers so a mismatch is unrepresentable,
     /// and [`add_function_dyn`](Self::add_function_dyn)'s `Dyn` matches
-    /// every signature by definition.
+    /// every signature by definition. That caller contract stays closed
+    /// because `FunctionReturn` cannot gain downstream impls: the
+    /// `impl<S: StructSchema> FunctionReturn for S` blanket
+    /// coherence-blocks direct external impls (and itself pins
+    /// `Marker = Dyn`), so removing or narrowing that blanket would make
+    /// the dropped marker check load-bearing again — re-add it here if
+    /// that ever changes.
     fn declare_function<R>(
         &self,
         name: &str,

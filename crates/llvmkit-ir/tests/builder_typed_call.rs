@@ -442,9 +442,10 @@ fn build_call_dyn_rejects_wrong_argument_type() -> Result<(), IrError> {
 /// `build_indirect_call_dyn` computed `expected` from `fn_ty`'s own
 /// return type instead of from the caller-asserted marker `R2`, so a
 /// mismatch always reported `expected == got`, never actually telling
-/// the caller what marker they asserted. Mirrors
-/// `Module::add_function`'s `signature_matches_marker` gate applied at
-/// an indirect call site.
+/// the caller what marker they asserted. Mirrors the
+/// `signature_matches_marker` gate on the checked declaration/lookup
+/// paths (`FunctionBuilder::build`, `function_by_name_typed`) applied
+/// at an indirect call site.
 #[test]
 fn build_indirect_call_dyn_int_marker_against_void_fn_type_reports_asymmetric_mismatch()
 -> Result<(), IrError> {

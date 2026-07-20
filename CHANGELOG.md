@@ -24,8 +24,11 @@ Erasure is still available, but it must be **spelled**.
   markers (a mismatch is unrepresentable; parameters come back typed), and
   `add_function_dyn` takes a runtime `FunctionType` and returns
   `FunctionValue<Dyn>`. To re-type a function declared erased, use the
-  checked `function_by_name_typed::<R>` lookup. Locked by
-  `tests/compile_fail/add_function_removed.rs`.
+  checked `function_by_name_typed::<R>` lookup. One deliberate escape hatch
+  remains: `function_builder::<R>(name, fn_ty)` (the attribute/linkage-rich
+  declaration path) still pairs a user-supplied signature with a chosen
+  marker and keeps the runtime `ReturnTypeMismatch` gate at `.build()`.
+  Locked by `tests/compile_fail/add_function_removed.rs`.
 - Removed the erased-handle lifts from `IntoIntValue`, `IntoFloatValue`, and
   `IntoPointerValue`. An erased `Value` / `Argument` / `Instruction` no longer
   fills a typed operand slot on its own; narrow it explicitly first — e.g.

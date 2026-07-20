@@ -123,7 +123,7 @@ fn post_construction_function_attributes() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
 
-        // Forward declaration via plain `add_function` (no builder).
+        // Forward declaration via `add_function_dyn` (no builder).
         let f = m.add_function_dyn("trampoline", fn_ty, Linkage::External)?;
         // Body is defined later; decorate the existing value.
         f.add_attribute(

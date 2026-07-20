@@ -3103,18 +3103,19 @@ where
     /// Mirrors `IRBuilder::CreateAtomicCmpXchg`.
     ///
     /// Result type is the literal struct `{ <pointee>, i1 }`.
-    pub fn build_atomic_cmpxchg<P, V, Name>(
+    pub fn build_atomic_cmpxchg<P, C, N, Name>(
         &self,
         ptr: P,
-        cmp: V,
-        new_val: V,
+        cmp: C,
+        new_val: N,
         config: crate::instr_types::AtomicCmpXchgConfig,
         name: Name,
     ) -> IrResult<AtomicCmpXchgInst<'ctx, B>>
     where
         Name: AsRef<str>,
         P: IsValue<'ctx, B>,
-        V: IsValue<'ctx, B>,
+        C: IsValue<'ctx, B>,
+        N: IsValue<'ctx, B>,
     {
         let p = ptr.as_value();
         let c = cmp.as_value();

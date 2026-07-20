@@ -193,9 +193,12 @@ fn function_builder_chains_options() -> Result<(), IrError> {
 // signature -- a runtime rejection. After the strict cut the typed
 // constructors derive the signature FROM the markers
 // (`add_typed_function::<Ret, Params, _>`), so a marker/signature mismatch
-// cannot be expressed at all; the compile-fail lock
+// cannot be expressed through them; the compile-fail lock
 // `tests/compile_fail/add_function_removed.rs` pins the erased+typed
-// constructor's absence.
+// constructor's absence. The one deliberate escape hatch --
+// `function_builder::<R>`, where a user-supplied signature still meets an
+// independent `R` -- keeps its runtime gate, locked by
+// `return_marker_mismatch_diagnostic.rs::function_builder_rejects_mismatched_return_marker`.
 
 /// llvmkit-specific: runtime-checked `Dyn` builder still validates `build_ret`
 /// types. Closest upstream reference: assertion in `IRBuilderBase::CreateRet`.
