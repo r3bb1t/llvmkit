@@ -282,7 +282,7 @@ fn macro_module_pass_matches_handwritten() -> Result<(), IrError> {
     let macro_ir: String = Module::with_new("macro-mod", |m| {
         let _f = build_ret_i32(&m)?;
         let verified = m.verify()?;
-        assert_eq!(verified.iter_globals().len(), 0);
+        assert_eq!(verified.globals().len(), 0);
         let mut analyses = Analyses::new();
 
         let (name, required) = mod_pass_meta(&verified, &MacroAddGlobal);
@@ -296,11 +296,7 @@ fn macro_module_pass_matches_handwritten() -> Result<(), IrError> {
         // compile-time half of the lock.
         let out: Module<'_, _, Unverified> =
             run_module_pass(MacroAddGlobal, verified, &mut analyses)?;
-        assert_eq!(
-            out.iter_globals().len(),
-            1,
-            "the macro pass added the global"
-        );
+        assert_eq!(out.globals().len(), 1, "the macro pass added the global");
         Ok(format!("{}", out.verify()?))
     })?;
 

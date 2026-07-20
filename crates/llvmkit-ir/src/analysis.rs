@@ -787,7 +787,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
             return Ok(());
         }
 
-        for function in module.iter_functions() {
+        for function in module.functions() {
             self.invalidate(function, pa)?;
         }
         Ok(())

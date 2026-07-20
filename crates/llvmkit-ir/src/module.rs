@@ -659,7 +659,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
 
     /// Iterate functions in declaration order.
     #[inline]
-    pub fn iter_functions(
+    pub fn functions(
         self,
     ) -> impl ExactSizeIterator<Item = crate::pass_context::FunctionView<'ctx, B>> + 'ctx {
         self.core
@@ -669,25 +669,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
 
     /// Iterate globals in declaration order.
     #[inline]
-    pub fn iter_globals(self) -> impl ExactSizeIterator<Item = GlobalVariableView<'ctx, B>> + 'ctx {
+    pub fn globals(self) -> impl ExactSizeIterator<Item = GlobalVariableView<'ctx, B>> + 'ctx {
         self.core.iter_globals::<B>().map(GlobalVariableView::new)
     }
 
     /// Iterate aliases in declaration order.
     #[inline]
-    pub fn iter_aliases(self) -> impl ExactSizeIterator<Item = GlobalAliasView<'ctx, B>> + 'ctx {
+    pub fn aliases(self) -> impl ExactSizeIterator<Item = GlobalAliasView<'ctx, B>> + 'ctx {
         self.core.iter_aliases::<B>().map(GlobalAliasView::new)
     }
 
     /// Iterate ifuncs in declaration order.
     #[inline]
-    pub fn iter_ifuncs(self) -> impl ExactSizeIterator<Item = GlobalIFuncView<'ctx, B>> + 'ctx {
+    pub fn ifuncs(self) -> impl ExactSizeIterator<Item = GlobalIFuncView<'ctx, B>> + 'ctx {
         self.core.iter_ifuncs::<B>().map(GlobalIFuncView::new)
     }
 
     /// Iterate COMDATs in insertion order.
     #[inline]
-    pub fn iter_comdats(self) -> impl ExactSizeIterator<Item = ComdatView<'ctx, B>> + 'ctx {
+    pub fn comdats(self) -> impl ExactSizeIterator<Item = ComdatView<'ctx, B>> + 'ctx {
         self.core.iter_comdats::<B>().map(ComdatView::new)
     }
 }
@@ -1891,12 +1891,13 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
     }
 
     /// Iterate globals in declaration order with this module token's brand.
-    pub fn iter_globals(&self) -> impl ExactSizeIterator<Item = GlobalVariable<'ctx, B>> + 'ctx {
+    pub fn globals(&self) -> impl ExactSizeIterator<Item = GlobalVariable<'ctx, B>> + 'ctx {
         self.core.iter_globals::<B>()
     }
 
-    /// Look up a function by name with this module token's brand.
-    pub fn function_by_name(&self, name: &str) -> Option<FunctionValue<'ctx, Dyn, B>> {
+    /// Look up a function by name with this module token's brand,
+    /// widened to [`Dyn`].
+    pub fn function_by_name_dyn(&self, name: &str) -> Option<FunctionValue<'ctx, Dyn, B>> {
         self.core
             .function_by_name
             .borrow()
@@ -1911,10 +1912,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
     }
 
     /// Look up a function by name and narrow to a specific return marker.
-    pub fn function_by_name_typed<R>(
-        &self,
-        name: &str,
-    ) -> IrResult<Option<FunctionValue<'ctx, R, B>>>
+    pub fn function_by_name<R>(&self, name: &str) -> IrResult<Option<FunctionValue<'ctx, R, B>>>
     where
         R: crate::marker::ReturnMarker,
     {
@@ -2390,7 +2388,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         ))
     }
 
-    pub fn set_struct_body<I, T>(
+    pub fn set_struct_body_dyn<I, T>(
         &self,
         st: StructType<'ctx, StructBodyDyn, B>,
         elements: I,
@@ -2420,7 +2418,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         self.core.ctx.set_named_struct_body(st.id, body)
     }
 
-    pub fn set_struct_body_typed<I, T>(
+    pub fn set_struct_body<I, T>(
         &self,
         opaque: StructType<'ctx, crate::struct_body_state::Opaque, B>,
         elements: I,

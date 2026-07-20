@@ -24,7 +24,7 @@ Erasure is still available, but it must be **spelled**.
   markers (a mismatch is unrepresentable; parameters come back typed), and
   `add_function_dyn` takes a runtime `FunctionType` and returns
   `FunctionValue<Dyn>`. To re-type a function declared erased, use the
-  checked `function_by_name_typed::<R>` lookup. One deliberate escape hatch
+  checked `function_by_name::<R>` lookup. One deliberate escape hatch
   remains: `function_builder::<R>(name, fn_ty)` (the attribute/linkage-rich
   declaration path) still pairs a user-supplied signature with a chosen
   marker and keeps the runtime `ReturnTypeMismatch` gate at `.build()`.
@@ -58,6 +58,36 @@ Erasure is still available, but it must be **spelled**.
   computed-SSA operands. The methods now take the concrete typed operand
   directly, so e.g. `build_bitcast_int_to_int(v, i8_ty, "bc")` needs no
   turbofish. Printed IR is unchanged.
+
+### Idiomatic surface (cycle C)
+
+#### Breaking
+
+- `Module::function_by_name` (erased; returns `Option<FunctionValue<Dyn>>`) is
+  renamed `function_by_name_dyn`, and the checked marker-narrowing
+  `function_by_name_typed::<R>` takes over the bare name as
+  `function_by_name::<R>` — the naming law: typed variant bare, erased variant
+  `_dyn`.
+- `Module::set_struct_body` (erased; takes `StructType<StructBodyDyn>`) is
+  renamed `set_struct_body_dyn`, and the typestate `set_struct_body_typed`
+  (consumes `Opaque`, yields `BodySet`) takes over the bare name as
+  `set_struct_body` — the naming law: typed variant bare, erased variant
+  `_dyn`.
+- `ModuleView::iter_functions` / `iter_globals` / `iter_aliases` /
+  `iter_ifuncs` / `iter_comdats` and `Module::iter_globals` become
+  `functions()` / `globals()` / `aliases()` / `ifuncs()` / `comdats()` —
+  `iter_` prefixes dropped for idiomatic Rust names.
+
+#### Deliberate law exceptions
+
+- `add_typed_function` keeps its name: `add_function` stays vacated as the
+  migration tombstone — a removed method's E0599 with a did-you-mean beats
+  confusing arity errors on a reused name (locked by
+  `tests/compile_fail/add_function_removed.rs`).
+- The `const_*` constructor family is conformant as-is: witness-generic
+  constructors, not typed/erased pairs.
+- The `append_block` family has no bare-named erased sibling — no violation.
+- `build_bitcast_dyn` / `build_phi_dyn` are by-design `_dyn` orphans.
 
 ### Declaration surface — globals derive their type from the initializer
 

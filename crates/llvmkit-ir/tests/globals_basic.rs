@@ -973,7 +973,7 @@ fn module_iter_globals_preserves_order() {
         m.add_global("a", zero).expect("a");
         m.add_global("b", zero).expect("b");
         m.add_global("c", zero).expect("c");
-        let names: Vec<&str> = m.iter_globals().map(|g| g.name()).collect();
+        let names: Vec<&str> = m.globals().map(|g| g.name()).collect();
         assert_eq!(names, vec!["a", "b", "c"]);
     })
 }

@@ -76,7 +76,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysis<'ctx, B> for CountModuleAnalysi
     ) -> IrResult<Self::Result> {
         self.runs.set(self.runs.get() + 1);
         Ok(CountModuleResult {
-            functions: module.iter_functions().len(),
+            functions: module.functions().len(),
         })
     }
 }
@@ -502,7 +502,7 @@ fn preserved_analyses_explicit_keys_intersect_and_abandon() {
 #[test]
 fn function_analysis_runs_once_caches_and_invalidates() -> Result<(), IrError> {
     with_sample_module(|m| {
-        let f = m.function_by_name("f").expect("sample has f");
+        let f = m.function_by_name_dyn("f").expect("sample has f");
         let runs = Rc::new(Cell::new(0));
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(CountFunctionAnalysis { runs: runs.clone() });
@@ -579,7 +579,7 @@ fn module_analysis_runs_once_caches_and_invalidates() -> Result<(), IrError> {
 #[test]
 fn invalidator_reports_missing_cached_dependency() -> Result<(), IrError> {
     with_sample_module(|m| {
-        let f = m.function_by_name("f").expect("sample has f");
+        let f = m.function_by_name_dyn("f").expect("sample has f");
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(DependsOnMissingFunctionAnalysis);
         let _ = fam.get_result::<DependsOnMissingFunctionAnalysis, _>(f)?;
@@ -603,7 +603,7 @@ fn invalidator_reports_missing_cached_dependency() -> Result<(), IrError> {
 #[test]
 fn module_level_invalidation_honors_fam_proxy_and_function_set() -> Result<(), IrError> {
     with_sample_module(|m| {
-        let f = m.function_by_name("f").expect("sample has f");
+        let f = m.function_by_name_dyn("f").expect("sample has f");
         let runs = Rc::new(Cell::new(0));
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(CountFunctionAnalysis { runs: runs.clone() });
@@ -638,7 +638,7 @@ fn module_level_invalidation_honors_fam_proxy_and_function_set() -> Result<(), I
 #[test]
 fn dominator_tree_analysis_caches_and_cfg_preserves() -> Result<(), IrError> {
     with_sample_module(|m| {
-        let f = m.function_by_name("f").expect("sample has f");
+        let f = m.function_by_name_dyn("f").expect("sample has f");
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(DominatorTreeAnalysis);
 

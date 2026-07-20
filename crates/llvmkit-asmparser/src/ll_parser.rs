@@ -1040,7 +1040,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let deferred = std::mem::take(&mut self.deferred_block_addresses);
         for item in deferred {
             let function = match &item.function {
-                NameOrId::Name(name) => self.module.function_by_name(name),
+                NameOrId::Name(name) => self.module.function_by_name_dyn(name),
                 NameOrId::Id(id) => self.numbered_globals.get(*id).and_then(|r| match r {
                     GlobalRef::Function(f) => Some(*f),
                     _ => None,
@@ -1781,13 +1781,13 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     .current_str_payload()
                     .ok_or_else(|| self.expected("function name in uselistorder_bb"))?;
                 self.bump()?;
-                self.module
-                    .function_by_name(&name)
-                    .ok_or_else(|| ParseError::UndefinedSymbol {
+                self.module.function_by_name_dyn(&name).ok_or_else(|| {
+                    ParseError::UndefinedSymbol {
                         kind: crate::parse_error::SymbolKind::Global,
                         id: crate::parse_error::SymbolId::Named(name),
                         loc: DiagLoc::span(loc),
-                    })?
+                    }
+                })?
             }
             Token::GlobalId(id) => {
                 let id = *id;
@@ -2493,7 +2493,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 let (elements, packed) = self.parse_struct_body()?;
                 if name.is_some() {
                     self.module
-                        .set_struct_body(handle, elements, packed)
+                        .set_struct_body_dyn(handle, elements, packed)
                         .map_err(|e| ParseError::Expected {
                             expected: format!("valid struct body: {e}"),
                             loc: DiagLoc::span(decl_loc),
@@ -3981,7 +3981,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         }
         if let Some(gv) = self.module.get_global(&name) {
             Ok(gv.as_value())
-        } else if let Some(fv) = self.module.function_by_name(&name) {
+        } else if let Some(fv) = self.module.function_by_name_dyn(&name) {
             Ok(fv.as_value())
         } else if let Some(a) = self.module.get_alias(&name) {
             Ok(a.as_value())
@@ -4028,7 +4028,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         }
         if let Some(g) = self.module.get_global(&name) {
             Ok(g.as_global_constant_ptr())
-        } else if let Some(f) = self.module.function_by_name(&name) {
+        } else if let Some(f) = self.module.function_by_name_dyn(&name) {
             Ok(f.as_global_constant_ptr())
         } else if let Some(a) = self.module.get_alias(&name) {
             Ok(a.as_global_constant_ptr())
@@ -4066,7 +4066,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
     fn resolve_global_name_as_ref(&self, name: String) -> ParseResult<GlobalRef<'ctx, B>> {
         if let Some(gv) = self.module.get_global(&name) {
             Ok(GlobalRef::Variable(gv))
-        } else if let Some(fv) = self.module.function_by_name(&name) {
+        } else if let Some(fv) = self.module.function_by_name_dyn(&name) {
             Ok(GlobalRef::Function(fv))
         } else if let Some(a) = self.module.get_alias(&name) {
             Ok(GlobalRef::Alias(a))
@@ -4120,7 +4120,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     .current_str_payload()
                     .ok_or_else(|| self.expected(expected))?;
                 self.bump()?;
-                if let Some(function) = self.module.function_by_name(&name) {
+                if let Some(function) = self.module.function_by_name_dyn(&name) {
                     Ok(ParsedBlockAddressFunction::Resolved(function))
                 } else if self.module.get_global(&name).is_some()
                     || self.module.get_alias(&name).is_some()
@@ -5315,7 +5315,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             NameOrId::Name(_) => None,
         };
         let existing_by_name = (!name.is_empty())
-            .then(|| self.module.function_by_name(&name))
+            .then(|| self.module.function_by_name_dyn(&name))
             .flatten();
         let f = if let Some(existing) = existing_by_id.or(existing_by_name) {
             if existing.signature() != fn_ty || existing.basic_blocks().len() != 0 {
@@ -5526,7 +5526,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             NameOrId::Name(_) => None,
         };
         let existing_by_name = (!name.is_empty())
-            .then(|| self.module.function_by_name(&name))
+            .then(|| self.module.function_by_name_dyn(&name))
             .flatten();
         let f = if let Some(existing) = existing_by_id.or(existing_by_name) {
             if existing.signature() != fn_ty || existing.basic_blocks().any(|bb| !bb.is_empty()) {
@@ -7775,7 +7775,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
     ) -> ParseResult<ParsedCallee<'ctx, B>> {
         match parsed {
             ParsedDirectCallee::Name { name, loc } => {
-                if let Some(f) = self.module.function_by_name(&name) {
+                if let Some(f) = self.module.function_by_name_dyn(&name) {
                     match resolve_intrinsic_name(&name) {
                         // A non-intrinsic direct callee resolves to the
                         // function regardless of whether the call-site type

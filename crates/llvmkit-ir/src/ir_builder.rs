@@ -4667,7 +4667,7 @@ where
         let fn_ty = asm.function_type();
         // Reject a return-marker / signature mismatch up front, mirroring
         // the `signature_matches_marker` gate on the typed lookup path
-        // (`Module::function_by_name_typed`).
+        // (`Module::function_by_name`).
         let ret_data = self.module.context().type_data(fn_ty.return_type().id());
         if !crate::function::signature_matches_marker::<R2>(ret_data) {
             return Err(IrError::ReturnTypeMismatch {

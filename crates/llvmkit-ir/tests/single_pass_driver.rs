@@ -77,7 +77,7 @@ fn inspect_module_pass_stays_verified_and_runs() -> Result<(), IrError> {
         let out: Module<'_, _, Verified> = run_module_pass(pass, verified, &mut analyses)?;
 
         assert!(ran.get(), "Inspect ModulePass::run must actually execute");
-        assert_eq!(out.as_view().iter_functions().count(), 1);
+        assert_eq!(out.as_view().functions().count(), 1);
         Ok(())
     })
 }
@@ -118,7 +118,7 @@ fn rewrite_module_pass_downgrades_and_mutates() -> Result<(), IrError> {
         b.build_ret(i32_ty.const_int(0_u32))?;
 
         let verified = m.verify()?;
-        assert_eq!(verified.iter_globals().len(), 0);
+        assert_eq!(verified.globals().len(), 0);
 
         let mut analyses = Analyses::new();
 
@@ -135,7 +135,7 @@ fn rewrite_module_pass_downgrades_and_mutates() -> Result<(), IrError> {
         );
         // The real mutation landed on the returned module, not just inside
         // the pass's own scope.
-        assert_eq!(out.iter_globals().len(), 1);
+        assert_eq!(out.globals().len(), 1);
         // The mutation is a real, well-formed IR edit.
         out.verify()?;
         Ok(())

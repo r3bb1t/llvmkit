@@ -41,7 +41,7 @@ impl<'ctx> ModulePass<'ctx> for ReportModulePass {
     ) -> Result<ModReport, IrError> {
         self.out.borrow_mut().push(format!(
             "module_pass functions={}",
-            cx.module().iter_functions().len()
+            cx.module().functions().len()
         ));
         Ok(cx.done())
     }
@@ -120,7 +120,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
 
 pub fn run_demo(m: Module<'_>) -> Result<(String, String, String), IrError> {
     let function = m
-        .function_by_name("select_or_add")
+        .function_by_name_dyn("select_or_add")
         .expect("demo function is present");
     let entry = function
         .entry_block()

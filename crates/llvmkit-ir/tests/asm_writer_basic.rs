@@ -51,7 +51,7 @@ fn module_prints_blank_line_between_type_identities_and_first_function() -> Resu
     Module::with_new("type_separator", |m| {
         let i32_ty = m.i32_type();
         let point_ty = m.named_struct("Point");
-        m.set_struct_body(point_ty, [i32_ty.as_type(), i32_ty.as_type()], false)?;
+        m.set_struct_body_dyn(point_ty, [i32_ty.as_type(), i32_ty.as_type()], false)?;
 
         let fn_ty = m.fn_type(m.void_type(), [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;

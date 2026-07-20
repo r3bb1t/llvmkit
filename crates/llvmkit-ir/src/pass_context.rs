@@ -40,7 +40,7 @@
 //!         let mut analyses = Analyses::new();
 //!         let rewritten: Module<'_, _, Unverified> =
 //!             run_module_pass(AddMarkerGlobal, verified, &mut analyses)?;
-//!         assert_eq!(rewritten.iter_globals().len(), 1);
+//!         assert_eq!(rewritten.globals().len(), 1);
 //!         let _ = rewritten.verify()?;
 //!         Ok(())
 //!     })
@@ -251,7 +251,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleFunctionViews<'ctx, B> {
     #[inline]
     pub(super) fn new(module: ModuleView<'ctx, B>) -> Self {
         Self {
-            inner: Box::new(module.iter_functions()),
+            inner: Box::new(module.functions()),
         }
     }
 }
@@ -2624,7 +2624,7 @@ where
     where
         FnA: MutatingFn,
     {
-        for function in self.module().iter_functions() {
+        for function in self.module().functions() {
             if function.entry_block().is_none() {
                 continue;
             }
@@ -3151,7 +3151,7 @@ mod tests {
             let mut fam = FunctionAnalysisManager::new();
 
             // No globals yet.
-            assert_eq!(module.iter_globals().len(), 0);
+            assert_eq!(module.globals().len(), 0);
 
             let cx: ModCx<'_, '_, '_, '_, _, RewriteModule, ()> =
                 ModCx::new(module, &m, (), &mam, &mut fam);
@@ -3161,7 +3161,7 @@ mod tests {
             r.module_mut().add_global("g", i32_ty.const_zero())?;
 
             // The mutation is visible on the module.
-            assert_eq!(module.iter_globals().len(), 1);
+            assert_eq!(module.globals().len(), 1);
 
             let rep = r.done();
             let pa = rep.into_pa();

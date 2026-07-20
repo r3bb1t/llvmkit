@@ -18,7 +18,7 @@ fn main() -> Result<(), IrError> {
         let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
         let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
         m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let f = m.function_by_name_typed::<()>("g")?.expect("declared above");
+        let f = m.function_by_name::<()>("g")?.expect("declared above");
         let entry = f.append_basic_block(&m, "entry");
         let b = llvmkit_ir::IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let up = f.param(0)?;
