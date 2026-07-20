@@ -734,7 +734,7 @@ macro_rules! decl_value_handle {
                 i: Instruction<'ctx, Attached, B>,
             ) -> IrResult<Self> {
                 <Self as TryFrom<Value<'ctx, B>>>::try_from(
-                    Instruction::into_erased(&i),
+                    Instruction::to_erased(&i),
                 )
             }
         }
@@ -1027,7 +1027,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
     type Error = IrError;
     #[inline]
     fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::into_erased(&i))
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::to_erased(&i))
     }
 }
 
@@ -1261,7 +1261,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>> for St
     type Error = IrError;
     #[inline]
     fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::into_erased(&i))
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::to_erased(&i))
     }
 }
 
@@ -1509,7 +1509,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
     type Error = IrError;
     #[inline]
     fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::into_erased(&i))
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::to_erased(&i))
     }
 }
 
@@ -1822,7 +1822,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
     type Error = IrError;
     #[inline]
     fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::into_erased(&i))
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::to_erased(&i))
     }
 }
 
@@ -1875,7 +1875,7 @@ macro_rules! impl_int_value_static_try_from {
             type Error = IrError;
             #[inline]
             fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::into_erased(&i))
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::to_erased(&i))
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<IntValue<'ctx, IntDyn, B>>
@@ -1952,7 +1952,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<Instruction<'ctx, Attach
     type Error = IrError;
     #[inline]
     fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::into_erased(&i))
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::to_erased(&i))
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<IntValue<'ctx, IntDyn, B>>
@@ -2178,7 +2178,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
 {
     type Error = IrError;
     fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::into_erased(&i))
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::to_erased(&i))
     }
 }
 
@@ -2223,7 +2223,7 @@ macro_rules! impl_float_value_static_try_from {
         {
             type Error = IrError;
             fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::into_erased(&i))
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::to_erased(&i))
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<FloatValue<'ctx, FloatDyn, B>>

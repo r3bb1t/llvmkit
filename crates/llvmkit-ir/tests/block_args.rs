@@ -27,7 +27,7 @@ fn append_block_with_params_creates_head_phi() -> Result<(), IrError> {
         assert_eq!(params[0].ty(), i32_ty.as_type());
 
         // The returned block handle is the freshly-appended `hdr`.
-        assert_eq!(hdr.label().into_erased().name().as_deref(), Some("hdr"));
+        assert_eq!(hdr.label().to_erased().name().as_deref(), Some("hdr"));
 
         // (b) the new block prints with a `phi i32` head-phi. `hdr` is the
         // only block carrying a phi, so its presence in the module text

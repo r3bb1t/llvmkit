@@ -376,7 +376,9 @@ impl Context {
 
     /// Named-struct ids in insertion (declaration) order. Cloned out of the
     /// `RefCell` to avoid holding a borrow across the caller's work, matching
-    /// the `iter_functions`/`iter_globals` snapshot pattern.
+    /// the `ModuleCore::iter_functions`/`iter_globals` snapshot pattern
+    /// (the crate-internal iterators, not the public `functions()`/
+    /// `globals()` surface).
     pub(crate) fn iter_named_structs(&self) -> Vec<TypeId> {
         self.named_struct_order.borrow().clone()
     }

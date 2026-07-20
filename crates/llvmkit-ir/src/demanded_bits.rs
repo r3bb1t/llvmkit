@@ -232,7 +232,7 @@ impl DemandedBits {
 
         for block in function.as_function().basic_blocks() {
             for inst in block.instructions() {
-                let value = inst.into_erased();
+                let value = inst.to_erased();
                 let ValueKindData::Instruction(data) = &value.data().kind else {
                     continue;
                 };
@@ -939,7 +939,7 @@ fn simplify_demanded_bits_iteration<'ctx>(
         let instruction_ids = block.instruction_ids();
         for id in instruction_ids {
             let inst = Instruction::<state::Attached>::from_parts(id, module_token.module_ref());
-            let value = inst.into_erased();
+            let value = inst.to_erased();
             if !is_simplify_candidate(value) {
                 continue;
             }
@@ -977,7 +977,7 @@ fn simplify_demanded_bits_iteration<'ctx>(
 
     for id in dead_to_erase.into_iter().rev() {
         let erased = Instruction::<state::Attached>::from_parts(id, module_token.module_ref());
-        if erased.into_erased().has_uses() {
+        if erased.to_erased().has_uses() {
             continue;
         }
         erased.erase_from_parent(module_token);
@@ -1102,7 +1102,7 @@ fn drop_zext_nneg_for_replaced_uses_recursive<'ctx, B: ModuleBrand + 'ctx>(
         return;
     }
     for user in value.users() {
-        let user = user.into_erased();
+        let user = user.to_erased();
         drop_zext_nneg_for_replaced_operand(user, value.id());
         drop_zext_nneg_for_replaced_uses_recursive(user, visited);
     }

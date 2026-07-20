@@ -108,9 +108,9 @@ fn build_switch_merge<'ctx>(
     let dflt_lbl = dflt.label();
     let other_lbl = other.label();
     let merge_lbl = merge.label();
-    let merge_dyn: BasicBlockLabel<Dyn> = merge_lbl.into_erased().try_into()?;
-    let dflt_dyn: BasicBlockLabel<Dyn> = dflt_lbl.into_erased().try_into()?;
-    let other_dyn: BasicBlockLabel<Dyn> = other_lbl.into_erased().try_into()?;
+    let merge_dyn: BasicBlockLabel<Dyn> = merge_lbl.to_erased().try_into()?;
+    let dflt_dyn: BasicBlockLabel<Dyn> = dflt_lbl.to_erased().try_into()?;
+    let other_dyn: BasicBlockLabel<Dyn> = other_lbl.to_erased().try_into()?;
 
     // entry: %e = add %a, 7 ; switch %a, default %dflt [ 0 -> merge, 1 -> other ]
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
@@ -293,8 +293,8 @@ fn build_switch_default_parallel<'ctx>(
     let entry_lbl = entry.label();
     let mid_lbl = mid.label();
     let shared_lbl = shared.label();
-    let shared_dyn: BasicBlockLabel<Dyn> = shared_lbl.into_erased().try_into()?;
-    let new_dyn: BasicBlockLabel<Dyn> = new.label().into_erased().try_into()?;
+    let shared_dyn: BasicBlockLabel<Dyn> = shared_lbl.to_erased().try_into()?;
+    let new_dyn: BasicBlockLabel<Dyn> = new.label().to_erased().try_into()?;
 
     // entry: %e = add %a, 7 ; switch %a, default %shared [ 0 -> shared, 1 -> mid ]
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);

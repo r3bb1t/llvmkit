@@ -177,7 +177,7 @@ fn typed_invoke_wires_multiple_argument_operands_in_order() -> Result<(), IrErro
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let (_sealed, invoke) =
             b.build_invoke(callee, (a, b_arg, p), normal_label, unwind_label, "iv")?;
-        let result: IntValue<i32> = invoke.into_erased().try_into()?;
+        let result: IntValue<i32> = invoke.to_erased().try_into()?;
         let bn = IRBuilder::new_for::<i32>(&m).position_at_end(normal);
         bn.build_ret(result)?;
         let text = format!("{m}");

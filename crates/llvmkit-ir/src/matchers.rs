@@ -40,7 +40,7 @@ pub trait Matcher<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
     /// Convenience: match against a rediscovered [`InstructionView`].
     #[inline]
     fn match_view(&self, view: &InstructionView<'ctx, B>) -> Option<Self::Bindings> {
-        self.try_match(view.into_erased())
+        self.try_match(view.to_erased())
     }
 }
 

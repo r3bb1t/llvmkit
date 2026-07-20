@@ -78,13 +78,10 @@ fn create_block_appends_named_block_to_function() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
-        assert_eq!(entry.label().into_erased().name().as_deref(), Some("entry"));
+        assert_eq!(entry.label().to_erased().name().as_deref(), Some("entry"));
 
         let second = b.create_block("second");
-        assert_eq!(
-            second.label().into_erased().name().as_deref(),
-            Some("second")
-        );
+        assert_eq!(second.label().to_erased().name().as_deref(), Some("second"));
 
         let entry_fn = f
             .entry_block()
@@ -205,8 +202,8 @@ fn ssa_block_label_round_trips_to_basic_block_label() -> Result<(), IrError> {
         let mut b = SsaBuilder::for_function(&m, f)?;
         let entry = b.create_block("entry");
         let label = entry.label();
-        assert_eq!(label.into_erased().name().as_deref(), Some("entry"));
-        assert_eq!(label.into_erased().id(), entry.label().into_erased().id());
+        assert_eq!(label.to_erased().name().as_deref(), Some("entry"));
+        assert_eq!(label.to_erased().id(), entry.label().to_erased().id());
         Ok(())
     })
 }

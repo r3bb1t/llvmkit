@@ -61,6 +61,14 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
 
 ## Ergonomics backlog (from the core audit)
 
+- `Display` for the ~25 typed instruction handles (`LoadInst`, `CallInst`, …).
+  Cycle C gave `Display` to every public *value* handle, which prints the
+  operand form, but deliberately stopped at the instruction handles: their
+  natural rendering is a full instruction line, not an operand, so they need
+  an explicit decision (delegate to `InstructionView`'s `Display`, or print
+  the operand form for consistency with the value handles) rather than a
+  mechanical sweep. Whichever is chosen should be stated in each impl's
+  rustdoc, as the value handles now do.
 - `build_atomic_cmpxchg` / `build_atomicrmw` builder-pattern variants (mirror
   `CallBuilder`).
 - Load/store variant explosion (base / `_with_align` / `_volatile` /

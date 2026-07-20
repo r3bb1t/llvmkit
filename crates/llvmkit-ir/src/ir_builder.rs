@@ -1581,7 +1581,7 @@ where
         }
         let payload = BinaryOpData::new(lhs.id, rhs.id);
         let inst = self.append_instruction(lhs.ty().id(), kind_ctor(payload), name);
-        Ok(inst.into_erased())
+        Ok(inst.to_erased())
     }
 
     /// `add lhs, rhs` on erased operands (scalar or integer vector).
@@ -2505,7 +2505,7 @@ where
         let payload = crate::instr_types::ExtractValueInstData::new(agg.id, indices.to_vec());
         let inst =
             self.append_instruction(leaf_ty, InstructionKindData::ExtractValue(payload), name);
-        Ok(inst.into_erased())
+        Ok(inst.to_erased())
     }
 
     /// Produce `insertvalue <agg-ty> <agg>, <elt-ty> <elt>, idx0, ...`.
@@ -2578,7 +2578,7 @@ where
         let payload =
             crate::instr_types::InsertValueInstData::new(agg.id, val.id, indices.to_vec());
         let inst = self.append_instruction(agg.ty, InstructionKindData::InsertValue(payload), name);
-        Ok(inst.into_erased())
+        Ok(inst.to_erased())
     }
 
     /// Extract a named-struct schema field and return the field's typed wrapper.
@@ -2664,7 +2664,7 @@ where
         let payload = crate::instr_types::ExtractElementInstData::new(vec.id, idx.id);
         let inst =
             self.append_instruction(elem_ty, InstructionKindData::ExtractElement(payload), name);
-        Ok(inst.into_erased())
+        Ok(inst.to_erased())
     }
 
     /// Produce `insertelement <vec-ty> <vec>, <elt-ty> <elt>, <idx-ty> <idx>`.
@@ -2693,7 +2693,7 @@ where
         let payload = crate::instr_types::InsertElementInstData::new(vec.id, val.id, idx.id);
         let inst =
             self.append_instruction(vec.ty, InstructionKindData::InsertElement(payload), name);
-        Ok(inst.into_erased())
+        Ok(inst.to_erased())
     }
 
     /// Produce `shufflevector <ty> <v1>, <ty> <v2>, <mask>`. Mirrors
@@ -2750,7 +2750,7 @@ where
             InstructionKindData::ShuffleVector(payload),
             name,
         );
-        Ok(inst.into_erased())
+        Ok(inst.to_erased())
     }
 
     // ---- Typed vector ops: element/length-checked siblings ----
@@ -3682,7 +3682,7 @@ where
             SyncScope::System,
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.into_erased())
+        Ok(inst.to_erased())
     }
 
     /// `load <ty>, ptr <ptr>, align N`. Non-volatile non-atomic load with explicit
@@ -3710,7 +3710,7 @@ where
             SyncScope::System,
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.into_erased())
+        Ok(inst.to_erased())
     }
 
     /// Typed integer load: `load iN, ptr <ptr>`. Marker-only form:
@@ -3922,7 +3922,7 @@ where
             SyncScope::System,
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.into_erased())
+        Ok(inst.to_erased())
     }
 
     /// `load volatile <ty>, ptr <ptr>, align N`. Volatile load with explicit
@@ -3950,7 +3950,7 @@ where
             SyncScope::System,
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.into_erased())
+        Ok(inst.to_erased())
     }
 
     /// Produce `store <value>, ptr <ptr>`. Mirrors
@@ -4172,7 +4172,7 @@ where
             config.sync_scope_value().clone(),
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.into_erased())
+        Ok(inst.to_erased())
     }
 
     /// Atomic store: `store atomic [volatile] <ty> <val>, ptr <ptr>
@@ -5253,7 +5253,7 @@ where
         }
         let payload = CastOpData::new(CastOpcode::PtrToAddr, value.id);
         let inst = self.append_instruction(dst_ty.id(), InstructionKindData::Cast(payload), name);
-        Ok(inst.into_erased())
+        Ok(inst.to_erased())
     }
 
     /// Produce `ptrtoint <value> to <dst>`. Mirrors
@@ -5465,7 +5465,7 @@ where
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, value.id);
         let inst = self.append_instruction(dst_ty.id(), InstructionKindData::Cast(payload), name);
-        Ok(inst.into_erased())
+        Ok(inst.to_erased())
     }
 
     /// Produce `addrspacecast <value> to <dst>`. Mirrors
@@ -7456,7 +7456,7 @@ where
         name: N,
     ) -> IntValue<'ctx, W, B> {
         let inst = self.append_instruction(like.ty().as_type().id(), kind, name);
-        IntValue::<W, B>::from_value_unchecked(inst.into_erased())
+        IntValue::<W, B>::from_value_unchecked(inst.to_erased())
     }
 
     /// Float analogue of `append_int_like`. Sound by construction: appended at `like.ty()`,
@@ -7468,7 +7468,7 @@ where
         name: N,
     ) -> FloatValue<'ctx, K, B> {
         let inst = self.append_instruction(like.ty().as_type().id(), kind, name);
-        FloatValue::<K, B>::from_value_unchecked(inst.into_erased())
+        FloatValue::<K, B>::from_value_unchecked(inst.to_erased())
     }
 
     /// Append `kind` at `ty` and wrap the result as width-`W`.
@@ -7486,7 +7486,7 @@ where
         name: N,
     ) -> IntValue<'ctx, W, B> {
         let inst = self.append_instruction(ty.as_type().id(), kind, name);
-        IntValue::<W, B>::from_value_unchecked(inst.into_erased())
+        IntValue::<W, B>::from_value_unchecked(inst.to_erased())
     }
 
     /// Float analogue of `append_int_at`. Sound: appended at `ty`, `ty: FloatType<'ctx, K, B>`
@@ -7498,7 +7498,7 @@ where
         name: N,
     ) -> FloatValue<'ctx, K, B> {
         let inst = self.append_instruction(ty.as_type().id(), kind, name);
-        FloatValue::<K, B>::from_value_unchecked(inst.into_erased())
+        FloatValue::<K, B>::from_value_unchecked(inst.to_erased())
     }
 
     /// Build and append a `load`, re-stamping the payload's pointee to `ty` and
@@ -7519,7 +7519,7 @@ where
     ) -> IrResult<IntValue<'ctx, W, B>> {
         payload.pointee_ty = ty.as_type().id();
         let inst = self.build_load_inner(payload, name)?;
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.into_erased()))
+        Ok(IntValue::<W, B>::from_value_unchecked(inst.to_erased()))
     }
 
     /// Float analogue of `append_int_load`. Re-stamps `payload.pointee_ty` with `ty`
@@ -7533,7 +7533,7 @@ where
     ) -> IrResult<FloatValue<'ctx, K, B>> {
         payload.pointee_ty = ty.as_type().id();
         let inst = self.build_load_inner(payload, name)?;
-        Ok(FloatValue::<K, B>::from_value_unchecked(inst.into_erased()))
+        Ok(FloatValue::<K, B>::from_value_unchecked(inst.to_erased()))
     }
 
     /// Append `kind` at `ptr_ty` and wrap the result as a `PointerValue`.
@@ -7550,7 +7550,7 @@ where
         name: N,
     ) -> PointerValue<'ctx, B> {
         let inst = self.append_instruction(ptr_ty.as_type().id(), kind, name);
-        PointerValue::from_value_unchecked(inst.into_erased())
+        PointerValue::from_value_unchecked(inst.to_erased())
     }
 
     /// Pointer load: build+append a `load` whose pointee is `ptr_ty`, routed through
@@ -7564,7 +7564,7 @@ where
     ) -> IrResult<PointerValue<'ctx, B>> {
         payload.pointee_ty = ptr_ty.as_type().id();
         let inst = self.build_load_inner(payload, name)?;
-        Ok(PointerValue::from_value_unchecked(inst.into_erased()))
+        Ok(PointerValue::from_value_unchecked(inst.to_erased()))
     }
 
     /// Crate-internal: append a freshly-built phi to the insertion block.
@@ -8416,10 +8416,7 @@ where
         }
         let payload = crate::instr_types::SelectInstData::new(c.id(), true_v.id, false_v.id);
         let inst = self.append_instruction(true_ty, InstructionKindData::Select(payload), name);
-        Ok(A::from_select_value(
-            inst.into_erased(),
-            &SelectNarrow::new(),
-        ))
+        Ok(A::from_select_value(inst.to_erased(), &SelectNarrow::new()))
     }
 }
 

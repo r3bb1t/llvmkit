@@ -193,7 +193,7 @@ fn invoke_result_dominates_normal_destination_but_not_unwind() -> Result<(), IrE
                 unwind_label,
                 "iv",
             )?;
-        let invoke_value: IntValue<i32> = invoke.into_erased().try_into()?;
+        let invoke_value: IntValue<i32> = invoke.to_erased().try_into()?;
 
         let bn = IRBuilder::new_for::<Dyn>(&m).position_at_end(normal);
         let normal_use = bn.build_int_add(invoke_value, 1_i32, "normal_use")?;

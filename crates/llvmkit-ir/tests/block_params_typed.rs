@@ -42,7 +42,7 @@ fn append_block_typed_yields_typed_params_from_head_phis() -> Result<(), IrError
         // Compile-time assertion: the typed block's label threads `Params`, so a
         // typed branch target keeps its `(i32, Ptr)` promise.
         let label: BasicBlockLabel<'_, (), _, (i32, Ptr)> = head.label();
-        assert_eq!(label.into_erased().name().as_deref(), Some("head"));
+        assert_eq!(label.to_erased().name().as_deref(), Some("head"));
 
         // The parameters are the block's *leading head-phis*: they print as
         // `phi i32` / `phi ptr` at the block head, in declaration order.
@@ -80,10 +80,7 @@ fn append_block_with_params_stays_erased() -> Result<(), IrError> {
 
         assert_eq!(params.len(), 1);
         assert_eq!(params[0].ty(), i32_ty.as_type());
-        assert_eq!(
-            erased.label().into_erased().name().as_deref(),
-            Some("erased")
-        );
+        assert_eq!(erased.label().to_erased().name().as_deref(), Some("erased"));
         Ok(())
     })
 }
@@ -106,7 +103,7 @@ fn append_block_typed_unit_params() -> Result<(), IrError> {
         // No head-phis were materialised.
         assert_eq!(head.instructions().count(), 0);
         let label: BasicBlockLabel<'_, (), _, ()> = head.label();
-        assert_eq!(label.into_erased().name().as_deref(), Some("head"));
+        assert_eq!(label.to_erased().name().as_deref(), Some("head"));
         Ok(())
     })
 }

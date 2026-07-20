@@ -72,7 +72,7 @@ fn phi_finishes_after_all_incomings() -> Result<(), IrError> {
         assert_eq!(phi_closed.incoming_count(), 2);
         let (_, incoming0) = phi_closed.incoming(0)?;
         let (_, incoming1) = phi_closed.incoming(1)?;
-        assert_ne!(incoming0.into_erased(), incoming1.into_erased());
+        assert_ne!(incoming0.to_erased(), incoming1.to_erased());
 
         // The phi result is still usable after finish().
         b.build_ret(phi_closed.as_int_value())?;

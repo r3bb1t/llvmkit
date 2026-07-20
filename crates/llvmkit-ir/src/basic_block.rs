@@ -196,8 +196,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     BasicBlockLabel<'ctx, R, B, Params>
 {
     /// Widen this copyable label reference to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes, so the label stays usable afterwards.
     #[inline]
-    pub fn into_erased(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -206,10 +208,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     }
 
     /// Opaque arena id of the underlying value (same id as
-    /// [`into_erased`](Self::into_erased)).
+    /// [`to_erased`](Self::to_erased)).
     #[inline]
     pub fn id(&self) -> ValueId {
-        self.into_erased().id
+        self.to_erased().id
     }
 
     /// Drop the typed parameter marker, yielding the parameter-erased
@@ -494,8 +496,10 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     }
 
     /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes, so the block stays usable afterwards.
     #[inline]
-    pub fn into_erased(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -504,10 +508,10 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     }
 
     /// Opaque arena id of the underlying value (same id as
-    /// [`into_erased`](Self::into_erased)).
+    /// [`to_erased`](Self::to_erased)).
     #[inline]
     pub fn id(&self) -> ValueId {
-        self.into_erased().id
+        self.to_erased().id
     }
 
     /// Erase the return-shape marker (and the parameter marker), producing
@@ -560,7 +564,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 
     /// Borrow the storage payload.
     fn data(&self) -> &'ctx BasicBlockData {
-        match &self.into_erased().data().kind {
+        match &self.to_erased().data().kind {
             ValueKindData::BasicBlock(b) => b,
             // The handle was produced by a constructor that pushed a
             // BasicBlock variant; the kind cannot have changed.
@@ -571,7 +575,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// Optional textual name. Mirrors `BasicBlock::getName`.
     #[inline]
     pub fn name(&self) -> Option<String> {
-        self.into_erased().name()
+        self.to_erased().name()
     }
 
     /// Set or clear the textual name.
@@ -581,13 +585,13 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     where
         Name: Into<String>,
     {
-        self.into_erased().set_name(module_token, name);
+        self.to_erased().set_name(module_token, name);
     }
 
     /// Clear the textual name.
     #[inline]
     pub fn clear_name(&self, module_token: &Module<'ctx, B, Unverified>) {
-        self.into_erased().clear_name(module_token);
+        self.to_erased().clear_name(module_token);
     }
 
     /// Owning module reference.
@@ -857,7 +861,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {
-        self.into_erased().ty()
+        self.to_erased().ty()
     }
 }
 impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, Params: BlockParams>
@@ -884,7 +888,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
-        self.into_erased().debug_loc()
+        self.to_erased().debug_loc()
     }
 }
 
@@ -893,7 +897,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 {
     #[inline]
     fn from(b: BasicBlock<'ctx, R, Term, B, Params>) -> Self {
-        b.into_erased()
+        b.to_erased()
     }
 }
 
@@ -967,7 +971,7 @@ mod tests {
             // A label recovered from an untyped `Value` carries no static
             // parameter promise, so it must land in the `BlockParamsDyn`
             // form (proved at compile time by `assert_dyn_params`).
-            let v: Value<'_, _> = bb.into_erased();
+            let v: Value<'_, _> = bb.to_erased();
             let recovered: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = v
                 .try_into()
                 .expect("a basic-block value narrows to a label");
@@ -977,7 +981,7 @@ mod tests {
     }
 
     #[test]
-    fn label_as_value_round_trips_to_dyn_params() {
+    fn label_to_erased_round_trips_to_dyn_params() {
         Module::with_new("bp-slice1-roundtrip", |m| {
             let void_ty = m.void_type().as_type();
             let fn_ty = m.fn_type_no_params(void_ty, false);
@@ -986,7 +990,7 @@ mod tests {
             let label = bb.label();
 
             let round: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = label
-                .into_erased()
+                .to_erased()
                 .try_into()
                 .expect("a label's value round-trips to a label");
             assert_eq!(round.id(), label.id());

@@ -200,7 +200,7 @@ fn va_arg_int_round_trip() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let ap: PointerValue = f.param(0)?.try_into()?;
         let v = b.build_va_arg(ap, i32_ty.as_type(), "tmp")?;
-        let asv: IntValue<i32> = v.into_erased().try_into()?;
+        let asv: IntValue<i32> = v.to_erased().try_into()?;
         b.build_ret(asv)?;
         let text = format!("{m}");
         // Mirrors the upstream `%tmp = va_arg ptr %ap, i32` form.
@@ -226,7 +226,7 @@ fn va_arg_print_keyword_and_destination_type() -> Result<(), IrError> {
         let v = b.build_va_arg(ap, i32_ty.as_type(), "build_va_arg")?;
         let _ = ap; // silence unused-variable lint when `pop` accessor changes.
         assert_eq!(v.result_type(), i32_ty.as_type());
-        let asv: IntValue<i32> = v.into_erased().try_into()?;
+        let asv: IntValue<i32> = v.to_erased().try_into()?;
         b.build_ret(asv)?;
         Ok(())
     })

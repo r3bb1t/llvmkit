@@ -1846,18 +1846,15 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         };
         self.expect_punct(PunctKind::Comma, "',' before uselistorder_bb indexes")?;
         let indexes = self.parse_use_list_order_indexes()?;
-        let record = UseListOrderBBRecord::new(
-            function.into_erased().id(),
-            block.into_erased().id(),
-            indexes,
-        )
-        .map_err(|e| match e {
-            IrError::InvalidOperation { message } => ParseError::Expected {
-                expected: message.into(),
-                loc: DiagLoc::span(loc),
-            },
-            other => self.builder_err("uselistorder_bb", other),
-        })?;
+        let record =
+            UseListOrderBBRecord::new(function.into_erased().id(), block.to_erased().id(), indexes)
+                .map_err(|e| match e {
+                    IrError::InvalidOperation { message } => ParseError::Expected {
+                        expected: message.into(),
+                        loc: DiagLoc::span(loc),
+                    },
+                    other => self.builder_err("uselistorder_bb", other),
+                })?;
         self.module
             .append_use_list_order_bb(record)
             .map_err(|e| match e {
@@ -5745,7 +5742,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             }
             BlockHeader::Implicit => state.define_implicit_block(self.module, header_loc)?,
         };
-        let bb_value = bb.into_erased();
+        let bb_value = bb.to_erased();
         // Drive the typed builder for this block.
         let builder = IRBuilder::with_folder(self.module, NoFolder).position_at_end(bb);
         // Emit instructions until a terminator consumes `builder`.
@@ -7334,19 +7331,19 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 let phi = b
                     .build_int_phi_dyn(int_ty, name)
                     .map_err(|e| self.builder_err("phi", e))?;
-                phi.into_erased()
+                phi.to_erased()
             }
             AnyTypeEnum::Float(fp_ty) => {
                 let phi = b
                     .build_fp_phi_dyn(fp_ty, name)
                     .map_err(|e| self.builder_err("phi", e))?;
-                phi.into_erased()
+                phi.to_erased()
             }
             AnyTypeEnum::Pointer(ptr_ty) => {
                 let phi = b
                     .build_pointer_phi_in_addrspace(ptr_ty, name)
                     .map_err(|e| self.builder_err("phi", e))?;
-                phi.into_erased()
+                phi.to_erased()
             }
             // The remaining first-class *data* types — vector, array, and
             // non-opaque struct — are legal phi result types. Route them through
@@ -7361,7 +7358,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 let phi = b
                     .build_phi_dyn(ty, name)
                     .map_err(|e| self.builder_err("phi", e))?;
-                phi.into_erased()
+                phi.to_erased()
             }
             // Everything else is rejected here. `label`, `metadata`, and
             // `token` are first-class per `Type::is_first_class` yet are not
@@ -7643,7 +7640,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     .name(name)
                     .build()
                     .map_err(|e| self.builder_err("call", e))?
-                    .into_erased()
+                    .to_erased()
             }
             ParsedCallee::InlineAsm(asm) => {
                 if asm.label_constraint_count() != 0 {
@@ -7651,7 +7648,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
                 b.build_inline_asm_call::<llvmkit_ir::Dyn, _, _, _>(asm, args, name)
                     .map_err(|e| self.builder_err("call", e))?
-                    .into_erased()
+                    .to_erased()
             }
             ParsedCallee::Indirect(callee) => b
                 .build_indirect_call_dyn::<llvmkit_ir::Dyn, _, _, _>(
@@ -7661,7 +7658,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     name,
                 )
                 .map_err(|e| self.builder_err("indirect call", e))?
-                .into_erased(),
+                .to_erased(),
         };
         Ok(v)
     }
@@ -7924,7 +7921,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_va_arg(list_ptr, result_ty, result_name.as_str())
             .map_err(|e| self.builder_err("va_arg", e))?;
-        Ok(v.into_erased())
+        Ok(v.to_erased())
     }
 
     /// `freeze <ty> <val>`. Mirrors `LLParser::parseFreeze`.
@@ -7941,7 +7938,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let r = b
             .build_freeze(v, result_name.as_str())
             .map_err(|e| self.builder_err("freeze", e))?;
-        Ok(r.into_erased())
+        Ok(r.to_erased())
     }
 
     /// `switch <ty> <val>, label %default [ <ty> N, label %case ... ]`.
@@ -8091,7 +8088,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_atomic_cmpxchg(ptr, cmp_v, new_v, config, result_name.as_str())
             .map_err(|e| self.builder_err("cmpxchg", e))?;
-        Ok(v.into_erased())
+        Ok(v.to_erased())
     }
 
     /// `atomicrmw [volatile] <op> ptr <ptr>, <ty> <val>
@@ -8139,7 +8136,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     loc,
                 });
         }
-        Ok(v.into_erased())
+        Ok(v.to_erased())
     }
 
     /// Parse an `atomicrmw` operation keyword.
@@ -8212,7 +8209,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 _ => break,
             }
         }
-        Ok(lp.finish().into_erased())
+        Ok(lp.finish().to_erased())
     }
 
     /// `cleanuppad within <token-or-none> [<args>]`. Non-terminator.
@@ -8233,7 +8230,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             None => b.build_cleanup_pad_within_none(args, result_name.as_str()),
         }
         .map_err(|e| self.builder_err("cleanuppad", e))?;
-        Ok(v.into_erased())
+        Ok(v.to_erased())
     }
 
     /// `catchpad within <catchswitch> [<args>]`. Non-terminator.
@@ -8253,7 +8250,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_catch_pad(parent_v, args, result_name.as_str())
             .map_err(|e| self.builder_err("catchpad", e))?;
-        Ok(v.into_erased())
+        Ok(v.to_erased())
     }
 
     /// `resume <ty> <val>`. Terminator.
@@ -8386,7 +8383,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 .add_handler(h)
                 .map_err(|e| self.builder_err("catchswitch.add_handler", e))?;
         }
-        Ok(cs.finish().into_erased())
+        Ok(cs.finish().to_erased())
     }
 
     /// `invoke [cc] [ret-attrs] <ret-ty> @func(<args>) to label %normal
@@ -8513,7 +8510,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         if ret_is_void {
             Ok(None)
         } else {
-            Ok(Some(inst.into_erased()))
+            Ok(Some(inst.to_erased()))
         }
     }
 
@@ -8650,7 +8647,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         if ret_is_void {
             Ok(None)
         } else {
-            Ok(Some(inst.into_erased()))
+            Ok(Some(inst.to_erased()))
         }
     }
 
@@ -8906,7 +8903,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         let mut blocks = std::collections::HashMap::new();
         for bb in func.basic_blocks() {
             let name = bb.name().unwrap_or_default();
-            blocks.insert(name, bb.into_erased());
+            blocks.insert(name, bb.to_erased());
         }
         Self {
             func,
@@ -8949,7 +8946,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             return self.value_as_block(module, value, loc);
         }
         let bb = self.func.append_basic_block(module, name);
-        self.blocks.insert(name.to_owned(), bb.into_erased());
+        self.blocks.insert(name.to_owned(), bb.to_erased());
         Ok(bb)
     }
 
@@ -8963,7 +8960,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             return self.value_as_block_label(value, loc);
         }
         let bb = self.func.append_basic_block(module, name);
-        self.blocks.insert(name.to_owned(), bb.into_erased());
+        self.blocks.insert(name.to_owned(), bb.to_erased());
         Ok(bb.label())
     }
 
@@ -9032,10 +9029,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             self.value_as_block(module, value, loc)?
         } else {
             let bb = self.func.append_basic_block(module, "");
-            self.numbered_blocks.insert(id, bb.into_erased());
+            self.numbered_blocks.insert(id, bb.to_erased());
             bb
         };
-        let bb_value = bb.into_erased();
+        let bb_value = bb.to_erased();
         self.func
             .move_basic_block_to_end(module, bb)
             .map_err(|e| ParseError::Expected {
@@ -9071,7 +9068,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Terminated, B>> {
         self.func
             .basic_blocks()
-            .find(|bb| bb.into_erased() == value)
+            .find(|bb| bb.to_erased() == value)
             .ok_or_else(|| ParseError::Expected {
                 expected: "referenced value is not a basic block".into(),
                 loc: DiagLoc::span(loc),
@@ -9102,7 +9099,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             self.value_as_block_label(value, loc)?
         } else {
             let bb = self.func.append_basic_block(module, "");
-            self.numbered_blocks.insert(id, bb.into_erased());
+            self.numbered_blocks.insert(id, bb.to_erased());
             bb.label()
         };
         self.numbered_block_refs.entry(id).or_insert(loc);
@@ -9128,7 +9125,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             BlockRef::Named(name) => self.ensure_block_label(module, name, loc)?,
             BlockRef::Numbered(id) => self.get_or_create_numbered_block_label(module, *id, loc)?,
         };
-        self.value_as_block_view(label.into_erased(), loc)
+        self.value_as_block_view(label.to_erased(), loc)
     }
 
     fn bind_local(

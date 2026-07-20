@@ -106,8 +106,8 @@ fn switch_cases_reader_round_trips() -> Result<(), IrError> {
             i8_ty.const_int(20_i8).into_erased()
         );
         // Targets round-trip too.
-        assert_eq!(cases[0].1.into_erased(), a_label.into_erased());
-        assert_eq!(cases[1].1.into_erased(), b_label.into_erased());
+        assert_eq!(cases[0].1.to_erased(), a_label.to_erased());
+        assert_eq!(cases[1].1.to_erased(), b_label.to_erased());
         Ok(())
     })
 }

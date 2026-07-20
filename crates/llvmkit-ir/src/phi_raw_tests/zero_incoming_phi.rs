@@ -96,7 +96,7 @@ fn build_single_pred_phi<'ctx>(
     let entry_lbl = entry.label();
     let to_lbl = to.label();
     let other_lbl = other.label();
-    let to_dyn: BasicBlockLabel<Dyn> = to_lbl.into_erased().try_into()?;
+    let to_dyn: BasicBlockLabel<Dyn> = to_lbl.to_erased().try_into()?;
 
     // entry: %x = add %a, 7 ; %c = icmp slt %a, 5 ; cond_br %c, to, other
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
@@ -191,8 +191,8 @@ fn build_redirect_single_pred_phi<'ctx>(
     let old_to_lbl = old_to.label();
     let other_lbl = other.label();
     let new_to_lbl = new_to.label();
-    let old_to_dyn: BasicBlockLabel<Dyn> = old_to_lbl.into_erased().try_into()?;
-    let new_to_dyn: BasicBlockLabel<Dyn> = new_to_lbl.into_erased().try_into()?;
+    let old_to_dyn: BasicBlockLabel<Dyn> = old_to_lbl.to_erased().try_into()?;
+    let new_to_dyn: BasicBlockLabel<Dyn> = new_to_lbl.to_erased().try_into()?;
 
     // entry: %x = add %a, 7 ; %c = icmp slt %a, 5 ; cond_br %c, old_to, other
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);

@@ -17,7 +17,7 @@ fn assert_successors<'ctx, R>(
     let got: Vec<_> = cfg
         .successors(from)
         .into_iter()
-        .map(|bb| bb.into_erased())
+        .map(|bb| bb.to_erased())
         .collect();
     assert_eq!(got, expected);
 }
@@ -32,7 +32,7 @@ fn assert_predecessors<'ctx, R>(
     let got: Vec<_> = cfg
         .predecessors(block)
         .into_iter()
-        .map(|bb| bb.into_erased())
+        .map(|bb| bb.to_erased())
         .collect();
     assert_eq!(got, expected);
 }
@@ -48,9 +48,9 @@ fn unconditional_branch_cfg_edges() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let exit = f.append_basic_block(&m, "exit");
         let entry_label = entry.label();
-        let entry_value = entry.into_erased();
+        let entry_value = entry.to_erased();
         let exit_label = exit.label();
-        let exit_value = exit.into_erased();
+        let exit_value = exit.to_erased();
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(exit)
@@ -79,9 +79,9 @@ fn conditional_branch_preserves_duplicate_edges() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let target = f.append_basic_block(&m, "target");
         let entry_label = entry.label();
-        let entry_value = entry.into_erased();
+        let entry_value = entry.to_erased();
         let target_label = target.label();
-        let target_value = target.into_erased();
+        let target_value = target.to_erased();
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(target)
@@ -112,13 +112,13 @@ fn switch_cfg_edges_include_default_then_cases() -> Result<(), IrError> {
         let case0 = f.append_basic_block(&m, "case0");
         let case1 = f.append_basic_block(&m, "case1");
         let entry_label = entry.label();
-        let entry_value = entry.into_erased();
+        let entry_value = entry.to_erased();
         let default_label = default_bb.label();
-        let default_value = default_bb.into_erased();
+        let default_value = default_bb.to_erased();
         let case0_label = case0.label();
-        let case0_value = case0.into_erased();
+        let case0_value = case0.to_erased();
         let case1_label = case1.label();
-        let case1_value = case1.into_erased();
+        let case1_value = case1.to_erased();
         for bb in [default_bb, case0, case1] {
             IRBuilder::new_for::<Dyn>(&m)
                 .position_at_end(bb)
@@ -160,11 +160,11 @@ fn indirectbr_cfg_edges_are_listed_destinations() -> Result<(), IrError> {
         let bb1 = f.append_basic_block(&m, "bb1");
         let bb2 = f.append_basic_block(&m, "bb2");
         let entry_label = entry.label();
-        let entry_value = entry.into_erased();
+        let entry_value = entry.to_erased();
         let bb1_label = bb1.label();
-        let bb1_value = bb1.into_erased();
+        let bb1_value = bb1.to_erased();
         let bb2_label = bb2.label();
-        let bb2_value = bb2.into_erased();
+        let bb2_value = bb2.to_erased();
         for bb in [bb1, bb2] {
             IRBuilder::new_for::<Dyn>(&m)
                 .position_at_end(bb)
@@ -202,11 +202,11 @@ fn invoke_cfg_edges_are_normal_then_unwind() -> Result<(), IrError> {
         let normal = caller.append_basic_block(&m, "normal");
         let unwind = caller.append_basic_block(&m, "unwind");
         let entry_label = entry.label();
-        let entry_value = entry.into_erased();
+        let entry_value = entry.to_erased();
         let normal_label = normal.label();
-        let normal_value = normal.into_erased();
+        let normal_value = normal.to_erased();
         let unwind_label = unwind.label();
-        let unwind_value = unwind.into_erased();
+        let unwind_value = unwind.to_erased();
         for bb in [normal, unwind] {
             IRBuilder::new_for::<Dyn>(&m)
                 .position_at_end(bb)
@@ -245,11 +245,11 @@ fn callbr_cfg_edges_are_default_then_indirect_dests() -> Result<(), IrError> {
         let dflt = caller.append_basic_block(&m, "default");
         let indirect = caller.append_basic_block(&m, "indirect");
         let entry_label = entry.label();
-        let entry_value = entry.into_erased();
+        let entry_value = entry.to_erased();
         let dflt_label = dflt.label();
-        let dflt_value = dflt.into_erased();
+        let dflt_value = dflt.to_erased();
         let indirect_label = indirect.label();
-        let indirect_value = indirect.into_erased();
+        let indirect_value = indirect.to_erased();
         for bb in [dflt, indirect] {
             IRBuilder::new_for::<Dyn>(&m)
                 .position_at_end(bb)
@@ -287,9 +287,9 @@ fn catchret_cfg_edge_is_target_block() -> Result<(), IrError> {
         let ret_block = f.append_basic_block(&m, "ret");
         let cs_label = cs_block.label();
         let cp_label = cp_block.label();
-        let cp_value = cp_block.into_erased();
+        let cp_value = cp_block.to_erased();
         let ret_label = ret_block.label();
-        let ret_value = ret_block.into_erased();
+        let ret_value = ret_block.to_erased();
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(ret_block)
             .build_ret_void()?;
@@ -299,12 +299,9 @@ fn catchret_cfg_edge_is_target_block() -> Result<(), IrError> {
             .build_catch_switch_within_none_to_caller("cs")?;
         let cs_closed = cs.add_handler(cp_label)?.finish();
         let b_cp = IRBuilder::new_for::<Dyn>(&m).position_at_end(cp_block);
-        let cp = b_cp.build_catch_pad(
-            cs_closed.into_erased(),
-            Vec::<llvmkit_ir::Value>::new(),
-            "cp",
-        )?;
-        b_cp.build_catch_ret(cp.into_erased(), ret_label, "")?;
+        let cp =
+            b_cp.build_catch_pad(cs_closed.to_erased(), Vec::<llvmkit_ir::Value>::new(), "cp")?;
+        b_cp.build_catch_ret(cp.to_erased(), ret_label, "")?;
 
         let cfg = FunctionCfg::new(f.as_dyn());
         assert_successors(&cfg, cs_label, &[cp_value]);
@@ -325,16 +322,16 @@ fn cleanupret_cfg_edge_is_optional_unwind_dest() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let unwind = f.append_basic_block(&m, "unwind");
         let entry_label = entry.label();
-        let entry_value = entry.into_erased();
+        let entry_value = entry.to_erased();
         let unwind_label = unwind.label();
-        let unwind_value = unwind.into_erased();
+        let unwind_value = unwind.to_erased();
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(unwind)
             .build_ret_void()?;
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let cp = b.build_cleanup_pad_within_none(Vec::<llvmkit_ir::Value>::new(), "cp")?;
-        b.build_cleanup_ret(cp.into_erased(), unwind_label, "")?;
+        b.build_cleanup_ret(cp.to_erased(), unwind_label, "")?;
 
         let cfg = FunctionCfg::new(f.as_dyn());
         assert_successors(&cfg, entry_label, &[unwind_value]);
@@ -356,13 +353,13 @@ fn catchswitch_cfg_edges_are_handlers_then_unwind_dest() -> Result<(), IrError> 
         let handler1 = f.append_basic_block(&m, "handler1");
         let unwind = f.append_basic_block(&m, "unwind");
         let entry_label = entry.label();
-        let entry_value = entry.into_erased();
+        let entry_value = entry.to_erased();
         let handler0_label = handler0.label();
-        let handler0_value = handler0.into_erased();
+        let handler0_value = handler0.to_erased();
         let handler1_label = handler1.label();
-        let handler1_value = handler1.into_erased();
+        let handler1_value = handler1.to_erased();
         let unwind_label = unwind.label();
-        let unwind_value = unwind.into_erased();
+        let unwind_value = unwind.to_erased();
         for bb in [handler0, handler1, unwind] {
             IRBuilder::new_for::<Dyn>(&m)
                 .position_at_end(bb)

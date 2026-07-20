@@ -332,7 +332,7 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
         invoke
             .as_view()
             .set_metadata(MetadataAttachmentKind::Range, range);
-        let invoke_value: llvmkit_ir::IntValue<i8> = invoke.into_erased().try_into()?;
+        let invoke_value: llvmkit_ir::IntValue<i8> = invoke.to_erased().try_into()?;
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(normal)
             .build_ret(invoke_value)?;

@@ -81,7 +81,7 @@ Call sites lose the assertion entirely:
 ```rust
 // before (ir_builder.rs:1523-1524)
 let inst = self.append_instruction(lhs.ty().as_type().id(), kind_ctor(payload), name);
-Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+Ok(IntValue::<W, B>::from_value_unchecked(inst.to_erased()))
 
 // after
 Ok(self.append_int_like(lhs, kind_ctor(payload), name))

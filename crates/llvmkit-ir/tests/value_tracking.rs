@@ -144,7 +144,7 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
             known(bitcast.into_erased(), &query)?.to_string(),
             "01011010"
         );
-        assert_eq!(known(freeze.into_erased(), &query)?.to_string(), "10101010");
+        assert_eq!(known(freeze.to_erased(), &query)?.to_string(), "10101010");
         assert_eq!(known(cmp.into_erased(), &query)?.to_string(), "1");
         Ok(())
     })
@@ -386,7 +386,7 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
                 invoke_unwind_label,
                 llvmkit_ir::CallSiteConfig::new("invoke").attrs(attrs),
             )?;
-        let invoke_value: IntValue<i8> = invoke.into_erased().try_into()?;
+        let invoke_value: IntValue<i8> = invoke.to_erased().try_into()?;
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(invoke_unwind)
@@ -588,7 +588,7 @@ fn query_carries_context_demanded_elements_and_instr_info_policy() -> Result<(),
             .with_demanded_elements(&demanded)
             .without_instruction_info();
 
-        assert_eq!(query.context_instruction(), Some(load_inst.into_erased()));
+        assert_eq!(query.context_instruction(), Some(load_inst.to_erased()));
         assert_eq!(query.demanded_elements(), Some(&demanded));
         assert!(!query.uses_instruction_info());
         assert!(query.with_instruction_info().uses_instruction_info());
@@ -689,7 +689,7 @@ fn shift_with_possible_invalid_amount_is_unknown_after_freeze() -> Result<(), Ir
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert!(known(frozen.into_erased(), &query)?.is_unknown());
+        assert!(known(frozen.to_erased(), &query)?.is_unknown());
         Ok(())
     })
 }
@@ -736,10 +736,10 @@ fn freeze_of_exact_shift_that_can_poison_is_unknown() -> Result<(), IrError> {
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert!(known(frozen.into_erased(), &query)?.is_unknown());
+        assert!(known(frozen.to_erased(), &query)?.is_unknown());
         let query_without_instr_info = ValueTrackingQuery::new(&dl).without_instruction_info();
         assert_eq!(
-            known(frozen.into_erased(), &query_without_instr_info)?.to_string(),
+            known(frozen.to_erased(), &query_without_instr_info)?.to_string(),
             "0000"
         );
         Ok(())

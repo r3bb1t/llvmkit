@@ -241,8 +241,8 @@ fn build_diamond<'ctx>(
     // The arm labels are `Dyn` for the `insert_phi` incoming slice (whose pred
     // labels are `Dyn`); the diamond's return marker is `Dyn` too, so the
     // conversion is an identity re-tag rather than an erasure.
-    let left_label: BasicBlockLabel<Dyn> = left.label().into_erased().try_into()?;
-    let right_label: BasicBlockLabel<Dyn> = right.label().into_erased().try_into()?;
+    let left_label: BasicBlockLabel<Dyn> = left.label().to_erased().try_into()?;
+    let right_label: BasicBlockLabel<Dyn> = right.label().to_erased().try_into()?;
 
     // entry: br (%a == 0) ? left : right
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
@@ -458,8 +458,8 @@ fn build_switch_redirect<'ctx>(
     let dflt_lbl = dflt.label();
     let old_lbl = old.label();
     let new_lbl = new.label();
-    let old_dyn: BasicBlockLabel<Dyn> = old_lbl.into_erased().try_into()?;
-    let new_dyn: BasicBlockLabel<Dyn> = new_lbl.into_erased().try_into()?;
+    let old_dyn: BasicBlockLabel<Dyn> = old_lbl.to_erased().try_into()?;
+    let new_dyn: BasicBlockLabel<Dyn> = new_lbl.to_erased().try_into()?;
 
     // entry: %ev = add %a, 3 ; switch %a, default %dflt [ 0 -> old ]
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
@@ -721,7 +721,7 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
         )?;
         let old_lbl = old.label();
         let other_lbl = other.label();
-        let new_dyn: BasicBlockLabel<Dyn> = new.label().into_erased().try_into()?;
+        let new_dyn: BasicBlockLabel<Dyn> = new.label().to_erased().try_into()?;
 
         // entry: %ev = add %a, 3 ; cond_br (%a == 0) ? old : other
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -869,7 +869,7 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
             "new",
         )?;
         let old_lbl = old.label();
-        let new_dyn: BasicBlockLabel<Dyn> = new.label().into_erased().try_into()?;
+        let new_dyn: BasicBlockLabel<Dyn> = new.label().to_erased().try_into()?;
 
         // entry: %ev = add %a, 3 ; br old
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -931,8 +931,8 @@ fn build_cond_br_pair<'ctx>(
     let new = f.append_basic_block(m, "new");
     let old_lbl = old.label();
     let new_lbl = new.label();
-    let old_dyn: BasicBlockLabel<Dyn> = old_lbl.into_erased().try_into()?;
-    let new_dyn: BasicBlockLabel<Dyn> = new_lbl.into_erased().try_into()?;
+    let old_dyn: BasicBlockLabel<Dyn> = old_lbl.to_erased().try_into()?;
+    let new_dyn: BasicBlockLabel<Dyn> = new_lbl.to_erased().try_into()?;
 
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<i32> = f.param(0)?.try_into()?;
@@ -1083,7 +1083,7 @@ fn build_cond_br_both_arms_phi<'ctx>(
     let src_lbl = src.label();
     let keep_lbl = keep.label();
     let shared_lbl = shared.label();
-    let new_dyn: BasicBlockLabel<Dyn> = new.label().into_erased().try_into()?;
+    let new_dyn: BasicBlockLabel<Dyn> = new.label().to_erased().try_into()?;
 
     // entry: cond_br (%a == 0) ? src : keep
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);

@@ -35,7 +35,7 @@ fn cond_br_terminator_terminates_block() -> Result<(), IrError> {
         let term_in_block = terminated_entry
             .terminator()
             .expect("terminated block has a terminator");
-        assert_eq!(term.into_erased(), term_in_block.into_erased());
+        assert_eq!(term.to_erased(), term_in_block.to_erased());
 
         // `br i1 ..., label %then, label %else` is the canonical form
         // (matches upstream `EXPECT_EQ(TBB, TI->getSuccessor(0))` /

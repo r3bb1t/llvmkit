@@ -169,14 +169,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
         &self,
         b: &BasicBlock<'ctx, R, S, B>,
     ) -> Option<FileLocRange> {
-        self.blocks.location_of(b.into_erased())
+        self.blocks.location_of(b.to_erased())
     }
 
     /// Source range of a recorded instruction. Mirrors
     /// `getInstructionLocation(const Instruction *)`.
     #[inline]
     pub fn instruction_location(&self, i: &InstructionView<'ctx, B>) -> Option<FileLocRange> {
-        self.instructions.location_of(i.into_erased())
+        self.instructions.location_of(i.to_erased())
     }
 
     // ── Reverse queries ────────────────────────────────────────────────
@@ -253,7 +253,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
         b: &BasicBlock<'ctx, R, S, B>,
         loc: FileLocRange,
     ) -> Result<(), LocationError> {
-        self.blocks.add(b.into_erased(), loc)
+        self.blocks.add(b.to_erased(), loc)
     }
 
     /// Record `i`'s location. Mirrors `addInstructionLocation`.
@@ -263,7 +263,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
         i: &InstructionView<'ctx, B>,
         loc: FileLocRange,
     ) -> Result<(), LocationError> {
-        self.instructions.add(i.into_erased(), loc)
+        self.instructions.add(i.to_erased(), loc)
     }
 }
 

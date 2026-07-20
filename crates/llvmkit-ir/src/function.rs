@@ -810,10 +810,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         S2: BlockTerminationState,
     {
         let _ = module;
-        let ValueKindData::BasicBlock(data) = &block.into_erased().data().kind else {
+        let ValueKindData::BasicBlock(data) = &block.to_erased().data().kind else {
             return Err(IrError::ValueCategoryMismatch {
                 expected: ValueCategoryLabel::BasicBlock,
-                got: block.into_erased().category().into(),
+                got: block.to_erased().category().into(),
             });
         };
         if *data.parent.borrow() != Some(self.id) {

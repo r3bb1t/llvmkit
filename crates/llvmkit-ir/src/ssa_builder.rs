@@ -293,15 +293,15 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> PartialEq for SsaBlock<'ctx, 
         // compares only `id`/`module`/`ty` — it deliberately does *not*
         // bound `R: PartialEq` (which `ReturnMarker` does not guarantee) —
         // so this mirrors that same `id`/`module`/`ty` comparison through
-        // `into_erased`, exactly as `BasicBlock`'s own manual `PartialEq`
+        // `to_erased`, exactly as `BasicBlock`'s own manual `PartialEq`
         // (above) does instead of touching the phantom markers.
-        self.label.into_erased() == other.label.into_erased() && self.owner == other.owner
+        self.label.to_erased() == other.label.to_erased() && self.owner == other.owner
     }
 }
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Eq for SsaBlock<'ctx, R, B> {}
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> core::hash::Hash for SsaBlock<'ctx, R, B> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
-        self.label.into_erased().hash(h);
+        self.label.to_erased().hash(h);
         self.owner.hash(h);
     }
 }
@@ -323,7 +323,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> SsaBlock<'ctx, R, B> {
 /// Resolve a block label to the [`ValueId`] the Braun engine's block-keyed
 /// maps use. Blocks are values (`LabelType`), so the label's own value-id
 /// *is* the block id -- this mirrors how [`crate::cfg`] keys its
-/// successor/predecessor maps off `block.into_erased().id`.
+/// successor/predecessor maps off `block.to_erased().id`.
 #[inline]
 fn label_value_id<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx>(
     label: &BasicBlockLabel<'ctx, R, B>,
@@ -341,7 +341,7 @@ fn block_name<'ctx, B: ModuleBrand + 'ctx>(
     let label_ty = module.module().label_type().as_type().id();
     let label = BasicBlock::<Dyn, Unterminated, B>::from_parts(block_id, module, label_ty).label();
     label
-        .into_erased()
+        .to_erased()
         .name()
         .unwrap_or_else(|| format!("<block {block_id:?}>"))
 }

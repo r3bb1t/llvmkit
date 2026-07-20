@@ -706,7 +706,7 @@ fn verify_invoke_result_used_on_unwind_edge_fails() -> Result<(), IrError> {
                 unwind_label,
                 "iv",
             )?;
-        let invoke_value: IntValue<i32> = invoke.into_erased().try_into()?;
+        let invoke_value: IntValue<i32> = invoke.to_erased().try_into()?;
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(normal)
             .build_ret(invoke_value)?;

@@ -101,8 +101,10 @@ macro_rules! decl_binop_handle {
             }
 
             /// Widen to the erased [`Value`] handle.
+            ///
+            /// Borrows rather than consumes.
             #[inline]
-            pub fn into_erased(&self) -> Value<'ctx, B> {
+            pub fn to_erased(&self) -> Value<'ctx, B> {
                 Value::from_parts(self.id, self.module, self.ty)
             }
 
@@ -306,8 +308,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> BinaryOp<'ctx, B> {
         InstructionView::from_parts(self.id, self.module)
     }
     /// Widen to the erased [`Value`] handle (the result).
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn into_erased(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 }
@@ -388,8 +392,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Cmp<'ctx, B> {
         InstructionView::from_parts(self.id, self.module)
     }
     /// Widen to the erased [`Value`] handle (the `i1`/vector result).
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn into_erased(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 }
@@ -417,8 +423,10 @@ macro_rules! decl_handle_scaffold {
             }
 
             /// Widen to the erased [`Value`] handle.
+            ///
+            /// Borrows rather than consumes.
             #[inline]
-            pub fn into_erased(&self) -> Value<'ctx, B> {
+            pub fn to_erased(&self) -> Value<'ctx, B> {
                 Value::from_parts(self.id, self.module, self.ty)
             }
         }
@@ -706,8 +714,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
     }
 
     /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn into_erased(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
@@ -928,7 +938,7 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> TypedCallInst<'ctx, Ret, 
     /// Widen to the erased [`Value`] handle.
     #[inline]
     pub fn into_erased(self) -> Value<'ctx, B> {
-        self.inner.into_erased()
+        self.inner.to_erased()
     }
 }
 
@@ -1365,16 +1375,19 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
         InstructionView::from_parts(self.id, self.module)
     }
 
+    /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn into_erased(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
     /// Opaque arena id of the underlying value (same id as
-    /// [`into_erased`](Self::into_erased)).
+    /// [`to_erased`](Self::to_erased)).
     #[inline]
     pub fn id(&self) -> ValueId {
-        self.into_erased().id
+        self.to_erased().id
     }
 
     /// Result handle for the phi node, narrowed to the static width
@@ -1591,16 +1604,19 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
         InstructionView::from_parts(self.id, self.module)
     }
 
+    /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn into_erased(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
     /// Opaque arena id of the underlying value (same id as
-    /// [`into_erased`](Self::into_erased)).
+    /// [`to_erased`](Self::to_erased)).
     #[inline]
     pub fn id(&self) -> ValueId {
-        self.into_erased().id
+        self.to_erased().id
     }
 
     /// Result handle for the phi, narrowed to the static kind `K`.
@@ -1803,16 +1819,19 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
         InstructionView::from_parts(self.id, self.module)
     }
 
+    /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn into_erased(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
     /// Opaque arena id of the underlying value (same id as
-    /// [`into_erased`](Self::into_erased)).
+    /// [`to_erased`](Self::to_erased)).
     #[inline]
     pub fn id(&self) -> ValueId {
-        self.into_erased().id
+        self.to_erased().id
     }
 
     /// Result handle for the phi, narrowed to a [`PointerValue`].
@@ -2631,8 +2650,11 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx
         InstructionView::from_parts(self.id, self.module)
     }
 
+    /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn into_erased(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     fn payload(&self) -> &'ctx crate::instr_types::SwitchInstData {
@@ -2837,8 +2859,11 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
         InstructionView::from_parts(self.id, self.module)
     }
 
+    /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn into_erased(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     fn payload(&self) -> &'ctx crate::instr_types::IndirectBrInstData {
@@ -2954,8 +2979,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
         InstructionView::from_parts(self.id, self.module)
     }
 
+    /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn into_erased(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     /// Re-tag the return marker. Crate-internal: both
@@ -3165,8 +3193,11 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, P, B> {
         InstructionView::from_parts(self.id, self.module)
     }
 
+    /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn into_erased(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     fn payload(&self) -> &'ctx crate::instr_types::LandingPadInstData {
@@ -3503,8 +3534,11 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
         InstructionView::from_parts(self.id, self.module)
     }
 
+    /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn into_erased(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     fn payload(&self) -> &'ctx crate::instr_types::CatchSwitchInstData {
@@ -3604,7 +3638,7 @@ mod tests {
 
             let call: CallInst<'_, i32, _> =
                 b.build_call_dyn(callee, Vec::<Value<'_, _>>::new(), "call")?;
-            let call_id = call.into_erased().id();
+            let call_id = call.to_erased().id();
 
             let typed = TypedCallInst::<i32, _> {
                 inner: call,

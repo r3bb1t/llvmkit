@@ -44,7 +44,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for DcePass {
 pub(crate) fn is_trivially_dead<'ctx, B: ModuleBrand + 'ctx>(
     view: &InstructionView<'ctx, B>,
 ) -> bool {
-    if view.into_erased().has_uses() || view.is_terminator() {
+    if view.to_erased().has_uses() || view.is_terminator() {
         return false;
     }
 

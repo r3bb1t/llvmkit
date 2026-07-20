@@ -66,7 +66,7 @@ fn use_test_sort_setup_registers_eight_users() -> Result<(), IrError> {
             .iter()
             .map(|iv| iv.into_erased())
             .collect();
-        let user_value_ids: Vec<_> = users.iter().map(|inst| inst.into_erased()).collect();
+        let user_value_ids: Vec<_> = users.iter().map(|inst| inst.to_erased()).collect();
         assert_eq!(user_value_ids, expected_value_ids);
         Ok(())
     })
@@ -98,7 +98,7 @@ fn erase_no_invalidation() -> Result<(), IrError> {
         let bb = b.into_insert_block();
 
         // Pre-erase order before the terminator is emitted: I1, I2, I3.
-        let pre: Vec<_> = bb.instructions().map(|i| i.into_erased()).collect();
+        let pre: Vec<_> = bb.instructions().map(|i| i.to_erased()).collect();
         assert_eq!(pre.len(), 3);
         assert_eq!(pre[0], i1.into_erased());
         assert_eq!(pre[1], i2.into_erased());
@@ -115,11 +115,11 @@ fn erase_no_invalidation() -> Result<(), IrError> {
 
         // Post-erase: I1, I3, Ret. Upstream asserts via comesBefore +
         // iterator-equality; we assert the iteration order directly.
-        let post: Vec<_> = bb.instructions().map(|i| i.into_erased()).collect();
+        let post: Vec<_> = bb.instructions().map(|i| i.to_erased()).collect();
         assert_eq!(post.len(), 3);
         assert_eq!(post[0], i1.into_erased());
         assert_eq!(post[1], i3.into_erased());
-        assert_eq!(post[2], ret.into_erased());
+        assert_eq!(post[2], ret.to_erased());
 
         // Upstream's invariant `EXPECT_EQ(std::next(I1->getIterator()),
         // I3->getIterator())` -- I1's successor is now I3.
@@ -233,7 +233,7 @@ fn detached_set_name_updates_carried_name_without_old_parent_binding() -> Result
             .expect("original instruction");
         let detached = detached_inst.detach_from_parent(&m);
         let block = cursor.into_block();
-        detached.into_erased().set_name(&m, "renamed");
+        detached.to_erased().set_name(&m, "renamed");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(block);
         let live = b.build_int_add::<i32, _, _, _>(
             i32_ty.const_int(3_i32),
@@ -290,7 +290,7 @@ fn erase_deregisters_from_operand_use_lists() -> Result<(), IrError> {
 
         // Post-erase: x has 2 users (only the surviving adds).
         assert_eq!(x.into_erased().num_uses(), 2);
-        let users: Vec<_> = x.into_erased().users().map(|i| i.into_erased()).collect();
+        let users: Vec<_> = x.into_erased().users().map(|i| i.to_erased()).collect();
         assert!(users.contains(&i1.into_erased()));
         assert!(users.contains(&i3.into_erased()));
         assert!(!users.contains(&i2.into_erased()));

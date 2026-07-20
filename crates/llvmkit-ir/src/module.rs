@@ -720,6 +720,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
 /// their named iterators ([`ModuleView::globals`], [`ModuleView::aliases`],
 /// [`ModuleView::ifuncs`], [`ModuleView::comdats`]). Sugar beside the named
 /// [`ModuleView::functions`], not a replacement.
+///
+/// One capability differs: this iterator is not [`DoubleEndedIterator`],
+/// because it boxes its inner iterator to name a single concrete type. For
+/// reverse iteration go through the named method — `functions().rev()`.
 impl<'ctx, B: ModuleBrand + 'ctx> IntoIterator for ModuleView<'ctx, B> {
     type Item = crate::pass_context::FunctionView<'ctx, B>;
     type IntoIter = crate::pass_context::ModuleFunctionViews<'ctx, B>;

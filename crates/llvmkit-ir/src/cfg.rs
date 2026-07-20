@@ -100,7 +100,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
         Block: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let block = block.into_basic_block_label();
-        ids_to_labels(block.into_erased().module, self.successors.get(&block.id()))
+        ids_to_labels(block.to_erased().module, self.successors.get(&block.id()))
     }
 
     /// Predecessors of `block`, preserving duplicate incoming edges.
@@ -110,10 +110,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
         Block: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let block = block.into_basic_block_label();
-        ids_to_labels(
-            block.into_erased().module,
-            self.predecessors.get(&block.id()),
-        )
+        ids_to_labels(block.to_erased().module, self.predecessors.get(&block.id()))
     }
 
     /// Directed edges in function block order and terminator successor order.
@@ -165,7 +162,7 @@ where
 pub(super) fn instruction_successor_ids<'ctx, B: ModuleBrand + 'ctx>(
     inst: &InstructionView<'ctx, B>,
 ) -> Vec<ValueId> {
-    match &inst.into_erased().data().kind {
+    match &inst.to_erased().data().kind {
         ValueKindData::Instruction(data) => kind_successor_ids(&data.kind),
         _ => Vec::new(),
     }

@@ -376,16 +376,19 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand> core::hash::Hash
 impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, S, B> {
     /// Widen to the erased [`Value`] handle. Read-only access; safe in
     /// either lifecycle state.
+    ///
+    /// Borrows rather than consumes: this handle is deliberately not
+    /// `Copy`, and widening does not spend it.
     #[inline]
-    pub fn into_erased(&self) -> Value<'ctx, B> {
-        self.as_view().into_erased()
+    pub fn to_erased(&self) -> Value<'ctx, B> {
+        self.as_view().to_erased()
     }
 
     /// Opaque arena id of the underlying value (same id as
-    /// [`into_erased`](Self::into_erased)).
+    /// [`to_erased`](Self::to_erased)).
     #[inline]
     pub fn id(&self) -> ValueId {
-        self.into_erased().id
+        self.to_erased().id
     }
 
     /// Return the copyable read-only view for this instruction.
@@ -496,8 +499,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     }
 
     /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes; the by-value
+    /// [`IsValue::into_erased`] form is also available on this type.
     #[inline]
-    pub fn into_erased(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -507,7 +513,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
 
     /// Borrow the storage payload.
     fn data(&self) -> &'ctx InstructionData {
-        match &self.into_erased().data().kind {
+        match &self.to_erased().data().kind {
             ValueKindData::Instruction(i) => i,
             _ => unreachable!("InstructionView invariant: kind is Instruction"),
         }
@@ -528,7 +534,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     /// Optional textual name. Mirrors `Value::getName`.
     #[inline]
     pub fn name(&self) -> Option<String> {
-        self.into_erased().name()
+        self.to_erased().name()
     }
 
     /// Metadata attachments on this instruction.
@@ -558,13 +564,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     where
         Name: Into<String>,
     {
-        self.into_erased().set_name(module_token, name);
+        self.to_erased().set_name(module_token, name);
     }
 
     /// Clear the textual name.
     #[inline]
     pub fn clear_name(&self, module_token: &Module<'ctx, B, Unverified>) {
-        self.into_erased().clear_name(module_token);
+        self.to_erased().clear_name(module_token);
     }
 
     /// Containing basic block label.
@@ -947,7 +953,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     pub fn erase_from_parent(self, module_token: &Module<'ctx, B, Unverified>) {
         let self_id = self.id;
         let module = module_token.core_ref();
-        remove_local_name_from_parent(self.into_erased());
+        remove_local_name_from_parent(self.to_erased());
         deregister_operand_uses(self_id, &self.data().kind, module);
         let parent_block_id = self.data().parent.get();
         let bb = BasicBlock::<Dyn>::from_parts(
@@ -969,7 +975,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     ) -> Instruction<'ctx, state::Detached, B> {
         let module = module_token.core_ref();
         let self_id = self.id;
-        remove_local_name_from_parent(self.into_erased());
+        remove_local_name_from_parent(self.to_erased());
         let parent_block_id = self.data().parent.get();
         let bb = BasicBlock::<Dyn>::from_parts(
             parent_block_id,
@@ -1001,10 +1007,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         if self_id == other_id {
             return Ok(());
         }
-        let old_parent_fn = self.into_erased().local_parent_function_id();
-        let new_parent_fn = other.into_erased().local_parent_function_id();
+        let old_parent_fn = self.to_erased().local_parent_function_id();
+        let new_parent_fn = other.to_erased().local_parent_function_id();
         if old_parent_fn != new_parent_fn {
-            remove_local_name_from_parent(self.into_erased());
+            remove_local_name_from_parent(self.to_erased());
         }
         // Remove from current parent.
         let cur_parent = self.data().parent.get();
@@ -1020,7 +1026,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         if old_parent_fn != new_parent_fn
             && let Some(parent_fn_id) = new_parent_fn
         {
-            reinsert_local_name(self.into_erased(), parent_fn_id);
+            reinsert_local_name(self.to_erased(), parent_fn_id);
         }
         Ok(())
     }
@@ -1038,10 +1044,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         if self_id == other_id {
             return Ok(());
         }
-        let old_parent_fn = self.into_erased().local_parent_function_id();
-        let new_parent_fn = other.into_erased().local_parent_function_id();
+        let old_parent_fn = self.to_erased().local_parent_function_id();
+        let new_parent_fn = other.to_erased().local_parent_function_id();
         if old_parent_fn != new_parent_fn {
-            remove_local_name_from_parent(self.into_erased());
+            remove_local_name_from_parent(self.to_erased());
         }
         let cur_parent = self.data().parent.get();
         let cur_bb =
@@ -1055,7 +1061,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         if old_parent_fn != new_parent_fn
             && let Some(parent_fn_id) = new_parent_fn
         {
-            reinsert_local_name(self.into_erased(), parent_fn_id);
+            reinsert_local_name(self.to_erased(), parent_fn_id);
         }
         Ok(())
     }
@@ -1072,13 +1078,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
         let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
-        let parent_fn_id = other.into_erased().local_parent_function_id();
+        let parent_fn_id = other.to_erased().local_parent_function_id();
         let bb =
             BasicBlock::<Dyn>::from_parts(parent_id, module, module.label_type().as_type().id());
         bb.insert_instruction_before(self.id, other.id)?;
         update_instruction_parent(module, self.id, parent_id);
         if let Some(parent_fn_id) = parent_fn_id {
-            reinsert_local_name(self.into_erased(), parent_fn_id);
+            reinsert_local_name(self.to_erased(), parent_fn_id);
         }
         Ok(Instruction::from_parts(self.id, self.module))
     }
@@ -1092,13 +1098,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
         let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
-        let parent_fn_id = other.into_erased().local_parent_function_id();
+        let parent_fn_id = other.to_erased().local_parent_function_id();
         let bb =
             BasicBlock::<Dyn>::from_parts(parent_id, module, module.label_type().as_type().id());
         bb.insert_instruction_after(self.id, other.id)?;
         update_instruction_parent(module, self.id, parent_id);
         if let Some(parent_fn_id) = parent_fn_id {
-            reinsert_local_name(self.into_erased(), parent_fn_id);
+            reinsert_local_name(self.to_erased(), parent_fn_id);
         }
         Ok(Instruction::from_parts(self.id, self.module))
     }
@@ -1112,11 +1118,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
         let module = module_token.core_ref();
         let parent_id = block.id();
-        let parent_fn_id = block.into_erased().local_parent_function_id();
+        let parent_fn_id = block.to_erased().local_parent_function_id();
         block.as_dyn().append_instruction(self.id);
         update_instruction_parent(module, self.id, parent_id);
         if let Some(parent_fn_id) = parent_fn_id {
-            reinsert_local_name(self.into_erased(), parent_fn_id);
+            reinsert_local_name(self.to_erased(), parent_fn_id);
         }
         Ok(Instruction::from_parts(self.id, self.module))
     }
@@ -1413,7 +1419,7 @@ impl<'ctx, B: ModuleBrand> sealed::Sealed for InstructionView<'ctx, B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for InstructionView<'ctx, B> {
     #[inline]
     fn into_erased(self) -> Value<'ctx, B> {
-        InstructionView::into_erased(&self)
+        InstructionView::to_erased(&self)
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for InstructionView<'ctx, B> {
@@ -1462,7 +1468,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> User<'ctx, B> for InstructionView<'ctx, B> {
     }
 
     fn operand_use(self, index: u32) -> Option<Use<'ctx, B>> {
-        let user = InstructionView::into_erased(&self);
+        let user = InstructionView::to_erased(&self);
         let v = self.operand(index)?;
         Some(Use::new(user, v, index))
     }
@@ -1471,7 +1477,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> User<'ctx, B> for InstructionView<'ctx, B> {
 // `IsValue` requires `Copy` (every other implementer is a thin Copy
 // handle). `Instruction<state::Attached>` is intentionally `!Copy`
 // (Doctrine D2: linear-typed handle for irreversible operations like
-// `erase_from_parent`). Use [`Instruction::into_erased`] (inherent,
+// `erase_from_parent`). Use [`Instruction::to_erased`] (inherent,
 // `&self`) when an erased view is needed.
 impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for Instruction<'ctx, state::Attached, B> {
     #[inline]
@@ -1499,7 +1505,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Instruction<'ctx, state::
 impl<B: ModuleBrand> HasDebugLoc for Instruction<'_, state::Attached, B> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
-        self.into_erased().debug_loc()
+        self.to_erased().debug_loc()
     }
 }
 
@@ -1537,7 +1543,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for InstructionView<'c
 impl<'ctx, B: ModuleBrand + 'ctx> From<Instruction<'ctx, state::Attached, B>> for Value<'ctx, B> {
     #[inline]
     fn from(i: Instruction<'ctx, state::Attached, B>) -> Self {
-        Instruction::into_erased(&i)
+        Instruction::to_erased(&i)
     }
 }
 
@@ -1634,22 +1640,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> CastKind<'ctx, B> {
     }
 
     /// Widen to the erased [`Value`] handle (the cast's result).
-    pub fn into_erased(&self) -> Value<'ctx, B> {
+    ///
+    /// Borrows rather than consumes.
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         match self {
-            Self::Trunc(i) => i.into_erased(),
-            Self::ZExt(i) => i.into_erased(),
-            Self::SExt(i) => i.into_erased(),
-            Self::FpTrunc(i) => i.into_erased(),
-            Self::FpExt(i) => i.into_erased(),
-            Self::FpToUI(i) => i.into_erased(),
-            Self::FpToSI(i) => i.into_erased(),
-            Self::UIToFp(i) => i.into_erased(),
-            Self::SIToFp(i) => i.into_erased(),
-            Self::PtrToAddr(i) => i.into_erased(),
-            Self::PtrToInt(i) => i.into_erased(),
-            Self::IntToPtr(i) => i.into_erased(),
-            Self::BitCast(i) => i.into_erased(),
-            Self::AddrSpaceCast(i) => i.into_erased(),
+            Self::Trunc(i) => i.to_erased(),
+            Self::ZExt(i) => i.to_erased(),
+            Self::SExt(i) => i.to_erased(),
+            Self::FpTrunc(i) => i.to_erased(),
+            Self::FpExt(i) => i.to_erased(),
+            Self::FpToUI(i) => i.to_erased(),
+            Self::FpToSI(i) => i.to_erased(),
+            Self::UIToFp(i) => i.to_erased(),
+            Self::SIToFp(i) => i.to_erased(),
+            Self::PtrToAddr(i) => i.to_erased(),
+            Self::PtrToInt(i) => i.to_erased(),
+            Self::IntToPtr(i) => i.to_erased(),
+            Self::BitCast(i) => i.to_erased(),
+            Self::AddrSpaceCast(i) => i.to_erased(),
         }
     }
 }
@@ -1733,12 +1741,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> PhiKind<'ctx, B> {
     }
 
     /// Widen to the erased [`Value`] handle (the phi's result).
-    pub fn into_erased(&self) -> Value<'ctx, B> {
+    ///
+    /// Borrows rather than consumes.
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         match self {
-            Self::Int(p) => p.into_erased(),
-            Self::Fp(p) => p.into_erased(),
-            Self::Ptr(p) => p.into_erased(),
-            Self::Other(p) => p.into_erased(),
+            Self::Int(p) => p.to_erased(),
+            Self::Fp(p) => p.to_erased(),
+            Self::Ptr(p) => p.to_erased(),
+            Self::Other(p) => p.to_erased(),
         }
     }
 }
@@ -1803,24 +1813,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionKind<'ctx, B> {
     /// `dyn_cast<BinaryOperator>`.
     pub fn as_binary_op(&self) -> Option<BinaryOp<'ctx, B>> {
         let (value, opcode) = match self {
-            Self::Add(h) => (h.into_erased(), BinaryOpcode::Add),
-            Self::Sub(h) => (h.into_erased(), BinaryOpcode::Sub),
-            Self::Mul(h) => (h.into_erased(), BinaryOpcode::Mul),
-            Self::UDiv(h) => (h.into_erased(), BinaryOpcode::UDiv),
-            Self::SDiv(h) => (h.into_erased(), BinaryOpcode::SDiv),
-            Self::URem(h) => (h.into_erased(), BinaryOpcode::URem),
-            Self::SRem(h) => (h.into_erased(), BinaryOpcode::SRem),
-            Self::Shl(h) => (h.into_erased(), BinaryOpcode::Shl),
-            Self::LShr(h) => (h.into_erased(), BinaryOpcode::LShr),
-            Self::AShr(h) => (h.into_erased(), BinaryOpcode::AShr),
-            Self::And(h) => (h.into_erased(), BinaryOpcode::And),
-            Self::Or(h) => (h.into_erased(), BinaryOpcode::Or),
-            Self::Xor(h) => (h.into_erased(), BinaryOpcode::Xor),
-            Self::FAdd(h) => (h.into_erased(), BinaryOpcode::FAdd),
-            Self::FSub(h) => (h.into_erased(), BinaryOpcode::FSub),
-            Self::FMul(h) => (h.into_erased(), BinaryOpcode::FMul),
-            Self::FDiv(h) => (h.into_erased(), BinaryOpcode::FDiv),
-            Self::FRem(h) => (h.into_erased(), BinaryOpcode::FRem),
+            Self::Add(h) => (h.to_erased(), BinaryOpcode::Add),
+            Self::Sub(h) => (h.to_erased(), BinaryOpcode::Sub),
+            Self::Mul(h) => (h.to_erased(), BinaryOpcode::Mul),
+            Self::UDiv(h) => (h.to_erased(), BinaryOpcode::UDiv),
+            Self::SDiv(h) => (h.to_erased(), BinaryOpcode::SDiv),
+            Self::URem(h) => (h.to_erased(), BinaryOpcode::URem),
+            Self::SRem(h) => (h.to_erased(), BinaryOpcode::SRem),
+            Self::Shl(h) => (h.to_erased(), BinaryOpcode::Shl),
+            Self::LShr(h) => (h.to_erased(), BinaryOpcode::LShr),
+            Self::AShr(h) => (h.to_erased(), BinaryOpcode::AShr),
+            Self::And(h) => (h.to_erased(), BinaryOpcode::And),
+            Self::Or(h) => (h.to_erased(), BinaryOpcode::Or),
+            Self::Xor(h) => (h.to_erased(), BinaryOpcode::Xor),
+            Self::FAdd(h) => (h.to_erased(), BinaryOpcode::FAdd),
+            Self::FSub(h) => (h.to_erased(), BinaryOpcode::FSub),
+            Self::FMul(h) => (h.to_erased(), BinaryOpcode::FMul),
+            Self::FDiv(h) => (h.to_erased(), BinaryOpcode::FDiv),
+            Self::FRem(h) => (h.to_erased(), BinaryOpcode::FRem),
             _ => return None,
         };
         Some(BinaryOp::from_value(value, opcode))
@@ -1831,8 +1841,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionKind<'ctx, B> {
     /// `dyn_cast<CmpInst>`.
     pub fn as_cmp(&self) -> Option<Cmp<'ctx, B>> {
         match self {
-            Self::ICmp(h) => Some(Cmp::from_value(h.into_erased())),
-            Self::FCmp(h) => Some(Cmp::from_value(h.into_erased())),
+            Self::ICmp(h) => Some(Cmp::from_value(h.to_erased())),
+            Self::FCmp(h) => Some(Cmp::from_value(h.to_erased())),
             _ => None,
         }
     }
@@ -1891,13 +1901,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> NonTerminator<'ctx, B> {
     }
 
     /// Widen to the erased [`Value`] handle (the instruction's result).
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn into_erased(&self) -> Value<'ctx, B> {
-        self.view.into_erased()
+    pub fn to_erased(&self) -> Value<'ctx, B> {
+        self.view.to_erased()
     }
 
     /// Opaque arena id of the underlying value (same id as
-    /// [`into_erased`](Self::into_erased)).
+    /// [`to_erased`](Self::to_erased)).
     #[inline]
     pub fn id(&self) -> ValueId {
         self.view.id()
