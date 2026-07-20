@@ -49,7 +49,7 @@
 
 #![deny(missing_docs)]
 
-use core::marker::PhantomData;
+use core::iter::FusedIterator;
 
 use super::BasicBlock;
 use super::IrResult;
@@ -63,85 +63,146 @@ use super::block_state::{Terminated, Unterminated};
 use super::cfg_update::CfgUpdate;
 use super::dominator_tree::DominatorTreeAnalysis;
 use super::error::IrError;
-use super::function::FunctionValue;
+use super::function::{FunctionBasicBlocks, FunctionValue};
 use super::instruction::{Instruction, InstructionView, NonTerminator, TerminatorKind, state};
 use super::ir_builder::IRBuilder;
 use super::marker::{Dyn, ReturnMarker};
-use super::module::{Brand, Invariant, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::pass_access::{
     FnAccess, ModAccess, MutatingFn, MutatingModule, PatchBody, ReshapeCfg, RewriteModule,
 };
 use super::phi_check::{check_phi_incoming, render_phi_violation};
-use super::r#type::Type;
+use super::r#type::{Type, TypeId};
 use super::value::{IsValue, Value, ValueId};
 use super::worklist::Worklist;
 
 /// Read-only view of a basic block under its owning module brand.
-#[derive(Debug, PartialEq, Eq, Hash)]
+///
+/// Stores the raw parts of the viewed block rather than a [`BasicBlock`]
+/// (which is a deliberately non-`Copy` linear handle), so the read-only view
+/// is `Copy` like its sibling [`FunctionView`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BasicBlockView<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    block: BasicBlock<'ctx, Dyn, Terminated, B>,
-    _brand: Invariant<B>,
-}
-
-impl<'ctx, B: ModuleBrand + 'ctx> Clone for BasicBlockView<'ctx, B> {
-    #[inline]
-    fn clone(&self) -> Self {
-        Self {
-            block: self.block.copy_handle(),
-            _brand: PhantomData,
-        }
-    }
+    id: ValueId,
+    module: ModuleRef<'ctx, B>,
+    ty: TypeId,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
     #[inline]
     pub(super) fn new(block: BasicBlock<'ctx, Dyn, Terminated, B>) -> Self {
         Self {
-            block,
-            _brand: PhantomData,
+            id: block.id,
+            module: block.module,
+            ty: block.ty,
         }
     }
 
     /// Underlying basic-block handle.
     #[inline]
     pub(super) fn as_basic_block(&self) -> BasicBlock<'ctx, Dyn, Terminated, B> {
-        self.block.copy_handle()
+        BasicBlock::from_parts(self.id, self.module, self.ty)
     }
 
     /// Optional textual name.
     #[inline]
     pub fn name(&self) -> Option<String> {
-        self.block.name()
+        self.as_basic_block().name()
     }
 
     /// Parent function if the block is attached.
     #[inline]
     pub fn parent_function(&self) -> Option<FunctionView<'ctx, B>> {
-        let id = self.block.parent_id()?;
+        let id = self.as_basic_block().parent_id()?;
         Some(FunctionView::new(FunctionValue::from_parts_unchecked(
             id,
-            ModuleRef::<B>::new(self.block.module().core_ref()),
+            self.module,
         )))
     }
 
     /// Number of instructions in program order.
     #[inline]
     pub fn instruction_count(&self) -> usize {
-        self.block.instructions().len()
+        self.as_basic_block().instructions().len()
     }
 
     /// Read-only instruction views in program order. Lets an `Inspect`-rung
     /// pass walk a block's instructions without escaping to the underlying
     /// function handle.
     #[inline]
-    pub fn instructions(&self) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>> {
-        self.block.instructions()
+    pub fn instructions(
+        &self,
+    ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>> + DoubleEndedIterator + FusedIterator
+    {
+        let module = self.module;
+        let ids = self.as_basic_block().instruction_ids();
+        ids.into_iter()
+            .map(move |id| InstructionView::from_parts(id, module))
     }
 
     /// `true` if the block currently has no instructions.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.block.is_empty()
+        self.as_basic_block().is_empty()
+    }
+}
+
+/// Iterator over read-only instruction views of one basic block, in program
+/// order. The named form of [`BasicBlockView::instructions`]'s walk, returned
+/// by [`BasicBlockView`]'s `IntoIterator`: it snapshots the block's
+/// instruction ids up front, so IR mutation during the walk does not disturb
+/// it.
+pub struct BlockInstructionViews<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    ids: std::vec::IntoIter<ValueId>,
+    module: ModuleRef<'ctx, B>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> Iterator for BlockInstructionViews<'ctx, B> {
+    type Item = InstructionView<'ctx, B>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let id = self.ids.next()?;
+        Some(InstructionView::from_parts(id, self.module))
+    }
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.ids.size_hint()
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> ExactSizeIterator for BlockInstructionViews<'ctx, B> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.ids.len()
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> DoubleEndedIterator for BlockInstructionViews<'ctx, B> {
+    #[inline]
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let id = self.ids.next_back()?;
+        Some(InstructionView::from_parts(id, self.module))
+    }
+}
+
+// The inner `vec::IntoIter` is fused, and `next` forwards to it directly.
+impl<'ctx, B: ModuleBrand + 'ctx> FusedIterator for BlockInstructionViews<'ctx, B> {}
+
+/// Iterating a block view yields its instruction views in program order —
+/// the innermost level of the idiomatic optimizer walk
+/// `for f in module { for bb in f { for inst in bb } }`. Sugar beside the
+/// named [`BasicBlockView::instructions`], not a replacement.
+impl<'ctx, B: ModuleBrand + 'ctx> IntoIterator for BasicBlockView<'ctx, B> {
+    type Item = InstructionView<'ctx, B>;
+    type IntoIter = BlockInstructionViews<'ctx, B>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        BlockInstructionViews {
+            ids: self.as_basic_block().instruction_ids().into_iter(),
+            module: self.module,
+        }
     }
 }
 
@@ -183,8 +244,67 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionView<'ctx, B> {
 
     /// Basic blocks in insertion order.
     #[inline]
-    pub fn basic_blocks(self) -> impl ExactSizeIterator<Item = BasicBlockView<'ctx, B>> + 'ctx {
+    pub fn basic_blocks(
+        self,
+    ) -> impl ExactSizeIterator<Item = BasicBlockView<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         self.function.basic_blocks().map(BasicBlockView::new)
+    }
+}
+
+/// Iterator over read-only basic-block views of one function, in insertion
+/// order. The named form of [`FunctionView::basic_blocks`]'s walk, returned
+/// by [`FunctionView`]'s `IntoIterator`.
+pub struct FunctionBasicBlockViews<'ctx, B: ModuleBrand = Brand<'ctx>> {
+    inner: FunctionBasicBlocks<'ctx, Dyn, B>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> Iterator for FunctionBasicBlockViews<'ctx, B> {
+    type Item = BasicBlockView<'ctx, B>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(BasicBlockView::new)
+    }
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> ExactSizeIterator for FunctionBasicBlockViews<'ctx, B> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> DoubleEndedIterator for FunctionBasicBlockViews<'ctx, B> {
+    #[inline]
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.inner.next_back().map(BasicBlockView::new)
+    }
+}
+
+// The inner [`FunctionBasicBlocks`] is fused, and `next` forwards to it
+// directly.
+impl<'ctx, B: ModuleBrand + 'ctx> FusedIterator for FunctionBasicBlockViews<'ctx, B> {}
+
+/// Iterating a function view yields its basic-block views in insertion order
+/// — the middle level of the idiomatic optimizer walk
+/// `for f in module { for bb in f { for inst in bb } }`. Sugar beside the
+/// named [`FunctionView::basic_blocks`], not a replacement.
+impl<'ctx, B: ModuleBrand + 'ctx> IntoIterator for FunctionView<'ctx, B> {
+    type Item = BasicBlockView<'ctx, B>;
+    type IntoIter = FunctionBasicBlockViews<'ctx, B>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        FunctionBasicBlockViews {
+            inner: self.function.into_iter(),
+        }
     }
 }
 
@@ -237,7 +357,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionBody<'ctx, B> {
     #[inline]
     pub fn basic_blocks(
         self,
-    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, Dyn, Terminated, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, Dyn, Terminated, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         self.function.basic_blocks()
     }
 }
@@ -275,6 +398,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> ExactSizeIterator for ModuleFunctionViews<'ctx
         self.inner.len()
     }
 }
+
+// Legitimate even through the `Box<dyn ExactSizeIterator>`: the sole
+// constructor ([`Self::new`]) boxes [`ModuleView::functions`], whose concrete
+// iterator is a `Map` over `vec::IntoIter` — fused — and `next` forwards to it
+// directly. (`DoubleEndedIterator` is deliberately NOT offered here: the boxed
+// `dyn ExactSizeIterator` erases it.)
+impl<'ctx, B: ModuleBrand + 'ctx> FusedIterator for ModuleFunctionViews<'ctx, B> {}
 
 // ==========================================================================
 // capability-graded pass API — function report, entry context, and mutators
@@ -1538,7 +1668,7 @@ where
             message: "edit_terminator: `from` has no terminator",
         })?;
         let term_id = term.id();
-        let from_view = from.clone();
+        let from_view = *from;
         let kind = term.terminator_kind().ok_or(IrError::InvalidOperation {
             message: "edit_terminator: `from`'s last instruction is not a terminator",
         })?;
@@ -2676,7 +2806,9 @@ mod tests {
     use crate::dominator_tree::DominatorTreeAnalysis;
     use crate::instruction::InstructionView;
     use crate::pass_access::{Inspect, PatchBody, ReshapeCfg, RewriteModule};
-    use crate::{Dyn, IRBuilder, IntValue, IrError, IsValue, Linkage, Module, NoFolder};
+    use crate::{
+        Dyn, IRBuilder, IntValue, IrError, IsValue, Linkage, Module, ModuleView, NoFolder,
+    };
 
     /// The `Requires` list shared by these tests: a single CFG-shaped analysis
     /// so both the infallible accessor and the preservation floors have a
@@ -3375,5 +3507,92 @@ mod tests {
             Ok::<(), IrError>(())
         })
         .expect("unreachable: the second worklist() call panics first");
+    }
+
+    /// Iterating a [`ModuleView`] (`for f in module`) yields exactly what the
+    /// named [`ModuleView::functions`] yields, in declaration order. Locks the
+    /// `IntoIterator` sugar added for idiomatic optimizer loops.
+    #[test]
+    fn module_view_into_iter_yields_functions_in_order() -> Result<(), IrError> {
+        Module::with_new("mv-into-iter", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type_no_params(i32_ty, false);
+            m.add_function_dyn("first", fn_ty, Linkage::External)?;
+            m.add_function_dyn("second", fn_ty, Linkage::External)?;
+            m.add_function_dyn("third", fn_ty, Linkage::External)?;
+
+            let module = ModuleView::from(&m);
+            let named: Vec<&str> = module.functions().map(|f| f.name()).collect();
+            let mut walked = Vec::new();
+            for f in module {
+                walked.push(f.name());
+            }
+            assert_eq!(walked, named);
+            assert_eq!(walked, ["first", "second", "third"]);
+            Ok(())
+        })
+    }
+
+    /// Iterating a [`FunctionView`] (`for bb in function`) yields exactly what
+    /// the named [`FunctionView::basic_blocks`] yields, in insertion order.
+    /// Locks the `IntoIterator` sugar added for idiomatic optimizer loops.
+    #[test]
+    fn function_view_into_iter_yields_blocks_in_order() -> Result<(), IrError> {
+        Module::with_new("fv-into-iter", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type_no_params(i32_ty, false);
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let exit = f.append_basic_block(&m, "exit");
+            let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+            b.build_br(&exit)?;
+            let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(exit);
+            b.build_ret(i32_ty.const_int(0_u32))?;
+
+            let function = FunctionView::from(f);
+            let named: Vec<Option<String>> = function.basic_blocks().map(|bb| bb.name()).collect();
+            let mut walked = Vec::new();
+            for bb in function {
+                walked.push(bb.name());
+            }
+            assert_eq!(walked, named);
+            assert_eq!(
+                walked,
+                [Some("entry".to_string()), Some("exit".to_string())]
+            );
+            Ok(())
+        })
+    }
+
+    /// Iterating a [`super::BasicBlockView`] (`for inst in block`) yields
+    /// exactly what the named [`super::BasicBlockView::instructions`] yields,
+    /// in program order. Locks the `IntoIterator` sugar added for idiomatic
+    /// optimizer loops (and exercises the view's new `Copy`: the loop consumes
+    /// a copy, and the original is read again afterwards).
+    #[test]
+    fn basic_block_view_into_iter_yields_instructions_in_order() -> Result<(), IrError> {
+        Module::with_new("bbv-into-iter", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let sum = b.build_int_add(x, 1_i32, "sum")?;
+            b.build_ret(sum)?;
+
+            let function = FunctionView::from(f);
+            let block = function
+                .entry_block()
+                .expect("definition has an entry block");
+            let ids: Vec<_> = block.instructions().map(|inst| inst.id()).collect();
+            let mut walked = Vec::new();
+            for inst in block {
+                walked.push(inst.id());
+            }
+            assert_eq!(walked, ids);
+            assert_eq!(block.instruction_count(), 2, "add + ret");
+            Ok(())
+        })
     }
 }

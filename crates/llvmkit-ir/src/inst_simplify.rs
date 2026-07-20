@@ -77,8 +77,7 @@ fn uniform_phi_value<'ctx, B: ModuleBrand + 'ctx>(
     };
     let self_value = view.as_value();
     let mut common: Option<crate::value::Value<'ctx, B>> = None;
-    for i in 0..kind.incoming_count() {
-        let (value, _block) = kind.incoming(i).ok()?;
+    for (value, _block) in kind.incomings() {
         if value == self_value {
             continue; // self-reference: neutral
         }

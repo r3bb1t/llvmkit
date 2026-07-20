@@ -28,6 +28,7 @@
 //! inside them, so the builder's `build_ret` can be statically typed.
 
 use core::cell::{Cell, RefCell};
+use core::iter::FusedIterator;
 use core::marker::PhantomData;
 
 use super::AttrIndex;
@@ -743,7 +744,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     /// Iterate the function parameters in declaration order.
-    pub fn params(self) -> impl ExactSizeIterator<Item = Argument<'ctx, B>> + 'ctx {
+    pub fn params(
+        self,
+    ) -> impl ExactSizeIterator<Item = Argument<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let module = self.module;
         let parent = self.id;
         let signature = self.signature;
@@ -831,7 +835,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// Iterate the basic blocks in insertion order as non-insertion labels/views.
     pub fn basic_blocks(
         self,
-    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, R, Terminated, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, R, Terminated, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
         let ids: Vec<ValueId> = self.data().basic_blocks.borrow().clone();
@@ -953,6 +960,78 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             id,
             module: self.module,
             ty: ptr_ty,
+        }
+    }
+}
+
+/// Iterator over the basic blocks of one function, in insertion order. The
+/// named form of [`FunctionValue::basic_blocks`]'s walk, returned by
+/// [`FunctionValue`]'s `IntoIterator`: it snapshots the function's block ids
+/// up front, so IR mutation during the walk does not disturb it.
+pub struct FunctionBasicBlocks<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
+    ids: std::vec::IntoIter<ValueId>,
+    module: ModuleRef<'ctx, B>,
+    label_ty: TypeId,
+    _r: PhantomData<R>,
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Iterator for FunctionBasicBlocks<'ctx, R, B> {
+    type Item = BasicBlock<'ctx, R, Terminated, B>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let id = self.ids.next()?;
+        Some(BasicBlock::from_parts(id, self.module, self.label_ty))
+    }
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.ids.size_hint()
+    }
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ExactSizeIterator
+    for FunctionBasicBlocks<'ctx, R, B>
+{
+    #[inline]
+    fn len(&self) -> usize {
+        self.ids.len()
+    }
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> DoubleEndedIterator
+    for FunctionBasicBlocks<'ctx, R, B>
+{
+    #[inline]
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let id = self.ids.next_back()?;
+        Some(BasicBlock::from_parts(id, self.module, self.label_ty))
+    }
+}
+
+// The inner `vec::IntoIter` is fused, and `next` forwards to it directly.
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FusedIterator
+    for FunctionBasicBlocks<'ctx, R, B>
+{
+}
+
+/// Iterating a function yields its basic blocks in insertion order (the same
+/// walk as [`FunctionValue::basic_blocks`]), matching LLVM's
+/// `for (BasicBlock &BB : F)`. Sugar beside the named method, not a
+/// replacement.
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoIterator for FunctionValue<'ctx, R, B> {
+    type Item = BasicBlock<'ctx, R, Terminated, B>;
+    type IntoIter = FunctionBasicBlocks<'ctx, R, B>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        let module = self.module.module();
+        let label_ty = module.label_type().as_type().id();
+        let ids: Vec<ValueId> = self.data().basic_blocks.borrow().clone();
+        FunctionBasicBlocks {
+            ids: ids.into_iter(),
+            module: self.module,
+            label_ty,
+            _r: PhantomData,
         }
     }
 }

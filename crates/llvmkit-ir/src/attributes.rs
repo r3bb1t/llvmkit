@@ -19,6 +19,7 @@
 //!   list maps function / return / per-parameter slots to attribute
 //!   sets.
 
+use core::iter::FusedIterator;
 use std::fmt;
 
 use super::ApInt;
@@ -678,7 +679,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> AttributeSet<'ctx, B> {
         self.attrs.len()
     }
 
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = &Attribute<'ctx, B>> {
+    pub fn iter(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &Attribute<'ctx, B>> + DoubleEndedIterator + FusedIterator
+    {
         self.attrs.iter()
     }
 
@@ -751,7 +755,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> AttributeList<'ctx, B> {
     }
 
     /// Read-only iterator over `(index, set)` pairs.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = (AttrIndex, &AttributeSet<'ctx, B>)> {
+    pub fn iter(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (AttrIndex, &AttributeSet<'ctx, B>)>
+    + DoubleEndedIterator
+    + FusedIterator {
         self.entries.iter().map(|(i, s)| (*i, s))
     }
 

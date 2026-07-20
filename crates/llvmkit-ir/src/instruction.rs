@@ -18,6 +18,8 @@
 //! rather than silently slipping through a wildcard. Exhaustiveness is
 //! the safety feature, not an oversight.
 
+use core::iter::FusedIterator;
+
 use super::asm_writer::{SlotTracker, fmt_instruction};
 use super::basic_block::{BasicBlock, BasicBlockLabel};
 use super::block_state::Unterminated;
@@ -1696,6 +1698,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> PhiKind<'ctx, B> {
             Self::Ptr(p) => p.incoming(index),
             Self::Other(p) => p.incoming(index),
         }
+    }
+
+    /// Iterate the `(value, block label)` incoming pairs in declaration
+    /// order, independent of variant — the same pairs [`Self::incoming`]
+    /// yields by index. Mirrors walking `PHINode::blocks()`/
+    /// `incoming_values()`. Snapshots the incoming list up front (like
+    /// [`SwitchInst::cases`](crate::SwitchInst::cases)), so callers may
+    /// mutate the phi while iterating. The per-variant handles keep the
+    /// narrowed accessors.
+    pub fn incomings(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
+        let entries: Vec<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> = match self {
+            Self::Int(p) => p.incomings().collect(),
+            Self::Fp(p) => p.incomings().collect(),
+            Self::Ptr(p) => p.incomings().collect(),
+            Self::Other(p) => p.incomings().collect(),
+        };
+        entries.into_iter()
     }
 
     /// Read-only erased instruction view for this phi.

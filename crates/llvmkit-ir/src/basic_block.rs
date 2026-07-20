@@ -31,6 +31,7 @@ use super::r#type::TypeId;
 use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
 use super::{DebugLoc, IrError, IrResult, Type};
 use core::cell::RefCell;
+use core::iter::FusedIterator;
 use core::marker::PhantomData;
 
 // --------------------------------------------------------------------------
@@ -627,7 +628,10 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     }
 
     /// Iterate read-only instruction views in program order.
-    pub fn instructions(&self) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>> {
+    pub fn instructions(
+        &self,
+    ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>> + DoubleEndedIterator + FusedIterator
+    {
         let module = self.module;
         let ids = self.instruction_ids();
         ids.into_iter()

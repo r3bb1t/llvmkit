@@ -2,6 +2,7 @@
 //! used by verifier and analysis code: successor, predecessor, and edge
 //! enumeration over `BasicBlock` / terminator instruction structure.
 
+use core::iter::FusedIterator;
 use std::collections::HashMap;
 
 use super::basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
@@ -113,7 +114,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
     }
 
     /// Directed edges in function block order and terminator successor order.
-    pub fn edges(&self) -> impl ExactSizeIterator<Item = BasicBlockEdge<'ctx, B>> + '_ {
+    pub fn edges(
+        &self,
+    ) -> impl ExactSizeIterator<Item = BasicBlockEdge<'ctx, B>> + DoubleEndedIterator + FusedIterator + '_
+    {
         self.edges.iter().cloned()
     }
 }

@@ -222,3 +222,34 @@ fn dyn_path_keeps_runtime_return_check() -> Result<(), IrError> {
         Ok(())
     })
 }
+
+/// llvmkit-specific: iterating a `FunctionValue` (`for bb in f`) yields its
+/// basic blocks in insertion order — the same walk as the named
+/// `basic_blocks()` — matching LLVM's `for (BasicBlock &BB : F)` range loop.
+#[test]
+fn function_value_into_iter_yields_blocks_in_order() -> Result<(), IrError> {
+    Module::with_new("fv-into-iter", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        f.append_basic_block(&m, "entry");
+        f.append_basic_block(&m, "mid");
+        f.append_basic_block(&m, "exit");
+
+        let named: Vec<Option<String>> = f.basic_blocks().map(|bb| bb.name()).collect();
+        let mut walked = Vec::new();
+        for bb in f {
+            walked.push(bb.name());
+        }
+        assert_eq!(walked, named);
+        assert_eq!(
+            walked,
+            [
+                Some("entry".to_string()),
+                Some("mid".to_string()),
+                Some("exit".to_string()),
+            ]
+        );
+        Ok(())
+    })
+}

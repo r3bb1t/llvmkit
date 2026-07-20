@@ -25,6 +25,7 @@
 //!   [`IsValue`] / [`Typed`] / [`HasName`] / [`HasDebugLoc`] traits.
 
 use core::cell::RefCell;
+use core::iter::FusedIterator;
 use core::num::NonZeroUsize;
 
 use super::argument::Argument;
@@ -386,7 +387,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     /// (erase, RAUW) without invalidating the iterator. Order is
     /// registration-order; user ids may appear more than once if the same
     /// instruction references this value in multiple slots.
-    pub fn users(self) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>> + 'ctx {
+    pub fn users(
+        self,
+    ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         let module = self.module;
         let snapshot: Vec<ValueId> = self
             .data()
