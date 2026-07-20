@@ -1423,7 +1423,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, Open, B> {
         let module = self.module.module();
         let value = value.into_int_value(self.module)?;
         if value.as_value().ty == self.ty {
-            let value_id = value.as_value().id;
+            let value_id = value.id();
             let block_id = block.into_basic_block_label().as_value().id;
             if self
                 .payload()
@@ -1606,7 +1606,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
         let module = self.module.module();
         let value = value.into_float_value(self.module)?;
         if value.as_value().ty == self.ty {
-            let value_id = value.as_value().id;
+            let value_id = value.id();
             let block_id = block.into_basic_block_label().as_value().id;
             if self
                 .payload()
@@ -1776,7 +1776,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, Open, B> {
         let module = self.module.module();
         let value = value.into_pointer_value(self.module)?;
         if value.as_value().ty == self.ty {
-            let value_id = value.as_value().id;
+            let value_id = value.id();
             let block_id = block.into_basic_block_label().as_value().id;
             if self
                 .payload()
@@ -3430,7 +3430,7 @@ mod tests {
             };
             let result = typed.result();
 
-            assert_eq!(result.as_value().id(), call_id);
+            assert_eq!(result.id(), call_id);
             Ok(())
         })
     }

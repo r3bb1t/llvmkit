@@ -107,7 +107,7 @@ impl Worklist {
 #[cfg(test)]
 mod tests {
     use super::Worklist;
-    use crate::{FunctionView, IRBuilder, IntValue, IrError, Linkage, Module, NoFolder};
+    use crate::{FunctionView, IRBuilder, IntValue, IrError, IsValue, Linkage, Module, NoFolder};
 
     // Build `f(i32 %x)` with three dead adds; return their ids + the module ref.
     // Helper closes over `m` so tests can pop against a live module.
@@ -124,7 +124,7 @@ mod tests {
             let c = b.build_int_add(x, 2_i32, "c")?;
             b.build_ret(x)?;
 
-            let (a_id, c_id) = (a.as_value().id, c.as_value().id);
+            let (a_id, c_id) = (a.id(), c.id());
             let module = m.module_ref();
 
             let mut wl = Worklist::new();
@@ -159,7 +159,7 @@ mod tests {
             let a = b.build_int_add(x, 1_i32, "a")?;
             let c = b.build_int_add(x, 2_i32, "c")?;
             b.build_ret(x)?;
-            let (a_id, c_id) = (a.as_value().id, c.as_value().id);
+            let (a_id, c_id) = (a.id(), c.id());
             let module = m.module_ref();
 
             let mut wl = Worklist::new();
@@ -190,10 +190,10 @@ mod tests {
             b.build_ret(x)?;
 
             // A constant operand id — the kind of id the erase cascade pushes.
-            let const_id = i32_ty.const_int(1_i32).as_value().id;
+            let const_id = i32_ty.const_int(1_i32).id();
             // A parameter id — likewise not an instruction (`x` is param 0).
-            let param_id = x.as_value().id;
-            let a_id = a.as_value().id;
+            let param_id = x.id();
+            let a_id = a.id();
             let module = m.module_ref();
 
             let mut wl = Worklist::new();
@@ -235,7 +235,7 @@ mod tests {
             let a = b.build_int_add(x, 1_i32, "a")?;
             b.build_ret(x)?;
 
-            let a_id = a.as_value().id;
+            let a_id = a.id();
             // The `ret` terminator is the block's last instruction; reach it the
             // same way `pass_context`'s tests do, then take its ValueId.
             let ret_id = FunctionView::from(f)
@@ -244,8 +244,7 @@ mod tests {
                 .as_basic_block()
                 .terminator()
                 .expect("block is terminated by the ret")
-                .as_value()
-                .id;
+                .id();
             let module = m.module_ref();
 
             let mut wl = Worklist::new();

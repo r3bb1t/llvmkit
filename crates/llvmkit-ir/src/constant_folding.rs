@@ -31,7 +31,7 @@ use super::intrinsics::BinaryIntrinsic;
 use super::module::{Brand, ModuleBrand, ModuleRef, ModuleView};
 use super::target_library_info::{LibFunc, TargetLibraryInfo};
 use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData};
-use super::value::{Value, ValueId, ValueKindData};
+use super::value::{IsValue, Value, ValueId, ValueKindData};
 use super::{ApInt, Dyn, FunctionValue, IrError, IrResult};
 
 /// Whether folds that depend on host/libm floating-point determinism are allowed.
@@ -393,8 +393,8 @@ pub fn constant_fold_constant<'ctx, B: ModuleBrand + 'ctx>(
                     return Ok(constant);
                 };
                 let folded = constant_fold_constant(element, dl, tli)?;
-                changed |= folded.as_value().id != id;
-                folded_ids.push(folded.as_value().id);
+                changed |= folded.id() != id;
+                folded_ids.push(folded.id());
             }
             if !changed {
                 return Ok(constant);
@@ -1994,9 +1994,5 @@ fn rebrand_constant<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx>,
     module: ModuleView<'ctx, B>,
 ) -> Constant<'ctx, B> {
-    Constant::from_parts(Value::from_parts(
-        constant.as_value().id,
-        module,
-        constant.ty().id(),
-    ))
+    Constant::from_parts(Value::from_parts(constant.id(), module, constant.ty().id()))
 }

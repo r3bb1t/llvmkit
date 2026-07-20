@@ -1060,8 +1060,7 @@ impl<'ctx> ModuleCore {
         R: ReturnMarker,
         S: BlockTerminationState,
     {
-        if block.parent_function().map(|f| f.as_value().id) != Some(function.as_dyn().as_value().id)
-        {
+        if block.parent_function().map(|f| f.id()) != Some(function.as_dyn().id()) {
             return Err(IrError::InvalidOperation {
                 message: "blockaddress block must belong to function",
             });
@@ -1069,7 +1068,7 @@ impl<'ctx> ModuleCore {
         let ty = self.ptr_type(function.address_space()).as_type().id();
         let id = self.context().intern_constant_block_address(
             ty,
-            function.as_dyn().as_value().id,
+            function.as_dyn().id(),
             block.as_dyn().as_value().id,
         );
         Ok(constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty))
@@ -1109,7 +1108,7 @@ impl<'ctx> ModuleCore {
         let ty = self.ptr_type(0).as_type().id();
         let id = self
             .context()
-            .intern_constant_dso_local_equivalent(ty, function.as_value().id);
+            .intern_constant_dso_local_equivalent(ty, function.id());
         constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty)
     }
     /// `dso_local_equivalent` over a function, alias-to-function, or ifunc.
@@ -1117,7 +1116,7 @@ impl<'ctx> ModuleCore {
         &'ctx self,
         global: Constant<'ctx, B>,
     ) -> IrResult<Constant<'ctx, B>> {
-        let value = match &self.context().value_data(global.as_value().id).kind {
+        let value = match &self.context().value_data(global.id()).kind {
             ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Value::from_parts(
                 *value,
                 ModuleRef::<B>::new(self),
@@ -1153,9 +1152,7 @@ impl<'ctx> ModuleCore {
         function: FunctionValue<'ctx, Dyn, B>,
     ) -> Constant<'ctx, B> {
         let ty = self.ptr_type(0).as_type().id();
-        let id = self
-            .context()
-            .intern_constant_no_cfi(ty, function.as_value().id);
+        let id = self.context().intern_constant_no_cfi(ty, function.id());
         constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty)
     }
 
@@ -1164,7 +1161,7 @@ impl<'ctx> ModuleCore {
         &'ctx self,
         global: Constant<'ctx, B>,
     ) -> IrResult<Constant<'ctx, B>> {
-        let value = match &self.context().value_data(global.as_value().id).kind {
+        let value = match &self.context().value_data(global.id()).kind {
             ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Value::from_parts(
                 *value,
                 ModuleRef::<B>::new(self),
@@ -1690,7 +1687,7 @@ fn constant_with_replaced_operand(
             validate_constant_expr_data(module, &expr)?;
             let result_ty = Type::new(expr.result_ty, module);
             if let Some(folded) = fold_constant_expr_data(module, result_ty, &expr)? {
-                return Ok(Some(folded.as_value().id));
+                return Ok(Some(folded.id()));
             }
             Ok(Some(module.context().intern_constant_expr(expr)))
         }
@@ -2507,12 +2504,12 @@ mod tests {
             let replacement = i64_ty.const_zero().as_constant();
             let rewritten = constant_with_replaced_operand(
                 m.core_ref(),
-                expr.as_value().id,
-                ptr_as_int.as_value().id,
-                replacement.as_value().id,
+                expr.id(),
+                ptr_as_int.id(),
+                replacement.id(),
             )?;
 
-            assert_eq!(rewritten, Some(i64_ty.const_int(1_i64).as_value().id));
+            assert_eq!(rewritten, Some(i64_ty.const_int(1_i64).id()));
             Ok(())
         })
     }

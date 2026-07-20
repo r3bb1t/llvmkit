@@ -547,7 +547,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         C: IsConstant<'ctx, B>,
     {
         let constant = data.as_constant();
-        Ok(constant.as_value().id)
+        Ok(constant.id())
     }
 
     pub fn comdat(self) -> Option<ComdatRef<'ctx, B>> {
@@ -1313,17 +1313,13 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
             *f.data().gc.borrow_mut() = Some(gc);
         }
         if let Some(prefix_data) = self.prefix_data {
-            f.data().prefix_data.set(Some(prefix_data.as_value().id));
+            f.data().prefix_data.set(Some(prefix_data.id()));
         }
         if let Some(prologue_data) = self.prologue_data {
-            f.data()
-                .prologue_data
-                .set(Some(prologue_data.as_value().id));
+            f.data().prologue_data.set(Some(prologue_data.id()));
         }
         if let Some(personality_fn) = self.personality_fn {
-            f.data()
-                .personality_fn
-                .set(Some(personality_fn.as_value().id));
+            f.data().personality_fn.set(Some(personality_fn.id()));
         }
         if let Some(comdat) = self.comdat {
             *f.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
@@ -1338,7 +1334,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         // Apply parameter names.
         for (slot, name) in self.param_names {
             let arg = f.param(slot)?;
-            f.set_local_value_name(arg.as_value().id, Some(&name));
+            f.set_local_value_name(arg.id(), Some(&name));
         }
         Ok(f)
     }

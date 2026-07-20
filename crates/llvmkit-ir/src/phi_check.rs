@@ -23,7 +23,7 @@ use crate::instruction::InstructionKindData;
 use crate::marker::Dyn;
 use crate::module::{Module, ModuleBrand, Unverified};
 use crate::r#type::{Type, TypeId};
-use crate::value::{ValueId, ValueKindData};
+use crate::value::{IsValue, ValueId, ValueKindData};
 
 /// A single coherence violation for one phi, identified by the raw
 /// `ValueId`/`TypeId` at fault. The verifier maps each variant back to
@@ -211,7 +211,7 @@ pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
                 .collect();
             if let Err(violation) = check_phi_incoming(result_ty, &incoming, preds, &value_ty_of) {
                 return Err(PhiCoherenceError {
-                    phi_id: inst.as_value().id,
+                    phi_id: inst.id(),
                     message: render_phi_violation(&violation, result_ty, module),
                 });
             }

@@ -1913,6 +1913,7 @@ mod tests {
     use super::*;
     use crate::instruction::build_instruction_value;
     use crate::module::Module;
+    use crate::value::IsValue;
 
     fn fabricate_instruction(
         m: &Module<'_>,
@@ -1959,8 +1960,8 @@ mod tests {
                 gep_ty.id(),
                 InstructionKindData::Gep(GepInstData::new(
                     i8_ty.as_type().id(),
-                    base.as_value().id,
-                    [minus_one.as_value().id],
+                    base.id(),
+                    [minus_one.id()],
                     crate::GepNoWrapFlags::empty(),
                 )),
             );

@@ -40,7 +40,7 @@ use super::module::{
     ModuleBrand, ModuleCore, ModuleView, UseListOrderBBRecord, UseListOrderRecord,
 };
 use super::r#type::{StructBody, Type, TypeData, TypeId};
-use super::value::{Value, ValueId, ValueKindData};
+use super::value::{IsValue, Value, ValueId, ValueKindData};
 use super::{ApInt, ApIntSignedness, AttrIndex};
 
 // --------------------------------------------------------------------------
@@ -78,7 +78,7 @@ impl SlotTracker {
 
         for arg in f.params() {
             if arg.name().is_none() {
-                local.insert(arg.as_value().id, next);
+                local.insert(arg.id(), next);
                 next += 1;
             }
         }
@@ -90,7 +90,7 @@ impl SlotTracker {
             }
             for inst in bb.instructions() {
                 if produces_named_result(&inst) && inst.name().is_none() {
-                    local.insert(inst.as_value().id, next);
+                    local.insert(inst.id(), next);
                     next += 1;
                 }
             }
@@ -767,7 +767,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueId) -> Option<u32> {
     let mut next = 0_u32;
     for global in module.iter_globals::<crate::module::Brand<'_>>() {
         if global.as_value().name().is_none() {
-            if global.as_value().id == id {
+            if global.id() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
@@ -775,7 +775,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueId) -> Option<u32> {
     }
     for alias in module.iter_aliases::<crate::module::Brand<'_>>() {
         if alias.as_value().name().is_none() {
-            if alias.as_value().id == id {
+            if alias.id() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
@@ -783,7 +783,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueId) -> Option<u32> {
     }
     for ifunc in module.iter_ifuncs::<crate::module::Brand<'_>>() {
         if ifunc.as_value().name().is_none() {
-            if ifunc.as_value().id == id {
+            if ifunc.id() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
@@ -791,7 +791,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueId) -> Option<u32> {
     }
     for function in module.iter_functions::<crate::module::Brand<'_>>() {
         if function.as_value().name().is_none() {
-            if function.as_value().id == id {
+            if function.id() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
@@ -935,7 +935,7 @@ pub(super) fn fmt_instruction(
                 fmt_llvm_name(f, "%", &n)?;
                 f.write_str(" = ")?;
             }
-            None => match slots.local(inst.as_value().id) {
+            None => match slots.local(inst.id()) {
                 Some(slot) => write!(f, "%{slot} = ")?,
                 None => f.write_str("%<unnumbered> = ")?,
             },
@@ -2529,7 +2529,7 @@ pub(super) fn fmt_function<B: ModuleBrand>(
         f.write_str(" ")?;
         match arg.name() {
             Some(n) => fmt_llvm_name(f, "%", &n)?,
-            None => match slots.local(arg.as_value().id) {
+            None => match slots.local(arg.id()) {
                 Some(slot) => write!(f, "%{slot}")?,
                 None => f.write_str("%<unnumbered>")?,
             },

@@ -17,7 +17,7 @@ use super::marker::{Dyn, ReturnMarker};
 use super::module::ModuleBrand;
 use super::pass_context::BasicBlockView;
 use super::r#use::Use;
-use super::value::{Value, ValueId, ValueKindData};
+use super::value::{IsValue, Value, ValueId, ValueKindData};
 
 /// Analysis marker for caching a [`DominatorTree`] in the new-pass-manager
 /// substrate. Its invalidation rule is wired in `analysis.rs`: preserved by
@@ -201,8 +201,8 @@ impl DominatorTree {
     ) -> bool {
         let use_bb = user.parent();
         let def_bb = def.parent();
-        let def_id = def.as_value().id;
-        let user_id = user.as_value().id;
+        let def_id = def.id();
+        let user_id = user.id();
 
         if !self.is_reachable_from_entry(use_bb) {
             return true;
@@ -234,7 +234,7 @@ impl DominatorTree {
     {
         let use_bb_id = block.dominator_block_id();
         let def_bb = def.parent();
-        let def_id = def.as_value().id;
+        let def_id = def.id();
         if !self.reachable.contains(&use_bb_id) {
             return true;
         }
@@ -263,8 +263,8 @@ impl DominatorTree {
         let Ok(user_inst) = InstructionView::try_from(use_edge.user()) else {
             return true;
         };
-        let def_id = def_inst.as_value().id;
-        let user_id = user_inst.as_value().id;
+        let def_id = def_inst.id();
+        let user_id = user_inst.id();
         let Some(def_bb_id) = self.instruction_parent.get(&def_id).copied() else {
             return false;
         };
@@ -313,7 +313,7 @@ impl DominatorTree {
         self.dominates_edge_use_ids(
             edge.start().as_value().id,
             edge.end().as_value().id,
-            user_inst.as_value().id,
+            user_inst.id(),
             use_edge.index(),
         )
     }
@@ -528,7 +528,7 @@ fn compute_instruction_maps<'ctx, B: ModuleBrand + 'ctx>(
     for block in function.basic_blocks() {
         let block_id = block.as_value().id;
         for (index, inst) in block.instructions().enumerate() {
-            let inst_id = inst.as_value().id;
+            let inst_id = inst.id();
             parent.insert(inst_id, block_id);
             order.insert(inst_id, (block_id, index));
             if let ValueKindData::Instruction(data) = &inst.as_value().data().kind {

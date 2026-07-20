@@ -28,7 +28,7 @@ use super::ir_builder::{IRBuilder, Positioned};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::TypeId;
-use super::value::{HasDebugLoc, HasName, Typed, Value, ValueId, ValueKindData, sealed};
+use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
 use super::{DebugLoc, IrError, IrResult, Type};
 use core::cell::RefCell;
 use core::marker::PhantomData;
@@ -807,7 +807,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         let parent_fn =
             FunctionValue::<'ctx, R, B>::from_parts_unchecked(parent_fn_id, self.module);
         let new_block = parent_fn.append_basic_block(module_token, name);
-        let split_id = before.as_value().id;
+        let split_id = before.id();
         let suffix: Vec<ValueId> = {
             let mut src = self.data().instructions.borrow_mut();
             let pos =

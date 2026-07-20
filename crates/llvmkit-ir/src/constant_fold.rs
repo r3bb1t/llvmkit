@@ -24,7 +24,7 @@ use super::int_width::IntDyn;
 use super::module::{ModuleBrand, ModuleRef, ModuleView};
 use super::r#type::{Type, TypeData};
 use super::unnamed_addr::UnnamedAddr;
-use super::value::{Value, ValueId, ValueKindData};
+use super::value::{IsValue, Value, ValueId, ValueKindData};
 use super::vec_len::LenDyn;
 use super::{IrError, IrResult, RoundingMode};
 
@@ -1253,7 +1253,7 @@ fn constant_relation_complexity<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<
 }
 
 fn global_value_ref<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> Option<ValueId> {
-    global_value_ref_from_id(constant.as_value().module(), constant.as_value().id())
+    global_value_ref_from_id(constant.as_value().module(), constant.id())
 }
 
 fn global_value_ref_from_id<B: ModuleBrand>(

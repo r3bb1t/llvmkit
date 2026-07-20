@@ -45,7 +45,7 @@ use crate::metadata::{MetadataAttachmentKind, MetadataId, MetadataKind};
 use crate::module::{ModuleCore, ModuleView};
 use crate::phi_check::{PhiViolation, check_phi_incoming};
 use crate::r#type::{Type, TypeData, TypeId};
-use crate::value::{ValueId, ValueKindData};
+use crate::value::{IsValue, ValueId, ValueKindData};
 
 // --------------------------------------------------------------------------
 // Verifier
@@ -136,7 +136,7 @@ impl<'ctx> Verifier<'ctx> {
                 ));
             }
             if g.linkage() == crate::global_value::Linkage::Common {
-                let init_data = self.module.context().value_data(init.as_value().id);
+                let init_data = self.module.context().value_data(init.id());
                 let zero = matches!(
                     &init_data.kind,
                     ValueKindData::Constant(crate::constant::ConstantData::Int(words))
@@ -179,7 +179,7 @@ impl<'ctx> Verifier<'ctx> {
     }
 
     fn verify_constant_tree(&self, constant: crate::constant::Constant<'ctx>) -> IrResult<()> {
-        let value_data = self.module.context().value_data(constant.as_value().id);
+        let value_data = self.module.context().value_data(constant.id());
         let ValueKindData::Constant(data) = &value_data.kind else {
             return Ok(());
         };
@@ -201,7 +201,7 @@ impl<'ctx> Verifier<'ctx> {
                     self.module,
                     self.module.label_type().as_type().id(),
                 );
-                if block.parent_function().map(|f| f.as_value().id) != Some(*function) {
+                if block.parent_function().map(|f| f.id()) != Some(*function) {
                     return Err(IrError::InvalidOperation {
                         message: "blockaddress block must belong to referenced function",
                     });
@@ -2828,7 +2828,7 @@ impl<'ctx> Verifier<'ctx> {
         };
         for op_id in kind.operand_ids() {
             // Self-reference (`Verifier/SelfReferential.ll`).
-            if op_id == inst.as_value().id {
+            if op_id == inst.id() {
                 return Err(self.fail(
                     f,
                     bb,
@@ -2844,9 +2844,7 @@ impl<'ctx> Verifier<'ctx> {
                 && op_inst.parent.get() == bb.as_value().id
             {
                 // Find op_id's index in block.
-                if let Some(op_idx) = block_instructions
-                    .iter()
-                    .position(|i| i.as_value().id == op_id)
+                if let Some(op_idx) = block_instructions.iter().position(|i| i.id() == op_id)
                     && op_idx >= index_in_block
                 {
                     return Err(self.fail(
@@ -3251,7 +3249,7 @@ mod tests {
         // Reach the value-id pair without leaking the return marker.
         let f_id = {
             // FunctionValue<Dyn> has a private id field; widen via as_dyn.
-            f.as_dyn().as_value().id
+            f.as_dyn().id()
         };
         let bb_id = bb.as_dyn().as_value().id;
         (f_id, bb_id)
@@ -3372,7 +3370,7 @@ mod tests {
                 &m,
                 bb_id,
                 i32_ty.id(),
-                InstructionKindData::Add(BinaryOpData::new(p0.as_value().id, p1.as_value().id)),
+                InstructionKindData::Add(BinaryOpData::new(p0.id(), p1.id())),
             );
             append_ret_void(&m, bb_id);
             let err = m.verify_borrowed().unwrap_err();
@@ -3400,7 +3398,7 @@ mod tests {
                 void_ty.id(),
                 InstructionKindData::Br(BranchInstData {
                     kind: core::cell::RefCell::new(BranchKind::Conditional {
-                        cond: core::cell::Cell::new(p0.as_value().id),
+                        cond: core::cell::Cell::new(p0.id()),
                         then_bb: then_bb.as_value().id,
                         else_bb: else_bb.as_value().id,
                     }),
@@ -3440,7 +3438,7 @@ mod tests {
                 &m,
                 entry_id,
                 i32_ty.id(),
-                InstructionKindData::Add(BinaryOpData::new(p0.as_value().id, p1.as_value().id)),
+                InstructionKindData::Add(BinaryOpData::new(p0.id(), p1.id())),
             );
             fabricate_instruction(
                 &m,
@@ -3566,7 +3564,7 @@ mod tests {
             let (f_id, entry_id) = skeleton(&m, void_ty, &[i1_ty], "f");
             let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
             let target = f.append_basic_block(&m, "target");
-            let cond_id = f.param(0).unwrap().as_value().id;
+            let cond_id = f.param(0).unwrap().id();
             fabricate_instruction(
                 &m,
                 entry_id,
@@ -3663,13 +3661,13 @@ mod tests {
                 .add_function_dyn("caller", caller_fn_ty, Linkage::External)
                 .unwrap();
             let entry = caller.append_basic_block(&m, "entry");
-            let arg_id = caller.param(0).unwrap().as_value().id;
+            let arg_id = caller.param(0).unwrap().id();
             fabricate_instruction(
                 &m,
                 entry.as_value().id,
                 i32_ty.id(),
                 InstructionKindData::Call(crate::instr_types::CallInstData::new(
-                    callee.as_value().id,
+                    callee.id(),
                     callee_fn_ty.as_type().id(),
                     [arg_id],
                     crate::CallingConv::default(),

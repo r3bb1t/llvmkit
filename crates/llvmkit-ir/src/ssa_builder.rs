@@ -879,7 +879,7 @@ where
         let v = value.into_int_value(self.module_ref())?;
         super::r#type::Type::new(var.ty, self.module_ref()).require_match(v.as_value().ty())?;
         let block = self.current_block_id();
-        self.write_variable(var.index, block, v.as_value().id);
+        self.write_variable(var.index, block, v.id());
         Ok(())
     }
 
@@ -919,7 +919,7 @@ where
         let v = value.into_float_value(self.module_ref())?;
         super::r#type::Type::new(var.ty, self.module_ref()).require_match(Typed::ty(v))?;
         let block = self.current_block_id();
-        self.write_variable(var.index, block, v.as_value().id);
+        self.write_variable(var.index, block, v.id());
         Ok(())
     }
 
@@ -961,7 +961,7 @@ where
         let v = value.into_pointer_value(self.module_ref())?;
         super::r#type::Type::new(var.ty, self.module_ref()).require_match(Typed::ty(v))?;
         let block = self.current_block_id();
-        self.write_variable(var.index, block, v.as_value().id);
+        self.write_variable(var.index, block, v.id());
         Ok(())
     }
 
@@ -1699,7 +1699,7 @@ where
     fn phi_user_ids(&self, phi: ValueId) -> Vec<ValueId> {
         let module = self.module_ref();
         let value = Value::from_parts(phi, module, module.value_data(phi).ty);
-        value.users().map(|u| u.as_value().id).collect()
+        value.users().map(|u| u.id()).collect()
     }
 
     /// A strict variable's read reached function entry with no write on
@@ -1714,7 +1714,7 @@ where
             let module = self.module_ref();
             let ty = super::r#type::Type::new(data.ty, module);
             let poison = ty.get_poison();
-            return Ok(poison.as_value().id);
+            return Ok(poison.id());
         }
         Err(IrError::SsaUseOfUndefinedVariable {
             variable: data.name.clone(),
@@ -1784,7 +1784,7 @@ where
                     )
                 });
             Instruction::<Attached, B>::from_parts(phi, module).erase_from_parent(self.module);
-            let resolved = poison.as_value().id;
+            let resolved = poison.id();
             self.state.resolved.borrow_mut().insert(phi, resolved);
             for user in users {
                 if self.state.created_phis.contains_key(&user) {
@@ -1931,7 +1931,7 @@ mod tests {
             let entry_id = label_value_id(&entry.label);
 
             let var: IntVariable<i32, _> = b.declare_int_var("x");
-            let one = m.i32_type().const_int(1_i32).as_value().id;
+            let one = m.i32_type().const_int(1_i32).id();
             b.write_variable(var.index, entry_id, one);
             let read = b.read_variable_in(var.index, entry_id)?;
             assert_eq!(read, one);
@@ -1965,7 +1965,7 @@ mod tests {
             b.state.preds.entry(loop_id).or_default().push(loop_id);
 
             let var: IntVariable<i32, _> = b.declare_int_var("i");
-            let zero = m.i32_type().const_int(0_i32).as_value().id;
+            let zero = m.i32_type().const_int(0_i32).id();
             b.write_variable(var.index, entry_id, zero);
 
             // Read inside the not-yet-sealed loop block: creates an
@@ -1978,7 +1978,7 @@ mod tests {
             // Record the loop body's own write (e.g. `i + 1`, modeled
             // here as reusing a fresh constant is fine -- the engine
             // does not care what the value IS, only that a def exists).
-            let one = m.i32_type().const_int(1_i32).as_value().id;
+            let one = m.i32_type().const_int(1_i32).id();
             b.write_variable(var.index, loop_id, one);
 
             // Sealing completes the incomplete phi: two distinct incoming
@@ -2030,7 +2030,7 @@ mod tests {
             b.seal_block(right)?;
 
             let var: IntVariable<i32, _> = b.declare_int_var("x");
-            let same_value = m.i32_type().const_int(7_i32).as_value().id;
+            let same_value = m.i32_type().const_int(7_i32).id();
             // Both predecessors write the SAME value.
             b.write_variable(var.index, left_id, same_value);
             b.write_variable(var.index, right_id, same_value);
@@ -2097,7 +2097,7 @@ mod tests {
             let var: IntVariable<i32, _> = b.declare_int_var_poison("x");
             let read = b.read_variable_in(var.index, entry_id)?;
             let i32_ty = m.i32_type();
-            let poison_id = i32_ty.as_type().get_poison().as_value().id;
+            let poison_id = i32_ty.as_type().get_poison().id();
             assert_eq!(read, poison_id);
             Ok(())
         })
@@ -2144,7 +2144,7 @@ mod tests {
             b.seal_block(b3)?;
 
             let var: IntVariable<i32, _> = b.declare_int_var("x");
-            let one = m.i32_type().const_int(1_i32).as_value().id;
+            let one = m.i32_type().const_int(1_i32).id();
             b.write_variable(var.index, entry_id, one);
 
             // Before the read: only entry has a current_def entry.

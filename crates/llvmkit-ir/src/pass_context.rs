@@ -601,14 +601,14 @@ where
     where
         V: IsValue<'ctx, B>,
     {
-        let id = view.as_value().id();
+        let id = view.id();
         // Capture the former users only when a worklist is active — the
         // inactive path must stay allocation-free (the field's zero-overhead
         // promise). The `borrow()` is a let-RHS temporary, released before the
         // later `borrow_mut()`. Users must be captured *before* the RAUW rewires
         // them.
         let users: Vec<ValueId> = if self.worklist.borrow().is_some() {
-            view.as_value().users().map(|u| u.as_value().id).collect()
+            view.as_value().users().map(|u| u.id()).collect()
         } else {
             Vec::new()
         };
@@ -1537,7 +1537,7 @@ where
         let term = from_block.terminator().ok_or(IrError::InvalidOperation {
             message: "edit_terminator: `from` has no terminator",
         })?;
-        let term_id = term.as_value().id;
+        let term_id = term.id();
         let from_view = from.clone();
         let kind = term.terminator_kind().ok_or(IrError::InvalidOperation {
             message: "edit_terminator: `from`'s last instruction is not a terminator",
@@ -2676,7 +2676,7 @@ mod tests {
     use crate::dominator_tree::DominatorTreeAnalysis;
     use crate::instruction::InstructionView;
     use crate::pass_access::{Inspect, PatchBody, ReshapeCfg, RewriteModule};
-    use crate::{Dyn, IRBuilder, IntValue, IrError, Linkage, Module, NoFolder};
+    use crate::{Dyn, IRBuilder, IntValue, IrError, IsValue, Linkage, Module, NoFolder};
 
     /// The `Requires` list shared by these tests: a single CFG-shaped analysis
     /// so both the infallible accessor and the preservation floors have a
@@ -2872,7 +2872,7 @@ mod tests {
                 .body_instructions()
                 .map(|nt| {
                     count += 1;
-                    let name = nt.as_view().as_value().name();
+                    let name = nt.as_view().name();
                     patch.erase(&nt); // erase the yielded instruction
                     name
                 })
@@ -3311,8 +3311,8 @@ mod tests {
             let a = b.build_int_add(x, 1_i32, "a")?;
             let bb = b.build_int_add(a, 1_i32, "b")?;
             b.build_ret(x)?;
-            let a_id = a.as_value().id;
-            let b_id = bb.as_value().id;
+            let a_id = a.id();
+            let b_id = bb.id();
 
             let function = FunctionView::from(f);
             let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());

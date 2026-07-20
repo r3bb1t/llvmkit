@@ -502,6 +502,14 @@ pub trait IsValue<'ctx, B: ModuleBrand = Brand<'ctx>>:
 {
     /// Widen to the erased [`Value`] handle.
     fn as_value(self) -> Value<'ctx, B>;
+
+    /// Opaque arena id of the underlying value. Every handle shares the
+    /// id of its erased [`Value`], so `x.id()` replaces the
+    /// `x.as_value().id` widen-then-project chain.
+    #[inline]
+    fn id(self) -> ValueId {
+        self.as_value().id
+    }
 }
 
 /// Sealed accessor trait: anything that has an IR type. Implemented by
