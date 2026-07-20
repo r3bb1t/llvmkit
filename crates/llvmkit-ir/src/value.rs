@@ -644,6 +644,14 @@ macro_rules! decl_value_handle {
             }
         }
 
+        impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for $name<'ctx, B> {
+            /// Print the operand form `<type> <ref>`, identical to what the
+            /// erased [`Value`] handle from `as_value` prints.
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::Display::fmt(&Self::as_value(*self), f)
+            }
+        }
+
         impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for $name<'ctx, B> {}
         impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for $name<'ctx, B> {
             #[inline]
@@ -822,6 +830,16 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> fmt::Debug
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ArrayValue").field("id", &self.id).finish()
+    }
+}
+
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> fmt::Display
+    for ArrayValue<'ctx, E, L, B>
+{
+    /// Print the operand form `[N x T] <ref>`, identical to what the erased
+    /// [`Value`] handle from [`ArrayValue::as_value`] prints.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&Self::as_value(*self), f)
     }
 }
 
@@ -1153,6 +1171,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> StructValue<'ctx, B> {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for StructValue<'ctx, B> {}
+impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for StructValue<'ctx, B> {
+    /// Print the operand form `{ ... } <ref>`, identical to what the erased
+    /// [`Value`] handle from [`StructValue::as_value`] prints.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&Self::as_value(*self), f)
+    }
+}
+
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for StructValue<'ctx, B> {
     #[inline]
     fn as_value(self) -> Value<'ctx, B> {
@@ -1282,6 +1308,16 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> Hash for VectorValue<'c
 impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> fmt::Debug for VectorValue<'ctx, E, L, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VectorValue").field("id", &self.id).finish()
+    }
+}
+
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> fmt::Display
+    for VectorValue<'ctx, E, L, B>
+{
+    /// Print the operand form `<N x T> <ref>`, identical to what the erased
+    /// [`Value`] handle from [`VectorValue::as_value`] prints.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&Self::as_value(*self), f)
     }
 }
 
@@ -1696,6 +1732,15 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
 }
 
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> sealed::Sealed for IntValue<'ctx, W, B> {}
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> fmt::Display for IntValue<'ctx, W, B> {
+    /// Print the operand form `i<N> <ref>`, identical to what the erased
+    /// [`Value`] handle from [`IntValue::as_value`] prints. A constant
+    /// operand prints its signed-decimal literal in place of the `<ref>`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&Self::as_value(*self), f)
+    }
+}
+
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for IntValue<'ctx, W, B> {
     #[inline]
     fn as_value(self) -> Value<'ctx, B> {
@@ -2042,6 +2087,14 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
 }
 
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> sealed::Sealed for FloatValue<'ctx, K, B> {}
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> fmt::Display for FloatValue<'ctx, K, B> {
+    /// Print the operand form `<float-type> <ref>`, identical to what the
+    /// erased [`Value`] handle from [`FloatValue::as_value`] prints.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&Self::as_value(*self), f)
+    }
+}
+
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for FloatValue<'ctx, K, B> {
     #[inline]
     fn as_value(self) -> Value<'ctx, B> {

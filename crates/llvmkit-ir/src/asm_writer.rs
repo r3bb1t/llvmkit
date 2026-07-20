@@ -471,8 +471,10 @@ fn is_null_pointer_constant(module: &ModuleCore, id: ValueId) -> bool {
 }
 
 fn fmt_apint_signed(f: &mut fmt::Formatter<'_>, words: &[u64], bit_width: u32) -> fmt::Result {
-    let value = ApInt::from_words(bit_width, words);
-    f.write_str(&value.to_string_radix(10, ApIntSignedness::Signed))
+    // Single source of truth with `impl Display for ApInt`, which prints the
+    // same signed-decimal form; keeping this a delegation stops the two from
+    // drifting apart.
+    write!(f, "{}", ApInt::from_words(bit_width, words))
 }
 
 fn fmt_constant_expr<'ctx, B: ModuleBrand + 'ctx>(
@@ -2990,7 +2992,7 @@ fn fmt_comdat(f: &mut fmt::Formatter<'_>, c: crate::comdat::ComdatRef<'_>) -> fm
     writeln!(f, " = comdat {}", c.selection_kind())
 }
 
-fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
+pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
     g: crate::global_variable::GlobalVariable<'ctx, B>,
 ) -> fmt::Result {

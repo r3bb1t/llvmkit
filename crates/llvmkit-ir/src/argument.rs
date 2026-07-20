@@ -96,6 +96,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
     }
 }
 
+impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for Argument<'ctx, B> {
+    /// Print the operand form `<type> %name`, identical to what the erased
+    /// [`Argument::as_value`] handle prints. An unnamed parameter has no
+    /// slot number outside a function-wide numbering pass, so it prints as
+    /// `%<unnumbered>` here.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&Argument::as_value(*self), f)
+    }
+}
+
 impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for Argument<'ctx, B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for Argument<'ctx, B> {
     #[inline]

@@ -461,6 +461,14 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Constant<'ctx, B> {
     }
 }
 
+impl<'ctx, B: crate::module::ModuleBrand + 'ctx> core::fmt::Display for Constant<'ctx, B> {
+    /// Print the operand form `<type> <literal>`, identical to what the
+    /// erased [`Value`] handle from [`Constant::as_value`] prints.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&Constant::as_value(*self), f)
+    }
+}
+
 impl<'ctx, B: crate::module::ModuleBrand + 'ctx> sealed::Sealed for Constant<'ctx, B> {}
 impl<'ctx, B: crate::module::ModuleBrand + 'ctx> IsValue<'ctx, B> for Constant<'ctx, B> {
     #[inline]

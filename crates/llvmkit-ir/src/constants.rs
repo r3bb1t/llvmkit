@@ -99,6 +99,15 @@ macro_rules! decl_constant_handle {
             }
         }
 
+        impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for $name<'ctx, B> {
+            /// Print the operand form `<type> <literal>` (e.g. `ptr null`,
+            /// `i32 undef`), identical to what the erased [`Value`] handle
+            /// from `as_value` prints.
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                core::fmt::Display::fmt(&Self::as_value(*self), f)
+            }
+        }
+
         impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for $name<'ctx, B> {}
         impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for $name<'ctx, B> {
             #[inline]
@@ -259,6 +268,15 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ConstantIntValue<'ctx, W, B> {
             ty: self.ty,
             _w: PhantomData,
         }
+    }
+}
+
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> fmt::Display for ConstantIntValue<'ctx, W, B> {
+    /// Print the operand form `i<N> <literal>`, where the literal is the
+    /// signed-decimal reading of the constant's bits. Identical to what the
+    /// erased [`Value`] handle from [`ConstantIntValue::as_value`] prints.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&Self::as_value(*self), f)
     }
 }
 
@@ -459,6 +477,15 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ConstantFloatValue<'ctx, K, B> {
             ty: self.ty,
             _k: PhantomData,
         }
+    }
+}
+
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> fmt::Display for ConstantFloatValue<'ctx, K, B> {
+    /// Print the operand form `<float-type> <literal>`, identical to what
+    /// the erased [`Value`] handle from [`ConstantFloatValue::as_value`]
+    /// prints.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&Self::as_value(*self), f)
     }
 }
 

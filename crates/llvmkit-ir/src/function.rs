@@ -1450,7 +1450,14 @@ impl<'ctx, K: FloatKind + ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ct
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> core::fmt::Display
     for FunctionValue<'ctx, R, B>
 {
-    /// Print the function definition as textual `.ll`.
+    /// Print the full `define` form -- header, signature, attributes and
+    /// every basic block -- exactly as it appears in module output. A
+    /// function with no basic blocks prints the one-line `declare` form
+    /// instead. Mirrors LLVM's `Function::print`.
+    ///
+    /// Note this is the *definition*, not the operand form: to print a
+    /// function the way it appears as a call operand (`ptr @name`), go
+    /// through [`FunctionValue::as_value`] instead.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         crate::asm_writer::fmt_function(f, self.as_dyn())
     }

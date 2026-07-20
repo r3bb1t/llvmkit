@@ -492,6 +492,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     }
 }
 
+impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for GlobalVariable<'ctx, B> {
+    /// Print the full definition line `@name = <linkage> global <type>
+    /// <init>, ...`, exactly as it appears in module output. Matches the
+    /// module-level sibling handles [`GlobalAlias`](crate::GlobalAlias) and
+    /// [`GlobalIFunc`](crate::GlobalIFunc), which likewise print their
+    /// definition rather than their operand form.
+    ///
+    /// To print the global the way it appears as an instruction operand
+    /// (`ptr @name`), go through [`GlobalVariable::as_value`] instead.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        crate::asm_writer::fmt_global(f, *self)
+    }
+}
+
 impl<'ctx, B: ModuleBrand> sealed::Sealed for GlobalVariable<'ctx, B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalVariable<'ctx, B> {
     #[inline]
