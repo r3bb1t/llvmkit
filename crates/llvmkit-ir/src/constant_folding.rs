@@ -31,7 +31,7 @@ use super::intrinsics::BinaryIntrinsic;
 use super::module::{Brand, ModuleBrand, ModuleRef, ModuleView};
 use super::target_library_info::{LibFunc, TargetLibraryInfo};
 use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData};
-use super::value::{Value, ValueId, ValueKindData};
+use super::value::{IsValue, Value, ValueId, ValueKindData};
 use super::{ApInt, Dyn, FunctionValue, IrError, IrResult};
 
 /// Whether folds that depend on host/libm floating-point determinism are allowed.
@@ -287,15 +287,15 @@ pub fn constant_fold_cast_operand<'ctx, B: ModuleBrand + 'ctx>(
         let Some(expr_opcode) = cast_constant_expr_opcode(opcode) else {
             return Ok(None);
         };
-        let expr = operand.as_value().module().core_ref().constant_expr(
+        let expr = operand.into_erased().module().core_ref().constant_expr(
             erase_type(dest_ty),
             expr_opcode,
-            [erase_value(operand.as_value())],
+            [erase_value(operand.into_erased())],
             [],
             [],
             ConstantExprFlags::none(),
         )?;
-        return Ok(Some(rebrand_constant(expr, operand.as_value().module())));
+        return Ok(Some(rebrand_constant(expr, operand.into_erased().module())));
     }
 
     Ok(None)
@@ -320,7 +320,7 @@ pub fn constant_fold_instruction<'ctx, B>(
 where
     B: ModuleBrand + 'ctx,
 {
-    let value = instruction.as_value();
+    let value = instruction.into_erased();
     let ValueKindData::Instruction(data) = &value.data().kind else {
         return Ok(None);
     };
@@ -369,8 +369,8 @@ pub fn constant_fold_constant<'ctx, B: ModuleBrand + 'ctx>(
     dl: &DataLayout,
     tli: Option<&TargetLibraryInfo>,
 ) -> IrResult<Constant<'ctx, B>> {
-    let module = constant.as_value().module();
-    match &constant.as_value().data().kind {
+    let module = constant.into_erased().module();
+    match &constant.into_erased().data().kind {
         ValueKindData::Constant(ConstantData::Expr(expr)) => {
             let Some(operands) =
                 folded_constants_from_ids(module, expr.operands.iter().copied(), dl, tli)?
@@ -393,8 +393,8 @@ pub fn constant_fold_constant<'ctx, B: ModuleBrand + 'ctx>(
                     return Ok(constant);
                 };
                 let folded = constant_fold_constant(element, dl, tli)?;
-                changed |= folded.as_value().id != id;
-                folded_ids.push(folded.as_value().id);
+                changed |= folded.id() != id;
+                folded_ids.push(folded.id());
             }
             if !changed {
                 return Ok(constant);
@@ -423,7 +423,7 @@ pub fn constant_fold_inst_operands<'ctx, B>(
 where
     B: ModuleBrand + 'ctx,
 {
-    let value = instruction.as_value();
+    let value = instruction.into_erased();
     let ValueKindData::Instruction(data) = &value.data().kind else {
         return Ok(None);
     };
@@ -693,11 +693,14 @@ pub fn constant_fold_binary_op_operands<'ctx, B: ModuleBrand + 'ctx>(
     let Some(expr_opcode) = binary_constant_expr_opcode(opcode) else {
         return Ok(None);
     };
-    let module = lhs.as_value().module();
+    let module = lhs.into_erased().module();
     let expr = module.core_ref().constant_expr(
         erase_type(lhs.ty()),
         expr_opcode,
-        [erase_value(lhs.as_value()), erase_value(rhs.as_value())],
+        [
+            erase_value(lhs.into_erased()),
+            erase_value(rhs.into_erased()),
+        ],
         [],
         [],
         ConstantExprFlags::none(),
@@ -991,8 +994,8 @@ fn constant_offset_from_global_with_offset<'ctx, B: ModuleBrand + 'ctx>(
     offset: ApInt,
     dl: &DataLayout,
 ) -> Option<ConstantOffsetFromGlobal<'ctx, B>> {
-    let module = pointer.as_value().module();
-    match &pointer.as_value().data().kind {
+    let module = pointer.into_erased().module();
+    match &pointer.into_erased().data().kind {
         ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => {
             let global_value =
                 Value::from_parts(*value, module, module.context().value_data(*value).ty);
@@ -1140,11 +1143,11 @@ fn constant_at_offset<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(Some(constant));
     }
     let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
-        &constant.as_value().data().kind
+        &constant.into_erased().data().kind
     else {
         return Ok(None);
     };
-    let module = constant.as_value().module();
+    let module = constant.into_erased().module();
     match constant.ty().data() {
         TypeData::Array { elem, .. } => {
             let elem_ty = Type::new(*elem, module);
@@ -1320,7 +1323,7 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx>(
                 _ => None,
             };
             constant_fold_get_element_ptr(
-                Type::new(source_ty, original.as_value().module()),
+                Type::new(source_ty, original.into_erased().module()),
                 *pointer,
                 indices,
                 in_range,
@@ -1362,7 +1365,7 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx>(
             constant_fold_cast_operand(
                 opcode,
                 *operand,
-                Type::new(expr.result_ty, original.as_value().module()),
+                Type::new(expr.result_ty, original.into_erased().module()),
                 dl,
             )
         }
@@ -1459,11 +1462,11 @@ fn aggregate_first_element<'ctx, B: ModuleBrand + 'ctx>(
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
     let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
-        &constant.as_value().data().kind
+        &constant.into_erased().data().kind
     else {
         return Ok(None);
     };
-    let module = constant.as_value().module();
+    let module = constant.into_erased().module();
     match constant.ty().data() {
         TypeData::Struct(_) => {
             for id in elements.iter().copied() {
@@ -1505,7 +1508,7 @@ fn constant_to_store_bytes<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx, B>,
     dl: &DataLayout,
 ) -> IrResult<Option<Vec<u8>>> {
-    match &constant.as_value().data().kind {
+    match &constant.into_erased().data().kind {
         ValueKindData::Constant(ConstantData::Int(words)) => {
             let Some(bits) = constant.ty().data().as_integer() else {
                 return Ok(None);
@@ -1529,7 +1532,7 @@ fn constant_to_store_bytes<'ctx, B: ModuleBrand + 'ctx>(
             )))
         }
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            aggregate_to_store_bytes(constant.ty(), elements, constant.as_value().module(), dl)
+            aggregate_to_store_bytes(constant.ty(), elements, constant.into_erased().module(), dl)
         }
         ValueKindData::Constant(ConstantData::PointerNull) => {
             let Some(addr_space) = pointer_address_space(constant.ty()) else {
@@ -1630,7 +1633,8 @@ fn fold_ptr_to_int_pair<'ctx, B: ModuleBrand + 'ctx>(
     dest_ty: Type<'ctx, B>,
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    let ValueKindData::Constant(ConstantData::Expr(expr)) = &operand.as_value().data().kind else {
+    let ValueKindData::Constant(ConstantData::Expr(expr)) = &operand.into_erased().data().kind
+    else {
         return Ok(None);
     };
     let [src] = expr.operands.as_ref() else {
@@ -1639,7 +1643,7 @@ fn fold_ptr_to_int_pair<'ctx, B: ModuleBrand + 'ctx>(
     if expr.opcode != ConstantExprOpcode::IntToPtr {
         return Ok(None);
     }
-    let module = operand.as_value().module();
+    let module = operand.into_erased().module();
     let source = Constant::from_parts(Value::from_parts(
         *src,
         module,
@@ -1665,7 +1669,8 @@ fn fold_int_to_ptr_pair<'ctx, B: ModuleBrand + 'ctx>(
     dest_ty: Type<'ctx, B>,
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    let ValueKindData::Constant(ConstantData::Expr(expr)) = &operand.as_value().data().kind else {
+    let ValueKindData::Constant(ConstantData::Expr(expr)) = &operand.into_erased().data().kind
+    else {
         return Ok(None);
     };
     if expr.opcode != ConstantExprOpcode::PtrToInt {
@@ -1674,7 +1679,7 @@ fn fold_int_to_ptr_pair<'ctx, B: ModuleBrand + 'ctx>(
     let [src] = expr.operands.as_ref() else {
         return Ok(None);
     };
-    let module = operand.as_value().module();
+    let module = operand.into_erased().module();
     let source = Constant::from_parts(Value::from_parts(
         *src,
         module,
@@ -1798,8 +1803,9 @@ fn index_bits_for_constant_offset<'ctx, B: ModuleBrand + 'ctx>(
     if let Some(bits) = index_bits_for_pointer(constant.ty(), dl) {
         return Some(bits);
     }
-    let module = constant.as_value().module();
-    let ValueKindData::Constant(ConstantData::Expr(expr)) = &constant.as_value().data().kind else {
+    let module = constant.into_erased().module();
+    let ValueKindData::Constant(ConstantData::Expr(expr)) = &constant.into_erased().data().kind
+    else {
         return None;
     };
     match expr.opcode {
@@ -1906,14 +1912,14 @@ fn usize_from_u64(value: u64) -> IrResult<usize> {
 
 fn is_undef<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
     matches!(
-        &constant.as_value().data().kind,
+        &constant.into_erased().data().kind,
         ValueKindData::Constant(ConstantData::Undef)
     )
 }
 
 fn is_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
     matches!(
-        &constant.as_value().data().kind,
+        &constant.into_erased().data().kind,
         ValueKindData::Constant(ConstantData::Poison)
     )
 }
@@ -1921,8 +1927,8 @@ fn is_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
 fn is_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx, B>,
 ) -> bool {
-    let module = constant.as_value().module();
-    match &constant.as_value().data().kind {
+    let module = constant.into_erased().module();
+    match &constant.into_erased().data().kind {
         ValueKindData::Constant(ConstantData::Undef | ConstantData::Poison) => false,
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => elements
             .iter()
@@ -1994,9 +2000,5 @@ fn rebrand_constant<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx>,
     module: ModuleView<'ctx, B>,
 ) -> Constant<'ctx, B> {
-    Constant::from_parts(Value::from_parts(
-        constant.as_value().id,
-        module,
-        constant.ty().id(),
-    ))
+    Constant::from_parts(Value::from_parts(constant.id(), module, constant.ty().id()))
 }

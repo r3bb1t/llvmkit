@@ -162,6 +162,19 @@ pub struct InlineAsm<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<
     pub(crate) _ctx: PhantomData<&'ctx ()>,
 }
 
+impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for InlineAsm<'ctx, B> {
+    /// Print the operand form `ptr asm [sideeffect] "<body>",
+    /// "<constraints>"` -- the leading `ptr` is the value's IR type,
+    /// matching LLVM's pointer typing of inline asm. Identical to what the
+    /// erased [`Value`] handle from [`InlineAsm::into_erased`] prints.
+    ///
+    /// A `call` whose callee is inline asm prints the `asm ...` body
+    /// directly in the callee position and so does not go through this.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&InlineAsm::into_erased(*self), f)
+    }
+}
+
 impl<'ctx, B: ModuleBrand + 'ctx> InlineAsm<'ctx, B> {
     /// Construct from raw parts. Crate-internal: only
     /// [`Module::inline_asm`](crate::module::Module::inline_asm) hands
@@ -182,7 +195,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InlineAsm<'ctx, B> {
     /// Widen to the erased [`Value`] handle. The widened value's type is
     /// the `ptr` type, matching LLVM's pointer typing of inline asm.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn into_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -273,6 +286,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> InlineAsm<'ctx, B> {
 impl<'ctx, B: ModuleBrand + 'ctx> From<InlineAsm<'ctx, B>> for Value<'ctx, B> {
     #[inline]
     fn from(v: InlineAsm<'ctx, B>) -> Self {
-        v.as_value()
+        v.into_erased()
     }
 }

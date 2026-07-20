@@ -90,7 +90,8 @@ fn constant_folder_folds_fneg_constant_without_instruction() -> Result<(), IrErr
 
         let result = b.build_float_neg::<f32, _, _>(f32_ty.const_float(1.0), "n")?;
 
-        let folded = ConstantFloatValue::<f32>::try_from(Constant::try_from(result.as_value())?)?;
+        let folded =
+            ConstantFloatValue::<f32>::try_from(Constant::try_from(result.into_erased())?)?;
         assert!(folded.ap_float().is_exactly_value_f64(-1.0));
         assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
@@ -112,7 +113,7 @@ fn constant_folder_folds_udiv_by_zero_to_poison_without_instruction() -> Result<
             b.build_int_udiv::<i32, _, _, _>(i32_ty.const_int(42_i32), i32_ty.const_zero(), "q")?;
 
         assert_eq!(
-            Constant::try_from(result.as_value())?,
+            Constant::try_from(result.into_erased())?,
             i32_ty.as_type().get_poison().as_constant()
         );
         assert_eq!(b.insert_block().instructions().len(), 0);
@@ -141,7 +142,7 @@ fn constant_folder_exact_udiv_inexact_constants_match_upstream_plain_fold() -> R
         )?;
 
         assert_eq!(
-            Constant::try_from(result.as_value())?,
+            Constant::try_from(result.into_erased())?,
             i32_ty.const_int(2_i32).as_constant()
         );
         assert_eq!(b.insert_block().instructions().len(), 0);
@@ -167,8 +168,8 @@ fn constant_folder_no_wrap_mul_delegates_to_binary_constant_fold() -> Result<(),
         let folded = ConstantFolder
             .fold_no_wrap_bin_op_dyn(
                 BinaryOpcode::Mul,
-                lhs.as_value(),
-                rhs.as_value(),
+                lhs.into_erased(),
+                rhs.into_erased(),
                 OverflowFlags::new().nuw(),
             )?
             .expect("all-constant no-wrap mul folds");
@@ -196,8 +197,8 @@ fn constant_folder_no_wrap_shl_delegates_to_binary_constant_fold() -> Result<(),
         let folded = ConstantFolder
             .fold_no_wrap_bin_op_dyn(
                 BinaryOpcode::Shl,
-                lhs.as_value(),
-                rhs.as_value(),
+                lhs.into_erased(),
+                rhs.into_erased(),
                 OverflowFlags::new().nuw().nsw(),
             )?
             .expect("all-constant no-wrap shl folds");
@@ -220,8 +221,8 @@ fn constant_folder_no_wrap_direct_hook_matches_upstream_for_xor_and_and() -> Res
         let xor = ConstantFolder
             .fold_no_wrap_bin_op_dyn(
                 BinaryOpcode::Xor,
-                i32_ty.const_int(5_i32).as_value(),
-                i32_ty.const_int(3_i32).as_value(),
+                i32_ty.const_int(5_i32).into_erased(),
+                i32_ty.const_int(3_i32).into_erased(),
                 OverflowFlags::new().nuw(),
             )?
             .expect("all-constant xor folds through direct no-wrap hook");
@@ -231,8 +232,8 @@ fn constant_folder_no_wrap_direct_hook_matches_upstream_for_xor_and_and() -> Res
         let and = ConstantFolder
             .fold_no_wrap_bin_op_dyn(
                 BinaryOpcode::And,
-                i32_ty.const_int(5_i32).as_value(),
-                i32_ty.const_zero().as_value(),
+                i32_ty.const_int(5_i32).into_erased(),
+                i32_ty.const_zero().into_erased(),
                 OverflowFlags::new().nuw().nsw(),
             )?
             .expect("all-constant and folds through direct no-wrap hook");
@@ -252,8 +253,8 @@ fn constant_folder_binary_intrinsic_declines() -> Result<(), IrError> {
         assert_eq!(
             ConstantFolder.fold_binary_intrinsic_dyn(
                 BinaryIntrinsic::UMax,
-                i32_ty.const_int(1_i32).as_value(),
-                i32_ty.const_int(2_i32).as_value(),
+                i32_ty.const_int(1_i32).into_erased(),
+                i32_ty.const_int(2_i32).into_erased(),
                 i32_ty.as_type(),
             )?,
             None
@@ -282,8 +283,8 @@ fn constant_folder_vector_gep_nonzero_index_builds_vector_expr() -> Result<(), I
         let folded = ConstantFolder
             .fold_gep_dyn(
                 i32_ty.as_type(),
-                g.as_global_constant_ptr().as_value(),
-                &[index.as_value()],
+                g.as_global_constant_ptr().into_erased(),
+                &[index.into_erased()],
                 GepNoWrapFlags::empty(),
             )?
             .expect("vector GEP constexpr constructed");
@@ -313,7 +314,7 @@ fn constant_folder_gep_declines_scalable_target_ext_source_type() -> Result<(), 
         assert_eq!(
             ConstantFolder.fold_gep_dyn(
                 source_ty.as_type(),
-                ptr.as_value(),
+                ptr.into_erased(),
                 &[],
                 GepNoWrapFlags::empty(),
             )?,
@@ -342,7 +343,7 @@ fn constant_folder_scalable_shuffle_builds_scalable_mask_expr() -> Result<(), Ir
         ])?;
 
         let folded = ConstantFolder
-            .fold_shuffle_vector_dyn(lhs.as_value(), rhs.as_value(), &[0, 0])?
+            .fold_shuffle_vector_dyn(lhs.into_erased(), rhs.into_erased(), &[0, 0])?
             .expect("scalable zero-mask shuffle constexpr constructed");
         let folded = Constant::try_from(folded)?;
         assert_eq!(folded.ty(), vec_ty.as_type());
@@ -428,12 +429,12 @@ fn constant_folder_folds_is_null_of_constant_null_without_instruction() -> Resul
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let null = PointerValue::try_from(ptr_ty.const_null().as_value())?;
+        let null = PointerValue::try_from(ptr_ty.const_null().into_erased())?;
 
         let result = b.build_is_null(null, "isn")?;
 
         assert_eq!(
-            Constant::try_from(result.as_value())?,
+            Constant::try_from(result.into_erased())?,
             bool_ty.const_int(true).as_constant()
         );
         assert_eq!(b.insert_block().instructions().len(), 0);
@@ -453,12 +454,12 @@ fn constant_folder_folds_is_not_null_of_constant_null_without_instruction() -> R
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let null = PointerValue::try_from(ptr_ty.const_null().as_value())?;
+        let null = PointerValue::try_from(ptr_ty.const_null().into_erased())?;
 
         let result = b.build_is_not_null(null, "ok")?;
 
         assert_eq!(
-            Constant::try_from(result.as_value())?,
+            Constant::try_from(result.into_erased())?,
             bool_ty.const_int(false).as_constant()
         );
         assert_eq!(b.insert_block().instructions().len(), 0);
@@ -477,7 +478,7 @@ fn constant_folder_folds_pointer_cmp_global_vs_null_without_instruction() -> Res
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let g = m.add_global("g", i32_ty.const_zero())?;
-        let gp = PointerValue::try_from(g.as_global_constant_ptr().as_value())?;
+        let gp = PointerValue::try_from(g.as_global_constant_ptr().into_erased())?;
         let fn_ty = m.fn_type_no_params(bool_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
@@ -487,11 +488,11 @@ fn constant_folder_folds_pointer_cmp_global_vs_null_without_instruction() -> Res
         let ne = b.build_pointer_cmp(IntPredicate::Ne, gp, ptr_ty.const_null(), "ne")?;
 
         assert_eq!(
-            Constant::try_from(eq.as_value())?,
+            Constant::try_from(eq.into_erased())?,
             bool_ty.const_int(false).as_constant()
         );
         assert_eq!(
-            Constant::try_from(ne.as_value())?,
+            Constant::try_from(ne.into_erased())?,
             bool_ty.const_int(true).as_constant()
         );
         assert_eq!(b.insert_block().instructions().len(), 0);
@@ -547,7 +548,7 @@ fn custom_folder_no_wrap_hook_receives_mul() -> Result<(), IrError> {
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let folded = i32_ty.const_int(99_i32).as_value();
+        let folded = i32_ty.const_int(99_i32).into_erased();
         let b = IRBuilder::with_folder(
             &m,
             ReturningFolder {
@@ -568,7 +569,7 @@ fn custom_folder_no_wrap_hook_receives_mul() -> Result<(), IrError> {
             "mul",
         )?;
 
-        assert_eq!(result.as_value(), folded);
+        assert_eq!(result.into_erased(), folded);
         assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
     })
@@ -584,7 +585,7 @@ fn custom_folder_no_wrap_hook_receives_shl() -> Result<(), IrError> {
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let folded = i32_ty.const_int(123_i32).as_value();
+        let folded = i32_ty.const_int(123_i32).into_erased();
         let b = IRBuilder::with_folder(
             &m,
             ReturningFolder {
@@ -605,7 +606,7 @@ fn custom_folder_no_wrap_hook_receives_shl() -> Result<(), IrError> {
             "shl",
         )?;
 
-        assert_eq!(result.as_value(), folded);
+        assert_eq!(result.into_erased(), folded);
         assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
     })
@@ -628,9 +629,9 @@ fn no_folder_names_add_instruction_exactly() -> Result<(), IrError> {
             "add",
         )?;
 
-        let name = add.as_value().name();
+        let name = add.into_erased().name();
         assert_eq!(name.as_deref(), Some("add"));
-        assert!(InstructionView::try_from(add.as_value()).is_ok());
+        assert!(InstructionView::try_from(add.into_erased()).is_ok());
         assert_eq!(b.insert_block().instructions().len(), 1);
         Ok(())
     })
@@ -650,15 +651,15 @@ fn no_folder_emits_udiv_instruction_for_constants() -> Result<(), IrError> {
         let rhs = i32_ty.const_zero();
 
         let result = b.build_int_udiv::<i32, _, _, _>(lhs, rhs, "q")?;
-        let instruction = InstructionView::try_from(result.as_value())?;
+        let instruction = InstructionView::try_from(result.into_erased())?;
         let Some(InstructionKind::UDiv(udiv)) = instruction.kind() else {
             panic!("expected udiv instruction");
         };
 
-        assert_eq!(udiv.lhs(), lhs.as_value());
-        assert_eq!(udiv.rhs(), rhs.as_value());
+        assert_eq!(udiv.lhs(), lhs.into_erased());
+        assert_eq!(udiv.rhs(), rhs.into_erased());
         assert!(!udiv.is_exact());
-        assert_eq!(result.as_value().name().as_deref(), Some("q"));
+        assert_eq!(result.into_erased().name().as_deref(), Some("q"));
         assert_eq!(b.insert_block().instructions().len(), 1);
         Ok(())
     })
@@ -680,7 +681,7 @@ fn no_folder_emits_ptrtoaddr_instruction_with_address_type() -> Result<(), IrErr
         let ptr: PointerValue = f.param(0)?.try_into()?;
 
         let result = b.build_ptr_to_addr(ptr, "addr")?;
-        let instruction = InstructionView::try_from(result.as_value())?;
+        let instruction = InstructionView::try_from(result.into_erased())?;
         // Match the exact cast opcode through the nested `CastKind`; the
         // `PtrToAddr` handle exposes a statically pointer-typed `src()`.
         let Some(InstructionKind::Cast(CastKind::PtrToAddr(cast))) = instruction.kind() else {
@@ -689,10 +690,10 @@ fn no_folder_emits_ptrtoaddr_instruction_with_address_type() -> Result<(), IrErr
 
         assert_eq!(cast.opcode(), CastOpcode::PtrToAddr);
         let src: PointerValue = cast.src();
-        assert_eq!(src.as_value(), ptr.as_value());
+        assert_eq!(src.into_erased(), ptr.into_erased());
         let typed_result: IntValue<IntDyn> = result;
         assert_eq!(typed_result.ty().bit_width(), 32);
-        assert_eq!(typed_result.as_value().name().as_deref(), Some("addr"));
+        assert_eq!(typed_result.into_erased().name().as_deref(), Some("addr"));
         assert_eq!(b.insert_block().instructions().len(), 1);
         Ok(())
     })
@@ -712,15 +713,15 @@ fn no_folder_emits_pointer_cmp_instruction_for_constant_nulls() -> Result<(), Ir
         let null = ptr_ty.const_null();
 
         let result = b.build_pointer_cmp(IntPredicate::Eq, null, null, "isn")?;
-        let instruction = InstructionView::try_from(result.as_value())?;
+        let instruction = InstructionView::try_from(result.into_erased())?;
         let Some(InstructionKind::ICmp(icmp)) = instruction.kind() else {
             panic!("expected icmp instruction");
         };
 
         assert_eq!(icmp.predicate(), IntPredicate::Eq);
-        assert_eq!(icmp.lhs(), null.as_value());
-        assert_eq!(icmp.rhs(), null.as_value());
-        assert_eq!(result.as_value().name().as_deref(), Some("isn"));
+        assert_eq!(icmp.lhs(), null.into_erased());
+        assert_eq!(icmp.rhs(), null.into_erased());
+        assert_eq!(result.into_erased().name().as_deref(), Some("isn"));
         assert_eq!(b.insert_block().instructions().len(), 1);
         Ok(())
     })
@@ -740,7 +741,7 @@ fn constant_folder_does_not_simplify_nonconstant_add_zero() -> Result<(), IrErro
 
         let result = b.build_int_add(x, i32_ty.const_zero(), "sum")?;
 
-        assert!(InstructionView::try_from(result.as_value()).is_ok());
+        assert!(InstructionView::try_from(result.into_erased()).is_ok());
         assert_eq!(b.insert_block().instructions().len(), 1);
         Ok(())
     })
@@ -763,7 +764,7 @@ fn custom_folder_wrong_type_is_rejected() -> Result<(), IrError> {
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let folded = i64_ty.const_int(0_i64).as_value();
+        let folded = i64_ty.const_int(0_i64).into_erased();
         let b = IRBuilder::with_folder(
             &m,
             ReturningFolder {
@@ -806,7 +807,7 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
         )?;
 
         assert_eq!(
-            Constant::try_from(result.as_value())?,
+            Constant::try_from(result.into_erased())?,
             i32_ty.const_int(16_i32).as_constant()
         );
         assert_eq!(b.insert_block().instructions().len(), 0);
@@ -821,8 +822,8 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let result = b.build_int_add_dyn(
-            i32_ty.const_int(7_i32).as_value(),
-            i32_ty.const_int(9_i32).as_value(),
+            i32_ty.const_int(7_i32).into_erased(),
+            i32_ty.const_int(9_i32).into_erased(),
             "sum",
         )?;
 
@@ -955,7 +956,7 @@ fn dyn_marker_fold_keeps_runtime_width_check() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let folder = WideningDynFolder {
-            replacement: i64_dyn_ty.const_zero().as_value(),
+            replacement: i64_dyn_ty.const_zero().into_erased(),
         };
         let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
 
@@ -1073,7 +1074,7 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B>
 /// `IntDyn` asserts nothing about width. The resulting
 /// `IntValue<'ctx, IntDyn, B>` (real IR type: 64-bit) returns to
 /// `build_int_add`, which forwards it to `self.accept_folded_int(folded, lhs)`.
-/// There, `folded.as_value().ty().id() != like.as_value().ty().id()` is
+/// There, `folded.into_erased().ty().id() != like.into_erased().ty().id()` is
 /// `true` -- 64-bit payload against `lhs`'s 32-bit custom-width type -- so
 /// the acceptor returns `Err(IrError::OperandWidthMismatch { lhs: 32, rhs: 64 })`
 /// and no instruction is inserted.
@@ -1094,7 +1095,7 @@ fn external_narrow_override_wrong_width_rejected_by_accept_folded_int() -> Resul
         let entry = f.append_basic_block(&m, "entry");
 
         let folder = NarrowingTypedFolder {
-            replacement: i64_dyn_ty.const_zero().as_value(),
+            replacement: i64_dyn_ty.const_zero().into_erased(),
         };
         let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
 

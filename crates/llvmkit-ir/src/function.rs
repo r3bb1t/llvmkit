@@ -28,6 +28,7 @@
 //! inside them, so the builder's `build_ret` can be statically typed.
 
 use core::cell::{Cell, RefCell};
+use core::iter::FusedIterator;
 use core::marker::PhantomData;
 
 use super::AttrIndex;
@@ -224,7 +225,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// LLVM 17+ pointers are opaque (so the signature is the only
     /// useful per-value type-side information).
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn into_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -252,7 +253,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 
     /// Borrow the storage payload.
     pub(super) fn data(self) -> &'ctx FunctionData {
-        match &self.as_value().data().kind {
+        match &self.into_erased().data().kind {
             ValueKindData::Function(f) => f,
             _ => unreachable!("FunctionValue handle invariant: kind is Function"),
         }
@@ -547,7 +548,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         C: IsConstant<'ctx, B>,
     {
         let constant = data.as_constant();
-        Ok(constant.as_value().id)
+        Ok(constant.id())
     }
 
     pub fn comdat(self) -> Option<ComdatRef<'ctx, B>> {
@@ -743,7 +744,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     /// Iterate the function parameters in declaration order.
-    pub fn params(self) -> impl ExactSizeIterator<Item = Argument<'ctx, B>> + 'ctx {
+    pub fn params(
+        self,
+    ) -> impl ExactSizeIterator<Item = Argument<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let module = self.module;
         let parent = self.id;
         let signature = self.signature;
@@ -806,10 +810,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         S2: BlockTerminationState,
     {
         let _ = module;
-        let ValueKindData::BasicBlock(data) = &block.as_value().data().kind else {
+        let ValueKindData::BasicBlock(data) = &block.to_erased().data().kind else {
             return Err(IrError::ValueCategoryMismatch {
                 expected: ValueCategoryLabel::BasicBlock,
-                got: block.as_value().category().into(),
+                got: block.to_erased().category().into(),
             });
         };
         if *data.parent.borrow() != Some(self.id) {
@@ -818,7 +822,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             });
         }
         let mut blocks = self.data().basic_blocks.borrow_mut();
-        let Some(pos) = blocks.iter().position(|id| *id == block.as_value().id) else {
+        let Some(pos) = blocks.iter().position(|id| *id == block.id()) else {
             return Err(IrError::InvalidOperation {
                 message: "block does not belong to function",
             });
@@ -831,7 +835,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// Iterate the basic blocks in insertion order as non-insertion labels/views.
     pub fn basic_blocks(
         self,
-    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, R, Terminated, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, R, Terminated, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
         let ids: Vec<ValueId> = self.data().basic_blocks.borrow().clone();
@@ -957,6 +964,78 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 }
 
+/// Iterator over the basic blocks of one function, in insertion order. The
+/// named form of [`FunctionValue::basic_blocks`]'s walk, returned by
+/// [`FunctionValue`]'s `IntoIterator`: it snapshots the function's block ids
+/// up front, so IR mutation during the walk does not disturb it.
+pub struct FunctionBasicBlocks<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
+    ids: std::vec::IntoIter<ValueId>,
+    module: ModuleRef<'ctx, B>,
+    label_ty: TypeId,
+    _r: PhantomData<R>,
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Iterator for FunctionBasicBlocks<'ctx, R, B> {
+    type Item = BasicBlock<'ctx, R, Terminated, B>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let id = self.ids.next()?;
+        Some(BasicBlock::from_parts(id, self.module, self.label_ty))
+    }
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.ids.size_hint()
+    }
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ExactSizeIterator
+    for FunctionBasicBlocks<'ctx, R, B>
+{
+    #[inline]
+    fn len(&self) -> usize {
+        self.ids.len()
+    }
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> DoubleEndedIterator
+    for FunctionBasicBlocks<'ctx, R, B>
+{
+    #[inline]
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let id = self.ids.next_back()?;
+        Some(BasicBlock::from_parts(id, self.module, self.label_ty))
+    }
+}
+
+// The inner `vec::IntoIter` is fused, and `next` forwards to it directly.
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FusedIterator
+    for FunctionBasicBlocks<'ctx, R, B>
+{
+}
+
+/// Iterating a function yields its basic blocks in insertion order (the same
+/// walk as [`FunctionValue::basic_blocks`]), matching LLVM's
+/// `for (BasicBlock &BB : F)`. Sugar beside the named method, not a
+/// replacement.
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoIterator for FunctionValue<'ctx, R, B> {
+    type Item = BasicBlock<'ctx, R, Terminated, B>;
+    type IntoIter = FunctionBasicBlocks<'ctx, R, B>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        let module = self.module.module();
+        let label_ty = module.label_type().as_type().id();
+        let ids: Vec<ValueId> = self.data().basic_blocks.borrow().clone();
+        FunctionBasicBlocks {
+            ids: ids.into_iter(),
+            module: self.module,
+            label_ty,
+            _r: PhantomData,
+        }
+    }
+}
+
 // --------------------------------------------------------------------------
 // Marker-narrowing helpers
 // --------------------------------------------------------------------------
@@ -1002,8 +1081,8 @@ pub(super) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool 
 impl<'ctx, R: ReturnMarker, B: ModuleBrand> sealed::Sealed for FunctionValue<'ctx, R, B> {}
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for FunctionValue<'ctx, R, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
-        FunctionValue::as_value(self)
+    fn into_erased(self) -> Value<'ctx, B> {
+        FunctionValue::into_erased(self)
     }
 }
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Typed<'ctx, B> for FunctionValue<'ctx, R, B> {
@@ -1015,7 +1094,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Typed<'ctx, B> for FunctionVa
 impl<'ctx, R: ReturnMarker, B: ModuleBrand> HasName<'ctx, B> for FunctionValue<'ctx, R, B> {
     #[inline]
     fn name(self) -> Option<String> {
-        self.as_value().name()
+        self.into_erased().name()
     }
     #[inline]
     fn set_name<Name>(self, _module_token: &Module<'ctx, B, Unverified>, _name: Name)
@@ -1032,7 +1111,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand> HasName<'ctx, B> for FunctionValue<'
 impl<R: ReturnMarker, B: ModuleBrand> HasDebugLoc for FunctionValue<'_, R, B> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
-        self.as_value().debug_loc()
+        self.into_erased().debug_loc()
     }
 }
 
@@ -1041,7 +1120,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> From<FunctionValue<'ctx, R, B
 {
     #[inline]
     fn from(f: FunctionValue<'ctx, R, B>) -> Self {
-        f.as_value()
+        f.into_erased()
     }
 }
 
@@ -1313,17 +1392,13 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
             *f.data().gc.borrow_mut() = Some(gc);
         }
         if let Some(prefix_data) = self.prefix_data {
-            f.data().prefix_data.set(Some(prefix_data.as_value().id));
+            f.data().prefix_data.set(Some(prefix_data.id()));
         }
         if let Some(prologue_data) = self.prologue_data {
-            f.data()
-                .prologue_data
-                .set(Some(prologue_data.as_value().id));
+            f.data().prologue_data.set(Some(prologue_data.id()));
         }
         if let Some(personality_fn) = self.personality_fn {
-            f.data()
-                .personality_fn
-                .set(Some(personality_fn.as_value().id));
+            f.data().personality_fn.set(Some(personality_fn.id()));
         }
         if let Some(comdat) = self.comdat {
             *f.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
@@ -1338,7 +1413,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         // Apply parameter names.
         for (slot, name) in self.param_names {
             let arg = f.param(slot)?;
-            f.set_local_value_name(arg.as_value().id, Some(&name));
+            f.set_local_value_name(arg.id(), Some(&name));
         }
         Ok(f)
     }
@@ -1375,7 +1450,14 @@ impl<'ctx, K: FloatKind + ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ct
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> core::fmt::Display
     for FunctionValue<'ctx, R, B>
 {
-    /// Print the function definition as textual `.ll`.
+    /// Print the full `define` form -- header, signature, attributes and
+    /// every basic block -- exactly as it appears in module output. A
+    /// function with no basic blocks prints the one-line `declare` form
+    /// instead. Mirrors LLVM's `Function::print`.
+    ///
+    /// Note this is the *definition*, not the operand form: to print a
+    /// function the way it appears as a call operand (`ptr @name`), go
+    /// through [`FunctionValue::into_erased`] instead.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         crate::asm_writer::fmt_function(f, self.as_dyn())
     }

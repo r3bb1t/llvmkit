@@ -294,8 +294,8 @@ fn typed_vec() -> Result<(), IrError> {
         let b = IRBuilder::at_end(entry);
 
         // `try_into` checks element (i32) AND lane count (4) before stamping the markers.
-        let a: VectorValue<'_, i32, Len<4>> = f.param(0).unwrap().as_value().try_into().unwrap();
-        let c: VectorValue<'_, i32, Len<4>> = f.param(1).unwrap().as_value().try_into().unwrap();
+        let a: VectorValue<'_, i32, Len<4>> = f.param(0).unwrap().into_erased().try_into().unwrap();
+        let c: VectorValue<'_, i32, Len<4>> = f.param(1).unwrap().into_erased().try_into().unwrap();
 
         // Both operands are pinned to `<4 x i32>`; a length/element mismatch would not compile.
         let sum = b.build_vec_int_add(a, c, "sum")?;

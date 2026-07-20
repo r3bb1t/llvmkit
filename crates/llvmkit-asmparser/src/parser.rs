@@ -159,8 +159,8 @@ fn record_parser_context<'ctx>(
     context: &mut AsmParserContext<'ctx>,
 ) -> ParseResult<()> {
     let lines = source_lines(src);
-    for function_view in module.as_view().iter_functions() {
-        let Some(function) = module.function_by_name(function_view.name()) else {
+    for function_view in module.as_view().functions() {
+        let Some(function) = module.function_by_name_dyn(function_view.name()) else {
             continue;
         };
         let Some((start, end)) = function_range(&lines, Some(function.name())) else {

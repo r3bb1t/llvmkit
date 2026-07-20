@@ -24,7 +24,7 @@ Erasure is still available, but it must be **spelled**.
   markers (a mismatch is unrepresentable; parameters come back typed), and
   `add_function_dyn` takes a runtime `FunctionType` and returns
   `FunctionValue<Dyn>`. To re-type a function declared erased, use the
-  checked `function_by_name_typed::<R>` lookup. One deliberate escape hatch
+  checked `function_by_name::<R>` lookup. One deliberate escape hatch
   remains: `function_builder::<R>(name, fn_ty)` (the attribute/linkage-rich
   declaration path) still pairs a user-supplied signature with a chosen
   marker and keeps the runtime `ReturnTypeMismatch` gate at `.build()`.
@@ -58,6 +58,75 @@ Erasure is still available, but it must be **spelled**.
   computed-SSA operands. The methods now take the concrete typed operand
   directly, so e.g. `build_bitcast_int_to_int(v, i8_ty, "bc")` needs no
   turbofish. Printed IR is unchanged.
+
+### Idiomatic surface (cycle C)
+
+#### Breaking
+
+- `IsValue::as_value` is renamed **`into_erased`**, and the 20 inherent
+  by-reference wideners on the linear (`!Copy`) handles — `BasicBlock`,
+  `BasicBlockLabel`, `Instruction`, and the typed instruction handles — become
+  **`to_erased`**. Erasure is the subject of this release, so the ~1500 sites
+  that perform it now spell it; the `into_`/`to_` split follows the Rust
+  convention that `into_*` consumes (owned → owned) while `to_*` widens from a
+  borrow, which matters here because those handles are deliberately non-`Copy`
+  so that their *lifecycle* methods consume. Migration is mechanical:
+  `x.as_value()` → `x.into_erased()`, or `x.to_erased()` if `x` is one of the
+  linear handles (the compiler names the right one).
+- `Module::function_by_name` (erased; returns `Option<FunctionValue<Dyn>>`) is
+  renamed `function_by_name_dyn`, and the checked marker-narrowing
+  `function_by_name_typed::<R>` takes over the bare name as
+  `function_by_name::<R>` — the naming law: typed variant bare, erased variant
+  `_dyn`.
+- `Module::set_struct_body` (erased; takes `StructType<StructBodyDyn>`) is
+  renamed `set_struct_body_dyn`, and the typestate `set_struct_body_typed`
+  (consumes `Opaque`, yields `BodySet`) takes over the bare name as
+  `set_struct_body` — the naming law: typed variant bare, erased variant
+  `_dyn`.
+- `ModuleView::iter_functions` / `iter_globals` / `iter_aliases` /
+  `iter_ifuncs` / `iter_comdats` and `Module::iter_globals` become
+  `functions()` / `globals()` / `aliases()` / `ifuncs()` / `comdats()` —
+  `iter_` prefixes dropped for idiomatic Rust names.
+
+#### Added
+
+- `IsValue::id()` — the arena id of any value handle, previously reachable only
+  by widening first (`x.as_value().id`). Every value handle now answers `id()`
+  directly, including the seven linear handles that cannot implement `IsValue`
+  (`Instruction`, `NonTerminator`, `BasicBlock`, `BasicBlockLabel`, `PhiInst`,
+  `FpPhiInst`, `PointerPhiInst`), which carry it as an inherent method.
+- `IntoIterator` for `ModuleView`, `FunctionView`, `BasicBlockView` and
+  `FunctionValue`, so a nest of `for` loops walks the IR directly:
+  `for f in module_view { for bb in f { for inst in bb { .. } } }`. `ModuleView`
+  iterates *functions*, mirroring LLVM's `for (Function &F : M)`. The named
+  methods (`functions()`, `basic_blocks()`, `instructions()`) remain — the trait
+  is sugar beside them. Their iterator types are public:
+  `FunctionBasicBlocks`, `FunctionBasicBlockViews`, `BlockInstructionViews`.
+- `PhiKind::incomings()` plus mirrors on the four typed phi handles — an
+  iterator of `(value, block)` pairs, matching the shape `SwitchInst::cases()`
+  already had. The indexed `incoming_count()` / `incoming(i)` remain.
+- Around 30 iterator-returning methods now also promise `DoubleEndedIterator`
+  and `FusedIterator`. The bodies always supported both; the opaque return type
+  was hiding it, so reverse iteration over blocks and instructions now works.
+  (`ModuleView`'s `IntoIterator` sugar is the one exception — its boxed inner
+  iterator cannot offer `DoubleEndedIterator`; use `functions().rev()`.)
+- `Display` for 18 public value handles and for `ApInt`. Value handles print
+  their operand form and agree with the erased path by construction; the
+  module-level globals (`FunctionValue`, `GlobalVariable`) print their
+  *definition* line instead, following the existing `GlobalAlias` /
+  `GlobalIFunc` precedent. Each impl documents which form it prints.
+- `BasicBlockView` is now `Copy`, matching its sibling `FunctionView`.
+
+#### Deliberate law exceptions
+
+- `add_typed_function` keeps its name: `add_function` stays vacated as the
+  migration tombstone — a removed method's E0599 with a did-you-mean beats
+  confusing arity errors on a reused name (locked by
+  `tests/compile_fail/add_function_removed.rs`).
+- The `const_*` constructor family is conformant as-is: witness-generic
+  constructors, not typed/erased pairs.
+- The `append_block` family has no bare-named erased sibling — no violation.
+- `build_bitcast_dyn` / `build_phi_dyn` are by-design `_dyn` orphans.
 
 ### Declaration surface — globals derive their type from the initializer
 

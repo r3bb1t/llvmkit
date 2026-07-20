@@ -20,9 +20,9 @@ fn main() {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let a4: VectorValue<'_, i32, Len<4>> =
-            f.param(0).unwrap().as_value().try_into().unwrap();
+            f.param(0).unwrap().into_erased().try_into().unwrap();
         let a2: VectorValue<'_, i32, Len<2>> =
-            f.param(1).unwrap().as_value().try_into().unwrap();
+            f.param(1).unwrap().into_erased().try_into().unwrap();
 
         // `Len<4>` and `Len<2>` cannot unify the single `L` the binop demands.
         let _bad = b.build_vec_int_add(a4, a2, "x").unwrap(); //~ ERROR mismatched types

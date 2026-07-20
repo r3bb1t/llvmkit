@@ -17,7 +17,7 @@ fn exercise_tables<'ctx>(module: Module<'ctx>) -> IrResult<()> {
     let parameter: IntValue<'ctx, i64> = function.param(0)?.try_into()?;
 
     let mut values = HashMap::<&str, Value<'ctx>>::new();
-    values.insert("parameter", parameter.as_value());
+    values.insert("parameter", parameter.into_erased());
     let mut integers = HashMap::<&str, IntValue<'ctx, i64>>::new();
     integers.insert("parameter", parameter);
 

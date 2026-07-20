@@ -1,8 +1,8 @@
 error[E0308]: mismatched types
-  --> tests/compile_fail/set_struct_body_twice.rs:20:41
+  --> tests/compile_fail/set_struct_body_twice.rs:20:35
    |
-20 |         let _ = m.set_struct_body_typed(body_set, [i32_ty.as_type()], false);
-   |                   --------------------- ^^^^^^^^ expected `StructType<'_, Opaque>`, found `StructType<'_, BodySet>`
+20 |         let _ = m.set_struct_body(body_set, [i32_ty.as_type()], false);
+   |                   --------------- ^^^^^^^^ expected `StructType<'_, Opaque>`, found `StructType<'_, BodySet>`
    |                   |
    |                   arguments to this method are incorrect
    |
@@ -11,5 +11,5 @@ error[E0308]: mismatched types
 note: method defined here
   --> src/module.rs
    |
-   |     pub fn set_struct_body_typed<I, T>(
-   |            ^^^^^^^^^^^^^^^^^^^^^
+   |     pub fn set_struct_body<I, T>(
+   |            ^^^^^^^^^^^^^^^

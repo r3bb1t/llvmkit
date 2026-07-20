@@ -89,7 +89,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let entry = main_fn.append_basic_block(m, "entry");
     let b = IRBuilder::at_end(entry);
     let one = i32_ty.const_int(1_i32);
-    let one_v = IntValue::<i32>::try_from(one.as_value())?;
+    let one_v = IntValue::<i32>::try_from(one.into_erased())?;
     b.build_ret(one_v)?;
 
     Ok(())

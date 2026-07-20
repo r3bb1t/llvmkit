@@ -14,7 +14,7 @@ use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
 use crate::module::{Brand, ModuleBrand, ModuleId, ModuleView};
 use crate::pass_context::FunctionView;
 use crate::pass_instrumentation::PassInstrumentationCallbacks;
-use crate::value::ValueId;
+use crate::value::{IsValue, ValueId};
 use crate::{IrError, IrResult};
 
 /// Explicit analysis identity used when no Rust type exists for a ported
@@ -663,8 +663,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
         pa: &mut PreservedAnalyses,
     ) {
         let handle = function.as_function();
-        let module_id = handle.as_value().module().id();
-        let function_id = handle.as_value().id;
+        let module_id = handle.module().id();
+        let function_id = handle.id();
         for (key, cached) in &mut self.results {
             if key.0 != module_id || key.2 != function_id {
                 continue;
@@ -744,8 +744,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
     {
         let function = function.into();
         let function_handle = function.as_function();
-        let module_id = function_handle.as_value().module().id();
-        let function_id = function_handle.as_value().id;
+        let module_id = function_handle.module().id();
+        let function_id = function_handle.id();
         let snapshot = FunctionAnalysisSnapshot {
             cached: self.results.keys().copied().collect(),
         };
@@ -787,7 +787,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
             return Ok(());
         }
 
-        for function in module.iter_functions() {
+        for function in module.functions() {
             self.invalidate(function, pa)?;
         }
         Ok(())
@@ -1067,11 +1067,7 @@ where
     B: ModuleBrand + 'ctx,
 {
     let function = function.as_function();
-    (
-        function.as_value().module().id(),
-        TypeId::of::<A>(),
-        function.as_value().id,
-    )
+    (function.module().id(), TypeId::of::<A>(), function.id())
 }
 
 fn module_key<'ctx, A, B>(module: ModuleView<'ctx, B>) -> (TypeId, ModuleId)
@@ -1596,8 +1592,8 @@ mod tests {
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
             let next = f.append_basic_block(&m, "next");
-            let entry_id = entry.as_value().id;
-            let next_id = next.as_value().id;
+            let entry_id = entry.id();
+            let next_id = next.id();
             let next_label = next.label();
 
             // entry: br next    next: ret 0
@@ -1620,7 +1616,7 @@ mod tests {
             let new_bb = entry_bb.split_at(&m, &terminator, "entry.split")?;
             let updates = [
                 CfgUpdate::delete(entry_id, next_id),
-                CfgUpdate::insert(new_bb.as_value().id, next_id),
+                CfgUpdate::insert(new_bb.id(), next_id),
             ];
 
             // Repairing the stale cached tree returns Repaired and yields the

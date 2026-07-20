@@ -57,16 +57,16 @@ fn use_test_sort_setup_registers_eight_users() -> Result<(), IrError> {
         b.build_ret_void()?;
 
         // Upstream: `ASSERT_EQ(8u, I)` after iterating `X.users()`.
-        assert_eq!(x.as_value().num_uses(), 8);
+        assert_eq!(x.into_erased().num_uses(), 8);
 
         // The set of users is exactly the 8 adds (registration order).
-        let users: Vec<_> = x.as_value().users().collect();
+        let users: Vec<_> = x.into_erased().users().collect();
         assert_eq!(users.len(), 8);
         let expected_value_ids: Vec<_> = [v0, v2, v5, v1, v3, v7, v6, v4]
             .iter()
-            .map(|iv| iv.as_value())
+            .map(|iv| iv.into_erased())
             .collect();
-        let user_value_ids: Vec<_> = users.iter().map(|inst| inst.as_value()).collect();
+        let user_value_ids: Vec<_> = users.iter().map(|inst| inst.to_erased()).collect();
         assert_eq!(user_value_ids, expected_value_ids);
         Ok(())
     })
@@ -98,11 +98,11 @@ fn erase_no_invalidation() -> Result<(), IrError> {
         let bb = b.into_insert_block();
 
         // Pre-erase order before the terminator is emitted: I1, I2, I3.
-        let pre: Vec<_> = bb.instructions().map(|i| i.as_value()).collect();
+        let pre: Vec<_> = bb.instructions().map(|i| i.to_erased()).collect();
         assert_eq!(pre.len(), 3);
-        assert_eq!(pre[0], i1.as_value());
-        assert_eq!(pre[1], i2.as_value());
-        assert_eq!(pre[2], i3.as_value());
+        assert_eq!(pre[0], i1.into_erased());
+        assert_eq!(pre[1], i2.into_erased());
+        assert_eq!(pre[2], i3.into_erased());
 
         // Erase I2. Upstream: `I2->eraseFromParent(); I2 = nullptr;`
         let cursor = BlockCursor::at_start(bb);
@@ -115,11 +115,11 @@ fn erase_no_invalidation() -> Result<(), IrError> {
 
         // Post-erase: I1, I3, Ret. Upstream asserts via comesBefore +
         // iterator-equality; we assert the iteration order directly.
-        let post: Vec<_> = bb.instructions().map(|i| i.as_value()).collect();
+        let post: Vec<_> = bb.instructions().map(|i| i.to_erased()).collect();
         assert_eq!(post.len(), 3);
-        assert_eq!(post[0], i1.as_value());
-        assert_eq!(post[1], i3.as_value());
-        assert_eq!(post[2], ret.as_value());
+        assert_eq!(post[0], i1.into_erased());
+        assert_eq!(post[1], i3.into_erased());
+        assert_eq!(post[2], ret.to_erased());
 
         // Upstream's invariant `EXPECT_EQ(std::next(I1->getIterator()),
         // I3->getIterator())` -- I1's successor is now I3.
@@ -233,7 +233,7 @@ fn detached_set_name_updates_carried_name_without_old_parent_binding() -> Result
             .expect("original instruction");
         let detached = detached_inst.detach_from_parent(&m);
         let block = cursor.into_block();
-        detached.as_value().set_name(&m, "renamed");
+        detached.to_erased().set_name(&m, "renamed");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(block);
         let live = b.build_int_add::<i32, _, _, _>(
             i32_ty.const_int(3_i32),
@@ -278,7 +278,7 @@ fn erase_deregisters_from_operand_use_lists() -> Result<(), IrError> {
         let bb = b.into_insert_block();
 
         // Pre-erase: x has 3 users (one per add).
-        assert_eq!(x.as_value().num_uses(), 3);
+        assert_eq!(x.into_erased().num_uses(), 3);
 
         let cursor = BlockCursor::at_start(bb);
         let (_, cursor) = cursor.next().expect("i1 instruction");
@@ -289,11 +289,11 @@ fn erase_deregisters_from_operand_use_lists() -> Result<(), IrError> {
         let _ = b.build_ret_void();
 
         // Post-erase: x has 2 users (only the surviving adds).
-        assert_eq!(x.as_value().num_uses(), 2);
-        let users: Vec<_> = x.as_value().users().map(|i| i.as_value()).collect();
-        assert!(users.contains(&i1.as_value()));
-        assert!(users.contains(&i3.as_value()));
-        assert!(!users.contains(&i2.as_value()));
+        assert_eq!(x.into_erased().num_uses(), 2);
+        let users: Vec<_> = x.into_erased().users().map(|i| i.to_erased()).collect();
+        assert!(users.contains(&i1.into_erased()));
+        assert!(users.contains(&i3.into_erased()));
+        assert!(!users.contains(&i2.into_erased()));
         Ok(())
     })
 }
@@ -306,15 +306,15 @@ fn metadata_constant_operand_counts_as_structural_value_use() -> Result<(), IrEr
     Module::with_new("md-use", |m| {
         let i64_ty = m.i64_type();
         let c = i64_ty.const_int(4_i64);
-        assert_eq!(c.as_value().num_uses(), 0);
+        assert_eq!(c.into_erased().num_uses(), 0);
 
         let md = m.metadata_constant(c);
         let tuple = m.metadata_tuple([MetadataRef(md)]);
         let idx = m.get_or_insert_named_metadata("uses");
         m.named_metadata_add_operand(idx, MetadataRef(tuple));
 
-        assert_eq!(c.as_value().num_uses(), 1);
-        assert_eq!(c.as_value().users().len(), 0);
+        assert_eq!(c.into_erased().num_uses(), 1);
+        assert_eq!(c.into_erased().users().len(), 0);
         assert!(format!("{m}").contains("!0 = !{i64 4}"));
         Ok(())
     })
@@ -371,7 +371,7 @@ fn debug_record_value_operand_counts_as_structural_use_and_erases() -> Result<()
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let x: IntValue<i32> = f.param(0)?.try_into()?;
-        assert_eq!(x.as_value().num_uses(), 0);
+        assert_eq!(x.into_erased().num_uses(), 0);
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let _add = b.build_int_add::<i32, _, _, _>(
             i32_ty.const_int(1_i32),
@@ -385,20 +385,20 @@ fn debug_record_value_operand_counts_as_structural_use_and_erases() -> Result<()
         let md = m.metadata_tuple(Vec::<MetadataRef>::new());
         inst.push_debug_record(DebugRecord::Variable(DebugVariableRecord::new(
             DebugVariableRecordKind::Value,
-            DebugMetadataOperand::Value(x.as_value().id()),
+            DebugMetadataOperand::Value(x.into_erased().id()),
             md,
             md,
             md,
         )));
 
-        assert_eq!(x.as_value().num_uses(), 1);
-        assert_eq!(x.as_value().users().len(), 0);
+        assert_eq!(x.into_erased().num_uses(), 1);
+        assert_eq!(x.into_erased().users().len(), 0);
         let block = cursor.into_block();
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(block);
         let _ = b.build_ret_void();
 
         inst.erase_from_parent(&m);
-        assert_eq!(x.as_value().num_uses(), 0);
+        assert_eq!(x.into_erased().num_uses(), 0);
         Ok(())
     })
 }
@@ -430,27 +430,27 @@ fn debug_record_value_operand_is_rewritten_by_rauw() -> Result<(), IrError> {
         let md = m.metadata_tuple(Vec::<MetadataRef>::new());
         anchor_inst.push_debug_record(DebugRecord::Variable(DebugVariableRecord::new(
             DebugVariableRecordKind::Value,
-            DebugMetadataOperand::Value(source.as_value().id()),
+            DebugMetadataOperand::Value(source.into_erased().id()),
             md,
             md,
             md,
         )));
 
         let replacement = i32_ty.const_int(42_i32);
-        assert_eq!(source.as_value().num_uses(), 1);
-        assert_eq!(replacement.as_value().num_uses(), 0);
+        assert_eq!(source.into_erased().num_uses(), 1);
+        assert_eq!(replacement.into_erased().num_uses(), 0);
 
         source_inst.replace_all_uses_with(&m, replacement)?;
 
-        assert_eq!(source.as_value().num_uses(), 0);
-        assert_eq!(replacement.as_value().num_uses(), 1);
+        assert_eq!(source.into_erased().num_uses(), 0);
+        assert_eq!(replacement.into_erased().num_uses(), 1);
         let records = anchor_inst.debug_records();
         let DebugRecord::Variable(record) = &records[0] else {
             panic!("expected variable debug record");
         };
         assert_eq!(
             record.location(),
-            DebugMetadataOperand::Value(replacement.as_value().id())
+            DebugMetadataOperand::Value(replacement.into_erased().id())
         );
         let block = cursor.into_block();
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(block);

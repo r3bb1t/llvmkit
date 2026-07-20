@@ -347,7 +347,7 @@ fn token_none_round_trips() {
         let parsed =
             parser::parse_constant_value(b"none", &module, module.token_type().as_type(), None)
                 .expect("token none parses");
-        assert_eq!(format!("{}", parsed.as_value()), "token none");
+        assert_eq!(format!("{}", parsed.into_erased()), "token none");
     });
 }
 
@@ -503,7 +503,7 @@ fn none_is_token_only() {
         let parsed =
             parser::parse_constant_value(b"none", &module, module.token_type().as_type(), None)
                 .expect("token none parses");
-        assert_eq!(format!("{}", parsed.as_value()), "token none");
+        assert_eq!(format!("{}", parsed.into_erased()), "token none");
 
         let target_ty = module
             .target_ext_type(
@@ -539,7 +539,7 @@ fn target_ext_zeroinitializer_requires_zero_init_property() {
         let zero = parser::parse_constant_value(b"zeroinitializer", &module, zero_ty, None)
             .expect("zero-initializable target extension parses");
         assert_eq!(
-            format!("{}", zero.as_value()),
+            format!("{}", zero.into_erased()),
             "target(\"spirv.foo\") zeroinitializer"
         );
 

@@ -40,7 +40,7 @@ use super::module::{
     ModuleBrand, ModuleCore, ModuleView, UseListOrderBBRecord, UseListOrderRecord,
 };
 use super::r#type::{StructBody, Type, TypeData, TypeId};
-use super::value::{Value, ValueId, ValueKindData};
+use super::value::{IsValue, Value, ValueId, ValueKindData};
 use super::{ApInt, ApIntSignedness, AttrIndex};
 
 // --------------------------------------------------------------------------
@@ -78,19 +78,19 @@ impl SlotTracker {
 
         for arg in f.params() {
             if arg.name().is_none() {
-                local.insert(arg.as_value().id, next);
+                local.insert(arg.id(), next);
                 next += 1;
             }
         }
 
         for bb in f.basic_blocks() {
             if bb.name().is_none() {
-                blocks.insert(bb.as_value().id, next);
+                blocks.insert(bb.id(), next);
                 next += 1;
             }
             for inst in bb.instructions() {
                 if produces_named_result(&inst) && inst.name().is_none() {
-                    local.insert(inst.as_value().id, next);
+                    local.insert(inst.id(), next);
                     next += 1;
                 }
             }
@@ -171,7 +171,7 @@ fn produces_named_result(inst: &InstructionView<'_, impl ModuleBrand>) -> bool {
 fn inst_kind_data<'ctx, B: ModuleBrand + 'ctx>(
     inst: &InstructionView<'ctx, B>,
 ) -> &'ctx InstructionKindData {
-    match &inst.as_value().data().kind {
+    match &inst.into_erased().data().kind {
         ValueKindData::Instruction(i) => &i.kind,
         _ => unreachable!("Instruction handle invariant: kind is Instruction"),
     }
@@ -471,8 +471,10 @@ fn is_null_pointer_constant(module: &ModuleCore, id: ValueId) -> bool {
 }
 
 fn fmt_apint_signed(f: &mut fmt::Formatter<'_>, words: &[u64], bit_width: u32) -> fmt::Result {
-    let value = ApInt::from_words(bit_width, words);
-    f.write_str(&value.to_string_radix(10, ApIntSignedness::Signed))
+    // Single source of truth with `impl Display for ApInt`, which prints the
+    // same signed-decimal form; keeping this a delegation stops the two from
+    // drifting apart.
+    write!(f, "{}", ApInt::from_words(bit_width, words))
 }
 
 fn fmt_constant_expr<'ctx, B: ModuleBrand + 'ctx>(
@@ -766,32 +768,32 @@ fn fmt_global_value_ref<'ctx, B: ModuleBrand + 'ctx>(
 fn module_global_slot(module: &ModuleCore, id: ValueId) -> Option<u32> {
     let mut next = 0_u32;
     for global in module.iter_globals::<crate::module::Brand<'_>>() {
-        if global.as_value().name().is_none() {
-            if global.as_value().id == id {
+        if global.into_erased().name().is_none() {
+            if global.id() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
         }
     }
     for alias in module.iter_aliases::<crate::module::Brand<'_>>() {
-        if alias.as_value().name().is_none() {
-            if alias.as_value().id == id {
+        if alias.into_erased().name().is_none() {
+            if alias.id() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
         }
     }
     for ifunc in module.iter_ifuncs::<crate::module::Brand<'_>>() {
-        if ifunc.as_value().name().is_none() {
-            if ifunc.as_value().id == id {
+        if ifunc.into_erased().name().is_none() {
+            if ifunc.id() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
         }
     }
     for function in module.iter_functions::<crate::module::Brand<'_>>() {
-        if function.as_value().name().is_none() {
-            if function.as_value().id == id {
+        if function.into_erased().name().is_none() {
+            if function.id() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
@@ -935,7 +937,7 @@ pub(super) fn fmt_instruction(
                 fmt_llvm_name(f, "%", &n)?;
                 f.write_str(" = ")?;
             }
-            None => match slots.local(inst.as_value().id) {
+            None => match slots.local(inst.id()) {
                 Some(slot) => write!(f, "%{slot} = ")?,
                 None => f.write_str("%<unnumbered> = ")?,
             },
@@ -1650,14 +1652,14 @@ fn fmt_call(
     // trailing `...` (AsmWriter's CallInst arm:
     // `isMustTailCall() && getParent()->getParent()->isVarArg()`).
     if matches!(c.tail_kind, crate::instr_types::TailCallKind::MustTail) {
-        let enclosing_varargs = inst
-            .as_value()
-            .local_parent_function_id()
-            .is_some_and(|fn_id| {
-                FunctionValue::<Dyn, _>::from_parts_unchecked(fn_id, module)
-                    .signature()
-                    .is_var_arg()
-            });
+        let enclosing_varargs =
+            inst.into_erased()
+                .local_parent_function_id()
+                .is_some_and(|fn_id| {
+                    FunctionValue::<Dyn, _>::from_parts_unchecked(fn_id, module)
+                        .signature()
+                        .is_var_arg()
+                });
         if enclosing_varargs {
             if !c.args.is_empty() {
                 f.write_str(", ")?;
@@ -2447,7 +2449,7 @@ pub(super) fn fmt_basic_block<S: BlockTerminationState>(
     if let Some(name) = bb.name() {
         fmt_llvm_name_without_prefix(f, &name)?;
         f.write_str(":")?;
-    } else if let Some(slot) = slots.block(bb.as_value().id) {
+    } else if let Some(slot) = slots.block(bb.id()) {
         write!(f, "{slot}:")?;
     } else {
         f.write_str("<unnamed>:")?;
@@ -2506,7 +2508,7 @@ pub(super) fn fmt_function<B: ModuleBrand>(
         f.write_str(" ")?;
     }
     write!(f, "{} ", sig.return_type())?;
-    fmt_global_value_ref(f, func.as_value())?;
+    fmt_global_value_ref(f, func.into_erased())?;
     f.write_str("(")?;
     let mut first = true;
     for arg in func.params() {
@@ -2529,7 +2531,7 @@ pub(super) fn fmt_function<B: ModuleBrand>(
         f.write_str(" ")?;
         match arg.name() {
             Some(n) => fmt_llvm_name(f, "%", &n)?,
-            None => match slots.local(arg.as_value().id) {
+            None => match slots.local(arg.id()) {
                 Some(slot) => write!(f, "%{slot}")?,
                 None => f.write_str("%<unnumbered>")?,
             },
@@ -2580,15 +2582,15 @@ pub(super) fn fmt_function<B: ModuleBrand>(
     }
     if let Some(prefix) = func.prefix_data() {
         f.write_str(" prefix ")?;
-        fmt_operand(f, prefix.as_value(), None)?;
+        fmt_operand(f, prefix.into_erased(), None)?;
     }
     if let Some(prologue) = func.prologue_data() {
         f.write_str(" prologue ")?;
-        fmt_operand(f, prologue.as_value(), None)?;
+        fmt_operand(f, prologue.into_erased(), None)?;
     }
     if let Some(personality) = func.personality_fn() {
         f.write_str(" personality ")?;
-        fmt_operand(f, personality.as_value(), None)?;
+        fmt_operand(f, personality.into_erased(), None)?;
     }
     {
         let module_view = func.module();
@@ -2990,13 +2992,13 @@ fn fmt_comdat(f: &mut fmt::Formatter<'_>, c: crate::comdat::ComdatRef<'_>) -> fm
     writeln!(f, " = comdat {}", c.selection_kind())
 }
 
-fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
+pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
     g: crate::global_variable::GlobalVariable<'ctx, B>,
 ) -> fmt::Result {
     // Mirrors `AssemblyWriter::printGlobal` in
     // `lib/IR/AsmWriter.cpp`.
-    fmt_global_value_ref(f, g.as_value())?;
+    fmt_global_value_ref(f, g.into_erased())?;
     f.write_str(" = ")?;
 
     // `external` keyword in front of decl-only globals with
@@ -3050,7 +3052,7 @@ fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
     // Initializer.
     if let Some(init) = g.initializer() {
         f.write_str(" ")?;
-        let v = init.as_value();
+        let v = init.into_erased();
         fmt_operand_ref(f, v, None)?;
     }
 
@@ -3091,7 +3093,7 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
     a: GlobalAlias<'ctx, B>,
 ) -> fmt::Result {
-    fmt_global_value_ref(f, a.as_value())?;
+    fmt_global_value_ref(f, a.into_erased())?;
     f.write_str(" = ")?;
     let linkage_kw = a.linkage().keyword();
     if !linkage_kw.is_empty() {
@@ -3116,7 +3118,7 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
     }
     f.write_str("alias ")?;
     write!(f, "{}, ", a.value_type())?;
-    fmt_operand(f, a.aliasee().as_value(), None)?;
+    fmt_operand(f, a.aliasee().into_erased(), None)?;
     if let Some(partition) = a.partition() {
         f.write_str(", partition \"")?;
         print_escaped_string(f, partition.as_bytes())?;
@@ -3133,7 +3135,7 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
     i: GlobalIFunc<'ctx, B>,
 ) -> fmt::Result {
-    fmt_global_value_ref(f, i.as_value())?;
+    fmt_global_value_ref(f, i.into_erased())?;
     f.write_str(" = ")?;
     let linkage_kw = i.linkage().keyword();
     if !linkage_kw.is_empty() {
@@ -3146,7 +3148,7 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
     }
     f.write_str("ifunc ")?;
     write!(f, "{}, ", i.value_type())?;
-    fmt_operand(f, i.resolver().as_value(), None)?;
+    fmt_operand(f, i.resolver().into_erased(), None)?;
     if let Some(partition) = i.partition() {
         f.write_str(", partition \"")?;
         print_escaped_string(f, partition.as_bytes())?;

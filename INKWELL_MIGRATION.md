@@ -116,7 +116,7 @@ shapes and is distinct from `IntDyn` / `FloatDyn`.
 |`context.custom_width_int_type(n)`|`module.custom_width_int_type(n)?`|fallible (returns `IrResult<IntType<'ctx, IntDyn>>`)|
 |`context.struct_type(&fields, packed)`|`module.struct_type(fields, packed)`|takes any `IntoIterator<Item = impl Into<Type<'ctx>>>`|
 |`context.opaque_struct_type(n)`|`module.named_struct(n)`|get-or-create, name preserved; `module.opaque_struct(n)?` is the typestate form (`StructType<'ctx, Opaque>`, `Err` if the name is taken)|
-|`StructType::set_body(...)`|`module.set_struct_body(st, fields, packed)?`|on `Module`; fallible (returns `Err` on second-set or non-named struct). `set_struct_body_typed(opaque, fields, packed)?` upgrades `Opaque` → `BodySet` in the type system|
+|`StructType::set_body(...)`|`module.set_struct_body(opaque, fields, packed)?`|on `Module`; upgrades `Opaque` → `BodySet` in the type system. `set_struct_body_dyn(st, fields, packed)?` is the runtime-checked erased path (returns `Err` on second-set or non-named struct)|
 |`fn_type(&params, var_args)`|`module.fn_type(ret, params, var_arg)`|return type explicit|
 ||`m.add_typed_function::<Ret, Params, _>(name, linkage)?`|builds the function signature from Rust marker types and returns `TypedFunctionValue<Ret, Params>`|
 ||`m.add_typed_function_of::<fn(i32) -> i32, _>(name, linkage)?`|builds the same typed facade from a Rust function-pointer alias; `unsafe` / `extern "C"` / `extern "system"` aliases are accepted|
@@ -128,9 +128,9 @@ shapes and is distinct from `IntDyn` / `FloatDyn`.
 |`float_type.const_float(d)` (f64)|`f64_ty.const_double(value)` / `f32_ty.const_float(value)`|infallible; `const_from_bits(u128)` covers the half / bfloat / fp128 / x86_fp80 / ppc_fp128 kinds|
 |`pointer_type.const_null()`|`pointer_type.const_null()`|same; also `const_zero()`|
 |`type.get_undef()` / `get_poison()`|`ty.get_undef()` / `get_poison()`|same|
-|`module.add_function(name, fn_ty, linkage)`|`module.add_function_dyn(name, fn_ty, linkage)?`|fallible (`Err(DuplicateFunctionName)`); returns `FunctionValue<'ctx, Dyn>` — the runtime-checked shape. Re-type later with the checked `module.function_by_name_typed::<R>(name)?`|
-|`module.get_function(name)`|`module.function_by_name(name)`|`Option<FunctionValue<'ctx, Dyn>>`|
-|`module.get_functions()`|`module.as_view().iter_functions()`|`ExactSizeIterator<Item = FunctionView>` on the read-only module view|
+|`module.add_function(name, fn_ty, linkage)`|`module.add_function_dyn(name, fn_ty, linkage)?`|fallible (`Err(DuplicateFunctionName)`); returns `FunctionValue<'ctx, Dyn>` — the runtime-checked shape. Re-type later with the checked `module.function_by_name::<R>(name)?`|
+|`module.get_function(name)`|`module.function_by_name_dyn(name)`|`Option<FunctionValue<'ctx, Dyn>>`|
+|`module.get_functions()`|`module.as_view().functions()`|`ExactSizeIterator<Item = FunctionView>` on the read-only module view|
 |—|`module.function_builder::<Dyn, _>(name, fn_ty)`|new — chainable `.linkage()` / `.calling_conv()` / `.attribute()` / `.build()?`|
 |`function.get_nth_param(n)`|`f.param(n)?`|fallible (`Err(ArgumentIndexOutOfRange)`); returns `Argument<'ctx>`|
 |`function.get_param_iter()`|`f.params()`|`ExactSizeIterator<Item = Argument>`|

@@ -660,9 +660,9 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B>
 {
     #[inline]
     fn into_int_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<IntValue<'ctx, W, B>> {
-        Ok(IntValue::<W, B>::from_value_unchecked(IsValue::as_value(
-            self,
-        )))
+        Ok(IntValue::<W, B>::from_value_unchecked(
+            IsValue::into_erased(self),
+        ))
     }
 }
 
@@ -684,7 +684,7 @@ macro_rules! impl_into_int_value_static {
                     IntType::<$marker, B>::new(module.module().$ty_method().as_type().id(), module);
                 match self.into_constant_int(ty) {
                     Ok(c) => Ok(IntValue::<$marker, B>::from_value_unchecked(
-                        IsValue::as_value(c),
+                        IsValue::into_erased(c),
                     )),
                     Err(_) => unreachable!(
                         "IntoConstantInt for static target is infallible per the trait impls"

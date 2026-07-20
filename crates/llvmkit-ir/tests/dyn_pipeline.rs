@@ -263,7 +263,7 @@ fn transform_dyn_module_pipeline_downgrades_and_mutates() -> Result<(), IrError>
     Module::with_new("dyn-mod-transform", |m| {
         let _f = build_ret_i32_named(&m, "f")?;
         let verified = m.verify()?;
-        assert_eq!(verified.iter_globals().len(), 0);
+        assert_eq!(verified.globals().len(), 0);
         let mut analyses = Analyses::new();
         let ran = Rc::new(Cell::new(false));
 
@@ -276,7 +276,7 @@ fn transform_dyn_module_pipeline_downgrades_and_mutates() -> Result<(), IrError>
 
         assert!(ran.get(), "RewriteModule pass must run");
         // The real mutation landed on the returned module.
-        assert_eq!(unverified.iter_globals().len(), 1);
+        assert_eq!(unverified.globals().len(), 1);
         unverified.verify()?;
         Ok(())
     })
@@ -296,7 +296,7 @@ fn read_only_dyn_module_pipeline_stays_verified_and_runs() -> Result<(), IrError
         let still_verified: Module<'_, _, Verified> = pipe.run(verified, &mut analyses)?;
 
         assert!(ran.get(), "Inspect module pass must run");
-        assert_eq!(still_verified.as_view().iter_functions().count(), 1);
+        assert_eq!(still_verified.as_view().functions().count(), 1);
         Ok(())
     })
 }
@@ -330,7 +330,7 @@ fn runtime_assembly_variable_length_pipeline() -> Result<(), IrError> {
 
         // Every pushed pass ran, in push order.
         assert_eq!(*log.borrow(), tags);
-        assert_eq!(still_verified.as_view().iter_functions().count(), 1);
+        assert_eq!(still_verified.as_view().functions().count(), 1);
         Ok(())
     })
 }
@@ -365,7 +365,7 @@ fn runtime_assembly_module_transform_variable_length() -> Result<(), IrError> {
 
         assert!(flags.iter().all(|f| f.get()), "every pushed pass must run");
         // Each `AddGlobalPass` inserts a global named "g"; three members ⇒ three.
-        assert_eq!(unverified.iter_globals().len(), count);
+        assert_eq!(unverified.globals().len(), count);
         Ok(())
     })
 }

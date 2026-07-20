@@ -51,7 +51,7 @@ fn module_prints_blank_line_between_type_identities_and_first_function() -> Resu
     Module::with_new("type_separator", |m| {
         let i32_ty = m.i32_type();
         let point_ty = m.named_struct("Point");
-        m.set_struct_body(point_ty, [i32_ty.as_type(), i32_ty.as_type()], false)?;
+        m.set_struct_body_dyn(point_ty, [i32_ty.as_type(), i32_ty.as_type()], false)?;
 
         let fn_ty = m.fn_type(m.void_type(), [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -183,8 +183,8 @@ fn module_prints_const_folded_arithmetic() -> Result<(), IrError> {
         // folded value reaches the `ret` operand directly with no `add`
         // instruction emitted.
         let folded = b.build_int_add(
-            IntValue::<i32>::try_from(a.as_value())?,
-            IntValue::<i32>::try_from(bb.as_value())?,
+            IntValue::<i32>::try_from(a.into_erased())?,
+            IntValue::<i32>::try_from(bb.into_erased())?,
             "sum",
         )?;
         b.build_ret(folded)?;

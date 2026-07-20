@@ -83,7 +83,7 @@ fn struct_gep() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
         let s_ty = m.named_struct("S");
-        m.set_struct_body(s_ty, [i32_ty.as_type(), i64_ty.as_type()], false)?;
+        m.set_struct_body_dyn(s_ty, [i32_ty.as_type(), i64_ty.as_type()], false)?;
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(ptr_ty.as_type(), [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("sg", fn_ty, Linkage::External)?;

@@ -239,7 +239,7 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ValueTrackingQuery<'a, 'ctx, B> {
 
     #[inline]
     pub fn with_context_instruction(mut self, instruction: &InstructionView<'ctx, B>) -> Self {
-        self.context_instruction = Some(instruction.as_value());
+        self.context_instruction = Some(instruction.to_erased());
         self
     }
 
@@ -1913,6 +1913,7 @@ mod tests {
     use super::*;
     use crate::instruction::build_instruction_value;
     use crate::module::Module;
+    use crate::value::IsValue;
 
     fn fabricate_instruction(
         m: &Module<'_>,
@@ -1955,12 +1956,12 @@ mod tests {
             let gep_ty = ptr_vec_ty.as_type();
             let gep_id = fabricate_instruction(
                 &m,
-                entry.as_value().id,
+                entry.id(),
                 gep_ty.id(),
                 InstructionKindData::Gep(GepInstData::new(
                     i8_ty.as_type().id(),
-                    base.as_value().id,
-                    [minus_one.as_value().id],
+                    base.id(),
+                    [minus_one.id()],
                     crate::GepNoWrapFlags::empty(),
                 )),
             );

@@ -49,7 +49,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     }
 
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn into_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -225,8 +225,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
 impl<'ctx, B: ModuleBrand> sealed::Sealed for GlobalAlias<'ctx, B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalAlias<'ctx, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
-        GlobalAlias::as_value(self)
+    fn into_erased(self) -> Value<'ctx, B> {
+        GlobalAlias::into_erased(self)
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for GlobalAlias<'ctx, B> {
@@ -243,7 +243,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for GlobalAlias<'ctx, B> {
 }
 impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalAlias<'ctx, B> {
     fn name(self) -> Option<String> {
-        self.as_value().name()
+        self.into_erased().name()
     }
     fn set_name<Name>(self, _module_token: &Module<'ctx, B, Unverified>, _name: Name)
     where
@@ -261,7 +261,7 @@ impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalAlias<'_, B> {
 impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalAlias<'ctx, B>> for Value<'ctx, B> {
     #[inline]
     fn from(a: GlobalAlias<'ctx, B>) -> Self {
-        a.as_value()
+        a.into_erased()
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalAlias<'ctx, B>> for Constant<'ctx, B> {

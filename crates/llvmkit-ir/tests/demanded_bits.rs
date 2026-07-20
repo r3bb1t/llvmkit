@@ -35,28 +35,31 @@ fn demanded_bits_basic_trunc_zext_chain() -> Result<(), IrError> {
         let demanded = fam.get_result::<DemandedBitsAnalysis, _>(f)?;
 
         assert_eq!(
-            bits(demanded.get_demanded_bits(add.as_value())),
+            bits(demanded.get_demanded_bits(add.into_erased())),
             "00000000000000000000000011111111"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(mul.as_value())),
+            bits(demanded.get_demanded_bits(mul.into_erased())),
             "00000000000000000000000011111111"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(trunc_i8.as_value())),
-            "11111111"
-        );
-        assert_eq!(bits(demanded.get_demanded_bits(trunc_i1.as_value())), "1");
-        assert_eq!(
-            bits(demanded.get_demanded_bits(zext.as_value())),
+            bits(demanded.get_demanded_bits(trunc_i8.into_erased())),
             "11111111"
         );
         assert_eq!(
-            bits(demanded.get_operand_demanded_bits(trunc_i1.as_value(), 0)?),
+            bits(demanded.get_demanded_bits(trunc_i1.into_erased())),
+            "1"
+        );
+        assert_eq!(
+            bits(demanded.get_demanded_bits(zext.into_erased())),
+            "11111111"
+        );
+        assert_eq!(
+            bits(demanded.get_operand_demanded_bits(trunc_i1.into_erased(), 0)?),
             "00000000000000000000000000000001"
         );
         assert_eq!(
-            bits(demanded.get_operand_demanded_bits(zext.as_value(), 0)?),
+            bits(demanded.get_operand_demanded_bits(zext.into_erased(), 0)?),
             "1"
         );
         Ok(())
@@ -101,42 +104,42 @@ fn demanded_bits_add_and_or_carry_propagation() -> Result<(), IrError> {
         let demanded = fam.get_result::<DemandedBitsAnalysis, _>(f)?;
 
         assert_eq!(
-            bits(demanded.get_demanded_bits(and_a.as_value())),
+            bits(demanded.get_demanded_bits(and_a.into_erased())),
             "00000000000000000000000000011110"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(and_b.as_value())),
+            bits(demanded.get_demanded_bits(and_b.into_erased())),
             "00000000000000000000000000011010"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(and_c.as_value())),
+            bits(demanded.get_demanded_bits(and_c.into_erased())),
             "00000000000000000000000000011010"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(and_d.as_value())),
+            bits(demanded.get_demanded_bits(and_d.into_erased())),
             "00000000000000000000000000011010"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(or_bc.as_value())),
+            bits(demanded.get_demanded_bits(or_bc.into_erased())),
             "00000000000000000000000000011010"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(or_dbc.as_value())),
+            bits(demanded.get_demanded_bits(or_dbc.into_erased())),
             "00000000000000000000000000011010"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(add.as_value())),
+            bits(demanded.get_demanded_bits(add.into_erased())),
             "00000000000000000000000000010000"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(mask.as_value())),
+            bits(demanded.get_demanded_bits(mask.into_erased())),
             "11111111111111111111111111111111"
         );
         assert_eq!(
-            bits(demanded.get_operand_demanded_bits(and_d.as_value(), 0)?),
+            bits(demanded.get_operand_demanded_bits(and_d.into_erased(), 0)?),
             "00000000000000000000000000000000"
         );
-        assert!(demanded.is_use_dead(and_d.as_value(), 0)?);
+        assert!(demanded.is_use_dead(and_d.into_erased(), 0)?);
         Ok(())
     })
 }
@@ -361,109 +364,109 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
 
         let rev_demanded = fam.get_result::<DemandedBitsAnalysis, _>(rev_host)?;
         assert_eq!(
-            bits(rev_demanded.get_operand_demanded_bits(rev.as_value(), 1)?),
+            bits(rev_demanded.get_operand_demanded_bits(rev.into_erased(), 1)?),
             "11110000"
         );
 
         let swap_demanded = fam.get_result::<DemandedBitsAnalysis, _>(swap_host)?;
         assert_eq!(
-            bits(swap_demanded.get_operand_demanded_bits(swap.as_value(), 1)?),
+            bits(swap_demanded.get_operand_demanded_bits(swap.into_erased(), 1)?),
             "1111111100000000"
         );
 
         let fshl_demanded = fam.get_result::<DemandedBitsAnalysis, _>(fshl_host)?;
         assert_eq!(
-            bits(fshl_demanded.get_operand_demanded_bits(fshl.as_value(), 1)?),
+            bits(fshl_demanded.get_operand_demanded_bits(fshl.into_erased(), 1)?),
             "00000000"
         );
         assert_eq!(
-            bits(fshl_demanded.get_operand_demanded_bits(fshl.as_value(), 2)?),
+            bits(fshl_demanded.get_operand_demanded_bits(fshl.into_erased(), 2)?),
             "11110000"
         );
         assert_eq!(
-            bits(fshl_demanded.get_operand_demanded_bits(fshl.as_value(), 3)?),
+            bits(fshl_demanded.get_operand_demanded_bits(fshl.into_erased(), 3)?),
             "00000111"
         );
 
         let fshr_demanded = fam.get_result::<DemandedBitsAnalysis, _>(fshr_host)?;
         assert_eq!(
-            bits(fshr_demanded.get_operand_demanded_bits(fshr.as_value(), 1)?),
+            bits(fshr_demanded.get_operand_demanded_bits(fshr.into_erased(), 1)?),
             "00000000"
         );
         assert_eq!(
-            bits(fshr_demanded.get_operand_demanded_bits(fshr.as_value(), 2)?),
+            bits(fshr_demanded.get_operand_demanded_bits(fshr.into_erased(), 2)?),
             "00111100"
         );
         assert_eq!(
-            bits(fshr_demanded.get_operand_demanded_bits(fshr.as_value(), 3)?),
+            bits(fshr_demanded.get_operand_demanded_bits(fshr.into_erased(), 3)?),
             "00000111"
         );
 
         let fshr_zero_demanded = fam.get_result::<DemandedBitsAnalysis, _>(fshr_zero_host)?;
         assert_eq!(
-            bits(fshr_zero_demanded.get_operand_demanded_bits(fshr_zero.as_value(), 1)?),
+            bits(fshr_zero_demanded.get_operand_demanded_bits(fshr_zero.into_erased(), 1)?),
             "00001111"
         );
         assert_eq!(
-            bits(fshr_zero_demanded.get_operand_demanded_bits(fshr_zero.as_value(), 2)?),
+            bits(fshr_zero_demanded.get_operand_demanded_bits(fshr_zero.into_erased(), 2)?),
             "00000000"
         );
         assert_eq!(
-            bits(fshr_zero_demanded.get_operand_demanded_bits(fshr_zero.as_value(), 3)?),
+            bits(fshr_zero_demanded.get_operand_demanded_bits(fshr_zero.into_erased(), 3)?),
             "00000111"
         );
 
         let wide_fshl_demanded = fam.get_result::<DemandedBitsAnalysis, _>(wide_fshl_host)?;
         assert_eq!(
-            wide_fshl_demanded.get_operand_demanded_bits(wide_fshl.as_value(), 1)?,
+            wide_fshl_demanded.get_operand_demanded_bits(wide_fshl.into_erased(), 1)?,
             ApInt::from_words(128, &[0x7f])
         );
         assert_eq!(
-            wide_fshl_demanded.get_operand_demanded_bits(wide_fshl.as_value(), 2)?,
+            wide_fshl_demanded.get_operand_demanded_bits(wide_fshl.into_erased(), 2)?,
             ApInt::one_bit_set(128, 127)
         );
         assert_eq!(
-            wide_fshl_demanded.get_operand_demanded_bits(wide_fshl.as_value(), 3)?,
+            wide_fshl_demanded.get_operand_demanded_bits(wide_fshl.into_erased(), 3)?,
             ApInt::from_words(128, &[127])
         );
 
         let umax_demanded = fam.get_result::<DemandedBitsAnalysis, _>(umax_host)?;
         assert_eq!(
-            bits(umax_demanded.get_operand_demanded_bits(umax.as_value(), 1)?),
+            bits(umax_demanded.get_operand_demanded_bits(umax.into_erased(), 1)?),
             "11110000"
         );
         assert_eq!(
-            bits(umax_demanded.get_operand_demanded_bits(umax.as_value(), 2)?),
+            bits(umax_demanded.get_operand_demanded_bits(umax.into_erased(), 2)?),
             "11110000"
         );
 
         let umin_demanded = fam.get_result::<DemandedBitsAnalysis, _>(umin_host)?;
         assert_eq!(
-            bits(umin_demanded.get_operand_demanded_bits(umin.as_value(), 1)?),
+            bits(umin_demanded.get_operand_demanded_bits(umin.into_erased(), 1)?),
             "11110000"
         );
         assert_eq!(
-            bits(umin_demanded.get_operand_demanded_bits(umin.as_value(), 2)?),
+            bits(umin_demanded.get_operand_demanded_bits(umin.into_erased(), 2)?),
             "11110000"
         );
 
         let smax_demanded = fam.get_result::<DemandedBitsAnalysis, _>(smax_host)?;
         assert_eq!(
-            bits(smax_demanded.get_operand_demanded_bits(smax.as_value(), 1)?),
+            bits(smax_demanded.get_operand_demanded_bits(smax.into_erased(), 1)?),
             "11110000"
         );
         assert_eq!(
-            bits(smax_demanded.get_operand_demanded_bits(smax.as_value(), 2)?),
+            bits(smax_demanded.get_operand_demanded_bits(smax.into_erased(), 2)?),
             "11110000"
         );
 
         let smin_demanded = fam.get_result::<DemandedBitsAnalysis, _>(smin_host)?;
         assert_eq!(
-            bits(smin_demanded.get_operand_demanded_bits(smin.as_value(), 1)?),
+            bits(smin_demanded.get_operand_demanded_bits(smin.into_erased(), 1)?),
             "11110000"
         );
         assert_eq!(
-            bits(smin_demanded.get_operand_demanded_bits(smin.as_value(), 2)?),
+            bits(smin_demanded.get_operand_demanded_bits(smin.into_erased(), 2)?),
             "11110000"
         );
         Ok(())
@@ -500,7 +503,7 @@ fn demanded_bits_ignore_mismatched_intrinsic_declarations() -> Result<(), IrErro
         fam.register_pass(DemandedBitsAnalysis);
         let demanded = fam.get_result::<DemandedBitsAnalysis, _>(host)?;
         assert_eq!(
-            bits(demanded.get_operand_demanded_bits(call.as_value(), 1)?),
+            bits(demanded.get_operand_demanded_bits(call.into_erased(), 1)?),
             "1111111111111111"
         );
         Ok(())
@@ -525,10 +528,10 @@ fn operands_of_dead_integer_instruction_are_dead() -> Result<(), IrError> {
         fam.register_pass(DemandedBitsAnalysis);
         let demanded = fam.get_result::<DemandedBitsAnalysis, _>(f)?;
 
-        assert!(demanded.is_instruction_dead(dead.as_value()));
-        assert!(demanded.is_use_dead(dead.as_value(), 0)?);
+        assert!(demanded.is_instruction_dead(dead.into_erased()));
+        assert!(demanded.is_use_dead(dead.into_erased(), 0)?);
         assert_eq!(
-            bits(demanded.get_operand_demanded_bits(dead.as_value(), 0)?),
+            bits(demanded.get_operand_demanded_bits(dead.into_erased(), 0)?),
             "00000000000000000000000000000000"
         );
         Ok(())
@@ -558,7 +561,7 @@ fn simplify_demanded_bits_replaces_known_demanded_low_bits() -> Result<(), IrErr
         let demanded = fam.get_result::<DemandedBitsAnalysis, _>(f)?;
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        let simplified = simplify_demanded_bits(high.as_value(), demanded, &query)?;
+        let simplified = simplify_demanded_bits(high.into_erased(), demanded, &query)?;
 
         assert!(simplified.demanded_bits_changed());
         assert_eq!(
@@ -621,7 +624,7 @@ fn simplify_demanded_bits_pass_ports_and_zext_and() -> Result<(), IrError> {
         let op2_rhs = i5_ty.const_ap_int(&ApInt::from_words(5, &[14]))?;
         let op1 = b.build_int_and::<Width<3>, _, _, _>(a, op1_rhs, "op1")?;
         let cast = b.build_zext_dyn(op1.as_dyn(), i5_ty.as_dyn(), "cast")?;
-        let op2 = b.build_int_and_dyn(cast.as_value(), op2_rhs.as_value(), "op2")?;
+        let op2 = b.build_int_and_dyn(cast.into_erased(), op2_rhs.into_erased(), "op2")?;
         b.build_ret(op2)?;
 
         let before = format!("{m}");
@@ -674,7 +677,7 @@ fn simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement()
             "cast",
         )?;
         let low_mask = i5_ty.const_ap_int(&ApInt::from_words(5, &[3]))?;
-        let low = b.build_int_and_dyn(cast.as_value(), low_mask.as_value(), "low")?;
+        let low = b.build_int_and_dyn(cast.into_erased(), low_mask.into_erased(), "low")?;
         b.build_ret(low)?;
 
         let mutate_fn_ty = m.fn_type(i5_ty, [i3_ty.as_type()], false);
@@ -694,8 +697,11 @@ fn simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement()
             ZExtFlags::new().nneg(),
             "cast.mut",
         )?;
-        let low_mut =
-            mutate_b.build_int_and_dyn(cast_mut.as_value(), low_mask.as_value(), "low.mut")?;
+        let low_mut = mutate_b.build_int_and_dyn(
+            cast_mut.into_erased(),
+            low_mask.into_erased(),
+            "low.mut",
+        )?;
         let zero_i3 = i3_ty.const_ap_int(&ApInt::zero(3))?;
         let _extra_mut =
             mutate_b.build_int_add::<Width<3>, _, _, _>(proof_mut, zero_i3, "extra.mut")?;
@@ -792,7 +798,7 @@ fn variable_lshr_demands_source_bits_that_can_reach_low_result() -> Result<(), I
         fam.register_pass(DemandedBitsAnalysis);
         let demanded = fam.get_result::<DemandedBitsAnalysis, _>(f)?;
         assert_eq!(
-            bits(demanded.get_demanded_bits(masked.as_value())),
+            bits(demanded.get_demanded_bits(masked.into_erased())),
             "11111111111111111111111111111111"
         );
 
@@ -832,7 +838,7 @@ fn variable_lshr_with_known_amount_range_demands_reachable_source_bits() -> Resu
         fam.register_pass(DemandedBitsAnalysis);
         let demanded = fam.get_result::<DemandedBitsAnalysis, _>(f)?;
         assert_eq!(
-            bits(demanded.get_operand_demanded_bits(shifted.as_value(), 0)?),
+            bits(demanded.get_operand_demanded_bits(shifted.into_erased(), 0)?),
             "00000000000000000000000000001111"
         );
         Ok(())

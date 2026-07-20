@@ -29,7 +29,7 @@ fn call_int_returning_function() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: llvmkit_ir::IntValue<i32> = caller.param(0)?.try_into()?;
         let y: llvmkit_ir::IntValue<i32> = caller.param(1)?.try_into()?;
-        let inst = b.build_call_dyn(callee, [x.as_value(), y.as_value()], "r")?;
+        let inst = b.build_call_dyn(callee, [x.into_erased(), y.into_erased()], "r")?;
         // Typed return accessor (Doctrine D4): `R` flows from the callee
         // through `build_call_dyn` into `CallInst<'ctx, i32>`, which directly
         // exposes `return_int_value(): IntValue<i32>` -- no runtime
@@ -147,7 +147,7 @@ fn intrinsic_call_inserts_declaration_and_emits_direct_call() -> Result<(), IrEr
             IntrinsicId::lookup("llvm.acos.f32").expect("acos intrinsic"),
             [f32_ty.as_type()],
         )?;
-        let call = b.build_intrinsic_call(&descriptor, &[x.as_value()], "r")?;
+        let call = b.build_intrinsic_call(&descriptor, &[x.into_erased()], "r")?;
         let r: FloatValue<f32> = call
             .return_value()
             .ok_or(IrError::InvalidOperation {
@@ -185,7 +185,7 @@ fn intrinsic_call_rejects_wrong_argument_type() -> Result<(), IrError> {
             [f32_ty.as_type()],
         )?;
         let err = b
-            .build_intrinsic_call(&descriptor, &[x.as_value()], "bad")
+            .build_intrinsic_call(&descriptor, &[x.into_erased()], "bad")
             .expect_err("i32 argument should not match llvm.acos.f32");
         assert!(matches!(
             err,
@@ -306,7 +306,7 @@ fn typed_build_indirect_call_derives_function_type_from_schema() -> Result<(), I
         let x = m.i32_type().const_int(7_i32);
         let call = b.build_indirect_call::<fn(i32) -> i32, _, _>(callee_ptr, (x,), "r")?;
         let r = call.result();
-        let text_ty = format!("{}", r.as_value().ty());
+        let text_ty = format!("{}", r.into_erased().ty());
         assert_eq!(text_ty, "i32", "typed indirect call result must be i32");
         let text = format!("{m}");
         assert!(text.contains("%r = call i32 %0(i32 7)"), "got:\n{text}");
@@ -510,7 +510,7 @@ fn build_varargs_call_lowers_fixed_prefix_and_appends_erased_tail() -> Result<()
         let call = b.build_varargs_call(
             callee,
             (count,),
-            [extra_a.as_value(), extra_b.as_value()],
+            [extra_a.into_erased(), extra_b.into_erased()],
             "r",
         )?;
         b.build_ret(call.result())?;

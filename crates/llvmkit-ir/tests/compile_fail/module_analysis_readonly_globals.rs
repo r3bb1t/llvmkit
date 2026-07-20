@@ -14,7 +14,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysis<'ctx, B> for MutatingGlobalAnal
         module: ModuleView<'ctx, B>,
         _am: &mut ModuleAnalysisManager<'ctx, B>,
     ) -> IrResult<Self::Result> {
-        if let Some(global) = module.iter_globals().next() {
+        if let Some(global) = module.globals().next() {
             global.set_linkage(Linkage::Internal);
         }
         Ok(MutatingGlobalResult)

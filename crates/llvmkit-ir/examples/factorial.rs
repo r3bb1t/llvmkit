@@ -89,7 +89,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
         base_label,
         &[],
         loop_label,
-        &[i32_ty.const_int(1_i32).as_value(), n.as_value()],
+        &[i32_ty.const_int(1_i32).into_erased(), n.into_erased()],
     )?;
 
     // base: ret i32 1
@@ -111,7 +111,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
         exit_label,
         &[],
         loop_label,
-        &[next_acc.as_value(), next_i.as_value()],
+        &[next_acc.into_erased(), next_i.into_erased()],
     )?;
 
     // exit: ret i32 %next_acc

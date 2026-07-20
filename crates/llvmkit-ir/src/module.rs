@@ -22,6 +22,7 @@
 //! token instead of a raw storage reference.
 
 use core::hash::{Hash, Hasher};
+use core::iter::FusedIterator;
 use core::marker::PhantomData;
 use core::num::NonZeroU32;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -659,9 +660,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
 
     /// Iterate functions in declaration order.
     #[inline]
-    pub fn iter_functions(
+    pub fn functions(
         self,
-    ) -> impl ExactSizeIterator<Item = crate::pass_context::FunctionView<'ctx, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = crate::pass_context::FunctionView<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         self.core
             .iter_functions::<B>()
             .map(crate::pass_context::FunctionView::new)
@@ -669,26 +673,64 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
 
     /// Iterate globals in declaration order.
     #[inline]
-    pub fn iter_globals(self) -> impl ExactSizeIterator<Item = GlobalVariableView<'ctx, B>> + 'ctx {
+    pub fn globals(
+        self,
+    ) -> impl ExactSizeIterator<Item = GlobalVariableView<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         self.core.iter_globals::<B>().map(GlobalVariableView::new)
     }
 
     /// Iterate aliases in declaration order.
     #[inline]
-    pub fn iter_aliases(self) -> impl ExactSizeIterator<Item = GlobalAliasView<'ctx, B>> + 'ctx {
+    pub fn aliases(
+        self,
+    ) -> impl ExactSizeIterator<Item = GlobalAliasView<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         self.core.iter_aliases::<B>().map(GlobalAliasView::new)
     }
 
     /// Iterate ifuncs in declaration order.
     #[inline]
-    pub fn iter_ifuncs(self) -> impl ExactSizeIterator<Item = GlobalIFuncView<'ctx, B>> + 'ctx {
+    pub fn ifuncs(
+        self,
+    ) -> impl ExactSizeIterator<Item = GlobalIFuncView<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         self.core.iter_ifuncs::<B>().map(GlobalIFuncView::new)
     }
 
     /// Iterate COMDATs in insertion order.
     #[inline]
-    pub fn iter_comdats(self) -> impl ExactSizeIterator<Item = ComdatView<'ctx, B>> + 'ctx {
+    pub fn comdats(
+        self,
+    ) -> impl ExactSizeIterator<Item = ComdatView<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         self.core.iter_comdats::<B>().map(ComdatView::new)
+    }
+}
+
+/// Iterating a module view yields its **functions** in declaration order —
+/// matching LLVM's `for (Function &F : M)` — not its globals: functions are
+/// the walk an optimizer loop wants, and globals/aliases/ifuncs/COMDATs keep
+/// their named iterators ([`ModuleView::globals`], [`ModuleView::aliases`],
+/// [`ModuleView::ifuncs`], [`ModuleView::comdats`]). Sugar beside the named
+/// [`ModuleView::functions`], not a replacement.
+///
+/// One capability differs: this iterator is not [`DoubleEndedIterator`],
+/// because it boxes its inner iterator to name a single concrete type. For
+/// reverse iteration go through the named method — `functions().rev()`.
+impl<'ctx, B: ModuleBrand + 'ctx> IntoIterator for ModuleView<'ctx, B> {
+    type Item = crate::pass_context::FunctionView<'ctx, B>;
+    type IntoIter = crate::pass_context::ModuleFunctionViews<'ctx, B>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        crate::pass_context::ModuleFunctionViews::new(self)
     }
 }
 
@@ -1293,7 +1335,10 @@ impl<'ctx> ModuleCore {
     /// to [`Dyn`](Dyn). Mirrors `Module::functions`.
     pub fn iter_functions<B: ModuleBrand + 'ctx>(
         &'ctx self,
-    ) -> impl ExactSizeIterator<Item = FunctionValue<'ctx, Dyn, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = FunctionValue<'ctx, Dyn, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         let ids: Vec<ValueId> = self.functions.borrow().clone();
         ids.into_iter().map(move |id| {
             FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(id, ModuleRef::<B>::new(self))
@@ -1322,7 +1367,10 @@ impl<'ctx> ModuleCore {
     /// `Module::globals`.
     pub fn iter_globals<B: ModuleBrand + 'ctx>(
         &'ctx self,
-    ) -> impl ExactSizeIterator<Item = GlobalVariable<'ctx, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = GlobalVariable<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         let ids: Vec<ValueId> = self.globals.borrow().clone();
         ids.into_iter().map(move |id| {
             let value_data = self.ctx.value_data(id);
@@ -1332,7 +1380,8 @@ impl<'ctx> ModuleCore {
 
     pub fn iter_aliases<B: ModuleBrand + 'ctx>(
         &'ctx self,
-    ) -> impl ExactSizeIterator<Item = GlobalAlias<'ctx, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = GlobalAlias<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let ids: Vec<ValueId> = self.aliases.borrow().clone();
         ids.into_iter().map(move |id| {
             let value_data = self.ctx.value_data(id);
@@ -1346,7 +1395,8 @@ impl<'ctx> ModuleCore {
 
     pub fn iter_ifuncs<B: ModuleBrand + 'ctx>(
         &'ctx self,
-    ) -> impl ExactSizeIterator<Item = GlobalIFunc<'ctx, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = GlobalIFunc<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let ids: Vec<ValueId> = self.ifuncs.borrow().clone();
         ids.into_iter().map(move |id| {
             let value_data = self.ctx.value_data(id);
@@ -1805,7 +1855,8 @@ impl<'ctx> ModuleCore {
     /// `Module::getComdatSymbolTable` (insertion-order traversal).
     pub fn iter_comdats<B: ModuleBrand + 'ctx>(
         &'ctx self,
-    ) -> impl ExactSizeIterator<Item = ComdatRef<'ctx, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = ComdatRef<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let count = self.comdats.count();
         (0..count).map(move |i| ComdatRef {
             module: ModuleRef::new(self),
@@ -1891,12 +1942,18 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
     }
 
     /// Iterate globals in declaration order with this module token's brand.
-    pub fn iter_globals(&self) -> impl ExactSizeIterator<Item = GlobalVariable<'ctx, B>> + 'ctx {
+    pub fn globals(
+        &self,
+    ) -> impl ExactSizeIterator<Item = GlobalVariable<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         self.core.iter_globals::<B>()
     }
 
-    /// Look up a function by name with this module token's brand.
-    pub fn function_by_name(&self, name: &str) -> Option<FunctionValue<'ctx, Dyn, B>> {
+    /// Look up a function by name with this module token's brand,
+    /// widened to [`Dyn`].
+    pub fn function_by_name_dyn(&self, name: &str) -> Option<FunctionValue<'ctx, Dyn, B>> {
         self.core
             .function_by_name
             .borrow()
@@ -1911,10 +1968,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
     }
 
     /// Look up a function by name and narrow to a specific return marker.
-    pub fn function_by_name_typed<R>(
-        &self,
-        name: &str,
-    ) -> IrResult<Option<FunctionValue<'ctx, R, B>>>
+    pub fn function_by_name<R>(&self, name: &str) -> IrResult<Option<FunctionValue<'ctx, R, B>>>
     where
         R: crate::marker::ReturnMarker,
     {
@@ -2390,7 +2444,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         ))
     }
 
-    pub fn set_struct_body<I, T>(
+    pub fn set_struct_body_dyn<I, T>(
         &self,
         st: StructType<'ctx, StructBodyDyn, B>,
         elements: I,
@@ -2420,7 +2474,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         self.core.ctx.set_named_struct_body(st.id, body)
     }
 
-    pub fn set_struct_body_typed<I, T>(
+    pub fn set_struct_body<I, T>(
         &self,
         opaque: StructType<'ctx, crate::struct_body_state::Opaque, B>,
         elements: I,

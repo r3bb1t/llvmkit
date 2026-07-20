@@ -188,14 +188,16 @@ fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let p: FloatValue<f32> = f.param(0)?.try_into()?;
         let n0 = b.build_float_neg::<f32, _, _>(p, "n0")?;
-        let Some(InstructionKind::FNeg(n0_inst)) = InstructionView::try_from(n0.as_value())?.kind()
+        let Some(InstructionKind::FNeg(n0_inst)) =
+            InstructionView::try_from(n0.into_erased())?.kind()
         else {
             panic!("expected n0 to be fneg");
         };
         assert!(n0_inst.fast_math_flags().is_empty());
         let fmf = FastMathFlags::NO_NANS | FastMathFlags::NO_SIGNED_ZEROS;
         let n1 = b.build_float_neg_with_flags::<f32, _, _>(n0, fmf, "n1")?;
-        let Some(InstructionKind::FNeg(n1_inst)) = InstructionView::try_from(n1.as_value())?.kind()
+        let Some(InstructionKind::FNeg(n1_inst)) =
+            InstructionView::try_from(n1.into_erased())?.kind()
         else {
             panic!("expected n1 to be fneg");
         };
@@ -385,7 +387,7 @@ fn build_fp_phi_emits_phi_with_double_kind() -> Result<(), IrError> {
         // entry: br join(%0) — the incoming f64 rides the edge into the head-phi.
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let p: FloatValue<f64> = f.param(0)?.try_into()?;
-        b.build_br_with_args(join_label, &[p.as_value()])?;
+        b.build_br_with_args(join_label, &[p.into_erased()])?;
         // join: ret %p (the head-phi param, where the phi result was used).
         let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
         let phi: FloatValue<f64> = params[0].try_into()?;
@@ -418,7 +420,7 @@ fn build_pointer_phi_emits_phi_with_ptr() -> Result<(), IrError> {
         // entry: br join(%0) — the incoming ptr rides the edge into the head-phi.
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let p: PointerValue = f.param(0)?.try_into()?;
-        b.build_br_with_args(join_label, &[p.as_value()])?;
+        b.build_br_with_args(join_label, &[p.into_erased()])?;
         // join: ret %p (the head-phi param, where the phi result was used).
         let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
         let phi: PointerValue = params[0].try_into()?;

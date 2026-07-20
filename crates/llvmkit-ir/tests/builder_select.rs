@@ -104,10 +104,12 @@ fn default_constant_folder_folds_select_to_chosen_arm() -> Result<(), IrError> {
         let f = m.add_function_dyn("pick", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let true_arm: llvmkit_ir::IntValue<i32> = i32_ty.const_int(7_i32).as_value().try_into()?;
-        let false_arm: llvmkit_ir::IntValue<i32> = i32_ty.const_int(9_i32).as_value().try_into()?;
+        let true_arm: llvmkit_ir::IntValue<i32> =
+            i32_ty.const_int(7_i32).into_erased().try_into()?;
+        let false_arm: llvmkit_ir::IntValue<i32> =
+            i32_ty.const_int(9_i32).into_erased().try_into()?;
         let result = b.build_select(true, true_arm, false_arm, "v")?;
-        let folded = ConstantIntValue::<i32>::try_from(Constant::try_from(result.as_value())?)?;
+        let folded = ConstantIntValue::<i32>::try_from(Constant::try_from(result.into_erased())?)?;
         assert_eq!(folded.ap_int().try_zext_u64(), Some(7));
         Ok(())
     })

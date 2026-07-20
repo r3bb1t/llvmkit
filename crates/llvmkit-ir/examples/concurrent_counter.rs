@@ -102,7 +102,7 @@ pub fn build_atomic_inc<'ctx>(m: &Module<'ctx>) -> Result<(), IrError> {
     let _ = b.build_fence(AtomicOrdering::Acquire, SyncScope::System, "")?;
 
     // ret i32 %old
-    let result: IntValue<i32> = old.as_value().try_into()?;
+    let result: IntValue<i32> = old.to_erased().try_into()?;
     b.build_ret(result)?;
     Ok(())
 }

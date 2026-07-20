@@ -1109,7 +1109,7 @@ where
         'ctx: 'pm,
     {
         let mut preserved = PreservedAnalyses::all();
-        for function in module.iter_functions() {
+        for function in module.functions() {
             // Skip declarations: only definitions have a body to run over.
             if function.entry_block().is_none() {
                 continue;

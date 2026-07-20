@@ -220,7 +220,7 @@ pub use derived_types::{
 pub use dominator_tree::{DominatorTree, DominatorTreeAnalysis, DominatorTreeBlock};
 pub use error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel, VerifierRule};
 pub use fmf::FastMathFlags;
-pub use function::{FunctionBuilder, FunctionValue};
+pub use function::{FunctionBasicBlocks, FunctionBuilder, FunctionValue};
 pub use function_signature::{
     CallArgs, FunctionParam, FunctionParamList, FunctionReturn, FunctionSignature, IntoCallArg,
     TypedFunctionValue, TypedVarArgsFunctionValue,
@@ -287,9 +287,9 @@ pub use pass_access::{
     PipelineVerdict, ReshapeCfg, RewriteModule, StaysVerified, VerdictFold,
 };
 pub use pass_context::{
-    BasicBlockView, BrEdit, CallBrEdit, CondBrEdit, FnCx, FnPatch, FnReport, FnReshape,
-    FunctionBody, FunctionView, InvokeEdit, ModCx, ModReport, ModRewrite, ModuleFunctionViews,
-    SwitchEdit, TermEdit,
+    BasicBlockView, BlockInstructionViews, BrEdit, CallBrEdit, CondBrEdit, FnCx, FnPatch, FnReport,
+    FnReshape, FunctionBasicBlockViews, FunctionBody, FunctionView, InvokeEdit, ModCx, ModReport,
+    ModRewrite, ModuleFunctionViews, SwitchEdit, TermEdit,
 };
 pub use pass_instrumentation::{PassInstrumentationAnalysis, PassInstrumentationCallbacks};
 pub use pass_manager::{

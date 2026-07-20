@@ -202,7 +202,7 @@ fn intrinsic_declaration_used_as_non_callee_operand_is_rejected() -> Result<(), 
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        b.build_call_dyn(sink, [intrinsic.as_value()], "")?;
+        b.build_call_dyn(sink, [intrinsic.into_erased()], "")?;
         b.build_ret_void()?;
 
         let err = m
@@ -411,10 +411,10 @@ fn verify_memory_gep_select_control() -> Result<(), IrError> {
         // `SelectArm` (constants narrow through value not int-value path).
         let _ = (one_const, two_const);
         let sel = bt.build_select(cmp, loaded, loaded, "sel")?;
-        bt.build_br_with_args(join_label, &[sel.as_value()])?;
+        bt.build_br_with_args(join_label, &[sel.into_erased()])?;
 
         let be = IRBuilder::new_for::<Dyn>(&m).position_at_end(else_bb);
-        be.build_br_with_args(join_label, &[loaded.as_value()])?;
+        be.build_br_with_args(join_label, &[loaded.into_erased()])?;
 
         let bj = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
         let p: IntValue<i32> = params[0].try_into()?;
@@ -445,7 +445,7 @@ fn verify_call() -> Result<(), IrError> {
         let bb = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
         let arg: IntValue<i32> = caller.param(0)?.try_into()?;
-        let inst = b.build_call_dyn(callee, [arg.as_value()], "c1")?;
+        let inst = b.build_call_dyn(callee, [arg.into_erased()], "c1")?;
         let one: IntValue<i32> = inst
             .return_value()
             .expect("non-void call returns a value")
@@ -666,10 +666,10 @@ fn verify_phi_incoming_edge_dominance_passes() -> Result<(), IrError> {
             .build_cond_br(cond, then_label, else_label)?;
         let bt = IRBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
         let y = bt.build_int_add(x, 1_i32, "y")?;
-        bt.build_br_with_args(join_label, &[y.as_value()])?;
+        bt.build_br_with_args(join_label, &[y.into_erased()])?;
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(else_bb)
-            .build_br_with_args(join_label, &[x.as_value()])?;
+            .build_br_with_args(join_label, &[x.into_erased()])?;
         let bj = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
         let p: IntValue<i32> = params[0].try_into()?;
         bj.build_ret(p)?;
@@ -706,7 +706,7 @@ fn verify_invoke_result_used_on_unwind_edge_fails() -> Result<(), IrError> {
                 unwind_label,
                 "iv",
             )?;
-        let invoke_value: IntValue<i32> = invoke.as_value().try_into()?;
+        let invoke_value: IntValue<i32> = invoke.to_erased().try_into()?;
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(normal)
             .build_ret(invoke_value)?;

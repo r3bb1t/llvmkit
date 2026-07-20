@@ -72,7 +72,7 @@ fn phi_finishes_after_all_incomings() -> Result<(), IrError> {
         assert_eq!(phi_closed.incoming_count(), 2);
         let (_, incoming0) = phi_closed.incoming(0)?;
         let (_, incoming1) = phi_closed.incoming(1)?;
-        assert_ne!(incoming0.as_value(), incoming1.as_value());
+        assert_ne!(incoming0.to_erased(), incoming1.to_erased());
 
         // The phi result is still usable after finish().
         b.build_ret(phi_closed.as_int_value())?;
@@ -272,6 +272,60 @@ fn phi_range_iterates_three_phis() -> Result<(), IrError> {
             .filter(|inst| matches!(inst.kind(), Some(crate::InstructionKind::Phi(_))))
             .count();
         assert_eq!(phi_count, 3);
+        Ok(())
+    })
+}
+
+/// `incomings()` yields exactly the pairs the indexed `incoming(i)` accessor
+/// yields, in the same order — on both the typed closed handle and the
+/// variant-independent [`PhiKind`] rediscovery surface. Locks the snapshot
+/// mirror of `SwitchInst::cases` added for idiomatic iteration; the indexed
+/// accessor stays beside it.
+#[test]
+fn phi_incomings_match_indexed_access() -> Result<(), IrError> {
+    Module::with_new("phi_incomings", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let other = f.append_basic_block(&m, "other");
+        let join = f.append_basic_block(&m, "join");
+        let entry_label = entry.label();
+        let other_label = other.label();
+
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        b.build_br(&join)?;
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(other);
+        b.build_br(&join)?;
+
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+        let phi = b
+            .build_int_phi::<i32, _>("p")?
+            .add_incoming(1_i32, entry_label)?
+            .add_incoming(2_i32, other_label)?
+            .finish();
+        b.build_ret(phi.as_int_value())?;
+
+        // Typed handle: `incomings()` mirrors `incoming(i)` pair-for-pair.
+        assert_eq!(phi.incomings().len(), 2);
+        for (index, (value, block)) in phi.incomings().enumerate() {
+            let index = u32::try_from(index).expect("two incomings fit in u32");
+            let (indexed_value, indexed_block) = phi.incoming(index)?;
+            assert_eq!(value, indexed_value);
+            assert_eq!(block, indexed_block);
+        }
+
+        // Variant-independent `PhiKind` rediscovery mirrors the same pairs.
+        let Some(InstructionKind::Phi(kind)) = phi.as_view().kind() else {
+            panic!("expected the phi to rediscover as InstructionKind::Phi");
+        };
+        assert_eq!(kind.incomings().len(), 2);
+        for (index, (value, block)) in kind.incomings().enumerate() {
+            let index = u32::try_from(index).expect("two incomings fit in u32");
+            let (indexed_value, indexed_block) = kind.incoming(index)?;
+            assert_eq!(value, indexed_value);
+            assert_eq!(block, indexed_block);
+        }
         Ok(())
     })
 }

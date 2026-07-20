@@ -41,7 +41,7 @@ impl<'ctx> ModulePass<'ctx> for ReportModulePass {
     ) -> Result<ModReport, IrError> {
         self.out.borrow_mut().push(format!(
             "module_pass functions={}",
-            cx.module().iter_functions().len()
+            cx.module().functions().len()
         ));
         Ok(cx.done())
     }
@@ -102,11 +102,11 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
 
     let bt = IRBuilder::at_end(then_bb);
     let add_xy = bt.build_int_add(x, y, "add_xy")?;
-    bt.build_br_with_args(merge_label, &[add_xy.as_value()])?;
+    bt.build_br_with_args(merge_label, &[add_xy.into_erased()])?;
 
     let be = IRBuilder::at_end(else_bb);
     let sub_xy = be.build_int_sub(x, y, "sub_xy")?;
-    be.build_br_with_args(merge_label, &[sub_xy.as_value()])?;
+    be.build_br_with_args(merge_label, &[sub_xy.into_erased()])?;
 
     let bm = IRBuilder::at_end(merge);
     // `params[0]` is `merge`'s head-phi, seeded with `[ %add_xy, %then ]` and
@@ -120,7 +120,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
 
 pub fn run_demo(m: Module<'_>) -> Result<(String, String, String), IrError> {
     let function = m
-        .function_by_name("select_or_add")
+        .function_by_name_dyn("select_or_add")
         .expect("demo function is present");
     let entry = function
         .entry_block()

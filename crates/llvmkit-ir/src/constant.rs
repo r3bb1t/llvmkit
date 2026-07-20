@@ -446,7 +446,7 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Constant<'ctx, B> {
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn into_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -461,11 +461,19 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Constant<'ctx, B> {
     }
 }
 
+impl<'ctx, B: crate::module::ModuleBrand + 'ctx> core::fmt::Display for Constant<'ctx, B> {
+    /// Print the operand form `<type> <literal>`, identical to what the
+    /// erased [`Value`] handle from [`Constant::into_erased`] prints.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&Constant::into_erased(*self), f)
+    }
+}
+
 impl<'ctx, B: crate::module::ModuleBrand + 'ctx> sealed::Sealed for Constant<'ctx, B> {}
 impl<'ctx, B: crate::module::ModuleBrand + 'ctx> IsValue<'ctx, B> for Constant<'ctx, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
-        Constant::as_value(self)
+    fn into_erased(self) -> Value<'ctx, B> {
+        Constant::into_erased(self)
     }
 }
 impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Typed<'ctx, B> for Constant<'ctx, B> {
@@ -477,31 +485,31 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Typed<'ctx, B> for Constant<'ct
 impl<'ctx, B: crate::module::ModuleBrand + 'ctx> HasName<'ctx, B> for Constant<'ctx, B> {
     #[inline]
     fn name(self) -> Option<String> {
-        self.as_value().name()
+        self.into_erased().name()
     }
     #[inline]
     fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
-        self.as_value().set_name(module_token, name);
+        self.into_erased().set_name(module_token, name);
     }
     #[inline]
     fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-        self.as_value().clear_name(module_token);
+        self.into_erased().clear_name(module_token);
     }
 }
 impl<B: crate::module::ModuleBrand + 'static> HasDebugLoc for Constant<'_, B> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
-        self.as_value().debug_loc()
+        self.into_erased().debug_loc()
     }
 }
 
 impl<'ctx, B: crate::module::ModuleBrand + 'ctx> From<Constant<'ctx, B>> for Value<'ctx, B> {
     #[inline]
     fn from(c: Constant<'ctx, B>) -> Self {
-        c.as_value()
+        c.into_erased()
     }
 }
 

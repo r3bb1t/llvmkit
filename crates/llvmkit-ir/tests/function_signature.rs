@@ -61,9 +61,9 @@ fn typed_function_facade_supports_pointer_and_float_params() -> Result<(), IrErr
         let x = expect_float(x);
         let bits = expect_int17(bits);
 
-        assert_eq!(p.as_value().ty().kind_label(), TypeKindLabel::Pointer);
-        assert_eq!(x.as_value().ty().kind_label(), TypeKindLabel::Float);
-        assert_eq!(bits.as_value().ty().kind_label(), TypeKindLabel::Integer);
+        assert_eq!(p.into_erased().ty().kind_label(), TypeKindLabel::Pointer);
+        assert_eq!(x.into_erased().ty().kind_label(), TypeKindLabel::Float);
+        assert_eq!(bits.into_erased().ty().kind_label(), TypeKindLabel::Integer);
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         b.build_ret(0_i32)?;

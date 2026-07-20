@@ -308,10 +308,10 @@ fn mem_intrinsic_wrapper_narrows_generated_memory_call() -> Result<(), IrError> 
         let view = b.build_intrinsic_call(
             &descriptor,
             &[
-                dst.as_value(),
-                src.as_value(),
-                len.as_value(),
-                i1_ty.const_int(false).as_value(),
+                dst.into_erased(),
+                src.into_erased(),
+                len.into_erased(),
+                i1_ty.const_int(false).into_erased(),
             ],
             "",
         )?;
@@ -355,10 +355,10 @@ fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), I
         let memcpy = b.build_intrinsic_call(
             &memcpy_descriptor,
             &[
-                dst.as_value(),
-                src.as_value(),
-                len.as_value(),
-                i1_ty.const_int(false).as_value(),
+                dst.into_erased(),
+                src.into_erased(),
+                len.into_erased(),
+                i1_ty.const_int(false).into_erased(),
             ],
             "",
         )?;
@@ -371,10 +371,10 @@ fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), I
         let memset = b.build_intrinsic_call(
             &memset_descriptor,
             &[
-                dst.as_value(),
-                i8_ty.const_int(0_i8).as_value(),
-                len.as_value(),
-                i1_ty.const_int(false).as_value(),
+                dst.into_erased(),
+                i8_ty.const_int(0_i8).into_erased(),
+                len.into_erased(),
+                i1_ty.const_int(false).into_erased(),
             ],
             "",
         )?;
@@ -398,7 +398,7 @@ fn lifetime_intrinsic_wrapper_narrows_generated_lifetime_call() -> Result<(), Ir
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let ptr: PointerValue = caller.param(0)?.try_into()?;
-        let view = b.build_intrinsic_call(&descriptor, &[ptr.as_value()], "")?;
+        let view = b.build_intrinsic_call(&descriptor, &[ptr.into_erased()], "")?;
 
         let lifetime = LifetimeIntrinsic::try_from_intrinsic(view)?;
         assert_eq!(lifetime.inner().intrinsic_id(), IntrinsicId::LIFETIME_START);
@@ -422,7 +422,7 @@ fn descriptor_call_builder_rejects_wrong_argument_count() -> Result<(), IrError>
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: IntValue<i32> = caller.param(0)?.try_into()?;
         let err = b
-            .build_intrinsic_call(&descriptor, &[x.as_value()], "bad")
+            .build_intrinsic_call(&descriptor, &[x.into_erased()], "bad")
             .expect_err("missing immarg is rejected before call emission");
         assert!(
             matches!(err, IrError::IntrinsicSignatureMismatch { .. }),
@@ -663,7 +663,7 @@ fn asm_writer_prints_generated_intrinsic_immediate_argument_comments() -> Result
         let ptr: PointerValue = caller.param(0)?.try_into()?;
         b.build_intrinsic_call(
             &descriptor,
-            &[ptr.as_value(), i32_ty.const_int(1_i32).as_value()],
+            &[ptr.into_erased(), i32_ty.const_int(1_i32).into_erased()],
             "",
         )?;
         b.build_ret_void()?;

@@ -21,7 +21,7 @@ fn build_vector_splat_expands_to_insertelement_plus_shuffle() -> Result<(), IrEr
         let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
         let scalar: IntValue<i8> = f.param(0)?.try_into()?;
         let splat = b.build_vector_splat(5, scalar, "v")?;
-        b.build_ret(splat.as_value())?;
+        b.build_ret(splat.into_erased())?;
         let text = format!("{m}");
         // The two-step expansion that upstream emits, mirrored byte-for-byte:
         // %v.splatinsert = insertelement <5 x i8> poison, i8 %0, i64 0

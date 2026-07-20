@@ -39,13 +39,13 @@ fn typed_vector_binops_match_dyn_golden() {
         let a: VectorValue<'_, i64, Len<2>> = f
             .param(0)
             .expect("p0")
-            .as_value()
+            .into_erased()
             .try_into()
             .expect("narrow p0");
         let c: VectorValue<'_, i64, Len<2>> = f
             .param(1)
             .expect("p1")
-            .as_value()
+            .into_erased()
             .try_into()
             .expect("narrow p1");
 
@@ -59,7 +59,7 @@ fn typed_vector_binops_match_dyn_golden() {
             .const_vector::<llvmkit_ir::ConstantIntValue<'_, i64>, _>([two, two])
             .expect("shamt vec");
         let shamt: VectorValue<'_, i64, Len<2>> =
-            shamt_const.as_value().try_into().expect("narrow shamt");
+            shamt_const.into_erased().try_into().expect("narrow shamt");
         let _sh = b.build_vec_int_shl(s, shamt, "sh").expect("shl vec");
 
         b.build_ret_void().expect("ret void");
@@ -100,7 +100,7 @@ fn typed_extract_returns_typed_element() {
         let a: VectorValue<'_, i64, Len<2>> = f
             .param(0)
             .expect("p0")
-            .as_value()
+            .into_erased()
             .try_into()
             .expect("narrow p0");
 
@@ -141,7 +141,7 @@ fn typed_splat_element_from_scalar_length_free() {
         // Element `i32` and length `Len<4>` come from the result annotation;
         // `scalar: E::Value` then checks the scalar is an `IntValue<i32>`.
         let sp: VectorValue<'_, i32, Len<4>> = b.build_vec_splat(scalar, "sp").expect("splat");
-        let _ = sp.as_value();
+        let _ = sp.into_erased();
 
         b.build_ret_void().expect("ret void");
 

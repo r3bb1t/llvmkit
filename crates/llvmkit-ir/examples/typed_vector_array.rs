@@ -54,13 +54,13 @@ fn build() -> Result<(), IrError> {
         let a: VectorValue<'_, i32, Len<4>> = vadd
             .param(0)
             .expect("param 0")
-            .as_value()
+            .into_erased()
             .try_into()
             .expect("narrow param 0 to <4 x i32>");
         let c: VectorValue<'_, i32, Len<4>> = vadd
             .param(1)
             .expect("param 1")
-            .as_value()
+            .into_erased()
             .try_into()
             .expect("narrow param 1 to <4 x i32>");
 
@@ -89,7 +89,7 @@ fn build() -> Result<(), IrError> {
         let arr: ArrayValue<'_, i32, ArrLen<4>> = apack
             .param(0)
             .expect("param 0")
-            .as_value()
+            .into_erased()
             .try_into()
             .expect("narrow param 0 to [4 x i32]");
 
@@ -99,7 +99,7 @@ fn build() -> Result<(), IrError> {
         // feeds straight back into another typed array op.
         let seven: IntValue<'_, i32> = i32_ty
             .const_int(7_i32)
-            .as_value()
+            .into_erased()
             .try_into()
             .expect("i32 constant");
         let updated: ArrayValue<'_, i32, ArrLen<4>> = b.build_arr_insert(arr, seven, 1, "u")?;

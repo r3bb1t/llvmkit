@@ -69,7 +69,7 @@ fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
         // The `add` instruction's operands are the function's two args.
         let arg0: Argument = f.param(0)?;
         let arg1: Argument = f.param(1)?;
-        let add_kind = sum.as_value().name();
+        let add_kind = sum.into_erased().name();
         assert_eq!(add_kind.as_deref(), Some("sum"));
         let _ = arg0;
         let _ = arg1;
@@ -124,7 +124,7 @@ fn const_int_interns() -> Result<(), IrError> {
         // Same value, different type: distinct handles.
         let i64_ty = m.i64_type();
         let d: llvmkit_ir::ConstantIntValue<i64> = i64_ty.const_int(42_i64);
-        assert_ne!(a.as_value().ty(), d.as_value().ty());
+        assert_ne!(a.into_erased().ty(), d.into_erased().ty());
         Ok(())
     })
 }
@@ -219,6 +219,37 @@ fn dyn_path_keeps_runtime_return_check() -> Result<(), IrError> {
             .build_ret(arg)
             .expect_err("returning i64 from i32-returning function must error");
         assert!(matches!(err, IrError::ReturnTypeMismatch { .. }));
+        Ok(())
+    })
+}
+
+/// llvmkit-specific: iterating a `FunctionValue` (`for bb in f`) yields its
+/// basic blocks in insertion order — the same walk as the named
+/// `basic_blocks()` — matching LLVM's `for (BasicBlock &BB : F)` range loop.
+#[test]
+fn function_value_into_iter_yields_blocks_in_order() -> Result<(), IrError> {
+    Module::with_new("fv-into-iter", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        f.append_basic_block(&m, "entry");
+        f.append_basic_block(&m, "mid");
+        f.append_basic_block(&m, "exit");
+
+        let named: Vec<Option<String>> = f.basic_blocks().map(|bb| bb.name()).collect();
+        let mut walked = Vec::new();
+        for bb in f {
+            walked.push(bb.name());
+        }
+        assert_eq!(walked, named);
+        assert_eq!(
+            walked,
+            [
+                Some("entry".to_string()),
+                Some("mid".to_string()),
+                Some("exit".to_string()),
+            ]
+        );
         Ok(())
     })
 }

@@ -496,7 +496,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let add = b.build_int_add::<i32, _, _, _>(c2_i, c5_i, "sum")?;
-        let instruction = InstructionView::try_from(add.as_value())?;
+        let instruction = InstructionView::try_from(add.into_erased())?;
         assert_eq!(
             constant_fold_inst_operands(
                 &instruction,
@@ -583,9 +583,9 @@ fn recursive_gep_load_through_bitcast_from_global_folds() -> Result<(), IrError>
             m.ptr_type(0).as_type(),
             ConstantExprOpcode::GetElementPtr,
             [
-                g.as_global_constant_ptr().as_value(),
-                zero.as_value(),
-                one.as_value(),
+                g.as_global_constant_ptr().into_erased(),
+                zero.into_erased(),
+                one.into_erased(),
             ],
             [],
             [],
@@ -666,7 +666,7 @@ fn function_denormal_f32_attribute_overrides_generic_mode() -> Result<(), IrErro
         let lhs = f32_ty.const_ap_float(&denormal)?;
         let rhs = f32_ty.const_ap_float(&denormal)?;
         let add = b.build_fp_add::<f32, _, _, _>(lhs, rhs, "sum")?;
-        let instruction = InstructionView::try_from(add.as_value())?;
+        let instruction = InstructionView::try_from(add.into_erased())?;
 
         let folded = constant_fold_instruction(&instruction, &dl, None)?
             .expect("f32 denormal inputs fold after f32 attribute flush");
@@ -708,7 +708,7 @@ fn function_denormal_attribute_group_overrides_generic_mode() -> Result<(), IrEr
         let lhs = f32_ty.const_ap_float(&denormal)?;
         let rhs = f32_ty.const_ap_float(&denormal)?;
         let add = b.build_fp_add::<f32, _, _, _>(lhs, rhs, "sum")?;
-        let instruction = InstructionView::try_from(add.as_value())?;
+        let instruction = InstructionView::try_from(add.into_erased())?;
 
         let folded = constant_fold_instruction(&instruction, &dl, None)?
             .expect("f32 denormal inputs fold after attribute-group f32 flush");

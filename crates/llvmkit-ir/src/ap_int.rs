@@ -69,6 +69,21 @@ impl core::fmt::Debug for ApInt {
     }
 }
 
+impl core::fmt::Display for ApInt {
+    /// Print the value as **signed decimal**: the bit pattern is read as a
+    /// two's-complement signed integer of this `ApInt`'s width, so a
+    /// negative value prints with a leading `-`. The bit width itself is
+    /// not printed. This is the representation the assembly writer uses
+    /// for `i<N>` constant bodies, so it agrees byte-for-byte with the
+    /// integer literal in module output.
+    ///
+    /// Use [`ApInt::to_string_radix`] for other radices or for an
+    /// unsigned reading of the same bits.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.to_string_radix(10, ApIntSignedness::Signed))
+    }
+}
+
 impl ApInt {
     pub fn new(
         bit_width: u32,

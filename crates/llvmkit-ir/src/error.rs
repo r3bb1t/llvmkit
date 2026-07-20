@@ -595,7 +595,7 @@ pub enum IrError {
         got: u32,
     },
 
-    /// `set_struct_body` called twice on the same named struct.
+    /// `set_struct_body_dyn` called twice on the same named struct.
     #[error("named struct {name:?} already has a body")]
     StructBodyAlreadySet {
         /// Name of the named struct that already has a body.

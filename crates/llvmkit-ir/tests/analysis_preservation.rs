@@ -126,7 +126,7 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
         let ip = b.save_insert_point();
         let a: IntValue<i32> = f.param(0)?.try_into()?;
         let x = b.build_int_add(a, 1_i32, "x")?;
-        b.build_br_with_args(merge_label, &[x.as_value()])?;
+        b.build_br_with_args(merge_label, &[x.into_erased()])?;
 
         // merge: ret %p (the head-phi param carrying the branch argument).
         let b2 = IRBuilder::new(&m).position_at_end(merge);
@@ -241,8 +241,8 @@ fn build_diamond<'ctx>(
     // The arm labels are `Dyn` for the `insert_phi` incoming slice (whose pred
     // labels are `Dyn`); the diamond's return marker is `Dyn` too, so the
     // conversion is an identity re-tag rather than an erasure.
-    let left_label: BasicBlockLabel<Dyn> = left.label().as_value().try_into()?;
-    let right_label: BasicBlockLabel<Dyn> = right.label().as_value().try_into()?;
+    let left_label: BasicBlockLabel<Dyn> = left.label().to_erased().try_into()?;
+    let right_label: BasicBlockLabel<Dyn> = right.label().to_erased().try_into()?;
 
     // entry: br (%a == 0) ? left : right
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
@@ -266,7 +266,13 @@ fn build_diamond<'ctx>(
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(merge);
     b.build_ret(i32_ty.const_int(0_u32))?;
 
-    Ok((f, lv.as_value(), left_label, rv.as_value(), right_label))
+    Ok((
+        f,
+        lv.into_erased(),
+        left_label,
+        rv.into_erased(),
+        right_label,
+    ))
 }
 
 /// POSITIVE: a `ReshapeCfg` pass inserts a phi into a 2-predecessor merge block
@@ -452,8 +458,8 @@ fn build_switch_redirect<'ctx>(
     let dflt_lbl = dflt.label();
     let old_lbl = old.label();
     let new_lbl = new.label();
-    let old_dyn: BasicBlockLabel<Dyn> = old_lbl.as_value().try_into()?;
-    let new_dyn: BasicBlockLabel<Dyn> = new_lbl.as_value().try_into()?;
+    let old_dyn: BasicBlockLabel<Dyn> = old_lbl.to_erased().try_into()?;
+    let new_dyn: BasicBlockLabel<Dyn> = new_lbl.to_erased().try_into()?;
 
     // entry: %ev = add %a, 3 ; switch %a, default %dflt [ 0 -> old ]
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
@@ -466,7 +472,7 @@ fn build_switch_redirect<'ctx>(
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(dflt);
     let a: IntValue<i32> = f.param(0)?.try_into()?;
     let nd = b.build_int_add(a, 5_i32, "nd")?;
-    b.build_br_with_args(new_lbl, &[nd.as_value()])?;
+    b.build_br_with_args(new_lbl, &[nd.into_erased()])?;
 
     // old: ret 0
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(old);
@@ -477,7 +483,7 @@ fn build_switch_redirect<'ctx>(
     let np: IntValue<i32> = new_params[0].try_into()?;
     b.build_ret(np)?;
 
-    Ok((f, old_dyn, new_dyn, ev.as_value()))
+    Ok((f, old_dyn, new_dyn, ev.into_erased()))
 }
 
 /// `redirect_successor` retargets the `entry → old` switch case onto `new` AND
@@ -562,7 +568,7 @@ fn redirect_edge_rejects_wrong_type() -> Result<(), IrError> {
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
         // `new`'s phi is i32; an i64 constant is the wrong type for it.
-        let wrong: Value = i64_ty.const_int(0_u32).as_value();
+        let wrong: Value = i64_ty.const_int(0_u32).into_erased();
         let pass = RedirectSwitchCase {
             from_name: "entry",
             old_to: old_dyn,
@@ -715,7 +721,7 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
         )?;
         let old_lbl = old.label();
         let other_lbl = other.label();
-        let new_dyn: BasicBlockLabel<Dyn> = new.label().as_value().try_into()?;
+        let new_dyn: BasicBlockLabel<Dyn> = new.label().to_erased().try_into()?;
 
         // entry: %ev = add %a, 3 ; cond_br (%a == 0) ? old : other
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -737,7 +743,7 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
         let pass = RedirectCondBrThen {
             from_name: "entry",
             new_to: new_dyn,
-            phi_values: vec![ev.as_value()],
+            phi_values: vec![ev.into_erased()],
         };
         let out = run_function_pass(pass, verified, f, &mut analyses)?;
         let reverified = out.verify().expect("redirect_then output must re-verify");
@@ -799,13 +805,13 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
         let a: IntValue<i32> = f.param(0)?.try_into()?;
         let ev = b.build_int_add(a, 3_i32, "ev")?;
         let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
-        b.build_cond_br_with_args(c, keep_lbl, &[], drop_lbl, &[ev.as_value()])?;
+        b.build_cond_br_with_args(c, keep_lbl, &[], drop_lbl, &[ev.into_erased()])?;
 
         // keep: %kv = add %a, 7 ; br drop(%kv)
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(keep);
         let a: IntValue<i32> = f.param(0)?.try_into()?;
         let kv = b.build_int_add(a, 7_i32, "kv")?;
-        b.build_br_with_args(drop_lbl, &[kv.as_value()])?;
+        b.build_br_with_args(drop_lbl, &[kv.into_erased()])?;
 
         // drop: ret %dp
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(drop_bb);
@@ -821,7 +827,7 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
         // branch — the collapse deregistered it. Nothing in `verify()` checks
         // use-list consistency, so assert it directly.
         assert!(
-            !c.as_value().has_uses(),
+            !c.into_erased().has_uses(),
             "the collapse must deregister the dead condition operand"
         );
 
@@ -863,7 +869,7 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
             "new",
         )?;
         let old_lbl = old.label();
-        let new_dyn: BasicBlockLabel<Dyn> = new.label().as_value().try_into()?;
+        let new_dyn: BasicBlockLabel<Dyn> = new.label().to_erased().try_into()?;
 
         // entry: %ev = add %a, 3 ; br old
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -881,7 +887,7 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
         let pass = RedirectBr {
             from_name: "entry",
             new_to: new_dyn,
-            phi_values: vec![ev.as_value()],
+            phi_values: vec![ev.into_erased()],
         };
         let out = run_function_pass(pass, verified, f, &mut analyses)?;
         let reverified = out.verify().expect("redirect output must re-verify");
@@ -925,8 +931,8 @@ fn build_cond_br_pair<'ctx>(
     let new = f.append_basic_block(m, "new");
     let old_lbl = old.label();
     let new_lbl = new.label();
-    let old_dyn: BasicBlockLabel<Dyn> = old_lbl.as_value().try_into()?;
-    let new_dyn: BasicBlockLabel<Dyn> = new_lbl.as_value().try_into()?;
+    let old_dyn: BasicBlockLabel<Dyn> = old_lbl.to_erased().try_into()?;
+    let new_dyn: BasicBlockLabel<Dyn> = new_lbl.to_erased().try_into()?;
 
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<i32> = f.param(0)?.try_into()?;
@@ -1077,7 +1083,7 @@ fn build_cond_br_both_arms_phi<'ctx>(
     let src_lbl = src.label();
     let keep_lbl = keep.label();
     let shared_lbl = shared.label();
-    let new_dyn: BasicBlockLabel<Dyn> = new.label().as_value().try_into()?;
+    let new_dyn: BasicBlockLabel<Dyn> = new.label().to_erased().try_into()?;
 
     // entry: cond_br (%a == 0) ? src : keep
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
@@ -1093,16 +1099,16 @@ fn build_cond_br_both_arms_phi<'ctx>(
     b.build_cond_br_with_args(
         c1,
         shared_lbl,
-        &[sv.as_value()],
+        &[sv.into_erased()],
         shared_lbl,
-        &[sv.as_value()],
+        &[sv.into_erased()],
     )?;
 
     // keep: %kv = add %a, 7 ; br shared(%kv)
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(keep);
     let a: IntValue<i32> = f.param(0)?.try_into()?;
     let kv = b.build_int_add(a, 7_i32, "kv")?;
-    b.build_br_with_args(shared_lbl, &[kv.as_value()])?;
+    b.build_br_with_args(shared_lbl, &[kv.into_erased()])?;
 
     // shared: ret %sp
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(shared);

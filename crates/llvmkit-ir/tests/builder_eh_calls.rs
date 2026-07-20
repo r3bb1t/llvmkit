@@ -60,7 +60,7 @@ fn invoke_void_to_unwind() -> Result<(), IrError> {
 
 /// TYPED `invoke`: the callee's return marker is derived (not
 /// caller-asserted) into the returned `InvokeInst<'_, Ret::Marker>` --
-/// `invoke.as_value()` narrows via `TryFrom` to `IntValue<i32>` without
+/// `invoke.to_erased()` narrows via `TryFrom` to `IntValue<i32>` without
 /// error, proving the marker is really `i32` and not `Dyn`. Prints
 /// identically to the dyn form for the same signature. Closest
 /// upstream coverage: same `IRBuilder::CreateInvoke` shape as
@@ -84,7 +84,7 @@ fn typed_invoke_derives_return_marker_from_callee() -> Result<(), IrError> {
         let (_sealed, invoke) = b.build_invoke(callee, (), normal_label, unwind_label, "iv")?;
         // The invoke's marker is already `i32` (derived from the callee),
         // so this infallible-in-practice narrowing never errors.
-        let result: IntValue<i32> = invoke.as_value().try_into()?;
+        let result: IntValue<i32> = invoke.to_erased().try_into()?;
         let bn = IRBuilder::new_for::<i32>(&m).position_at_end(normal);
         bn.build_ret(result)?;
         let text = format!("{m}");
@@ -128,7 +128,7 @@ fn callbr_void_with_one_indirect_dest() -> Result<(), IrError> {
         }
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let c: llvmkit_ir::IntValue<bool> = caller.param(0)?.try_into()?;
-        let _ = b.build_callbr(callee, [c.as_value()], cont_label, [kill_label], "")?;
+        let _ = b.build_callbr(callee, [c.into_erased()], cont_label, [kill_label], "")?;
         let text = format!("{m}");
         assert!(
             text.contains(

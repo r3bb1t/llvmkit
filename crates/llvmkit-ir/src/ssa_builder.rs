@@ -293,15 +293,15 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> PartialEq for SsaBlock<'ctx, 
         // compares only `id`/`module`/`ty` — it deliberately does *not*
         // bound `R: PartialEq` (which `ReturnMarker` does not guarantee) —
         // so this mirrors that same `id`/`module`/`ty` comparison through
-        // `as_value`, exactly as `BasicBlock`'s own manual `PartialEq`
+        // `to_erased`, exactly as `BasicBlock`'s own manual `PartialEq`
         // (above) does instead of touching the phantom markers.
-        self.label.as_value() == other.label.as_value() && self.owner == other.owner
+        self.label.to_erased() == other.label.to_erased() && self.owner == other.owner
     }
 }
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Eq for SsaBlock<'ctx, R, B> {}
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> core::hash::Hash for SsaBlock<'ctx, R, B> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
-        self.label.as_value().hash(h);
+        self.label.to_erased().hash(h);
         self.owner.hash(h);
     }
 }
@@ -323,12 +323,12 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> SsaBlock<'ctx, R, B> {
 /// Resolve a block label to the [`ValueId`] the Braun engine's block-keyed
 /// maps use. Blocks are values (`LabelType`), so the label's own value-id
 /// *is* the block id -- this mirrors how [`crate::cfg`] keys its
-/// successor/predecessor maps off `block.as_value().id`.
+/// successor/predecessor maps off `block.to_erased().id`.
 #[inline]
 fn label_value_id<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx>(
     label: &BasicBlockLabel<'ctx, R, B>,
 ) -> ValueId {
-    label.as_value().id
+    label.id()
 }
 
 /// Diagnostic name for a block id: falls back to a slot-style
@@ -341,7 +341,7 @@ fn block_name<'ctx, B: ModuleBrand + 'ctx>(
     let label_ty = module.module().label_type().as_type().id();
     let label = BasicBlock::<Dyn, Unterminated, B>::from_parts(block_id, module, label_ty).label();
     label
-        .as_value()
+        .to_erased()
         .name()
         .unwrap_or_else(|| format!("<block {block_id:?}>"))
 }
@@ -835,7 +835,7 @@ where
     /// -- the Braun engine's block key.
     #[inline]
     fn current_block_id(&self) -> ValueId {
-        self.ins().insert_block().as_value().id
+        self.ins().insert_block().id()
     }
 
     /// Braun `writeVariable`: pure bookkeeping, no IR emitted.
@@ -877,9 +877,9 @@ where
     {
         self.check_owner_var(var.owner)?;
         let v = value.into_int_value(self.module_ref())?;
-        super::r#type::Type::new(var.ty, self.module_ref()).require_match(v.as_value().ty())?;
+        super::r#type::Type::new(var.ty, self.module_ref()).require_match(v.into_erased().ty())?;
         let block = self.current_block_id();
-        self.write_variable(var.index, block, v.as_value().id);
+        self.write_variable(var.index, block, v.id());
         Ok(())
     }
 
@@ -919,7 +919,7 @@ where
         let v = value.into_float_value(self.module_ref())?;
         super::r#type::Type::new(var.ty, self.module_ref()).require_match(Typed::ty(v))?;
         let block = self.current_block_id();
-        self.write_variable(var.index, block, v.as_value().id);
+        self.write_variable(var.index, block, v.id());
         Ok(())
     }
 
@@ -961,7 +961,7 @@ where
         let v = value.into_pointer_value(self.module_ref())?;
         super::r#type::Type::new(var.ty, self.module_ref()).require_match(Typed::ty(v))?;
         let block = self.current_block_id();
-        self.write_variable(var.index, block, v.as_value().id);
+        self.write_variable(var.index, block, v.id());
         Ok(())
     }
 
@@ -1310,18 +1310,15 @@ where
     let id = match category {
         VarCategory::Int => {
             let int_ty = IntType::<super::int_width::IntDyn, B>::new(ty, module);
-            builder.build_int_phi_dyn(int_ty, name)?.as_value().id
+            builder.build_int_phi_dyn(int_ty, name)?.id()
         }
         VarCategory::Float => {
             let float_ty = FloatType::<super::float_kind::FloatDyn, B>::new(ty, module);
-            builder.build_fp_phi_dyn(float_ty, name)?.as_value().id
+            builder.build_fp_phi_dyn(float_ty, name)?.id()
         }
         VarCategory::Pointer => {
             let ptr_ty = PointerType::<B>::new(ty, module);
-            builder
-                .build_pointer_phi_in_addrspace(ptr_ty, name)?
-                .as_value()
-                .id
+            builder.build_pointer_phi_in_addrspace(ptr_ty, name)?.id()
         }
     };
     Ok(id)
@@ -1625,7 +1622,7 @@ where
         } else if let Some(current) = self
             .inner
             .as_ref()
-            .filter(|b| b.insert_block().as_value().id == block)
+            .filter(|b| b.insert_block().id() == block)
         {
             // Empty and currently positioned: the phi builders take
             // `&self`, so appending through the live builder directly
@@ -1699,7 +1696,7 @@ where
     fn phi_user_ids(&self, phi: ValueId) -> Vec<ValueId> {
         let module = self.module_ref();
         let value = Value::from_parts(phi, module, module.value_data(phi).ty);
-        value.users().map(|u| u.as_value().id).collect()
+        value.users().map(|u| u.id()).collect()
     }
 
     /// A strict variable's read reached function entry with no write on
@@ -1714,7 +1711,7 @@ where
             let module = self.module_ref();
             let ty = super::r#type::Type::new(data.ty, module);
             let poison = ty.get_poison();
-            return Ok(poison.as_value().id);
+            return Ok(poison.id());
         }
         Err(IrError::SsaUseOfUndefinedVariable {
             variable: data.name.clone(),
@@ -1733,7 +1730,7 @@ where
             .state
             .created_phis
             .get(&phi)
-            .map(|h| h.parent().as_value().id)
+            .map(|h| h.parent().id())
             .unwrap_or_else(|| {
                 unreachable!(
                     "SsaBuilder invariant: try_remove_trivial_phi only calls this helper on a \
@@ -1776,7 +1773,7 @@ where
                 )
             });
             handle
-                .replace_all_uses_with(self.module, poison.as_value())
+                .replace_all_uses_with(self.module, poison.into_erased())
                 .unwrap_or_else(|_| {
                     unreachable!(
                         "SsaBuilder invariant: the poison constant is built from the phi's own \
@@ -1784,7 +1781,7 @@ where
                     )
                 });
             Instruction::<Attached, B>::from_parts(phi, module).erase_from_parent(self.module);
-            let resolved = poison.as_value().id;
+            let resolved = poison.id();
             self.state.resolved.borrow_mut().insert(phi, resolved);
             for user in users {
                 if self.state.created_phis.contains_key(&user) {
@@ -1931,7 +1928,7 @@ mod tests {
             let entry_id = label_value_id(&entry.label);
 
             let var: IntVariable<i32, _> = b.declare_int_var("x");
-            let one = m.i32_type().const_int(1_i32).as_value().id;
+            let one = m.i32_type().const_int(1_i32).id();
             b.write_variable(var.index, entry_id, one);
             let read = b.read_variable_in(var.index, entry_id)?;
             assert_eq!(read, one);
@@ -1965,7 +1962,7 @@ mod tests {
             b.state.preds.entry(loop_id).or_default().push(loop_id);
 
             let var: IntVariable<i32, _> = b.declare_int_var("i");
-            let zero = m.i32_type().const_int(0_i32).as_value().id;
+            let zero = m.i32_type().const_int(0_i32).id();
             b.write_variable(var.index, entry_id, zero);
 
             // Read inside the not-yet-sealed loop block: creates an
@@ -1978,7 +1975,7 @@ mod tests {
             // Record the loop body's own write (e.g. `i + 1`, modeled
             // here as reusing a fresh constant is fine -- the engine
             // does not care what the value IS, only that a def exists).
-            let one = m.i32_type().const_int(1_i32).as_value().id;
+            let one = m.i32_type().const_int(1_i32).id();
             b.write_variable(var.index, loop_id, one);
 
             // Sealing completes the incomplete phi: two distinct incoming
@@ -2030,7 +2027,7 @@ mod tests {
             b.seal_block(right)?;
 
             let var: IntVariable<i32, _> = b.declare_int_var("x");
-            let same_value = m.i32_type().const_int(7_i32).as_value().id;
+            let same_value = m.i32_type().const_int(7_i32).id();
             // Both predecessors write the SAME value.
             b.write_variable(var.index, left_id, same_value);
             b.write_variable(var.index, right_id, same_value);
@@ -2097,7 +2094,7 @@ mod tests {
             let var: IntVariable<i32, _> = b.declare_int_var_poison("x");
             let read = b.read_variable_in(var.index, entry_id)?;
             let i32_ty = m.i32_type();
-            let poison_id = i32_ty.as_type().get_poison().as_value().id;
+            let poison_id = i32_ty.as_type().get_poison().id();
             assert_eq!(read, poison_id);
             Ok(())
         })
@@ -2144,7 +2141,7 @@ mod tests {
             b.seal_block(b3)?;
 
             let var: IntVariable<i32, _> = b.declare_int_var("x");
-            let one = m.i32_type().const_int(1_i32).as_value().id;
+            let one = m.i32_type().const_int(1_i32).id();
             b.write_variable(var.index, entry_id, one);
 
             // Before the read: only entry has a current_def entry.
@@ -2210,7 +2207,7 @@ mod tests {
 
             let mut b = b.switch_to_block(entry)?;
             let forged: IntValue<'_, i32, _> =
-                IntValue::from_value_unchecked(m.i64_type().const_zero().as_value());
+                IntValue::from_value_unchecked(m.i64_type().const_zero().into_erased());
 
             let err = b
                 .def_int_var(x, forged)
@@ -2248,7 +2245,7 @@ mod tests {
 
             let mut b = b.switch_to_block(entry)?;
             let forged: FloatValue<'_, f32, _> =
-                FloatValue::from_value_unchecked(m.f64_type().const_from_bits(0).as_value());
+                FloatValue::from_value_unchecked(m.f64_type().const_from_bits(0).into_erased());
 
             let err = b
                 .def_float_var(x, forged)
@@ -2293,7 +2290,7 @@ mod tests {
 
             let mut b = b.switch_to_block(entry)?;
             let forged: PointerValue<'_, _> =
-                PointerValue::from_value_unchecked(m.i32_type().const_zero().as_value());
+                PointerValue::from_value_unchecked(m.i32_type().const_zero().into_erased());
 
             let err = b
                 .def_pointer_var(p, forged)

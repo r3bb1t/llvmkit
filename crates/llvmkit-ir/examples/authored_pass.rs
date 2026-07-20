@@ -86,7 +86,7 @@ fn main() -> Result<(), IrError> {
             run_module_pass(AddMarkerGlobal, verified, &mut analyses)?;
         println!(
             "globals after add-marker-global = {}",
-            rewritten.iter_globals().len()
+            rewritten.globals().len()
         );
 
         let reverified = rewritten.verify()?;

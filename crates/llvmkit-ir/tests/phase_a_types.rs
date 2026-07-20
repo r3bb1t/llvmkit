@@ -163,7 +163,7 @@ fn named_struct_forward_decl_then_set_body() {
         // Set body once.
         let i32 = m.i32_type();
         let i64 = m.i64_type();
-        m.set_struct_body(s, [i32.as_type(), i64.as_type()], false)
+        m.set_struct_body_dyn(s, [i32.as_type(), i64.as_type()], false)
             .expect("first set_body succeeds");
 
         // Now opaque is false and we can read fields.
@@ -174,7 +174,7 @@ fn named_struct_forward_decl_then_set_body() {
 
         // Setting the body again fails with StructBodyAlreadySet.
         let err = m
-            .set_struct_body(s, [i32.as_type()], false)
+            .set_struct_body_dyn(s, [i32.as_type()], false)
             .expect_err("second set_body must error");
         assert!(matches!(err, IrError::StructBodyAlreadySet { ref name } if name == "MyStruct"));
     })
@@ -257,7 +257,7 @@ fn first_class_predicate_rejects_function_void_opaque() {
         // Filling the body promotes it to first-class.
         let s = m.named_struct("Filled");
         let i32 = m.i32_type();
-        m.set_struct_body(s, [i32.as_type()], false).unwrap();
+        m.set_struct_body_dyn(s, [i32.as_type()], false).unwrap();
         assert!(s.as_type().is_first_class());
 
         assert!(m.i32_type().as_type().is_first_class());

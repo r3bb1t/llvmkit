@@ -160,7 +160,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for MutatingReshape {
             .function()
             .basic_blocks()
             .flat_map(|block| block.instructions().collect::<Vec<_>>())
-            .filter(|view| !view.is_terminator() && !view.as_value().has_uses())
+            .filter(|view| !view.is_terminator() && !view.to_erased().has_uses())
             .collect();
         for view in &dead {
             reshape.erase(
@@ -294,14 +294,14 @@ fn module_pipeline_with_rewrite_downgrades() -> Result<(), IrError> {
     Module::with_new("pipe-mod-rewrite", |m| {
         let _f = build_ret_i32_named(&m, "f")?;
         let verified = m.verify()?;
-        assert_eq!(verified.iter_globals().len(), 0);
+        assert_eq!(verified.globals().len(), 0);
         let mut analyses = Analyses::new();
         let ran = Rc::new(Cell::new(false));
         let mut pipe = module_pipeline((AddGlobalPass { ran: ran.clone() },));
         // `RewriteModule` folds to `Downgrades`.
         let unverified: Module<'_, _, Unverified> = pipe.run(verified, &mut analyses)?;
         assert!(ran.get(), "RewriteModule pass must run");
-        assert_eq!(unverified.iter_globals().len(), 1);
+        assert_eq!(unverified.globals().len(), 1);
         unverified.verify()?;
         Ok(())
     })
