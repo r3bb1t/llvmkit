@@ -379,6 +379,13 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
         self.as_view().as_value()
     }
 
+    /// Opaque arena id of the underlying value (same id as
+    /// [`as_value`](Self::as_value)).
+    #[inline]
+    pub fn id(&self) -> ValueId {
+        self.as_value().id
+    }
+
     /// Return the copyable read-only view for this instruction.
     #[inline]
     pub fn as_view(&self) -> InstructionView<'ctx, B> {
@@ -1102,7 +1109,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
         block: &BasicBlock<'ctx, R, Unterminated, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
         let module = module_token.core_ref();
-        let parent_id = block.as_value().id;
+        let parent_id = block.id();
         let parent_fn_id = block.as_value().local_parent_function_id();
         block.as_dyn().append_instruction(self.id);
         update_instruction_parent(module, self.id, parent_id);
@@ -1863,6 +1870,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> NonTerminator<'ctx, B> {
     #[inline]
     pub fn as_value(&self) -> Value<'ctx, B> {
         self.view.as_value()
+    }
+
+    /// Opaque arena id of the underlying value (same id as
+    /// [`as_value`](Self::as_value)).
+    #[inline]
+    pub fn id(&self) -> ValueId {
+        self.view.id()
     }
 
     /// Crate-internal: wrap a view already known to be a non-terminator.

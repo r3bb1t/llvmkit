@@ -1592,8 +1592,8 @@ mod tests {
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
             let next = f.append_basic_block(&m, "next");
-            let entry_id = entry.as_value().id;
-            let next_id = next.as_value().id;
+            let entry_id = entry.id();
+            let next_id = next.id();
             let next_label = next.label();
 
             // entry: br next    next: ret 0
@@ -1616,7 +1616,7 @@ mod tests {
             let new_bb = entry_bb.split_at(&m, &terminator, "entry.split")?;
             let updates = [
                 CfgUpdate::delete(entry_id, next_id),
-                CfgUpdate::insert(new_bb.as_value().id, next_id),
+                CfgUpdate::insert(new_bb.id(), next_id),
             ];
 
             // Repairing the stale cached tree returns Repaired and yields the

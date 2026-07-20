@@ -1956,7 +1956,7 @@ mod tests {
             let gep_ty = ptr_vec_ty.as_type();
             let gep_id = fabricate_instruction(
                 &m,
-                entry.as_value().id,
+                entry.id(),
                 gep_ty.id(),
                 InstructionKindData::Gep(GepInstData::new(
                     i8_ty.as_type().id(),

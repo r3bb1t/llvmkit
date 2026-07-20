@@ -1358,6 +1358,13 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
         Value::from_parts(self.id, self.module, self.ty)
     }
 
+    /// Opaque arena id of the underlying value (same id as
+    /// [`as_value`](Self::as_value)).
+    #[inline]
+    pub fn id(&self) -> ValueId {
+        self.as_value().id
+    }
+
     /// Result handle for the phi node, narrowed to the static width
     /// `W`.
     #[inline]
@@ -1424,7 +1431,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, Open, B> {
         let value = value.into_int_value(self.module)?;
         if value.as_value().ty == self.ty {
             let value_id = value.id();
-            let block_id = block.into_basic_block_label().as_value().id;
+            let block_id = block.into_basic_block_label().id();
             if self
                 .payload()
                 .incoming
@@ -1547,6 +1554,13 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
         Value::from_parts(self.id, self.module, self.ty)
     }
 
+    /// Opaque arena id of the underlying value (same id as
+    /// [`as_value`](Self::as_value)).
+    #[inline]
+    pub fn id(&self) -> ValueId {
+        self.as_value().id
+    }
+
     /// Result handle for the phi, narrowed to the static kind `K`.
     #[inline]
     pub fn as_float_value(&self) -> FloatValue<'ctx, K, B> {
@@ -1607,7 +1621,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
         let value = value.into_float_value(self.module)?;
         if value.as_value().ty == self.ty {
             let value_id = value.id();
-            let block_id = block.into_basic_block_label().as_value().id;
+            let block_id = block.into_basic_block_label().id();
             if self
                 .payload()
                 .incoming
@@ -1722,6 +1736,13 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
+    /// Opaque arena id of the underlying value (same id as
+    /// [`as_value`](Self::as_value)).
+    #[inline]
+    pub fn id(&self) -> ValueId {
+        self.as_value().id
+    }
+
     /// Result handle for the phi, narrowed to a [`PointerValue`].
     #[inline]
     pub fn as_pointer_value(&self) -> PointerValue<'ctx, B> {
@@ -1777,7 +1798,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, Open, B> {
         let value = value.into_pointer_value(self.module)?;
         if value.as_value().ty == self.ty {
             let value_id = value.id();
-            let block_id = block.into_basic_block_label().as_value().id;
+            let block_id = block.into_basic_block_label().id();
             if self
                 .payload()
                 .incoming
@@ -2570,7 +2591,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
             });
         }
         let v_id = v.id;
-        let bb_id = target.into_basic_block_label().as_value().id;
+        let bb_id = target.into_basic_block_label().id();
         self.payload()
             .cases
             .borrow_mut()
@@ -2730,7 +2751,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
         self.payload()
             .destinations
             .borrow_mut()
-            .push(target.into_basic_block_label().as_value().id);
+            .push(target.into_basic_block_label().id());
         Ok(self)
     }
     /// Consume the open `indirectbr` and return its [`Closed`] view.
@@ -3379,7 +3400,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, TermOpen, B> {
         self.payload()
             .handlers
             .borrow_mut()
-            .push(handler.into_basic_block_label().as_value().id);
+            .push(handler.into_basic_block_label().id());
         Ok(self)
     }
     #[inline]

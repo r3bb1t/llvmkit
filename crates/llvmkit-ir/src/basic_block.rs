@@ -204,6 +204,13 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
         }
     }
 
+    /// Opaque arena id of the underlying value (same id as
+    /// [`as_value`](Self::as_value)).
+    #[inline]
+    pub fn id(&self) -> ValueId {
+        self.as_value().id
+    }
+
     /// Drop the typed parameter marker, yielding the parameter-erased
     /// ([`BlockParamsDyn`]) label form. Crate-internal: the typed branch
     /// builders lower a [`BlockCall`] to this erased label before reusing the
@@ -495,6 +502,13 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         }
     }
 
+    /// Opaque arena id of the underlying value (same id as
+    /// [`as_value`](Self::as_value)).
+    #[inline]
+    pub fn id(&self) -> ValueId {
+        self.as_value().id
+    }
+
     /// Erase the return-shape marker (and the parameter marker), producing
     /// the runtime-checked [`Dyn`] / [`BlockParamsDyn`] form. Crate-internal
     /// only: this duplicates the handle for storage and printing helpers, so
@@ -747,7 +761,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         let source_fn_id = self.parent_id();
         let dest_fn_id = dest.parent_id();
         let rehome_names = source_fn_id != dest_fn_id;
-        let dest_id = dest.as_value().id;
+        let dest_id = dest.id();
         let drained: Vec<ValueId> = {
             let mut src = self.data().instructions.borrow_mut();
             core::mem::take(&mut *src)
@@ -818,7 +832,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
                     })?;
             src.split_off(pos)
         };
-        let new_id = new_block.as_value().id;
+        let new_id = new_block.id();
         {
             let mut dst = new_block.data().instructions.borrow_mut();
             dst.extend(suffix.iter().copied());
@@ -953,7 +967,7 @@ mod tests {
             let recovered: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = v
                 .try_into()
                 .expect("a basic-block value narrows to a label");
-            assert_eq!(recovered.as_value().id, bb.as_value().id);
+            assert_eq!(recovered.id(), bb.id());
             assert_dyn_params(recovered);
         });
     }
@@ -971,7 +985,7 @@ mod tests {
                 .as_value()
                 .try_into()
                 .expect("a label's value round-trips to a label");
-            assert_eq!(round.as_value().id, label.as_value().id);
+            assert_eq!(round.id(), label.id());
             assert_dyn_params(round);
         });
     }

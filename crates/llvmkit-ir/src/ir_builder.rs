@@ -475,7 +475,7 @@ where
         anchor: &InstructionView<'ctx, B>,
     ) -> IRBuilder<'m, 'ctx, B, F, Positioned, R> {
         let anchor_id = anchor.id();
-        let parent_block_id = anchor.parent().as_value().id;
+        let parent_block_id = anchor.parent().id();
         let label_ty = self.module.label_type().as_type().id();
         let bb = BasicBlock::<R, Unterminated, B>::from_parts(
             parent_block_id,
@@ -531,7 +531,7 @@ where
     /// `IRBuilder::saveIP` (returns `InsertPoint(BB, InsertPt)`).
     pub fn save_insert_point(&self) -> InsertPoint<'ctx, R, B> {
         InsertPoint {
-            block_id: self.insert_block.as_ref().map(|bb| bb.as_value().id),
+            block_id: self.insert_block.as_ref().map(|bb| bb.id()),
             before: self.insert_before,
             _marker: PhantomData,
         }
@@ -643,7 +643,7 @@ where
         // block with a different value is meaningless in any CFG (the
         // InstCombine #196954 bug class). A same-block same-value duplicate
         // stays legal (multi-edges from `switch`).
-        let block_id = block.as_value().id;
+        let block_id = block.id();
         if phi_payload
             .incoming
             .borrow()
@@ -754,7 +754,7 @@ where
     {
         let module = Module::<'ctx, B, Unverified>::from_core(self.module);
         let bb = function.append_basic_block(&module, name);
-        let bb_id = bb.as_value().id;
+        let bb_id = bb.id();
         let mut params = Vec::with_capacity(param_types.len());
         for ty in param_types {
             params.push(self.make_phi_in_block(bb_id, ty.id(), ""));
@@ -787,7 +787,7 @@ where
     {
         let module = Module::<'ctx, B, Unverified>::from_core(self.module);
         let bb = function.append_basic_block(&module, name);
-        let bb_id = bb.as_value().id;
+        let bb_id = bb.id();
         let mut out = Vec::with_capacity(params.len());
         for (ty, param_name) in params {
             out.push(self.make_phi_in_block(bb_id, ty.id(), param_name));
@@ -838,7 +838,7 @@ where
         // cannot fail at this step).
         let param_types = Params::ir_types(&module)?;
         let bb = function.append_basic_block(&module, name);
-        let bb_id = bb.as_value().id;
+        let bb_id = bb.id();
         let mut phi_values = Vec::with_capacity(param_types.len());
         for ty in &param_types {
             phi_values.push(self.make_phi_in_block(bb_id, ty.id(), ""));
@@ -2418,7 +2418,7 @@ where
         let payload = crate::instr_types::FreezeInstData::new(v.id);
         let inst = self.append_instruction(v.ty, InstructionKindData::Freeze(payload), name);
         Ok(FreezeInst::<B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             v.ty,
         ))
@@ -2440,7 +2440,7 @@ where
         let payload = crate::instr_types::VAArgInstData::new(v.id);
         let inst = self.append_instruction(result_ty.id, InstructionKindData::VAArg(payload), name);
         Ok(VAArgInst::<B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             result_ty.id,
         ))
@@ -3084,7 +3084,7 @@ where
         let void_ty = self.module.void_type().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Fence(payload), name);
         Ok(crate::instructions::FenceInst::from_raw(
-            inst.as_value().id,
+            inst.id(),
             self.module,
             void_ty,
         ))
@@ -3125,7 +3125,7 @@ where
         let inst =
             self.append_instruction(result_id, InstructionKindData::AtomicCmpXchg(payload), name);
         Ok(AtomicCmpXchgInst::<B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             result_id,
         ))
@@ -3154,7 +3154,7 @@ where
         let payload = crate::instr_types::AtomicRMWInstData::new(op, p.id, v.id, config);
         let inst = self.append_instruction(v.ty, InstructionKindData::AtomicRMW(payload), name);
         Ok(AtomicRMWInst::<B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             v.ty,
         ))
@@ -4067,7 +4067,7 @@ where
         let void_ty = self.module.void_type().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Store(payload), "");
         Ok(StoreInst::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
@@ -4280,7 +4280,7 @@ where
             name,
         );
         Ok(TypedCallInst::from_call(CallInst::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         )))
@@ -4317,7 +4317,7 @@ where
             name,
         );
         Ok(TypedCallInst::from_call(CallInst::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         )))
@@ -4385,7 +4385,7 @@ where
             name,
         );
         Ok(TypedCallInst::from_call(CallInst::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         )))
@@ -4577,7 +4577,7 @@ where
             name,
         );
         Ok(TypedCallInst::from_call(CallInst::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         )))
@@ -4633,7 +4633,7 @@ where
             name,
         );
         Ok(CallInst::<R2, B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
@@ -4696,7 +4696,7 @@ where
             name,
         );
         Ok(CallInst::<R2, B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
@@ -6037,7 +6037,7 @@ where
         Ok({
             let _i = inst;
             PhiInst::<W, PhiOpen, B>::from_raw(
-                _i.as_value().id,
+                _i.id(),
                 ModuleRef::<B>::new(self.module),
                 _i.ty().id(),
             )
@@ -6065,7 +6065,7 @@ where
         Ok({
             let _i = inst;
             PhiInst::<IntDyn, PhiOpen, B>::from_raw(
-                _i.as_value().id,
+                _i.id(),
                 ModuleRef::<B>::new(self.module),
                 _i.ty().id(),
             )
@@ -6096,7 +6096,7 @@ where
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(FpPhiInst::<K, PhiOpen, B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
@@ -6121,7 +6121,7 @@ where
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(FpPhiInst::<FloatDyn, PhiOpen, B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
@@ -6149,7 +6149,7 @@ where
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(PointerPhiInst::<PhiOpen, B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
@@ -6174,7 +6174,7 @@ where
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(PointerPhiInst::<PhiOpen, B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
@@ -6220,7 +6220,7 @@ where
         let payload = crate::instr_types::PhiData::new();
         let inst = self.append_phi_instruction(ty.id(), InstructionKindData::Phi(payload), name);
         Ok(OtherPhiInst::<B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
@@ -6241,7 +6241,7 @@ where
         let target = target.into_basic_block_label();
         let payload = crate::instr_types::BranchInstData {
             kind: core::cell::RefCell::new(crate::instr_types::BranchKind::Unconditional(
-                target.as_value().id,
+                target.id(),
             )),
         };
         let void_ty = self.module.void_type().as_type().id();
@@ -6271,8 +6271,8 @@ where
         let payload = crate::instr_types::BranchInstData {
             kind: core::cell::RefCell::new(crate::instr_types::BranchKind::Conditional {
                 cond: core::cell::Cell::new(cond.id()),
-                then_bb: then_bb.as_value().id,
-                else_bb: else_bb.as_value().id,
+                then_bb: then_bb.id(),
+                else_bb: else_bb.id(),
             }),
         };
         let void_ty = self.module.void_type().as_type().id();
@@ -6389,11 +6389,8 @@ where
         // The target block's parameters are its leading head-phis, in order.
         // Scan from the block top and stop at the first non-phi (phis are
         // grouped at the head) — the pattern the CFG splitter uses.
-        let target_block = BasicBlock::<Dyn, Terminated, B>::from_parts(
-            target.as_value().id,
-            module_ref,
-            label_ty,
-        );
+        let target_block =
+            BasicBlock::<Dyn, Terminated, B>::from_parts(target.id(), module_ref, label_ty);
         let mut param_phis: Vec<ValueId> = Vec::new();
         for inst_id in target_block.instruction_ids() {
             let data = self.module.context().value_data(inst_id);
@@ -6437,7 +6434,7 @@ where
         // matching parameter-phi (types already validated above; the erased
         // path re-checks and registers the phi in each value's use-list).
         let pred_block =
-            BasicBlock::<Dyn, Terminated, B>::from_parts(pred.as_value().id, module_ref, label_ty);
+            BasicBlock::<Dyn, Terminated, B>::from_parts(pred.id(), module_ref, label_ty);
         for (phi_id, arg) in param_phis.iter().zip(args.iter()) {
             let phi_ty = self.module.context().value_data(*phi_id).ty;
             let phi_val = Value::from_parts(*phi_id, module_ref, phi_ty);
@@ -6574,13 +6571,12 @@ where
         let cond_id = cond.into_int_value(module_ref)?.id();
         let default_target = default_target.into_basic_block_label();
         let void_ty = self.module.void_type().as_type().id();
-        let payload =
-            crate::instr_types::SwitchInstData::new(cond_id, default_target.as_value().id);
+        let payload = crate::instr_types::SwitchInstData::new(cond_id, default_target.id());
         let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            SwitchInst::<Open, B, W>::from_raw(inst.as_value().id, module_ref, void_ty),
+            SwitchInst::<Open, B, W>::from_raw(inst.id(), module_ref, void_ty),
         ))
     }
 
@@ -6614,14 +6610,13 @@ where
         let default_target = default_target.into_basic_block_label();
         let cond_v = cond.as_value();
         let void_ty = self.module.void_type().as_type().id();
-        let payload =
-            crate::instr_types::SwitchInstData::new(cond_v.id, default_target.as_value().id);
+        let payload = crate::instr_types::SwitchInstData::new(cond_v.id, default_target.id());
         let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
         let module_ref = ModuleRef::<B>::new(self.module);
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            SwitchInst::<Open, B>::from_raw(inst.as_value().id, module_ref, void_ty),
+            SwitchInst::<Open, B>::from_raw(inst.id(), module_ref, void_ty),
         ))
     }
 
@@ -6657,7 +6652,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            IndirectBrInst::<Open, B>::from_raw(inst.as_value().id, module_ref, void_ty),
+            IndirectBrInst::<Open, B>::from_raw(inst.id(), module_ref, void_ty),
         ))
     }
 
@@ -6717,8 +6712,8 @@ where
             f.signature().as_type().id(),
             arg_ids,
             calling_conv,
-            normal_dest.as_value().id,
-            unwind_dest.as_value().id,
+            normal_dest.id(),
+            unwind_dest.id(),
             attrs,
         );
         let ret_ty = f.return_type().id();
@@ -6727,8 +6722,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            InvokeInst::<Dyn, B>::from_raw(inst.as_value().id, module_ref, ret_ty)
-                .retag::<Ret::Marker>(),
+            InvokeInst::<Dyn, B>::from_raw(inst.id(), module_ref, ret_ty).retag::<Ret::Marker>(),
         ))
     }
 
@@ -6806,8 +6800,8 @@ where
             fn_ty.as_type().id(),
             arg_ids,
             calling_conv,
-            normal_dest.as_value().id,
-            unwind_dest.as_value().id,
+            normal_dest.id(),
+            unwind_dest.id(),
             attrs,
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
@@ -6815,7 +6809,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            InvokeInst::<Dyn, B>::from_raw(inst.as_value().id, module_ref, ret_ty).retag::<R2>(),
+            InvokeInst::<Dyn, B>::from_raw(inst.id(), module_ref, ret_ty).retag::<R2>(),
         ))
     }
 
@@ -6852,8 +6846,8 @@ where
             fn_ty.as_type().id(),
             arg_ids,
             calling_conv,
-            normal_dest.as_value().id,
-            unwind_dest.as_value().id,
+            normal_dest.id(),
+            unwind_dest.id(),
             attrs,
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
@@ -6861,7 +6855,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            InvokeInst::<Dyn, B>::from_raw(inst.as_value().id, module_ref, ret_ty).retag::<R2>(),
+            InvokeInst::<Dyn, B>::from_raw(inst.id(), module_ref, ret_ty).retag::<R2>(),
         ))
     }
 
@@ -6932,8 +6926,8 @@ where
             fn_ty.as_type().id(),
             arg_ids,
             calling_conv,
-            normal_dest.as_value().id,
-            unwind_dest.as_value().id,
+            normal_dest.id(),
+            unwind_dest.id(),
             attrs,
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
@@ -6941,7 +6935,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            InvokeInst::<Dyn, B>::from_raw(inst.as_value().id, module_ref, ret_ty).retag::<R2>(),
+            InvokeInst::<Dyn, B>::from_raw(inst.id(), module_ref, ret_ty).retag::<R2>(),
         ))
     }
 
@@ -6998,14 +6992,14 @@ where
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let indirect_ids: Vec<ValueId> = indirect_dests
             .into_iter()
-            .map(|d| d.into_basic_block_label().as_value().id)
+            .map(|d| d.into_basic_block_label().id())
             .collect();
         let payload = crate::instr_types::CallBrInstData::new_with_attrs(
             callee_v.id,
             fn_ty.as_type().id(),
             arg_ids,
             calling_conv,
-            default_dest.as_value().id,
+            default_dest.id(),
             indirect_ids,
             attrs,
         );
@@ -7014,7 +7008,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            CallBrInst::<B>::from_raw(inst.as_value().id, module_ref, ret_ty),
+            CallBrInst::<B>::from_raw(inst.id(), module_ref, ret_ty),
         ))
     }
 
@@ -7082,7 +7076,7 @@ where
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let indirect_ids: Vec<ValueId> = indirect_dests
             .into_iter()
-            .map(|d| d.into_basic_block_label().as_value().id)
+            .map(|d| d.into_basic_block_label().id())
             .collect();
         let (name, calling_conv, attrs) = config.into_parts();
         let payload = crate::instr_types::CallBrInstData::new_with_attrs(
@@ -7090,7 +7084,7 @@ where
             fn_ty.as_type().id(),
             arg_ids,
             calling_conv,
-            default_dest.as_value().id,
+            default_dest.id(),
             indirect_ids,
             attrs,
         );
@@ -7099,7 +7093,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            CallBrInst::<B>::from_raw(inst.as_value().id, module_ref, ret_ty),
+            CallBrInst::<B>::from_raw(inst.id(), module_ref, ret_ty),
         ))
     }
 
@@ -7123,7 +7117,7 @@ where
         let inst =
             self.append_instruction(result_ty.id, InstructionKindData::LandingPad(payload), name);
         Ok(LandingPadInst::<Open, B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             result_ty.id,
         ))
@@ -7196,7 +7190,7 @@ where
         let inst =
             self.append_instruction(token_ty, InstructionKindData::CleanupPad(payload), name);
         Ok(CleanupPadInst::<B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             token_ty,
         ))
@@ -7220,7 +7214,7 @@ where
         let token_ty = self.module.token_type().as_type().id();
         let inst = self.append_instruction(token_ty, InstructionKindData::CatchPad(payload), name);
         Ok(CatchPadInst::<B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             token_ty,
         ))
@@ -7240,8 +7234,7 @@ where
     {
         let target = target.into_basic_block_label();
         let void_ty = self.module.void_type().as_type().id();
-        let payload =
-            crate::instr_types::CatchReturnInstData::new(catch_pad.id, target.as_value().id);
+        let payload = crate::instr_types::CatchReturnInstData::new(catch_pad.id, target.id());
         let inst =
             self.append_instruction(void_ty, InstructionKindData::CatchReturn(payload), name);
         let bb = self.into_insert_block();
@@ -7261,7 +7254,7 @@ where
         Name: AsRef<str>,
     {
         let unwind_dest = unwind_dest.into_basic_block_label();
-        self.build_cleanup_ret_raw(cleanup_pad.id, Some(unwind_dest.as_value().id), name)
+        self.build_cleanup_ret_raw(cleanup_pad.id, Some(unwind_dest.id()), name)
     }
 
     /// Produce `cleanupret from <cleanuppad> unwind to caller`.
@@ -7307,7 +7300,7 @@ where
         Name: AsRef<str>,
     {
         let unwind_dest = unwind_dest.into_basic_block_label();
-        self.build_catch_switch_raw(Some(parent_pad.id), Some(unwind_dest.as_value().id), name)
+        self.build_catch_switch_raw(Some(parent_pad.id), Some(unwind_dest.id()), name)
     }
 
     /// Produce `catchswitch within <parent> [...] unwind to caller`.
@@ -7335,7 +7328,7 @@ where
         Name: AsRef<str>,
     {
         let unwind_dest = unwind_dest.into_basic_block_label();
-        self.build_catch_switch_raw(None, Some(unwind_dest.as_value().id), name)
+        self.build_catch_switch_raw(None, Some(unwind_dest.id()), name)
     }
 
     /// Produce `catchswitch within none [...] unwind to caller`.
@@ -7367,7 +7360,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            CatchSwitchInst::<Open, B>::from_raw(inst.as_value().id, module_ref, token_ty),
+            CatchSwitchInst::<Open, B>::from_raw(inst.id(), module_ref, token_ty),
         ))
     }
 
@@ -7397,7 +7390,7 @@ where
     ) -> Instruction<'ctx, Attached, B> {
         let name = name.as_ref();
         let bb = self.insert_block();
-        let bb_id = bb.as_value().id;
+        let bb_id = bb.id();
         let value = build_instruction_value(ty, bb_id, kind, None);
         // Snapshot operand ids before the value is moved into the arena;
         // we need them to register the new instruction in each operand's
@@ -7584,7 +7577,7 @@ where
     ) -> Instruction<'ctx, Attached, B> {
         let name = name.as_ref();
         let bb = self.insert_block();
-        let bb_id = bb.as_value().id;
+        let bb_id = bb.id();
         let value = build_instruction_value(ty, bb_id, kind, None);
         // Snapshot operand ids before the value is moved into the arena so
         // we can register the new instruction in each operand's reverse
@@ -8076,7 +8069,7 @@ where
             self.name,
         );
         Ok(CallInst::<RC, B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.parent.module),
             inst.ty().id(),
         ))
@@ -8195,7 +8188,7 @@ where
             self.name,
         );
         Ok(TypedCallInst::from_call(CallInst::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.parent.module),
             inst.ty().id(),
         )))

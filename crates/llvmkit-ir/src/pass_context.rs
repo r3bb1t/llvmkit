@@ -556,7 +556,7 @@ where
     /// cannot fail.
     #[inline]
     pub fn erase(&self, target: &NonTerminator<'ctx, B>) {
-        let id = target.as_value().id();
+        let id = target.id();
         let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
         // Capture operand ids before erasing (erase drops their uses). Push them
         // all unconditionally — `Worklist::pop` is panic-safe and skips any id that
@@ -644,7 +644,7 @@ where
         );
         let mut wl = Worklist::new();
         for inst in self.body_instructions() {
-            wl.push(inst.as_value().id());
+            wl.push(inst.id());
         }
         *self.worklist.borrow_mut() = Some(wl);
         WorklistScope { patch: self }
@@ -951,11 +951,11 @@ where
         // (the caller wires the fresh `block → new_block` edge later, through
         // its own terminator, so that edge is not this method's to record).
         let source = block.as_basic_block();
-        let source_id = source.as_value().id;
+        let source_id = source.id();
         let successors = crate::cfg::block_successors(&source);
 
         let new_block = source.split_at(self.patch.module_mut(), before, name)?;
-        let new_id = new_block.as_value().id;
+        let new_id = new_block.id();
 
         // The terminator moved to `new_block`, so every edge that used to
         // leave `block` now leaves `new_block`. Phis in the successors
@@ -987,7 +987,7 @@ where
         if !successors.is_empty() {
             let mut log = self.cfg_updates.borrow_mut();
             for succ in &successors {
-                let succ_id = succ.as_value().id;
+                let succ_id = succ.id();
                 log.push(CfgUpdate::delete(source_id, succ_id));
                 log.push(CfgUpdate::insert(new_id, succ_id));
             }
@@ -1120,7 +1120,7 @@ where
         slot: EditSlot,
     ) -> IrResult<()> {
         let from_block = from.as_basic_block();
-        let from_id = from_block.as_value().id;
+        let from_id = from_block.id();
         let ctx = self.patch.module_mut().core_ref().context();
 
         // Mutate the terminator and learn the removed target block.
@@ -1219,7 +1219,7 @@ where
         );
         let surviving = crate::cfg::block_successors(&from_block)
             .iter()
-            .filter(|succ| succ.as_value().id == target_id)
+            .filter(|succ| succ.id() == target_id)
             .count();
         self.drop_incoming_from_pred(&target_block, from_id, surviving)?;
 
@@ -1262,8 +1262,8 @@ where
         phi_values: &[Value<'ctx, B>],
     ) -> IrResult<()> {
         let from_block = from.as_basic_block();
-        let from_id = from_block.as_value().id;
-        let new_id = new_to.as_value().id;
+        let from_id = from_block.id();
+        let new_id = new_to.id();
         let ctx = self.patch.module_mut().core_ref().context();
 
         // Centralized edge precondition: `from` must not already reach
@@ -1276,7 +1276,7 @@ where
         // priority.
         if crate::cfg::block_successors(&from_block)
             .iter()
-            .any(|succ| succ.as_value().id == new_id)
+            .any(|succ| succ.id() == new_id)
         {
             return Err(IrError::InvalidOperation {
                 message: "redirect: `from` already reaches `new_to`",
@@ -1450,7 +1450,7 @@ where
             BasicBlock::<Dyn, Terminated, B>::from_parts(old_id, from_block.module, from_block.ty);
         let surviving = crate::cfg::block_successors(&from_block)
             .iter()
-            .filter(|succ| succ.as_value().id == old_id)
+            .filter(|succ| succ.id() == old_id)
             .count();
         self.drop_incoming_from_pred(&old_block, from_id, surviving)?;
 
@@ -1724,7 +1724,7 @@ where
     where
         R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
     {
-        let target_id = block.as_basic_block().as_value().id;
+        let target_id = block.as_basic_block().id();
 
         // (1) Predecessor multiset of `block`: invert `block_successors` over
         // the function's blocks (the pattern `check_function_phi_coherence`
@@ -1733,9 +1733,9 @@ where
         let mut preds: Vec<ValueId> = Vec::new();
         for bb in self.function().basic_blocks() {
             let handle = bb.as_basic_block();
-            let pred_id = handle.as_value().id;
+            let pred_id = handle.id();
             for succ in crate::cfg::block_successors(&handle) {
-                if succ.as_value().id == target_id {
+                if succ.id() == target_id {
                     preds.push(pred_id);
                 }
             }
@@ -1746,7 +1746,7 @@ where
         let ty_id = ty.id();
         let incoming_ids: Vec<(ValueId, ValueId)> = incomings
             .iter()
-            .map(|(value, pred)| (value.id, pred.as_value().id))
+            .map(|(value, pred)| (value.id, pred.id()))
             .collect();
         let ctx = self.patch.module_mut().core_ref().context();
         let value_ty_of = |id: ValueId| ctx.value_data(id).ty;
@@ -1770,7 +1770,7 @@ where
                 if let Ok(inst) = InstructionView::try_from(*value) {
                     let def_block = inst.parent();
                     if !dt.dominates_block(def_block, *pred) {
-                        dom_failure = Some((def_block.as_value().id, pred.as_value().id));
+                        dom_failure = Some((def_block.id(), pred.id()));
                         break;
                     }
                 }
@@ -2033,7 +2033,7 @@ where
         new_to: &BasicBlockLabel<'ctx, Dyn, B>,
         phi_values: &[Value<'ctx, B>],
     ) -> IrResult<()> {
-        let old_id = old_to.as_value().id;
+        let old_id = old_to.id();
         // `old_to` is target-based, so witness it names a live case before
         // delegating: a bogus `old_to` retargets zero cases yet the shared tail
         // would still seed `new_to`'s phis / log a spurious `CfgUpdate`. This
@@ -2091,7 +2091,7 @@ where
     /// edge (a `switch` must keep its default) or is not a case successor.
     #[inline]
     pub fn remove_successor(&self, old_to: &BasicBlockLabel<'ctx, Dyn, B>) -> IrResult<()> {
-        let old_id = old_to.as_value().id;
+        let old_id = old_to.id();
         if self.reshape.switch_default_dest(self.term_id) == old_id {
             return Err(IrError::InvalidOperation {
                 message: "remove_successor: cannot remove a `switch`'s default edge",
@@ -2978,8 +2978,8 @@ mod tests {
             let next = f.append_basic_block(&m, "next");
             // Ids captured up front — the block handles are consumed by the
             // builders below.
-            let entry_id = entry.as_value().id;
-            let next_id = next.as_value().id;
+            let entry_id = entry.id();
+            let next_id = next.id();
 
             // entry: %x = add 1, 2 ; br label %next
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -3014,7 +3014,7 @@ mod tests {
                 .terminator()
                 .expect("entry is terminated by the br");
             let new_block = reshape.split_block(&entry_view, &terminator, "entry.split")?;
-            let new_id = new_block.as_value().id;
+            let new_id = new_block.id();
 
             // Exactly the rewiring: entry loses `→ next`, the new block gains it.
             assert_eq!(
@@ -3323,9 +3323,9 @@ mod tests {
             // instructions are still attached.
             let scope = patch.worklist();
             let first = scope.next().expect("seed pops b first (LIFO)");
-            assert_eq!(first.as_value().id, b_id, "LIFO seed order: b before a");
+            assert_eq!(first.id(), b_id, "LIFO seed order: b before a");
             let second = scope.next().expect("seed pops a second");
-            assert_eq!(second.as_value().id, a_id);
+            assert_eq!(second.id(), a_id);
             assert!(scope.next().is_none(), "seed fully drained");
 
             // Erase `b` through the active worklist: this must push `b`'s
@@ -3339,8 +3339,7 @@ mod tests {
             assert_eq!(
                 resurfaced
                     .expect("a re-pushed by erase's operand cascade")
-                    .as_value()
-                    .id,
+                    .id(),
                 a_id,
             );
             drop(scope);

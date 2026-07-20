@@ -1069,7 +1069,7 @@ impl<'ctx> ModuleCore {
         let id = self.context().intern_constant_block_address(
             ty,
             function.as_dyn().id(),
-            block.as_dyn().as_value().id,
+            block.as_dyn().id(),
         );
         Ok(constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty))
     }

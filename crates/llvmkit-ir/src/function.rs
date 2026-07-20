@@ -818,7 +818,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             });
         }
         let mut blocks = self.data().basic_blocks.borrow_mut();
-        let Some(pos) = blocks.iter().position(|id| *id == block.as_value().id) else {
+        let Some(pos) = blocks.iter().position(|id| *id == block.id()) else {
             return Err(IrError::InvalidOperation {
                 message: "block does not belong to function",
             });

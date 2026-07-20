@@ -85,7 +85,7 @@ impl SlotTracker {
 
         for bb in f.basic_blocks() {
             if bb.name().is_none() {
-                blocks.insert(bb.as_value().id, next);
+                blocks.insert(bb.id(), next);
                 next += 1;
             }
             for inst in bb.instructions() {
@@ -2447,7 +2447,7 @@ pub(super) fn fmt_basic_block<S: BlockTerminationState>(
     if let Some(name) = bb.name() {
         fmt_llvm_name_without_prefix(f, &name)?;
         f.write_str(":")?;
-    } else if let Some(slot) = slots.block(bb.as_value().id) {
+    } else if let Some(slot) = slots.block(bb.id()) {
         write!(f, "{slot}:")?;
     } else {
         f.write_str("<unnamed>:")?;

@@ -328,7 +328,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> SsaBlock<'ctx, R, B> {
 fn label_value_id<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx>(
     label: &BasicBlockLabel<'ctx, R, B>,
 ) -> ValueId {
-    label.as_value().id
+    label.id()
 }
 
 /// Diagnostic name for a block id: falls back to a slot-style
@@ -835,7 +835,7 @@ where
     /// -- the Braun engine's block key.
     #[inline]
     fn current_block_id(&self) -> ValueId {
-        self.ins().insert_block().as_value().id
+        self.ins().insert_block().id()
     }
 
     /// Braun `writeVariable`: pure bookkeeping, no IR emitted.
@@ -1310,18 +1310,15 @@ where
     let id = match category {
         VarCategory::Int => {
             let int_ty = IntType::<super::int_width::IntDyn, B>::new(ty, module);
-            builder.build_int_phi_dyn(int_ty, name)?.as_value().id
+            builder.build_int_phi_dyn(int_ty, name)?.id()
         }
         VarCategory::Float => {
             let float_ty = FloatType::<super::float_kind::FloatDyn, B>::new(ty, module);
-            builder.build_fp_phi_dyn(float_ty, name)?.as_value().id
+            builder.build_fp_phi_dyn(float_ty, name)?.id()
         }
         VarCategory::Pointer => {
             let ptr_ty = PointerType::<B>::new(ty, module);
-            builder
-                .build_pointer_phi_in_addrspace(ptr_ty, name)?
-                .as_value()
-                .id
+            builder.build_pointer_phi_in_addrspace(ptr_ty, name)?.id()
         }
     };
     Ok(id)
@@ -1625,7 +1622,7 @@ where
         } else if let Some(current) = self
             .inner
             .as_ref()
-            .filter(|b| b.insert_block().as_value().id == block)
+            .filter(|b| b.insert_block().id() == block)
         {
             // Empty and currently positioned: the phi builders take
             // `&self`, so appending through the live builder directly
@@ -1733,7 +1730,7 @@ where
             .state
             .created_phis
             .get(&phi)
-            .map(|h| h.parent().as_value().id)
+            .map(|h| h.parent().id())
             .unwrap_or_else(|| {
                 unreachable!(
                     "SsaBuilder invariant: try_remove_trivial_phi only calls this helper on a \

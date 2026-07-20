@@ -175,19 +175,16 @@ pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
     // multiplicity matches the verifier's map).
     let mut predecessors: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
     for block in function.basic_blocks() {
-        let block_id = block.as_value().id;
+        let block_id = block.id();
         for succ in crate::cfg::block_successors(&block) {
-            predecessors
-                .entry(succ.as_value().id)
-                .or_default()
-                .push(block_id);
+            predecessors.entry(succ.id()).or_default().push(block_id);
         }
     }
 
     let value_ty_of = |id: ValueId| ctx.value_data(id).ty;
 
     for block in function.basic_blocks() {
-        let block_id = block.as_value().id;
+        let block_id = block.id();
         let preds: &[ValueId] = predecessors
             .get(&block_id)
             .map(|v| v.as_slice())

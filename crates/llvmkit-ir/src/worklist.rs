@@ -136,13 +136,13 @@ mod tests {
             assert!(!wl.is_empty());
 
             // LIFO: c popped before a.
-            assert_eq!(wl.pop(module).unwrap().as_value().id, c_id);
-            assert_eq!(wl.pop(module).unwrap().as_value().id, a_id);
+            assert_eq!(wl.pop(module).unwrap().id(), c_id);
+            assert_eq!(wl.pop(module).unwrap().id(), a_id);
             assert!(wl.pop(module).is_none());
             assert!(wl.is_empty());
             // Re-queue after pop is allowed (cascade requirement).
             wl.push(a_id);
-            assert_eq!(wl.pop(module).unwrap().as_value().id, a_id);
+            assert_eq!(wl.pop(module).unwrap().id(), a_id);
             Ok(())
         })
     }
@@ -168,7 +168,7 @@ mod tests {
             wl.remove(a_id);
             assert!(!wl.contains(a_id));
             // Only c remains.
-            assert_eq!(wl.pop(module).unwrap().as_value().id, c_id);
+            assert_eq!(wl.pop(module).unwrap().id(), c_id);
             assert!(wl.pop(module).is_none());
             Ok(())
         })
@@ -212,7 +212,7 @@ mod tests {
             wl.push(const_id);
             wl.push(a_id);
             wl.push(param_id);
-            assert_eq!(wl.pop(module).unwrap().as_value().id, a_id);
+            assert_eq!(wl.pop(module).unwrap().id(), a_id);
             assert!(wl.pop(module).is_none());
             Ok(())
         })
@@ -254,7 +254,7 @@ mod tests {
             // `ret_id` instead of `a_id` and fail.
             wl.push(a_id);
             wl.push(ret_id);
-            assert_eq!(wl.pop(module).unwrap().as_value().id, a_id);
+            assert_eq!(wl.pop(module).unwrap().id(), a_id);
             assert!(wl.pop(module).is_none());
             assert!(wl.is_empty());
             Ok(())
