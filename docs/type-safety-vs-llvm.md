@@ -720,14 +720,14 @@ bounds were not satisfied: Inspect: MutatingFn`.
 
 **(b) Reaching a mutator consumes the all-preserved report.** `FnCx::mutate`
 takes `self` **by value**. Once a mutating pass has stepped into its mutator the
-context is moved, so the all-preserved `cx.unchanged()` / `cx.done()` is gone.
+context is moved, so the all-preserved `cx.done()` is gone.
 The only report left is the mutator's own `done()`, which carries the rung's
 derived floor. "Mutated, then claimed everything preserved" has no spelling:
 
 ```rust
     fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport> {
         let _patch = cx.mutate(); // moves `cx` into the mutator
-        Ok(cx.unchanged())        // use of moved value
+        Ok(cx.done())             // use of moved value
     }
 ```
 

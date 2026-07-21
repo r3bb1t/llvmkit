@@ -474,7 +474,7 @@ impl FnReport {
 ///
 /// The typestate that makes a preservation lie unspellable: to change the IR a
 /// pass must call [`FnCx::mutate`], which **consumes** the context and returns a
-/// rung-specific mutator. Before `mutate()`, [`FnCx::unchanged`] yields an
+/// rung-specific mutator. Before `mutate()`, [`FnCx::done`] yields an
 /// all-preserved report; after it, the context is gone, so the only report left
 /// is the mutator's `done()` → the rung's derived preservation floor. This is
 /// the same consuming-handle discipline the crate already uses for terminated
@@ -564,17 +564,9 @@ where
     'ctx: 'pm,
     'ctx: 'r,
 {
-    /// The didn't-actually-mutate shortcut: report everything preserved without
-    /// entering the mutator. Consumes the context, so it cannot be paired with a
-    /// later `mutate()`.
-    #[inline]
-    pub fn unchanged(self) -> FnReport {
-        FnReport::from_pa(PreservedAnalyses::all())
-    }
-
     /// Transition into mutation: **consumes** the context and moves its token,
     /// function, and prefetched results into the rung's mutator. Once called,
-    /// `unchanged()`/`done()` on the context are unspellable — the only report
+    /// `done()` on the context is unspellable — the only report
     /// left is the mutator's `done()`, which carries the rung's preservation
     /// floor. This is the core honesty mechanism.
     #[inline]
@@ -2520,7 +2512,7 @@ impl ModReport {
 ///
 /// The typestate that makes a preservation lie unspellable: to change the module
 /// a pass must call [`ModCx::mutate`], which **consumes** the context and returns
-/// a [`ModRewrite`]. Before `mutate()`, [`ModCx::unchanged`] yields an
+/// a [`ModRewrite`]. Before `mutate()`, [`ModCx::done`] yields an
 /// all-preserved report; after it, the context is gone, so the only report left
 /// is the mutator's `done()` → the [`RewriteModule`] floor (`none()` — a module
 /// rewrite is the heaviest rung and preserves nothing by default). `Inspect`
@@ -2644,19 +2636,11 @@ where
     'ctx: 'r,
     'ctx: 'f,
 {
-    /// The didn't-actually-mutate shortcut: report everything preserved without
-    /// entering the mutator. Consumes the context, so it cannot be paired with a
-    /// later `mutate()`.
-    #[inline]
-    pub fn unchanged(self) -> ModReport {
-        ModReport::from_pa(PreservedAnalyses::all())
-    }
-
     /// Transition into mutation: **consumes** the context and moves its module
     /// token and prefetched results into the rung's mutator. The `mam`/`fam`
     /// cache-peek borrows end here — the read-only query phase is over (today's
     /// `for_each_function` needs no per-function prefetch). Once called,
-    /// `unchanged()`/`done()` on the context are unspellable — the only report
+    /// `done()` on the context is unspellable — the only report
     /// left is the mutator's `done()`, which carries the rung's preservation
     /// floor. This is the core honesty mechanism.
     #[inline]

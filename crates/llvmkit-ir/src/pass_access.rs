@@ -215,7 +215,7 @@ impl ModAccess for RewriteModule {
 /// A [`FnAccess`] rung that permits mutation. Split from [`FnAccess`] so it can
 /// name the mutator types defined in [`crate::pass_context`]. Implemented for [`PatchBody`] and
 /// [`ReshapeCfg`] only — [`Inspect`] deliberately has no impl, which is exactly
-/// what removes `mutate()`/`unchanged()` from a read-only context (read-only is
+/// what removes `mutate()` from a read-only context (read-only is
 /// structural, not checked; D1). Sealed through the [`FnAccess`] supertrait.
 ///
 /// The mutator itself (`FnPatch`/`FnReshape`) carries the mutation token and the
@@ -272,7 +272,7 @@ pub trait MutatingFn: FnAccess {
 /// A [`ModAccess`] rung that permits mutation — the module-level mirror of
 /// [`MutatingFn`]. Implemented for [`RewriteModule`] only; [`Inspect`]
 /// deliberately has no impl, which is exactly what removes
-/// `mutate()`/`unchanged()` from a read-only module context (read-only is
+/// `mutate()` from a read-only module context (read-only is
 /// structural, not checked; D1). Sealed through the [`ModAccess`] supertrait.
 ///
 /// The mutator itself (`ModRewrite`) carries the module mutation token and the
