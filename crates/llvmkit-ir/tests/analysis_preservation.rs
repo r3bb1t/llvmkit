@@ -160,7 +160,7 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
                     .ip
                     .take()
                     .expect("insert point stashed before the pass ran");
-                let b = IRBuilder::new(reshape.module_mut()).restore_insert_point(ip)?;
+                let b = reshape.builder_at(ip)?;
                 b.build_br(new_block.label())?;
                 Ok(reshape.done())
             }

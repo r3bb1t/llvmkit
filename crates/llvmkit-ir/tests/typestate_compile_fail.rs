@@ -108,6 +108,16 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/function_pass_missing_name.rs");
     t.compile_fail("tests/compile_fail/function_pass_wrong_level_access.rs");
     t.compile_fail("tests/compile_fail/claim_preserved_after_mutate.rs");
+    // Cycle D slice D.2 (rung honesty, module surface): the module's
+    // *declaration* capability (`&Module<Unverified>`, carrying `add_global` /
+    // `add_function_dyn` / `set_struct_body`) is `pub(crate)` on the function
+    // rungs, so a `PatchBody` pass cannot mutate the module structurally and
+    // still report the body-level preservation floor. Type construction — which
+    // only interns into the context and invalidates nothing — stays reachable
+    // through the read-only `FnPatch::module` view, so the fixture proves a
+    // *boundary*, not a blanket ban: its first statement compiles and its second
+    // does not. Primary error is rustc's stable `E0624` privacy diagnostic.
+    t.compile_fail("tests/compile_fail/function_rung_cannot_declare_globals.rs");
     // Slice 2 (typed terminator edit handles): the handle *type* fixes which
     // edge ops exist, so a structurally-invalid CFG edge edit is a compile
     // error. Each fixture's primary error is one of OUR OWN stable messages —
