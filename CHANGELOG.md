@@ -82,6 +82,18 @@ Erasure is still available, but it must be **spelled**.
   Locked by `tests/compile_fail/function_rung_cannot_declare_globals.rs`,
   which pins the boundary, not a ban: in one fixture, minting a type through
   `patch.module()` compiles and `patch.module_mut()` is private.
+- `FnReshape::insert_phi` is now the **typed** phi inserter and
+  `insert_phi_dyn` is the erased twin (the naming law: bare = typed, `_dyn` =
+  erased type). The typed `insert_phi<V>(block, incomings: &[(V, label)])`
+  takes same-typed incomings (`IntValue<i32>`, `PointerValue`, …) and returns
+  that same handle `V` — so a wrong-typed incoming is a compile error and the
+  type is derived from the incomings rather than restated as a `Type` argument
+  (it needs ≥1 incoming for that; the zero-incoming case stays on
+  `insert_phi_dyn`). `insert_phi_dyn(block, ty, incomings: &[(Value, label)])`
+  is the previous erased signature verbatim, renamed. The completeness and
+  dominance obligations are witnessed at the call by both, exactly as before —
+  only the per-incoming type-agreement moves to compile time.
+
 - `ModRewrite::for_each_function::<FnA>(visitor)` is replaced by two
   rung-named **iterators**: `patch_functions()` (yields `FnPatch`) and
   `reshape_functions()` (yields `FnReshape`). External iteration is the

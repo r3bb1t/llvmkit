@@ -78,7 +78,7 @@ use super::pass_access::{
 };
 use super::phi_check::{check_phi_incoming, render_phi_violation};
 use super::r#type::{Type, TypeId};
-use super::value::{IsValue, Value, ValueId};
+use super::value::{IsValue, Typed, Value, ValueId};
 use super::worklist::Worklist;
 
 /// Read-only view of a basic block under its owning module brand.
@@ -1863,10 +1863,64 @@ where
         }
     }
 
-    /// Insert a fully-witnessed phi at `block`'s phi head and return its erased
-    /// result [`Value`].
+    /// Insert a fully-witnessed phi at `block`'s phi head from **typed**
+    /// incomings, and return its result as the same typed handle `V`.
     ///
-    /// Do not `insert_phi` into a block whose leading phis are block parameters
+    /// Every incoming shares the one handle type `V`, so the phi's result type is
+    /// derived from them (no restated type argument — the erased
+    /// [`Self::insert_phi_dyn`] is what takes a `Type`), and mixing a wrong-typed
+    /// incoming is a **compile error** rather than the runtime coherence error
+    /// the erased path raises. For a statically-marked `V` (`IntValue<i32>`,
+    /// `PointerValue`, `FloatValue<f64>`, …) the type-agreement obligation the
+    /// verifier and parser check is discharged at compile time; for an
+    /// erased-marker `V` (`IntValue<IntDyn>`) the width still varies per handle,
+    /// so the shared runtime coherence check still applies.
+    ///
+    /// The completeness and dominance obligations are *not* in the type (the CFG
+    /// shape is dynamic), so they are witnessed at the call exactly as
+    /// [`Self::insert_phi_dyn`] describes.
+    ///
+    /// Requires at least one incoming (the result type is read from the first);
+    /// a zero-incoming phi has no type to give — use [`Self::insert_phi_dyn`] for
+    /// that degenerate case.
+    ///
+    /// Errors: `IrError::InvalidOperation` if `incomings` is empty; otherwise the
+    /// same errors as [`Self::insert_phi_dyn`] (dominance / coherence).
+    #[inline]
+    pub fn insert_phi<V, I>(
+        &mut self,
+        block: &BasicBlockView<'ctx, B>,
+        incomings: &[(V, BasicBlockLabel<'ctx, Dyn, B>)],
+    ) -> IrResult<V>
+    where
+        V: IsValue<'ctx, B> + Typed<'ctx, B> + TryFrom<Value<'ctx, B>, Error = IrError>,
+        R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
+    {
+        let (first, _) = *incomings.first().ok_or(IrError::InvalidOperation {
+            message: "insert_phi: needs at least one typed incoming to derive the \
+                      result type; use insert_phi_dyn for the zero-incoming case",
+        })?;
+        let ty = first.ty();
+        let erased: Vec<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> = incomings
+            .iter()
+            .map(|(value, pred)| (value.into_erased(), *pred))
+            .collect();
+        let phi = self.insert_phi_dyn::<I>(block, ty, &erased)?;
+        // Total by construction: the phi was created with `ty` == `V`'s type, so
+        // narrowing back to `V` cannot fail. The map guards the invariant rather
+        // than trusting it.
+        V::try_from(phi).map_err(|_| IrError::InvalidOperation {
+            message: "insert_phi: constructed phi type disagreed with the incoming \
+                      handle type (internal invariant)",
+        })
+    }
+
+    /// Insert a fully-witnessed phi at `block`'s phi head from erased incomings,
+    /// and return its erased result [`Value`]. The `_dyn` (erased-type) twin of
+    /// [`Self::insert_phi`]; also the zero-incoming path, since it takes the
+    /// result `ty` explicitly instead of deriving it.
+    ///
+    /// Do not insert into a block whose leading phis are block parameters
     /// (created by [`IRBuilder::append_block_with_params`](crate::IRBuilder)):
     /// the new phi lands in that same head group, where the block-argument path
     /// would miscount it as an extra block parameter.
@@ -1904,7 +1958,7 @@ where
     /// phi check) if the incomings are incomplete, mistyped, or carry a
     /// differing duplicate for one predecessor.
     #[inline]
-    pub fn insert_phi<I>(
+    pub fn insert_phi_dyn<I>(
         &mut self,
         block: &BasicBlockView<'ctx, B>,
         ty: Type<'ctx, B>,

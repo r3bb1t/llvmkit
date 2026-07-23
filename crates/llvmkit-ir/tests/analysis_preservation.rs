@@ -211,7 +211,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InsertMergePhi<'ctx,
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.merge_name))
             .expect("merge block is present");
-        reshape.insert_phi(&merge, self.ty, &self.incomings)?;
+        reshape.insert_phi_dyn(&merge, self.ty, &self.incomings)?;
         Ok(reshape.done())
     }
 }
@@ -306,6 +306,97 @@ fn insert_phi_into_merge_block_verifies() -> Result<(), IrError> {
         assert!(
             printed.contains("[ %rv, %right ]"),
             "phi must carry the right incoming, got:\n{printed}"
+        );
+        Ok(())
+    })
+}
+
+/// A `ReshapeCfg` pass that inserts a **typed** phi through the `insert_phi`
+/// twin: the incomings are `IntValue<i32>` handles, so the result binding below
+/// is inferred as `IntValue<i32>` (not an erased `Value`) — the whole point of
+/// the twin. Using the result as an `IntValue<i32>` compiles only because the
+/// method hands back the marker it was fed. Mirrors `InsertMergePhi`.
+struct InsertMergePhiTyped<'ctx, B: ModuleBrand + 'ctx> {
+    merge_name: &'static str,
+    incomings: Vec<(IntValue<'ctx, i32, B>, BasicBlockLabel<'ctx, Dyn, B>)>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InsertMergePhiTyped<'ctx, B> {
+    type Access = ReshapeCfg;
+    type Requires = (DominatorTreeAnalysis,);
+    const NAME: &'static str = "insert-merge-phi-typed";
+
+    fn run(
+        &mut self,
+        cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, (DominatorTreeAnalysis,)>,
+    ) -> IrResult<FnReport> {
+        let mut reshape = cx.mutate();
+        let merge = reshape
+            .function()
+            .basic_blocks()
+            .find(|bb| bb.name().as_deref() == Some(self.merge_name))
+            .expect("merge block is present");
+        let phi: IntValue<'ctx, i32, B> = reshape.insert_phi(&merge, &self.incomings)?;
+        // The handle is typed: reading its width-marked type needs no narrowing.
+        let _typed_ty: llvmkit_ir::IntType<'ctx, i32, B> = phi.ty();
+        Ok(reshape.done())
+    }
+}
+
+/// POSITIVE (typed twin): the same diamond as `insert_phi_into_merge_block_verifies`,
+/// but the phi is inserted through the typed `insert_phi` from `IntValue<i32>`
+/// incomings. It derives the phi type from the incomings (no restated `Type`),
+/// hands back an `IntValue<i32>`, and the output re-verifies with both incomings.
+#[test]
+fn insert_phi_typed_into_merge_block_verifies() -> Result<(), IrError> {
+    Module::with_new("insert-phi-typed-merge", |m| {
+        let (f, lv, left_label, rv, right_label) = build_diamond(&m)?;
+        // Narrow the arm values to the typed handle the twin takes.
+        let lv: IntValue<i32> = lv.try_into()?;
+        let rv: IntValue<i32> = rv.try_into()?;
+
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        let pass = InsertMergePhiTyped {
+            merge_name: "merge",
+            incomings: vec![(lv, left_label), (rv, right_label)],
+        };
+        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+
+        let reverified = out.verify().expect("inserted typed phi must be coherent");
+        let printed = format!("{reverified}");
+        assert!(
+            printed.contains("[ %lv, %left ]"),
+            "typed phi must carry the left incoming, got:\n{printed}"
+        );
+        assert!(
+            printed.contains("[ %rv, %right ]"),
+            "typed phi must carry the right incoming, got:\n{printed}"
+        );
+        Ok(())
+    })
+}
+
+/// NEGATIVE (empty): the typed `insert_phi` needs at least one incoming to derive
+/// the result type. Fed none, it errors with `InvalidOperation` (and points to
+/// `insert_phi_dyn` for the zero-incoming case) rather than reaching the CFG
+/// checks.
+#[test]
+fn insert_phi_typed_rejects_empty_incomings() -> Result<(), IrError> {
+    Module::with_new("insert-phi-typed-empty", |m| {
+        let (f, _lv, _left, _rv, _right) = build_diamond(&m)?;
+        let verified = m.verify()?;
+        let mut analyses = Analyses::new();
+        let pass = InsertMergePhiTyped {
+            merge_name: "merge",
+            incomings: Vec::new(),
+        };
+        let err = run_function_pass(pass, verified, f, &mut analyses)
+            .err()
+            .expect("typed insert_phi must reject empty incomings");
+        assert!(
+            matches!(err, IrError::InvalidOperation { .. }),
+            "expected InvalidOperation for empty incomings, got: {err:?}"
         );
         Ok(())
     })
