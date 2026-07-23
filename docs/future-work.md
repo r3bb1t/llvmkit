@@ -519,10 +519,21 @@ shipped, the **"branching bugs impossible at the type level"** program's typed
 surfaces are largely complete. What remains is deliberately out of scope rather
 than pending:
 
-- **Universal per-function branding** — deferred on feasibility grounds (the
-  full-program lifetime/branding gymnastics do not pay for themselves versus the
-  per-module brand already in place); the locked API decisions from the program's
-  design remain, but this rung is not being pursued.
+- **Universal per-function branding (`build_body`)** — designed and spec'd
+  (`docs/superpowers/specs/2026-07-20-per-fn-branding-design.md`: a defaulted
+  `Fb: FnBrand = FnErased`, a generative `FnScoped<'fid>` opted into via
+  `func.build_body(|fb| …)`, with `build_br` requiring a matching brand so
+  branded labels cannot escape the body), then **deferred out of the type-safety
+  program** after re-analysis against the actual consumers. The evidence points
+  one way: (1) regular authoring gains nothing — the default is `FnErased`, so
+  existing `position_at_end` sites stay byte-identical and untouched, leaving the
+  brand pure opt-in ceremony for them; (2) the primary consumer, the `bin_lift`
+  lifter, stores SSA registers as **function arguments** (for concolic
+  constant-visibility) and **rebuilds CFGs from runtime-recovered structure**, so
+  a compile-time, un-nameable per-function `'fid` fights its model rather than
+  helping it — its edges are recovered, not statically authored. The locked API
+  decisions survive in the spec; the rung is not pursued in this program.
+  Revisit only as its own opt-in cycle if a concrete authoring need appears.
 - **Whole-graph verifier territory** — phi-incoming completeness against the
   final predecessor set for builder-constructed IR, and dominance, are permanent
   residents of `Module::verify()` (defense in depth). These are whole-graph facts
