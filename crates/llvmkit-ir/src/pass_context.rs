@@ -2471,21 +2471,6 @@ impl MutatingFn for PatchBody {
     {
         FnPatch::new(token, function, results)
     }
-
-    #[inline]
-    fn mutator_over_module<'m, 'r, 'ctx, B, R>(
-        module: &'m Module<'ctx, B, Unverified>,
-        function: FunctionView<'ctx, B>,
-        results: R::ResultRefs<'r>,
-    ) -> Self::Mutator<'m, 'r, 'ctx, B, R>
-    where
-        B: ModuleBrand + 'ctx,
-        R: FunctionAnalysisList<'ctx, B>,
-        'ctx: 'm,
-        'ctx: 'r,
-    {
-        FnPatch::new(module, function, results)
-    }
 }
 
 impl MutatingFn for ReshapeCfg {
@@ -2510,21 +2495,6 @@ impl MutatingFn for ReshapeCfg {
         'ctx: 'r,
     {
         FnReshape::new(token, function, results)
-    }
-
-    #[inline]
-    fn mutator_over_module<'m, 'r, 'ctx, B, R>(
-        module: &'m Module<'ctx, B, Unverified>,
-        function: FunctionView<'ctx, B>,
-        results: R::ResultRefs<'r>,
-    ) -> Self::Mutator<'m, 'r, 'ctx, B, R>
-    where
-        B: ModuleBrand + 'ctx,
-        R: FunctionAnalysisList<'ctx, B>,
-        'ctx: 'm,
-        'ctx: 'r,
-    {
-        FnReshape::new(module, function, results)
     }
 }
 
@@ -2706,7 +2676,7 @@ where
     /// Transition into mutation: **consumes** the context and moves its module
     /// token and prefetched results into the rung's mutator. The `mam`/`fam`
     /// cache-peek borrows end here — the read-only query phase is over (today's
-    /// `for_each_function` needs no per-function prefetch). Once called,
+    /// per-function descent needs no per-function prefetch). Once called,
     /// `done()` on the context is unspellable — the only report
     /// left is the mutator's `done()`, which carries the rung's preservation
     /// floor. This is the core honesty mechanism.
@@ -2788,40 +2758,57 @@ where
         R::select(&self.results)
     }
 
-    /// Visit every function *definition* in module order, handing the visitor a
-    /// per-function mutator (`FnPatch`/`FnReshape`, selected by `FnA`) built from
-    /// this module's mutation token. Declarations (no entry block) are skipped.
-    /// This is the load-bearing module→function visitor; the pass driver calls
-    /// `rewrite.for_each_function::<Self::FnAccess>(...)`.
+    /// Iterate every function *definition* in module order as a [`PatchBody`]
+    /// mutator built from this module's mutation token. Declarations (no entry
+    /// block) are skipped. This is the load-bearing module→function descent for
+    /// hand-written module passes:
     ///
-    /// Per-function analysis prefetch is deliberately future work: each
-    /// per-function mutator is built with empty results `()`, so a
-    /// `FnPatch::analysis` call inside the visitor has no members to select. A
-    /// future revision threads a per-function `Requires` list through here.
+    /// ```ignore
+    /// for patch in rewrite.patch_functions() {
+    ///     // `?`, `continue` and `break` all just work — this is a plain `for`.
+    /// }
+    /// ```
     ///
-    /// The visitor's mutator is spelled at this mutator's own `'m`/`'r` rather
-    /// than fresh higher-ranked lifetimes: the `MutatingFn::Mutator` GAT carries
-    /// `'ctx: 'm`/`'ctx: 'r` outlives bounds that a `for<'a, 'b>` quantification
-    /// cannot satisfy universally, so a concrete binding is the standalone-green
-    /// shape (each mutator is still built fresh per function from the same
-    /// module token).
+    /// [`Self::reshape_functions`] is the [`ReshapeCfg`] twin. The rung is the
+    /// method name rather than a turbofished access marker, so nothing here is
+    /// generic over the rung and no `MutatingFn::Mutator` GAT has to be spelled.
+    ///
+    /// The returned iterator borrows nothing from `self` — it copies the module
+    /// token and holds the same function *snapshot*
+    /// [`ModuleView::functions`](crate::ModuleView::functions) always takes — so
+    /// [`Self::module_mut`] stays callable inside the loop (declaring a global
+    /// per patched function is the sanitizer shape) and functions added while
+    /// iterating are simply not visited.
+    ///
+    /// Per-function analysis prefetch is deliberately future work: each mutator
+    /// is built with empty results `()`, so a [`FnPatch::analysis`] call inside
+    /// the loop has no members to select. A future revision threads a
+    /// per-function `Requires` list through here.
     #[inline]
-    pub fn for_each_function<FnA>(
-        &mut self,
-        mut visitor: impl FnMut(FnA::Mutator<'m, 'r, 'ctx, B, ()>) -> IrResult<()>,
-    ) -> IrResult<()>
-    where
-        FnA: MutatingFn,
-    {
-        for function in self.module().functions() {
-            if function.entry_block().is_none() {
-                continue;
-            }
-            let mutator: FnA::Mutator<'m, 'r, 'ctx, B, ()> =
-                FnA::mutator_over_module(self.token, function, ());
-            visitor(mutator)?;
+    pub fn patch_functions(&self) -> PatchFunctions<'m, 'ctx, B> {
+        PatchFunctions {
+            token: self.token,
+            functions: ModuleFunctionViews::new(self.module()),
         }
-        Ok(())
+    }
+
+    /// Iterate every function *definition* in module order as a [`ReshapeCfg`]
+    /// mutator — the CFG-editing twin of [`Self::patch_functions`], with the
+    /// same snapshot and skip-declarations semantics.
+    ///
+    /// A yielded [`FnReshape`]'s recorded [`CfgUpdate`] log does not reach the
+    /// driver's witnessed flush: this rung's own [`Self::done`] floor is already
+    /// `none()`, which evicts every CFG analysis anyway, so the log could only
+    /// have *added* preservation precision, never honesty. Reclaiming it would
+    /// mean raising this floor above `none()`, which is unavailable while
+    /// [`Self::module_mut`] hands out unwitnessed module-structural mutation —
+    /// deliberately, since that is the [`RewriteModule`] rung's reason to exist.
+    #[inline]
+    pub fn reshape_functions(&self) -> ReshapeFunctions<'m, 'ctx, B> {
+        ReshapeFunctions {
+            token: self.token,
+            functions: ModuleFunctionViews::new(self.module()),
+        }
     }
 
     /// Finish: report the [`RewriteModule`] preservation floor (`none()` —
@@ -2831,6 +2818,79 @@ where
         ModReport::from_pa(<RewriteModule as ModAccess>::preserved_floor())
     }
 }
+
+/// Iterator over per-function [`FnPatch`] mutators, one per function
+/// *definition* in module order. Returned by [`ModRewrite::patch_functions`].
+///
+/// Yielding a mutator out of an iterator (rather than into a closure) is sound
+/// because a mutator borrows the *module*, not the iterator: it holds a copy of
+/// the shared `&'m Module<Unverified>` token plus its own witnessed state, and
+/// IR mutation flows through that token's interior-mutable arena. So the items
+/// are independent of `next`'s `&mut self` — no lending iterator is needed, and
+/// several may be alive at once (they address distinct functions).
+///
+/// Dropping a yielded mutator without calling its `done()` discards that
+/// function's report. Sound by construction: [`ModRewrite::done`]'s floor is
+/// `none()`, so the module report already claims nothing.
+pub struct PatchFunctions<'m, 'ctx, B: ModuleBrand + 'ctx>
+where
+    'ctx: 'm,
+{
+    token: &'m Module<'ctx, B, Unverified>,
+    functions: ModuleFunctionViews<'ctx, B>,
+}
+
+impl<'m, 'ctx, B: ModuleBrand + 'ctx> Iterator for PatchFunctions<'m, 'ctx, B> {
+    // The `'r` (prefetched-results) slot is bound to `'m`: the `Requires` list
+    // is `()`, so the slot carries no borrow to keep separate.
+    type Item = FnPatch<'m, 'm, 'ctx, B, ()>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let function = self.functions.find(|f| f.entry_block().is_some())?;
+        Some(FnPatch::new(self.token, function, ()))
+    }
+
+    /// Lower bound 0 — the declarations skipped by [`Self::next`] are not known
+    /// until they are reached. The upper bound is the module's function count.
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, self.functions.size_hint().1)
+    }
+}
+
+// `find` over a fused iterator (`ModuleFunctionViews`) keeps returning `None`.
+impl<'m, 'ctx, B: ModuleBrand + 'ctx> FusedIterator for PatchFunctions<'m, 'ctx, B> {}
+
+/// Iterator over per-function [`FnReshape`] mutators, one per function
+/// *definition* in module order. Returned by
+/// [`ModRewrite::reshape_functions`]; the CFG-editing twin of
+/// [`PatchFunctions`], with the same soundness argument.
+pub struct ReshapeFunctions<'m, 'ctx, B: ModuleBrand + 'ctx>
+where
+    'ctx: 'm,
+{
+    token: &'m Module<'ctx, B, Unverified>,
+    functions: ModuleFunctionViews<'ctx, B>,
+}
+
+impl<'m, 'ctx, B: ModuleBrand + 'ctx> Iterator for ReshapeFunctions<'m, 'ctx, B> {
+    type Item = FnReshape<'m, 'm, 'ctx, B, ()>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let function = self.functions.find(|f| f.entry_block().is_some())?;
+        Some(FnReshape::new(self.token, function, ()))
+    }
+
+    /// Lower bound 0 — see [`PatchFunctions::size_hint`].
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, self.functions.size_hint().1)
+    }
+}
+
+impl<'m, 'ctx, B: ModuleBrand + 'ctx> FusedIterator for ReshapeFunctions<'m, 'ctx, B> {}
 
 impl MutatingModule for RewriteModule {
     type Mutator<'m, 'r, 'ctx, B, R>
@@ -3409,12 +3469,13 @@ mod tests {
         })
     }
 
-    /// [`super::ModRewrite::for_each_function`] visits every function *definition*
-    /// in module order (skipping the declaration) and hands each a
-    /// [`super::FnPatch`] that erases the function's dead instruction.
+    /// [`super::ModRewrite::patch_functions`] yields every function *definition*
+    /// in module order (skipping the declaration) as a [`super::FnPatch`] that
+    /// erases the function's dead instruction. Also locks that the iterator does
+    /// not borrow the mutator: `module_mut` is called *inside* the loop.
     /// llvmkit-specific capability-context lock (no upstream analog).
     #[test]
-    fn for_each_function_visits_defs_and_can_patch() -> Result<(), IrError> {
+    fn patch_functions_visits_defs_and_can_patch() -> Result<(), IrError> {
         Module::with_new("foreach-modcx", |m| {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
@@ -3456,10 +3517,10 @@ mod tests {
 
             let cx: ModCx<'_, '_, '_, '_, _, RewriteModule, ()> =
                 ModCx::new(module, &m, (), &mam, &mut fam);
-            let mut r = cx.mutate();
+            let r = cx.mutate();
 
             let mut visited: Vec<FunctionView<'_, _>> = Vec::new();
-            r.for_each_function::<PatchBody>(|p| {
+            for (i, p) in r.patch_functions().enumerate() {
                 let fv = p.function();
                 visited.push(fv);
                 for (f, dead) in &dead_by_fn {
@@ -3467,11 +3528,17 @@ mod tests {
                         p.erase(&dead.as_non_terminator().expect("dead is a non-terminator"));
                     }
                 }
-                Ok(())
-            })?;
+                // The iterator holds no borrow of `r`, so the module's own
+                // declaration surface stays reachable mid-loop — the sanitizer
+                // shape (a global per patched function).
+                r.module_mut()
+                    .add_global(format!("seen.{i}"), i32_ty.const_zero())?;
+            }
 
             // Both definitions were visited; the declaration was skipped.
             assert_eq!(visited.len(), 2);
+            // One global per visited definition, declared from inside the loop.
+            assert_eq!(module.globals().count(), 2);
             assert!(visited.contains(&fv1));
             assert!(visited.contains(&fv2));
             assert!(!visited.contains(&decl_view));

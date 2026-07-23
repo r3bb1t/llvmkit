@@ -245,28 +245,6 @@ pub trait MutatingFn: FnAccess {
         R: FunctionAnalysisList<'ctx, B>,
         'ctx: 'm,
         'ctx: 'r;
-
-    /// Build the mutator directly from a raw `&Module<Unverified>` token.
-    ///
-    /// Every mutating function rung's [`FnAccess::Token`] *is* a
-    /// `&Module<Unverified>`, but that equality is opaque behind the associated
-    /// type when the rung is a generic `FnA`, so a module→function visitor
-    /// ([`crate::pass_context::ModRewrite::for_each_function`]) that holds a
-    /// concrete module reference cannot feed it through [`Self::into_mutator`].
-    /// This entry point accepts the raw reference instead, dispatching to the
-    /// same `FnPatch`/`FnReshape` constructors. Internal plumbing; hidden from
-    /// authors.
-    #[doc(hidden)]
-    fn mutator_over_module<'m, 'r, 'ctx, B, R>(
-        module: &'m Module<'ctx, B, Unverified>,
-        function: FunctionView<'ctx, B>,
-        results: R::ResultRefs<'r>,
-    ) -> Self::Mutator<'m, 'r, 'ctx, B, R>
-    where
-        B: ModuleBrand + 'ctx,
-        R: FunctionAnalysisList<'ctx, B>,
-        'ctx: 'm,
-        'ctx: 'r;
 }
 
 /// A [`ModAccess`] rung that permits mutation — the module-level mirror of

@@ -317,11 +317,12 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
   but there is no `NAME`->pass-constructor registry, so a parsed pipeline
   cannot yet be *run*. A registry mapping each pass's `NAME` to a boxed-pass
   constructor would let a textual pipeline drive the `Dyn` containers.
-- **Per-function analyses in `ModRewrite::for_each_function`** -- the
-  module->function visitor (`pass_context.rs`) builds each per-function mutator
-  with empty results `()`, so a `FnPatch::analysis` call inside the visitor has
-  no members to select. A future revision threads a per-function `Requires`
-  list (prefetched per visited function) through the visitor.
+- **Per-function analyses in `ModRewrite::patch_functions` /
+  `reshape_functions`** -- the module->function iterators (`pass_context.rs`)
+  build each per-function mutator with empty results `()`, so a
+  `FnPatch::analysis` call inside the loop has no members to select. A future
+  revision threads a per-function `Requires` list (prefetched per yielded
+  function) through them.
 - **Instrumentation wiring** -- the `const NAME` / `const REQUIRED` pass
   members and `PassInstrumentationCallbacks` (`pass_instrumentation.rs`) exist,
   but the single-pass drivers and pipelines (`pass_manager.rs`) do not yet fire
@@ -386,12 +387,16 @@ driver marks preserved exactly what it watched repair). What remains deferred:
   Instruction-level events for value analyses (KnownBits/DemandedBits) are a
   possible extension, not designed here -- every mutating rung's floor already
   evicts them.
-- **`ModRewrite::for_each_function` reshape flush.** The module→function visitor
-  builds `FnReshape` mutators whose `done()` (and thus `CfgUpdate` log) the
-  visitor never surfaces, so those reshapes do not run the witnessed flush. This
-  is sound today: the enclosing `RewriteModule` floor is `none()`, which evicts
-  every CFG analysis anyway. Wire the flush through the visitor if per-function
-  analyses are ever threaded into `for_each_function`.
+- **`ModRewrite::reshape_functions` reshape flush.** The module→function
+  iterator yields `FnReshape` mutators whose `done()` (and thus `CfgUpdate` log)
+  never reaches the driver, so those reshapes do not run the witnessed flush.
+  This is sound today: the enclosing `RewriteModule` floor is `none()`, which
+  evicts every CFG analysis anyway. Reclaiming the lost *precision* means
+  raising that floor above `none()`, which in turn means witnessing the
+  module-structural mutation `ModRewrite::module_mut` deliberately hands out
+  unwitnessed -- so this waits on a decision about `module_mut`, not on
+  plumbing alone. Wire the flush through the iterators if per-function analyses
+  are ever threaded into them.
 - **New `.stderr` under the canonical-rustc bless caveat.**
   `reshape_stale_cfg_analysis_across_edit` is blessed on the local rustc like
   the pass-API fixtures above; its `E0502` borrow-error wording is stable

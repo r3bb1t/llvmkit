@@ -148,9 +148,9 @@ pub trait FunctionPass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
 
 /// A pass over one module at capability rung [`Self::Access`]. The module-level
 /// mirror of [`FunctionPass`]. A module pass reaches per-function bodies by
-/// calling `rewrite.for_each_function::<Rung>(...)` inline, so there is no
-/// `FnAccess`/`FnRequires` associated type here — the function rung is chosen at
-/// the call site.
+/// iterating `rewrite.patch_functions()` / `rewrite.reshape_functions()` inline,
+/// so there is no `FnAccess`/`FnRequires` associated type here — the function
+/// rung is the method name, chosen at the call site.
 pub trait ModulePass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
     /// Capability rung: how much of the module this pass may rewrite.
     type Access: ModAccess;
@@ -1074,8 +1074,9 @@ where
 /// (`createModuleToFunctionPassAdaptor`, IR/PassManager.h). A module-pipeline
 /// member; its verdict is the wrapped function pipeline's verdict (a mutating
 /// function pipeline downgrades the module). Distinct from
-/// [`crate::pass_context::ModRewrite::for_each_function`], which is a mutator
-/// method for hand-written module passes.
+/// [`crate::pass_context::ModRewrite::patch_functions`] and its
+/// [`reshape_functions`](crate::pass_context::ModRewrite::reshape_functions)
+/// twin, which are mutator methods for hand-written module passes.
 pub struct ForEachFunction<P> {
     pipeline: FunctionPipeline<P>,
 }
