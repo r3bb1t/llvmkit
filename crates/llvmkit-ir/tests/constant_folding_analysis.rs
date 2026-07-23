@@ -1479,3 +1479,108 @@ fn nested_gep_cancelling_offsets_fold_to_base_pointer() -> Result<(), IrError> {
         Ok(())
     })
 }
+
+// ---------------------------------------------------------------------------
+// SymbolicallyEvaluateGEP merge-loop no-wrap-flag intersection (parity fix)
+// ---------------------------------------------------------------------------
+
+/// Mirrors `SymbolicallyEvaluateGEP`'s merge loop (`ConstantFolding.cpp`
+/// lines 915-946): `NW &= GEP->getNoWrapFlags();` (line 919) runs
+/// *unconditionally* for every nested GEP the loop looks at, strictly
+/// before the `AllConstantInt` check (lines 924-931) that decides whether
+/// the loop can actually accumulate that level's offset and keep going. So
+/// a nested GEP whose own index isn't a plain `ConstantInt` — which stops
+/// the offset merge — must still have contributed its own no-wrap flags to
+/// the running intersection first.
+///
+/// `getelementptr inbounds i32, ptr (getelementptr i32, ptr @g, i64
+/// ptrtoint(ptr @h to i64)), i64 4`: the inner GEP is *not* inbounds and its
+/// index (`ptrtoint(@h)`) is a constant expression rather than a
+/// `ConstantInt`, so the merge cannot fold the inner level's offset in — but
+/// per upstream, the inner level's (empty) no-wrap flags still get
+/// intersected with the outer's `inbounds`, so the result carries no
+/// no-wrap flags at all rather than inheriting `inbounds` from the outer
+/// GEP alone.
+#[test]
+fn nested_gep_non_constant_index_intersects_inner_no_wrap_flags() -> Result<(), IrError> {
+    Module::with_new("analysis-gep-symbolic-nw-intersect", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i8_ty = m.i8_type();
+        let i32_ty = m.i32_type();
+        let i64_ty = m.i64_type();
+        let ptr_ty = m.ptr_type(0);
+        let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
+        let h = m.add_global_constant("h", i32_ty.const_int(0_i32))?;
+        let h_int = m.constant_expr(
+            i64_ty.as_type(),
+            ConstantExprOpcode::PtrToInt,
+            [h.as_global_constant_ptr().into_erased()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+
+        // Inner GEP: deliberately *not* inbounds, and its index is a
+        // constant expression rather than a plain `ConstantInt` so the merge
+        // loop cannot accumulate its offset.
+        let inner = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [
+                g.as_global_constant_ptr().into_erased(),
+                h_int.into_erased(),
+            ],
+            [],
+            [],
+            ConstantExprOptions::new().source_ty(i32_ty.as_type()),
+        )?;
+        let four = i64_ty.const_int(4_i64).as_constant();
+        let outer = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [inner.into_erased(), four.into_erased()],
+            [],
+            [],
+            ConstantExprOptions::new()
+                .source_ty(i32_ty.as_type())
+                .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS)),
+        )?;
+
+        let folded = constant_fold_constant(outer, &dl, None)?;
+
+        // Expected: `getelementptr i8, ptr <inner>, i64 16` with NO no-wrap
+        // flags — `inbounds` (outer) intersected with empty (inner) is
+        // empty. Built independently, through the same general-form
+        // construction `build_canonical_i8_gep` falls back to, so the two
+        // printed forms line up exactly if (and only if) no flag survived.
+        let sixteen = i64_ty.const_int(16_i64).as_constant();
+        let expected = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [inner.into_erased(), sixteen.into_erased()],
+            [],
+            [],
+            ConstantExprOptions::new().source_ty(i8_ty.as_type()),
+        )?;
+        assert_eq!(folded.to_string(), expected.to_string());
+        assert!(!folded.to_string().contains("inbounds"));
+
+        // Non-vacuity: the pre-fix behavior kept the outer's `inbounds`
+        // unconditionally (the inner level's flags were computed but
+        // discarded when its offset failed to peel), which would print with
+        // an `inbounds` keyword this construction never gets.
+        let wrongly_inbounds = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [inner.into_erased(), sixteen.into_erased()],
+            [],
+            [],
+            ConstantExprOptions::new()
+                .source_ty(i8_ty.as_type())
+                .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS)),
+        )?;
+        assert_ne!(folded.to_string(), wrongly_inbounds.to_string());
+
+        Ok(())
+    })
+}

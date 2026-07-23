@@ -1702,8 +1702,16 @@ fn symbolically_evaluate_gep<'ctx, B: ModuleBrand + 'ctx>(
     let mut nw = nw;
     let mut overflow = false;
     let mut ptr = pointer;
-    while let Some((base, level_offset, level_nw)) = peel_one_gep_level(ptr, index_bits, dl) {
+    while let Some(level_nw) = gep_level_no_wrap_flags(ptr) {
+        // Upstream intersects a level's no-wrap flags unconditionally
+        // (`NW &= GEP->getNoWrapFlags();`, `ConstantFolding.cpp` line 919) —
+        // *before* it even checks whether that level's indices are all
+        // `ConstantInt` (lines 924-931). So this must run even when the
+        // peel below fails and the loop is about to stop.
         nw &= level_nw;
+        let Some((base, level_offset)) = peel_one_gep_level(ptr, index_bits, dl) else {
+            break;
+        };
         let (combined, this_overflowed) = offset.sadd_ov(&level_offset);
         offset = combined;
         overflow |= this_overflowed;
@@ -1732,21 +1740,57 @@ fn symbolically_evaluate_gep<'ctx, B: ModuleBrand + 'ctx>(
     build_canonical_i8_gep(ptr, &offset, nw)
 }
 
-/// Attempt to view `ptr` as one level of a constant `getelementptr` — either
+/// Return the no-wrap flags of `ptr` if it is GEP-shaped — either llvmkit's
+/// compact [`ConstantData::GepOffset`] (always `inbounds`) or a general
+/// [`ConstantExprOpcode::GetElementPtr`] constant expression (its stored
+/// flags) — or `None` if `ptr` is not a GEP at all (upstream's merge-loop
+/// condition, `while (auto *GEP = dyn_cast<GEPOperator>(Ptr))`,
+/// `ConstantFolding.cpp` line 918).
+///
+/// Deliberately split out of [`peel_one_gep_level`]: upstream intersects a
+/// level's no-wrap flags into the running state *unconditionally* (`NW &=
+/// GEP->getNoWrapFlags();`, line 919) — before it even checks whether that
+/// level's indices are all `ConstantInt` (`AllConstantInt`, lines 924-931).
+/// Callers must consult this function first and intersect its result before
+/// attempting [`peel_one_gep_level`], so the intersection still happens on
+/// the level where the peel is about to fail and the merge loop is about to
+/// stop.
+fn gep_level_no_wrap_flags<'ctx, B: ModuleBrand + 'ctx>(
+    ptr: Constant<'ctx, B>,
+) -> Option<GepNoWrapFlags> {
+    match &ptr.into_erased().data().kind {
+        ValueKindData::Constant(ConstantData::GepOffset { .. }) => Some(GepNoWrapFlags::inbounds()),
+        ValueKindData::Constant(ConstantData::Expr(expr))
+            if expr.opcode == ConstantExprOpcode::GetElementPtr =>
+        {
+            Some(match &expr.flags {
+                ConstantExprFlags::Gep(flags) => flags.no_wrap(),
+                _ => GepNoWrapFlags::empty(),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Attempt to peel one level of a constant `getelementptr` — either
 /// llvmkit's compact [`ConstantData::GepOffset`] or the general
 /// [`ConstantExprOpcode::GetElementPtr`] constant expression — returning its
-/// base pointer, its own contribution to the running byte offset, and its
-/// own no-wrap flags. `None` stops the caller's merge loop exactly where
-/// upstream's does: a non-GEP `Ptr` (loop condition, line 918), a nested GEP
-/// with a non-`ConstantInt` index (`AllConstantInt`, lines 924-931), or
-/// (this port's addition) a nested GEP carrying `in_range` — see
-/// [`symbolically_evaluate_gep`]'s doc comment for why that last one isn't
-/// ported.
+/// base pointer and its own contribution to the running byte offset. Callers
+/// must already know `ptr` is GEP-shaped (via [`gep_level_no_wrap_flags`])
+/// before calling this; a non-GEP `ptr` still falls through to `None` here
+/// too, but no longer needs to for the caller's own no-wrap intersection.
+///
+/// `None` stops the caller's merge loop exactly where upstream's does past
+/// the unconditional `NW &=` (which [`gep_level_no_wrap_flags`] now covers):
+/// a nested GEP with a non-`ConstantInt` index (`AllConstantInt`,
+/// `ConstantFolding.cpp` lines 924-931), or (this port's addition) a nested
+/// GEP carrying `in_range` — see [`symbolically_evaluate_gep`]'s doc comment
+/// for why that last one isn't ported.
 fn peel_one_gep_level<'ctx, B: ModuleBrand + 'ctx>(
     ptr: Constant<'ctx, B>,
     index_bits: u32,
     dl: &DataLayout,
-) -> Option<(Constant<'ctx, B>, ApInt, GepNoWrapFlags)> {
+) -> Option<(Constant<'ctx, B>, ApInt)> {
     let module = ptr.into_erased().module();
     match &ptr.into_erased().data().kind {
         ValueKindData::Constant(ConstantData::GepOffset { base_id, off }) => {
@@ -1763,18 +1807,14 @@ fn peel_one_gep_level<'ctx, B: ModuleBrand + 'ctx>(
                 .context()
                 .intern_constant_global_value_ref(ptr_ty.id(), *base_id);
             let base = Constant::from_parts(Value::from_parts(wrapped, module, ptr_ty.id()));
-            Some((
-                base,
-                gep_offset_magnitude(*off, index_bits),
-                GepNoWrapFlags::inbounds(),
-            ))
+            Some((base, gep_offset_magnitude(*off, index_bits)))
         }
         ValueKindData::Constant(ConstantData::Expr(expr))
             if expr.opcode == ConstantExprOpcode::GetElementPtr =>
         {
-            let (no_wrap, in_range) = match &expr.flags {
-                ConstantExprFlags::Gep(flags) => (flags.no_wrap(), flags.in_range()),
-                _ => (GepNoWrapFlags::empty(), None),
+            let in_range = match &expr.flags {
+                ConstantExprFlags::Gep(flags) => flags.in_range(),
+                _ => None,
             };
             if in_range.is_some() {
                 return None;
@@ -1783,7 +1823,7 @@ fn peel_one_gep_level<'ctx, B: ModuleBrand + 'ctx>(
             let (base_id, index_ids) = expr.operands.split_first()?;
             let base = constant_from_id(module, *base_id)?;
             let level_offset = constant_gep_offset(source_ty, index_ids, module, index_bits, dl)?;
-            Some((base, level_offset, no_wrap))
+            Some((base, level_offset))
         }
         _ => None,
     }
