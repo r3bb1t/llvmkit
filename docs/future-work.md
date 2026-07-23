@@ -528,3 +528,54 @@ than pending:
   residents of `Module::verify()` (defense in depth). These are whole-graph facts
   that cannot be a local construction- or parse-time guarantee, so they stay the
   verifier's job by design, not a gap to close.
+
+## Constant-folding parity — deferred / known divergences (2026-07-23)
+
+The `feature-29/constfold-parity` cycle fixed the divergences a three-agent
+audit found against vendored `llvmorg-22.1.4` (see CHANGELOG "Constant-folding
+parity"). A whole-branch review confirmed no mis-folds and no over-folds; the
+items below are the deferred / known-remaining points.
+
+- **Constants are not uniqued like upstream `Constant*`.** llvmkit mints a fresh
+  arena id for every `GlobalValueRef` / `GepOffset` / `SymbolDelta` constant
+  (`intern_constant_global_value_ref` / `intern_constant_gep_offset` push without
+  a dedup lookup), whereas LLVM uniques `Constant*` so `@g` is always the same
+  pointer. Any fold that compares constants by identity therefore silently
+  **under**-folds (never mis-folds: `==`-true still implies same value). The
+  `icmp` same-base fold was fixed with `base_identity` (compare underlying global
+  id). Other pre-existing identity-comparison sites with the same latent
+  under-fold, all sound, none yet addressed: `fold_phi`
+  (`constant_folding.rs`, `previous != constant`), select `true_value ==
+  false_value` and `constant_splat_value` (`constant_fold.rs`). The general fix
+  is a constant-uniquing (hash-consed intern) layer for these constant kinds;
+  it would make identity comparison structural everywhere, matching upstream, and
+  retire the `base_identity` workaround — a dedicated cycle, since it changes a
+  deliberate arena characteristic and needs its own review.
+
+- **`ptrtoint`/`ptrtoaddr` mid-width on `pointer_size != index_size` (CHERI-like)
+  layouts — a deliberate, reasoned divergence (needs a decision).** In the
+  `isEliminableCastPair` case-11 *declined* sub-case (`MidSize < SrcSize &&
+  MidSize < DstSize`), llvmkit's `fold_ptr_to_int_pair` always two-steps through
+  the case-11 mid (`ptrtoint`→pointer size, `ptrtoaddr`→index/address size),
+  whereas upstream falls to its switch path (`ConstantFolding.cpp` ~1508:
+  `PtrToInt`→address type, `PtrToAddr`→int-ptr type — the inverse). Example on
+  `p:128:128:128:64`: `ptrtoaddr(inttoptr(i128 x)):i128` → llvmkit `x mod 2^64`
+  (the semantically-correct address extraction), upstream `x`. llvmkit's value is
+  arguably the *more correct* side; matching upstream would introduce a wrong
+  mask to copy an upstream quirk, only on layouts x86/bin_lift never use.
+  Deliberately NOT matched; recorded for an explicit decision if CHERI parity is
+  ever in scope.
+
+- **`SymbolicallyEvaluateGEP` sub-cases not ported (each only declines, never
+  mis-folds):** `CastGEPIndices` vector-index width normalization; nested-GEP
+  `in_range` preservation; the null/`inttoptr`-nonzero-base → `inttoptr` fold
+  (needs `mustNotIntroduceIntToPtr` / `APInt::insertBits`); "infer inbounds for
+  GEPs of globals" (needs a dereferenceable-bytes query). Each produces weaker /
+  fewer folds than upstream, never a wrong one.
+
+- **Proactive ApFloat bit-exactness audit (deferred to its own cycle).** No
+  constant-folder fix in this cycle touched ApFloat arithmetic, and the folding
+  audit found `ap_float` structurally faithful and test-backed. A full
+  bit-for-bit verification across all seven float semantics (incl. PPC
+  double-double, every rounding/denormal/NaN-payload path) against known IEEE /
+  LLVM `APFloat` values is a large, standalone effort worth its own cycle.
