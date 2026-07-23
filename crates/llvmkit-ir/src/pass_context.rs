@@ -700,6 +700,17 @@ where
     /// builder, never the module's declaration surface. Errors the same way
     /// [`IRBuilder::restore_insert_point`] does — an empty insert point, or a
     /// block that has since grown a terminator.
+    ///
+    /// Handing out a positioned builder over the mutable module token is
+    /// intent-to-mutate, so the dirty flag is witnessed here on success. Unlike
+    /// [`Self::erase`] / [`Self::replace_all_uses`], a raw builder does not flip
+    /// the flag as it inserts, and `done()` would otherwise report
+    /// everything-preserved after a pass built through it — over-claiming the
+    /// body-analysis floor. Setting it here is conservative (a builder taken but
+    /// unused reports the rung floor rather than all-preserved) but never
+    /// dishonest, matching the doctrine that a report may lose precision, never
+    /// honesty. Set only after `restore_insert_point` succeeds: a rejected
+    /// insert point hands out no builder, so no mutation is possible.
     #[inline]
     pub fn builder_at<R2>(
         &self,
@@ -708,7 +719,9 @@ where
     where
         R2: ReturnMarker,
     {
-        IRBuilder::new_for::<R2>(self.module).restore_insert_point(ip)
+        let builder = IRBuilder::new_for::<R2>(self.module).restore_insert_point(ip)?;
+        self.dirty.set(true);
+        Ok(builder)
     }
 
     /// Erase a non-terminator instruction from its parent block, deregistering
@@ -3128,6 +3141,52 @@ mod tests {
             assert_eq!(m.globals().len(), 0);
             assert!(!patch.is_dirty());
             assert!(patch.done().into_parts().0.are_all_preserved());
+            Ok(())
+        })
+    }
+
+    /// Taking a positioned builder through [`super::FnPatch::builder_at`] is
+    /// intent-to-mutate, so it witnesses the dirty flag: a `PatchBody` pass that
+    /// builds through it can no longer `done()` an everything-preserved report
+    /// and thereby over-claim the body-analysis floor. (A raw builder does not
+    /// flip the flag as it inserts, unlike `erase`/`replace_all_uses`, so
+    /// `builder_at` sets it on the author's behalf.) llvmkit-specific
+    /// capability-context lock.
+    #[test]
+    fn patchbody_builder_at_witnesses_dirty() -> Result<(), IrError> {
+        Module::with_new("patch-builder-dirty", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            // A second, deliberately-open block so an end-of-block insert point
+            // restores successfully (the terminated-block guard rejects only an
+            // end-of-block ip whose block has since grown a terminator).
+            let scratch = f.append_basic_block(&m, "scratch");
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            IRBuilder::new_for::<Dyn>(&m)
+                .position_at_end(entry)
+                .build_ret(x)?;
+            let ip = IRBuilder::new_for::<Dyn>(&m)
+                .position_at_end(scratch)
+                .save_insert_point();
+
+            let function = FunctionView::from(f);
+            let mut fam = FunctionAnalysisManager::new();
+            Reqs::prefetch(&mut fam, function)?;
+            let results = Reqs::collect(&fam, function)?;
+
+            let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(&m, function, results);
+            let patch = cx.mutate();
+
+            // Before: nothing mutated, the report would be all-preserved.
+            assert!(!patch.is_dirty());
+            // Taking the positioned builder alone flips the witness…
+            let _builder = patch.builder_at(ip)?;
+            assert!(patch.is_dirty());
+            // …so `done()` reports the rung floor, never everything-preserved —
+            // even though the pass has not (yet) inserted anything.
+            assert!(!patch.done().into_parts().0.are_all_preserved());
             Ok(())
         })
     }

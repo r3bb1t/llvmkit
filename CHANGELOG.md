@@ -111,7 +111,10 @@ Erasure is still available, but it must be **spelled**.
 
 - `FnPatch::builder_at(ip)` / `FnReshape::builder_at(ip)` — a positioned
   `IRBuilder` over the mutator's function, replacing the one legitimate use
-  the removed `module_mut` escape had.
+  the removed `module_mut` escape had. Taking one witnesses the mutator's
+  dirty flag (handing out a mutable-positioned builder is intent-to-mutate),
+  so a pass that builds through it cannot then `done()` an
+  everything-preserved report and over-claim its analysis floor.
 - `PatchFunctions` / `ReshapeFunctions` — the named iterator types behind
   `patch_functions()` / `reshape_functions()`, public like the other pass-API
   iterators (`ModuleFunctionViews` precedent).

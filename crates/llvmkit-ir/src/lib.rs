@@ -289,7 +289,7 @@ pub use pass_access::{
 pub use pass_context::{
     BasicBlockView, BlockInstructionViews, BrEdit, CallBrEdit, CondBrEdit, FnCx, FnPatch, FnReport,
     FnReshape, FunctionBasicBlockViews, FunctionBody, FunctionView, InvokeEdit, ModCx, ModReport,
-    ModRewrite, ModuleFunctionViews, SwitchEdit, TermEdit,
+    ModRewrite, ModuleFunctionViews, PatchFunctions, ReshapeFunctions, SwitchEdit, TermEdit,
 };
 pub use pass_instrumentation::{PassInstrumentationAnalysis, PassInstrumentationCallbacks};
 pub use pass_manager::{
