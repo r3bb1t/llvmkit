@@ -1,20 +1,20 @@
 error[E0277]: the trait bound `f64: IntoIntValue<'_, i32, Brand<'_>>` is not satisfied
-  --> tests/compile_fail/block_call_wrong_arg_type.rs:35:36
+  --> tests/compile_fail/block_call_wrong_arg_type.rs:33:36
    |
-35 |         let _ = head.label().call((1.0_f64,));
+33 |         let _ = head.label().call((1.0_f64,));
    |                              ----  ^^^^^^^ the trait `IntoIntValue<'_, i32, Brand<'_>>` is not implemented for `f64`
    |                              |
    |                              required by a bound introduced by this call
    |
    = help: the following other types implement trait `IntoIntValue<'ctx, W, B>`:
-             `i128` implements `IntoIntValue<'_, Width<N>, B>`
              `i128` implements `IntoIntValue<'_, i128, B>`
-             `i16` implements `IntoIntValue<'_, Width<N>, B>`
-             `i16` implements `IntoIntValue<'_, i128, B>`
              `i16` implements `IntoIntValue<'_, i16, B>`
-             `i16` implements `IntoIntValue<'_, i32, B>`
-             `i16` implements `IntoIntValue<'_, i64, B>`
-             `i32` implements `IntoIntValue<'_, Width<N>, B>`
+             `i32` implements `IntoIntValue<'_, i32, B>`
+             `i64` implements `IntoIntValue<'_, i64, B>`
+             `i8` implements `IntoIntValue<'_, i8, B>`
+             `u128` implements `IntoIntValue<'_, i128, B>`
+             `u16` implements `IntoIntValue<'_, i16, B>`
+             `u32` implements `IntoIntValue<'_, i32, B>`
            and $N others
    = note: required for `f64` to implement `IntoCallArg<'_, i32, Brand<'_>>`
    = note: required for `(f64,)` to implement `CallArgs<'_, (i32,), Brand<'_>>`

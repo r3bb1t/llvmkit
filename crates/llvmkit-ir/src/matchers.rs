@@ -40,7 +40,7 @@ pub trait Matcher<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
     /// Convenience: match against a rediscovered [`InstructionView`].
     #[inline]
     fn match_view(&self, view: &InstructionView<'ctx, B>) -> Option<Self::Bindings> {
-        self.try_match(view.as_value())
+        self.try_match(view.to_erased())
     }
 }
 
@@ -578,7 +578,7 @@ where
     fn try_match(&self, value: Value<'ctx, B>) -> Option<Self::Bindings> {
         let view = InstructionView::try_from(value).ok()?;
         match view.kind()? {
-            InstructionKind::Load(load) => self.0.try_match(load.pointer().as_value()),
+            InstructionKind::Load(load) => self.0.try_match(load.pointer().into_erased()),
             _ => None,
         }
     }
@@ -629,7 +629,7 @@ where
     fn try_match(&self, value: Value<'ctx, B>) -> Option<Self::Bindings> {
         let view = InstructionView::try_from(value).ok()?;
         match view.kind()? {
-            InstructionKind::Gep(gep) => self.0.try_match(gep.pointer().as_value()),
+            InstructionKind::Gep(gep) => self.0.try_match(gep.pointer().into_erased()),
             _ => None,
         }
     }

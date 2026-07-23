@@ -1,7 +1,7 @@
 error[E0277]: argument tuple `(ConstantIntValue<'_, i32, Brand<'_>>,)` does not match the callee's parameter schema `(i32, i32)`
-  --> tests/compile_fail/block_call_wrong_arity.rs:35:35
+  --> tests/compile_fail/block_call_wrong_arity.rs:33:35
    |
-35 |         let _ = head.label().call((x,));
+33 |         let _ = head.label().call((x,));
    |                              ---- ^^^^ the trait `CallArgs<'_, (i32, i32), Brand<'_>>` is not implemented for `(ConstantIntValue<'_, i32, Brand<'_>>,)`
    |                              |
    |                              required by a bound introduced by this call

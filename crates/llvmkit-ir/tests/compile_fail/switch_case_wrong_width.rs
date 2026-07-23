@@ -3,7 +3,7 @@
 //!
 //! Closest upstream behaviour: LLVM's verifier (`Verifier::visitSwitchInst`)
 //! rejects a `switch` whose case value type disagrees with the condition's
-//! type *at runtime*. llvmkit's typed `build_switch_typed` pins the
+//! type *at runtime*. llvmkit's typed `build_switch` pins the
 //! condition width `W` into the type system: `SwitchInst::add_case` on a
 //! width-`W` switch carries an `IntoIntValue<'ctx, W, B>` bound, so a
 //! wrong-width case value cannot type-check.
@@ -14,24 +14,22 @@
 //! surfaces the unsatisfied `IntoIntValue<'_, i32, _>` bound — an
 //! llvmkit-authored trait bound, stable across rustc versions.
 
-use llvmkit_ir::{IRBuilder, IntValue, Linkage, Module};
+use llvmkit_ir::{Dyn, IRBuilder, IntValue, Linkage, Module};
 
 fn main() {
     Module::with_new("c", |m| {
         let i32_ty = m.i32_type();
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [i32_ty.as_type()], false);
-        let f = m
-            .add_function::<(), _>("f", fn_ty, Linkage::External)
-            .unwrap();
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
         let entry = f.append_basic_block(&m, "entry");
         let dest = f.append_basic_block(&m, "dest");
         let dest_label = dest.label();
 
         // `W` is inferred as `i32` from the typed condition.
         let cond: IntValue<i32> = f.param(0).unwrap().try_into().unwrap();
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        let (_sealed, switch) = b.build_switch_typed(cond, dest_label, "").unwrap();
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let (_sealed, switch) = b.build_switch(cond, dest_label, "").unwrap();
 
         // `5_i64` does not implement `IntoIntValue<'_, i32, _>`, so it cannot
         // be a case value on an `i32`-width switch: `.add_case` does not

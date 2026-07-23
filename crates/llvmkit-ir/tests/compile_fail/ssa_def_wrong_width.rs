@@ -20,7 +20,7 @@ fn main() {
     Module::with_new("ssa-def-wrong-width", |m| {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External).unwrap();
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
         let mut b = llvmkit_ir::SsaBuilder::for_function(&m, f).unwrap();
         let entry = b.create_block("entry");
 

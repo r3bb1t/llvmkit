@@ -14,7 +14,7 @@
 
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::{
-    Analyses, FnCx, FnReport, FunctionPass, IRBuilder, IntValue, IrError, IrResult, Linkage,
+    Analyses, Dyn, FnCx, FnReport, FunctionPass, IRBuilder, IntValue, IrError, IrResult, Linkage,
     Module, ModuleBrand, ReshapeCfg, run_function_pass,
 };
 
@@ -56,28 +56,28 @@ fn build_and_empty_phi() -> IrResult<String> {
     Module::with_new("empty-phi-build", |m| -> IrResult<String> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let other = f.append_basic_block(&m, "other");
         // to(%p: i32): reached ONLY from entry.
         let (to_bb, to_params) =
-            IRBuilder::new_for::<i32>(&m).append_block_with_params(f, &[i32_ty.as_type()], "to")?;
+            IRBuilder::new_for::<Dyn>(&m).append_block_with_params(f, &[i32_ty.as_type()], "to")?;
         let to_lbl = to_bb.label();
         let other_lbl = other.label();
 
         // entry: %c = icmp eq %a, 0 ; br %c ? to(%a) : other()
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let a: IntValue<i32> = f.param(0)?.try_into()?;
         let c = b.build_icmp_eq(a, 0_i32, "c")?;
-        b.build_cond_br_with_args(c, to_lbl, &[a.as_value()], other_lbl, &[])?;
+        b.build_cond_br_with_args(c, to_lbl, &[a.into_erased()], other_lbl, &[])?;
 
         // to: ret %p
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(to_bb);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(to_bb);
         let p: IntValue<i32> = to_params[0].try_into()?;
         b.build_ret(p)?;
 
         // other: ret 0
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(other);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(other);
         b.build_ret(i32_ty.const_int(0_u32))?;
 
         let verified = m.verify()?;

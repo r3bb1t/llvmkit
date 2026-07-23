@@ -1,7 +1,7 @@
 error[E0382]: use of moved value: `switch`
   --> tests/compile_fail/retained_open_switch_cannot_add_after_finish.rs:22:17
    |
-19 |         let (_sealed, switch) = b.build_switch(cond, dest_label, "").unwrap();
+19 |         let (_sealed, switch) = b.build_switch_dyn(cond, dest_label, "").unwrap();
    |                       ------ move occurs because `switch` has type `SwitchInst<'_, llvmkit_ir::term_open_state::Open, Brand<'_>>`, which does not implement the `Copy` trait
 20 |
 21 |         let _closed = switch.finish();

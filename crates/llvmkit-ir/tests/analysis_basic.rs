@@ -14,7 +14,7 @@ use llvmkit_ir::{
     AllAnalysesOnFunction, AllAnalysesOnModule, CFGAnalyses, DominatorTreeAnalysis,
     FunctionAnalysis, FunctionAnalysisManager, FunctionAnalysisResult, FunctionView, IRBuilder,
     IrError, IrResult, Linkage, Module, ModuleAnalysis, ModuleAnalysisManager,
-    ModuleAnalysisResult, ModuleBrand, ModuleView, PreservedAnalyses, Type, Value,
+    ModuleAnalysisResult, ModuleBrand, ModuleView, PreservedAnalyses, Value,
 };
 
 #[derive(Clone)]
@@ -76,7 +76,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysis<'ctx, B> for CountModuleAnalysi
     ) -> IrResult<Self::Result> {
         self.runs.set(self.runs.get() + 1);
         Ok(CountModuleResult {
-            functions: module.iter_functions().len(),
+            functions: module.functions().len(),
         })
     }
 }
@@ -129,11 +129,15 @@ where
     F: for<'ctx> FnOnce(Module<'ctx>) -> Result<R, IrError>,
 {
     Module::with_new("analysis", |module| {
-        let void_ty = module.void_type();
-        let fn_ty = module.fn_type(void_ty.as_type(), Vec::<Type>::new(), false);
-        let f = module.add_function::<(), _>("f", fn_ty, Linkage::External)?;
-        let g = module.add_function::<(), _>("g", fn_ty, Linkage::External)?;
-        let h = module.add_function::<(), _>("h", fn_ty, Linkage::External)?;
+        let f = module
+            .add_typed_function::<(), (), _>("f", Linkage::External)?
+            .as_function();
+        let g = module
+            .add_typed_function::<(), (), _>("g", Linkage::External)?
+            .as_function();
+        let h = module
+            .add_typed_function::<(), (), _>("h", Linkage::External)?
+            .as_function();
 
         let entry = f.append_basic_block(&module, "entry");
         let b = IRBuilder::new_for::<()>(&module).position_at_end(entry);
@@ -498,7 +502,7 @@ fn preserved_analyses_explicit_keys_intersect_and_abandon() {
 #[test]
 fn function_analysis_runs_once_caches_and_invalidates() -> Result<(), IrError> {
     with_sample_module(|m| {
-        let f = m.function_by_name("f").expect("sample has f");
+        let f = m.function_by_name_dyn("f").expect("sample has f");
         let runs = Rc::new(Cell::new(0));
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(CountFunctionAnalysis { runs: runs.clone() });
@@ -575,7 +579,7 @@ fn module_analysis_runs_once_caches_and_invalidates() -> Result<(), IrError> {
 #[test]
 fn invalidator_reports_missing_cached_dependency() -> Result<(), IrError> {
     with_sample_module(|m| {
-        let f = m.function_by_name("f").expect("sample has f");
+        let f = m.function_by_name_dyn("f").expect("sample has f");
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(DependsOnMissingFunctionAnalysis);
         let _ = fam.get_result::<DependsOnMissingFunctionAnalysis, _>(f)?;
@@ -599,7 +603,7 @@ fn invalidator_reports_missing_cached_dependency() -> Result<(), IrError> {
 #[test]
 fn module_level_invalidation_honors_fam_proxy_and_function_set() -> Result<(), IrError> {
     with_sample_module(|m| {
-        let f = m.function_by_name("f").expect("sample has f");
+        let f = m.function_by_name_dyn("f").expect("sample has f");
         let runs = Rc::new(Cell::new(0));
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(CountFunctionAnalysis { runs: runs.clone() });
@@ -634,7 +638,7 @@ fn module_level_invalidation_honors_fam_proxy_and_function_set() -> Result<(), I
 #[test]
 fn dominator_tree_analysis_caches_and_cfg_preserves() -> Result<(), IrError> {
     with_sample_module(|m| {
-        let f = m.function_by_name("f").expect("sample has f");
+        let f = m.function_by_name_dyn("f").expect("sample has f");
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(DominatorTreeAnalysis);
 

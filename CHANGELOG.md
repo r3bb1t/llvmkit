@@ -7,6 +7,325 @@ tagged release is cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### Constant-folding parity with LLVM 22.1.4
+
+An audit against the vendored `llvmorg-22.1.4` sources found the constant folder
+faithful in the large, with a handful of divergences — one real bug, several
+safe-but-not-identical over-precisions, and some missing folds. All are now
+fixed so the folder mirrors upstream.
+
+#### Fixed
+
+- **Correctness:** `icmp` of a global vs `null` no longer folds in a non-zero
+  address space (matching upstream's `!NullPointerIsDefined(AS)` guard, where
+  `null` may be a valid address). It folded to a possibly-wrong constant before;
+  address space 0 is unaffected.
+- The instruction-level folder no longer threads the `exact` flag into a
+  poison-producing path: `udiv/sdiv/lshr/ashr exact` with an inexact result now
+  fold to the plain value (e.g. `udiv exact 7, 2 → 3`), and `x exact undef, 1`
+  folds to `undef`, exactly as upstream's flag-agnostic `ConstantFoldInstruction`
+  does — so llvmkit's two fold paths also agree with each other.
+- `fcmp` equality with an `undef` operand folds to the concrete `i1`
+  (`oeq undef,c → false`, `ueq undef,c → true`) rather than `undef` — the
+  undef→undef shortcut is integer-`eq`/`ne`-only, matching `ICmpInst::isEquality`.
+- A vector-condition `select` with an unresolvable lane falls through to the
+  whole-value poison/undef rules instead of declining (so a poison arm still
+  collapses to the other arm).
+
+#### Added folds (previously declined; now matching upstream)
+
+- FP **vector** arithmetic/compare through the DataLayout path (element-wise
+  denormal flush), the `AllowNonDeterministic` fast-math fold guard, and
+  `ptrtoint(inttoptr x)` sized by pointer width (`isEliminableCastPair` case 11).
+- Pointer/int-cast `icmp` folds: `inttoptr` vs `null`, `ptrtoint` vs `0`,
+  matching cast pairs, and same-base `(base+off1) pred (base+off2) → off1 pred
+  off2`.
+- `SymbolicallyEvaluateGEP` scalar offset canonicalization: an all-constant-index
+  `getelementptr` folds to the `i8`-element form (`gep i32, @g, 4 → gep i8, @g,
+  16`). Several upstream sub-cases (vector-index normalization, `in_range`,
+  null/`inttoptr`-base, inbounds-inference for globals) are deliberately
+  declined, never mis-folded.
+- Same-base pointer `icmp` folds now compare the stripped bases by their
+  underlying global rather than by arena identity — necessary because, unlike
+  upstream's uniqued `Constant*`, llvmkit mints fresh ids for
+  `GlobalValueRef`/`GepOffset` constants, so two independently-built pointers
+  into the same global would otherwise fail to be recognized as same-base.
+
+### No silent erasure — the strict cut
+
+An erased `Value` / `Argument` / `Instruction` can no longer *silently* satisfy a
+typed operand position, and a Rust numeric literal maps to exactly one IR width.
+Erasure is still available, but it must be **spelled**.
+
+#### Breaking
+
+- Removed `Module::add_function::<R>(name, fn_ty, linkage)` — the constructor
+  that paired an erased runtime signature with a static return marker, the
+  one place a declaration could silently claim a return type its signature
+  did not have (the marker check caught cross-kind lies at runtime, but the
+  API's shape invited them). Declarations now split honestly:
+  `add_typed_function::<Ret, Params, _>` derives the signature *from* the
+  markers (a mismatch is unrepresentable; parameters come back typed), and
+  `add_function_dyn` takes a runtime `FunctionType` and returns
+  `FunctionValue<Dyn>`. To re-type a function declared erased, use the
+  checked `function_by_name::<R>` lookup. One deliberate escape hatch
+  remains: `function_builder::<R>(name, fn_ty)` (the attribute/linkage-rich
+  declaration path) still pairs a user-supplied signature with a chosen
+  marker and keeps the runtime `ReturnTypeMismatch` gate at `.build()`.
+  Locked by `tests/compile_fail/add_function_removed.rs`.
+- Removed the erased-handle lifts from `IntoIntValue`, `IntoFloatValue`, and
+  `IntoPointerValue`. An erased `Value` / `Argument` / `Instruction` no longer
+  fills a typed operand slot on its own; narrow it explicitly first — e.g.
+  `let p: PointerValue = v.try_into()?;` (or `IntValue::<W>::try_from` /
+  `FloatValue::<K>::try_from`) — or use the erased `_dyn` builder family. The four
+  conversion traits (`IntoIntValue`, `IntoFloatValue`, `IntoPointerValue`, and,
+  transitively, `IntoCallArg`) are now **sealed**: their set of accepted operand
+  sources is closed and cannot be extended downstream.
+- Removed the implicit literal-widening impls. A Rust integer literal now maps to
+  exactly one IR width (`2i32` is `i32`; `2i64` is `i64`) and a Rust float to
+  exactly one kind (`f32` / `f64`), with no silent widening (`i8 -> i32`,
+  `f32 -> f64`). A literal in a wider slot must name its width, e.g. `2_i64`. The
+  Rust-scalar → `Width<N>` lifts were removed for the same reason; a `Width<N>`
+  slot takes a typed `IntValue<Width<N>>` / `ConstantIntValue<Width<N>>`, not a
+  bare literal.
+
+#### Improved
+
+- As a direct consequence of the above, `build_int_add(2i32, 3i32, "n")` now
+  infers its width with **no turbofish** and no annotation: with a single width
+  per literal, the operand marker `W` has exactly one solution.
+- The bitcast builders (`build_bitcast_int_to_int`, `build_bitcast_int_to_fp`,
+  `build_bitcast_fp_to_int`, `build_bitcast_fp_to_fp`), `build_atomic_cmpxchg`,
+  and `build_ui_to_fp_with_flags` drop their now-redundant operand-lift generic:
+  with one-literal-one-width and sealed conversions, the lift bought only
+  "accept a bare literal in place of a typed handle", dead weight for these
+  computed-SSA operands. The methods now take the concrete typed operand
+  directly, so e.g. `build_bitcast_int_to_int(v, i8_ty, "bc")` needs no
+  turbofish. Printed IR is unchanged.
+
+### Pass surface (cycle D)
+
+#### Breaking
+
+- Removed `FnCx::unchanged` / `ModCx::unchanged` — verbatim duplicates of the
+  `done()` on the same contexts (identical bodies, identical semantics, two
+  names for one operation). Migration: `cx.unchanged()` → `cx.done()`. The
+  honesty lock is unchanged: `done()` also takes `self` by value, so calling
+  it after `mutate()` is the same use-of-moved-value error.
+- The function-rung mutators no longer hand out the module's *declaration*
+  capability: `FnPatch::module_mut` is crate-internal and
+  `FnReshape::module_mut` is removed. Through them, a pass declared at
+  `PatchBody`/`ReshapeCfg` could `add_global` / `add_function_dyn` /
+  `set_struct_body` while still reporting only its body-level preservation
+  floor — the one rung-honesty leak left in the surface. The boundary that
+  replaces them: **type construction is preservation-neutral** (it only interns
+  into the context; no function, global, or CFG changes), so the read-only
+  view reached by `FnPatch::module()` / `FnReshape::module()` now carries the
+  type-constructor surface — while *declarations* stay exclusive to
+  `ModRewrite::module_mut`, whose `RewriteModule` floor is already `none()`.
+  Locked by `tests/compile_fail/function_rung_cannot_declare_globals.rs`,
+  which pins the boundary, not a ban: in one fixture, minting a type through
+  `patch.module()` compiles and `patch.module_mut()` is private.
+- `FnReshape::insert_phi` is now the **typed** phi inserter and
+  `insert_phi_dyn` is the erased twin (the naming law: bare = typed, `_dyn` =
+  erased type). The typed `insert_phi<V>(block, incomings: &[(V, label)])`
+  takes same-typed incomings (`IntValue<i32>`, `PointerValue`, …) and returns
+  that same handle `V` — so a wrong-typed incoming is a compile error and the
+  type is derived from the incomings rather than restated as a `Type` argument
+  (it needs ≥1 incoming for that; the zero-incoming case stays on
+  `insert_phi_dyn`). `insert_phi_dyn(block, ty, incomings: &[(Value, label)])`
+  is the previous erased signature verbatim, renamed. The completeness and
+  dominance obligations are witnessed at the call by both, exactly as before —
+  only the per-incoming type-agreement moves to compile time.
+
+- `ModRewrite::for_each_function::<FnA>(visitor)` is replaced by two
+  rung-named **iterators**: `patch_functions()` (yields `FnPatch`) and
+  `reshape_functions()` (yields `FnReshape`). External iteration is the
+  idiomatic shape the closure visitor could not be: `?`, `continue`, and
+  `break` just work, the rung is the method name instead of a turbofished
+  access marker, and the iterator borrows nothing from the mutator, so
+  `module_mut()` stays callable mid-loop (a global per patched function is
+  the sanitizer shape). Same semantics otherwise: definitions in module
+  order, declarations skipped, per-function `Requires` still `()`. The
+  doc-hidden `MutatingFn::mutator_over_module` plumbing (sealed trait) went
+  with it. The *pipeline adaptor* `for_each_function(function_pipeline((..)))`
+  is a different item and is unchanged.
+
+#### Added
+
+- `FnPatch::builder_at(ip)` / `FnReshape::builder_at(ip)` — a positioned
+  `IRBuilder` over the mutator's function, replacing the one legitimate use
+  the removed `module_mut` escape had. Taking one witnesses the mutator's
+  dirty flag (handing out a mutable-positioned builder is intent-to-mutate),
+  so a pass that builds through it cannot then `done()` an
+  everything-preserved report and over-claim its analysis floor.
+- `PatchFunctions` / `ReshapeFunctions` — the named iterator types behind
+  `patch_functions()` / `reshape_functions()`, public like the other pass-API
+  iterators (`ModuleFunctionViews` precedent).
+
+### Idiomatic surface (cycle C)
+
+#### Breaking
+
+- `IsValue::as_value` is renamed **`into_erased`**, and the 20 inherent
+  by-reference wideners on the linear (`!Copy`) handles — `BasicBlock`,
+  `BasicBlockLabel`, `Instruction`, and the typed instruction handles — become
+  **`to_erased`**. Erasure is the subject of this release, so the ~1500 sites
+  that perform it now spell it; the `into_`/`to_` split follows the Rust
+  convention that `into_*` consumes (owned → owned) while `to_*` widens from a
+  borrow, which matters here because those handles are deliberately non-`Copy`
+  so that their *lifecycle* methods consume. Migration is mechanical:
+  `x.as_value()` → `x.into_erased()`, or `x.to_erased()` if `x` is one of the
+  linear handles (the compiler names the right one).
+- `Module::function_by_name` (erased; returns `Option<FunctionValue<Dyn>>`) is
+  renamed `function_by_name_dyn`, and the checked marker-narrowing
+  `function_by_name_typed::<R>` takes over the bare name as
+  `function_by_name::<R>` — the naming law: typed variant bare, erased variant
+  `_dyn`.
+- `Module::set_struct_body` (erased; takes `StructType<StructBodyDyn>`) is
+  renamed `set_struct_body_dyn`, and the typestate `set_struct_body_typed`
+  (consumes `Opaque`, yields `BodySet`) takes over the bare name as
+  `set_struct_body` — the naming law: typed variant bare, erased variant
+  `_dyn`.
+- `ModuleView::iter_functions` / `iter_globals` / `iter_aliases` /
+  `iter_ifuncs` / `iter_comdats` and `Module::iter_globals` become
+  `functions()` / `globals()` / `aliases()` / `ifuncs()` / `comdats()` —
+  `iter_` prefixes dropped for idiomatic Rust names.
+
+#### Added
+
+- `IsValue::id()` — the arena id of any value handle, previously reachable only
+  by widening first (`x.as_value().id`). Every value handle now answers `id()`
+  directly, including the seven linear handles that cannot implement `IsValue`
+  (`Instruction`, `NonTerminator`, `BasicBlock`, `BasicBlockLabel`, `PhiInst`,
+  `FpPhiInst`, `PointerPhiInst`), which carry it as an inherent method.
+- `IntoIterator` for `ModuleView`, `FunctionView`, `BasicBlockView` and
+  `FunctionValue`, so a nest of `for` loops walks the IR directly:
+  `for f in module_view { for bb in f { for inst in bb { .. } } }`. `ModuleView`
+  iterates *functions*, mirroring LLVM's `for (Function &F : M)`. The named
+  methods (`functions()`, `basic_blocks()`, `instructions()`) remain — the trait
+  is sugar beside them. Their iterator types are public:
+  `FunctionBasicBlocks`, `FunctionBasicBlockViews`, `BlockInstructionViews`.
+- `PhiKind::incomings()` plus mirrors on the four typed phi handles — an
+  iterator of `(value, block)` pairs, matching the shape `SwitchInst::cases()`
+  already had. The indexed `incoming_count()` / `incoming(i)` remain.
+- Around 30 iterator-returning methods now also promise `DoubleEndedIterator`
+  and `FusedIterator`. The bodies always supported both; the opaque return type
+  was hiding it, so reverse iteration over blocks and instructions now works.
+  (`ModuleView`'s `IntoIterator` sugar is the one exception — its boxed inner
+  iterator cannot offer `DoubleEndedIterator`; use `functions().rev()`.)
+- `Display` for 18 public value handles and for `ApInt`. Value handles print
+  their operand form and agree with the erased path by construction; the
+  module-level globals (`FunctionValue`, `GlobalVariable`) print their
+  *definition* line instead, following the existing `GlobalAlias` /
+  `GlobalIFunc` precedent. Each impl documents which form it prints.
+- `BasicBlockView` is now `Copy`, matching its sibling `FunctionView`.
+
+#### Deliberate law exceptions
+
+- `add_typed_function` keeps its name: `add_function` stays vacated as the
+  migration tombstone — a removed method's E0599 with a did-you-mean beats
+  confusing arity errors on a reused name (locked by
+  `tests/compile_fail/add_function_removed.rs`).
+- The `const_*` constructor family is conformant as-is: witness-generic
+  constructors, not typed/erased pairs.
+- The `append_block` family has no bare-named erased sibling — no violation.
+- `build_bitcast_dyn` / `build_phi_dyn` are by-design `_dyn` orphans.
+
+### Declaration surface — globals derive their type from the initializer
+
+`Module::add_global` / `add_global_constant` no longer take a separate
+`value_type`: the global's type is derived from its initializer, and the
+initializer is now any `IntoConstantValue` — an existing constant handle **or a
+Rust scalar literal**. The motivating call `add_global("marker", 0i32)` now
+compiles with no type handle and no `.as_type()`.
+
+#### Added
+
+- `IntoConstantValue<'ctx, B>` — a value usable as a constant initializer: a
+  blanket impl over every `IsConstant` handle, plus one impl per exact Rust
+  scalar width (`bool`, `i8`..=`i128`, `u8`..=`u128`, `f32`, `f64`). One literal
+  maps to exactly one IR width (no widening): `0i32` is an `i32`, `0i64` an
+  `i64`. The scalar impls reuse the existing `IntoConstantInt` /
+  `IntoConstantFloat` machinery.
+- `Module::add_global_uninitialized(name, value_type)` — the declaration-only
+  case (no initializer to derive from), using the module's default linkage.
+  Accepts `impl Into<Type>`, so a typed handle needn't be widened via
+  `.as_type()`; `add_external_global` gains the same ergonomic.
+- `IrError::DuplicateGlobalName` — installing a global variable, alias, or ifunc
+  whose name is already bound at module scope now reports this instead of the
+  misused `DuplicateFunctionName`. One variant covers all three global-scope
+  symbol kinds (they share the module's global namespace).
+- `IRBuilder::at_end(bb)` and `BasicBlock::builder()` — a builder positioned at a
+  block with the return marker inferred from the block, so
+  `IRBuilder::new_for::<R>(&m).position_at_end(bb)` collapses to
+  `IRBuilder::at_end(bb)` (no turbofish). `new_for` retained for building blocks
+  before positioning.
+- `Module::fn_type_no_params(ret, is_var_arg)` — a no-parameter function type
+  without the empty-`Vec::<Type>::new()` inference cliff of `fn_type` (with an
+  empty iterator the element type can't be inferred). It is exactly
+  `fn_type(ret, [], is_var_arg)` with the element type pinned.
+- `Module::add_function_dyn(name, signature, linkage)` — the honest *erased*
+  function-declaration path: it takes a runtime `FunctionType` and returns a
+  `FunctionValue<Dyn>`, carrying no static return marker and running no
+  return-marker check (`Dyn` matches every signature by definition). This is the
+  path for the `.ll` parser and other runtime-schema-driven tooling. For
+  statically-typed authoring, prefer the typed primary
+  `add_typed_function::<Ret, Params>(name, linkage)`: its turbofish *is* the
+  schema (no separately built `FunctionType`), and the parameters come back
+  already typed through `f.params()`. The erased
+  `add_function::<R>(name, fn_ty, linkage)` — erased signature, typed return —
+  stays; migrating its remaining call sites is deferred to the strict-cut cycle.
+
+#### Changed
+
+- **Breaking:** `add_global` / `add_global_constant` drop the `value_type`
+  parameter and take `initializer: impl IntoConstantValue`. Migrate
+  `add_global("g", ty.as_type(), init)` to `add_global("g", init)`. The
+  redundant creation-time `TypeMismatch` (initializer type vs declared type) is
+  gone — it is now unrepresentable, since the type *is* the initializer's.
+  `GlobalVariable::set_initializer` keeps its type check: a *replacement*
+  initializer must still match the global's frozen type. On the low-level
+  `global_builder(name, ty).initializer(c)` escape hatch — where `ty` and `c`
+  remain independent — a mismatch now surfaces at `verify()`
+  (`GlobalInitializerTypeMismatch`) rather than eagerly at `build()`.
+- Aggregate constant constructors `ArrayType::const_array` /
+  `StructType::const_struct` / `VectorType::const_vector` now accept
+  `impl IntoConstantValue` elements, so Rust literals work
+  (`const_array([1i32, 2, 3])`). The blanket `IntoConstantValue for IsConstant`
+  impl keeps existing constant-handle callers unchanged. They stay **fallible**
+  (`IrResult`): the element-vs-container type check is still needed because the
+  receivers are erased (`ArrayType<ElemDyn, ArrLenDyn>`, etc.).
+
+### Unforgeable markers — the builder's typed-append family (internal)
+
+Internal refactor of *how* an int / float / pointer marker is attached to a
+freshly-appended instruction; **no public API change and byte-identical printed
+IR**. Marker attachment across the builder's append surface now flows through a
+typed-append constructor family — `append_int_like` / `append_int_at` /
+`append_int_load`, the `append_fp_*` trio, and `append_ptr` / `append_ptr_load` —
+each of which appends the instruction *at* a typed type-handle and re-wraps the
+result, so the width / kind / pointer-ness matches the runtime type **by
+construction** rather than by an implicit proof beside each call. This collapses
+~40 scattered `from_value_unchecked` wraps (casts, comparisons, loads, alloca /
+GEP, scalar arithmetic) onto the family.
+
+#### Changed
+
+- `from_value_unchecked`'s in-crate callers in `ir_builder.rs` drop from ~40
+  scattered wraps to the 8 constructor-family bodies plus a legible residual
+  (runtime-checked fold seams, the select-arm re-wrap, the `ptrtoaddr` `IntDyn`
+  re-wrap, and the vector / array append wraps that have no typed constructor
+  yet). The Cycle-1 runtime re-checks (`accept_folded_*` / `narrow_folded_*` /
+  `def_*_var`) stay as defense in depth.
+- **Audited, not sealed.** `from_value_unchecked` remains `pub(crate)` — a hard
+  compile-time seal is infeasible (`value` and `ir_builder` are sibling modules
+  and the constructors need `ir_builder`-private helpers), so the confinement is
+  documented and locally proven, not compiler-enforced. `IntDyn` / `FloatDyn`
+  markers still name no width / kind by design (erasure); the family proves
+  integer- / float-ness structurally, and the width is simply not part of what
+  the erased marker claims.
+
 ### Phi guarantees — wave 1
 
 Pushes the *local*, statically- or parse-time-knowable phi invariants into
@@ -306,6 +625,103 @@ every existing erased branch/edge call keeps compiling and printing identical IR
   `build_cond_br_with_args` — is **unchanged** and still produces `BlockParamsDyn`
   handles.
 
+### No silent erasure — marker-generic narrowing and type checks at every marker
+
+Closes a gap between llvmkit's typed handles and the checks behind them. A typed
+handle (`IntValue<'ctx, i32, B>`, `FloatValue<'ctx, f64, B>`) is a *claim* about
+a value's runtime type; several seams that consume such handles trusted the
+claim instead of checking it, but only when the marker was static — exactly the
+case where a wrong claim is invisible. They now check unconditionally, and where
+a check does fire, the error names what actually differs.
+
+#### Added
+
+- `IntWidth::narrow` / `FloatKind::narrow` — narrow an erased `Value` to a typed
+  `IntValue<'ctx, W, B>` / `FloatValue<'ctx, K, B>` behind a **bare**
+  `W: IntWidth` / `K: FloatKind` bound, returning `IrResult`. Every impl
+  delegates to the matching per-marker `TryFrom<Value>`, so the error split is
+  inherited, not restated (right kind + wrong width → `OperandWidthMismatch`;
+  wrong kind → `TypeMismatch`; `IntDyn` / `FloatDyn` accept any width / kind).
+
+  What is new is the *bound*, not the capability: those `TryFrom` impls could
+  already be reached from generic code by propagating a
+  `where IntValue<'ctx, W, B>: TryFrom<Value<'ctx, B>>` clause through every
+  downstream signature. `narrow` makes the same narrowing callable from a bare
+  marker bound, and is expressible where that route is not — namely inside a
+  trait impl, whose signature is fixed for you and cannot take the extra clause.
+- `IrError::AddressSpaceMismatch { expected, got }` — a pointer-vs-pointer type
+  drift now names both address spaces. `IrError` is `#[non_exhaustive]`, so this
+  is **not** a breaking addition.
+
+#### Fixed
+
+- **Behaviour change:** four fold-result acceptors (`accept_folded_int` /
+  `accept_folded_fp` / `accept_folded_cast_int` / `accept_folded_cast_fp`) and
+  two auto-SSA variable-def seams (`SsaBuilder::def_int_var` /
+  `def_float_var`) compared the value's runtime type against the expected type
+  **only for the erased `IntDyn` / `FloatDyn` markers**. At every static marker
+  the compare was skipped, on the rationale that the handle's type already
+  proved the width — which is circular, since `from_value_unchecked` exists
+  precisely to mint that claim *without* consulting the payload. A wrong-typed
+  fold result or variable def was therefore **silently accepted** at a static
+  width: an `IntValue<'_, i32>` really carrying an `i64` could escape to a
+  caller, or land in an `i32`-pinned variable that a later `use_int_var` reads
+  back at the wrong type. All six now compare at every marker.
+
+  **No released behaviour was wrong.** `from_value_unchecked` is
+  crate-internal, so only in-crate code could mint the contradicting handle:
+  an externally-authored folder cannot reach the hole at all (its typed hooks
+  are compile-time barred — `tests/compile_fail/folder_typed_wrong_width.rs`),
+  and the shipped `ConstantFolder` produced correct types throughout. This
+  closes a **latent in-crate channel**, not an active miscompile. The cost is
+  one interned-`TypeId` compare per accepted fold or def, and no correct
+  program is newly rejected: types are interned by width / kind / address
+  space, so equality of `TypeId` *is* structural type equality.
+
+  Two supporting changes make that claim checkable rather than asserted:
+  `ConstantFolder`'s nine typed hooks now `narrow` the results of their erased
+  siblings instead of re-wrapping them unchecked behind a prose audit of the
+  fold kernel, turning the audit into a proof at the point of construction; and
+  the four hand-rolled "is this the type it claims?" compares collapsed into a
+  single core, `Type::require_match`, which carries the comparison, the error
+  shape and the rationale in one place.
+
+#### Changed
+
+- **Breaking:** `IRBuilder::build_switch` is now the **typed** builder (was
+  `build_switch_typed`), and the width-erased one is `build_switch_dyn` (was
+  `build_switch`). Every other typed/erased pair in the crate suffixes the
+  *erased* variant `_dyn` — `build_call` / `build_call_dyn`, `build_invoke` /
+  `build_invoke_dyn`, `build_int_phi` / `build_int_phi_dyn` — and `switch` was
+  the sole inversion. Migration is a rename: `build_switch` → `build_switch_dyn`,
+  `build_switch_typed` → `build_switch`. Behaviour and return types are
+  unchanged, and the erased form is still what the `.ll` parser and the auto-SSA
+  builder land on. The *Typed terminator operands* section below, which
+  introduced the pair, is written in the new names.
+- Integer type drift at the fold and variable-def seams now reports
+  `IrError::OperandWidthMismatch { lhs, rhs }` where it previously reported
+  `IrError::TypeMismatch { expected: Integer, got: Integer }` — true, and silent
+  about the only fact separating the two sides, since `TypeKindLabel` has a
+  single width-less `Integer` variant. A drift to a wrong *kind* still reports
+  `TypeMismatch`. Float seams are unaffected: `TypeKindLabel` has a distinct
+  variant per float kind, so their `TypeMismatch` already named both sides.
+- Pointer type drift at the fold and variable-def seams now reports
+  `IrError::AddressSpaceMismatch { expected, got }`, for the identical reason
+  applied to the single, address-space-less `Pointer` variant — an
+  `addrspace(0)`-vs-`addrspace(1)` def used to report "expected pointer, got
+  pointer". It is a separate error rather than a reuse of
+  `OperandWidthMismatch` because an address space is not a width.
+  `SsaBuilder::def_pointer_var` is the variable-def seam. The fold seams are
+  every pointer-typed destination a custom folder can answer — among them
+  `build_pointer_cast`, and `build_bitcast_dyn` / `build_select` when the
+  destination or the arms are pointers — all of which funnel through the
+  builder's `checked_folded_value`, hence through the same
+  `Type::require_match`.
+
+  Both are **breaking for error matching**: code keying on
+  `IrError::TypeMismatch` to catch an integer-width or address-space drift at
+  these seams must now match the new variants.
+
 ### Typed terminator operands — switch condition width and indirectbr address
 
 Extends the branching type-safety program from a terminator's *edges* to its
@@ -313,19 +729,19 @@ Extends the branching type-safety program from a terminator's *edges* to its
 address type now live in the Rust type system, so a wrong-width case value or a
 non-pointer jump address is a **compile error** rather than a runtime
 `TypeMismatch` / verifier rejection. Typing is **opt-in** — the erased authoring
-surface (`build_switch`, `build_indirectbr` with a runtime-checked `Value`
+surface (`build_switch_dyn`, `build_indirectbr` with a runtime-checked `Value`
 address) is untouched and keeps its existing runtime checks.
 
 #### Added
 
 - `SwitchInst<'ctx, P, B, W: IntWidth = IntDyn>` now threads the condition's
   integer width `W` as a **last, defaulted** type parameter, plus
-  `IRBuilder::build_switch_typed::<W>(cond, default, name)` — the typed sibling
-  of `build_switch` — which pins `W` from the typed condition and returns a
+  `IRBuilder::build_switch::<W>(cond, default, name)` — the typed sibling
+  of `build_switch_dyn` — which pins `W` from the typed condition and returns a
   `SwitchInst<…, W>`. On such a switch, `SwitchInst::add_case` carries an
   `IntoIntValue<'ctx, W, B>` bound, so a **wrong-width case value is a compile
   error** (an `i64` case on a `W = i32` switch has no `IntoIntValue<'_, i32, _>`
-  impl — never narrows). The erased `build_switch` still yields a
+  impl — never narrows). The erased `build_switch_dyn` still yields a
   `SwitchInst<…, IntDyn>` whose `add_case` keeps the runtime `TypeMismatch`
   check, and the parser / SSA-builder paths are unchanged (they land on the
   erased form).

@@ -30,6 +30,16 @@ impl<'ctx, T: IrField, B: ModuleBrand> Clone for TypedPointerValue<'ctx, T, B> {
 }
 impl<'ctx, T: IrField, B: ModuleBrand> Copy for TypedPointerValue<'ctx, T, B> {}
 
+impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> fmt::Display for TypedPointerValue<'ctx, T, B> {
+    /// Print the operand form `ptr <ref>`. The pointee schema `T` is
+    /// compile-time-only bookkeeping and does not appear in the output, so
+    /// this is byte-identical to what the erased
+    /// [`PointerValue`] / [`Value`] handles print.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.ptr, f)
+    }
+}
+
 impl<'ctx, T: IrField, B: ModuleBrand> PartialEq for TypedPointerValue<'ctx, T, B> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
@@ -71,9 +81,14 @@ impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> TypedPointerValue<'ctx, T, B> {
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
-        self.ptr.as_value()
+    pub fn into_erased(self) -> Value<'ctx, B> {
+        self.ptr.into_erased()
     }
+}
+
+impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> crate::value::into_pointer_value_sealed::Sealed
+    for TypedPointerValue<'ctx, T, B>
+{
 }
 
 impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B>

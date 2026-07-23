@@ -30,6 +30,7 @@ use core::hash::{Hash, Hasher};
 use core::num::NonZeroU32;
 
 use crate::TypeKindLabel;
+use crate::error::{IrError, IrResult};
 use crate::module::{ModuleBrand, ModuleCore, ModuleRef, ModuleView};
 
 /// Minimum legal integer width. Mirrors `IntegerType::MIN_INT_BITS`
@@ -318,6 +319,73 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     #[inline]
     pub fn module(self) -> ModuleView<'ctx, B> {
         ModuleView::new(self.module.module())
+    }
+
+    /// Require `got` to be exactly `self`, reporting the most precise
+    /// error available when it is not.
+    ///
+    /// The crate's one answer to "this value claims a type it may not
+    /// have". `self` is the *known-good* type — an operand's, a
+    /// destination type's, a declared variable's — and `got` the runtime
+    /// type of the value under suspicion.
+    ///
+    /// **Compares two runtime types, never a type against a marker.** That
+    /// distinction is the whole point and callers must preserve it: a
+    /// marker-keyed check (`W::narrow`) asks "is this *some* value of
+    /// `W`", which for the erased [`IntDyn`](crate::int_width::IntDyn) /
+    /// [`FloatDyn`](crate::float_kind::FloatDyn) markers means "any
+    /// integer" / "any float" and would silently drop the width/kind
+    /// check this performs. Reach for `narrow` only where the expected
+    /// type is *statically* fixed (e.g. an icmp result is always `i1`),
+    /// never where it comes from an operand or a declared variable.
+    ///
+    /// Two kinds get a dedicated error instead of
+    /// [`IrError::TypeMismatch`], because [`TypeKindLabel`] collapses each
+    /// of them into one variant that omits the only fact distinguishing
+    /// the two sides:
+    ///
+    /// - **Integer width** drift reports
+    ///   [`IrError::OperandWidthMismatch`]: `TypeKindLabel` has a
+    ///   *single*, width-less `Integer` variant, so an i32-vs-i64 drift
+    ///   would otherwise read "expected integer, got integer" — true, and
+    ///   silent about the only fact that distinguishes them. This mirrors
+    ///   the split `IntValue`'s `TryFrom<Value>` performs (`value.rs`),
+    ///   for the same reason.
+    /// - **Pointer address space** drift reports
+    ///   [`IrError::AddressSpaceMismatch`], the identical argument applied
+    ///   to the single, address-space-less `Pointer` variant. It needs its
+    ///   own error rather than reusing `OperandWidthMismatch`: an address
+    ///   space is not a width, and `lhs`/`rhs` bit counts would misname
+    ///   what the numbers are.
+    ///
+    /// Both arms fire only when the two sides *share* the kind. A genuine
+    /// cross-kind drift (`i32` vs `ptr`) falls through to the general arm,
+    /// where the labels are already exactly the right amount of detail --
+    /// never an `AddressSpaceMismatch` about an address space one side
+    /// does not have. Float kinds need no special case either:
+    /// `TypeKindLabel` has a distinct variant per kind
+    /// (`Half`/`Float`/`Double`/…), so their `TypeMismatch` already names
+    /// both sides precisely — they too fall through.
+    ///
+    /// No false rejections: `llvm_context.rs` memoizes `int_type(bits)` by
+    /// width and `ptr_type(addr_space)` by address space, so `TypeId`
+    /// equality is structural type equality — a correctly typed value
+    /// always compares equal. Cost is one `TypeId` compare.
+    pub(crate) fn require_match(self, got: Self) -> IrResult<()> {
+        if self.id == got.id {
+            return Ok(());
+        }
+        let (expected_data, got_data) = (self.data(), got.data());
+        Err(match (expected_data.as_integer(), got_data.as_integer()) {
+            (Some(lhs), Some(rhs)) => IrError::OperandWidthMismatch { lhs, rhs },
+            _ => match (expected_data.as_pointer(), got_data.as_pointer()) {
+                (Some(expected), Some(got)) => IrError::AddressSpaceMismatch { expected, got },
+                _ => IrError::TypeMismatch {
+                    expected: self.kind_label(),
+                    got: got.kind_label(),
+                },
+            },
+        })
     }
 
     /// Analysis-mode discriminator. Pattern-match here for read-only IR

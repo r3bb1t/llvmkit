@@ -21,6 +21,10 @@ fn typestate_compile_fail() {
     let t = trybuild::TestCases::new();
     // Relies on the unblessed `has_pass` workaround (dtolnay/trybuild#258); re-verify this still forces `cargo build` mode after any trybuild version bump.
     t.pass("tests/compile_fail/extract_value_dyn_empty_slice_compiles.rs");
+    // Cycle B (no-silent-erasure) strict cut: the erased-signature +
+    // typed-return `add_function::<R>` constructor is deleted from the
+    // public surface; this lock pins its absence (E0599).
+    t.compile_fail("tests/compile_fail/add_function_removed.rs");
     t.compile_fail("tests/compile_fail/position_at_end_terminated_block.rs");
     t.compile_fail("tests/compile_fail/retained_unterminated_block_cannot_reposition.rs");
     t.compile_fail("tests/compile_fail/terminated_block_cannot_start_cursor.rs");
@@ -104,6 +108,16 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/function_pass_missing_name.rs");
     t.compile_fail("tests/compile_fail/function_pass_wrong_level_access.rs");
     t.compile_fail("tests/compile_fail/claim_preserved_after_mutate.rs");
+    // Cycle D slice D.2 (rung honesty, module surface): the module's
+    // *declaration* capability (`&Module<Unverified>`, carrying `add_global` /
+    // `add_function_dyn` / `set_struct_body`) is `pub(crate)` on the function
+    // rungs, so a `PatchBody` pass cannot mutate the module structurally and
+    // still report the body-level preservation floor. Type construction — which
+    // only interns into the context and invalidates nothing — stays reachable
+    // through the read-only `FnPatch::module` view, so the fixture proves a
+    // *boundary*, not a blanket ban: its first statement compiles and its second
+    // does not. Primary error is rustc's stable `E0624` privacy diagnostic.
+    t.compile_fail("tests/compile_fail/function_rung_cannot_declare_globals.rs");
     // Slice 2 (typed terminator edit handles): the handle *type* fixes which
     // edge ops exist, so a structurally-invalid CFG edge edit is a compile
     // error. Each fixture's primary error is one of OUR OWN stable messages —
@@ -124,7 +138,7 @@ fn typestate_compile_fail() {
     // across rustc versions.
     t.compile_fail("tests/compile_fail/block_call_wrong_arity.rs");
     t.compile_fail("tests/compile_fail/block_call_wrong_arg_type.rs");
-    // OP Slice 1 (typed `SwitchInst<W>`): `build_switch_typed` pins the
+    // OP Slice 1 (typed `SwitchInst<W>`): `build_switch` pins the
     // condition width `W`, so `SwitchInst::add_case` carries an
     // `IntoIntValue<'ctx, W, B>` bound and a wrong-width case value is a
     // compile error. The primary error is our own `IntoIntValue<'_, i32, _>`

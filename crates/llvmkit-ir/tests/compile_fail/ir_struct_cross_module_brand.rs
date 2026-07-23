@@ -17,9 +17,9 @@ fn main() -> Result<(), IrError> {
         let (left_point,) = left_fn.params();
 
         Module::with_new("right", |right| {
-            let void_ty = right.void_type();
-            let fn_ty = right.fn_type(void_ty, Vec::<llvmkit_ir::Type>::new(), false);
-            let right_fn = right.add_function::<(), _>("right", fn_ty, Linkage::External)?;
+            let right_fn = right
+                .add_typed_function::<(), (), _>("right", Linkage::External)?
+                .as_function();
             let entry = right_fn.append_basic_block(&right, "entry");
             let builder = IRBuilder::new_for::<()>(&right).position_at_end(entry);
             let _ = builder.build_insert_field::<Point, i32, _, _, _>(

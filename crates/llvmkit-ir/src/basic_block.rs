@@ -23,12 +23,15 @@ use super::block_state::{BlockTerminationState, Unterminated};
 use super::function::FunctionValue;
 use super::function_signature::{CallArgs, FunctionParamList};
 use super::instruction::{InstructionKindData, InstructionView};
+use super::ir_builder::constant_folder::ConstantFolder;
+use super::ir_builder::{IRBuilder, Positioned};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::TypeId;
-use super::value::{HasDebugLoc, HasName, Typed, Value, ValueId, ValueKindData, sealed};
+use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
 use super::{DebugLoc, IrError, IrResult, Type};
 use core::cell::RefCell;
+use core::iter::FusedIterator;
 use core::marker::PhantomData;
 
 // --------------------------------------------------------------------------
@@ -66,7 +69,7 @@ impl BasicBlockData {
 /// `ty` field carries that label type's id without allocating.
 ///
 /// The `R: ReturnMarker` parameter pins the parent function's return
-/// shape at the type level so a typed [`IRBuilder`](crate::IRBuilder)
+/// shape at the type level so a typed [`IRBuilder`]
 /// positioned inside the block can keep its compile-time `build_ret`
 /// invariant.
 ///
@@ -193,13 +196,22 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     BasicBlockLabel<'ctx, R, B, Params>
 {
     /// Widen this copyable label reference to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes, so the label stays usable afterwards.
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
             ty: self.ty,
         }
+    }
+
+    /// Opaque arena id of the underlying value (same id as
+    /// [`to_erased`](Self::to_erased)).
+    #[inline]
+    pub fn id(&self) -> ValueId {
+        self.to_erased().id
     }
 
     /// Drop the typed parameter marker, yielding the parameter-erased
@@ -411,6 +423,19 @@ where
 }
 
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
+    BasicBlock<'ctx, R, Unterminated, B, Params>
+{
+    /// Positioned builder at the end of this block. `bb.builder()` is
+    /// exactly [`IRBuilder::at_end(bb)`](crate::IRBuilder::at_end) — the
+    /// return marker `R` is inferred from the block, so no turbofish is
+    /// needed. Reads better when `bb` is already in hand.
+    #[inline]
+    pub fn builder(self) -> IRBuilder<'ctx, 'ctx, B, ConstantFolder, Positioned, R> {
+        IRBuilder::at_end(self)
+    }
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     BlockCall<'ctx, R, B, Params>
 {
     /// Decompose into the parameter-erased target label and the edge's
@@ -471,13 +496,22 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     }
 
     /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes, so the block stays usable afterwards.
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
             ty: self.ty,
         }
+    }
+
+    /// Opaque arena id of the underlying value (same id as
+    /// [`to_erased`](Self::to_erased)).
+    #[inline]
+    pub fn id(&self) -> ValueId {
+        self.to_erased().id
     }
 
     /// Erase the return-shape marker (and the parameter marker), producing
@@ -530,7 +564,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 
     /// Borrow the storage payload.
     fn data(&self) -> &'ctx BasicBlockData {
-        match &self.as_value().data().kind {
+        match &self.to_erased().data().kind {
             ValueKindData::BasicBlock(b) => b,
             // The handle was produced by a constructor that pushed a
             // BasicBlock variant; the kind cannot have changed.
@@ -541,7 +575,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// Optional textual name. Mirrors `BasicBlock::getName`.
     #[inline]
     pub fn name(&self) -> Option<String> {
-        self.as_value().name()
+        self.to_erased().name()
     }
 
     /// Set or clear the textual name.
@@ -551,13 +585,13 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     where
         Name: Into<String>,
     {
-        self.as_value().set_name(module_token, name);
+        self.to_erased().set_name(module_token, name);
     }
 
     /// Clear the textual name.
     #[inline]
     pub fn clear_name(&self, module_token: &Module<'ctx, B, Unverified>) {
-        self.as_value().clear_name(module_token);
+        self.to_erased().clear_name(module_token);
     }
 
     /// Owning module reference.
@@ -598,7 +632,10 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     }
 
     /// Iterate read-only instruction views in program order.
-    pub fn instructions(&self) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>> {
+    pub fn instructions(
+        &self,
+    ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>> + DoubleEndedIterator + FusedIterator
+    {
         let module = self.module;
         let ids = self.instruction_ids();
         ids.into_iter()
@@ -732,7 +769,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         let source_fn_id = self.parent_id();
         let dest_fn_id = dest.parent_id();
         let rehome_names = source_fn_id != dest_fn_id;
-        let dest_id = dest.as_value().id;
+        let dest_id = dest.id();
         let drained: Vec<ValueId> = {
             let mut src = self.data().instructions.borrow_mut();
             core::mem::take(&mut *src)
@@ -792,7 +829,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         let parent_fn =
             FunctionValue::<'ctx, R, B>::from_parts_unchecked(parent_fn_id, self.module);
         let new_block = parent_fn.append_basic_block(module_token, name);
-        let split_id = before.as_value().id;
+        let split_id = before.id();
         let suffix: Vec<ValueId> = {
             let mut src = self.data().instructions.borrow_mut();
             let pos =
@@ -803,7 +840,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
                     })?;
             src.split_off(pos)
         };
-        let new_id = new_block.as_value().id;
+        let new_id = new_block.id();
         {
             let mut dst = new_block.data().instructions.borrow_mut();
             dst.extend(suffix.iter().copied());
@@ -824,7 +861,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {
-        self.as_value().ty()
+        self.to_erased().ty()
     }
 }
 impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, Params: BlockParams>
@@ -851,7 +888,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
-        self.as_value().debug_loc()
+        self.to_erased().debug_loc()
     }
 }
 
@@ -860,7 +897,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 {
     #[inline]
     fn from(b: BasicBlock<'ctx, R, Term, B, Params>) -> Self {
-        b.as_value()
+        b.to_erased()
     }
 }
 
@@ -927,40 +964,36 @@ mod tests {
     fn erased_block_value_narrows_to_dyn_params_label() {
         Module::with_new("bp-slice1-narrow", |m| {
             let void_ty = m.void_type().as_type();
-            let fn_ty = m.fn_type(void_ty, Vec::<Type>::new(), false);
-            let f = m
-                .add_function::<(), _>("f", fn_ty, Linkage::External)
-                .unwrap();
+            let fn_ty = m.fn_type_no_params(void_ty, false);
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
             let bb = f.append_basic_block(&m, "entry");
 
             // A label recovered from an untyped `Value` carries no static
             // parameter promise, so it must land in the `BlockParamsDyn`
             // form (proved at compile time by `assert_dyn_params`).
-            let v: Value<'_, _> = bb.as_value();
+            let v: Value<'_, _> = bb.to_erased();
             let recovered: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = v
                 .try_into()
                 .expect("a basic-block value narrows to a label");
-            assert_eq!(recovered.as_value().id, bb.as_value().id);
+            assert_eq!(recovered.id(), bb.id());
             assert_dyn_params(recovered);
         });
     }
 
     #[test]
-    fn label_as_value_round_trips_to_dyn_params() {
+    fn label_to_erased_round_trips_to_dyn_params() {
         Module::with_new("bp-slice1-roundtrip", |m| {
             let void_ty = m.void_type().as_type();
-            let fn_ty = m.fn_type(void_ty, Vec::<Type>::new(), false);
-            let f = m
-                .add_function::<(), _>("f", fn_ty, Linkage::External)
-                .unwrap();
+            let fn_ty = m.fn_type_no_params(void_ty, false);
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
             let bb = f.append_basic_block(&m, "entry");
             let label = bb.label();
 
             let round: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = label
-                .as_value()
+                .to_erased()
                 .try_into()
                 .expect("a label's value round-trips to a label");
-            assert_eq!(round.as_value().id, label.as_value().id);
+            assert_eq!(round.id(), label.id());
             assert_dyn_params(round);
         });
     }
@@ -968,7 +1001,7 @@ mod tests {
     #[test]
     fn non_block_value_is_rejected() {
         Module::with_new("bp-slice1-reject", |m| {
-            let v = m.i32_type().const_zero().as_value();
+            let v = m.i32_type().const_zero().into_erased();
             let narrowed: IrResult<BasicBlockLabel<'_, Dyn, _, BlockParamsDyn>> = v.try_into();
             assert!(
                 narrowed.is_err(),

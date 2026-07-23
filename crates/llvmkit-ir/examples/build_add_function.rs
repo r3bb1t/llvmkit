@@ -24,7 +24,7 @@ fn build() -> Result<(), IrError> {
         let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::at_end(entry);
         let (lhs, rhs) = f.params();
         let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
         b.build_ret(sum)?;

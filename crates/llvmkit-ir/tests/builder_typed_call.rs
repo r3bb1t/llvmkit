@@ -19,7 +19,7 @@
 //! own upstream citation per Doctrine D11.
 
 use llvmkit_ir::{
-    Brand, CallSiteConfig, IRBuilder, IntValue, IrError, Linkage, Module, PointerValue, Ptr,
+    Brand, CallSiteConfig, Dyn, IRBuilder, IntValue, IrError, Linkage, Module, PointerValue, Ptr,
     TypeKindLabel, Unverified,
 };
 
@@ -177,7 +177,7 @@ fn typed_invoke_wires_multiple_argument_operands_in_order() -> Result<(), IrErro
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let (_sealed, invoke) =
             b.build_invoke(callee, (a, b_arg, p), normal_label, unwind_label, "iv")?;
-        let result: IntValue<i32> = invoke.as_value().try_into()?;
+        let result: IntValue<i32> = invoke.to_erased().try_into()?;
         let bn = IRBuilder::new_for::<i32>(&m).position_at_end(normal);
         bn.build_ret(result)?;
         let text = format!("{m}");
@@ -225,7 +225,7 @@ fn build_varargs_call_printf_shape_two_fixed_args_and_int_tail() -> Result<(), I
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let (fmt, level) = caller.params();
         let extra = i32_ty.const_int(7_i32);
-        let call = b.build_varargs_call(callee, (fmt, level), [extra.as_value()], "r")?;
+        let call = b.build_varargs_call(callee, (fmt, level), [extra.into_erased()], "r")?;
         b.build_ret(call.result())?;
         let text = format!("{m}");
         assert!(
@@ -265,15 +265,21 @@ fn typed_call_full_module_print_equals_dyn_call_full_module_print() -> Result<()
     }
     fn build_dyn<'ctx>(m: &Module<'ctx, Brand<'ctx>, Unverified>) -> Result<(), IrError> {
         let i32_ty = m.i32_type();
-        let callee_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-        let callee = m.add_function::<i32, _>("callee", callee_ty, Linkage::External)?;
+        // The callee stays typed: `build_call_dyn` propagates the
+        // callee's return marker into the `CallInst`, and the dyn arm's
+        // `return_int_value()` accessor is gated on that marker.
+        let callee = m.add_typed_function::<i32, (i32, i32), _>("callee", Linkage::External)?;
         let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-        let caller = m.add_function::<i32, _>("caller", caller_ty, Linkage::External)?;
+        let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(m, "entry");
-        let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
         let x: IntValue<i32> = caller.param(0)?.try_into()?;
         let y: IntValue<i32> = caller.param(1)?.try_into()?;
-        let inst = b.build_call_dyn(callee, [x.as_value(), y.as_value()], "r")?;
+        let inst = b.build_call_dyn(
+            callee.as_function(),
+            [x.into_erased(), y.into_erased()],
+            "r",
+        )?;
         b.build_ret(inst.return_int_value())?;
         Ok(())
     }
@@ -311,9 +317,9 @@ fn typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_pr
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let host_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
-        let host = m.add_function::<i32, _>("host", host_ty, Linkage::External)?;
+        let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
         let entry = host.append_basic_block(m, "entry");
-        let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
         let callee_ptr = PointerValue::try_from(host.param(0)?)?;
         let x = i32_ty.const_int(7_i32);
         let call = b.build_indirect_call::<fn(i32) -> i32, _, _>(callee_ptr, (x,), "r")?;
@@ -324,14 +330,14 @@ fn typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_pr
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let host_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
-        let host = m.add_function::<i32, _>("host", host_ty, Linkage::External)?;
+        let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
         let entry = host.append_basic_block(m, "entry");
-        let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
         let callee_ptr = PointerValue::try_from(host.param(0)?)?;
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let x = i32_ty.const_int(7_i32);
         let inst =
-            b.build_indirect_call_dyn::<i32, _, _, _>(fn_ty, callee_ptr, [x.as_value()], "r")?;
+            b.build_indirect_call_dyn::<i32, _, _, _>(fn_ty, callee_ptr, [x.into_erased()], "r")?;
         b.build_ret(inst.return_int_value())?;
         Ok(())
     }
@@ -372,14 +378,14 @@ fn build_call_dyn_rejects_wrong_argument_count() -> Result<(), IrError> {
     Module::with_new("c", |m| {
         let i32_ty = m.i32_type();
         let callee_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-        let callee = m.add_function::<i32, _>("callee", callee_ty, Linkage::External)?;
+        let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
         let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let caller = m.add_function::<i32, _>("caller", caller_ty, Linkage::External)?;
+        let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: IntValue<i32> = caller.param(0)?.try_into()?;
         let err = b
-            .build_call_dyn(callee, [x.as_value()], "bad")
+            .build_call_dyn(callee, [x.into_erased()], "bad")
             .expect_err("one argument against a two-parameter callee must be rejected");
         assert_eq!(
             err,
@@ -388,7 +394,7 @@ fn build_call_dyn_rejects_wrong_argument_count() -> Result<(), IrError> {
                 got: 1,
             }
         );
-        let _ = b.build_ret(0_i32);
+        let _ = b.build_ret(i32_ty.const_int(0_i32));
         Ok(())
     })
 }
@@ -405,14 +411,14 @@ fn build_call_dyn_rejects_wrong_argument_type() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let f64_ty = m.f64_type();
         let callee_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let callee = m.add_function::<i32, _>("callee", callee_ty, Linkage::External)?;
+        let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
         let caller_ty = m.fn_type(i32_ty, [f64_ty.as_type()], false);
-        let caller = m.add_function::<i32, _>("caller", caller_ty, Linkage::External)?;
+        let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: llvmkit_ir::FloatValue<f64> = caller.param(0)?.try_into()?;
         let err = b
-            .build_call_dyn(callee, [x.as_value()], "bad")
+            .build_call_dyn(callee, [x.into_erased()], "bad")
             .expect_err("an f64 argument against an i32 parameter must be rejected");
         assert_eq!(
             err,
@@ -422,7 +428,7 @@ fn build_call_dyn_rejects_wrong_argument_type() -> Result<(), IrError> {
                 got: "double".to_owned(),
             }
         );
-        let _ = b.build_ret(0_i32);
+        let _ = b.build_ret(i32_ty.const_int(0_i32));
         Ok(())
     })
 }
@@ -440,9 +446,10 @@ fn build_call_dyn_rejects_wrong_argument_type() -> Result<(), IrError> {
 /// `build_indirect_call_dyn` computed `expected` from `fn_ty`'s own
 /// return type instead of from the caller-asserted marker `R2`, so a
 /// mismatch always reported `expected == got`, never actually telling
-/// the caller what marker they asserted. Mirrors
-/// `Module::add_function`'s `signature_matches_marker` gate applied at
-/// an indirect call site.
+/// the caller what marker they asserted. Mirrors the
+/// `signature_matches_marker` gate on the checked declaration/lookup
+/// paths (`FunctionBuilder::build`, the typed `function_by_name`) applied
+/// at an indirect call site.
 #[test]
 fn build_indirect_call_dyn_int_marker_against_void_fn_type_reports_asymmetric_mismatch()
 -> Result<(), IrError> {
@@ -450,9 +457,9 @@ fn build_indirect_call_dyn_int_marker_against_void_fn_type_reports_asymmetric_mi
         let void_ty = m.void_type();
         let ptr_ty = m.ptr_type(0);
         let host_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
-        let host = m.add_function::<(), _>("host", host_ty, Linkage::External)?;
+        let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
         let entry = host.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let callee_ptr = PointerValue::try_from(host.param(0)?)?;
         // The asserted callee function type returns `void`, but `R2 =
         // i32` asserts an integer result -- a mismatch.
@@ -472,7 +479,7 @@ fn build_indirect_call_dyn_int_marker_against_void_fn_type_reports_asymmetric_mi
                 got: TypeKindLabel::Void,
             }
         );
-        b.build_ret_void();
+        b.build_ret_void()?;
         Ok(())
     })
 }

@@ -97,7 +97,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn into_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -492,11 +492,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     }
 }
 
+impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for GlobalVariable<'ctx, B> {
+    /// Print the full definition line `@name = <linkage> global <type>
+    /// <init>, ...`, exactly as it appears in module output. Matches the
+    /// module-level sibling handles [`GlobalAlias`](crate::GlobalAlias) and
+    /// [`GlobalIFunc`](crate::GlobalIFunc), which likewise print their
+    /// definition rather than their operand form.
+    ///
+    /// To print the global the way it appears as an instruction operand
+    /// (`ptr @name`), go through [`GlobalVariable::into_erased`] instead.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        crate::asm_writer::fmt_global(f, *self)
+    }
+}
+
 impl<'ctx, B: ModuleBrand> sealed::Sealed for GlobalVariable<'ctx, B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalVariable<'ctx, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
-        GlobalVariable::as_value(self)
+    fn into_erased(self) -> Value<'ctx, B> {
+        GlobalVariable::into_erased(self)
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for GlobalVariable<'ctx, B> {
@@ -513,7 +527,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for GlobalVariable<'ctx, B> {
 }
 impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalVariable<'ctx, B> {
     fn name(self) -> Option<String> {
-        self.as_value().name()
+        self.into_erased().name()
     }
     fn set_name<Name>(self, _module_token: &Module<'ctx, B, Unverified>, _name: Name)
     where
@@ -534,7 +548,7 @@ impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalVariable<'_, B> {
 impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalVariable<'ctx, B>> for Value<'ctx, B> {
     #[inline]
     fn from(g: GlobalVariable<'ctx, B>) -> Self {
-        g.as_value()
+        g.into_erased()
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalVariable<'ctx, B>> for Constant<'ctx, B> {
@@ -582,7 +596,6 @@ pub struct GlobalBuilder<'ctx, B: ModuleBrand = Brand<'ctx>> {
     is_constant: bool,
     externally_initialized: bool,
     initializer: Option<ValueId>,
-    initializer_type: Option<TypeId>,
     linkage: Linkage,
     visibility: Visibility,
     dll_storage_class: DllStorageClass,
@@ -607,7 +620,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
             is_constant: false,
             externally_initialized: false,
             initializer: None,
-            initializer_type: None,
             linkage: Linkage::External,
             visibility: Visibility::Default,
             dll_storage_class: DllStorageClass::Default,
@@ -704,29 +716,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
         self
     }
 
-    /// Attach an initializer. Errors at build time if the
-    /// initializer's type does not match the value type.
+    /// Attach an initializer.
+    ///
+    /// The builder records the constant's id; callers are responsible for
+    /// supplying an initializer whose type matches the global's value type
+    /// (the higher-level `Module::add_global` derives the value type from
+    /// the initializer, so they always agree by construction).
     pub fn initializer<C: IsConstant<'ctx, B>>(mut self, init: C) -> Self {
         let constant = init.as_constant();
         self.initializer = Some(constant.id);
-        self.initializer_type = Some(constant.ty);
         self
     }
 
     /// Materialise the global. Mirrors the second
     /// `GlobalVariable::GlobalVariable(Module &M, ...)` ctor.
     pub fn build(self) -> IrResult<GlobalVariable<'ctx, B>> {
-        if let Some(init_ty) = self.initializer_type
-            && init_ty != self.value_type
-        {
-            let module = self.module;
-            let want = Type::new(self.value_type, module).kind_label();
-            let got = Type::new(init_ty, module).kind_label();
-            return Err(IrError::TypeMismatch {
-                expected: want,
-                got,
-            });
-        }
         self.module.module().install_global_variable::<B>(self)
     }
 
@@ -739,7 +743,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
             is_constant,
             externally_initialized,
             initializer,
-            initializer_type: _,
             linkage,
             visibility,
             dll_storage_class,

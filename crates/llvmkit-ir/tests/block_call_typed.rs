@@ -17,9 +17,9 @@ use llvmkit_ir::{IRBuilder, IntPredicate, IntValue, IrError, Linkage, Module, Po
 #[test]
 fn build_br_call_seeds_typed_head_phi_and_verifies() -> Result<(), IrError> {
     Module::with_new("block_call_br", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m
+            .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
+            .as_function();
         let entry = f.append_basic_block(&m, "entry");
 
         // head(%p: i32): a typed one-i32-parameter block. `params` is the typed
@@ -59,10 +59,9 @@ fn build_br_call_seeds_typed_head_phi_and_verifies() -> Result<(), IrError> {
 #[test]
 fn block_call_convenience_two_params_verifies() -> Result<(), IrError> {
     Module::with_new("block_call_two", |m| {
-        let i32_ty = m.i32_type();
-        let ptr_ty = m.ptr_type(0);
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), ptr_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m
+            .add_typed_function::<i32, (i32, Ptr), _>("f", Linkage::External)?
+            .as_function();
         let entry = f.append_basic_block(&m, "entry");
 
         // head(%pi: i32, %pp: ptr): a typed two-parameter block.
@@ -100,9 +99,9 @@ fn block_call_convenience_two_params_verifies() -> Result<(), IrError> {
 #[test]
 fn build_cond_br_call_two_targets_verify() -> Result<(), IrError> {
     Module::with_new("block_call_condbr", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m
+            .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
+            .as_function();
         let entry = f.append_basic_block(&m, "entry");
 
         // then(%pt: i32) and else(%pe: i32): two typed one-parameter blocks.
@@ -146,8 +145,9 @@ fn build_cond_br_call_two_targets_verify() -> Result<(), IrError> {
 fn build_cond_br_call_distinct_schemas_per_edge() -> Result<(), IrError> {
     Module::with_new("block_call_condbr_mixed", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m
+            .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
+            .as_function();
         let entry = f.append_basic_block(&m, "entry");
 
         // then(%pt: i32) is typed `(i32,)`; join() is typed `()` (no head-phis).
@@ -185,8 +185,9 @@ fn build_cond_br_call_distinct_schemas_per_edge() -> Result<(), IrError> {
 fn erased_build_br_with_args_still_works() -> Result<(), IrError> {
     Module::with_new("block_call_erased", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m
+            .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
+            .as_function();
         let entry = f.append_basic_block(&m, "entry");
 
         let bwp = IRBuilder::new_for::<i32>(&m);
@@ -196,7 +197,7 @@ fn erased_build_br_with_args_still_works() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let a: IntValue<i32> = f.param(0)?.try_into()?;
         let x = b.build_int_add(a, 1_i32, "x")?;
-        b.build_br_with_args(hdr_label, &[x.as_value()])?;
+        b.build_br_with_args(hdr_label, &[x.into_erased()])?;
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(hdr);
         let p: IntValue<i32> = params[0].try_into()?;

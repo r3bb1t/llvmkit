@@ -25,6 +25,7 @@
 //!   [`IsValue`] / [`Typed`] / [`HasName`] / [`HasDebugLoc`] traits.
 
 use core::cell::RefCell;
+use core::iter::FusedIterator;
 use core::num::NonZeroUsize;
 
 use super::argument::Argument;
@@ -386,7 +387,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     /// (erase, RAUW) without invalidating the iterator. Order is
     /// registration-order; user ids may appear more than once if the same
     /// instruction references this value in multiple slots.
-    pub fn users(self) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>> + 'ctx {
+    pub fn users(
+        self,
+    ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         let module = self.module;
         let snapshot: Vec<ValueId> = self
             .data()
@@ -501,7 +507,15 @@ pub trait IsValue<'ctx, B: ModuleBrand = Brand<'ctx>>:
     sealed::Sealed + Copy + Sized + core::fmt::Debug
 {
     /// Widen to the erased [`Value`] handle.
-    fn as_value(self) -> Value<'ctx, B>;
+    fn into_erased(self) -> Value<'ctx, B>;
+
+    /// Opaque arena id of the underlying value. Every handle shares the
+    /// id of its erased [`Value`], so `x.id()` replaces the
+    /// `x.into_erased().id` widen-then-project chain.
+    #[inline]
+    fn id(self) -> ValueId {
+        self.into_erased().id
+    }
 }
 
 /// Sealed accessor trait: anything that has an IR type. Implemented by
@@ -529,7 +543,7 @@ pub trait HasDebugLoc: sealed::Sealed {
 impl<'ctx, B: ModuleBrand> sealed::Sealed for Value<'ctx, B> {}
 impl<'ctx, B: ModuleBrand> IsValue<'ctx, B> for Value<'ctx, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
+    fn into_erased(self) -> Value<'ctx, B> {
         self
     }
 }
@@ -589,7 +603,7 @@ macro_rules! decl_value_handle {
         impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
             /// Widen to the erased [`Value`] handle.
             #[inline]
-            pub fn as_value(self) -> Value<'ctx, B> {
+            pub fn into_erased(self) -> Value<'ctx, B> {
                 Value { id: self.id, module: self.module, ty: self.ty }
             }
 
@@ -607,7 +621,7 @@ macro_rules! decl_value_handle {
 
             /// Optional textual name.
             pub fn name(self) -> Option<String> {
-                self.as_value().name()
+                self.into_erased().name()
             }
 
             /// Set the textual name.
@@ -615,25 +629,33 @@ macro_rules! decl_value_handle {
             where
                 Name: Into<String>,
             {
-                self.as_value().set_name(module_token, name);
+                self.into_erased().set_name(module_token, name);
             }
 
             /// Clear the textual name.
             pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-                self.as_value().clear_name(module_token);
+                self.into_erased().clear_name(module_token);
             }
 
             /// Optional debug-location.
             #[inline]
             pub fn debug_loc(self) -> Option<DebugLoc> {
-                self.as_value().debug_loc()
+                self.into_erased().debug_loc()
+            }
+        }
+
+        impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for $name<'ctx, B> {
+            /// Print the operand form `<type> <ref>`, identical to what the
+            /// erased [`Value`] handle from `into_erased` prints.
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::Display::fmt(&Self::into_erased(*self), f)
             }
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for $name<'ctx, B> {}
         impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for $name<'ctx, B> {
             #[inline]
-            fn as_value(self) -> Value<'ctx, B> { Self::as_value(self) }
+            fn into_erased(self) -> Value<'ctx, B> { Self::into_erased(self) }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for $name<'ctx, B> {
             #[inline]
@@ -663,7 +685,7 @@ macro_rules! decl_value_handle {
 
         impl<'ctx, B: ModuleBrand + 'ctx> From<$name<'ctx, B>> for Value<'ctx, B> {
             #[inline]
-            fn from(v: $name<'ctx, B>) -> Self { v.as_value() }
+            fn from(v: $name<'ctx, B>) -> Self { v.into_erased() }
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for $name<'ctx, B> {
@@ -688,7 +710,7 @@ macro_rules! decl_value_handle {
             type Error = IrError;
             #[inline]
             fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
             }
         }
 
@@ -698,7 +720,7 @@ macro_rules! decl_value_handle {
             type Error = IrError;
             #[inline]
             fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
             }
         }
 
@@ -712,7 +734,7 @@ macro_rules! decl_value_handle {
                 i: Instruction<'ctx, Attached, B>,
             ) -> IrResult<Self> {
                 <Self as TryFrom<Value<'ctx, B>>>::try_from(
-                    Instruction::as_value(&i),
+                    Instruction::to_erased(&i),
                 )
             }
         }
@@ -727,9 +749,27 @@ decl_value_handle!(
     type_predicate |d| matches!(d, TypeData::Pointer { .. })
 );
 impl<'ctx, B: ModuleBrand + 'ctx> PointerValue<'ctx, B> {
-    /// Crate-internal: wrap a [`Value`] known to have a pointer type.
-    /// The IR builder uses this when it just produced a pointer-result
-    /// instruction (cast / GEP / alloca / load).
+    /// Crate-internal: wrap a [`Value`] **claimed** to have a pointer type,
+    /// without checking that it does.
+    ///
+    /// # Callers must guarantee
+    ///
+    /// `v`'s runtime type is a pointer type. As with
+    /// `IntValue::from_value_unchecked` (see it for the full account of the
+    /// obligation), the builder is not the only caller: `ir_builder.rs` attaches
+    /// the pointer marker to a freshly-appended instruction only through the
+    /// `append_ptr` / `append_ptr_load` constructors (which append at a
+    /// `PointerType`, proving pointer-ness by construction) — its other in-file
+    /// callers are the fold seams (runtime-checked) and the select-arm re-wrap;
+    /// `instructions.rs` re-wraps pointer operands read back out of an
+    /// instruction payload, `function_signature.rs` lifts pointer arguments
+    /// and block parameters, and `ssa_builder.rs` wraps arena reads against a
+    /// pointer variable's pinned type.
+    ///
+    /// Carries no address-space marker to contradict — unlike the int/float
+    /// handles, a `PointerValue` never statically pins one — so the claim
+    /// forged here is only "this is a pointer". The checked path is
+    /// `TryFrom<Value>`.
     #[inline]
     pub(super) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
         Self {
@@ -793,10 +833,20 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> fmt::Debug
     }
 }
 
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> fmt::Display
+    for ArrayValue<'ctx, E, L, B>
+{
+    /// Print the operand form `[N x T] <ref>`, identical to what the erased
+    /// [`Value`] handle from [`ArrayValue::into_erased`] prints.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&Self::into_erased(*self), f)
+    }
+}
+
 impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayValue<'ctx, E, L, B> {
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn into_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -815,23 +865,23 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayValue<'ctx, E, L
     }
     /// Optional textual name.
     pub fn name(self) -> Option<String> {
-        self.as_value().name()
+        self.into_erased().name()
     }
     /// Set the textual name.
     pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
-        self.as_value().set_name(module_token, name);
+        self.into_erased().set_name(module_token, name);
     }
     /// Clear the textual name.
     pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-        self.as_value().clear_name(module_token);
+        self.into_erased().clear_name(module_token);
     }
     /// Optional debug-location.
     #[inline]
     pub fn debug_loc(self) -> Option<DebugLoc> {
-        self.as_value().debug_loc()
+        self.into_erased().debug_loc()
     }
     /// Erase both markers; preserves the runtime element type / element count.
     #[inline]
@@ -845,11 +895,23 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayValue<'ctx, E, L
         }
     }
 
-    /// Crate-internal: wrap a [`Value`] known to have an array type of the
-    /// claimed element / length. The IR builder uses this when it just
-    /// produced an array-result instruction (`insertvalue`) whose element and
-    /// length markers are pinned by its statically-typed input array. Mirrors
+    /// Crate-internal: wrap a [`Value`] **claimed** to have an array type of
+    /// the given element / length, without checking that it does. Mirrors
     /// [`VectorValue::from_value_unchecked`](VectorValue).
+    ///
+    /// # Callers must guarantee
+    ///
+    /// `v`'s runtime type is an array whose element type and length are
+    /// exactly `E` and `L`. Two markers are forged here rather than one, so
+    /// the obligation is correspondingly wider — see
+    /// `IntValue::from_value_unchecked` for the full account of what it means
+    /// to mint a marker rather than verify it.
+    ///
+    /// Callers: `ir_builder.rs` wraps array-result instructions
+    /// (`insertvalue`) whose `E`/`L` are pinned by the statically-typed input
+    /// array, `instructions.rs` re-wraps array operands read back out of a
+    /// payload, and `function_signature.rs` lifts array arguments and block
+    /// parameters. The checked path is `TryFrom<Value>`.
     #[inline]
     pub(super) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
         Self {
@@ -870,8 +932,8 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> IsValue<'ctx, B>
     for ArrayValue<'ctx, E, L, B>
 {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
-        Self::as_value(self)
+    fn into_erased(self) -> Value<'ctx, B> {
+        Self::into_erased(self)
     }
 }
 impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> Typed<'ctx, B>
@@ -914,7 +976,7 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> From<ArrayValue<'ctx,
 {
     #[inline]
     fn from(v: ArrayValue<'ctx, E, L, B>) -> Self {
-        v.as_value()
+        v.into_erased()
     }
 }
 
@@ -947,7 +1009,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>>
     type Error = IrError;
     #[inline]
     fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
@@ -956,7 +1018,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
     type Error = IrError;
     #[inline]
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
@@ -965,7 +1027,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
     type Error = IrError;
     #[inline]
     fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::to_erased(&i))
     }
 }
 
@@ -1037,7 +1099,7 @@ pub struct StructValue<'ctx, B: ModuleBrand = Brand<'ctx>> {
 impl<'ctx, B: ModuleBrand + 'ctx> StructValue<'ctx, B> {
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn into_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -1045,6 +1107,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> StructValue<'ctx, B> {
         }
     }
 
+    /// Crate-internal: wrap a [`Value`] **claimed** to have a struct type,
+    /// without checking that it does.
+    ///
+    /// # Callers must guarantee
+    ///
+    /// `v`'s runtime type is a struct type. The body stays erased
+    /// (`StructBodyDyn`), so — as with [`PointerValue`] and unlike the
+    /// int/float handles — the only claim forged here is the kind itself; a
+    /// schema-typed wrapper is minted separately against a
+    /// `ValidatedStructValue` witness. See
+    /// `IntValue::from_value_unchecked` for the full account of the
+    /// obligation.
+    ///
+    /// Callers: `ir_builder.rs` wraps struct-result instructions it just
+    /// produced, `instructions.rs` re-wraps struct operands read back out of
+    /// a payload, and `struct_schema.rs` lifts schema-typed values and
+    /// arguments. The checked path is `TryFrom<Value>`.
     #[inline]
     pub(crate) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
         Self {
@@ -1068,7 +1147,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> StructValue<'ctx, B> {
 
     /// Optional textual name.
     pub fn name(self) -> Option<String> {
-        self.as_value().name()
+        self.into_erased().name()
     }
 
     /// Set the textual name.
@@ -1076,26 +1155,34 @@ impl<'ctx, B: ModuleBrand + 'ctx> StructValue<'ctx, B> {
     where
         Name: Into<String>,
     {
-        self.as_value().set_name(module_token, name);
+        self.into_erased().set_name(module_token, name);
     }
 
     /// Clear the textual name.
     pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-        self.as_value().clear_name(module_token);
+        self.into_erased().clear_name(module_token);
     }
 
     /// Optional debug-location.
     #[inline]
     pub fn debug_loc(self) -> Option<DebugLoc> {
-        self.as_value().debug_loc()
+        self.into_erased().debug_loc()
     }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for StructValue<'ctx, B> {}
+impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for StructValue<'ctx, B> {
+    /// Print the operand form `{ ... } <ref>`, identical to what the erased
+    /// [`Value`] handle from [`StructValue::into_erased`] prints.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&Self::into_erased(*self), f)
+    }
+}
+
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for StructValue<'ctx, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
-        Self::as_value(self)
+    fn into_erased(self) -> Value<'ctx, B> {
+        Self::into_erased(self)
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for StructValue<'ctx, B> {
@@ -1131,7 +1218,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasDebugLoc for StructValue<'ctx, B> {
 impl<'ctx, B: ModuleBrand + 'ctx> From<StructValue<'ctx, B>> for Value<'ctx, B> {
     #[inline]
     fn from(v: StructValue<'ctx, B>) -> Self {
-        v.as_value()
+        v.into_erased()
     }
 }
 
@@ -1158,7 +1245,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>> for StructValue<'ct
     type Error = IrError;
     #[inline]
     fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
     }
 }
 
@@ -1166,7 +1253,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>> for StructValue<'ct
     type Error = IrError;
     #[inline]
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
     }
 }
 
@@ -1174,7 +1261,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>> for St
     type Error = IrError;
     #[inline]
     fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::to_erased(&i))
     }
 }
 
@@ -1224,11 +1311,35 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> fmt::Debug for VectorVa
     }
 }
 
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> fmt::Display
+    for VectorValue<'ctx, E, L, B>
+{
+    /// Print the operand form `<N x T> <ref>`, identical to what the erased
+    /// [`Value`] handle from [`VectorValue::into_erased`] prints.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&Self::into_erased(*self), f)
+    }
+}
+
 impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorValue<'ctx, E, L, B> {
-    /// Crate-internal: wrap a [`Value`] known to have a vector type of the
-    /// claimed element / length. The IR builder uses the erased form when it
-    /// just produced a vector-result instruction (insertelement /
-    /// shufflevector / splat); typed callers pass the pinned `E, L`.
+    /// Crate-internal: wrap a [`Value`] **claimed** to have a vector type of
+    /// the given element / length, without checking that it does.
+    ///
+    /// # Callers must guarantee
+    ///
+    /// `v`'s runtime type is a vector whose element type and length are
+    /// exactly `E` and `L`. As on the array twin, two markers are forged at
+    /// once — see `IntValue::from_value_unchecked` for the full account of
+    /// the obligation.
+    ///
+    /// Callers: `ir_builder.rs` wraps vector-result instructions it just
+    /// produced (insertelement / shufflevector / splat) — using the erased
+    /// form where the shape is not statically known, and passing the pinned
+    /// `E, L` where it is; `instructions.rs` re-wraps vector operands read
+    /// back out of a payload; `function_signature.rs` lifts vector arguments
+    /// and block parameters. `element.rs` gates its own raw wrap behind the
+    /// unforgeable [`WrapWitness`](crate::element::WrapWitness) instead. The
+    /// checked path here is `TryFrom<Value>`.
     #[inline]
     pub(super) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
         Self {
@@ -1242,7 +1353,7 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorValue<'ctx, E, L,
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn into_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -1261,23 +1372,23 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorValue<'ctx, E, L,
     }
     /// Optional textual name.
     pub fn name(self) -> Option<String> {
-        self.as_value().name()
+        self.into_erased().name()
     }
     /// Set the textual name.
     pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
-        self.as_value().set_name(module_token, name);
+        self.into_erased().set_name(module_token, name);
     }
     /// Clear the textual name.
     pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-        self.as_value().clear_name(module_token);
+        self.into_erased().clear_name(module_token);
     }
     /// Optional debug-location.
     #[inline]
     pub fn debug_loc(self) -> Option<DebugLoc> {
-        self.as_value().debug_loc()
+        self.into_erased().debug_loc()
     }
     /// Erase both markers; preserves the runtime element type / lane count.
     #[inline]
@@ -1300,8 +1411,8 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> IsValue<'ctx, B>
     for VectorValue<'ctx, E, L, B>
 {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
-        Self::as_value(self)
+    fn into_erased(self) -> Value<'ctx, B> {
+        Self::into_erased(self)
     }
 }
 impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> Typed<'ctx, B>
@@ -1344,7 +1455,7 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> From<VectorValue<'ctx, 
 {
     #[inline]
     fn from(v: VectorValue<'ctx, E, L, B>) -> Self {
-        v.as_value()
+        v.into_erased()
     }
 }
 
@@ -1380,7 +1491,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>>
     type Error = IrError;
     #[inline]
     fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
@@ -1389,7 +1500,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
     type Error = IrError;
     #[inline]
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
@@ -1398,7 +1509,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
     type Error = IrError;
     #[inline]
     fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::to_erased(&i))
     }
 }
 
@@ -1511,9 +1622,54 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> fmt::Debug for IntValue<'ctx, W, 
 }
 
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
-    /// Crate-internal: wrap a [`Value`] known to have type `iN` with width `W`.
-    /// The IRBuilder uses this when it just produced an instruction whose
-    /// type matches the operand widths it validated.
+    /// Crate-internal: wrap a [`Value`] **claimed** to have type `iN` with
+    /// width `W`, without checking that it does.
+    ///
+    /// This *mints* the claim `W` makes rather than verifying it, so `W` is
+    /// only ever as honest as the caller. Crate-internal is the entire
+    /// safety story: `pub(crate)` is what keeps external safe code from
+    /// forging an `IntValue<W>` whose marker contradicts its runtime type.
+    /// The checked paths are `TryFrom<Value>` (per concrete marker) and
+    /// `IntWidth::narrow` (from marker-generic code); prefer them anywhere
+    /// the runtime type is not already proven.
+    ///
+    /// # Callers must guarantee
+    ///
+    /// `v`'s runtime type is exactly `W`'s. This is an obligation to
+    /// discharge, not a given — the in-crate callers are not equally safe,
+    /// and they are not all the builder:
+    ///
+    /// - `ir_builder.rs` — as of the unforgeable-markers cycle, an int marker is
+    ///   attached to a freshly-appended instruction *only* through the typed-append
+    ///   constructor family (`append_int_like` / `append_int_at` / `append_int_load`),
+    ///   each of which appends the instruction AT a typed `IntType<W>` (or a `W`-typed
+    ///   operand) and re-wraps the result — so the marker matches the runtime type by
+    ///   construction, not by a proof the reader must reconstruct. The other in-file
+    ///   callers are the fold seams (below) and the `ptrtoaddr` `IntDyn` re-wrap (which
+    ///   claims only integer-ness). This confinement is *audited*, not compiler-enforced:
+    ///   `from_value_unchecked` stays `pub(crate)` — a hard seal is impossible, since
+    ///   `value` and `ir_builder` are sibling modules and the constructors need
+    ///   `ir_builder`-private helpers — so the fold re-checks remain the backstop.
+    /// - `instructions.rs` — re-wraps an operand read back out of an
+    ///   instruction's own payload, whose type the builder pinned going in.
+    /// - `function_signature.rs` — argument and block-parameter (head-phi)
+    ///   lifts, pinned by the marker the function or block was declared with.
+    /// - `ssa_builder.rs` — arena reads (`use_int_var`) wrap the variable's
+    ///   pinned `ty`; `def_int_var` is what makes that safe, by checking
+    ///   every write against it.
+    /// - `ir_builder/folder.rs` — fold results, but only *after*
+    ///   `Type::require_match` has compared the two runtime types.
+    /// - `int_width.rs` — the `IntoIntValue` lifts, on constants they just
+    ///   built at `W`'s own type.
+    ///
+    /// The riskiest caller is the one this doc used to omit: a folder hook is
+    /// an *extension point*, and an in-crate folder that wraps a wrong-width
+    /// payload here is exactly the bug the builder's `accept_folded_int` /
+    /// `narrow_folded_int` seams exist to catch — see
+    /// `hostile_native_typed_override_wrong_width_rejected_at_static_width`
+    /// (`ir_builder.rs`). Those seams check every marker, static ones
+    /// included, precisely because this method makes a static `W` no more
+    /// trustworthy than the code that wrote it.
     #[inline]
     pub(crate) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
         Self {
@@ -1526,7 +1682,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn into_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -1545,23 +1701,23 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
     }
     /// Optional textual name.
     pub fn name(self) -> Option<String> {
-        self.as_value().name()
+        self.into_erased().name()
     }
     /// Set the textual name.
     pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
-        self.as_value().set_name(module_token, name);
+        self.into_erased().set_name(module_token, name);
     }
     /// Clear the textual name.
     pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-        self.as_value().clear_name(module_token);
+        self.into_erased().clear_name(module_token);
     }
     /// Optional debug-location.
     #[inline]
     pub fn debug_loc(self) -> Option<DebugLoc> {
-        self.as_value().debug_loc()
+        self.into_erased().debug_loc()
     }
     /// Erase the width marker; preserves the runtime width.
     #[inline]
@@ -1576,10 +1732,19 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
 }
 
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> sealed::Sealed for IntValue<'ctx, W, B> {}
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> fmt::Display for IntValue<'ctx, W, B> {
+    /// Print the operand form `i<N> <ref>`, identical to what the erased
+    /// [`Value`] handle from [`IntValue::into_erased`] prints. A constant
+    /// operand prints its signed-decimal literal in place of the `<ref>`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&Self::into_erased(*self), f)
+    }
+}
+
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for IntValue<'ctx, W, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
-        Self::as_value(self)
+    fn into_erased(self) -> Value<'ctx, B> {
+        Self::into_erased(self)
     }
 }
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> Typed<'ctx, B> for IntValue<'ctx, W, B> {
@@ -1614,7 +1779,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> HasDebugLoc for IntValue<'ctx, W,
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> From<IntValue<'ctx, W, B>> for Value<'ctx, B> {
     #[inline]
     fn from(v: IntValue<'ctx, W, B>) -> Self {
-        v.as_value()
+        v.into_erased()
     }
 }
 
@@ -1641,14 +1806,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>> for IntValue<'ctx, 
     type Error = IrError;
     #[inline]
     fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>> for IntValue<'ctx, IntDyn, B> {
     type Error = IrError;
     #[inline]
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
@@ -1657,7 +1822,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
     type Error = IrError;
     #[inline]
     fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::to_erased(&i))
     }
 }
 
@@ -1692,7 +1857,7 @@ macro_rules! impl_int_value_static_try_from {
             type Error = IrError;
             #[inline]
             fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
@@ -1701,7 +1866,7 @@ macro_rules! impl_int_value_static_try_from {
             type Error = IrError;
             #[inline]
             fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
@@ -1710,7 +1875,7 @@ macro_rules! impl_int_value_static_try_from {
             type Error = IrError;
             #[inline]
             fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::to_erased(&i))
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<IntValue<'ctx, IntDyn, B>>
@@ -1718,7 +1883,7 @@ macro_rules! impl_int_value_static_try_from {
         {
             type Error = IrError;
             fn try_from(v: IntValue<'ctx, IntDyn, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(v.as_value())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(v.into_erased())
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> From<IntValue<'ctx, $marker, B>>
@@ -1769,7 +1934,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<Argument<'ctx, B>>
     type Error = IrError;
     #[inline]
     fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<Constant<'ctx, B>>
@@ -1778,7 +1943,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<Constant<'ctx, B>>
     type Error = IrError;
     #[inline]
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<Instruction<'ctx, Attached, B>>
@@ -1787,7 +1952,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<Instruction<'ctx, Attach
     type Error = IrError;
     #[inline]
     fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::to_erased(&i))
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<IntValue<'ctx, IntDyn, B>>
@@ -1796,7 +1961,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> TryFrom<IntValue<'ctx, IntDyn, B
     type Error = IrError;
     #[inline]
     fn try_from(v: IntValue<'ctx, IntDyn, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(v.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(v.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> From<IntValue<'ctx, Width<N>, B>>
@@ -1851,7 +2016,23 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> fmt::Debug for FloatValue<'ctx, 
 }
 
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
-    /// Crate-internal: wrap a [`Value`] known to have a float type of kind `K`.
+    /// Crate-internal: wrap a [`Value`] **claimed** to have a float type of
+    /// kind `K`, without checking that it does.
+    ///
+    /// The float twin of `IntValue::from_value_unchecked` in every respect,
+    /// including its caller classes and the obligation they carry — see that
+    /// method's doc for the full account (the float constructor family through
+    /// which `ir_builder.rs` attaches the marker is `append_fp_like` /
+    /// `append_fp_at` / `append_fp_load`). It forges a static `K` exactly as
+    /// freely as the int side forges a static `W`, which is why the float
+    /// acceptors (`accept_folded_fp`, `narrow_folded_fp`) and `def_float_var`
+    /// check every marker rather than only the erased `FloatDyn` one.
+    ///
+    /// # Callers must guarantee
+    ///
+    /// `v`'s runtime type is exactly `K`'s. The checked paths are
+    /// `TryFrom<Value>` (per concrete marker) and `FloatKind::narrow` (from
+    /// kind-generic code).
     #[inline]
     pub(crate) fn from_value_unchecked(v: Value<'ctx, B>) -> Self {
         Self {
@@ -1863,7 +2044,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
     }
 
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn into_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -1879,20 +2060,20 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
         FloatType::new(self.ty, self.module)
     }
     pub fn name(self) -> Option<String> {
-        self.as_value().name()
+        self.into_erased().name()
     }
     pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
-        self.as_value().set_name(module_token, name);
+        self.into_erased().set_name(module_token, name);
     }
     pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-        self.as_value().clear_name(module_token);
+        self.into_erased().clear_name(module_token);
     }
     #[inline]
     pub fn debug_loc(self) -> Option<DebugLoc> {
-        self.as_value().debug_loc()
+        self.into_erased().debug_loc()
     }
     #[inline]
     pub fn as_dyn(self) -> FloatValue<'ctx, FloatDyn, B> {
@@ -1906,10 +2087,18 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
 }
 
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> sealed::Sealed for FloatValue<'ctx, K, B> {}
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> fmt::Display for FloatValue<'ctx, K, B> {
+    /// Print the operand form `<float-type> <ref>`, identical to what the
+    /// erased [`Value`] handle from [`FloatValue::into_erased`] prints.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&Self::into_erased(*self), f)
+    }
+}
+
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for FloatValue<'ctx, K, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
-        Self::as_value(self)
+    fn into_erased(self) -> Value<'ctx, B> {
+        Self::into_erased(self)
     }
 }
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> Typed<'ctx, B> for FloatValue<'ctx, K, B> {
@@ -1940,7 +2129,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> HasDebugLoc for FloatValue<'ctx,
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> From<FloatValue<'ctx, K, B>> for Value<'ctx, B> {
     #[inline]
     fn from(v: FloatValue<'ctx, K, B>) -> Self {
-        v.as_value()
+        v.into_erased()
     }
 }
 
@@ -1975,13 +2164,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for FloatValue<'ctx, F
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Argument<'ctx, B>> for FloatValue<'ctx, FloatDyn, B> {
     type Error = IrError;
     fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>> for FloatValue<'ctx, FloatDyn, B> {
     type Error = IrError;
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
@@ -1989,7 +2178,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
 {
     type Error = IrError;
     fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::to_erased(&i))
     }
 }
 
@@ -2018,7 +2207,7 @@ macro_rules! impl_float_value_static_try_from {
         {
             type Error = IrError;
             fn try_from(a: Argument<'ctx, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.as_value())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(a.into_erased())
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
@@ -2026,7 +2215,7 @@ macro_rules! impl_float_value_static_try_from {
         {
             type Error = IrError;
             fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.as_value())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(c.into_erased())
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
@@ -2034,7 +2223,7 @@ macro_rules! impl_float_value_static_try_from {
         {
             type Error = IrError;
             fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::as_value(&i))
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::to_erased(&i))
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<FloatValue<'ctx, FloatDyn, B>>
@@ -2042,7 +2231,7 @@ macro_rules! impl_float_value_static_try_from {
         {
             type Error = IrError;
             fn try_from(v: FloatValue<'ctx, FloatDyn, B>) -> IrResult<Self> {
-                <Self as TryFrom<Value<'ctx, B>>>::try_from(v.as_value())
+                <Self as TryFrom<Value<'ctx, B>>>::try_from(v.into_erased())
             }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> From<FloatValue<'ctx, $marker, B>>
@@ -2081,11 +2270,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Value<'ctx, B> {
 /// Implemented by:
 /// - [`PointerValue<'ctx, B>`] (identity).
 /// - [`crate::ConstantPointerNull<'ctx, B>`] (lift via `null`).
-/// - [`Argument<'ctx, B>`] (runtime-checked narrow).
-/// - [`Value<'ctx, B>`] (runtime-checked narrow).
-/// - [`Instruction`] (runtime-checked narrow when attached).
-pub trait IntoPointerValue<'ctx, B: ModuleBrand = Brand<'ctx>>: Sized {
+/// - [`crate::TypedPointerValue<'ctx, T, B>`] (drops the schema, identity lift).
+///
+/// The trait is **sealed**. An erased [`Value`] / `Argument` /
+/// `Instruction` no longer lifts silently: narrow it explicitly with
+/// [`PointerValue::try_from`] (or [`IsValue`]-erased `_dyn` builders).
+pub trait IntoPointerValue<'ctx, B: ModuleBrand = Brand<'ctx>>:
+    Sized + into_pointer_value_sealed::Sealed
+{
     fn into_pointer_value(self, module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>>;
+}
+
+/// Seals [`IntoPointerValue`] to the pointer-value handles below.
+/// [`TypedPointerValue`](crate::TypedPointerValue) also implements it
+/// (its `Sealed` impl lives beside its lift impl).
+pub(crate) mod into_pointer_value_sealed {
+    pub trait Sealed {}
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> into_pointer_value_sealed::Sealed for PointerValue<'ctx, B> {}
+impl<'ctx, B: ModuleBrand + 'ctx> into_pointer_value_sealed::Sealed
+    for ConstantPointerNull<'ctx, B>
+{
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for PointerValue<'ctx, B> {
@@ -2099,28 +2305,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for ConstantPointerN
     #[inline]
     fn into_pointer_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
         Ok(PointerValue::from_value_unchecked(
-            crate::value::IsValue::as_value(self),
+            crate::value::IsValue::into_erased(self),
         ))
-    }
-}
-
-impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for Argument<'ctx, B> {
-    #[inline]
-    fn into_pointer_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
-        PointerValue::try_from(self.as_value())
-    }
-}
-
-impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for Value<'ctx, B> {
-    #[inline]
-    fn into_pointer_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
-        PointerValue::try_from(self)
-    }
-}
-
-impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for Instruction<'ctx, Attached, B> {
-    #[inline]
-    fn into_pointer_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
-        PointerValue::try_from(self.as_value())
     }
 }

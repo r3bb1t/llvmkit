@@ -27,6 +27,33 @@ use super::r#type::sealed;
 pub trait FloatKind: sealed::Sealed + Copy + 'static + fmt::Debug {
     /// LangRef keyword for this kind. `None` for [`FloatDyn`].
     fn ieee_label() -> Option<&'static str>;
+
+    /// Narrow an erased [`Value`] to this kind, **proving** the marker.
+    ///
+    /// The generic counterpart of the per-marker
+    /// `TryFrom<Value> for FloatValue<'ctx, K, B>` impls, which exist only
+    /// per concrete marker — never as a blanket over `K`. A bare
+    /// `K: FloatKind` bound therefore affords narrowing here, whereas
+    /// reaching `TryFrom` from generic code forces a
+    /// `where FloatValue<'ctx, K, B>: TryFrom<Value<'ctx, B>>` clause onto
+    /// every downstream signature, and is not expressible at all where a
+    /// trait impl fixes the signature for you. Every implementation
+    /// delegates to the matching `TryFrom`, so a non-matching value
+    /// yields [`IrError::TypeMismatch`] exactly as it does today.
+    ///
+    /// [`FloatDyn`] accepts any float kind.
+    ///
+    /// ```
+    /// # use llvmkit_ir::{FloatKind, FloatValue, IrResult, ModuleBrand, Value};
+    /// fn narrow_generic<'ctx, K: FloatKind, B: ModuleBrand + 'ctx>(
+    ///     v: Value<'ctx, B>,
+    /// ) -> IrResult<FloatValue<'ctx, K, B>> {
+    ///     K::narrow(v)
+    /// }
+    /// ```
+    fn narrow<'ctx, B: ModuleBrand + 'ctx>(
+        v: Value<'ctx, B>,
+    ) -> IrResult<FloatValue<'ctx, Self, B>>;
 }
 
 impl sealed::Sealed for f32 {}
@@ -35,6 +62,12 @@ impl FloatKind for f32 {
     fn ieee_label() -> Option<&'static str> {
         Some("float")
     }
+    #[inline]
+    fn narrow<'ctx, B: ModuleBrand + 'ctx>(
+        v: Value<'ctx, B>,
+    ) -> IrResult<FloatValue<'ctx, Self, B>> {
+        FloatValue::<'ctx, Self, B>::try_from(v)
+    }
 }
 
 impl sealed::Sealed for f64 {}
@@ -42,6 +75,12 @@ impl FloatKind for f64 {
     #[inline]
     fn ieee_label() -> Option<&'static str> {
         Some("double")
+    }
+    #[inline]
+    fn narrow<'ctx, B: ModuleBrand + 'ctx>(
+        v: Value<'ctx, B>,
+    ) -> IrResult<FloatValue<'ctx, Self, B>> {
+        FloatValue::<'ctx, Self, B>::try_from(v)
     }
 }
 
@@ -55,6 +94,12 @@ macro_rules! decl_struct_kind {
             #[inline]
             fn ieee_label() -> Option<&'static str> {
                 Some($label)
+            }
+            #[inline]
+            fn narrow<'ctx, B: ModuleBrand + 'ctx>(
+                v: Value<'ctx, B>,
+            ) -> IrResult<FloatValue<'ctx, Self, B>> {
+                FloatValue::<'ctx, Self, B>::try_from(v)
             }
         }
     };
@@ -102,6 +147,12 @@ impl FloatKind for FloatDyn {
     #[inline]
     fn ieee_label() -> Option<&'static str> {
         None
+    }
+    #[inline]
+    fn narrow<'ctx, B: ModuleBrand + 'ctx>(
+        v: Value<'ctx, B>,
+    ) -> IrResult<FloatValue<'ctx, Self, B>> {
+        FloatValue::<'ctx, Self, B>::try_from(v)
     }
 }
 
@@ -228,17 +279,39 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, FloatDyn, B> for f64 {
 // IntoFloatValue: ergonomic operand input for the float IRBuilder
 // --------------------------------------------------------------------------
 
-use super::argument::Argument;
-use super::instruction::{Instruction, state::Attached};
 use super::module::{Brand, ModuleBrand, ModuleRef};
 use super::value::{FloatValue, Value};
 
 /// Inputs that can be lifted into a [`FloatValue<'ctx, K>`] operand
 /// for the IR builder. Mirrors the int-side [`crate::IntoIntValue`]
 /// for the float family.
-pub trait IntoFloatValue<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>>: Sized {
+///
+/// The trait is **sealed**. An erased [`Value`] / `Argument` /
+/// `Instruction` no longer lifts silently: narrow it explicitly with
+/// [`FloatValue::try_from`] (or [`IsValue`](crate::IsValue)-erased `_dyn`
+/// builders).
+pub trait IntoFloatValue<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>>:
+    Sized + into_float_value_sealed::Sealed
+{
     fn into_float_value(self, module: ModuleRef<'ctx, B>) -> IrResult<FloatValue<'ctx, K, B>>;
 }
+
+/// Seals [`IntoFloatValue`] to the identity/lift handles plus the exact
+/// Rust floats (`f32`, `f64`). Erased handles are deliberately absent.
+mod into_float_value_sealed {
+    pub trait Sealed {}
+}
+
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> into_float_value_sealed::Sealed
+    for FloatValue<'ctx, K, B>
+{
+}
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> into_float_value_sealed::Sealed
+    for ConstantFloatValue<'ctx, K, B>
+{
+}
+impl into_float_value_sealed::Sealed for f32 {}
+impl into_float_value_sealed::Sealed for f64 {}
 
 // Identity
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IntoFloatValue<'ctx, K, B>
@@ -257,7 +330,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IntoFloatValue<'ctx, K, B>
     #[inline]
     fn into_float_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<FloatValue<'ctx, K, B>> {
         Ok(FloatValue::<K, B>::from_value_unchecked(
-            crate::value::IsValue::as_value(self),
+            crate::value::IsValue::into_erased(self),
         ))
     }
 }
@@ -276,7 +349,7 @@ macro_rules! impl_into_float_value_static {
                 );
                 match self.into_constant_float(ty) {
                     Ok(c) => Ok(FloatValue::<$marker, B>::from_value_unchecked(
-                        crate::value::IsValue::as_value(c),
+                        crate::value::IsValue::into_erased(c),
                     )),
                     Err(_) => unreachable!(
                         "IntoConstantFloat for static target is infallible per the trait impls"
@@ -286,57 +359,11 @@ macro_rules! impl_into_float_value_static {
         }
     };
 }
+// Exact only: each Rust float maps to its own IR float kind. (The
+// `f32 -> f64` widening lift was removed in the "no silent erasure"
+// strict cut, mirroring the int side; a wider slot must name its kind.)
 impl_into_float_value_static!(f32, f32, f32_type);
 impl_into_float_value_static!(f64, f64, f64_type);
-impl_into_float_value_static!(f32, f64, f64_type);
-
-// Erased / heterogeneous handles narrow via TryFrom.
-macro_rules! impl_into_float_value_via_try_from {
-    ($source:ty, $($k:ty),+ $(,)?) => { $(
-        impl<'ctx, B: ModuleBrand + 'ctx> IntoFloatValue<'ctx, $k, B> for $source {
-            #[inline]
-            fn into_float_value(
-                self,
-                _module: ModuleRef<'ctx, B>,
-            ) -> IrResult<FloatValue<'ctx, $k, B>> {
-                FloatValue::<'ctx, $k, B>::try_from(self)
-            }
-        }
-    )+ };
-}
-impl_into_float_value_via_try_from!(
-    Argument<'ctx, B>,
-    f32,
-    f64,
-    Half,
-    BFloat,
-    Fp128,
-    X86Fp80,
-    PpcFp128,
-    FloatDyn,
-);
-impl_into_float_value_via_try_from!(
-    Value<'ctx, B>,
-    f32,
-    f64,
-    Half,
-    BFloat,
-    Fp128,
-    X86Fp80,
-    PpcFp128,
-    FloatDyn,
-);
-impl_into_float_value_via_try_from!(
-    Instruction<'ctx, Attached, B>,
-    f32,
-    f64,
-    Half,
-    BFloat,
-    Fp128,
-    X86Fp80,
-    PpcFp128,
-    FloatDyn,
-);
 
 // --------------------------------------------------------------------------
 // StaticFloatKind: marker-only type lookup (mirrors StaticIntWidth)
@@ -358,9 +385,8 @@ pub trait StaticFloatKind: FloatKind {
     /// Usable as `K::STATIC_BITS` in `const { ... }` assertions.
     const STATIC_BITS: u32;
 
-    fn ir_type<'ctx, B: ModuleBrand + 'ctx>(module: ModuleRef<'ctx, B>) -> FloatType<'ctx, Self, B>
-    where
-        Self: Sized;
+    fn ir_type<'ctx, B: ModuleBrand + 'ctx>(module: ModuleRef<'ctx, B>)
+    -> FloatType<'ctx, Self, B>;
 }
 
 macro_rules! impl_static_float_kind {

@@ -136,7 +136,7 @@ fn build() -> Result<(), IrError> {
         let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::at_end(entry);
         let (lhs, rhs) = f.params();
         let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
         b.build_ret(sum)?;
@@ -171,14 +171,14 @@ fn build_typed_call() -> Result<(), IrError> {
     Module::with_new("demo", |m| {
         let callee = m.add_typed_function::<i32, (i32, i32), _>("add_inner", Linkage::External)?;
         let entry = callee.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::at_end(entry);
         let (lhs, rhs) = callee.params();
         let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
         b.build_ret(sum)?;
 
         let caller = m.add_typed_function::<i32, (i32, i32), _>("caller", Linkage::External)?;
         let entry = caller.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::at_end(entry);
         let (x, y) = caller.params();
 
         // `call.result()` is already `IntValue<i32>` -- no `try_into`.
@@ -289,13 +289,13 @@ fn typed_vec() -> Result<(), IrError> {
     Module::with_new("demo", |m| {
         let v4i32 = m.vector_type_n::<i32, 4>(); // VectorType<'_, i32, Len<4>>
         let fn_ty = m.fn_type(m.i32_type().as_type(), [v4i32.as_type(), v4i32.as_type()], false);
-        let f = m.add_function::<i32, _>("vadd", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("vadd", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::at_end(entry);
 
         // `try_into` checks element (i32) AND lane count (4) before stamping the markers.
-        let a: VectorValue<'_, i32, Len<4>> = f.param(0).unwrap().as_value().try_into().unwrap();
-        let c: VectorValue<'_, i32, Len<4>> = f.param(1).unwrap().as_value().try_into().unwrap();
+        let a: VectorValue<'_, i32, Len<4>> = f.param(0).unwrap().into_erased().try_into().unwrap();
+        let c: VectorValue<'_, i32, Len<4>> = f.param(1).unwrap().into_erased().try_into().unwrap();
 
         // Both operands are pinned to `<4 x i32>`; a length/element mismatch would not compile.
         let sum = b.build_vec_int_add(a, c, "sum")?;

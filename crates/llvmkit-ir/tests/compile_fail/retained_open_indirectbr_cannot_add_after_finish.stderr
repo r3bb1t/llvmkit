@@ -1,12 +1,12 @@
 error[E0382]: use of moved value: `ibr`
-  --> tests/compile_fail/retained_open_indirectbr_cannot_add_after_finish.rs:22:17
+  --> tests/compile_fail/retained_open_indirectbr_cannot_add_after_finish.rs:26:17
    |
-19 |         let (_sealed, ibr) = b.build_indirectbr(addr, "").unwrap();
+23 |         let (_sealed, ibr) = b.build_indirectbr(addr, "").unwrap();
    |                       --- move occurs because `ibr` has type `IndirectBrInst<'_, llvmkit_ir::term_open_state::Open, Brand<'_>>`, which does not implement the `Copy` trait
-20 |
-21 |         let _closed = ibr.finish();
+24 |
+25 |         let _closed = ibr.finish();
    |                           -------- `ibr` moved due to this method call
-22 |         let _ = ibr.add_destination(dest_label);
+26 |         let _ = ibr.add_destination(dest_label);
    |                 ^^^ value used here after move
    |
 note: `IndirectBrInst::<'ctx, llvmkit_ir::term_open_state::Open, B>::finish` takes ownership of the receiver `self`, which moves `ibr`

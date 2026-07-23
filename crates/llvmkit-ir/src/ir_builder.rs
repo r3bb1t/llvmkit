@@ -118,13 +118,16 @@ pub type TypedBlockWithParams<'ctx, R, Params, B = Brand<'ctx>> = (
     <Params as FunctionParamList>::Values<'ctx, B>,
 );
 
-/// Pair returned by `switch` builders before the case list is closed.
+/// Pair returned by the width-erased [`IRBuilder::build_switch_dyn`] before
+/// the case list is closed. Erased sibling of
+/// [`TerminatedBlockSwitchTyped`], the way [`TerminatedBlockInvoke`] is of
+/// [`TerminatedBlockTypedInvoke`].
 pub type TerminatedBlockSwitch<'ctx, R, B = Brand<'ctx>> = (
     BasicBlock<'ctx, R, Terminated, B>,
     SwitchInst<'ctx, Open, B>,
 );
 
-/// Pair returned by the TYPED [`IRBuilder::build_switch_typed`] before the
+/// Pair returned by the TYPED [`IRBuilder::build_switch`] before the
 /// case list is closed: the terminated parent block plus an [`Open`],
 /// width-`W` [`SwitchInst`]. Every case added through the returned handle
 /// must share the condition's width `W` — a wrong-width case is a compile
@@ -367,6 +370,42 @@ where
     }
 }
 
+impl<'m, 'ctx, B, R> IRBuilder<'m, 'ctx, B, ConstantFolder, Positioned, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: ReturnMarker,
+{
+    /// Create a builder already positioned at the end of `bb`, inferring the
+    /// return marker `R` from the block — the block already pins it, so no
+    /// turbofish is needed. Equivalent to
+    /// `new_for::<R>(module).position_at_end(bb)` but with `R` derived and the
+    /// module taken from `bb` (which carries a `ModuleRef`). Installs the
+    /// default [`ConstantFolder`], matching [`new_for`](Self::new_for).
+    /// [`new_for`](Self::new_for) remains for the unpositioned case (build a
+    /// block first).
+    ///
+    /// Accepts a block carrying any parameter schema `Params` — mirroring
+    /// [`position_at_end`](Self::position_at_end), which erases the parameter
+    /// marker at the insertion point.
+    pub fn at_end<Params>(
+        bb: BasicBlock<'ctx, R, Unterminated, B, Params>,
+    ) -> IRBuilder<'m, 'ctx, B, ConstantFolder, Positioned, R>
+    where
+        Params: BlockParams,
+    {
+        let module = bb.module_ref().module();
+        IRBuilder {
+            module,
+            _module: PhantomData,
+            insert_block: Some(bb.retag_params::<BlockParamsDyn>()),
+            insert_before: None,
+            folder: ConstantFolder,
+            fmf: super::fmf::FastMathFlags::empty(),
+            _state: PhantomData,
+        }
+    }
+}
+
 impl<'m, 'ctx, B, F, R> IRBuilder<'m, 'ctx, B, F, Unpositioned, R>
 where
     B: ModuleBrand + 'ctx,
@@ -435,8 +474,8 @@ where
         self,
         anchor: &InstructionView<'ctx, B>,
     ) -> IRBuilder<'m, 'ctx, B, F, Positioned, R> {
-        let anchor_id = anchor.as_value().id;
-        let parent_block_id = anchor.parent().as_value().id;
+        let anchor_id = anchor.id();
+        let parent_block_id = anchor.parent().id();
         let label_ty = self.module.label_type().as_type().id();
         let bb = BasicBlock::<R, Unterminated, B>::from_parts(
             parent_block_id,
@@ -472,7 +511,7 @@ where
             match inst.kind() {
                 Some(InstructionKind::Alloca(_)) => continue,
                 _ => {
-                    anchor = Some(inst.as_value().id);
+                    anchor = Some(inst.id());
                     break;
                 }
             }
@@ -492,7 +531,7 @@ where
     /// `IRBuilder::saveIP` (returns `InsertPoint(BB, InsertPt)`).
     pub fn save_insert_point(&self) -> InsertPoint<'ctx, R, B> {
         InsertPoint {
-            block_id: self.insert_block.as_ref().map(|bb| bb.as_value().id),
+            block_id: self.insert_block.as_ref().map(|bb| bb.id()),
             before: self.insert_before,
             _marker: PhantomData,
         }
@@ -604,7 +643,7 @@ where
         // block with a different value is meaningless in any CFG (the
         // InstCombine #196954 bug class). A same-block same-value duplicate
         // stays legal (multi-edges from `switch`).
-        let block_id = block.as_value().id;
+        let block_id = block.id();
         if phi_payload
             .incoming
             .borrow()
@@ -715,7 +754,7 @@ where
     {
         let module = Module::<'ctx, B, Unverified>::from_core(self.module);
         let bb = function.append_basic_block(&module, name);
-        let bb_id = bb.as_value().id;
+        let bb_id = bb.id();
         let mut params = Vec::with_capacity(param_types.len());
         for ty in param_types {
             params.push(self.make_phi_in_block(bb_id, ty.id(), ""));
@@ -748,7 +787,7 @@ where
     {
         let module = Module::<'ctx, B, Unverified>::from_core(self.module);
         let bb = function.append_basic_block(&module, name);
-        let bb_id = bb.as_value().id;
+        let bb_id = bb.id();
         let mut out = Vec::with_capacity(params.len());
         for (ty, param_name) in params {
             out.push(self.make_phi_in_block(bb_id, ty.id(), param_name));
@@ -799,7 +838,7 @@ where
         // cannot fail at this step).
         let param_types = Params::ir_types(&module)?;
         let bb = function.append_basic_block(&module, name);
-        let bb_id = bb.as_value().id;
+        let bb_id = bb.id();
         let mut phi_values = Vec::with_capacity(param_types.len());
         for ty in &param_types {
             phi_values.push(self.make_phi_in_block(bb_id, ty.id(), ""));
@@ -924,13 +963,8 @@ where
         if let Some(folded) = self.folder.fold_int_bin_op(BinaryOpcode::Add, lhs, rhs)? {
             return self.accept_folded_int(folded, lhs);
         }
-        let payload = BinaryOpData::new(lhs.as_value().id, rhs.as_value().id);
-        let inst = self.append_instruction(
-            lhs.ty().as_type().id(),
-            InstructionKindData::Add(payload),
-            name,
-        );
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+        let payload = BinaryOpData::new(lhs.id(), rhs.id());
+        Ok(self.append_int_like(lhs, InstructionKindData::Add(payload), name))
     }
 
     /// Produce `sub lhs, rhs`. Mirrors `IRBuilder::CreateSub`.
@@ -951,13 +985,8 @@ where
         if let Some(folded) = self.folder.fold_int_bin_op(BinaryOpcode::Sub, lhs, rhs)? {
             return self.accept_folded_int(folded, lhs);
         }
-        let payload = BinaryOpData::new(lhs.as_value().id, rhs.as_value().id);
-        let inst = self.append_instruction(
-            lhs.ty().as_type().id(),
-            InstructionKindData::Sub(payload),
-            name,
-        );
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+        let payload = BinaryOpData::new(lhs.id(), rhs.id());
+        Ok(self.append_int_like(lhs, InstructionKindData::Sub(payload), name))
     }
 
     /// Produce `mul lhs, rhs`. Mirrors `IRBuilder::CreateMul`.
@@ -1472,7 +1501,7 @@ where
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
-        let mut payload = BinaryOpData::new(lhs.as_value().id, rhs.as_value().id);
+        let mut payload = BinaryOpData::new(lhs.id(), rhs.id());
         flags.apply(&mut payload);
         let folded = if payload.is_exact {
             self.folder.fold_int_bin_op_exact(opcode, lhs, rhs)?
@@ -1489,8 +1518,7 @@ where
         if let Some(folded) = folded {
             return self.accept_folded_int(folded, lhs);
         }
-        let inst = self.append_instruction(lhs.ty().as_type().id(), kind_ctor(payload), name);
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_like(lhs, kind_ctor(payload), name))
     }
 
     /// Crate-internal helper: emit a binary op given a callback that
@@ -1516,9 +1544,8 @@ where
         if let Some(folded) = self.folder.fold_int_bin_op(opcode, lhs, rhs)? {
             return self.accept_folded_int(folded, lhs);
         }
-        let payload = BinaryOpData::new(lhs.as_value().id, rhs.as_value().id);
-        let inst = self.append_instruction(lhs.ty().as_type().id(), kind_ctor(payload), name);
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+        let payload = BinaryOpData::new(lhs.id(), rhs.id());
+        Ok(self.append_int_like(lhs, kind_ctor(payload), name))
     }
 
     // ---- Type-erased integer binops (scalar OR integer-vector operands) ----
@@ -1554,7 +1581,7 @@ where
         }
         let payload = BinaryOpData::new(lhs.id, rhs.id);
         let inst = self.append_instruction(lhs.ty().id(), kind_ctor(payload), name);
-        Ok(inst.as_value())
+        Ok(inst.to_erased())
     }
 
     /// `add lhs, rhs` on erased operands (scalar or integer vector).
@@ -1828,14 +1855,12 @@ where
         if let Some(folded) = self.folder.fold_fp_bin_op(opcode, lhs, rhs, self.fmf)? {
             return self.accept_folded_fp(folded, lhs);
         }
-        let mut payload = BinaryOpData::new(IsValue::as_value(lhs).id, IsValue::as_value(rhs).id);
+        let mut payload = BinaryOpData::new(lhs.id(), rhs.id());
         // Apply the builder-context FMF (parallel to upstream
         // `IRBuilderBase::setFPAttrs` in `IRBuilder.h`, which calls
         // `I->setFastMathFlags(FMF)` on every FP-math instruction).
         payload.fmf = self.fmf;
-        let inst =
-            self.append_instruction(crate::value::Typed::ty(lhs).id(), kind_ctor(payload), name);
-        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_fp_like(lhs, kind_ctor(payload), name))
     }
 
     /// Crate-internal helper for float binops with an explicit
@@ -1861,11 +1886,9 @@ where
         if let Some(folded) = self.folder.fold_fp_bin_op(opcode, lhs, rhs, fmf)? {
             return self.accept_folded_fp(folded, lhs);
         }
-        let mut payload = BinaryOpData::new(IsValue::as_value(lhs).id, IsValue::as_value(rhs).id);
+        let mut payload = BinaryOpData::new(lhs.id(), rhs.id());
         payload.fmf = fmf;
-        let inst =
-            self.append_instruction(crate::value::Typed::ty(lhs).id(), kind_ctor(payload), name);
-        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_fp_like(lhs, kind_ctor(payload), name))
     }
 
     /// `fadd` with an explicit [`crate::fmf::FastMathFlags`] parameter.
@@ -2007,18 +2030,13 @@ where
     {
         let lhs = lhs.into_float_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
-        let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
+        let i1 = ModuleView::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_fp_cmp(pred, lhs, rhs)? {
             return Ok(folded);
         }
-        let mut payload = crate::instr_types::FCmpInstData::new(
-            pred,
-            IsValue::as_value(lhs).id,
-            IsValue::as_value(rhs).id,
-        );
+        let mut payload = crate::instr_types::FCmpInstData::new(pred, lhs.id(), rhs.id());
         payload.fmf = fmf;
-        let inst = self.append_instruction(i1_ty, InstructionKindData::FCmp(payload), name);
-        Ok(IntValue::<bool, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_at(i1, InstructionKindData::FCmp(payload), name))
     }
 
     /// Produce `fcmp <pred> lhs, rhs`. Mirrors
@@ -2038,19 +2056,14 @@ where
     {
         let lhs = lhs.into_float_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
-        let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
+        let i1 = ModuleView::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_fp_cmp(pred, lhs, rhs)? {
             return Ok(folded);
         }
-        let mut payload = crate::instr_types::FCmpInstData::new(
-            pred,
-            IsValue::as_value(lhs).id,
-            IsValue::as_value(rhs).id,
-        );
+        let mut payload = crate::instr_types::FCmpInstData::new(pred, lhs.id(), rhs.id());
         // Apply builder-context FMF (`fcmp` is an `FPMathOperator` upstream).
         payload.fmf = self.fmf;
-        let inst = self.append_instruction(i1_ty, InstructionKindData::FCmp(payload), name);
-        Ok(IntValue::<bool, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_at(i1, InstructionKindData::FCmp(payload), name))
     }
 
     // ---- Per-predicate fcmp wrappers ----
@@ -2386,13 +2399,11 @@ where
         V: IntoFloatValue<'ctx, K, B>,
     {
         let v = value.into_float_value(ModuleRef::new(self.module))?;
-        let ty = crate::value::Typed::ty(v).id();
         if let Some(folded) = self.folder.fold_fp_un_op(UnaryOpcode::FNeg, v, fmf)? {
             return self.accept_folded_fp(folded, v);
         }
-        let payload = FNegInstData::new(IsValue::as_value(v).id, fmf);
-        let inst = self.append_instruction(ty, InstructionKindData::FNeg(payload), name);
-        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
+        let payload = FNegInstData::new(v.id(), fmf);
+        Ok(self.append_fp_like(v, InstructionKindData::FNeg(payload), name))
     }
 
     /// Produce `freeze <value>`. Mirrors `IRBuilder::CreateFreeze`.
@@ -2403,11 +2414,11 @@ where
         Name: AsRef<str>,
         V: IsValue<'ctx, B>,
     {
-        let v = value.as_value();
+        let v = value.into_erased();
         let payload = crate::instr_types::FreezeInstData::new(v.id);
         let inst = self.append_instruction(v.ty, InstructionKindData::Freeze(payload), name);
         Ok(FreezeInst::<B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             v.ty,
         ))
@@ -2425,11 +2436,11 @@ where
     where
         Name: AsRef<str>,
     {
-        let v = IsValue::as_value(list_ptr);
+        let v = IsValue::into_erased(list_ptr);
         let payload = crate::instr_types::VAArgInstData::new(v.id);
         let inst = self.append_instruction(result_ty.id, InstructionKindData::VAArg(payload), name);
         Ok(VAArgInst::<B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             result_ty.id,
         ))
@@ -2481,7 +2492,7 @@ where
         Name: AsRef<str>,
         V: IsValue<'ctx, B>,
     {
-        let agg = aggregate.as_value();
+        let agg = aggregate.into_erased();
         if indices.is_empty() {
             return Err(IrError::InvalidOperation {
                 message: "extractvalue indices must not be empty",
@@ -2494,7 +2505,7 @@ where
         let payload = crate::instr_types::ExtractValueInstData::new(agg.id, indices.to_vec());
         let inst =
             self.append_instruction(leaf_ty, InstructionKindData::ExtractValue(payload), name);
-        Ok(inst.as_value())
+        Ok(inst.to_erased())
     }
 
     /// Produce `insertvalue <agg-ty> <agg>, <elt-ty> <elt>, idx0, ...`.
@@ -2547,8 +2558,8 @@ where
         A: IsValue<'ctx, B>,
         V: IsValue<'ctx, B>,
     {
-        let agg = aggregate.as_value();
-        let val = value.as_value();
+        let agg = aggregate.into_erased();
+        let val = value.into_erased();
         if indices.is_empty() {
             return Err(IrError::InvalidOperation {
                 message: "insertvalue indices must not be empty",
@@ -2567,7 +2578,7 @@ where
         let payload =
             crate::instr_types::InsertValueInstData::new(agg.id, val.id, indices.to_vec());
         let inst = self.append_instruction(agg.ty, InstructionKindData::InsertValue(payload), name);
-        Ok(inst.as_value())
+        Ok(inst.to_erased())
     }
 
     /// Extract a named-struct schema field and return the field's typed wrapper.
@@ -2635,9 +2646,9 @@ where
         W: crate::int_width::IntWidth,
         I: IntoIntValue<'ctx, W, B>,
     {
-        let vec = vector.as_value();
+        let vec = vector.into_erased();
         let idx_v = index.into_int_value(ModuleRef::new(self.module))?;
-        let idx = IsValue::as_value(idx_v);
+        let idx = IsValue::into_erased(idx_v);
         let elem_ty = match self.module.context().type_data(vec.ty).as_vector() {
             Some((e, _, _)) => e,
             None => {
@@ -2653,7 +2664,7 @@ where
         let payload = crate::instr_types::ExtractElementInstData::new(vec.id, idx.id);
         let inst =
             self.append_instruction(elem_ty, InstructionKindData::ExtractElement(payload), name);
-        Ok(inst.as_value())
+        Ok(inst.to_erased())
     }
 
     /// Produce `insertelement <vec-ty> <vec>, <elt-ty> <elt>, <idx-ty> <idx>`.
@@ -2672,17 +2683,17 @@ where
         W: crate::int_width::IntWidth,
         I: IntoIntValue<'ctx, W, B>,
     {
-        let vec = vector.as_value();
-        let val = elt.as_value();
+        let vec = vector.into_erased();
+        let val = elt.into_erased();
         let idx_v = index.into_int_value(ModuleRef::new(self.module))?;
-        let idx = IsValue::as_value(idx_v);
+        let idx = IsValue::into_erased(idx_v);
         if let Some(folded) = self.folder.fold_insert_element_dyn(vec, val, idx)? {
             return self.checked_folded_value(folded, vec.ty);
         }
         let payload = crate::instr_types::InsertElementInstData::new(vec.id, val.id, idx.id);
         let inst =
             self.append_instruction(vec.ty, InstructionKindData::InsertElement(payload), name);
-        Ok(inst.as_value())
+        Ok(inst.to_erased())
     }
 
     /// Produce `shufflevector <ty> <v1>, <ty> <v2>, <mask>`. Mirrors
@@ -2701,8 +2712,8 @@ where
         L: IsValue<'ctx, B>,
         Rhs2: IsValue<'ctx, B>,
     {
-        let l = lhs.as_value();
-        let r = rhs.as_value();
+        let l = lhs.into_erased();
+        let r = rhs.into_erased();
         if l.ty != r.ty {
             return Err(IrError::TypeMismatch {
                 expected: l.ty().kind_label(),
@@ -2739,7 +2750,7 @@ where
             InstructionKindData::ShuffleVector(payload),
             name,
         );
-        Ok(inst.as_value())
+        Ok(inst.to_erased())
     }
 
     // ---- Typed vector ops: element/length-checked siblings ----
@@ -2774,8 +2785,13 @@ where
         Name: AsRef<str>,
         F2: FnOnce(BinaryOpData) -> InstructionKindData,
     {
-        let r =
-            self.build_int_binop_dyn(opcode, lhs.as_value(), rhs.as_value(), name, kind_ctor)?;
+        let r = self.build_int_binop_dyn(
+            opcode,
+            lhs.into_erased(),
+            rhs.into_erased(),
+            name,
+            kind_ctor,
+        )?;
         Ok(VectorValue::from_value_unchecked(r))
     }
 
@@ -2997,7 +3013,7 @@ where
         Name: AsRef<str>,
     {
         let erased = self.build_vector_splat(L::STATIC_LEN, scalar, name)?;
-        Ok(VectorValue::from_value_unchecked(erased.as_value()))
+        Ok(VectorValue::from_value_unchecked(erased.into_erased()))
     }
 
     // ---- Typed array ops: extractvalue / insertvalue ----
@@ -3073,7 +3089,7 @@ where
         let void_ty = self.module.void_type().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Fence(payload), name);
         Ok(crate::instructions::FenceInst::from_raw(
-            inst.as_value().id,
+            inst.id(),
             self.module,
             void_ty,
         ))
@@ -3098,9 +3114,9 @@ where
         C: IsValue<'ctx, B>,
         N: IsValue<'ctx, B>,
     {
-        let p = ptr.as_value();
-        let c = cmp.as_value();
-        let n = new_val.as_value();
+        let p = ptr.into_erased();
+        let c = cmp.into_erased();
+        let n = new_val.into_erased();
         if c.ty != n.ty {
             return Err(IrError::TypeMismatch {
                 expected: c.ty().kind_label(),
@@ -3114,7 +3130,7 @@ where
         let inst =
             self.append_instruction(result_id, InstructionKindData::AtomicCmpXchg(payload), name);
         Ok(AtomicCmpXchgInst::<B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             result_id,
         ))
@@ -3138,12 +3154,12 @@ where
         P: IsValue<'ctx, B>,
         V: IsValue<'ctx, B>,
     {
-        let p = ptr.as_value();
-        let v = value.as_value();
+        let p = ptr.into_erased();
+        let v = value.into_erased();
         let payload = crate::instr_types::AtomicRMWInstData::new(op, p.id, v.id, config);
         let inst = self.append_instruction(v.ty, InstructionKindData::AtomicRMW(payload), name);
         Ok(AtomicRMWInst::<B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             v.ty,
         ))
@@ -3174,18 +3190,13 @@ where
     {
         if let Some(folded) = self.folder.fold_cast_to_int(
             crate::instr_types::CastOpcode::Trunc,
-            value.as_value(),
+            value.into_erased(),
             dst_ty,
         )? {
             return self.accept_folded_cast_int(folded, dst_ty);
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.as_value().id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(IntValue::<Dst, B>::from_value_unchecked(inst.as_value()))
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.id());
+        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// `trunc nuw/nsw` with explicit [`crate::TruncFlags`]. Mirrors
@@ -3214,20 +3225,15 @@ where
     {
         if let Some(folded) = self.folder.fold_cast_to_int(
             crate::instr_types::CastOpcode::Trunc,
-            value.as_value(),
+            value.into_erased(),
             dst_ty,
         )? {
             return self.accept_folded_cast_int(folded, dst_ty);
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.as_value().id);
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.id());
         payload.nuw.set(flags.nuw);
         payload.nsw.set(flags.nsw);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(IntValue::<Dst, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// Produce `zext <value> to <dst_ty>`. Mirrors
@@ -3249,18 +3255,13 @@ where
     {
         if let Some(folded) = self.folder.fold_cast_to_int(
             crate::instr_types::CastOpcode::ZExt,
-            value.as_value(),
+            value.into_erased(),
             dst_ty,
         )? {
             return self.accept_folded_cast_int(folded, dst_ty);
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, value.as_value().id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(IntValue::<Dst, B>::from_value_unchecked(inst.as_value()))
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, value.id());
+        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// `zext nneg` with explicit [`crate::ZExtFlags`]. Mirrors
@@ -3283,19 +3284,14 @@ where
     {
         if let Some(folded) = self.folder.fold_cast_to_int(
             crate::instr_types::CastOpcode::ZExt,
-            value.as_value(),
+            value.into_erased(),
             dst_ty,
         )? {
             return self.accept_folded_cast_int(folded, dst_ty);
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, value.as_value().id);
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, value.id());
         payload.nneg.set(flags.nneg);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(IntValue::<Dst, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// Produce `sext <value> to <dst_ty>`. Mirrors
@@ -3317,18 +3313,13 @@ where
     {
         if let Some(folded) = self.folder.fold_cast_to_int(
             crate::instr_types::CastOpcode::SExt,
-            value.as_value(),
+            value.into_erased(),
             dst_ty,
         )? {
             return self.accept_folded_cast_int(folded, dst_ty);
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::SExt, value.as_value().id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(IntValue::<Dst, B>::from_value_unchecked(inst.as_value()))
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::SExt, value.id());
+        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     // ---- Dyn fallbacks (runtime-checked) ----
@@ -3355,19 +3346,14 @@ where
         }
         if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::Trunc,
-            value.as_value(),
+            value.into_erased(),
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.as_value().id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(IntValue::<IntDyn, B>::from_value_unchecked(inst.as_value()))
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.id());
+        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// `trunc nuw/nsw` with explicit [`crate::TruncFlags`]. Runtime-checked
@@ -3393,21 +3379,16 @@ where
         }
         if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::Trunc,
-            value.as_value(),
+            value.into_erased(),
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.as_value().id);
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.id());
         payload.nuw.set(flags.nuw);
         payload.nsw.set(flags.nsw);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(IntValue::<IntDyn, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// Runtime-checked `zext` for `IntValue<Dyn>` operands.
@@ -3448,17 +3429,15 @@ where
         }
         if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::ZExt,
-            src.as_value(),
+            src.into_erased(),
             dst.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, src.as_value().id);
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, src.id());
         payload.nneg.set(flags.nneg);
-        let inst =
-            self.append_instruction(dst.as_type().id(), InstructionKindData::Cast(payload), name);
-        Ok(IntValue::<IntDyn, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_at(dst, InstructionKindData::Cast(payload), name))
     }
 
     /// Runtime-checked `sext` for `IntValue<Dyn>` operands.
@@ -3494,18 +3473,13 @@ where
         }
         if let Some(folded) =
             self.folder
-                .fold_cast_dyn(opcode, value.as_value(), dst_ty.as_type())?
+                .fold_cast_dyn(opcode, value.into_erased(), dst_ty.as_type())?
         {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
         }
-        let payload = CastOpData::new(opcode, value.as_value().id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(IntValue::<IntDyn, B>::from_value_unchecked(inst.as_value()))
+        let payload = CastOpData::new(opcode, value.id());
+        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     // ---- Memory: alloca / load / store ----
@@ -3566,7 +3540,7 @@ where
         let n = num_elements.into_int_value(ModuleRef::new(self.module))?;
         self.build_alloca_inner(
             ty.as_type().id(),
-            Some(n.as_value().id),
+            Some(n.id()),
             MaybeAlign::NONE,
             self.alloca_addr_space(),
             crate::instr_types::AllocaFlags::none(),
@@ -3591,7 +3565,7 @@ where
         let n = num_elements.into_int_value(ModuleRef::new(self.module))?;
         self.build_alloca_inner(
             ty.as_type().id(),
-            Some(n.as_value().id),
+            Some(n.id()),
             MaybeAlign::new(align),
             self.alloca_addr_space(),
             crate::instr_types::AllocaFlags::none(),
@@ -3645,9 +3619,8 @@ where
             addr_space,
             flags,
         );
-        let ptr_ty = self.module.ptr_type(addr_space).as_type().id();
-        let inst = self.append_instruction(ptr_ty, InstructionKindData::Alloca(payload), name);
-        Ok(PointerValue::from_value_unchecked(inst.as_value()))
+        let ptr_ty = ModuleView::<B>::new(self.module).ptr_type(addr_space);
+        Ok(self.append_ptr(ptr_ty, InstructionKindData::Alloca(payload), name))
     }
 
     /// Erased `alloca` construction (D3 dyn twin of the typed
@@ -3668,7 +3641,7 @@ where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
     {
-        let size = num_elements.map(|n| n.as_value().id);
+        let size = num_elements.map(|n| n.id());
         let addr_space = addr_space.unwrap_or_else(|| self.alloca_addr_space());
         self.build_alloca_inner(ty.as_type().id(), size, align, addr_space, flags, name)
     }
@@ -3702,14 +3675,14 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty_id,
-            IsValue::as_value(p).id,
+            p.id(),
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.as_value())
+        Ok(inst.to_erased())
     }
 
     /// `load <ty>, ptr <ptr>, align N`. Non-volatile non-atomic load with explicit
@@ -3730,14 +3703,14 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty_id,
-            IsValue::as_value(p).id,
+            p.id(),
             MaybeAlign::new(align),
             false,
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.as_value())
+        Ok(inst.to_erased())
     }
 
     /// Typed integer load: `load iN, ptr <ptr>`. Marker-only form:
@@ -3753,14 +3726,13 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            IsValue::as_value(p).id,
+            p.id(),
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(payload, name)?;
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+        self.append_int_load(ty, payload, name)
     }
 
     /// Runtime-width integer load. Takes the type explicitly because
@@ -3778,14 +3750,13 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            IsValue::as_value(p).id,
+            p.id(),
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(payload, name)?;
-        Ok(IntValue::<IntDyn, B>::from_value_unchecked(inst.as_value()))
+        self.append_int_load(ty, payload, name)
     }
 
     /// Typed float load: `load <fpty>, ptr <ptr>`. Marker-only.
@@ -3799,14 +3770,13 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            IsValue::as_value(p).id,
+            p.id(),
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(payload, name)?;
-        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
+        self.append_fp_load(ty, payload, name)
     }
 
     /// Runtime-kind float load. Takes the type explicitly because
@@ -3824,16 +3794,13 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            IsValue::as_value(p).id,
+            p.id(),
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(payload, name)?;
-        Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        self.append_fp_load(ty, payload, name)
     }
 
     /// Pointer-typed load: `load ptr, ptr <ptr>`. Pointer types are
@@ -3845,18 +3812,17 @@ where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
     {
-        let ty = self.module.ptr_type(0);
+        let ty = ModuleView::<B>::new(self.module).ptr_type(0);
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            IsValue::as_value(p).id,
+            p.id(),
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(payload, name)?;
-        Ok(PointerValue::from_value_unchecked(inst.as_value()))
+        self.append_ptr_load(ty, payload, name)
     }
 
     /// Same as [`Self::build_int_load`] plus an explicit alignment.
@@ -3875,14 +3841,13 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            IsValue::as_value(p).id,
+            p.id(),
             MaybeAlign::new(align),
             false,
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.build_load_inner(payload, name)?;
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+        self.append_int_load(ty, payload, name)
     }
 
     /// Typed `load`: the result type is derived from the pointer's
@@ -3950,14 +3915,14 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty_id,
-            IsValue::as_value(p).id,
+            p.id(),
             MaybeAlign::NONE,
             true,
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.as_value())
+        Ok(inst.to_erased())
     }
 
     /// `load volatile <ty>, ptr <ptr>, align N`. Volatile load with explicit
@@ -3978,14 +3943,14 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty_id,
-            IsValue::as_value(p).id,
+            p.id(),
             MaybeAlign::new(align),
             true,
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.as_value())
+        Ok(inst.to_erased())
     }
 
     /// Produce `store <value>, ptr <ptr>`. Mirrors
@@ -4107,7 +4072,7 @@ where
         let void_ty = self.module.void_type().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Store(payload), "");
         Ok(StoreInst::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
@@ -4126,7 +4091,7 @@ where
         V: IsValue<'ctx, B>,
         P: IntoPointerValue<'ctx, B>,
     {
-        let v = value.as_value();
+        let v = value.into_erased();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         // Materialise the DataLayout default off the stored value's type,
         // like upstream (`computeLoadStoreDefaultAlign` /
@@ -4139,7 +4104,7 @@ where
         };
         Ok(StoreInstData::new(
             v.id,
-            IsValue::as_value(p).id,
+            p.id(),
             align,
             volatile,
             ordering,
@@ -4172,14 +4137,13 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            IsValue::as_value(p).id,
+            p.id(),
             MaybeAlign::new(config.align_value()),
             config.is_volatile(),
             config.ordering_value(),
             config.sync_scope_value().clone(),
         );
-        let inst = self.build_load_inner(payload, name)?;
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+        self.append_int_load(ty, payload, name)
     }
 
     /// Erased atomic load. Same upstream constructor as
@@ -4201,14 +4165,14 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty_id,
-            IsValue::as_value(p).id,
+            p.id(),
             MaybeAlign::new(config.align_value()),
             config.is_volatile(),
             config.ordering_value(),
             config.sync_scope_value().clone(),
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.as_value())
+        Ok(inst.to_erased())
     }
 
     /// Atomic store: `store atomic [volatile] <ty> <val>, ptr <ptr>
@@ -4309,7 +4273,7 @@ where
         let f = callee.as_function();
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let payload = crate::instr_types::CallInstData::new(
-            f.as_value().id,
+            f.id(),
             f.signature().as_type().id(),
             arg_ids,
             f.calling_conv(),
@@ -4321,7 +4285,7 @@ where
             name,
         );
         Ok(TypedCallInst::from_call(CallInst::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         )))
@@ -4345,7 +4309,7 @@ where
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let (name, calling_conv, attrs) = config.into_parts();
         let payload = crate::instr_types::CallInstData::new_with_attrs(
-            f.as_value().id,
+            f.id(),
             f.signature().as_type().id(),
             arg_ids,
             calling_conv,
@@ -4358,7 +4322,7 @@ where
             name,
         );
         Ok(TypedCallInst::from_call(CallInst::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         )))
@@ -4412,9 +4376,9 @@ where
     {
         let f = callee.as_function();
         let mut arg_ids: Vec<ValueId> = fixed_args.lower(ModuleRef::new(self.module))?.into_vec();
-        arg_ids.extend(varargs.into_iter().map(|v| v.as_value().id));
+        arg_ids.extend(varargs.into_iter().map(|v| v.id()));
         let payload = crate::instr_types::CallInstData::new(
-            f.as_value().id,
+            f.id(),
             f.signature().as_type().id(),
             arg_ids,
             f.calling_conv(),
@@ -4426,7 +4390,7 @@ where
             name,
         );
         Ok(TypedCallInst::from_call(CallInst::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         )))
@@ -4557,7 +4521,7 @@ where
     ) -> CallBuilder<'_, 'm, 'ctx, B, F, R, R2> {
         CallBuilder {
             parent: self,
-            callee_id: callee.as_value().id,
+            callee_id: callee.id(),
             fn_ty: callee.signature().as_type().id(),
             return_ty: callee.return_type().id(),
             args: Vec::new(),
@@ -4603,7 +4567,7 @@ where
         let ret = <Sig::Ret as FunctionReturn>::ir_type(&module)?;
         let params = <Sig::Params as FunctionParamList>::ir_types(&module)?;
         let fn_ty = module.fn_type(ret, params, false);
-        let callee_v = IsValue::as_value(callee);
+        let callee_v = IsValue::into_erased(callee);
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let payload = crate::instr_types::CallInstData::new(
             callee_v.id,
@@ -4618,7 +4582,7 @@ where
             name,
         );
         Ok(TypedCallInst::from_call(CallInst::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         )))
@@ -4646,7 +4610,7 @@ where
         I: IntoIterator<Item = V>,
         V: IsValue<'ctx, B>,
     {
-        let callee_v = IsValue::as_value(callee);
+        let callee_v = IsValue::into_erased(callee);
         let ret_data = self.module.context().type_data(fn_ty.return_type().id());
         if !crate::function::signature_matches_marker::<R2>(ret_data) {
             return Err(IrError::ReturnTypeMismatch {
@@ -4657,7 +4621,7 @@ where
         }
         let mut arg_ids: Vec<ValueId> = Vec::new();
         for arg in args {
-            let v = arg.as_value();
+            let v = arg.into_erased();
             arg_ids.push(v.id);
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
@@ -4674,7 +4638,7 @@ where
             name,
         );
         Ok(CallInst::<R2, B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
@@ -4704,10 +4668,11 @@ where
         I: IntoIterator<Item = V>,
         V: IsValue<'ctx, B>,
     {
-        let asm_v = asm.as_value();
+        let asm_v = asm.into_erased();
         let fn_ty = asm.function_type();
         // Reject a return-marker / signature mismatch up front, mirroring
-        // `Module::add_function`'s `signature_matches_marker` gate.
+        // the `signature_matches_marker` gate on the typed lookup path
+        // (`Module::function_by_name`).
         let ret_data = self.module.context().type_data(fn_ty.return_type().id());
         if !crate::function::signature_matches_marker::<R2>(ret_data) {
             return Err(IrError::ReturnTypeMismatch {
@@ -4718,7 +4683,7 @@ where
         }
         let mut arg_ids: Vec<ValueId> = Vec::new();
         for arg in args {
-            let v = arg.as_value();
+            let v = arg.into_erased();
             arg_ids.push(v.id);
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
@@ -4736,7 +4701,7 @@ where
             name,
         );
         Ok(CallInst::<R2, B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
@@ -4869,7 +4834,7 @@ where
         let raw = self.build_gep(
             elem_ty,
             ptr.as_pointer_value(),
-            core::iter::once(IsValue::as_value(idx_value)),
+            core::iter::once(idx_value.as_dyn()),
             name,
         )?;
         Ok(raw.with_pointee::<T>())
@@ -4895,7 +4860,7 @@ where
         let raw = self.build_inbounds_gep(
             elem_ty,
             ptr.as_pointer_value(),
-            core::iter::once(IsValue::as_value(idx_value)),
+            core::iter::once(idx_value.as_dyn()),
             name,
         )?;
         Ok(raw.with_pointee::<T>())
@@ -4939,13 +4904,13 @@ where
         let source_ty = source_ty.as_type();
         let source_ty_id = source_ty.id();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
-        let ptr_value = IsValue::as_value(p);
+        let ptr_value = IsValue::into_erased(p);
         let mut idx_ids = Vec::new();
         let mut idx_values = Vec::new();
         for index in indices {
             let iv = index.into_int_value(ModuleRef::new(self.module))?;
-            idx_values.push(iv.as_value());
-            idx_ids.push(iv.as_value().id);
+            idx_values.push(iv.into_erased());
+            idx_ids.push(iv.id());
         }
         // Reject index sequences that do not index into the source element
         // type (`GetElementPtrInst::getIndexedType`) — the parser's
@@ -4957,7 +4922,8 @@ where
         // for the scalar (non-vector-of-pointers) case the result type is
         // exactly the base pointer's type, i.e. it lives in the SAME address
         // space as `ptr`, not always address space 0.
-        let result_ty = self.module.ptr_type(p.ty().address_space()).as_type().id();
+        let result_ptr_ty = ModuleView::<B>::new(self.module).ptr_type(p.ty().address_space());
+        let result_ty = result_ptr_ty.as_type().id();
         if let Some(folded) = self
             .folder
             .fold_gep_dyn(source_ty, ptr_value, &idx_values, flags)?
@@ -4971,8 +4937,7 @@ where
             idx_ids.into_boxed_slice(),
             flags,
         );
-        let inst = self.append_instruction(result_ty, InstructionKindData::Gep(payload), name);
-        Ok(PointerValue::from_value_unchecked(inst.as_value()))
+        Ok(self.append_ptr(result_ptr_ty, InstructionKindData::Gep(payload), name))
     }
 
     // ---- Floating-point casts ----
@@ -5025,7 +4990,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let v = IsValue::as_value(value);
+        let v = IsValue::into_erased(value);
         if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::FpTrunc,
             v,
@@ -5035,14 +5000,7 @@ where
             return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::FpTrunc, v.id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(self.append_fp_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// Runtime-kind `fpext`. Mirrors [`Self::build_fp_ext`] but accepts
@@ -5061,7 +5019,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let v = IsValue::as_value(value);
+        let v = IsValue::into_erased(value);
         if let Some(folded) =
             self.folder
                 .fold_cast_dyn(crate::instr_types::CastOpcode::FpExt, v, dst_ty.as_type())?
@@ -5070,14 +5028,7 @@ where
             return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::FpExt, v.id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(self.append_fp_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// Crate-internal helper for `build_fp_ext` / `build_fp_trunc`.
@@ -5092,17 +5043,12 @@ where
         Src: FloatKind,
         Dst: FloatKind,
     {
-        let v = IsValue::as_value(value);
+        let v = IsValue::into_erased(value);
         if let Some(folded) = self.folder.fold_cast_to_fp(opcode, v, dst_ty)? {
             return self.accept_folded_cast_fp(folded, dst_ty);
         }
         let payload = CastOpData::new(opcode, v.id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(FloatValue::<Dst, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_fp_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// Produce `fptoui <value> to <dst>`. Mirrors
@@ -5148,17 +5094,12 @@ where
         K: FloatKind,
         W: IntWidth,
     {
-        let v = IsValue::as_value(value);
+        let v = IsValue::into_erased(value);
         if let Some(folded) = self.folder.fold_cast_to_int(opcode, v, dst_ty)? {
             return self.accept_folded_cast_int(folded, dst_ty);
         }
         let payload = CastOpData::new(opcode, v.id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// Produce `uitofp <value> to <dst>`. Mirrors
@@ -5180,9 +5121,9 @@ where
     /// `uitofp nneg` with explicit [`crate::UIToFpFlags`]. Mirrors
     /// `IRBuilder::CreateUIToFP` plus `Instruction::setNonNeg`. The `nneg`
     /// flag asserts the source value is non-negative.
-    pub fn build_ui_to_fp_with_flags<W, K, V, Name>(
+    pub fn build_ui_to_fp_with_flags<W, K, Name>(
         &self,
-        value: V,
+        value: IntValue<'ctx, W, B>,
         dst_ty: FloatType<'ctx, K, B>,
         flags: crate::instr_types::UIToFpFlags,
         name: Name,
@@ -5191,10 +5132,8 @@ where
         Name: AsRef<str>,
         W: IntWidth,
         K: FloatKind,
-        V: IntoIntValue<'ctx, W, B>,
     {
-        let value = value.into_int_value(ModuleRef::new(self.module))?;
-        let v = value.as_value();
+        let v = value.into_erased();
         if let Some(folded) =
             self.folder
                 .fold_cast_to_fp(crate::instr_types::CastOpcode::UIToFp, v, dst_ty)?
@@ -5203,12 +5142,7 @@ where
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::UIToFp, v.id);
         payload.nneg.set(flags.nneg);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_fp_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// Produce `sitofp <value> to <dst>`. Mirrors
@@ -5242,19 +5176,15 @@ where
     {
         if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::UIToFp,
-            src.as_value(),
+            src.into_erased(),
             dst.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst.as_type().id())?;
             return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded));
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::UIToFp, src.as_value().id);
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::UIToFp, src.id());
         payload.nneg.set(flags.nneg);
-        let inst =
-            self.append_instruction(dst.as_type().id(), InstructionKindData::Cast(payload), name);
-        Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(
-            inst.as_value(),
-        ))
+        Ok(self.append_fp_at(dst, InstructionKindData::Cast(payload), name))
     }
 
     fn build_int_to_fp<W, K>(
@@ -5268,17 +5198,12 @@ where
         W: IntWidth,
         K: FloatKind,
     {
-        let v = value.as_value();
+        let v = value.into_erased();
         if let Some(folded) = self.folder.fold_cast_to_fp(opcode, v, dst_ty)? {
             return self.accept_folded_cast_fp(folded, dst_ty);
         }
         let payload = CastOpData::new(opcode, v.id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_fp_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     // ---- Pointer casts ----
@@ -5295,7 +5220,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let value = value.as_value();
+        let value = value.into_erased();
         let dst_ty = self.ptr_to_addr_result_type(value.ty())?;
         let result = self.build_ptr_to_addr_dyn(value, dst_ty, name)?;
         Ok(IntValue::<IntDyn, B>::from_value_unchecked(result))
@@ -5328,7 +5253,7 @@ where
         }
         let payload = CastOpData::new(CastOpcode::PtrToAddr, value.id);
         let inst = self.append_instruction(dst_ty.id(), InstructionKindData::Cast(payload), name);
-        Ok(inst.as_value())
+        Ok(inst.to_erased())
     }
 
     /// Produce `ptrtoint <value> to <dst>`. Mirrors
@@ -5343,7 +5268,7 @@ where
         Name: AsRef<str>,
         W: IntWidth,
     {
-        let v = IsValue::as_value(value);
+        let v = IsValue::into_erased(value);
         if let Some(folded) =
             self.folder
                 .fold_cast_to_int(crate::instr_types::CastOpcode::PtrToInt, v, dst_ty)?
@@ -5351,12 +5276,7 @@ where
             return self.accept_folded_cast_int(folded, dst_ty);
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::PtrToInt, v.id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// Produce `inttoptr <value> to <dst>`. Mirrors
@@ -5371,7 +5291,7 @@ where
         Name: AsRef<str>,
         W: IntWidth,
     {
-        let v = value.as_value();
+        let v = value.into_erased();
         if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::IntToPtr,
             v,
@@ -5381,12 +5301,7 @@ where
             return Ok(PointerValue::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::IntToPtr, v.id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(PointerValue::from_value_unchecked(inst.as_value()))
+        Ok(self.append_ptr(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// Generic bitcast on values of equal bit width. Mirrors
@@ -5397,9 +5312,9 @@ where
     /// [`super::float_kind::StaticFloatKind::STATIC_BITS`]
     /// `const { assert!(...) }` blocks at monomorphisation; under-spec'd
     /// instantiations are *compile* errors.
-    pub fn build_bitcast_int_to_int<Src, Dst, V, Name>(
+    pub fn build_bitcast_int_to_int<Src, Dst, Name>(
         &self,
-        value: V,
+        value: IntValue<'ctx, Src, B>,
         dst_ty: IntType<'ctx, Dst, B>,
         name: Name,
     ) -> IrResult<IntValue<'ctx, Dst, B>>
@@ -5407,7 +5322,6 @@ where
         Name: AsRef<str>,
         Src: super::int_width::StaticIntWidth,
         Dst: super::int_width::StaticIntWidth,
-        V: IntoIntValue<'ctx, Src, B>,
     {
         const {
             assert!(
@@ -5416,8 +5330,7 @@ where
                 "bitcast int->int requires Src::STATIC_BITS == Dst::STATIC_BITS",
             );
         }
-        let v = value.into_int_value(ModuleRef::new(self.module))?;
-        let v_value = IsValue::as_value(v);
+        let v_value = value.into_erased();
         if let Some(folded) = self.folder.fold_cast_to_int(
             super::instr_types::CastOpcode::BitCast,
             v_value,
@@ -5426,21 +5339,16 @@ where
             return self.accept_folded_cast_int(folded, dst_ty);
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(IntValue::<Dst, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// Bitcast an integer value to a same-bit-width float. Mirrors the
     /// `Instruction::BitCast` arm of `CastInst::Create` in
     /// `lib/IR/Instructions.cpp` for the `int -> fp` shape. Width
     /// equality is enforced statically.
-    pub fn build_bitcast_int_to_fp<W, K, V, Name>(
+    pub fn build_bitcast_int_to_fp<W, K, Name>(
         &self,
-        value: V,
+        value: IntValue<'ctx, W, B>,
         dst_ty: FloatType<'ctx, K, B>,
         name: Name,
     ) -> IrResult<FloatValue<'ctx, K, B>>
@@ -5448,7 +5356,6 @@ where
         Name: AsRef<str>,
         W: super::int_width::StaticIntWidth,
         K: super::float_kind::StaticFloatKind,
-        V: IntoIntValue<'ctx, W, B>,
     {
         const {
             assert!(
@@ -5457,8 +5364,7 @@ where
                 "bitcast int->fp requires W::STATIC_BITS == K::STATIC_BITS",
             );
         }
-        let v = value.into_int_value(ModuleRef::new(self.module))?;
-        let v_value = IsValue::as_value(v);
+        let v_value = value.into_erased();
         if let Some(folded) =
             self.folder
                 .fold_cast_to_fp(super::instr_types::CastOpcode::BitCast, v_value, dst_ty)?
@@ -5466,21 +5372,16 @@ where
             return self.accept_folded_cast_fp(folded, dst_ty);
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(FloatValue::<K, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_fp_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// Bitcast a float to a same-bit-width integer. Mirrors the
     /// `Instruction::BitCast` arm of `CastInst::Create` in
     /// `lib/IR/Instructions.cpp` for the `fp -> int` shape. Width
     /// equality is enforced statically.
-    pub fn build_bitcast_fp_to_int<K, W, V, Name>(
+    pub fn build_bitcast_fp_to_int<K, W, Name>(
         &self,
-        value: V,
+        value: FloatValue<'ctx, K, B>,
         dst_ty: IntType<'ctx, W, B>,
         name: Name,
     ) -> IrResult<IntValue<'ctx, W, B>>
@@ -5488,7 +5389,6 @@ where
         Name: AsRef<str>,
         K: super::float_kind::StaticFloatKind,
         W: super::int_width::StaticIntWidth,
-        V: IntoFloatValue<'ctx, K, B>,
     {
         const {
             assert!(
@@ -5497,8 +5397,7 @@ where
                 "bitcast fp->int requires K::STATIC_BITS == W::STATIC_BITS",
             );
         }
-        let v = value.into_float_value(ModuleRef::new(self.module))?;
-        let v_value = IsValue::as_value(v);
+        let v_value = value.into_erased();
         if let Some(folded) = self.folder.fold_cast_to_int(
             super::instr_types::CastOpcode::BitCast,
             v_value,
@@ -5507,21 +5406,16 @@ where
             return self.accept_folded_cast_int(folded, dst_ty);
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// Bitcast a float to a same-bit-width float. Used for
     /// `bfloat <-> half` (both 16 bits) and `fp128 <-> ppc_fp128` (both
     /// 128 bits). Mirrors `Instruction::BitCast` in
     /// `lib/IR/Instructions.cpp`.
-    pub fn build_bitcast_fp_to_fp<Src, Dst, V, Name>(
+    pub fn build_bitcast_fp_to_fp<Src, Dst, Name>(
         &self,
-        value: V,
+        value: FloatValue<'ctx, Src, B>,
         dst_ty: FloatType<'ctx, Dst, B>,
         name: Name,
     ) -> IrResult<FloatValue<'ctx, Dst, B>>
@@ -5529,7 +5423,6 @@ where
         Name: AsRef<str>,
         Src: super::float_kind::StaticFloatKind,
         Dst: super::float_kind::StaticFloatKind,
-        V: IntoFloatValue<'ctx, Src, B>,
     {
         const {
             assert!(
@@ -5538,8 +5431,7 @@ where
                 "bitcast fp->fp requires Src::STATIC_BITS == Dst::STATIC_BITS",
             );
         }
-        let v = value.into_float_value(ModuleRef::new(self.module))?;
-        let v_value = IsValue::as_value(v);
+        let v_value = value.into_erased();
         if let Some(folded) =
             self.folder
                 .fold_cast_to_fp(super::instr_types::CastOpcode::BitCast, v_value, dst_ty)?
@@ -5547,12 +5439,7 @@ where
             return self.accept_folded_cast_fp(folded, dst_ty);
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(FloatValue::<Dst, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_fp_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// Runtime-typed bitcast: produce `bitcast <src> to <dst>` with both
@@ -5578,7 +5465,7 @@ where
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, value.id);
         let inst = self.append_instruction(dst_ty.id(), InstructionKindData::Cast(payload), name);
-        Ok(inst.as_value())
+        Ok(inst.to_erased())
     }
 
     /// Produce `addrspacecast <value> to <dst>`. Mirrors
@@ -5592,7 +5479,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let v = IsValue::as_value(value);
+        let v = IsValue::into_erased(value);
         if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::AddrSpaceCast,
             v,
@@ -5602,12 +5489,7 @@ where
             return Ok(PointerValue::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::AddrSpaceCast, v.id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(PointerValue::from_value_unchecked(inst.as_value()))
+        Ok(self.append_ptr(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// Pointer cast: pick `bitcast` for same-addrspace pointer-to-pointer
@@ -5624,7 +5506,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let v = IsValue::as_value(value);
+        let v = IsValue::into_erased(value);
         let opcode = if value.ty().address_space() == dst_ty.address_space() {
             super::instr_types::CastOpcode::BitCast
         } else {
@@ -5643,12 +5525,7 @@ where
             return Ok(PointerValue::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(opcode, v.id);
-        let inst = self.append_instruction(
-            dst_ty.as_type().id(),
-            InstructionKindData::Cast(payload),
-            name,
-        );
-        Ok(PointerValue::from_value_unchecked(inst.as_value()))
+        Ok(self.append_ptr(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// `icmp eq <ptr>, null` -- pointer-null test. Mirrors
@@ -5710,20 +5587,15 @@ where
         let rhs = rhs.into_pointer_value(ModuleRef::new(self.module))?;
         let folded = self.folder.fold_cmp_dyn(
             pred.into(),
-            IsValue::as_value(lhs),
-            IsValue::as_value(rhs),
+            IsValue::into_erased(lhs),
+            IsValue::into_erased(rhs),
         )?;
         if let Some(folded) = folder::narrow_folded_bool(folded)? {
             return Ok(folded);
         }
-        let payload = super::instr_types::CmpInstData::new(
-            pred,
-            IsValue::as_value(lhs).id,
-            IsValue::as_value(rhs).id,
-        );
-        let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
-        let inst = self.append_instruction(i1_ty, InstructionKindData::ICmp(payload), name);
-        Ok(IntValue::<bool, B>::from_value_unchecked(inst.as_value()))
+        let payload = super::instr_types::CmpInstData::new(pred, lhs.id(), rhs.id());
+        let i1 = ModuleView::<B>::new(self.module).bool_type();
+        Ok(self.append_int_at(i1, InstructionKindData::ICmp(payload), name))
     }
 
     // ---- Vector splat / ptr arithmetic / aggregate ret convenience ----
@@ -5750,7 +5622,7 @@ where
                 message: "build_vector_splat requires at least one lane",
             });
         }
-        let scalar_value = scalar.as_value();
+        let scalar_value = scalar.into_erased();
         let elem_ty = scalar_value.ty();
         let vec_ty = ModuleView::<B>::new(self.module).vector_type(elem_ty, count, false);
         let poison = vec_ty.as_type().get_poison();
@@ -5797,8 +5669,7 @@ where
         let i8_ty = ModuleView::<B>::new(self.module).i8_type();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let offset_v = offset.into_int_value(ModuleRef::new(self.module))?;
-        let offset_value = IsValue::as_value(offset_v);
-        self.build_gep(i8_ty, p, core::iter::once(offset_value), name)
+        self.build_gep(i8_ty, p, core::iter::once(offset_v.as_dyn()), name)
     }
 
     /// `getelementptr inbounds i8, ptr <ptr>, <offset>`. Mirrors
@@ -5819,8 +5690,7 @@ where
         let i8_ty = ModuleView::<B>::new(self.module).i8_type();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let offset_v = offset.into_int_value(ModuleRef::new(self.module))?;
-        let offset_value = IsValue::as_value(offset_v);
-        self.build_inbounds_gep(i8_ty, p, core::iter::once(offset_value), name)
+        self.build_inbounds_gep(i8_ty, p, core::iter::once(offset_v.as_dyn()), name)
     }
 
     // ---- Integer comparison ----
@@ -5845,14 +5715,12 @@ where
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
-        let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
+        let i1 = ModuleView::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_int_cmp(pred, lhs, rhs)? {
             return Ok(folded);
         }
-        let payload =
-            crate::instr_types::CmpInstData::new(pred, lhs.as_value().id, rhs.as_value().id);
-        let inst = self.append_instruction(i1_ty, InstructionKindData::ICmp(payload), name);
-        Ok(IntValue::<bool, B>::from_value_unchecked(inst.as_value()))
+        let payload = crate::instr_types::CmpInstData::new(pred, lhs.id(), rhs.id());
+        Ok(self.append_int_at(i1, InstructionKindData::ICmp(payload), name))
     }
 
     /// `icmp samesign` with explicit [`crate::ICmpFlags`]. Mirrors
@@ -5880,15 +5748,13 @@ where
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
-        let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
+        let i1 = ModuleView::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_int_cmp(predicate, lhs, rhs)? {
             return Ok(folded);
         }
-        let mut payload =
-            crate::instr_types::CmpInstData::new(predicate, lhs.as_value().id, rhs.as_value().id);
+        let mut payload = crate::instr_types::CmpInstData::new(predicate, lhs.id(), rhs.id());
         payload.samesign = flags.samesign;
-        let inst = self.append_instruction(i1_ty, InstructionKindData::ICmp(payload), name);
-        Ok(IntValue::<bool, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_at(i1, InstructionKindData::ICmp(payload), name))
     }
 
     /// `icmp samesign` with explicit [`crate::ICmpFlags`]. Both operands
@@ -5905,15 +5771,13 @@ where
     where
         Name: AsRef<str>,
     {
-        let i1_ty = ModuleView::<B>::new(self.module).bool_type().as_type().id();
+        let i1 = ModuleView::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_int_cmp(pred, lhs, rhs)? {
             return Ok(folded);
         }
-        let mut payload =
-            crate::instr_types::CmpInstData::new(pred, lhs.as_value().id, rhs.as_value().id);
+        let mut payload = crate::instr_types::CmpInstData::new(pred, lhs.id(), rhs.id());
         payload.samesign = flags.samesign;
-        let inst = self.append_instruction(i1_ty, InstructionKindData::ICmp(payload), name);
-        Ok(IntValue::<bool, B>::from_value_unchecked(inst.as_value()))
+        Ok(self.append_int_at(i1, InstructionKindData::ICmp(payload), name))
     }
 
     // Per-predicate convenience wrappers. Mirror the LLVM C++
@@ -6178,7 +6042,7 @@ where
         Ok({
             let _i = inst;
             PhiInst::<W, PhiOpen, B>::from_raw(
-                _i.as_value().id,
+                _i.id(),
                 ModuleRef::<B>::new(self.module),
                 _i.ty().id(),
             )
@@ -6206,7 +6070,7 @@ where
         Ok({
             let _i = inst;
             PhiInst::<IntDyn, PhiOpen, B>::from_raw(
-                _i.as_value().id,
+                _i.id(),
                 ModuleRef::<B>::new(self.module),
                 _i.ty().id(),
             )
@@ -6237,7 +6101,7 @@ where
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(FpPhiInst::<K, PhiOpen, B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
@@ -6262,7 +6126,7 @@ where
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(FpPhiInst::<FloatDyn, PhiOpen, B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
@@ -6290,7 +6154,7 @@ where
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(PointerPhiInst::<PhiOpen, B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
@@ -6315,7 +6179,7 @@ where
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(PointerPhiInst::<PhiOpen, B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
@@ -6361,7 +6225,7 @@ where
         let payload = crate::instr_types::PhiData::new();
         let inst = self.append_phi_instruction(ty.id(), InstructionKindData::Phi(payload), name);
         Ok(OtherPhiInst::<B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
@@ -6382,7 +6246,7 @@ where
         let target = target.into_basic_block_label();
         let payload = crate::instr_types::BranchInstData {
             kind: core::cell::RefCell::new(crate::instr_types::BranchKind::Unconditional(
-                target.as_value().id,
+                target.id(),
             )),
         };
         let void_ty = self.module.void_type().as_type().id();
@@ -6411,9 +6275,9 @@ where
         let cond = cond.into_int_value(ModuleRef::new(self.module))?;
         let payload = crate::instr_types::BranchInstData {
             kind: core::cell::RefCell::new(crate::instr_types::BranchKind::Conditional {
-                cond: core::cell::Cell::new(cond.as_value().id),
-                then_bb: then_bb.as_value().id,
-                else_bb: else_bb.as_value().id,
+                cond: core::cell::Cell::new(cond.id()),
+                then_bb: then_bb.id(),
+                else_bb: else_bb.id(),
             }),
         };
         let void_ty = self.module.void_type().as_type().id();
@@ -6530,11 +6394,8 @@ where
         // The target block's parameters are its leading head-phis, in order.
         // Scan from the block top and stop at the first non-phi (phis are
         // grouped at the head) — the pattern the CFG splitter uses.
-        let target_block = BasicBlock::<Dyn, Terminated, B>::from_parts(
-            target.as_value().id,
-            module_ref,
-            label_ty,
-        );
+        let target_block =
+            BasicBlock::<Dyn, Terminated, B>::from_parts(target.id(), module_ref, label_ty);
         let mut param_phis: Vec<ValueId> = Vec::new();
         for inst_id in target_block.instruction_ids() {
             let data = self.module.context().value_data(inst_id);
@@ -6578,7 +6439,7 @@ where
         // matching parameter-phi (types already validated above; the erased
         // path re-checks and registers the phi in each value's use-list).
         let pred_block =
-            BasicBlock::<Dyn, Terminated, B>::from_parts(pred.as_value().id, module_ref, label_ty);
+            BasicBlock::<Dyn, Terminated, B>::from_parts(pred.id(), module_ref, label_ty);
         for (phi_id, arg) in param_phis.iter().zip(args.iter()) {
             let phi_ty = self.module.context().value_data(*phi_id).ty;
             let phi_val = Value::from_parts(*phi_id, module_ref, phi_ty);
@@ -6679,39 +6540,6 @@ where
         self.build_cond_br(cond, then_label, else_label)
     }
 
-    /// Produce `switch <cond>, label <default> [...]`. Mirrors
-    /// `IRBuilder::CreateSwitch`.
-    ///
-    /// Returns the terminated parent block plus an [`Open`]-typestate
-    /// [`SwitchInst`]. The caller adds
-    /// cases via [`SwitchInst::add_case`](SwitchInst::add_case)
-    /// (chainable) and seals the case list with
-    /// [`SwitchInst::finish`](SwitchInst::finish).
-    pub fn build_switch<C, DefaultTarget, Name>(
-        self,
-        cond: C,
-        default_target: DefaultTarget,
-        name: Name,
-    ) -> IrResult<TerminatedBlockSwitch<'ctx, R, B>>
-    where
-        Name: AsRef<str>,
-        C: IsValue<'ctx, B>,
-        DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
-    {
-        let default_target = default_target.into_basic_block_label();
-        let cond_v = cond.as_value();
-        let void_ty = self.module.void_type().as_type().id();
-        let payload =
-            crate::instr_types::SwitchInstData::new(cond_v.id, default_target.as_value().id);
-        let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
-        let module_ref = ModuleRef::<B>::new(self.module);
-        let bb = self.into_insert_block();
-        Ok((
-            bb.retag_termination::<Terminated>(),
-            SwitchInst::<Open, B>::from_raw(inst.as_value().id, module_ref, void_ty),
-        ))
-    }
-
     /// Produce a TYPED `switch <cond>, label <default> [...]` whose
     /// condition is a width-`W` integer. Mirrors `IRBuilder::CreateSwitch`
     /// with the case-value width statically pinned.
@@ -6723,12 +6551,16 @@ where
     /// `i64` literal on a `W = i32` switch) is a *compile* error — there
     /// is no `IntoIntValue<'ctx, W, B>` impl for the mismatched value —
     /// rather than the runtime [`IrError::TypeMismatch`] the width-erased
-    /// [`build_switch`](Self::build_switch) reports at
-    /// [`SwitchInst::add_case`]. Typed sibling of
-    /// [`build_switch`](Self::build_switch) (cf. `build_invoke` vs
-    /// `build_invoke_dyn`); the caller still seals the case list with
+    /// [`build_switch_dyn`](Self::build_switch_dyn) reports at
+    /// [`SwitchInst::add_case`]. The caller still seals the case list with
     /// [`SwitchInst::finish`](SwitchInst::finish).
-    pub fn build_switch_typed<W, C, DefaultTarget, Name>(
+    ///
+    /// Typed member of the pair, so it takes the unsuffixed name and its
+    /// erased sibling carries the `_dyn` — as with
+    /// [`build_call`](Self::build_call) / [`build_call_dyn`](Self::build_call_dyn)
+    /// and [`build_invoke`](Self::build_invoke) /
+    /// [`build_invoke_dyn`](Self::build_invoke_dyn).
+    pub fn build_switch<W, C, DefaultTarget, Name>(
         self,
         cond: C,
         default_target: DefaultTarget,
@@ -6741,16 +6573,55 @@ where
         DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let module_ref = ModuleRef::<B>::new(self.module);
-        let cond_id = IsValue::as_value(cond.into_int_value(module_ref)?).id;
+        let cond_id = cond.into_int_value(module_ref)?.id();
         let default_target = default_target.into_basic_block_label();
         let void_ty = self.module.void_type().as_type().id();
-        let payload =
-            crate::instr_types::SwitchInstData::new(cond_id, default_target.as_value().id);
+        let payload = crate::instr_types::SwitchInstData::new(cond_id, default_target.id());
         let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            SwitchInst::<Open, B, W>::from_raw(inst.as_value().id, module_ref, void_ty),
+            SwitchInst::<Open, B, W>::from_raw(inst.id(), module_ref, void_ty),
+        ))
+    }
+
+    /// Produce a width-ERASED `switch <cond>, label <default> [...]`.
+    /// Mirrors `IRBuilder::CreateSwitch`.
+    ///
+    /// Returns the terminated parent block plus an [`Open`]-typestate
+    /// [`SwitchInst`]. The caller adds
+    /// cases via [`SwitchInst::add_case`](SwitchInst::add_case)
+    /// (chainable) and seals the case list with
+    /// [`SwitchInst::finish`](SwitchInst::finish).
+    ///
+    /// `cond` is bound by [`IsValue`], so the condition's width is not
+    /// pinned and `add_case` checks each case value at *runtime*
+    /// ([`IrError::TypeMismatch`]). Prefer the typed
+    /// [`build_switch`](Self::build_switch) where the width is statically
+    /// known — it makes a wrong-width case a compile error. This form is
+    /// what the `.ll` parser and the auto-SSA builder land on, since
+    /// neither knows the condition's width until run time.
+    pub fn build_switch_dyn<C, DefaultTarget, Name>(
+        self,
+        cond: C,
+        default_target: DefaultTarget,
+        name: Name,
+    ) -> IrResult<TerminatedBlockSwitch<'ctx, R, B>>
+    where
+        Name: AsRef<str>,
+        C: IsValue<'ctx, B>,
+        DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let default_target = default_target.into_basic_block_label();
+        let cond_v = cond.into_erased();
+        let void_ty = self.module.void_type().as_type().id();
+        let payload = crate::instr_types::SwitchInstData::new(cond_v.id, default_target.id());
+        let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let bb = self.into_insert_block();
+        Ok((
+            bb.retag_termination::<Terminated>(),
+            SwitchInst::<Open, B>::from_raw(inst.id(), module_ref, void_ty),
         ))
     }
 
@@ -6778,7 +6649,7 @@ where
         Name: AsRef<str>,
         A: IntoPointerValue<'ctx, B>,
     {
-        let addr_v = IsValue::as_value(address.into_pointer_value(ModuleRef::new(self.module))?);
+        let addr_v = IsValue::into_erased(address.into_pointer_value(ModuleRef::new(self.module))?);
         let void_ty = self.module.void_type().as_type().id();
         let payload = crate::instr_types::IndirectBrInstData::new(addr_v.id);
         let inst = self.append_instruction(void_ty, InstructionKindData::IndirectBr(payload), name);
@@ -6786,7 +6657,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            IndirectBrInst::<Open, B>::from_raw(inst.as_value().id, module_ref, void_ty),
+            IndirectBrInst::<Open, B>::from_raw(inst.id(), module_ref, void_ty),
         ))
     }
 
@@ -6842,12 +6713,12 @@ where
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let (name, calling_conv, attrs) = config.into_parts();
         let payload = crate::instr_types::InvokeInstData::new_with_attrs(
-            f.as_value().id,
+            f.id(),
             f.signature().as_type().id(),
             arg_ids,
             calling_conv,
-            normal_dest.as_value().id,
-            unwind_dest.as_value().id,
+            normal_dest.id(),
+            unwind_dest.id(),
             attrs,
         );
         let ret_ty = f.return_type().id();
@@ -6856,8 +6727,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            InvokeInst::<Dyn, B>::from_raw(inst.as_value().id, module_ref, ret_ty)
-                .retag::<Ret::Marker>(),
+            InvokeInst::<Dyn, B>::from_raw(inst.id(), module_ref, ret_ty).retag::<Ret::Marker>(),
         ))
     }
 
@@ -6925,18 +6795,18 @@ where
     {
         let normal_dest = normal_dest.into_basic_block_label();
         let unwind_dest = unwind_dest.into_basic_block_label();
-        let callee_v = callee.as_value();
+        let callee_v = callee.into_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
         let (name, calling_conv, attrs) = config.into_parts();
-        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.as_value().id).collect();
+        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.id()).collect();
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let payload = crate::instr_types::InvokeInstData::new_with_attrs(
             callee_v.id,
             fn_ty.as_type().id(),
             arg_ids,
             calling_conv,
-            normal_dest.as_value().id,
-            unwind_dest.as_value().id,
+            normal_dest.id(),
+            unwind_dest.id(),
             attrs,
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
@@ -6944,7 +6814,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            InvokeInst::<Dyn, B>::from_raw(inst.as_value().id, module_ref, ret_ty).retag::<R2>(),
+            InvokeInst::<Dyn, B>::from_raw(inst.id(), module_ref, ret_ty).retag::<R2>(),
         ))
     }
 
@@ -6971,18 +6841,18 @@ where
     {
         let normal_dest = normal_dest.into_basic_block_label();
         let unwind_dest = unwind_dest.into_basic_block_label();
-        let callee_v = IsValue::as_value(callee);
+        let callee_v = IsValue::into_erased(callee);
         let ret_ty = fn_ty.return_type().id();
         let (name, calling_conv, attrs) = config.into_parts();
-        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.as_value().id).collect();
+        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.id()).collect();
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let payload = crate::instr_types::InvokeInstData::new_with_attrs(
             callee_v.id,
             fn_ty.as_type().id(),
             arg_ids,
             calling_conv,
-            normal_dest.as_value().id,
-            unwind_dest.as_value().id,
+            normal_dest.id(),
+            unwind_dest.id(),
             attrs,
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
@@ -6990,7 +6860,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            InvokeInst::<Dyn, B>::from_raw(inst.as_value().id, module_ref, ret_ty).retag::<R2>(),
+            InvokeInst::<Dyn, B>::from_raw(inst.id(), module_ref, ret_ty).retag::<R2>(),
         ))
     }
 
@@ -7038,7 +6908,7 @@ where
     {
         let normal_dest = normal_dest.into_basic_block_label();
         let unwind_dest = unwind_dest.into_basic_block_label();
-        let asm_v = asm.as_value();
+        let asm_v = asm.into_erased();
         let fn_ty = asm.function_type();
         let ret_ty = fn_ty.return_type().id();
         let ret_data = self.module.context().type_data(ret_ty);
@@ -7051,7 +6921,7 @@ where
         }
         let mut arg_ids: Vec<ValueId> = Vec::new();
         for arg in args {
-            let v = arg.as_value();
+            let v = arg.into_erased();
             arg_ids.push(v.id);
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
@@ -7061,8 +6931,8 @@ where
             fn_ty.as_type().id(),
             arg_ids,
             calling_conv,
-            normal_dest.as_value().id,
-            unwind_dest.as_value().id,
+            normal_dest.id(),
+            unwind_dest.id(),
             attrs,
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
@@ -7070,7 +6940,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            InvokeInst::<Dyn, B>::from_raw(inst.as_value().id, module_ref, ret_ty).retag::<R2>(),
+            InvokeInst::<Dyn, B>::from_raw(inst.id(), module_ref, ret_ty).retag::<R2>(),
         ))
     }
 
@@ -7120,21 +6990,21 @@ where
         Indirect: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let default_dest = default_dest.into_basic_block_label();
-        let callee_v = callee.as_value();
+        let callee_v = callee.into_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
         let (name, calling_conv, attrs) = config.into_parts();
-        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.as_value().id).collect();
+        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.id()).collect();
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let indirect_ids: Vec<ValueId> = indirect_dests
             .into_iter()
-            .map(|d| d.into_basic_block_label().as_value().id)
+            .map(|d| d.into_basic_block_label().id())
             .collect();
         let payload = crate::instr_types::CallBrInstData::new_with_attrs(
             callee_v.id,
             fn_ty.as_type().id(),
             arg_ids,
             calling_conv,
-            default_dest.as_value().id,
+            default_dest.id(),
             indirect_ids,
             attrs,
         );
@@ -7143,7 +7013,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            CallBrInst::<B>::from_raw(inst.as_value().id, module_ref, ret_ty),
+            CallBrInst::<B>::from_raw(inst.id(), module_ref, ret_ty),
         ))
     }
 
@@ -7192,7 +7062,7 @@ where
         Indirect: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let default_dest = default_dest.into_basic_block_label();
-        let asm_v = asm.as_value();
+        let asm_v = asm.into_erased();
         let fn_ty = asm.function_type();
         let ret_ty = fn_ty.return_type().id();
         let ret_data = self.module.context().type_data(ret_ty);
@@ -7205,13 +7075,13 @@ where
         }
         let mut arg_ids: Vec<ValueId> = Vec::new();
         for arg in args {
-            let v = arg.as_value();
+            let v = arg.into_erased();
             arg_ids.push(v.id);
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let indirect_ids: Vec<ValueId> = indirect_dests
             .into_iter()
-            .map(|d| d.into_basic_block_label().as_value().id)
+            .map(|d| d.into_basic_block_label().id())
             .collect();
         let (name, calling_conv, attrs) = config.into_parts();
         let payload = crate::instr_types::CallBrInstData::new_with_attrs(
@@ -7219,7 +7089,7 @@ where
             fn_ty.as_type().id(),
             arg_ids,
             calling_conv,
-            default_dest.as_value().id,
+            default_dest.id(),
             indirect_ids,
             attrs,
         );
@@ -7228,7 +7098,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            CallBrInst::<B>::from_raw(inst.as_value().id, module_ref, ret_ty),
+            CallBrInst::<B>::from_raw(inst.id(), module_ref, ret_ty),
         ))
     }
 
@@ -7252,7 +7122,7 @@ where
         let inst =
             self.append_instruction(result_ty.id, InstructionKindData::LandingPad(payload), name);
         Ok(LandingPadInst::<Open, B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             result_ty.id,
         ))
@@ -7269,7 +7139,7 @@ where
         Name: AsRef<str>,
         V: IsValue<'ctx, B>,
     {
-        let v = value.as_value();
+        let v = value.into_erased();
         let void_ty = self.module.void_type().as_type().id();
         let payload = crate::instr_types::ResumeInstData::new(v.id);
         let inst = self.append_instruction(void_ty, InstructionKindData::Resume(payload), name);
@@ -7319,13 +7189,13 @@ where
         V: IsValue<'ctx, B>,
         Name: AsRef<str>,
     {
-        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.as_value().id).collect();
+        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.id()).collect();
         let payload = crate::instr_types::CleanupPadInstData::new(parent_id, arg_ids);
         let token_ty = self.module.token_type().as_type().id();
         let inst =
             self.append_instruction(token_ty, InstructionKindData::CleanupPad(payload), name);
         Ok(CleanupPadInst::<B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             token_ty,
         ))
@@ -7344,12 +7214,12 @@ where
         I: IntoIterator<Item = V>,
         V: IsValue<'ctx, B>,
     {
-        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.as_value().id).collect();
+        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.id()).collect();
         let payload = crate::instr_types::CatchPadInstData::new(Some(catch_switch.id), arg_ids);
         let token_ty = self.module.token_type().as_type().id();
         let inst = self.append_instruction(token_ty, InstructionKindData::CatchPad(payload), name);
         Ok(CatchPadInst::<B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.module),
             token_ty,
         ))
@@ -7369,8 +7239,7 @@ where
     {
         let target = target.into_basic_block_label();
         let void_ty = self.module.void_type().as_type().id();
-        let payload =
-            crate::instr_types::CatchReturnInstData::new(catch_pad.id, target.as_value().id);
+        let payload = crate::instr_types::CatchReturnInstData::new(catch_pad.id, target.id());
         let inst =
             self.append_instruction(void_ty, InstructionKindData::CatchReturn(payload), name);
         let bb = self.into_insert_block();
@@ -7390,7 +7259,7 @@ where
         Name: AsRef<str>,
     {
         let unwind_dest = unwind_dest.into_basic_block_label();
-        self.build_cleanup_ret_raw(cleanup_pad.id, Some(unwind_dest.as_value().id), name)
+        self.build_cleanup_ret_raw(cleanup_pad.id, Some(unwind_dest.id()), name)
     }
 
     /// Produce `cleanupret from <cleanuppad> unwind to caller`.
@@ -7436,7 +7305,7 @@ where
         Name: AsRef<str>,
     {
         let unwind_dest = unwind_dest.into_basic_block_label();
-        self.build_catch_switch_raw(Some(parent_pad.id), Some(unwind_dest.as_value().id), name)
+        self.build_catch_switch_raw(Some(parent_pad.id), Some(unwind_dest.id()), name)
     }
 
     /// Produce `catchswitch within <parent> [...] unwind to caller`.
@@ -7464,7 +7333,7 @@ where
         Name: AsRef<str>,
     {
         let unwind_dest = unwind_dest.into_basic_block_label();
-        self.build_catch_switch_raw(None, Some(unwind_dest.as_value().id), name)
+        self.build_catch_switch_raw(None, Some(unwind_dest.id()), name)
     }
 
     /// Produce `catchswitch within none [...] unwind to caller`.
@@ -7496,7 +7365,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            CatchSwitchInst::<Open, B>::from_raw(inst.as_value().id, module_ref, token_ty),
+            CatchSwitchInst::<Open, B>::from_raw(inst.id(), module_ref, token_ty),
         ))
     }
 
@@ -7526,7 +7395,7 @@ where
     ) -> Instruction<'ctx, Attached, B> {
         let name = name.as_ref();
         let bb = self.insert_block();
-        let bb_id = bb.as_value().id;
+        let bb_id = bb.id();
         let value = build_instruction_value(ty, bb_id, kind, None);
         // Snapshot operand ids before the value is moved into the arena;
         // we need them to register the new instruction in each operand's
@@ -7573,6 +7442,131 @@ where
         Instruction::from_parts(id, ModuleRef::<B>::new(self.module))
     }
 
+    /// Append `kind` at `like`'s type and wrap the result as width-`W`.
+    ///
+    /// Sound by construction: the instruction is created AT `like.ty()`, and
+    /// `like: IntValue<'ctx, W, B>` is W-typed, so the result is W-typed. This is the
+    /// only sanctioned way to attach an `IntValue<W>` marker to a freshly-appended
+    /// instruction whose type comes from an operand -- it removes the `from_value_unchecked`
+    /// assertion at the call site (see docs/unforgeable-markers-design.md, census pattern 1).
+    fn append_int_like<W: IntWidth, N: AsRef<str>>(
+        &self,
+        like: IntValue<'ctx, W, B>,
+        kind: InstructionKindData,
+        name: N,
+    ) -> IntValue<'ctx, W, B> {
+        let inst = self.append_instruction(like.ty().as_type().id(), kind, name);
+        IntValue::<W, B>::from_value_unchecked(inst.to_erased())
+    }
+
+    /// Float analogue of `append_int_like`. Sound by construction: appended at `like.ty()`,
+    /// `like: FloatValue<'ctx, K, B>` is K-typed.
+    fn append_fp_like<K: FloatKind, N: AsRef<str>>(
+        &self,
+        like: FloatValue<'ctx, K, B>,
+        kind: InstructionKindData,
+        name: N,
+    ) -> FloatValue<'ctx, K, B> {
+        let inst = self.append_instruction(like.ty().as_type().id(), kind, name);
+        FloatValue::<K, B>::from_value_unchecked(inst.to_erased())
+    }
+
+    /// Append `kind` at `ty` and wrap the result as width-`W`.
+    ///
+    /// Sound by construction: the instruction is created AT `ty`, and
+    /// `ty: IntType<'ctx, W, B>` is W-typed by construction (`W::ir_type()` or a checked
+    /// narrow), so the result is W-typed. The sanctioned constructor for results whose type
+    /// comes from a typed DESTINATION handle -- casts, comparisons at a fixed `i1`, loads --
+    /// removing the `from_value_unchecked` assertion at the call site
+    /// (docs/unforgeable-markers-design.md, census pattern 2).
+    fn append_int_at<W: IntWidth, N: AsRef<str>>(
+        &self,
+        ty: IntType<'ctx, W, B>,
+        kind: InstructionKindData,
+        name: N,
+    ) -> IntValue<'ctx, W, B> {
+        let inst = self.append_instruction(ty.as_type().id(), kind, name);
+        IntValue::<W, B>::from_value_unchecked(inst.to_erased())
+    }
+
+    /// Float analogue of `append_int_at`. Sound: appended at `ty`, `ty: FloatType<'ctx, K, B>`
+    /// is K-typed by construction.
+    fn append_fp_at<K: FloatKind, N: AsRef<str>>(
+        &self,
+        ty: FloatType<'ctx, K, B>,
+        kind: InstructionKindData,
+        name: N,
+    ) -> FloatValue<'ctx, K, B> {
+        let inst = self.append_instruction(ty.as_type().id(), kind, name);
+        FloatValue::<K, B>::from_value_unchecked(inst.to_erased())
+    }
+
+    /// Build and append a `load`, re-stamping the payload's pointee to `ty` and
+    /// wrapping the result as width-`W`.
+    ///
+    /// Takes the whole [`LoadInstData`] (so the caller sets align/volatile/ordering/
+    /// scope exactly as before) and overwrites `payload.pointee_ty` with `ty` — the
+    /// appended type IS `ty` by construction, so the `W` marker is provably correct.
+    /// Routes through [`Self::build_load_inner`] so the DataLayout default-align fill
+    /// is preserved (a raw `append_int_at` would skip it and emit `align 0`). This
+    /// removes the `from_value_unchecked` assertion at the load site
+    /// (docs/unforgeable-markers-design.md, census pattern 2 -- load variant).
+    fn append_int_load<W: IntWidth, N: AsRef<str>>(
+        &self,
+        ty: IntType<'ctx, W, B>,
+        mut payload: LoadInstData,
+        name: N,
+    ) -> IrResult<IntValue<'ctx, W, B>> {
+        payload.pointee_ty = ty.as_type().id();
+        let inst = self.build_load_inner(payload, name)?;
+        Ok(IntValue::<W, B>::from_value_unchecked(inst.to_erased()))
+    }
+
+    /// Float analogue of `append_int_load`. Re-stamps `payload.pointee_ty` with `ty`
+    /// so the appended type IS `ty` and the `K` marker is provably correct; routed
+    /// through [`Self::build_load_inner`] so the default-align fill is preserved.
+    fn append_fp_load<K: FloatKind, N: AsRef<str>>(
+        &self,
+        ty: FloatType<'ctx, K, B>,
+        mut payload: LoadInstData,
+        name: N,
+    ) -> IrResult<FloatValue<'ctx, K, B>> {
+        payload.pointee_ty = ty.as_type().id();
+        let inst = self.build_load_inner(payload, name)?;
+        Ok(FloatValue::<K, B>::from_value_unchecked(inst.to_erased()))
+    }
+
+    /// Append `kind` at `ptr_ty` and wrap the result as a `PointerValue`.
+    ///
+    /// Sound by construction: the instruction is created AT `ptr_ty` (a `PointerType`,
+    /// so provably a pointer type), and `PointerValue` asserts only pointer-ness — which
+    /// `ptr_ty` supplies. The sanctioned constructor for pointer-result builders
+    /// (alloca / GEP / int→ptr / addrspacecast / pointer bitcast); removes the
+    /// `from_value_unchecked` assertion (docs/unforgeable-markers-design.md, census pattern 6).
+    fn append_ptr<N: AsRef<str>>(
+        &self,
+        ptr_ty: PointerType<'ctx, B>,
+        kind: InstructionKindData,
+        name: N,
+    ) -> PointerValue<'ctx, B> {
+        let inst = self.append_instruction(ptr_ty.as_type().id(), kind, name);
+        PointerValue::from_value_unchecked(inst.to_erased())
+    }
+
+    /// Pointer load: build+append a `load` whose pointee is `ptr_ty`, routed through
+    /// [`Self::build_load_inner`] so the default-align fill is preserved (a raw append would
+    /// emit `align 0`). Re-stamps `payload.pointee_ty = ptr_ty` — structural.
+    fn append_ptr_load<N: AsRef<str>>(
+        &self,
+        ptr_ty: PointerType<'ctx, B>,
+        mut payload: LoadInstData,
+        name: N,
+    ) -> IrResult<PointerValue<'ctx, B>> {
+        payload.pointee_ty = ptr_ty.as_type().id();
+        let inst = self.build_load_inner(payload, name)?;
+        Ok(PointerValue::from_value_unchecked(inst.to_erased()))
+    }
+
     /// Crate-internal: append a freshly-built phi to the insertion block.
     /// Identical to [`Self::append_instruction`] (same operand use-list
     /// registration and value-symbol-table population) except for
@@ -7588,7 +7582,7 @@ where
     ) -> Instruction<'ctx, Attached, B> {
         let name = name.as_ref();
         let bb = self.insert_block();
-        let bb_id = bb.as_value().id;
+        let bb_id = bb.id();
         let value = build_instruction_value(ty, bb_id, kind, None);
         // Snapshot operand ids before the value is moved into the arena so
         // we can register the new instruction in each operand's reverse
@@ -7683,84 +7677,75 @@ where
         folded: Value<'ctx, B>,
         expected_ty: TypeId,
     ) -> IrResult<Value<'ctx, B>> {
-        if folded.ty != expected_ty {
-            return Err(IrError::TypeMismatch {
-                expected: Type::new(expected_ty, self.module).kind_label(),
-                got: folded.ty().kind_label(),
-            });
-        }
+        Type::new(expected_ty, ModuleRef::<B>::new(self.module)).require_match(folded.ty())?;
         Ok(folded)
     }
 
-    /// Accept a typed fold result. For static markers this is the identity —
-    /// the type system already guarantees the width/kind. For dyn markers
-    /// (IntDyn) the marker doesn't pin the width, so keep a TypeId check.
-    /// The branch monomorphizes away for static W.
+    /// Accept a typed fold result, checking the payload's runtime type
+    /// against the operand's for **every** marker — static ones included.
+    ///
+    /// A static `W` is not self-guaranteeing here. The type system pins `W`
+    /// only as tightly as whoever constructed the handle: the crate-internal
+    /// [`IntValue::from_value_unchecked`] mints an `IntValue<W>` without
+    /// consulting the payload's real type, so an in-crate folder overriding
+    /// the typed `fold_int_bin_op<W>` hook can hand back a value whose IR
+    /// type contradicts `W`. Keying this check on `W::static_bits().is_none()`
+    /// would trust the very claim it exists to verify — the folder's word
+    /// that `W` matches the payload. Both markers are checked instead
+    /// (`hostile_native_typed_override_wrong_width_rejected_at_static_width`
+    /// locks the static half; the `..._by_accept_folded_int` sibling the dyn).
+    ///
+    /// For the same reason this compares against `like`'s *runtime* type
+    /// rather than narrowing to `W`: see [`Type::require_match`], which
+    /// carries the error shape and the no-false-rejections argument.
     fn accept_folded_int<W: IntWidth>(
         &self,
         folded: IntValue<'ctx, W, B>,
         like: IntValue<'ctx, W, B>,
     ) -> IrResult<IntValue<'ctx, W, B>> {
-        if W::static_bits().is_none() && folded.as_value().ty().id() != like.as_value().ty().id() {
-            return Err(IrError::TypeMismatch {
-                expected: like.as_value().ty().kind_label(),
-                got: folded.as_value().ty().kind_label(),
-            });
-        }
+        like.into_erased()
+            .ty()
+            .require_match(folded.into_erased().ty())?;
         Ok(folded)
     }
 
-    /// Mirrors [`Self::accept_folded_int`] for float kinds, keyed on
-    /// `K::ieee_label().is_none()` (the erased `FloatDyn` marker) instead of
-    /// `W::static_bits()`.
+    /// Mirrors [`Self::accept_folded_int`] for float kinds — including its
+    /// reason for checking every marker rather than only the erased
+    /// `FloatDyn` one: `FloatValue::from_value_unchecked` forges a static
+    /// `K` just as freely as `IntValue`'s does a static `W`.
     fn accept_folded_fp<K: FloatKind>(
         &self,
         folded: FloatValue<'ctx, K, B>,
         like: FloatValue<'ctx, K, B>,
     ) -> IrResult<FloatValue<'ctx, K, B>> {
-        if K::ieee_label().is_none()
-            && crate::value::Typed::ty(folded).id() != crate::value::Typed::ty(like).id()
-        {
-            return Err(IrError::TypeMismatch {
-                expected: crate::value::Typed::ty(like).kind_label(),
-                got: crate::value::Typed::ty(folded).kind_label(),
-            });
-        }
+        crate::value::Typed::ty(like).require_match(crate::value::Typed::ty(folded))?;
         Ok(folded)
     }
 
     /// Accept a typed cast fold result against the destination int type.
     /// Casts have no same-type operand to compare against (unlike binops),
     /// so this checks against `dst_ty` instead of a `like` operand; otherwise
-    /// mirrors [`Self::accept_folded_int`].
+    /// mirrors [`Self::accept_folded_int`], including its every-marker check
+    /// and the reasoning for it.
     fn accept_folded_cast_int<W: IntWidth>(
         &self,
         folded: IntValue<'ctx, W, B>,
         dst_ty: IntType<'ctx, W, B>,
     ) -> IrResult<IntValue<'ctx, W, B>> {
-        if W::static_bits().is_none() && folded.as_value().ty().id() != dst_ty.as_type().id() {
-            return Err(IrError::TypeMismatch {
-                expected: dst_ty.as_type().kind_label(),
-                got: folded.as_value().ty().kind_label(),
-            });
-        }
+        dst_ty.as_type().require_match(folded.into_erased().ty())?;
         Ok(folded)
     }
 
-    /// Mirrors [`Self::accept_folded_cast_int`] for float destination kinds.
+    /// Mirrors [`Self::accept_folded_cast_int`] for float destination kinds,
+    /// checking every marker for the same reason.
     fn accept_folded_cast_fp<K: FloatKind>(
         &self,
         folded: FloatValue<'ctx, K, B>,
         dst_ty: FloatType<'ctx, K, B>,
     ) -> IrResult<FloatValue<'ctx, K, B>> {
-        if K::ieee_label().is_none()
-            && crate::value::Typed::ty(folded).id() != dst_ty.as_type().id()
-        {
-            return Err(IrError::TypeMismatch {
-                expected: dst_ty.as_type().kind_label(),
-                got: crate::value::Typed::ty(folded).kind_label(),
-            });
-        }
+        dst_ty
+            .as_type()
+            .require_match(crate::value::Typed::ty(folded))?;
         Ok(folded)
     }
 
@@ -7784,11 +7769,16 @@ where
 // return-value lift per concrete marker. Each impl is concrete-typed so
 // no overlap arises. Mirrors `IRBuilder::CreateRet` in `IRBuilder.h`.
 
-/// Sealed: types that can be passed to [`IRBuilder::build_ret`] for a
-/// function carrying [`ReturnMarker`] `R`. Concrete impls are provided
-/// per `(value-shape, R)` pair so a typed builder accepts every Rust
-/// scalar / typed handle that lifts to the correct IR type, while a
-/// runtime-checked [`Dyn`] builder accepts anything that implements
+/// Types that can be passed to [`IRBuilder::build_ret`] for a function
+/// carrying [`ReturnMarker`] `R`. Concrete impls are provided per
+/// `(value-shape, R)` pair: for a typed `R` the impls blanket over the
+/// now-sealed lift traits ([`IntoIntValue`] / [`IntoFloatValue`] /
+/// [`IntoPointerValue`]), so a typed builder accepts every Rust scalar /
+/// typed handle that lifts to the correct IR type and an erased handle is
+/// rejected; the [`Dyn`] builder blankets over [`IsValue`] and accepts any
+/// value handle with a runtime type check. This trait is not itself sealed
+/// with a private supertrait — its extension surface is closed
+/// transitively by those sealed lift-trait bounds plus the sealed
 /// [`IsValue`].
 pub trait IntoReturnValue<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>>: Sized {
     #[doc(hidden)]
@@ -7809,7 +7799,7 @@ macro_rules! impl_into_return_value_int {
                 self,
                 module: ModuleRef<'ctx, B>,
             ) -> IrResult<Value<'ctx, B>> {
-                Ok(IsValue::as_value(self.into_int_value(module)?))
+                Ok(IsValue::into_erased(self.into_int_value(module)?))
             }
         }
     )+ };
@@ -7832,7 +7822,7 @@ macro_rules! impl_into_return_value_float {
                 self,
                 module: ModuleRef<'ctx, B>,
             ) -> IrResult<Value<'ctx, B>> {
-                Ok(IsValue::as_value(self.into_float_value(module)?))
+                Ok(IsValue::into_erased(self.into_float_value(module)?))
             }
         }
     )+ };
@@ -7855,7 +7845,7 @@ where
 {
     #[inline]
     fn into_return_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(IsValue::as_value(self.into_pointer_value(module)?))
+        Ok(IsValue::into_erased(self.into_pointer_value(module)?))
     }
 }
 
@@ -7866,7 +7856,7 @@ where
 {
     #[inline]
     fn into_return_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(self.as_value())
+        Ok(self.into_erased())
     }
 }
 
@@ -8002,7 +7992,7 @@ where
     /// Add an argument. Statically dispatched per `V: IsValue` so
     /// mixed-type argument lists work without homogeneity.
     pub fn arg<V: IsValue<'ctx, B>>(mut self, value: V) -> Self {
-        let v = value.as_value();
+        let v = value.into_erased();
         self.args.push(v.id);
         self
     }
@@ -8086,7 +8076,7 @@ where
             self.name,
         );
         Ok(CallInst::<RC, B>::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.parent.module),
             inst.ty().id(),
         ))
@@ -8192,7 +8182,7 @@ where
         let arg_ids = self.args.lower(ModuleRef::new(self.parent.module))?;
         let calling_conv = self.calling_conv.unwrap_or_else(|| f.calling_conv());
         let payload = crate::instr_types::CallInstData::new_with_attrs(
-            f.as_value().id,
+            f.id(),
             f.signature().as_type().id(),
             arg_ids,
             calling_conv,
@@ -8205,7 +8195,7 @@ where
             self.name,
         );
         Ok(TypedCallInst::from_call(CallInst::from_raw(
-            inst.as_value().id,
+            inst.id(),
             ModuleRef::<B>::new(self.parent.module),
             inst.ty().id(),
         )))
@@ -8354,7 +8344,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for IntValue<'
     }
     #[inline]
     fn arm_value(self) -> Value<'ctx, B> {
-        IsValue::as_value(self)
+        IsValue::into_erased(self)
     }
 }
 
@@ -8366,7 +8356,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for FloatValu
     }
     #[inline]
     fn arm_value(self) -> Value<'ctx, B> {
-        IsValue::as_value(self)
+        IsValue::into_erased(self)
     }
 }
 
@@ -8378,7 +8368,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for PointerValue<'ctx, B> {
     }
     #[inline]
     fn arm_value(self) -> Value<'ctx, B> {
-        IsValue::as_value(self)
+        IsValue::into_erased(self)
     }
 }
 
@@ -8417,14 +8407,16 @@ where
                 got: false_v.ty().kind_label(),
             });
         }
-        if let Some(folded) = self.folder.fold_select_dyn(c.as_value(), true_v, false_v)? {
+        if let Some(folded) = self
+            .folder
+            .fold_select_dyn(c.into_erased(), true_v, false_v)?
+        {
             let folded = self.checked_folded_value(folded, true_ty)?;
             return Ok(A::from_select_value(folded, &SelectNarrow::new()));
         }
-        let payload =
-            crate::instr_types::SelectInstData::new(c.as_value().id, true_v.id, false_v.id);
+        let payload = crate::instr_types::SelectInstData::new(c.id(), true_v.id, false_v.id);
         let inst = self.append_instruction(true_ty, InstructionKindData::Select(payload), name);
-        Ok(A::from_select_value(inst.as_value(), &SelectNarrow::new()))
+        Ok(A::from_select_value(inst.to_erased(), &SelectNarrow::new()))
     }
 }
 
@@ -8505,25 +8497,27 @@ mod tests {
     use crate::Linkage;
 
     /// Hostile in-crate folder simulating a *buggy* native typed-hook
-    /// override (the class of bug `ConstantFolder`'s own native
-    /// `fold_int_bin_op<W>` override -- see `ir_builder/constant_folder.rs`
-    /// -- is trusted, by kernel-invariant audit, not to commit). Unlike
-    /// `tests/constant_folder_builder.rs`'s external `WideningDynFolder`
-    /// (which can only override the erased `fold_bin_op_dyn` hook and so
-    /// gets caught by `folder::narrow_folded_int`'s TypeId re-check before
-    /// the builder ever sees the result), this folder overrides the
-    /// *typed* `fold_int_bin_op<W>` hook directly and answers with an
-    /// `IntValue<'ctx, W, B>` built via the crate-internal
-    /// `IntValue::from_value_unchecked` escape hatch (`pub(super)` in
-    /// `value.rs`, reachable here because this module lives at the crate
-    /// root, same as `value`). That constructor performs no width check at
-    /// all, so this override can -- and deliberately does -- lie about the
-    /// width of its `stored` payload: it always answers with a 64-bit
-    /// constant, regardless of `W`. Because this is a *native* override
-    /// (not the trait's delegating default body at `folder.rs`'s
-    /// `fold_int_bin_op<W>`), `narrow_folded_int` never runs on this path;
-    /// the only remaining guard is the builder's own
-    /// `accept_folded_int` dyn-marker re-check.
+    /// override -- the class of bug `ConstantFolder`'s own native typed
+    /// overrides (see `ir_builder/constant_folder.rs`) are now structurally
+    /// incapable of committing, because every one of them re-types its
+    /// erased fold result through `W::narrow` / `K::narrow` instead of
+    /// rewrapping it unchecked on the authority of a prose invariant audit.
+    /// Unlike `tests/constant_folder_builder.rs`'s external
+    /// `WideningDynFolder` (which can only override the erased
+    /// `fold_bin_op_dyn` hook and so gets caught by
+    /// `folder::narrow_folded_int`'s TypeId re-check before the builder ever
+    /// sees the result), this folder overrides the *typed* hooks directly
+    /// and answers with an `IntValue<'ctx, W, B>` built via the
+    /// crate-internal `IntValue::from_value_unchecked` escape hatch
+    /// (`pub(crate)` in `value.rs`, reachable here because this module lives
+    /// at the crate root, same as `value`). That constructor performs no
+    /// width check at all, so these overrides can -- and deliberately do --
+    /// lie about the width of the `stored` payload: they always answer with
+    /// a 64-bit constant, regardless of `W`. Because these are *native*
+    /// overrides (not the trait's delegating default bodies at `folder.rs`),
+    /// `narrow_folded_int` / `narrow_folded_cast_int` never run on this
+    /// path; the only remaining guard is the builder's own
+    /// `accept_folded_int` / `accept_folded_cast_int` type check.
     #[derive(Debug, Clone, Copy)]
     struct HostileTypedFolder<'ctx, B: ModuleBrand + 'ctx> {
         /// Always a 64-bit constant, deliberately the wrong width for any
@@ -8540,20 +8534,75 @@ mod tests {
         ) -> IrResult<Option<IntValue<'ctx, W, B>>> {
             // Bypasses `narrow_folded_int` entirely: this reuses the
             // already-erased `Value` payload behind `self.stored` (a
-            // 64-bit constant) and rewraps it as `IntValue<'ctx, W, B>`
-            // via the unchecked constructor, exactly mirroring the shape
-            // `ConstantFolder::fold_int_bin_op` uses for its (audited,
-            // correct) native override -- except here the "audit" is
-            // deliberately false: the payload's true IR type never
-            // matches `W` when `W` is a 32-bit dyn width.
+            // 64-bit constant) and rewraps it as `IntValue<'ctx, W, B>` via
+            // the unchecked constructor. This is the shape
+            // `ConstantFolder::fold_int_bin_op` used before `bf57e17`, when
+            // a prose "kernel invariant" audit was the only thing standing
+            // between it and a mistyped handle -- written out here by hand
+            // with the audit deliberately false: the payload's true IR type
+            // is `i64` and matches no 32-bit `W`, static or dyn.
             Ok(Some(IntValue::<W, B>::from_value_unchecked(
-                self.stored.as_value(),
+                self.stored.into_erased(),
+            )))
+        }
+
+        fn fold_cast_to_int<W: IntWidth>(
+            &self,
+            _opcode: CastOpcode,
+            _value: Value<'ctx, B>,
+            _dest_ty: IntType<'ctx, W, B>,
+        ) -> IrResult<Option<IntValue<'ctx, W, B>>> {
+            // Cast twin of `fold_int_bin_op` above, lying the same way: the
+            // requested destination type is ignored and the 64-bit `stored`
+            // payload is rewrapped as the destination's `W`. Drives
+            // `accept_folded_cast_int`, which checks against `dst_ty`
+            // rather than an operand.
+            Ok(Some(IntValue::<W, B>::from_value_unchecked(
+                self.stored.into_erased(),
             )))
         }
     }
 
-    /// Locks `accept_folded_int`'s dyn-marker branch (`ir_builder.rs`,
-    /// `W::static_bits().is_none()` arm) as the seam that rejects a
+    /// Float twin of [`HostileTypedFolder`], overriding the typed *float*
+    /// hooks with the same lie: `FloatValue::from_value_unchecked` forges a
+    /// static `K` exactly as freely as `IntValue`'s forges a static `W`, so
+    /// both overrides answer with a `double` payload regardless of the `K`
+    /// asked for. Drives the two float acceptors
+    /// (`accept_folded_fp` / `accept_folded_cast_fp`), which the same
+    /// `bf57e17` change made unconditional.
+    #[derive(Debug, Clone, Copy)]
+    struct HostileTypedFpFolder<'ctx, B: ModuleBrand + 'ctx> {
+        /// Always a `double` constant, deliberately the wrong kind for any
+        /// `float` `K` the builder calls this with.
+        stored: FloatValue<'ctx, f64, B>,
+    }
+
+    impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for HostileTypedFpFolder<'ctx, B> {
+        fn fold_fp_bin_op<K: FloatKind>(
+            &self,
+            _opcode: BinaryOpcode,
+            _lhs: FloatValue<'ctx, K, B>,
+            _rhs: FloatValue<'ctx, K, B>,
+            _fmf: FastMathFlags,
+        ) -> IrResult<Option<FloatValue<'ctx, K, B>>> {
+            Ok(Some(FloatValue::<K, B>::from_value_unchecked(
+                IsValue::into_erased(self.stored),
+            )))
+        }
+
+        fn fold_cast_to_fp<K: FloatKind>(
+            &self,
+            _opcode: CastOpcode,
+            _value: Value<'ctx, B>,
+            _dest_ty: FloatType<'ctx, K, B>,
+        ) -> IrResult<Option<FloatValue<'ctx, K, B>>> {
+            Ok(Some(FloatValue::<K, B>::from_value_unchecked(
+                IsValue::into_erased(self.stored),
+            )))
+        }
+    }
+
+    /// Locks `accept_folded_int` (`ir_builder.rs`) as the seam that rejects a
     /// wrong-width result from a *native* typed-hook override -- the bug
     /// class external folders are compile-time barred from producing
     /// (see the sibling compile-fail golden
@@ -8570,26 +8619,28 @@ mod tests {
     /// inside the *trait's default* body, which this override replaces).
     /// The native override returns `Ok(Some(wrong_width_value))`
     /// straight back to `build_int_add`, which forwards it to
-    /// `self.accept_folded_int(folded, lhs)`. Inside `accept_folded_int`:
-    /// `W = IntDyn`, so `W::static_bits().is_none()` is `true`
-    /// (`int_width.rs`'s `impl IntWidth for IntDyn`), and
-    /// `folded.as_value().ty().id() != like.as_value().ty().id()` is
+    /// `self.accept_folded_int(folded, lhs)`. Inside `accept_folded_int`,
+    /// `folded.into_erased().ty().id() != like.into_erased().ty().id()` is
     /// `true` (the stored value's real type is `i64`, `lhs`'s is the
     /// 32-bit custom-width `IntDyn` type) -- so `accept_folded_int`
-    /// returns `Err(IrError::TypeMismatch { .. })`. That is the exact
-    /// line under test; `narrow_folded_int` is never reached on this path.
+    /// returns `Err(IrError::OperandWidthMismatch { lhs: 32, rhs: 64 })`.
+    /// That is the exact line under test; `narrow_folded_int` is never
+    /// reached on this path. The comparison is unconditional -- it no
+    /// longer keys on `W::static_bits().is_none()` -- so `W = IntDyn` no
+    /// longer selects it; the static-`W` sibling test below covers the
+    /// other marker class.
     #[test]
     fn hostile_native_typed_override_wrong_width_rejected_by_accept_folded_int()
     -> Result<(), IrError> {
         Module::with_new("hostile-typed-folder", |m| {
             let i32_dyn_ty = m.custom_width_int_type(32)?;
             let i64_dyn_ty = m.custom_width_int_type(64)?;
-            let fn_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
-            let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+            let fn_ty = m.fn_type_no_params(m.i32_type(), false);
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
 
             let stored: IntValue<'_, i64, _> =
-                IntValue::from_value_unchecked(i64_dyn_ty.const_zero().as_value());
+                IntValue::from_value_unchecked(i64_dyn_ty.const_zero().into_erased());
             let folder = HostileTypedFolder { stored };
             let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
 
@@ -8600,7 +8651,180 @@ mod tests {
                 .build_int_add::<IntDyn, _, _, _>(lhs, rhs, "sum")
                 .expect_err("wrong-width native-override fold result is rejected");
 
-            assert!(matches!(err, IrError::TypeMismatch { .. }));
+            // Both sides are integers, so the acceptor reports the widths
+            // rather than a `TypeMismatch { expected: Integer, got: Integer }`
+            // that could not say which width was wrong.
+            assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
+            assert_eq!(b.insert_block().instructions().len(), 0);
+            Ok(())
+        })
+    }
+
+    /// Sibling of the `IntDyn` case above, at a *static* width. This is the
+    /// half `accept_folded_int`'s old `W::static_bits().is_none() &&`
+    /// short-circuit let through: the same `HostileTypedFolder` answers
+    /// `build_int_add::<i32, _, _, _>` with its 64-bit `stored` payload
+    /// rewrapped as `IntValue<'ctx, i32, B>`, and because the guard skipped
+    /// the TypeId compare whenever the marker was static, the builder
+    /// accepted it -- handing back an `IntValue<'_, i32>` whose real IR type
+    /// is `i64`. A mistyped handle escaping into user code.
+    ///
+    /// The static marker is not self-guaranteeing: `from_value_unchecked`
+    /// mints an `IntValue<W>` without ever consulting the payload's runtime
+    /// type, so `W` is only as honest as the in-crate caller that wrote it.
+    /// The acceptor now compares TypeIds for every marker, which is exactly
+    /// what this test locks.
+    #[test]
+    fn hostile_native_typed_override_wrong_width_rejected_at_static_width() -> Result<(), IrError> {
+        Module::with_new("hostile-typed-folder-static", |m| {
+            let i32_ty = m.i32_type();
+            let i64_ty = m.i64_type();
+            let fn_ty = m.fn_type_no_params(m.i32_type(), false);
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+
+            // `stored`'s REAL IR type is i64; the folder hands it back as
+            // `IntValue<W>` for whatever `W` the builder asks for -- here i32.
+            // The handle itself is built through the *checked* path: this is
+            // the honest half of the setup (`const_zero()` on an `i64_ty`
+            // genuinely is an i64), and in a test whose whole subject is
+            // `from_value_unchecked` lying, the lie belongs only where it is
+            // under test -- inside the folder's override.
+            let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().into_erased())?;
+            let folder = HostileTypedFolder { stored };
+            let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+
+            let lhs = i32_ty.const_int(1_i32);
+            let rhs = i32_ty.const_int(2_i32);
+
+            let err = b
+                .build_int_add::<i32, _, _, _>(lhs, rhs, "sum")
+                .expect_err("wrong-width fold result must be rejected at a static width too");
+
+            assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
+            assert_eq!(b.insert_block().instructions().len(), 0);
+            Ok(())
+        })
+    }
+
+    /// Locks `accept_folded_cast_int` at a *static* destination width --
+    /// the cast sibling of the two `accept_folded_int` tests above, and one
+    /// of the three acceptors `bf57e17` made unconditional without proof.
+    ///
+    /// Casts have no same-type operand to compare against, so the acceptor
+    /// checks the fold result against `dst_ty` instead of a `like` operand.
+    /// `build_trunc::<i64, i32>` asks the folder to narrow an i64 to i32;
+    /// `HostileTypedFolder::fold_cast_to_int` ignores the destination and
+    /// answers with its 64-bit `stored` payload rewrapped as
+    /// `IntValue<'ctx, i32, B>`. Being a native override it bypasses
+    /// `folder::narrow_folded_cast_int`, so `accept_folded_cast_int`'s
+    /// TypeId compare against `dst_ty` is the only thing between that lie
+    /// and a mistyped handle -- and before `bf57e17` it was skipped outright
+    /// for a static `Dst`.
+    #[test]
+    fn hostile_native_typed_override_wrong_width_rejected_by_accept_folded_cast_int()
+    -> Result<(), IrError> {
+        Module::with_new("hostile-typed-folder-cast-int", |m| {
+            let i32_ty = m.i32_type();
+            let i64_ty = m.i64_type();
+            let fn_ty = m.fn_type_no_params(m.i32_type(), false);
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+
+            let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().into_erased())?;
+            let folder = HostileTypedFolder { stored };
+            let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+
+            let src: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_int(1_i64).into_erased())?;
+            let err = b
+                .build_trunc::<i64, i32, _>(src, i32_ty, "narrowed")
+                .expect_err("wrong-width cast fold result must be rejected at a static width");
+
+            assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
+            assert_eq!(b.insert_block().instructions().len(), 0);
+            Ok(())
+        })
+    }
+
+    /// Float twin of `..._rejected_at_static_width`, locking
+    /// `accept_folded_fp` at a *static* kind.
+    ///
+    /// `HostileTypedFpFolder::fold_fp_bin_op` answers `build_fp_add::<f32>`
+    /// with its `double` `stored` payload rewrapped as
+    /// `FloatValue<'ctx, f32, B>`. Unlike the int side, the error names both
+    /// kinds directly: `TypeKindLabel` has a distinct variant per float kind,
+    /// so `TypeMismatch { expected: Float, got: Double }` is already precise
+    /// and needs no width-carrying variant.
+    #[test]
+    fn hostile_native_typed_override_wrong_kind_rejected_by_accept_folded_fp() -> Result<(), IrError>
+    {
+        Module::with_new("hostile-typed-fp-folder", |m| {
+            let f32_ty = m.f32_type();
+            let f64_ty = m.f64_type();
+            let fn_ty = m.fn_type_no_params(m.i32_type(), false);
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+
+            let stored: FloatValue<'_, f64, _> =
+                f64::narrow(f64_ty.const_double(0.0).into_erased())?;
+            let folder = HostileTypedFpFolder { stored };
+            let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+
+            let lhs = f32_ty.const_float(1.0_f32);
+            let rhs = f32_ty.const_float(2.0_f32);
+
+            let err = b
+                .build_fp_add::<f32, _, _, _>(lhs, rhs, "sum")
+                .expect_err("wrong-kind fold result must be rejected at a static kind");
+
+            assert_eq!(
+                err,
+                IrError::TypeMismatch {
+                    expected: crate::error::TypeKindLabel::Float,
+                    got: crate::error::TypeKindLabel::Double,
+                }
+            );
+            assert_eq!(b.insert_block().instructions().len(), 0);
+            Ok(())
+        })
+    }
+
+    /// Locks `accept_folded_cast_fp` at a *static* destination kind -- the
+    /// last of the four acceptors, and the float twin of
+    /// `..._rejected_by_accept_folded_cast_int`.
+    ///
+    /// `build_fp_trunc::<f64, f32>` asks the folder to narrow a `double` to
+    /// a `float`; `HostileTypedFpFolder::fold_cast_to_fp` ignores the
+    /// destination and answers with the `double` `stored` payload rewrapped
+    /// as `FloatValue<'ctx, f32, B>`, leaving the acceptor's compare against
+    /// `dst_ty` as the only guard.
+    #[test]
+    fn hostile_native_typed_override_wrong_kind_rejected_by_accept_folded_cast_fp()
+    -> Result<(), IrError> {
+        Module::with_new("hostile-typed-fp-folder-cast", |m| {
+            let f32_ty = m.f32_type();
+            let f64_ty = m.f64_type();
+            let fn_ty = m.fn_type_no_params(m.i32_type(), false);
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+
+            let stored: FloatValue<'_, f64, _> =
+                f64::narrow(f64_ty.const_double(0.0).into_erased())?;
+            let folder = HostileTypedFpFolder { stored };
+            let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+
+            let src: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(1.0).into_erased())?;
+            let err = b
+                .build_fp_trunc::<f64, f32, _>(src, f32_ty, "narrowed")
+                .expect_err("wrong-kind cast fold result must be rejected at a static kind");
+
+            assert_eq!(
+                err,
+                IrError::TypeMismatch {
+                    expected: crate::error::TypeKindLabel::Float,
+                    got: crate::error::TypeKindLabel::Double,
+                }
+            );
             assert_eq!(b.insert_block().instructions().len(), 0);
             Ok(())
         })

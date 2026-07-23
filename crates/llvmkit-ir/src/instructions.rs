@@ -22,6 +22,7 @@
 //! gate nothing.
 
 use core::fmt;
+use core::iter::FusedIterator;
 
 use super::IrResult;
 use super::align::Align;
@@ -100,8 +101,10 @@ macro_rules! decl_binop_handle {
             }
 
             /// Widen to the erased [`Value`] handle.
+            ///
+            /// Borrows rather than consumes.
             #[inline]
-            pub fn as_value(&self) -> Value<'ctx, B> {
+            pub fn to_erased(&self) -> Value<'ctx, B> {
                 Value::from_parts(self.id, self.module, self.ty)
             }
 
@@ -305,8 +308,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> BinaryOp<'ctx, B> {
         InstructionView::from_parts(self.id, self.module)
     }
     /// Widen to the erased [`Value`] handle (the result).
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 }
@@ -387,8 +392,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Cmp<'ctx, B> {
         InstructionView::from_parts(self.id, self.module)
     }
     /// Widen to the erased [`Value`] handle (the `i1`/vector result).
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 }
@@ -416,8 +423,10 @@ macro_rules! decl_handle_scaffold {
             }
 
             /// Widen to the erased [`Value`] handle.
+            ///
+            /// Borrows rather than consumes.
             #[inline]
-            pub fn as_value(&self) -> Value<'ctx, B> {
+            pub fn to_erased(&self) -> Value<'ctx, B> {
                 Value::from_parts(self.id, self.module, self.ty)
             }
         }
@@ -622,7 +631,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GepInst<'ctx, B> {
         let data = module.context().value_data(id);
         PointerValue::from_value_unchecked(Value::from_parts(id, self.module, data.ty))
     }
-    pub fn indices(self) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + 'ctx {
+    pub fn indices(
+        self,
+    ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let module = self.module.module();
         let ids: Vec<ValueId> = self.payload().indices.iter().map(|c| c.get()).collect();
         ids.into_iter().map(move |id| {
@@ -702,8 +714,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
     }
 
     /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
@@ -761,7 +775,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
     pub fn function_type(self) -> FunctionType<'ctx, B> {
         FunctionType::new(self.payload().fn_ty, self.module)
     }
-    pub fn args(self) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + 'ctx {
+    pub fn args(
+        self,
+    ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let module = self.module.module();
         let ids: Vec<ValueId> = self.payload().args.iter().map(|c| c.get()).collect();
         ids.into_iter().map(move |id| {
@@ -920,8 +937,8 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> TypedCallInst<'ctx, Ret, 
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
-        self.inner.as_value()
+    pub fn into_erased(self) -> Value<'ctx, B> {
+        self.inner.to_erased()
     }
 }
 
@@ -1266,7 +1283,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> BranchInst<'ctx, B> {
         }
     }
     /// Successors as copyable block labels.
-    pub fn successors(self) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>> + 'ctx {
+    pub fn successors(
+        self,
+    ) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
         self.successor_ids().into_iter().map(move |id| {
@@ -1353,9 +1375,19 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
         InstructionView::from_parts(self.id, self.module)
     }
 
+    /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
+    }
+
+    /// Opaque arena id of the underlying value (same id as
+    /// [`to_erased`](Self::to_erased)).
+    #[inline]
+    pub fn id(&self) -> ValueId {
+        self.to_erased().id
     }
 
     /// Result handle for the phi node, narrowed to the static width
@@ -1396,6 +1428,36 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
             BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, self.module, label_ty).label();
         Ok((value, block))
     }
+
+    /// Iterate the `(value, block label)` incoming pairs in declaration
+    /// order — the same pairs [`Self::incoming`] yields by index. Mirrors
+    /// walking `PHINode::blocks()`/`incoming_values()`. Snapshots the
+    /// incoming list up front (like [`SwitchInst::cases`]), so callers may
+    /// mutate the phi while iterating.
+    pub fn incomings(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
+        let module = self.module.module();
+        let label_ty = module.label_type().as_type().id();
+        let module_ref = self.module;
+        let entries: Vec<(ValueId, ValueId)> = self
+            .payload()
+            .incoming
+            .borrow()
+            .iter()
+            .map(|(v, b)| (v.get(), *b))
+            .collect();
+        entries.into_iter().map(move |(vid, bid)| {
+            let v_data = module.context().value_data(vid);
+            let value = Value::from_parts(vid, module_ref, v_data.ty);
+            let block =
+                BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label();
+            (value, block)
+        })
+    }
 }
 
 // The typed open-phi mutation surface is crate-internal since slice 7 (block
@@ -1422,9 +1484,9 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, Open, B> {
     {
         let module = self.module.module();
         let value = value.into_int_value(self.module)?;
-        if value.as_value().ty == self.ty {
-            let value_id = value.as_value().id;
-            let block_id = block.into_basic_block_label().as_value().id;
+        if value.into_erased().ty == self.ty {
+            let value_id = value.id();
+            let block_id = block.into_basic_block_label().id();
             if self
                 .payload()
                 .incoming
@@ -1451,7 +1513,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, Open, B> {
         } else {
             Err(crate::IrError::TypeMismatch {
                 expected: Type::new(self.ty, module).kind_label(),
-                got: value.as_value().ty().kind_label(),
+                got: value.into_erased().ty().kind_label(),
             })
         }
     }
@@ -1542,9 +1604,19 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
         InstructionView::from_parts(self.id, self.module)
     }
 
+    /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
+    }
+
+    /// Opaque arena id of the underlying value (same id as
+    /// [`to_erased`](Self::to_erased)).
+    #[inline]
+    pub fn id(&self) -> ValueId {
+        self.to_erased().id
     }
 
     /// Result handle for the phi, narrowed to the static kind `K`.
@@ -1584,6 +1656,36 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
             BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, self.module, label_ty).label();
         Ok((value, block))
     }
+
+    /// Iterate the `(value, block label)` incoming pairs in declaration
+    /// order — the same pairs [`Self::incoming`] yields by index. Mirrors
+    /// walking `PHINode::blocks()`/`incoming_values()`. Snapshots the
+    /// incoming list up front (like [`SwitchInst::cases`]), so callers may
+    /// mutate the phi while iterating.
+    pub fn incomings(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
+        let module = self.module.module();
+        let label_ty = module.label_type().as_type().id();
+        let module_ref = self.module;
+        let entries: Vec<(ValueId, ValueId)> = self
+            .payload()
+            .incoming
+            .borrow()
+            .iter()
+            .map(|(v, b)| (v.get(), *b))
+            .collect();
+        entries.into_iter().map(move |(vid, bid)| {
+            let v_data = module.context().value_data(vid);
+            let value = Value::from_parts(vid, module_ref, v_data.ty);
+            let block =
+                BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label();
+            (value, block)
+        })
+    }
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1605,9 +1707,9 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
     {
         let module = self.module.module();
         let value = value.into_float_value(self.module)?;
-        if value.as_value().ty == self.ty {
-            let value_id = value.as_value().id;
-            let block_id = block.into_basic_block_label().as_value().id;
+        if value.into_erased().ty == self.ty {
+            let value_id = value.id();
+            let block_id = block.into_basic_block_label().id();
             if self
                 .payload()
                 .incoming
@@ -1633,7 +1735,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
         } else {
             Err(crate::IrError::TypeMismatch {
                 expected: Type::new(self.ty, module).kind_label(),
-                got: value.as_value().ty().kind_label(),
+                got: value.into_erased().ty().kind_label(),
             })
         }
     }
@@ -1717,9 +1819,19 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
         InstructionView::from_parts(self.id, self.module)
     }
 
+    /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
+    }
+
+    /// Opaque arena id of the underlying value (same id as
+    /// [`to_erased`](Self::to_erased)).
+    #[inline]
+    pub fn id(&self) -> ValueId {
+        self.to_erased().id
     }
 
     /// Result handle for the phi, narrowed to a [`PointerValue`].
@@ -1759,6 +1871,36 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
             BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, self.module, label_ty).label();
         Ok((value, block))
     }
+
+    /// Iterate the `(value, block label)` incoming pairs in declaration
+    /// order — the same pairs [`Self::incoming`] yields by index. Mirrors
+    /// walking `PHINode::blocks()`/`incoming_values()`. Snapshots the
+    /// incoming list up front (like [`SwitchInst::cases`]), so callers may
+    /// mutate the phi while iterating.
+    pub fn incomings(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
+        let module = self.module.module();
+        let label_ty = module.label_type().as_type().id();
+        let module_ref = self.module;
+        let entries: Vec<(ValueId, ValueId)> = self
+            .payload()
+            .incoming
+            .borrow()
+            .iter()
+            .map(|(v, b)| (v.get(), *b))
+            .collect();
+        entries.into_iter().map(move |(vid, bid)| {
+            let v_data = module.context().value_data(vid);
+            let value = Value::from_parts(vid, module_ref, v_data.ty);
+            let block =
+                BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label();
+            (value, block)
+        })
+    }
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1775,9 +1917,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, Open, B> {
     {
         let module = self.module.module();
         let value = value.into_pointer_value(self.module)?;
-        if value.as_value().ty == self.ty {
-            let value_id = value.as_value().id;
-            let block_id = block.into_basic_block_label().as_value().id;
+        if value.into_erased().ty == self.ty {
+            let value_id = value.id();
+            let block_id = block.into_basic_block_label().id();
             if self
                 .payload()
                 .incoming
@@ -1803,7 +1945,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, Open, B> {
         } else {
             Err(crate::IrError::TypeMismatch {
                 expected: Type::new(self.ty, module).kind_label(),
-                got: IsValue::as_value(value).ty().kind_label(),
+                got: IsValue::into_erased(value).ty().kind_label(),
             })
         }
     }
@@ -1889,6 +2031,36 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
         let block =
             BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, self.module, label_ty).label();
         Ok((value, block))
+    }
+
+    /// Iterate the `(value, block label)` incoming pairs in declaration
+    /// order — the same pairs [`Self::incoming`] yields by index. Mirrors
+    /// walking `PHINode::blocks()`/`incoming_values()`. Snapshots the
+    /// incoming list up front (like [`SwitchInst::cases`]), so callers may
+    /// mutate the phi while iterating.
+    pub fn incomings(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
+        let module = self.module.module();
+        let label_ty = module.label_type().as_type().id();
+        let module_ref = self.module;
+        let entries: Vec<(ValueId, ValueId)> = self
+            .payload()
+            .incoming
+            .borrow()
+            .iter()
+            .map(|(v, b)| (v.get(), *b))
+            .collect();
+        entries.into_iter().map(move |(vid, bid)| {
+            let v_data = module.context().value_data(vid);
+            let value = Value::from_parts(vid, module_ref, v_data.ty);
+            let block =
+                BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label();
+            (value, block)
+        })
     }
 }
 
@@ -2415,7 +2587,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
 /// `W` — a wrong-width case is a *compile* error (there is no
 /// `IntoIntValue<'ctx, W, B>` impl for the mismatched value). The erased
 /// `W = IntDyn` flavour (produced by the parser / SSA builder via the
-/// width-erased [`build_switch`](crate::IRBuilder::build_switch)) keeps the
+/// width-erased [`build_switch_dyn`](crate::IRBuilder::build_switch_dyn)) keeps the
 /// runtime [`crate::IrError::TypeMismatch`] check instead. `W` is the LAST parameter
 /// and defaults to `IntDyn`, so width-agnostic `SwitchInst<'ctx, P, B>`
 /// annotations keep resolving to the erased flavour unchanged.
@@ -2478,8 +2650,11 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx
         InstructionView::from_parts(self.id, self.module)
     }
 
+    /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     fn payload(&self) -> &'ctx crate::instr_types::SwitchInstData {
@@ -2516,7 +2691,10 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx
     /// order. Mirrors walking `SwitchInst::cases()`.
     pub fn cases(
         &self,
-    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
         let module_ref = self.module;
@@ -2570,7 +2748,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
             });
         }
         let v_id = v.id;
-        let bb_id = target.into_basic_block_label().as_value().id;
+        let bb_id = target.into_basic_block_label().id();
         self.payload()
             .cases
             .borrow_mut()
@@ -2602,7 +2780,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> SwitchInst<'ctx, TermOpen, B, IntDyn> {
         R: ReturnMarker,
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let v = case_value.as_value();
+        let v = case_value.into_erased();
         self.push_case_checked(v, target)
     }
 }
@@ -2624,7 +2802,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: StaticIntWidth> SwitchInst<'ctx, TermOpen, 
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let module_ref = self.module;
-        let v = IsValue::as_value(case_value.into_int_value(module_ref)?);
+        let v = IsValue::into_erased(case_value.into_int_value(module_ref)?);
         self.push_case_checked(v, target)
     }
 }
@@ -2681,8 +2859,11 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
         InstructionView::from_parts(self.id, self.module)
     }
 
+    /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     fn payload(&self) -> &'ctx crate::instr_types::IndirectBrInstData {
@@ -2710,7 +2891,10 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
     /// walking `IndirectBrInst::successors()`.
     pub fn destinations(
         &self,
-    ) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         let label_ty = self.module.module().label_type().as_type().id();
         let module_ref = self.module;
         let ids: Vec<ValueId> = self.payload().destinations.borrow().clone();
@@ -2730,7 +2914,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
         self.payload()
             .destinations
             .borrow_mut()
-            .push(target.into_basic_block_label().as_value().id);
+            .push(target.into_basic_block_label().id());
         Ok(self)
     }
     /// Consume the open `indirectbr` and return its [`Closed`] view.
@@ -2795,8 +2979,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
         InstructionView::from_parts(self.id, self.module)
     }
 
+    /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     /// Re-tag the return marker. Crate-internal: both
@@ -2836,7 +3023,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     pub fn function_type(self) -> FunctionType<'ctx, B> {
         FunctionType::new(self.payload().fn_ty, self.module)
     }
-    pub fn args(self) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + 'ctx {
+    pub fn args(
+        self,
+    ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let module = self.module.module();
         let ids: Vec<ValueId> = self.payload().args.iter().map(|c| c.get()).collect();
         ids.into_iter().map(move |id| {
@@ -2901,7 +3091,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
     pub fn function_type(self) -> FunctionType<'ctx, B> {
         FunctionType::new(self.payload().fn_ty, self.module)
     }
-    pub fn args(self) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + 'ctx {
+    pub fn args(
+        self,
+    ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let module = self.module.module();
         let ids: Vec<ValueId> = self.payload().args.iter().map(|c| c.get()).collect();
         ids.into_iter().map(move |id| {
@@ -2924,7 +3117,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
     }
     pub fn indirect_destinations(
         self,
-    ) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
         let ids: Vec<ValueId> = self
@@ -2997,8 +3193,11 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, P, B> {
         InstructionView::from_parts(self.id, self.module)
     }
 
+    /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     fn payload(&self) -> &'ctx crate::instr_types::LandingPadInstData {
@@ -3024,7 +3223,10 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, P, B> {
     /// `LandingPadInst::clauses()` + `isCatch`/`isFilter`.
     pub fn clauses(
         &self,
-    ) -> impl ExactSizeIterator<Item = (LandingPadClauseKind, Value<'ctx, B>)> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = (LandingPadClauseKind, Value<'ctx, B>)>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         let module = self.module.module();
         let module_ref = self.module;
         let entries: Vec<(LandingPadClauseKind, ValueId)> = self
@@ -3051,7 +3253,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
     /// for `Catch`.
     pub fn add_catch_clause<V: IsValue<'ctx, B>>(self, type_info: V) -> IrResult<Self> {
         let module = self.module.module();
-        let v = type_info.as_value();
+        let v = type_info.into_erased();
         self.payload()
             .clauses
             .borrow_mut()
@@ -3067,7 +3269,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
     /// Append a `filter <ty> <val>` clause.
     pub fn add_filter_clause<V: IsValue<'ctx, B>>(self, filter_array: V) -> IrResult<Self> {
         let module = self.module.module();
-        let v = filter_array.as_value();
+        let v = filter_array.into_erased();
         self.payload()
             .clauses
             .borrow_mut()
@@ -3151,7 +3353,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> CleanupPadInst<'ctx, B> {
         let data = module.context().value_data(id);
         Some(Value::from_parts(id, self.module, data.ty))
     }
-    pub fn args(self) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + 'ctx {
+    pub fn args(
+        self,
+    ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let module = self.module.module();
         let ids: Vec<ValueId> = self.payload().args.iter().map(|c| c.get()).collect();
         ids.into_iter().map(move |id| {
@@ -3190,7 +3395,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchPadInst<'ctx, B> {
         let data = module.context().value_data(id);
         Some(Value::from_parts(id, self.module, data.ty))
     }
-    pub fn args(self) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + 'ctx {
+    pub fn args(
+        self,
+    ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let module = self.module.module();
         let ids: Vec<ValueId> = self.payload().args.iter().map(|c| c.get()).collect();
         ids.into_iter().map(move |id| {
@@ -3326,8 +3534,11 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
         InstructionView::from_parts(self.id, self.module)
     }
 
+    /// Widen to the erased [`Value`] handle.
+    ///
+    /// Borrows rather than consumes.
     #[inline]
-    pub fn as_value(&self) -> Value<'ctx, B> {
+    pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     fn payload(&self) -> &'ctx crate::instr_types::CatchSwitchInstData {
@@ -3360,7 +3571,12 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
     }
     /// Iterate the handler blocks in declaration order. Mirrors walking
     /// `CatchSwitchInst::handlers()`.
-    pub fn handlers(&self) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>> + 'ctx {
+    pub fn handlers(
+        &self,
+    ) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         let label_ty = self.module.module().label_type().as_type().id();
         let module_ref = self.module;
         let ids: Vec<ValueId> = self.payload().handlers.borrow().clone();
@@ -3379,7 +3595,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, TermOpen, B> {
         self.payload()
             .handlers
             .borrow_mut()
-            .push(handler.into_basic_block_label().as_value().id);
+            .push(handler.into_basic_block_label().id());
         Ok(self)
     }
     #[inline]
@@ -3412,16 +3628,17 @@ mod tests {
     #[test]
     fn typed_call_inst_result_narrows_to_callresult() -> Result<(), IrError> {
         Module::with_new("typed-call-inst-result", |m| {
-            let fn_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
-            let callee = m.add_function::<i32, _>("callee", fn_ty, Linkage::External)?;
-            let caller_ty = m.fn_type(m.i32_type(), Vec::<Type>::new(), false);
-            let caller = m.add_function::<i32, _>("caller", caller_ty, Linkage::External)?;
+            let callee = m
+                .add_typed_function::<i32, (), _>("callee", Linkage::External)?
+                .as_function();
+            let caller_ty = m.fn_type_no_params(m.i32_type(), false);
+            let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
             let entry = caller.append_basic_block(&m, "entry");
-            let b = crate::IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+            let b = crate::IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
             let call: CallInst<'_, i32, _> =
                 b.build_call_dyn(callee, Vec::<Value<'_, _>>::new(), "call")?;
-            let call_id = call.as_value().id();
+            let call_id = call.to_erased().id();
 
             let typed = TypedCallInst::<i32, _> {
                 inner: call,
@@ -3429,7 +3646,7 @@ mod tests {
             };
             let result = typed.result();
 
-            assert_eq!(result.as_value().id(), call_id);
+            assert_eq!(result.id(), call_id);
             Ok(())
         })
     }

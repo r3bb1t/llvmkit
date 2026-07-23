@@ -15,7 +15,7 @@
 //! unsatisfied `IntoIntValue<'_, i32, _>` bound, an llvmkit-authored trait
 //! bound stable across rustc versions.
 
-use llvmkit_ir::{IRBuilder, IntValue, Linkage, Module};
+use llvmkit_ir::{Dyn, IRBuilder, IntValue, Linkage, Module};
 
 fn main() {
     Module::with_new("c", |m| {
@@ -27,17 +27,15 @@ fn main() {
             [i32_ty.as_type(), i64_ty.as_type()],
             false,
         );
-        let f = m
-            .add_function::<(), _>("f", fn_ty, Linkage::External)
-            .unwrap();
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
         let entry = f.append_basic_block(&m, "entry");
         let dest = f.append_basic_block(&m, "dest");
         let dest_label = dest.label();
 
         // `W` is inferred as `i32` from the typed condition.
         let cond: IntValue<i32> = f.param(0).unwrap().try_into().unwrap();
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        let (_sealed, switch) = b.build_switch_typed(cond, dest_label, "").unwrap();
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let (_sealed, switch) = b.build_switch(cond, dest_label, "").unwrap();
 
         // A typed `i64` *value handle* (not a literal): the second parameter
         // narrowed to `IntValue<i64>`. It IS `IsValue`, but does not implement

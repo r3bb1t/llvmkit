@@ -1,13 +1,13 @@
 error[E0521]: borrowed data escapes outside of closure
-  --> tests/compile_fail/cross_module_select_arm.rs:34:21
+  --> tests/compile_fail/cross_module_select_arm.rs:36:21
    |
-19 |         let left_arm = left_builder
+20 |         let left_arm = left_builder
    |             -------- `left_arm` declared here, outside of the closure body
 ...
-22 |         Module::with_new::<_, _, _>("right", |right| {
+23 |         Module::with_new::<_, _, _>("right", |right| {
    |                                               ----- `right` is a reference that is only valid in the closure body
 ...
-34 |             let _ = builder.build_select(cond, left_arm, right_arm, "bad");
+36 |             let _ = builder.build_select(cond, left_arm, right_arm, "bad");
    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `right` escapes the closure body here
    |
    = note: requirement occurs because of the type `IntValue<'_, i32, Brand<'_>>`, which makes the generic argument `Brand<'_>` invariant
@@ -15,7 +15,7 @@ error[E0521]: borrowed data escapes outside of closure
    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
 
 error[E0521]: borrowed data escapes outside of closure
-  --> tests/compile_fail/cross_module_select_arm.rs:30:27
+  --> tests/compile_fail/cross_module_select_arm.rs:32:27
    |
 12 |     Module::with_new::<_, _, _>("left", |left| {
    |                                          ----
@@ -23,7 +23,7 @@ error[E0521]: borrowed data escapes outside of closure
    |                                          `left` is a reference that is only valid in the closure body
    |                                          has type `Module<'1>`
 ...
-30 |             let builder = IRBuilder::new_for::<i32>(&right).position_at_end(entry);
+32 |             let builder = IRBuilder::new_for::<i32>(&right).position_at_end(entry);
    |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    |                           |
    |                           `left` escapes the closure body here

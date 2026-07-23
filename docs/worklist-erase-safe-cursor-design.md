@@ -155,7 +155,7 @@ let dl = patch.function().module().data_layout().clone();
 let wl = patch.worklist();
 while let Some(inst) = wl.next() {
     let view = inst.as_view();
-    if !view.as_value().has_uses() { continue; }             // upstream !use_empty guard
+    if !view.to_erased().has_uses() { continue; }            // upstream !use_empty guard
     if let Some(c) = constant_fold_instruction(&view, &dl, None)? {
         patch.replace_all_uses(&view, c)?;                   // auto-pushes users
         if crate::dce::is_trivially_dead(&view) {

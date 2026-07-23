@@ -16,12 +16,12 @@ fn build_vector_splat_expands_to_insertelement_plus_shuffle() -> Result<(), IrEr
         let i8_ty = m.i8_type();
         let v_ty = m.vector_type(i8_ty, 5, false);
         let fn_ty = m.fn_type(v_ty, [i8_ty.as_type()], false);
-        let f = m.add_function::<llvmkit_ir::marker::Dyn, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
         let scalar: IntValue<i8> = f.param(0)?.try_into()?;
         let splat = b.build_vector_splat(5, scalar, "v")?;
-        b.build_ret(splat.as_value())?;
+        b.build_ret(splat.into_erased())?;
         let text = format!("{m}");
         // The two-step expansion that upstream emits, mirrored byte-for-byte:
         // %v.splatinsert = insertelement <5 x i8> poison, i8 %0, i64 0
@@ -48,9 +48,9 @@ fn build_ptr_add_emits_gep_i8() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(ptr_ty, [ptr_ty.as_type()], false);
-        let f = m.add_function::<llvmkit_ir::marker::Ptr, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<llvmkit_ir::marker::Ptr>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
         let p: PointerValue = f.param(0)?.try_into()?;
         let i64_ty = m.i64_type();
         let one = i64_ty.const_int(1_i64);
@@ -75,10 +75,9 @@ fn build_inbounds_ptr_add_emits_gep_inbounds_i8() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(ptr_ty, [ptr_ty.as_type(), i64_ty.as_type()], false);
-        let f =
-            m.add_function::<llvmkit_ir::marker::Ptr, _>("gep_inbounds", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("gep_inbounds", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<llvmkit_ir::marker::Ptr>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
         let p: PointerValue = f.param(0)?.try_into()?;
         let idx: IntValue<i64> = f.param(1)?.try_into()?;
         let q = b.build_inbounds_ptr_add::<_, _, i64, _>(p, idx, "gep")?;

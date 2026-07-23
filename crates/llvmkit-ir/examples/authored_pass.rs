@@ -18,8 +18,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    Analyses, DominatorTreeAnalysis, IRBuilder, IrError, Linkage, Module, Type, Unverified,
-    Verified, function_pass, module_pass, run_function_pass, run_module_pass,
+    Analyses, DominatorTreeAnalysis, IRBuilder, IrError, Linkage, Module, Unverified, Verified,
+    function_pass, module_pass, run_function_pass, run_module_pass,
 };
 
 /// Read-only (`Inspect`) function pass that declares a required analysis and
@@ -50,22 +50,21 @@ struct AddMarkerGlobal;
 impl AddMarkerGlobal {
     fn run(&mut self, cx: ModCx<Self>) -> IrResult<ModReport> {
         let rewrite = cx.mutate();
-        let i32_ty = rewrite.module_mut().i32_type();
-        rewrite
-            .module_mut()
-            .add_global("marker", i32_ty.as_type(), i32_ty.const_zero())?;
+        // A Rust literal initializer: no type handle, no `.as_type()`.
+        rewrite.module_mut().add_global("marker", 0i32)?;
         Ok(rewrite.done())
     }
 }
 
 fn main() -> Result<(), IrError> {
     Module::with_new("authored-pass-demo", |m| {
-        // Build `i32 @f()` returning a constant.
+        // Build `i32 @f()` returning a constant. `add_typed_function` is the
+        // typed primary: the turbofish `<i32, ()>` *is* the schema (return
+        // `i32`, no parameters) — no separately built `FunctionType`.
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_typed_function::<i32, (), _>("f", Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::at_end(entry);
         b.build_ret(i32_ty.const_int(1_u32))?;
 
         let verified = m.verify()?;
@@ -77,7 +76,7 @@ fn main() -> Result<(), IrError> {
         let verified: Module<'_, _, Verified> = run_function_pass(
             EntryReachable { flag: flag.clone() },
             verified,
-            f,
+            f.as_function(),
             &mut analyses,
         )?;
         println!("entry-reachable = {}", flag.get());
@@ -87,7 +86,7 @@ fn main() -> Result<(), IrError> {
             run_module_pass(AddMarkerGlobal, verified, &mut analyses)?;
         println!(
             "globals after add-marker-global = {}",
-            rewritten.iter_globals().len()
+            rewritten.globals().len()
         );
 
         let reverified = rewritten.verify()?;

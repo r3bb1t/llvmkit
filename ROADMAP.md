@@ -89,6 +89,16 @@ comparisons, `select`, GEP no-op / poison / undef cases, extract/insert value,
 extract/insert element, `shufflevector`, vector splats/fixed vectors, and
 aggregate constants.
 
+A 2026-07-23 audit against the vendored `llvmorg-22.1.4` sources re-verified
+this surface and fixed the handful of divergences it found — one real bug
+(`icmp` of a global vs `null` in a non-zero address space) plus several
+safe-but-not-identical over-precisions and previously-declined folds; a
+whole-branch review confirmed no mis-folds and no over-folds remained. See the
+CHANGELOG ("Constant-folding parity with LLVM 22.1.4") and `docs/future-work.md`
+for the fixes and the deferred/known-divergent points (constant uniquing,
+CHERI-like `ptrtoint`/`ptrtoaddr`, remaining `SymbolicallyEvaluateGEP`
+sub-cases, and a proactive APFloat audit).
+
 Represented `ConstantExpr` construction/folding covers the parser-needed
 add/sub/xor, GEP, vector, and cast forms, including upstream vector GEP,
 bitcast, cast, and select fixtures.

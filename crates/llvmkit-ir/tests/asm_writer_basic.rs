@@ -8,7 +8,7 @@
 //! `unnamed_addr` assertions in `module_prints_simple_add_function` track
 //! `test/Assembler/unnamed-addr.ll`.
 
-use llvmkit_ir::{IRBuilder, IntValue, IrError, Linkage, Module};
+use llvmkit_ir::{Dyn, IRBuilder, IntValue, IrError, Linkage, Module};
 
 /// Closest upstream coverage:
 /// `unittests/IR/AsmWriterTest.cpp::TEST(AsmWriterTest, DebugPrintDetachedInstruction)`
@@ -19,10 +19,10 @@ fn module_prints_simple_add_function() -> Result<(), IrError> {
     Module::with_new("demo", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("add", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("add", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let lhs: IntValue<i32> = f.param(0)?.try_into()?;
         let rhs: IntValue<i32> = f.param(1)?.try_into()?;
         let sum = b.build_int_add(lhs, rhs, "sum")?;
@@ -51,14 +51,14 @@ fn module_prints_blank_line_between_type_identities_and_first_function() -> Resu
     Module::with_new("type_separator", |m| {
         let i32_ty = m.i32_type();
         let point_ty = m.named_struct("Point");
-        m.set_struct_body(point_ty, [i32_ty.as_type(), i32_ty.as_type()], false)?;
+        m.set_struct_body_dyn(point_ty, [i32_ty.as_type(), i32_ty.as_type()], false)?;
 
         let fn_ty = m.fn_type(m.void_type(), [i32_ty.as_type()], false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        IRBuilder::new_for::<()>(&m)
+        IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
-            .build_ret_void();
+            .build_ret_void()?;
 
         let expected = "; ModuleID = 'type_separator'\n\
             \n\
@@ -81,9 +81,9 @@ fn dollar_names_print_without_quotes() -> Result<(), IrError> {
     Module::with_new("dollar_names", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("foo$bar", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("foo$bar", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry$bb");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let arg: IntValue<i32> = f.param(0)?.try_into()?;
         let sum = b.build_int_add::<i32, _, _, _>(arg, 1_i32, "sum$value")?;
         b.build_ret(sum)?;
@@ -138,9 +138,9 @@ fn set_name_reinserts_and_frees_old_binding() -> Result<(), IrError> {
     Module::with_new("rename", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let arg: IntValue<i32> = f.param(0)?.try_into()?;
 
         let first = b.build_int_add::<i32, _, _, _>(arg, 1_i32, "tmp")?;
@@ -172,10 +172,10 @@ fn module_prints_const_folded_arithmetic() -> Result<(), IrError> {
         // pre-folded ConstantInt operand for `ret`.
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<i32, _>("answer", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("answer", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let a = i32_ty.const_int(40_i32);
         let bb = i32_ty.const_int(2_i32);
         // build_int_add on two constants: the folder produces a constant.
@@ -183,8 +183,8 @@ fn module_prints_const_folded_arithmetic() -> Result<(), IrError> {
         // folded value reaches the `ret` operand directly with no `add`
         // instruction emitted.
         let folded = b.build_int_add(
-            IntValue::<i32>::try_from(a.as_value())?,
-            IntValue::<i32>::try_from(bb.as_value())?,
+            IntValue::<i32>::try_from(a.into_erased())?,
+            IntValue::<i32>::try_from(bb.into_erased())?,
             "sum",
         )?;
         b.build_ret(folded)?;
@@ -205,10 +205,10 @@ fn function_print_standalone_matches_module_section() -> Result<(), IrError> {
     Module::with_new("standalone", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("identity", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("identity", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let arg: IntValue<i32> = f.param(0)?.try_into()?;
         b.build_ret(arg)?;
 
@@ -229,7 +229,7 @@ fn declare_form_for_empty_function() -> Result<(), IrError> {
     Module::with_new("declare_only", |m| {
         let void = m.void_type();
         let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let _ = m.add_function::<(), _>("ext", fn_ty, Linkage::External)?;
+        let _ = m.add_function_dyn("ext", fn_ty, Linkage::External)?;
         let text = format!("{m}");
         assert!(text.contains("declare void @ext()\n"), "got:\n{text}");
         Ok(())
@@ -245,10 +245,10 @@ fn unnamed_basic_block_uses_slot_label() -> Result<(), IrError> {
     Module::with_new("slots", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function::<i32, _>("anon", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("anon", fn_ty, Linkage::External)?;
         // No name on the entry block.
         let entry = f.append_basic_block(&m, "");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let arg: IntValue<i32> = f.param(0)?.try_into()?;
         b.build_ret(arg)?;
         let text = format!("{m}");

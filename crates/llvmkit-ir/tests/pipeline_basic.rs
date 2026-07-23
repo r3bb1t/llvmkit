@@ -17,9 +17,9 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    Analyses, DcePass, DominatorTreeAnalysis, FnCx, FnReport, FunctionPass, FunctionView,
+    Analyses, DcePass, DominatorTreeAnalysis, Dyn, FnCx, FnReport, FunctionPass, FunctionView,
     IRBuilder, Inspect, IrError, IrResult, Linkage, ModCx, ModReport, Module, ModuleBrand,
-    ModulePass, NoFolder, PatchBody, ReshapeCfg, RewriteModule, Type, Unverified, Verified,
+    ModulePass, NoFolder, PatchBody, ReshapeCfg, RewriteModule, Unverified, Verified,
     for_each_function, function_pipeline, module_pipeline,
 };
 
@@ -33,10 +33,10 @@ fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
     name: &str,
 ) -> Result<FunctionView<'ctx, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, Vec::<Type<'ctx, B>>::new(), false);
-    let f = m.add_function::<i32, _>(name, fn_ty, Linkage::External)?;
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
     b.build_ret(i32_ty.const_int(1_u32))?;
     Ok(f.into())
 }
@@ -49,8 +49,8 @@ fn build_dead_add_named<'ctx, B: ModuleBrand + 'ctx>(
     name: &str,
 ) -> Result<FunctionView<'ctx, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, Vec::<Type<'ctx, B>>::new(), false);
-    let f = m.add_function::<i32, _>(name, fn_ty, Linkage::External)?;
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let b = IRBuilder::with_folder(m, NoFolder).position_at_end(entry);
     let _dead = b.build_int_add::<i32, _, _, _>(
@@ -160,7 +160,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for MutatingReshape {
             .function()
             .basic_blocks()
             .flat_map(|block| block.instructions().collect::<Vec<_>>())
-            .filter(|view| !view.is_terminator() && !view.as_value().has_uses())
+            .filter(|view| !view.is_terminator() && !view.to_erased().has_uses())
             .collect();
         for view in &dead {
             reshape.erase(
@@ -208,9 +208,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B> for AddGlobalPass {
     fn run(&mut self, cx: ModCx<'_, '_, '_, 'ctx, B, RewriteModule, ()>) -> IrResult<ModReport> {
         let rewrite = cx.mutate();
         let i32_ty = rewrite.module_mut().i32_type();
-        rewrite
-            .module_mut()
-            .add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        rewrite.module_mut().add_global("g", i32_ty.const_zero())?;
         self.ran.set(true);
         Ok(rewrite.done())
     }
@@ -296,14 +294,14 @@ fn module_pipeline_with_rewrite_downgrades() -> Result<(), IrError> {
     Module::with_new("pipe-mod-rewrite", |m| {
         let _f = build_ret_i32_named(&m, "f")?;
         let verified = m.verify()?;
-        assert_eq!(verified.iter_globals().len(), 0);
+        assert_eq!(verified.globals().len(), 0);
         let mut analyses = Analyses::new();
         let ran = Rc::new(Cell::new(false));
         let mut pipe = module_pipeline((AddGlobalPass { ran: ran.clone() },));
         // `RewriteModule` folds to `Downgrades`.
         let unverified: Module<'_, _, Unverified> = pipe.run(verified, &mut analyses)?;
         assert!(ran.get(), "RewriteModule pass must run");
-        assert_eq!(unverified.iter_globals().len(), 1);
+        assert_eq!(unverified.globals().len(), 1);
         unverified.verify()?;
         Ok(())
     })
@@ -340,8 +338,8 @@ fn for_each_function_mutating_downgrades_and_visits_defs() -> Result<(), IrError
         let f2 = build_dead_add_named(&m, "f2")?;
         // A declaration (no body) — must be skipped by `for_each_function`.
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
-        let _decl = m.add_function::<i32, _>("ext", fn_ty, Linkage::External)?;
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
+        let _decl = m.add_function_dyn("ext", fn_ty, Linkage::External)?;
 
         assert_eq!(f1.entry_block().expect("def").instruction_count(), 2);
         assert_eq!(f2.entry_block().expect("def").instruction_count(), 2);

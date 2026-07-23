@@ -9,12 +9,12 @@ error[E0277]: the trait bound `FloatValue<'_, f64, Brand<'_>>: IntoIntValue<'_, 
    = help: the following other types implement trait `IntoIntValue<'ctx, W, B>`:
              `ConstantIntValue<'ctx, W, B>` implements `IntoIntValue<'ctx, W, B>`
              `IntValue<'ctx, W, B>` implements `IntoIntValue<'ctx, W, B>`
-             `bool` implements `IntoIntValue<'ctx, Width<N>, B>`
              `bool` implements `IntoIntValue<'ctx, bool, B>`
-             `i128` implements `IntoIntValue<'ctx, Width<N>, B>`
              `i128` implements `IntoIntValue<'ctx, i128, B>`
-             `i16` implements `IntoIntValue<'ctx, Width<N>, B>`
-             `i16` implements `IntoIntValue<'ctx, i128, B>`
+             `i16` implements `IntoIntValue<'ctx, i16, B>`
+             `i32` implements `IntoIntValue<'ctx, i32, B>`
+             `i64` implements `IntoIntValue<'ctx, i64, B>`
+             `i8` implements `IntoIntValue<'ctx, i8, B>`
            and $N others
    = note: required for `FloatValue<'_, f64, Brand<'_>>` to implement `IntoCallArg<'_, i32, Brand<'_>>`
    = note: required for `(FloatValue<'_, f64, Brand<'_>>,)` to implement `CallArgs<'_, (i32,), Brand<'_>>`

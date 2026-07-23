@@ -17,9 +17,9 @@ fn main() -> IrResult<()> {
         let ptr_ty = m.ptr_type(0);
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
         let word: PointerValue = f.param(0)?.try_into()?;
         let twelve = i32_ty.const_int(12_i32);
         let armw = b.build_atomicrmw(
@@ -32,9 +32,9 @@ fn main() -> IrResult<()> {
 
         let replacement = i32_ty.const_int(99_i32);
         // Missing the `&Module<Unverified>` capability token.
-        armw.set_value_operand(replacement.as_value())?;
+        armw.set_value_operand(replacement.into_erased())?;
 
-        b.build_ret_void();
+        b.build_ret_void()?;
         Ok(())
     })
 }

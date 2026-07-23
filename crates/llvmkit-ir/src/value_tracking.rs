@@ -239,7 +239,7 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ValueTrackingQuery<'a, 'ctx, B> {
 
     #[inline]
     pub fn with_context_instruction(mut self, instruction: &InstructionView<'ctx, B>) -> Self {
-        self.context_instruction = Some(instruction.as_value());
+        self.context_instruction = Some(instruction.to_erased());
         self
     }
 
@@ -1913,6 +1913,7 @@ mod tests {
     use super::*;
     use crate::instruction::build_instruction_value;
     use crate::module::Module;
+    use crate::value::IsValue;
 
     fn fabricate_instruction(
         m: &Module<'_>,
@@ -1946,8 +1947,8 @@ mod tests {
             let i32_ty = m.i32_type();
             let ptr1_ty = m.ptr_type(1);
             let ptr_vec_ty = m.vector_type(ptr1_ty.as_type(), 2, false);
-            let fn_ty = m.fn_type(m.void_type(), Vec::<Type>::new(), false);
-            let f = m.add_function::<(), _>("f", fn_ty, crate::Linkage::External)?;
+            let fn_ty = m.fn_type_no_params(m.void_type(), false);
+            let f = m.add_function_dyn("f", fn_ty, crate::Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
 
             let base = ptr_vec_ty.const_vector([ptr1_ty.const_null(); 2])?;
@@ -1955,12 +1956,12 @@ mod tests {
             let gep_ty = ptr_vec_ty.as_type();
             let gep_id = fabricate_instruction(
                 &m,
-                entry.as_value().id,
+                entry.id(),
                 gep_ty.id(),
                 InstructionKindData::Gep(GepInstData::new(
                     i8_ty.as_type().id(),
-                    base.as_value().id,
-                    [minus_one.as_value().id],
+                    base.id(),
+                    [minus_one.id()],
                     crate::GepNoWrapFlags::empty(),
                 )),
             );

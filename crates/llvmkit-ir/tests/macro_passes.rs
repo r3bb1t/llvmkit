@@ -19,9 +19,9 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    Analyses, DominatorTreeAnalysis, FnCx, FnPatch, FnReport, FunctionPass, FunctionView,
+    Analyses, DominatorTreeAnalysis, Dyn, FnCx, FnPatch, FnReport, FunctionPass, FunctionView,
     IRBuilder, InstructionView, IrError, IrResult, Linkage, ModCx, ModReport, Module, ModuleBrand,
-    ModulePass, NoFolder, PatchBody, RewriteModule, Type, Unverified, Verified, function_pass,
+    ModulePass, NoFolder, PatchBody, RewriteModule, Unverified, Verified, function_pass,
     module_pass, run_function_pass, run_module_pass,
 };
 
@@ -36,8 +36,8 @@ fn build_dead_add<'ctx, B: ModuleBrand + 'ctx>(
     m: &Module<'ctx, B, Unverified>,
 ) -> Result<FunctionView<'ctx, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, Vec::<Type<'ctx, B>>::new(), false);
-    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let b = IRBuilder::with_folder(m, NoFolder).position_at_end(entry);
     let _dead = b.build_int_add::<i32, _, _, _>(
@@ -54,10 +54,10 @@ fn build_ret_i32<'ctx, B: ModuleBrand + 'ctx>(
     m: &Module<'ctx, B, Unverified>,
 ) -> Result<FunctionView<'ctx, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, Vec::<Type<'ctx, B>>::new(), false);
-    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
     b.build_ret(i32_ty.const_int(1_u32))?;
     Ok(f.into())
 }
@@ -72,7 +72,7 @@ fn erase_dead_instructions<'ctx, B: ModuleBrand + 'ctx>(
     let mut dead: Vec<InstructionView<'ctx, B>> = Vec::new();
     for block in patch.function_mut().basic_blocks() {
         for view in block.instructions() {
-            if !view.as_value().has_uses() && !view.is_terminator() {
+            if !view.to_erased().has_uses() && !view.is_terminator() {
                 dead.push(view);
             }
         }
@@ -255,9 +255,7 @@ impl MacroAddGlobal {
     fn run(&mut self, cx: ModCx<Self>) -> IrResult<ModReport> {
         let rewrite = cx.mutate();
         let i32_ty = rewrite.module_mut().i32_type();
-        rewrite
-            .module_mut()
-            .add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        rewrite.module_mut().add_global("g", i32_ty.const_zero())?;
         Ok(rewrite.done())
     }
 }
@@ -274,9 +272,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B> for HandAddGlobal {
     fn run(&mut self, cx: ModCx<'_, '_, '_, 'ctx, B, RewriteModule, ()>) -> IrResult<ModReport> {
         let rewrite = cx.mutate();
         let i32_ty = rewrite.module_mut().i32_type();
-        rewrite
-            .module_mut()
-            .add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        rewrite.module_mut().add_global("g", i32_ty.const_zero())?;
         Ok(rewrite.done())
     }
 }
@@ -286,7 +282,7 @@ fn macro_module_pass_matches_handwritten() -> Result<(), IrError> {
     let macro_ir: String = Module::with_new("macro-mod", |m| {
         let _f = build_ret_i32(&m)?;
         let verified = m.verify()?;
-        assert_eq!(verified.iter_globals().len(), 0);
+        assert_eq!(verified.globals().len(), 0);
         let mut analyses = Analyses::new();
 
         let (name, required) = mod_pass_meta(&verified, &MacroAddGlobal);
@@ -300,11 +296,7 @@ fn macro_module_pass_matches_handwritten() -> Result<(), IrError> {
         // compile-time half of the lock.
         let out: Module<'_, _, Unverified> =
             run_module_pass(MacroAddGlobal, verified, &mut analyses)?;
-        assert_eq!(
-            out.iter_globals().len(),
-            1,
-            "the macro pass added the global"
-        );
+        assert_eq!(out.globals().len(), 1, "the macro pass added the global");
         Ok(format!("{}", out.verify()?))
     })?;
 

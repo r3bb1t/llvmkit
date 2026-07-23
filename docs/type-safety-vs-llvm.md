@@ -23,6 +23,7 @@ on user-visible API failure modes; D11's test-provenance rule is tracked in
 | Branch to a block from another module | D7 | Builder accepts `BasicBlock *`; verifier later rejects malformed control flow | Branch target carries the builder module's brand |
 | Global initializer expression tied to another module | D7 | Constructor accepts `Constant *`; type is asserted, module provenance is not statically represented | `add_global` requires `Type<'ctx, B>` and `IsConstant<'ctx, B>` with the same `B` |
 | Custom folder returns a value from the wrong module | D7 | Folder hooks return raw `Value *` | Folder hooks return `IrResult<Option<Value<'ctx, B>>>` |
+| Custom folder returns a wrong-*width* typed fold result | D4 | Folder hooks return raw `Value *`; the builder inserts whatever comes back, and the mistyped constant surfaces later as malformed IR | The typed hook's signature pins the return type, so an external folder cannot spell a **concrete** wrong width (`E0308`, locked by `tests/compile_fail/folder_typed_wrong_width.rs`). Where a signature *cannot* pin it — `W = IntDyn` names no width, and the crate-internal `from_value_unchecked` can mint any marker — the builder re-checks each fold result's runtime type against the operand / cast destination, for **every** marker (see §4; the check was previously skipped for static markers, which was circular) |
 | Insert after a terminated block | D1 | Insertion point is a mutable iterator into a `BasicBlock *` | Terminator builders consume the builder and return a `Terminated` view; retained `Unterminated` block copies remain verifier-backed |
 | Return a value from a `void` function, or `ret void` from a value-returning function | D1, D4 | `CreateRet(Value *)` / `CreateRetVoid()` are just methods; mismatch is verifier/runtime state | `IRBuilder<..., R>` exposes return methods according to the function return marker |
 | Read a typed result from a `void` call | D3, D4 | Caller must inspect the call/function type | `CallInst<'ctx, ()>` exposes no typed result accessor |
@@ -30,6 +31,10 @@ on user-visible API failure modes; D11's test-provenance rule is tracked in
 | Recover lifecycle authority from a copyable value, block, or use-list | D2, D9 | Any retained `Instruction *` can be reused for mutation | Copyable rediscovery APIs return `InstructionView`; only builder output, `BlockCursor`, and detached reinsertion produce `Instruction<Attached>` |
 | Add more incoming edges or destinations after a variable-arity instruction is finalized | D1, D2 | Caller discipline plus verifier | `PhiInst<Open>` / `SwitchInst<Open>` / `IndirectBrInst<Open>` / `LandingPadInst<Open>` / `CatchSwitchInst<Open>` are linear; `finish()` returns closed views without mutators |
 | Misplace a phi, mistype a phi incoming, or give one predecessor two different incoming values | D1, D4 | Builder accepts all three; the verifier later reports `PhiNotAtTop` or the type / predecessor mismatch | `build_*_phi` always insert at the block's PHI head (placement correct by construction); `add_incoming` — the typed path *and* the untyped parser/SSA-builder path — type-checks the incoming and rejects a differing duplicate for one predecessor as `IrError::AmbiguousPhiIncoming`; whole-graph incoming-vs-predecessor completeness stays in `Module::verify()` |
+| Branch carries the wrong number of, or wrong-typed, values for its successor's block parameters | D1, D4 | The successor's head-phis are filled `PHINode`-by-`PHINode`; a miscounted or mistyped incoming is an `assert` / verifier concern | A typed successor label carries a `Params` schema; `head.call(args)` (a `BlockCall`) requires `args: CallArgs<Params>`, so a wrong arity or a wrong-typed block-argument position is a compile error, reusing the typed-`build_call` machinery. The erased `append_block_with_params` / `build_*_with_args` path stays call-site-checked (`IrError::PhiArgArityMismatch` / type mismatch) |
+| Add a wrong-width case value to a `switch` | D4 | Builder accepts any `ConstantInt *`; a case whose integer width ≠ the condition is caught later by `Verifier::visitSwitchInst` (`"Switch constants must all be same type as switch value!"`) | `build_switch::<W>` pins the condition width `W`, and `SwitchInst::add_case` then carries an `IntoIntValue<'ctx, W, B>` bound, so a wrong-width case is a compile error; the erased `build_switch_dyn` (`IntDyn`) keeps the same rule as a runtime `IrError::TypeMismatch` check for parsed / SSA-builder input |
+| Jump through a non-pointer `indirectbr` address | D4 | `CreateIndirectBr` accepts any `Value *`; a non-pointer address is caught later by `Verifier::visitIndirectBrInst` (`"Indirectbr operand must have pointer type!"`) | `build_indirectbr`'s address is bound `IntoPointerValue<'ctx, B>`, so a typed non-pointer address is a compile error; an erased `Value` address is pointer-checked at build time — the same verifier rule, moved out of `Module::verify()` |
+| Make a structurally-invalid CFG edge edit — remove an `invoke`/`callbr` edge or the sole edge of an unconditional `br`, remove a `switch` default, or collapse a `cond_br` twice | D1, D2 | Edge edits are raw pointer manipulation (`setSuccessor` / `removePredecessor` / branch replacement); an edit that orphans a mandatory edge yields malformed IR the verifier catches later, if at all | `FnReshape::edit_terminator` narrows the terminator into a per-kind typed handle (`BrEdit` / `CondBrEdit` / `SwitchEdit` / `InvokeEdit` / `CallBrEdit`) whose method set fixes the legal edits: a removal that would orphan a mandatory edge has no method to spell (`E0599`), and `remove_then` / `remove_else` consume the handle, so a double collapse is use-after-move (`E0382`). Each redirect/remove maintains the successors' phis mechanically, poison-erasing an emptied phi for `BasicBlock::removePredecessor` parity |
 | Insert a wrong-typed element into a vector or aggregate (`insertelement` / `insertvalue`) | D4, D6 | Builder accepts `Value *`; the verifier later reports the element/field type mismatch | `build_vec_insert` / `build_arr_insert` take a value typed by the handle's element marker `E`, so a wrong element type is a compile error (typed handle); the erased `VectorValue<'ctx>` / `ArrayValue<'ctx>` (`Dyn`) path stays verifier-checked as the escape hatch |
 | Elementwise vector binop on mismatched lane count or element type | D4, D6 | Builder accepts two `Value *`; the verifier later reports the operand type mismatch | `build_vec_int_{add,sub,mul,xor,and,or,shl,lshr,ashr}` take two `VectorValue<E, Len<N>>` with the *same* `E`,`N`, so a mismatched length or element has no matching impl (compile error, typed handle); the erased `_dyn` / `VectorValue<'ctx>` path stays verifier-checked |
 | `<N x T>` / `[N x T]` length mismatch at a typed vector/array op | D6 | Builder accepts the mis-sized operand; the verifier later reports the length/type mismatch | The length marker (`Len<N>` for vectors, `ArrLen<N>` for arrays) is part of the handle type, so a typed op on a wrong-length value is a compile error; the all-`Dyn` `VectorValue<'ctx>` / `ArrayValue<'ctx>` form narrows via `TryFrom` (`OperandWidthMismatch` / `IrError::ArrayLengthMismatch`) as the escape hatch |
@@ -146,9 +151,7 @@ Module::with_new::<_, _, _>("left", |left| {
     let left_value = left.i64_type().const_int(1_i64);
 
     Module::with_new::<_, _, _>("right", |right| {
-        let i64_ty = right.i64_type();
-        let fn_ty = right.fn_type(i64_ty.as_type(), Vec::<Type<'_, _>>::new(), false);
-        let function = right.add_function::<i64, _>("f", fn_ty, Linkage::External).unwrap();
+        let function = right.add_typed_function::<i64, (), _>("f", Linkage::External).unwrap();
         let entry = function.append_basic_block(&right, "entry");
         let builder = IRBuilder::new_for::<i64>(&right).position_at_end(entry);
 
@@ -195,15 +198,11 @@ Bad Rust program:
 
 ```rust
 Module::with_new::<_, _, _>("left", |left| {
-    let void_ty = left.void_type();
-    let fn_ty = left.fn_type(void_ty.as_type(), Vec::<Type<'_, _>>::new(), false);
-    let f = left.add_function::<(), _>("left_f", fn_ty, Linkage::External).unwrap();
+    let f = left.add_typed_function::<(), (), _>("left_f", Linkage::External).unwrap();
     let left_target = f.append_basic_block(&left, "target");
 
     Module::with_new::<_, _, _>("right", |right| {
-        let void_ty = right.void_type();
-        let fn_ty = right.fn_type(void_ty.as_type(), Vec::<Type<'_, _>>::new(), false);
-        let f = right.add_function::<(), _>("right_f", fn_ty, Linkage::External).unwrap();
+        let f = right.add_typed_function::<(), (), _>("right_f", Linkage::External).unwrap();
         let entry = f.append_basic_block(&right, "entry");
         let builder = IRBuilder::new_for::<()>(&right).position_at_end(entry);
 
@@ -269,8 +268,7 @@ Module::with_new::<_, _, _>("left", |left| {
     let left_init = left.i32_type().const_int(1_i32);
 
     Module::with_new::<_, _, _>("right", |right| {
-        let i32_ty = right.i32_type();
-        let _ = right.add_global("g", i32_ty.as_type(), left_init);
+        let _ = right.add_global("g", left_init);
     });
 });
 ```
@@ -309,9 +307,53 @@ pub trait IRBuilderFolder<'ctx, B: ModuleBrand = Brand<'ctx>> {
 ```
 
 The typed hooks go further: `fold_int_bin_op<W>` returns
-`IrResult<Option<IntValue<'ctx, W, B>>>`, so a custom folder cannot forge a
-wrong *width* either -- the hook's signature pins it, and the builder accepts
-typed fold results with no runtime re-check.
+`IrResult<Option<IntValue<'ctx, W, B>>>`, so an *external* folder cannot spell a
+**concrete** wrong width -- returning an `IntValue<'ctx, i64, B>` where
+`IntValue<'ctx, W, B>` is required is an ordinary `E0308`, locked by
+`tests/compile_fail/folder_typed_wrong_width.rs`.
+
+The signature is not the whole story, though, and this page does not pretend it
+is. Two gaps survive it:
+
+- At `W = IntDyn` the marker names no width at all, so a fold result typed
+  `IntValue<'ctx, IntDyn, B>` can still carry any integer width. `IntWidth::narrow`
+  is public and proves only "some integer" there, so an external folder *can*
+  hand back a wrong-width result.
+- In-crate, the `pub(crate)` `IntValue::from_value_unchecked` mints an
+  `IntValue<'ctx, W, B>` without consulting the payload's real type, so a static
+  `W` is only as honest as whoever built the handle.
+
+So the builder does **not** take the marker on trust. Its `accept_folded_*`
+helpers re-check every fold result's runtime type against the operand's (or the
+cast's destination), for *every* marker, static ones included, and
+`ConstantFolder`'s own typed overrides re-type their erased results through
+`W::narrow` / `K::narrow` at the point of construction rather than rewrapping on
+the authority of a prose invariant.
+
+Beyond folds, the builder's own marker attachment is likewise no longer implicit.
+An int / float / pointer marker reaches a freshly-appended instruction only through
+the typed-append constructor family — `append_int_like` / `_at` / `_load`,
+`append_fp_*`, `append_ptr` / `append_ptr_load` — each of which appends the
+instruction *at* a typed type-handle (`IntType<W>` / `FloatType<K>` / `PointerType`,
+or a `W`-typed operand) and re-wraps the result, so the marker matches the runtime
+type **by construction** rather than by a proof a reader must reconstruct. This
+confinement is *audited*, not a compile-time seal: `from_value_unchecked` stays
+`pub(crate)` (a hard seal is impossible — `value` and `ir_builder` are sibling
+modules, and the constructors depend on `ir_builder`-private helpers), so its
+in-crate callers are now a legible handful — the constructor family, the runtime-
+checked fold seams, and a documented residual (result accessors, arena/param lifts,
+the vector/array append wraps, the select-arm re-wrap, and the `ptrtoaddr` `IntDyn`
+re-wrap) — rather than a hundred scattered wraps, and the fold re-checks above remain
+the backstop.
+
+That check used to be keyed on the marker being erased -- which was circular: it
+trusted precisely the claim it existed to verify, so at any static width a
+wrong-typed fold result was silently accepted. See the CHANGELOG's *"No silent
+erasure"* entry; the seam is locked from both sides by
+`hostile_native_typed_override_wrong_width_rejected_at_static_width`
+(in-crate, via `from_value_unchecked`) and
+`external_narrow_override_wrong_width_rejected_by_accept_folded_int`
+(external, via `narrow` at `IntDyn`).
 
 Bad Rust helper:
 
@@ -539,6 +581,23 @@ desynced phi is not merely rejected at `verify()` — it is unrepresentable thro
 the public surface. Printed IR is ordinary phis; storage, parser, printer, and
 verifier are unchanged.
 
+The block-argument surface above is width/type-erased: arity and per-argument
+types are checked at the *call site* (runtime `IrError`). A **typed** variant
+lifts the block's *parameter shape* into the type system so those checks move to
+*compile* time. `append_block_typed::<(i32, Ptr)>(f, "hdr")` returns the block
+stamped with that schema plus a typed tuple of parameter handles, and a
+`BlockCall` — `hdr.call((a, b))`, consumed by `build_br_call` /
+`build_cond_br_call` — carries a `CallArgs<Params>` bound (the same machinery a
+typed `build_call` uses), so a wrong-arity or wrong-typed block-argument is a
+compile error rather than the erased path's call-site `IrError::PhiArgArityMismatch`
+/ type mismatch. Both surfaces lower to the identical ordinary phis; the schema is
+an opt-in, last, defaulted `Params` marker (`BlockParamsDyn` by default), so every
+erased spelling is unchanged. In the same spirit, a `switch`'s condition width and
+an `indirectbr`'s address pointer-ness can be pinned in the type
+(`build_switch::<W>` / the `IntoPointerValue`-bound `build_indirectbr`), so a
+wrong-width case or a non-pointer jump address is a compile error too — see the
+summary table above.
+
 Underneath, the incremental editing window still exists — the `PhiInst` handle
 *type* and its read accessors stay public (a `_dyn` builder returns one, and
 rediscovery yields it), but *authoring through it* is now crate-internal: the
@@ -661,14 +720,14 @@ bounds were not satisfied: Inspect: MutatingFn`.
 
 **(b) Reaching a mutator consumes the all-preserved report.** `FnCx::mutate`
 takes `self` **by value**. Once a mutating pass has stepped into its mutator the
-context is moved, so the all-preserved `cx.unchanged()` / `cx.done()` is gone.
+context is moved, so the all-preserved `cx.done()` is gone.
 The only report left is the mutator's own `done()`, which carries the rung's
 derived floor. "Mutated, then claimed everything preserved" has no spelling:
 
 ```rust
     fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport> {
         let _patch = cx.mutate(); // moves `cx` into the mutator
-        Ok(cx.unchanged())        // use of moved value
+        Ok(cx.done())             // use of moved value
     }
 ```
 
@@ -837,6 +896,14 @@ The flag overlays `OverflowingBinaryOperator` (add/sub/mul/shl) and
 type system. Runtime verification still owns:
 
 - parsed or otherwise erased `Dyn` forms;
+- **a custom folder's typed fold result** — the hook's signature keeps a
+  *concrete* wrong width out (§4), but `IntDyn` names no width and the
+  crate-internal `from_value_unchecked` can mint any marker, so a marker is only
+  as honest as whoever built the handle. The builder re-checks each fold result's
+  runtime type against the operand / cast destination, for every marker;
+- **an `SsaBuilder` variable definition** — same reason, same shape:
+  `def_int_var` / `def_float_var` re-check the incoming value's runtime type
+  against the variable's, for every marker;
 - dominance and cross-block SSA use checks;
 - phi-incoming completeness against the *complete* CFG predecessor set — the
   whole-graph check. Wave 1 moved the *local* phi facts earlier (placement is

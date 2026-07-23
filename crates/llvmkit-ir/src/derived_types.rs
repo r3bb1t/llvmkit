@@ -26,6 +26,7 @@
 //!   intrinsic argument typing.
 
 use core::fmt;
+use core::iter::FusedIterator;
 
 use super::error::{IrError, IrResult, TypeKindLabel};
 use super::module::{Brand, ModuleBrand, ModuleRef};
@@ -1038,7 +1039,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionType<'ctx, B> {
         Type::new(ret, self.module)
     }
     /// Iterator over parameter types in declaration order.
-    pub fn params(self) -> impl ExactSizeIterator<Item = Type<'ctx, B>> + 'ctx {
+    pub fn params(
+        self,
+    ) -> impl ExactSizeIterator<Item = Type<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let (_, params, _) = self
             .module
             .type_data(self.id)
@@ -1145,7 +1149,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> TargetExtType<'ctx, B> {
             .name
             .as_str()
     }
-    pub fn type_params(self) -> impl ExactSizeIterator<Item = Type<'ctx, B>> + 'ctx {
+    pub fn type_params(
+        self,
+    ) -> impl ExactSizeIterator<Item = Type<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let t = self
             .module
             .type_data(self.id)
@@ -1154,7 +1161,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> TargetExtType<'ctx, B> {
         let module = self.module;
         t.type_params.iter().map(move |id| Type::new(*id, module))
     }
-    pub fn int_params(self) -> impl ExactSizeIterator<Item = u32> + 'ctx {
+    pub fn int_params(
+        self,
+    ) -> impl ExactSizeIterator<Item = u32> + DoubleEndedIterator + FusedIterator + 'ctx {
         let t = self
             .module
             .type_data(self.id)

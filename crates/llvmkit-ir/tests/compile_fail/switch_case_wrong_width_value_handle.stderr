@@ -1,7 +1,7 @@
 error[E0277]: the trait bound `IntValue<'_, i64, Brand<'_>>: IntoIntValue<'_, i32, Brand<'_>>` is not satisfied
-  --> tests/compile_fail/switch_case_wrong_width_value_handle.rs:47:33
+  --> tests/compile_fail/switch_case_wrong_width_value_handle.rs:45:33
    |
-47 |         let _ = switch.add_case(case, dest_label);
+45 |         let _ = switch.add_case(case, dest_label);
    |                        -------- ^^^^ the trait `IntoIntValue<'_, i32, Brand<'_>>` is not implemented for `IntValue<'_, i64, Brand<'_>>`
    |                        |
    |                        required by a bound introduced by this call

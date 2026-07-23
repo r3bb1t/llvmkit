@@ -20,10 +20,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    Analyses, DCE, DcePass, DynFunctionPipeline, DynModulePipeline, DynReadOnlyFunctionPipeline,
-    DynReadOnlyModulePipeline, FnCx, FnReport, FunctionPass, FunctionView, IRBuilder, Inspect,
-    IrError, IrResult, Linkage, ModCx, ModReport, Module, ModuleBrand, ModulePass, NoFolder,
-    RewriteModule, Type, Unverified, Verified,
+    Analyses, DCE, DcePass, Dyn, DynFunctionPipeline, DynModulePipeline,
+    DynReadOnlyFunctionPipeline, DynReadOnlyModulePipeline, FnCx, FnReport, FunctionPass,
+    FunctionView, IRBuilder, Inspect, IrError, IrResult, Linkage, ModCx, ModReport, Module,
+    ModuleBrand, ModulePass, NoFolder, RewriteModule, Unverified, Verified,
 };
 
 // ==========================================================================
@@ -36,10 +36,10 @@ fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
     name: &str,
 ) -> Result<FunctionView<'ctx, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, Vec::<Type<'ctx, B>>::new(), false);
-    let f = m.add_function::<i32, _>(name, fn_ty, Linkage::External)?;
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
     b.build_ret(i32_ty.const_int(1_u32))?;
     Ok(f.into())
 }
@@ -51,8 +51,8 @@ fn build_dead_add_named<'ctx, B: ModuleBrand + 'ctx>(
     name: &str,
 ) -> Result<FunctionView<'ctx, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, Vec::<Type<'ctx, B>>::new(), false);
-    let f = m.add_function::<i32, _>(name, fn_ty, Linkage::External)?;
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let b = IRBuilder::with_folder(m, NoFolder).position_at_end(entry);
     let _dead = b.build_int_add::<i32, _, _, _>(
@@ -141,9 +141,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B> for AddGlobalPass {
     fn run(&mut self, cx: ModCx<'_, '_, '_, 'ctx, B, RewriteModule, ()>) -> IrResult<ModReport> {
         let rewrite = cx.mutate();
         let i32_ty = rewrite.module_mut().i32_type();
-        rewrite
-            .module_mut()
-            .add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+        rewrite.module_mut().add_global("g", i32_ty.const_zero())?;
         self.ran.set(true);
         Ok(rewrite.done())
     }
@@ -166,7 +164,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B> for AddNamedGlobalPass {
         let i32_ty = rewrite.module_mut().i32_type();
         rewrite
             .module_mut()
-            .add_global(self.name, i32_ty.as_type(), i32_ty.const_zero())?;
+            .add_global(self.name, i32_ty.const_zero())?;
         self.ran.set(true);
         Ok(rewrite.done())
     }
@@ -265,7 +263,7 @@ fn transform_dyn_module_pipeline_downgrades_and_mutates() -> Result<(), IrError>
     Module::with_new("dyn-mod-transform", |m| {
         let _f = build_ret_i32_named(&m, "f")?;
         let verified = m.verify()?;
-        assert_eq!(verified.iter_globals().len(), 0);
+        assert_eq!(verified.globals().len(), 0);
         let mut analyses = Analyses::new();
         let ran = Rc::new(Cell::new(false));
 
@@ -278,7 +276,7 @@ fn transform_dyn_module_pipeline_downgrades_and_mutates() -> Result<(), IrError>
 
         assert!(ran.get(), "RewriteModule pass must run");
         // The real mutation landed on the returned module.
-        assert_eq!(unverified.iter_globals().len(), 1);
+        assert_eq!(unverified.globals().len(), 1);
         unverified.verify()?;
         Ok(())
     })
@@ -298,7 +296,7 @@ fn read_only_dyn_module_pipeline_stays_verified_and_runs() -> Result<(), IrError
         let still_verified: Module<'_, _, Verified> = pipe.run(verified, &mut analyses)?;
 
         assert!(ran.get(), "Inspect module pass must run");
-        assert_eq!(still_verified.as_view().iter_functions().count(), 1);
+        assert_eq!(still_verified.as_view().functions().count(), 1);
         Ok(())
     })
 }
@@ -332,7 +330,7 @@ fn runtime_assembly_variable_length_pipeline() -> Result<(), IrError> {
 
         // Every pushed pass ran, in push order.
         assert_eq!(*log.borrow(), tags);
-        assert_eq!(still_verified.as_view().iter_functions().count(), 1);
+        assert_eq!(still_verified.as_view().functions().count(), 1);
         Ok(())
     })
 }
@@ -367,7 +365,7 @@ fn runtime_assembly_module_transform_variable_length() -> Result<(), IrError> {
 
         assert!(flags.iter().all(|f| f.get()), "every pushed pass must run");
         // Each `AddGlobalPass` inserts a global named "g"; three members ⇒ three.
-        assert_eq!(unverified.iter_globals().len(), count);
+        assert_eq!(unverified.globals().len(), count);
         Ok(())
     })
 }

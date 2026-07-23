@@ -6,7 +6,7 @@ error[E0382]: use of moved value: `cx`
 ...
 34 |         let _patch = cx.mutate();
    |                         -------- `cx` moved due to this method call
-35 |         Ok(cx.unchanged())
+35 |         Ok(cx.done())
    |            ^^ value used here after move
    |
 note: `FnCx::<'pm, 'r, 'ctx, B, A, R>::mutate` takes ownership of the receiver `self`, which moves `cx`

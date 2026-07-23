@@ -43,9 +43,9 @@ fn build() -> Result<(), IrError> {
         let v4i32 = m.vector_type_n::<i32, 4>();
 
         let fn_ty = m.fn_type(i32_ty.as_type(), [v4i32.as_type(), v4i32.as_type()], false);
-        let vadd = m.add_function::<i32, _>("vadd", fn_ty, Linkage::External)?;
+        let vadd = m.add_function_dyn("vadd", fn_ty, Linkage::External)?;
         let entry = vadd.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::at_end(entry);
 
         // Narrow the erased `<4 x i32>` params into the statically typed handle.
         // `try_into` checks BOTH element (i32) and lane count (4) at run time,
@@ -54,13 +54,13 @@ fn build() -> Result<(), IrError> {
         let a: VectorValue<'_, i32, Len<4>> = vadd
             .param(0)
             .expect("param 0")
-            .as_value()
+            .into_erased()
             .try_into()
             .expect("narrow param 0 to <4 x i32>");
         let c: VectorValue<'_, i32, Len<4>> = vadd
             .param(1)
             .expect("param 1")
-            .as_value()
+            .into_erased()
             .try_into()
             .expect("narrow param 1 to <4 x i32>");
 
@@ -82,14 +82,14 @@ fn build() -> Result<(), IrError> {
         let a4i32 = m.array_type_n::<i32, 4>();
 
         let fn_ty = m.fn_type(i32_ty.as_type(), [a4i32.as_type()], false);
-        let apack = m.add_function::<i32, _>("apack", fn_ty, Linkage::External)?;
+        let apack = m.add_function_dyn("apack", fn_ty, Linkage::External)?;
         let entry = apack.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::at_end(entry);
 
         let arr: ArrayValue<'_, i32, ArrLen<4>> = apack
             .param(0)
             .expect("param 0")
-            .as_value()
+            .into_erased()
             .try_into()
             .expect("narrow param 0 to [4 x i32]");
 
@@ -99,7 +99,7 @@ fn build() -> Result<(), IrError> {
         // feeds straight back into another typed array op.
         let seven: IntValue<'_, i32> = i32_ty
             .const_int(7_i32)
-            .as_value()
+            .into_erased()
             .try_into()
             .expect("i32 constant");
         let updated: ArrayValue<'_, i32, ArrLen<4>> = b.build_arr_insert(arr, seven, 1, "u")?;

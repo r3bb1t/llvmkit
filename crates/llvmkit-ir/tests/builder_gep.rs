@@ -7,7 +7,7 @@
 //! `unittests/IR/InstructionsTest.cpp` (`GEPIndices`, `ZeroIndexGEP`)
 //! or mirrors a `test/Assembler/getelementptr*.ll` fixture.
 
-use llvmkit_ir::{IRBuilder, IrError, Linkage, Module, Ptr};
+use llvmkit_ir::{Dyn, IRBuilder, IrError, Linkage, Module};
 
 /// Port of `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, GEPIndices)`
 /// for the array-offset GEP case. Textual form mirrors
@@ -22,9 +22,9 @@ fn gep_array_offset() -> Result<(), IrError> {
             [ptr_ty.as_type(), i32_ty.as_type()],
             false,
         );
-        let f = m.add_function::<Ptr, _>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Ptr>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let p: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
         let n: llvmkit_ir::IntValue<llvmkit_ir::IntDyn> = f.param(1)?.try_into()?;
         let r = b.build_gep(i32_ty, p, [n], "p2")?;
@@ -51,9 +51,9 @@ fn gep_inbounds() -> Result<(), IrError> {
             [ptr_ty.as_type(), i32_ty.as_type()],
             false,
         );
-        let f = m.add_function::<Ptr, _>("gi", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("gi", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Ptr>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let p: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
         let n: llvmkit_ir::IntValue<llvmkit_ir::IntDyn> = f.param(1)?.try_into()?;
         let r = b.build_inbounds_gep(i32_ty, p, [n], "p2")?;
@@ -83,12 +83,12 @@ fn struct_gep() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
         let s_ty = m.named_struct("S");
-        m.set_struct_body(s_ty, [i32_ty.as_type(), i64_ty.as_type()], false)?;
+        m.set_struct_body_dyn(s_ty, [i32_ty.as_type(), i64_ty.as_type()], false)?;
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(ptr_ty.as_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<Ptr, _>("sg", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("sg", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Ptr>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let p: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
         let r = b.build_struct_gep(s_ty, p, 1, "p2")?;
         b.build_ret(r)?;
@@ -109,9 +109,9 @@ fn gep_zero_index() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(ptr_ty.as_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function::<Ptr, _>("gz", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("gz", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Ptr>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let p: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
         // Zero-index degenerate GEP: just `getelementptr i32, ptr %0` (no
         // indices). Mirrors `2009-07-24-ZeroArgGEP.ll`.

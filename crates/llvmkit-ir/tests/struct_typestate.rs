@@ -1,8 +1,8 @@
 //! StructType body-state typestate coverage (session T4).
 //!
 //! Doctrine D1: an opaque named struct typed as `StructType<Opaque>`
-//! consumes its handle on `set_struct_body_typed` and produces a
-//! `StructType<BodySet>` -- a second `set_struct_body_typed` call is
+//! consumes its handle on `set_struct_body` and produces a
+//! `StructType<BodySet>` -- a second `set_struct_body` call is
 //! impossible because there is no second `Opaque` handle. The
 //! companion trybuild fixture in `tests/compile_fail/`
 //! (`set_struct_body_twice.rs`) locks the compile-fail story.
@@ -35,15 +35,14 @@ fn opaque_to_body_set_transition() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let opaque = m.opaque_struct("Pair")?;
         assert!(opaque.is_opaque());
-        let body_set =
-            m.set_struct_body_typed(opaque, [i32_ty.as_type(), i32_ty.as_type()], false)?;
+        let body_set = m.set_struct_body(opaque, [i32_ty.as_type(), i32_ty.as_type()], false)?;
         assert!(!body_set.is_opaque());
         assert_eq!(body_set.field_count(), 2);
         Ok(())
     })
 }
 
-/// llvmkit-specific (Doctrine D1): the runtime `set_struct_body`
+/// llvmkit-specific (Doctrine D1): the runtime `set_struct_body_dyn`
 /// (untyped, runtime-checked path) still rejects a second body
 /// assignment with [`IrError::StructBodyAlreadySet`]. This guards the
 /// runtime-checked default that mirrors LLVM's `StructType::setBody`
@@ -54,8 +53,7 @@ fn double_set_body_runtime_path_rejects() -> Result<(), IrError> {
     Module::with_new("t", |m| {
         let i32_ty = m.i32_type();
         let opaque = m.opaque_struct("Once")?;
-        let _body_set =
-            m.set_struct_body_typed(opaque, [i32_ty.as_type(), i32_ty.as_type()], false)?;
+        let _body_set = m.set_struct_body(opaque, [i32_ty.as_type(), i32_ty.as_type()], false)?;
         // The typed `Opaque` handle has been consumed. Attempting another
         // `opaque_struct(name)` for the same name surfaces the runtime
         // `StructBodyAlreadySet` (since the second declaration pulls an

@@ -22,6 +22,7 @@
 //! token instead of a raw storage reference.
 
 use core::hash::{Hash, Hasher};
+use core::iter::FusedIterator;
 use core::marker::PhantomData;
 use core::num::NonZeroU32;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -32,7 +33,8 @@ use super::attributes::AttributeStorage;
 use super::basic_block::BasicBlock;
 use super::comdat::{ComdatData, ComdatId, ComdatRef, SelectionKind};
 use super::constant::{
-    BlockAddressPlaceholder, Constant, ConstantExprFlags, ConstantExprOpcode, IsConstant,
+    BlockAddressPlaceholder, Constant, ConstantExprFlags, ConstantExprOpcode, IntoConstantValue,
+    IsConstant,
 };
 use super::constants::ConstantExprOptions;
 use super::data_layout::DataLayout;
@@ -585,52 +587,216 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         self.core.metadata_store()
     }
 
+    // ---- Type constructors ----
+    //
+    // Constructing a type is preservation-**neutral**: it interns into the
+    // context's type table and touches no function, block, or global, so it can
+    // invalidate no analysis. That is why the read-only view carries the same
+    // constructor set as the [`Module<Unverified>`] token — code holding only a
+    // view (a pass at any capability rung, for instance) can still name the
+    // types it needs. *Declarations* — [`Module::add_global`],
+    // [`Module::add_function_dyn`], [`Module::set_struct_body`] and friends —
+    // are module-structural and deliberately stay on the token alone.
+
+    /// `void`.
     #[inline]
-    pub(super) fn bool_type(self) -> IntType<'ctx, bool, B> {
-        IntType::new(self.core.context().int_type(1), ModuleRef::new(self.core))
+    pub fn void_type(self) -> VoidType<'ctx, B> {
+        VoidType::new(self.core.ctx.void(), ModuleRef::new(self.core))
     }
 
+    /// `label`.
     #[inline]
-    pub(super) fn i8_type(self) -> IntType<'ctx, i8, B> {
-        IntType::new(self.core.context().int_type(8), ModuleRef::new(self.core))
+    pub fn label_type(self) -> LabelType<'ctx, B> {
+        LabelType::new(self.core.ctx.label(), ModuleRef::new(self.core))
     }
 
+    /// `metadata`.
     #[inline]
-    pub(super) fn i32_type(self) -> IntType<'ctx, i32, B> {
-        IntType::new(self.core.context().int_type(32), ModuleRef::new(self.core))
+    pub fn metadata_type(self) -> MetadataType<'ctx, B> {
+        MetadataType::new(self.core.ctx.metadata(), ModuleRef::new(self.core))
     }
 
+    /// `token`.
     #[inline]
-    pub(super) fn i64_type(self) -> IntType<'ctx, i64, B> {
-        IntType::new(self.core.context().int_type(64), ModuleRef::new(self.core))
+    pub fn token_type(self) -> TokenType<'ctx, B> {
+        TokenType::new(self.core.ctx.token(), ModuleRef::new(self.core))
     }
 
+    /// `half`.
     #[inline]
-    pub(super) fn struct_type<I, T>(
-        self,
-        elements: I,
-        packed: bool,
-    ) -> StructType<'ctx, StructBodyDyn, B>
+    pub fn half_type(self) -> FloatType<'ctx, Half, B> {
+        FloatType::new(self.core.ctx.half(), ModuleRef::new(self.core))
+    }
+
+    /// `bfloat`.
+    #[inline]
+    pub fn bfloat_type(self) -> FloatType<'ctx, BFloat, B> {
+        FloatType::new(self.core.ctx.bfloat(), ModuleRef::new(self.core))
+    }
+
+    /// `float` (32-bit IEEE 754).
+    #[inline]
+    pub fn f32_type(self) -> FloatType<'ctx, f32, B> {
+        FloatType::new(self.core.ctx.float(), ModuleRef::new(self.core))
+    }
+
+    /// `double` (64-bit IEEE 754).
+    #[inline]
+    pub fn f64_type(self) -> FloatType<'ctx, f64, B> {
+        FloatType::new(self.core.ctx.double(), ModuleRef::new(self.core))
+    }
+
+    /// `fp128`.
+    #[inline]
+    pub fn fp128_type(self) -> FloatType<'ctx, Fp128, B> {
+        FloatType::new(self.core.ctx.fp128(), ModuleRef::new(self.core))
+    }
+
+    /// `x86_fp80`.
+    #[inline]
+    pub fn x86_fp80_type(self) -> FloatType<'ctx, X86Fp80, B> {
+        FloatType::new(self.core.ctx.x86_fp80(), ModuleRef::new(self.core))
+    }
+
+    /// `ppc_fp128`.
+    #[inline]
+    pub fn ppc_fp128_type(self) -> FloatType<'ctx, PpcFp128, B> {
+        FloatType::new(self.core.ctx.ppc_fp128(), ModuleRef::new(self.core))
+    }
+
+    /// `x86_amx`.
+    #[inline]
+    pub fn x86_amx_type(self) -> Type<'ctx, B> {
+        Type::new(self.core.ctx.x86_amx(), ModuleRef::new(self.core))
+    }
+
+    /// `exnref`.
+    #[inline]
+    pub fn wasm_exnref_type(self) -> Type<'ctx, B> {
+        Type::new(self.core.ctx.wasm_exnref(), ModuleRef::new(self.core))
+    }
+
+    /// `i1`.
+    #[inline]
+    pub fn bool_type(self) -> IntType<'ctx, bool, B> {
+        IntType::new(self.core.ctx.int_type(1), ModuleRef::new(self.core))
+    }
+
+    /// Alias for [`Self::bool_type`].
+    #[inline]
+    pub fn i1_type(self) -> IntType<'ctx, bool, B> {
+        self.bool_type()
+    }
+
+    /// `i8`.
+    #[inline]
+    pub fn i8_type(self) -> IntType<'ctx, i8, B> {
+        IntType::new(self.core.ctx.int_type(8), ModuleRef::new(self.core))
+    }
+
+    /// `i16`.
+    #[inline]
+    pub fn i16_type(self) -> IntType<'ctx, i16, B> {
+        IntType::new(self.core.ctx.int_type(16), ModuleRef::new(self.core))
+    }
+
+    /// `i32`.
+    #[inline]
+    pub fn i32_type(self) -> IntType<'ctx, i32, B> {
+        IntType::new(self.core.ctx.int_type(32), ModuleRef::new(self.core))
+    }
+
+    /// `i64`.
+    #[inline]
+    pub fn i64_type(self) -> IntType<'ctx, i64, B> {
+        IntType::new(self.core.ctx.int_type(64), ModuleRef::new(self.core))
+    }
+
+    /// `i128`.
+    #[inline]
+    pub fn i128_type(self) -> IntType<'ctx, i128, B> {
+        IntType::new(self.core.ctx.int_type(128), ModuleRef::new(self.core))
+    }
+
+    /// Run-time-width integer type. Errors when `bits` falls outside
+    /// `MIN_INT_BITS..=MAX_INT_BITS`.
+    #[inline]
+    pub fn custom_width_int_type(self, bits: u32) -> IrResult<IntType<'ctx, IntDyn, B>> {
+        if !(MIN_INT_BITS..=MAX_INT_BITS).contains(&bits) {
+            return Err(IrError::InvalidIntegerWidth { bits });
+        }
+        Ok(IntType::new(
+            self.core.ctx.int_type(bits),
+            ModuleRef::new(self.core),
+        ))
+    }
+
+    /// Const-generic integer type. Const-evaluated range check at
+    /// monomorphisation: `N` outside `MIN_INT_BITS..=MAX_INT_BITS` is a
+    /// compile error.
+    #[inline]
+    pub fn int_type_n<const N: u32>(self) -> IntType<'ctx, Width<N>, B> {
+        const {
+            assert!(
+                N >= MIN_INT_BITS && N <= MAX_INT_BITS,
+                "integer width N outside [MIN_INT_BITS, MAX_INT_BITS]",
+            );
+        }
+        IntType::new(self.core.ctx.int_type(N), ModuleRef::new(self.core))
+    }
+
+    /// Opaque pointer in address space `addr_space` (`0` = default).
+    #[inline]
+    pub fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, B> {
+        PointerType::new(
+            self.core.ctx.ptr_type(addr_space),
+            ModuleRef::new(self.core),
+        )
+    }
+
+    /// Legacy typed pointer `T*` in address space `addr_space`.
+    #[inline]
+    pub fn typed_pointer_type<T>(self, pointee: T, addr_space: u32) -> TypedPointerType<'ctx, B>
     where
-        I: IntoIterator<Item = T>,
         T: Into<Type<'ctx, B>>,
     {
-        let elems: Box<[TypeId]> = elements.into_iter().map(|t| t.into().id()).collect();
-        StructType::new(
-            self.core.context().literal_struct_type(elems, packed),
+        let pointee_id = pointee.into().id();
+        TypedPointerType::new(
+            self.core.ctx.typed_pointer_type(pointee_id, addr_space),
             ModuleRef::new(self.core),
         )
     }
 
+    /// `[n x elem]`.
     #[inline]
-    pub(super) fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, B> {
-        PointerType::new(
-            self.core.ptr_type(addr_space).as_type().id(),
+    pub fn array_type<T>(self, elem: T, n: u64) -> ArrayType<'ctx, ElemDyn, ArrLenDyn, B>
+    where
+        T: Into<Type<'ctx, B>>,
+    {
+        let elem_id = elem.into().id();
+        ArrayType::new(
+            self.core.ctx.array_type(elem_id, n),
             ModuleRef::new(self.core),
         )
     }
+
+    /// Const-generic typed array `[N x E]`. The element marker `E` projects
+    /// the scalar element type and `N` pins the element count. Unlike
+    /// [`vector_type_n`](Self::vector_type_n), `N == 0` is **not** rejected:
+    /// LLVM permits zero-length arrays `[0 x T]`.
     #[inline]
-    pub(super) fn vector_type<T>(
+    pub fn array_type_n<E, const N: u64>(self) -> ArrayType<'ctx, E, ArrLen<N>, B>
+    where
+        E: StaticVecElem<'ctx, B>,
+    {
+        let elem = E::element_ir_type(ModuleRef::new(self.core));
+        let id = self.core.ctx.array_type(elem.id(), N);
+        ArrayType::new(id, ModuleRef::new(self.core))
+    }
+
+    /// Fixed `<n x elem>` or scalable `<vscale x n x elem>` vector.
+    #[inline]
+    pub fn vector_type<T>(
         self,
         elem: T,
         n: u32,
@@ -641,26 +807,104 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     {
         let elem_id = elem.into().id();
         let id = if scalable {
-            self.core.context().scalable_vector_type(elem_id, n)
+            self.core.ctx.scalable_vector_type(elem_id, n)
         } else {
-            self.core.context().fixed_vector_type(elem_id, n)
+            self.core.ctx.fixed_vector_type(elem_id, n)
         };
         VectorType::new(id, ModuleRef::new(self.core))
     }
 
+    /// Const-generic typed vector `<N x E>`. The element marker `E` projects
+    /// the scalar element type and `N` pins the lane count.
+    /// `const`-evaluated at monomorphisation: `N == 0` is a compile error.
     #[inline]
-    pub(super) fn label_type(self) -> LabelType<'ctx, B> {
-        LabelType::new(
-            self.core.label_type().as_type().id(),
+    pub fn vector_type_n<E, const N: u32>(self) -> VectorType<'ctx, E, Len<N>, B>
+    where
+        E: StaticVecElem<'ctx, B>,
+    {
+        const {
+            assert!(N > 0, "vector length must be >= 1");
+        }
+        let elem = E::element_ir_type(ModuleRef::new(self.core));
+        let id = self.core.ctx.fixed_vector_type(elem.id(), N);
+        VectorType::new(id, ModuleRef::new(self.core))
+    }
+
+    /// Literal (unnamed) struct type `{ .. }` / `<{ .. }>`.
+    #[inline]
+    pub fn struct_type<I, T>(self, elements: I, packed: bool) -> StructType<'ctx, StructBodyDyn, B>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Type<'ctx, B>>,
+    {
+        let elems: Box<[TypeId]> = elements.into_iter().map(|t| t.into().id()).collect();
+        StructType::new(
+            self.core.ctx.literal_struct_type(elems, packed),
+            ModuleRef::new(self.core),
+        )
+    }
+
+    /// Function type `ret (params...)`, variadic when `is_var_arg`.
+    #[inline]
+    pub fn fn_type<I, R, T>(self, ret: R, params: I, is_var_arg: bool) -> FunctionType<'ctx, B>
+    where
+        I: IntoIterator<Item = T>,
+        R: Into<Type<'ctx, B>>,
+        T: Into<Type<'ctx, B>>,
+    {
+        let ret = ret.into();
+        let params: Box<[TypeId]> = params.into_iter().map(|t| t.into().id()).collect();
+        FunctionType::new(
+            self.core.ctx.function_type(ret.id(), params, is_var_arg),
+            ModuleRef::new(self.core),
+        )
+    }
+
+    /// A function type with no parameters. Avoids the empty-`Vec::<Type>::new()`
+    /// inference cliff of [`fn_type`](Self::fn_type): with an empty iterator the
+    /// element type `T` cannot be inferred, so callers otherwise have to spell it
+    /// (`fn_type(ret, Vec::<Type>::new(), va)`). This pins the element type for
+    /// them — `fn_type_no_params(ret, is_var_arg)` is exactly
+    /// `fn_type(ret, [], is_var_arg)`.
+    #[inline]
+    pub fn fn_type_no_params<R>(self, ret: R, is_var_arg: bool) -> FunctionType<'ctx, B>
+    where
+        R: Into<Type<'ctx, B>>,
+    {
+        self.fn_type(ret, core::iter::empty::<Type<'ctx, B>>(), is_var_arg)
+    }
+
+    /// Target extension type `target("name", type_params..., int_params...)`.
+    #[inline]
+    pub fn target_ext_type<Name, I, T, J>(
+        self,
+        name: Name,
+        type_params: I,
+        int_params: J,
+    ) -> TargetExtType<'ctx, B>
+    where
+        Name: Into<String>,
+        I: IntoIterator<Item = T>,
+        T: Into<Type<'ctx, B>>,
+        J: IntoIterator<Item = u32>,
+    {
+        let name: String = name.into();
+        let type_params: Box<[TypeId]> = type_params.into_iter().map(|t| t.into().id()).collect();
+        let int_params: Box<[u32]> = int_params.into_iter().collect();
+        TargetExtType::new(
+            self.core.ctx.target_ext_type(name, type_params, int_params),
             ModuleRef::new(self.core),
         )
     }
 
     /// Iterate functions in declaration order.
     #[inline]
-    pub fn iter_functions(
+    pub fn functions(
         self,
-    ) -> impl ExactSizeIterator<Item = crate::pass_context::FunctionView<'ctx, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = crate::pass_context::FunctionView<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         self.core
             .iter_functions::<B>()
             .map(crate::pass_context::FunctionView::new)
@@ -668,26 +912,64 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
 
     /// Iterate globals in declaration order.
     #[inline]
-    pub fn iter_globals(self) -> impl ExactSizeIterator<Item = GlobalVariableView<'ctx, B>> + 'ctx {
+    pub fn globals(
+        self,
+    ) -> impl ExactSizeIterator<Item = GlobalVariableView<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         self.core.iter_globals::<B>().map(GlobalVariableView::new)
     }
 
     /// Iterate aliases in declaration order.
     #[inline]
-    pub fn iter_aliases(self) -> impl ExactSizeIterator<Item = GlobalAliasView<'ctx, B>> + 'ctx {
+    pub fn aliases(
+        self,
+    ) -> impl ExactSizeIterator<Item = GlobalAliasView<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         self.core.iter_aliases::<B>().map(GlobalAliasView::new)
     }
 
     /// Iterate ifuncs in declaration order.
     #[inline]
-    pub fn iter_ifuncs(self) -> impl ExactSizeIterator<Item = GlobalIFuncView<'ctx, B>> + 'ctx {
+    pub fn ifuncs(
+        self,
+    ) -> impl ExactSizeIterator<Item = GlobalIFuncView<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         self.core.iter_ifuncs::<B>().map(GlobalIFuncView::new)
     }
 
     /// Iterate COMDATs in insertion order.
     #[inline]
-    pub fn iter_comdats(self) -> impl ExactSizeIterator<Item = ComdatView<'ctx, B>> + 'ctx {
+    pub fn comdats(
+        self,
+    ) -> impl ExactSizeIterator<Item = ComdatView<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         self.core.iter_comdats::<B>().map(ComdatView::new)
+    }
+}
+
+/// Iterating a module view yields its **functions** in declaration order —
+/// matching LLVM's `for (Function &F : M)` — not its globals: functions are
+/// the walk an optimizer loop wants, and globals/aliases/ifuncs/COMDATs keep
+/// their named iterators ([`ModuleView::globals`], [`ModuleView::aliases`],
+/// [`ModuleView::ifuncs`], [`ModuleView::comdats`]). Sugar beside the named
+/// [`ModuleView::functions`], not a replacement.
+///
+/// One capability differs: this iterator is not [`DoubleEndedIterator`],
+/// because it boxes its inner iterator to name a single concrete type. For
+/// reverse iteration go through the named method — `functions().rev()`.
+impl<'ctx, B: ModuleBrand + 'ctx> IntoIterator for ModuleView<'ctx, B> {
+    type Item = crate::pass_context::FunctionView<'ctx, B>;
+    type IntoIter = crate::pass_context::ModuleFunctionViews<'ctx, B>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        crate::pass_context::ModuleFunctionViews::new(self)
     }
 }
 
@@ -833,8 +1115,9 @@ pub(super) struct ModuleCore {
     source_filename: core::cell::RefCell<Option<String>>,
     ctx: Context,
     /// Functions defined in this module, in declaration order.
-    /// Stored as a `RefCell<Vec<ValueId>>` so `add_function` can mutate
-    /// while the same `&'ctx self` borrow is held by call sites.
+    /// Stored as a `RefCell<Vec<ValueId>>` so the function-declaring
+    /// constructors can mutate while the same `&'ctx self` borrow is
+    /// held by call sites.
     functions: core::cell::RefCell<Vec<ValueId>>,
     /// Module-level name -> function value-id table.
     function_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueId>>,
@@ -1103,12 +1386,15 @@ impl<'ctx> ModuleCore {
 
     // ---- Function creation ----
 
-    /// Add a function to this module. Mirrors `Function::Create`.
+    /// Crate-internal CHECKED declaration path for
+    /// [`FunctionBuilder::build`](crate::function::FunctionBuilder::build),
+    /// the one constructor where a user-supplied signature and an
+    /// independently chosen `R` meet. Mirrors `Function::Create`.
     /// Returns `Err(IrError::DuplicateFunctionName)` if a function
     /// of the same name already exists, or
     /// [`IrError::ReturnTypeMismatch`] if the signature's return
     /// type does not match the chosen [`ReturnMarker`](crate::marker::ReturnMarker).
-    pub fn add_function<B: ModuleBrand + 'ctx, R, Name>(
+    pub(crate) fn add_function_checked<B: ModuleBrand + 'ctx, R, Name>(
         &'ctx self,
         name: Name,
         signature: FunctionType<'ctx, B>,
@@ -1129,7 +1415,8 @@ impl<'ctx> ModuleCore {
         let ret_data = self.ctx.type_data(signature.return_type().id());
         if !crate::function::signature_matches_marker::<R>(ret_data) {
             return Err(IrError::ReturnTypeMismatch {
-                expected: signature.return_type().kind_label(),
+                expected: crate::marker::marker_kind_label::<R>()
+                    .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
                 got: signature.return_type().kind_label(),
             });
         }
@@ -1287,7 +1574,10 @@ impl<'ctx> ModuleCore {
     /// to [`Dyn`](Dyn). Mirrors `Module::functions`.
     pub fn iter_functions<B: ModuleBrand + 'ctx>(
         &'ctx self,
-    ) -> impl ExactSizeIterator<Item = FunctionValue<'ctx, Dyn, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = FunctionValue<'ctx, Dyn, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         let ids: Vec<ValueId> = self.functions.borrow().clone();
         ids.into_iter().map(move |id| {
             FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(id, ModuleRef::<B>::new(self))
@@ -1316,7 +1606,10 @@ impl<'ctx> ModuleCore {
     /// `Module::globals`.
     pub fn iter_globals<B: ModuleBrand + 'ctx>(
         &'ctx self,
-    ) -> impl ExactSizeIterator<Item = GlobalVariable<'ctx, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = GlobalVariable<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         let ids: Vec<ValueId> = self.globals.borrow().clone();
         ids.into_iter().map(move |id| {
             let value_data = self.ctx.value_data(id);
@@ -1326,7 +1619,8 @@ impl<'ctx> ModuleCore {
 
     pub fn iter_aliases<B: ModuleBrand + 'ctx>(
         &'ctx self,
-    ) -> impl ExactSizeIterator<Item = GlobalAlias<'ctx, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = GlobalAlias<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let ids: Vec<ValueId> = self.aliases.borrow().clone();
         ids.into_iter().map(move |id| {
             let value_data = self.ctx.value_data(id);
@@ -1340,7 +1634,8 @@ impl<'ctx> ModuleCore {
 
     pub fn iter_ifuncs<B: ModuleBrand + 'ctx>(
         &'ctx self,
-    ) -> impl ExactSizeIterator<Item = GlobalIFunc<'ctx, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = GlobalIFunc<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let ids: Vec<ValueId> = self.ifuncs.borrow().clone();
         ids.into_iter().map(move |id| {
             let value_data = self.ctx.value_data(id);
@@ -1365,7 +1660,7 @@ impl<'ctx> ModuleCore {
     ) -> IrResult<GlobalVariable<'ctx, B>> {
         let (name, data, _initializer, address_space, value_type) = builder.into_data();
         if !name.is_empty() && self.global_name_exists(&name) {
-            return Err(IrError::DuplicateFunctionName { name });
+            return Err(IrError::DuplicateGlobalName { name });
         }
         let pointer_ty = self.ctx.ptr_type(address_space);
         // Sanity: value_type must already be in the same context. Use
@@ -1396,7 +1691,7 @@ impl<'ctx> ModuleCore {
     ) -> IrResult<GlobalAlias<'ctx, B>> {
         let (name, data, address_space) = builder.into_data();
         if !name.is_empty() && self.global_name_exists(&name) {
-            return Err(IrError::DuplicateFunctionName { name });
+            return Err(IrError::DuplicateGlobalName { name });
         }
         let pointer_ty = self.ctx.ptr_type(address_space);
         let value_id = self.ctx.push_value(crate::value::ValueData {
@@ -1423,7 +1718,7 @@ impl<'ctx> ModuleCore {
     ) -> IrResult<GlobalIFunc<'ctx, B>> {
         let (name, data, address_space) = builder.into_data();
         if !name.is_empty() && self.global_name_exists(&name) {
-            return Err(IrError::DuplicateFunctionName { name });
+            return Err(IrError::DuplicateGlobalName { name });
         }
         let pointer_ty = self.ctx.ptr_type(address_space);
         let value_id = self.ctx.push_value(crate::value::ValueData {
@@ -1799,7 +2094,8 @@ impl<'ctx> ModuleCore {
     /// `Module::getComdatSymbolTable` (insertion-order traversal).
     pub fn iter_comdats<B: ModuleBrand + 'ctx>(
         &'ctx self,
-    ) -> impl ExactSizeIterator<Item = ComdatRef<'ctx, B>> + 'ctx {
+    ) -> impl ExactSizeIterator<Item = ComdatRef<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let count = self.comdats.count();
         (0..count).map(move |i| ComdatRef {
             module: ModuleRef::new(self),
@@ -1885,12 +2181,18 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
     }
 
     /// Iterate globals in declaration order with this module token's brand.
-    pub fn iter_globals(&self) -> impl ExactSizeIterator<Item = GlobalVariable<'ctx, B>> + 'ctx {
+    pub fn globals(
+        &self,
+    ) -> impl ExactSizeIterator<Item = GlobalVariable<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + 'ctx {
         self.core.iter_globals::<B>()
     }
 
-    /// Look up a function by name with this module token's brand.
-    pub fn function_by_name(&self, name: &str) -> Option<FunctionValue<'ctx, Dyn, B>> {
+    /// Look up a function by name with this module token's brand,
+    /// widened to [`Dyn`].
+    pub fn function_by_name_dyn(&self, name: &str) -> Option<FunctionValue<'ctx, Dyn, B>> {
         self.core
             .function_by_name
             .borrow()
@@ -1905,10 +2207,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
     }
 
     /// Look up a function by name and narrow to a specific return marker.
-    pub fn function_by_name_typed<R>(
-        &self,
-        name: &str,
-    ) -> IrResult<Option<FunctionValue<'ctx, R, B>>>
+    pub fn function_by_name<R>(&self, name: &str) -> IrResult<Option<FunctionValue<'ctx, R, B>>>
     where
         R: crate::marker::ReturnMarker,
     {
@@ -1929,11 +2228,11 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
             .0;
         let ret_data = self.core.ctx.type_data(ret_id);
         if !crate::function::signature_matches_marker::<R>(ret_data) {
-            let label =
-                crate::r#type::Type::new(ret_id, ModuleRef::<B>::new(self.core)).kind_label();
+            let got = crate::r#type::Type::new(ret_id, ModuleRef::<B>::new(self.core)).kind_label();
             return Err(IrError::ReturnTypeMismatch {
-                expected: label,
-                got: label,
+                expected: crate::marker::marker_kind_label::<R>()
+                    .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
+                got,
             });
         }
         Ok(Some(FunctionValue::<'ctx, R, B>::from_parts_unchecked(
@@ -2384,7 +2683,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         ))
     }
 
-    pub fn set_struct_body<I, T>(
+    pub fn set_struct_body_dyn<I, T>(
         &self,
         st: StructType<'ctx, StructBodyDyn, B>,
         elements: I,
@@ -2414,7 +2713,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         self.core.ctx.set_named_struct_body(st.id, body)
     }
 
-    pub fn set_struct_body_typed<I, T>(
+    pub fn set_struct_body<I, T>(
         &self,
         opaque: StructType<'ctx, crate::struct_body_state::Opaque, B>,
         elements: I,
@@ -2445,6 +2744,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
             self.core.ctx.function_type(ret.id(), params, is_var_arg),
             self.module_ref(),
         )
+    }
+
+    /// A function type with no parameters. Avoids the empty-`Vec::<Type>::new()`
+    /// inference cliff of [`fn_type`](Self::fn_type): with an empty iterator the
+    /// element type `T` cannot be inferred, so callers otherwise have to spell it
+    /// (`fn_type(ret, Vec::<Type>::new(), va)`). This pins the element type for
+    /// them — `fn_type_no_params(ret, is_var_arg)` is exactly
+    /// `fn_type(ret, [], is_var_arg)`.
+    pub fn fn_type_no_params<R>(&self, ret: R, is_var_arg: bool) -> FunctionType<'ctx, B>
+    where
+        R: Into<Type<'ctx, B>>,
+    {
+        self.fn_type(ret, core::iter::empty::<Type<'ctx, B>>(), is_var_arg)
     }
 
     /// Fixed-arity typed function type: `Ret (Params...)`.
@@ -2520,7 +2832,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Name: AsRef<str>,
     {
         let signature = self.typed_function_type::<Ret, Params>()?;
-        let function = self.add_function::<Ret::Marker, _>(name, signature, linkage)?;
+        let function = self.declare_function::<Ret::Marker>(name.as_ref(), signature, linkage)?;
         TypedFunctionValue::<Ret, Params, B>::try_from_function(function)
     }
 
@@ -2534,8 +2846,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Name: AsRef<str>,
     {
         let signature = self.typed_function_type_of::<Sig>()?;
-        let function =
-            self.add_function::<<Sig::Ret as FunctionReturn>::Marker, _>(name, signature, linkage)?;
+        let function = self.declare_function::<<Sig::Ret as FunctionReturn>::Marker>(
+            name.as_ref(),
+            signature,
+            linkage,
+        )?;
         TypedFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(function)
     }
 
@@ -2552,7 +2867,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Name: AsRef<str>,
     {
         let signature = self.typed_varargs_function_type::<Ret, Params>()?;
-        let function = self.add_function::<Ret::Marker, _>(name, signature, linkage)?;
+        let function = self.declare_function::<Ret::Marker>(name.as_ref(), signature, linkage)?;
         crate::function_signature::TypedVarArgsFunctionValue::<Ret, Params, B>::try_from_function(
             function,
         )
@@ -2573,35 +2888,42 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Name: AsRef<str>,
     {
         let signature = self.typed_varargs_function_type_of::<Sig>()?;
-        let function =
-            self.add_function::<<Sig::Ret as FunctionReturn>::Marker, _>(name, signature, linkage)?;
+        let function = self.declare_function::<<Sig::Ret as FunctionReturn>::Marker>(
+            name.as_ref(),
+            signature,
+            linkage,
+        )?;
         crate::function_signature::TypedVarArgsFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(
             function,
         )
     }
 
-    pub fn add_function<R, Name>(
+    /// Shared declaration tail for every public constructor: name
+    /// validation (reserved intrinsic names, duplicate rejection)
+    /// followed by the arena push. Return-marker/signature agreement is
+    /// the CALLER's responsibility — the typed constructors derive the
+    /// signature from their markers so a mismatch is unrepresentable,
+    /// and [`add_function_dyn`](Self::add_function_dyn)'s `Dyn` matches
+    /// every signature by definition. That caller contract stays closed
+    /// because `FunctionReturn` cannot gain downstream impls: the
+    /// `impl<S: StructSchema> FunctionReturn for S` blanket
+    /// coherence-blocks direct external impls (and itself pins
+    /// `Marker = Dyn`), so removing or narrowing that blanket would make
+    /// the dropped marker check load-bearing again — re-add it here if
+    /// that ever changes.
+    fn declare_function<R>(
         &self,
-        name: Name,
+        name: &str,
         signature: FunctionType<'ctx, B>,
         linkage: crate::global_value::Linkage,
     ) -> IrResult<FunctionValue<'ctx, R, B>>
     where
         R: crate::marker::ReturnMarker,
-        Name: AsRef<str>,
     {
-        let name = name.as_ref();
         reject_reserved_intrinsic_name(name)?;
         if !name.is_empty() && self.core.global_name_exists(name) {
             return Err(IrError::DuplicateFunctionName {
                 name: name.to_owned(),
-            });
-        }
-        let ret_data = self.core.ctx.type_data(signature.return_type().id());
-        if !crate::function::signature_matches_marker::<R>(ret_data) {
-            return Err(IrError::ReturnTypeMismatch {
-                expected: signature.return_type().kind_label(),
-                got: signature.return_type().kind_label(),
             });
         }
         self.core.push_function(
@@ -2612,6 +2934,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
             None,
             None,
         )
+    }
+
+    /// Add a function whose return marker is erased to [`Dyn`].
+    ///
+    /// The honest erased declaration path: it takes a runtime [`FunctionType`] and
+    /// returns a `FunctionValue<Dyn>`. Unlike [`add_typed_function`](Self::add_typed_function) it
+    /// carries no static return marker and runs no return-marker check — `Dyn` matches
+    /// every signature by definition. Use this for the parser and runtime-schema-driven
+    /// tooling; for statically-typed authoring prefer
+    /// [`add_typed_function`](Self::add_typed_function), whose turbofish *is* the schema
+    /// (no separate `FunctionType`, and its parameters come back typed).
+    pub fn add_function_dyn<Name>(
+        &self,
+        name: Name,
+        signature: FunctionType<'ctx, B>,
+        linkage: crate::global_value::Linkage,
+    ) -> IrResult<FunctionValue<'ctx, crate::marker::Dyn, B>>
+    where
+        Name: AsRef<str>,
+    {
+        // `R = Dyn` matches every signature, so no return-marker check is needed.
+        self.declare_function::<crate::marker::Dyn>(name.as_ref(), signature, linkage)
     }
 
     pub fn intrinsic_descriptor_from_signature(
@@ -2663,57 +3007,88 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         self.get_or_insert_intrinsic_declaration(&descriptor)
     }
 
-    pub fn add_global<N, C>(
-        &self,
-        name: N,
-        value_type: Type<'ctx, B>,
-        initializer: C,
-    ) -> IrResult<GlobalVariable<'ctx, B>>
+    /// Add a `global` whose type is derived from its `initializer`.
+    ///
+    /// The initializer is any [`IntoConstantValue`] — an existing constant
+    /// handle or a Rust scalar literal (`add_global("marker", 0i32)`). The
+    /// global's value type is the constant's type, so a creation-time type
+    /// mismatch is unrepresentable.
+    pub fn add_global<N, C>(&self, name: N, initializer: C) -> IrResult<GlobalVariable<'ctx, B>>
     where
         N: AsRef<str>,
-        C: IsConstant<'ctx, B>,
+        C: IntoConstantValue<'ctx, B>,
     {
+        let constant = initializer.into_constant(self.module_ref());
         crate::global_variable::GlobalBuilder::<B>::new(
             self.module_ref(),
             name.as_ref().to_owned(),
-            value_type,
+            constant.ty(),
         )
-        .initializer(initializer)
+        .initializer(constant)
         .build()
     }
 
+    /// Add a `constant` whose type is derived from its `initializer`.
+    ///
+    /// Like [`add_global`](Self::add_global) but marks the global as
+    /// `constant` rather than mutable.
     pub fn add_global_constant<N, C>(
         &self,
         name: N,
-        value_type: Type<'ctx, B>,
         initializer: C,
     ) -> IrResult<GlobalVariable<'ctx, B>>
     where
         N: AsRef<str>,
-        C: IsConstant<'ctx, B>,
+        C: IntoConstantValue<'ctx, B>,
     {
+        let constant = initializer.into_constant(self.module_ref());
         crate::global_variable::GlobalBuilder::<B>::new(
             self.module_ref(),
             name.as_ref().to_owned(),
-            value_type,
+            constant.ty(),
         )
         .constant(true)
-        .initializer(initializer)
+        .initializer(constant)
         .build()
     }
 
-    pub fn add_external_global<N>(
+    /// Add a global with no initializer, declared at `value_type`.
+    ///
+    /// For the declaration-only case where there is no initializer to
+    /// derive the type from. Unlike [`add_external_global`](Self::add_external_global),
+    /// this uses the module's default linkage. Accepts any
+    /// `impl Into<Type>` so a typed handle needn't be widened via
+    /// `.as_type()`.
+    pub fn add_global_uninitialized<N, T>(
         &self,
         name: N,
-        value_type: Type<'ctx, B>,
+        value_type: T,
     ) -> IrResult<GlobalVariable<'ctx, B>>
     where
         N: AsRef<str>,
+        T: Into<Type<'ctx, B>>,
     {
         crate::global_variable::GlobalBuilder::<B>::new(
             self.module_ref(),
             name.as_ref().to_owned(),
-            value_type,
+            value_type.into(),
+        )
+        .build()
+    }
+
+    pub fn add_external_global<N, T>(
+        &self,
+        name: N,
+        value_type: T,
+    ) -> IrResult<GlobalVariable<'ctx, B>>
+    where
+        N: AsRef<str>,
+        T: Into<Type<'ctx, B>>,
+    {
+        crate::global_variable::GlobalBuilder::<B>::new(
+            self.module_ref(),
+            name.as_ref().to_owned(),
+            value_type.into(),
         )
         .linkage(crate::global_value::Linkage::External)
         .build()

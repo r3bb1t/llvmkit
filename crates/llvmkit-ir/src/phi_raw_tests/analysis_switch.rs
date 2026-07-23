@@ -91,14 +91,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchEdge<'
 fn build_switch_merge<'ctx>(
     m: &Module<'ctx, crate::Brand<'ctx>, crate::Unverified>,
 ) -> IrResult<(
-    crate::FunctionValue<'ctx, i32>,
+    crate::FunctionValue<'ctx, Dyn>,
     BasicBlockLabel<'ctx, Dyn>,
     BasicBlockLabel<'ctx, Dyn>,
     BasicBlockLabel<'ctx, Dyn>,
 )> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let dflt = f.append_basic_block(m, "dflt");
     let other = f.append_basic_block(m, "other");
@@ -108,31 +108,31 @@ fn build_switch_merge<'ctx>(
     let dflt_lbl = dflt.label();
     let other_lbl = other.label();
     let merge_lbl = merge.label();
-    let merge_dyn: BasicBlockLabel<Dyn> = merge_lbl.as_value().try_into()?;
-    let dflt_dyn: BasicBlockLabel<Dyn> = dflt_lbl.as_value().try_into()?;
-    let other_dyn: BasicBlockLabel<Dyn> = other_lbl.as_value().try_into()?;
+    let merge_dyn: BasicBlockLabel<Dyn> = merge_lbl.to_erased().try_into()?;
+    let dflt_dyn: BasicBlockLabel<Dyn> = dflt_lbl.to_erased().try_into()?;
+    let other_dyn: BasicBlockLabel<Dyn> = other_lbl.to_erased().try_into()?;
 
     // entry: %e = add %a, 7 ; switch %a, default %dflt [ 0 -> merge, 1 -> other ]
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<i32> = f.param(0)?.try_into()?;
     let e = b.build_int_add(a, 7_i32, "e")?;
-    let (_sealed, sw) = b.build_switch(a, dflt_lbl, "")?;
+    let (_sealed, sw) = b.build_switch_dyn(a, dflt_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), merge_lbl)?
         .add_case(i32_ty.const_int(1_u32), other_lbl)?
         .finish();
 
     // dflt: %d = add %a, 9 ; br merge
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(dflt);
+    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(dflt);
     let a: IntValue<i32> = f.param(0)?.try_into()?;
     let d = b.build_int_add(a, 9_i32, "d")?;
     b.build_br(merge_lbl)?;
 
     // other: ret 0
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(other);
+    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(other);
     b.build_ret(i32_ty.const_int(0_u32))?;
 
     // merge: %p = phi i32 [ %e, entry ], [ %d, dflt ] ; ret %p
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(merge);
+    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(merge);
     let p = b
         .build_int_phi::<i32, _>("p")?
         .add_incoming(e, entry_lbl)?
@@ -278,13 +278,13 @@ fn redirect_edge_rejects_already_reaches_new() -> Result<(), IrError> {
 fn build_switch_default_parallel<'ctx>(
     m: &Module<'ctx, crate::Brand<'ctx>, crate::Unverified>,
 ) -> IrResult<(
-    crate::FunctionValue<'ctx, i32>,
+    crate::FunctionValue<'ctx, Dyn>,
     BasicBlockLabel<'ctx, Dyn>,
     BasicBlockLabel<'ctx, Dyn>,
 )> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-    let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = f.append_basic_block(m, "entry");
     let mid = f.append_basic_block(m, "mid");
     let shared = f.append_basic_block(m, "shared");
@@ -293,26 +293,26 @@ fn build_switch_default_parallel<'ctx>(
     let entry_lbl = entry.label();
     let mid_lbl = mid.label();
     let shared_lbl = shared.label();
-    let shared_dyn: BasicBlockLabel<Dyn> = shared_lbl.as_value().try_into()?;
-    let new_dyn: BasicBlockLabel<Dyn> = new.label().as_value().try_into()?;
+    let shared_dyn: BasicBlockLabel<Dyn> = shared_lbl.to_erased().try_into()?;
+    let new_dyn: BasicBlockLabel<Dyn> = new.label().to_erased().try_into()?;
 
     // entry: %e = add %a, 7 ; switch %a, default %shared [ 0 -> shared, 1 -> mid ]
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<i32> = f.param(0)?.try_into()?;
     let e = b.build_int_add(a, 7_i32, "e")?;
-    let (_sealed, sw) = b.build_switch(a, shared_lbl, "")?;
+    let (_sealed, sw) = b.build_switch_dyn(a, shared_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), shared_lbl)?
         .add_case(i32_ty.const_int(1_u32), mid_lbl)?
         .finish();
 
     // mid: %mv = add %a, 3 ; br shared
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(mid);
+    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(mid);
     let a: IntValue<i32> = f.param(0)?.try_into()?;
     let mv = b.build_int_add(a, 3_i32, "mv")?;
     b.build_br(shared_lbl)?;
 
     // shared: %p = phi i32 [ %e, entry ] (default), [ %e, entry ] (case 0), [ %mv, mid ] ; ret %p
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(shared);
+    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(shared);
     let p = b
         .build_int_phi::<i32, _>("p")?
         .add_incoming(e, entry_lbl)?
@@ -321,7 +321,7 @@ fn build_switch_default_parallel<'ctx>(
     b.build_ret(p.as_int_value())?;
 
     // new: ret 1  (no phi — a redirect onto it seeds an empty phi_values)
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(new);
+    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new);
     b.build_ret(i32_ty.const_int(1_u32))?;
 
     Ok((f, shared_dyn, new_dyn))

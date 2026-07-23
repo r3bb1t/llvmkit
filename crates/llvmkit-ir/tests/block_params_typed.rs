@@ -21,9 +21,9 @@ fn append_block_typed_yields_typed_params_from_head_phis() -> Result<(), IrError
     Module::with_new("block_params_typed", |m| {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
-        let void_ty = m.void_type().as_type();
-        let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m
+            .add_typed_function::<(), (), _>("f", Linkage::External)?
+            .as_function();
 
         let b = IRBuilder::new_for::<()>(&m);
 
@@ -36,13 +36,13 @@ fn append_block_typed_yields_typed_params_from_head_phis() -> Result<(), IrError
 
         // Runtime: each handle's IR type matches its schema position, and both
         // are sourced from the freshly built head-phis.
-        assert_eq!(p0.as_value().ty(), i32_ty.as_type());
-        assert_eq!(p1.as_value().ty(), ptr_ty.as_type());
+        assert_eq!(p0.into_erased().ty(), i32_ty.as_type());
+        assert_eq!(p1.into_erased().ty(), ptr_ty.as_type());
 
         // Compile-time assertion: the typed block's label threads `Params`, so a
         // typed branch target keeps its `(i32, Ptr)` promise.
         let label: BasicBlockLabel<'_, (), _, (i32, Ptr)> = head.label();
-        assert_eq!(label.as_value().name().as_deref(), Some("head"));
+        assert_eq!(label.to_erased().name().as_deref(), Some("head"));
 
         // The parameters are the block's *leading head-phis*: they print as
         // `phi i32` / `phi ptr` at the block head, in declaration order.
@@ -65,9 +65,9 @@ fn append_block_typed_yields_typed_params_from_head_phis() -> Result<(), IrError
 fn append_block_with_params_stays_erased() -> Result<(), IrError> {
     Module::with_new("block_params_erased", |m| {
         let i32_ty = m.i32_type();
-        let void_ty = m.void_type().as_type();
-        let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m
+            .add_typed_function::<(), (), _>("f", Linkage::External)?
+            .as_function();
 
         let b = IRBuilder::new_for::<()>(&m);
 
@@ -80,7 +80,7 @@ fn append_block_with_params_stays_erased() -> Result<(), IrError> {
 
         assert_eq!(params.len(), 1);
         assert_eq!(params[0].ty(), i32_ty.as_type());
-        assert_eq!(erased.label().as_value().name().as_deref(), Some("erased"));
+        assert_eq!(erased.label().to_erased().name().as_deref(), Some("erased"));
         Ok(())
     })
 }
@@ -91,9 +91,9 @@ fn append_block_with_params_stays_erased() -> Result<(), IrError> {
 #[test]
 fn append_block_typed_unit_params() -> Result<(), IrError> {
     Module::with_new("block_params_unit", |m| {
-        let void_ty = m.void_type().as_type();
-        let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("f", fn_ty, Linkage::External)?;
+        let f = m
+            .add_typed_function::<(), (), _>("f", Linkage::External)?
+            .as_function();
 
         let b = IRBuilder::new_for::<()>(&m);
 
@@ -103,7 +103,7 @@ fn append_block_typed_unit_params() -> Result<(), IrError> {
         // No head-phis were materialised.
         assert_eq!(head.instructions().count(), 0);
         let label: BasicBlockLabel<'_, (), _, ()> = head.label();
-        assert_eq!(label.as_value().name().as_deref(), Some("head"));
+        assert_eq!(label.to_erased().name().as_deref(), Some("head"));
         Ok(())
     })
 }

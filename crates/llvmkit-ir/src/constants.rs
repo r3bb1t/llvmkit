@@ -27,7 +27,7 @@ use super::basic_block::BasicBlock;
 use super::block_state::BlockTerminationState;
 use super::constant::{
     BlockAddressPlaceholder, Constant, ConstantData, ConstantExprData, ConstantExprFlags,
-    ConstantExprInRange, ConstantExprOpcode, IsConstant,
+    ConstantExprInRange, ConstantExprOpcode, IntoConstantValue, IsConstant,
 };
 use super::constant_fold::{
     constant_fold_binary_instruction, constant_fold_cast_instruction,
@@ -94,15 +94,24 @@ macro_rules! decl_constant_handle {
 
             /// Widen to the erased [`Value`] handle.
             #[inline]
-            pub fn as_value(self) -> Value<'ctx, B> {
+            pub fn into_erased(self) -> Value<'ctx, B> {
                 Value { id: self.id, module: self.module, ty: self.ty }
+            }
+        }
+
+        impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for $name<'ctx, B> {
+            /// Print the operand form `<type> <literal>` (e.g. `ptr null`,
+            /// `i32 undef`), identical to what the erased [`Value`] handle
+            /// from `into_erased` prints.
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                core::fmt::Display::fmt(&Self::into_erased(*self), f)
             }
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for $name<'ctx, B> {}
         impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for $name<'ctx, B> {
             #[inline]
-            fn as_value(self) -> Value<'ctx, B> { Self::as_value(self) }
+            fn into_erased(self) -> Value<'ctx, B> { Self::into_erased(self) }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for $name<'ctx, B> {
             #[inline]
@@ -116,15 +125,15 @@ macro_rules! decl_constant_handle {
         }
         impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for $name<'ctx, B> {
             #[inline]
-            fn name(self) -> Option<String> { self.as_value().name() }
+            fn name(self) -> Option<String> { self.into_erased().name() }
             #[inline]
-            fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name) where Name: Into<String> { self.as_value().set_name(module_token, name); }
+            fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name) where Name: Into<String> { self.into_erased().set_name(module_token, name); }
             #[inline]
-            fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) { self.as_value().clear_name(module_token); }
+            fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) { self.into_erased().clear_name(module_token); }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> HasDebugLoc for $name<'ctx, B> {
             #[inline]
-            fn debug_loc(self) -> Option<DebugLoc> { self.as_value().debug_loc() }
+            fn debug_loc(self) -> Option<DebugLoc> { self.into_erased().debug_loc() }
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> From<$name<'ctx, B>> for Constant<'ctx, B> {
@@ -133,7 +142,7 @@ macro_rules! decl_constant_handle {
         }
         impl<'ctx, B: ModuleBrand + 'ctx> From<$name<'ctx, B>> for Value<'ctx, B> {
             #[inline]
-            fn from(c: $name<'ctx, B>) -> Self { c.as_value() }
+            fn from(c: $name<'ctx, B>) -> Self { c.into_erased() }
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>> for $name<'ctx, B> {
@@ -243,7 +252,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ConstantIntValue<'ctx, W, B> {
         }
     }
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn into_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -262,11 +271,20 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ConstantIntValue<'ctx, W, B> {
     }
 }
 
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> fmt::Display for ConstantIntValue<'ctx, W, B> {
+    /// Print the operand form `i<N> <literal>`, where the literal is the
+    /// signed-decimal reading of the constant's bits. Identical to what the
+    /// erased [`Value`] handle from [`ConstantIntValue::into_erased`] prints.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&Self::into_erased(*self), f)
+    }
+}
+
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> sealed::Sealed for ConstantIntValue<'ctx, W, B> {}
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for ConstantIntValue<'ctx, W, B> {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
-        Self::as_value(self)
+    fn into_erased(self) -> Value<'ctx, B> {
+        Self::into_erased(self)
     }
 }
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IsConstant<'ctx, B>
@@ -285,21 +303,21 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> Typed<'ctx, B> for ConstantIntVal
 }
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> HasName<'ctx, B> for ConstantIntValue<'ctx, W, B> {
     fn name(self) -> Option<String> {
-        self.as_value().name()
+        self.into_erased().name()
     }
     fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
-        self.as_value().set_name(module_token, name);
+        self.into_erased().set_name(module_token, name);
     }
     fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-        self.as_value().clear_name(module_token);
+        self.into_erased().clear_name(module_token);
     }
 }
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> HasDebugLoc for ConstantIntValue<'ctx, W, B> {
     fn debug_loc(self) -> Option<DebugLoc> {
-        self.as_value().debug_loc()
+        self.into_erased().debug_loc()
     }
 }
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> From<ConstantIntValue<'ctx, W, B>>
@@ -315,14 +333,14 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> From<ConstantIntValue<'ctx, W, B>
 {
     #[inline]
     fn from(c: ConstantIntValue<'ctx, W, B>) -> Self {
-        c.as_value()
+        c.into_erased()
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>> for ConstantIntValue<'ctx, IntDyn, B> {
     type Error = IrError;
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
         let ty = c.ty();
-        match (ty.data(), &c.as_value().data().kind) {
+        match (ty.data(), &c.into_erased().data().kind) {
             (TypeData::Integer { .. }, ValueKindData::Constant(ConstantData::Int(_))) => {
                 Ok(Self::from_parts_typed(c))
             }
@@ -345,7 +363,7 @@ macro_rules! impl_constant_int_static_try_from {
             type Error = IrError;
             fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
                 let ty = c.ty();
-                match (ty.data(), &c.as_value().data().kind) {
+                match (ty.data(), &c.into_erased().data().kind) {
                     (TypeData::Integer { bits }, ValueKindData::Constant(ConstantData::Int(_)))
                         if *bits == $bits =>
                     {
@@ -444,7 +462,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ConstantFloatValue<'ctx, K, B> {
         }
     }
     #[inline]
-    pub fn as_value(self) -> Value<'ctx, B> {
+    pub fn into_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -462,13 +480,22 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ConstantFloatValue<'ctx, K, B> {
     }
 }
 
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> fmt::Display for ConstantFloatValue<'ctx, K, B> {
+    /// Print the operand form `<float-type> <literal>`, identical to what
+    /// the erased [`Value`] handle from [`ConstantFloatValue::into_erased`]
+    /// prints.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&Self::into_erased(*self), f)
+    }
+}
+
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> sealed::Sealed for ConstantFloatValue<'ctx, K, B> {}
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IsValue<'ctx, B>
     for ConstantFloatValue<'ctx, K, B>
 {
     #[inline]
-    fn as_value(self) -> Value<'ctx, B> {
-        Self::as_value(self)
+    fn into_erased(self) -> Value<'ctx, B> {
+        Self::into_erased(self)
     }
 }
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IsConstant<'ctx, B>
@@ -488,21 +515,21 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> HasName<'ctx, B>
     for ConstantFloatValue<'ctx, K, B>
 {
     fn name(self) -> Option<String> {
-        self.as_value().name()
+        self.into_erased().name()
     }
     fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
-        self.as_value().set_name(module_token, name);
+        self.into_erased().set_name(module_token, name);
     }
     fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-        self.as_value().clear_name(module_token);
+        self.into_erased().clear_name(module_token);
     }
 }
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> HasDebugLoc for ConstantFloatValue<'ctx, K, B> {
     fn debug_loc(self) -> Option<DebugLoc> {
-        self.as_value().debug_loc()
+        self.into_erased().debug_loc()
     }
 }
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> From<ConstantFloatValue<'ctx, K, B>>
@@ -516,7 +543,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> From<ConstantFloatValue<'ctx, K,
     for Value<'ctx, B>
 {
     fn from(c: ConstantFloatValue<'ctx, K, B>) -> Self {
-        c.as_value()
+        c.into_erased()
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
@@ -525,7 +552,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
     type Error = IrError;
     fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
         let ty = c.ty();
-        match (ty.data(), &c.as_value().data().kind) {
+        match (ty.data(), &c.into_erased().data().kind) {
             (
                 TypeData::Half
                 | TypeData::BFloat
@@ -564,7 +591,7 @@ macro_rules! impl_constant_float_static_try_from {
             type Error = IrError;
             fn try_from(c: Constant<'ctx, B>) -> IrResult<Self> {
                 let ty = c.ty();
-                match (ty.data(), &c.as_value().data().kind) {
+                match (ty.data(), &c.into_erased().data().kind) {
                     (TypeData::$variant, ValueKindData::Constant(ConstantData::Float(_))) => {
                         Ok(Self::from_parts_typed(c))
                     }
@@ -710,7 +737,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ConstantIntValue<'ctx, W, B> {
     }
 
     pub fn words(self) -> &'ctx [u64] {
-        match &self.as_value().data().kind {
+        match &self.into_erased().data().kind {
             ValueKindData::Constant(ConstantData::Int(words)) => words,
             _ => unreachable!("ConstantIntValue invariant: kind is Constant::Int"),
         }
@@ -806,7 +833,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ConstantFloatValue<'ctx, K, B> {
     }
 
     pub fn bit_pattern(self) -> u128 {
-        match &self.as_value().data().kind {
+        match &self.into_erased().data().kind {
             ValueKindData::Constant(ConstantData::Float(b)) => *b,
             _ => unreachable!("ConstantFloatValue invariant: kind is Constant::Float"),
         }
@@ -849,13 +876,13 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L,
     pub fn const_array<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx, B>>
     where
         I: IntoIterator<Item = C>,
-        C: IsConstant<'ctx, B>,
+        C: IntoConstantValue<'ctx, B>,
     {
         let elem_ty = self.element().id();
         let expected_len = self.len();
         let mut ids = Vec::new();
-        for c in elements {
-            let value = c.as_value();
+        for elem in elements {
+            let value = elem.into_constant(self.module).into_erased();
             if value.ty != elem_ty {
                 return Err(IrError::TypeMismatch {
                     expected: self.element().kind_label(),
@@ -884,14 +911,14 @@ impl<'ctx, Body: crate::struct_body_state::StructBodyState, B: ModuleBrand + 'ct
     pub fn const_struct<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx, B>>
     where
         I: IntoIterator<Item = C>,
-        C: IsConstant<'ctx, B>,
+        C: IntoConstantValue<'ctx, B>,
     {
         // The struct must already have a body (literal structs always
         // do; identified structs need `set_struct_body` first).
         let count = self.field_count();
         let mut ids = Vec::new();
-        for (i, c) in elements.into_iter().enumerate() {
-            let value = c.as_value();
+        for (i, elem) in elements.into_iter().enumerate() {
+            let value = elem.into_constant(self.module).into_erased();
             let field = self.field_type(i).ok_or(IrError::OperandWidthMismatch {
                 lhs: u32::try_from(count).unwrap_or(u32::MAX),
                 rhs: u32::try_from(i + 1).unwrap_or(u32::MAX),
@@ -919,12 +946,12 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, 
     pub fn const_vector<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx, B>>
     where
         I: IntoIterator<Item = C>,
-        C: IsConstant<'ctx, B>,
+        C: IntoConstantValue<'ctx, B>,
     {
         let elem_ty = self.element().id();
         let mut ids = Vec::new();
-        for c in elements {
-            let value = c.as_value();
+        for elem in elements {
+            let value = elem.into_constant(self.module).into_erased();
             if value.ty != elem_ty {
                 return Err(IrError::TypeMismatch {
                     expected: self.element().kind_label(),
@@ -1060,8 +1087,7 @@ impl<'ctx> ModuleCore {
         R: ReturnMarker,
         S: BlockTerminationState,
     {
-        if block.parent_function().map(|f| f.as_value().id) != Some(function.as_dyn().as_value().id)
-        {
+        if block.parent_function().map(|f| f.id()) != Some(function.as_dyn().id()) {
             return Err(IrError::InvalidOperation {
                 message: "blockaddress block must belong to function",
             });
@@ -1069,8 +1095,8 @@ impl<'ctx> ModuleCore {
         let ty = self.ptr_type(function.address_space()).as_type().id();
         let id = self.context().intern_constant_block_address(
             ty,
-            function.as_dyn().as_value().id,
-            block.as_dyn().as_value().id,
+            function.as_dyn().id(),
+            block.as_dyn().id(),
         );
         Ok(constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty))
     }
@@ -1109,7 +1135,7 @@ impl<'ctx> ModuleCore {
         let ty = self.ptr_type(0).as_type().id();
         let id = self
             .context()
-            .intern_constant_dso_local_equivalent(ty, function.as_value().id);
+            .intern_constant_dso_local_equivalent(ty, function.id());
         constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty)
     }
     /// `dso_local_equivalent` over a function, alias-to-function, or ifunc.
@@ -1117,13 +1143,13 @@ impl<'ctx> ModuleCore {
         &'ctx self,
         global: Constant<'ctx, B>,
     ) -> IrResult<Constant<'ctx, B>> {
-        let value = match &self.context().value_data(global.as_value().id).kind {
+        let value = match &self.context().value_data(global.id()).kind {
             ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Value::from_parts(
                 *value,
                 ModuleRef::<B>::new(self),
                 self.context().value_data(*value).ty,
             ),
-            _ => global.as_value(),
+            _ => global.into_erased(),
         };
         let is_function_like = match &self.context().value_data(value.id).kind {
             ValueKindData::Function(_) => true,
@@ -1153,9 +1179,7 @@ impl<'ctx> ModuleCore {
         function: FunctionValue<'ctx, Dyn, B>,
     ) -> Constant<'ctx, B> {
         let ty = self.ptr_type(0).as_type().id();
-        let id = self
-            .context()
-            .intern_constant_no_cfi(ty, function.as_value().id);
+        let id = self.context().intern_constant_no_cfi(ty, function.id());
         constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty)
     }
 
@@ -1164,13 +1188,13 @@ impl<'ctx> ModuleCore {
         &'ctx self,
         global: Constant<'ctx, B>,
     ) -> IrResult<Constant<'ctx, B>> {
-        let value = match &self.context().value_data(global.as_value().id).kind {
+        let value = match &self.context().value_data(global.id()).kind {
             ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Value::from_parts(
                 *value,
                 ModuleRef::<B>::new(self),
                 self.context().value_data(*value).ty,
             ),
-            _ => global.as_value(),
+            _ => global.into_erased(),
         };
         match &self.context().value_data(value.id).kind {
             ValueKindData::Function(_)
@@ -1197,11 +1221,11 @@ impl<'ctx> ModuleCore {
         addr_discriminator: impl IsConstant<'ctx, B>,
         deactivation_symbol: impl IsConstant<'ctx, B>,
     ) -> IrResult<Constant<'ctx, B>> {
-        let pointer = pointer.as_constant().as_value();
-        let key = key.as_constant().as_value();
-        let discriminator = discriminator.as_constant().as_value();
-        let addr_discriminator = addr_discriminator.as_constant().as_value();
-        let deactivation_symbol = deactivation_symbol.as_constant().as_value();
+        let pointer = pointer.as_constant().into_erased();
+        let key = key.as_constant().into_erased();
+        let discriminator = discriminator.as_constant().into_erased();
+        let addr_discriminator = addr_discriminator.as_constant().into_erased();
+        let deactivation_symbol = deactivation_symbol.as_constant().into_erased();
         if !pointer.ty().is_pointer() {
             return Err(IrError::InvalidOperation {
                 message: "constant ptrauth base pointer must be a pointer",
@@ -1690,7 +1714,7 @@ fn constant_with_replaced_operand(
             validate_constant_expr_data(module, &expr)?;
             let result_ty = Type::new(expr.result_ty, module);
             if let Some(folded) = fold_constant_expr_data(module, result_ty, &expr)? {
-                return Ok(Some(folded.as_value().id));
+                return Ok(Some(folded.id()));
             }
             Ok(Some(module.context().intern_constant_expr(expr)))
         }
@@ -2487,11 +2511,11 @@ mod tests {
         Module::with_new("constexpr-rewrite-fold", |m| {
             let i32_ty = m.i32_type();
             let i64_ty = m.i64_type();
-            let global = m.add_global("g", i32_ty.as_type(), i32_ty.const_zero())?;
+            let global = m.add_global("g", i32_ty.const_zero())?;
             let ptr_as_int = m.constant_expr(
                 i64_ty.as_type(),
                 ConstantExprOpcode::PtrToInt,
-                [global.as_global_constant_ptr().as_value()],
+                [global.as_global_constant_ptr().into_erased()],
                 [],
                 [],
                 ConstantExprFlags::none(),
@@ -2499,7 +2523,10 @@ mod tests {
             let expr = m.constant_expr(
                 i64_ty.as_type(),
                 ConstantExprOpcode::Add,
-                [ptr_as_int.as_value(), i64_ty.const_int(1_i64).as_value()],
+                [
+                    ptr_as_int.into_erased(),
+                    i64_ty.const_int(1_i64).into_erased(),
+                ],
                 [],
                 [],
                 ConstantExprFlags::none(),
@@ -2507,12 +2534,12 @@ mod tests {
             let replacement = i64_ty.const_zero().as_constant();
             let rewritten = constant_with_replaced_operand(
                 m.core_ref(),
-                expr.as_value().id,
-                ptr_as_int.as_value().id,
-                replacement.as_value().id,
+                expr.id(),
+                ptr_as_int.id(),
+                replacement.id(),
             )?;
 
-            assert_eq!(rewritten, Some(i64_ty.const_int(1_i64).as_value().id));
+            assert_eq!(rewritten, Some(i64_ty.const_int(1_i64).id()));
             Ok(())
         })
     }

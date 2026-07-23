@@ -12,7 +12,7 @@
 //! fixture (`tests/compile_fail/array_insert_wrong_element`); here we only
 //! exercise the well-typed happy path.
 
-use llvmkit_ir::{ArrLen, ArrayValue, IRBuilder, IntValue, Linkage, Module, Type};
+use llvmkit_ir::{ArrLen, ArrayValue, Dyn, IRBuilder, IntValue, Linkage, Module};
 
 /// `build_arr_extract` at index 2 on a `[4 x i32]` typed `ArrayValue` returns
 /// the element as its statically typed scalar handle — `IntValue<'_, i32>`,
@@ -28,16 +28,16 @@ fn typed_arr_extract_returns_typed_element() {
 
         let fn_ty = m.fn_type(i32_ty.as_type(), [arr_ty.as_type()], false);
         let f = m
-            .add_function::<i32, _>("g", fn_ty, Linkage::External)
+            .add_function_dyn("g", fn_ty, Linkage::External)
             .expect("g");
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         // Narrow the erased `[4 x i32]` param into the statically typed handle.
         let a: ArrayValue<'_, i32, ArrLen<4>> = f
             .param(0)
             .expect("p0")
-            .as_value()
+            .into_erased()
             .try_into()
             .expect("narrow p0");
 
@@ -69,21 +69,21 @@ fn typed_arr_insert_round_trips() {
 
         let fn_ty = m.fn_type(void_ty.as_type(), [arr_ty.as_type()], false);
         let f = m
-            .add_function::<(), _>("g", fn_ty, Linkage::External)
+            .add_function_dyn("g", fn_ty, Linkage::External)
             .expect("g");
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let a: ArrayValue<'_, i32, ArrLen<4>> = f
             .param(0)
             .expect("p0")
-            .as_value()
+            .into_erased()
             .try_into()
             .expect("narrow p0");
 
         let seven: IntValue<'_, i32> = i32_ty
             .const_int(7_i32)
-            .as_value()
+            .into_erased()
             .try_into()
             .expect("i32 const");
 
@@ -94,7 +94,7 @@ fn typed_arr_insert_round_trips() {
         let back: IntValue<'_, i32> = b.build_arr_extract(updated, 1, "back").expect("extract");
         assert_eq!(back.ty(), i32_ty, "round-tripped element must be i32-typed");
 
-        b.build_ret_void();
+        b.build_ret_void().expect("ret void");
 
         let txt = format!("{m}");
         assert!(
@@ -119,19 +119,18 @@ fn typed_array_type_allocas() {
         let arr_ty = m.array_type_n::<i32, 4>();
         let void_ty = m.void_type();
 
-        let no_params: [Type<'_>; 0] = [];
-        let fn_ty = m.fn_type(void_ty.as_type(), no_params, false);
+        let fn_ty = m.fn_type_no_params(void_ty.as_type(), false);
         let f = m
-            .add_function::<(), _>("g", fn_ty, Linkage::External)
+            .add_function_dyn("g", fn_ty, Linkage::External)
             .expect("g");
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         // `build_alloca` takes any `IrType`; the typed array handle qualifies.
         let slot = b.build_alloca(arr_ty, "slot").expect("alloca");
-        let _ = slot.as_value();
+        let _ = slot.into_erased();
 
-        b.build_ret_void();
+        b.build_ret_void().expect("ret void");
 
         let txt = format!("{m}");
         assert!(

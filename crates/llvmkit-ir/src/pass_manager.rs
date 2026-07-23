@@ -27,7 +27,7 @@
 //! ```
 //! use llvmkit_ir::{
 //!     Analyses, Brand, DcePass, DynReadOnlyFunctionPipeline, FnCx, FnReport, FunctionPass,
-//!     IRBuilder, Inspect, InstSimplifyPass, IrError, IrResult, Linkage, Module, Type, Unverified,
+//!     IRBuilder, Inspect, InstSimplifyPass, IrError, IrResult, Linkage, Module, Unverified,
 //!     Verified, function_pipeline, run_function_pass,
 //! };
 //!
@@ -51,10 +51,10 @@
 //!     Module::with_new("pass-doc", |m| {
 //!         // Build `i32 @f()` returning a constant.
 //!         let i32_ty = m.i32_type();
-//!         let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
-//!         let f = m.add_function::<i32, _>("f", fn_ty, Linkage::External)?;
+//!         let fn_ty = m.fn_type_no_params(i32_ty, false);
+//!         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 //!         let entry = f.append_basic_block(&m, "entry");
-//!         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+//!         let b = IRBuilder::at_end(entry);
 //!         b.build_ret(i32_ty.const_int(1_u32))?;
 //!
 //!         let verified = m.verify()?;
@@ -148,9 +148,9 @@ pub trait FunctionPass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
 
 /// A pass over one module at capability rung [`Self::Access`]. The module-level
 /// mirror of [`FunctionPass`]. A module pass reaches per-function bodies by
-/// calling `rewrite.for_each_function::<Rung>(...)` inline, so there is no
-/// `FnAccess`/`FnRequires` associated type here — the function rung is chosen at
-/// the call site.
+/// iterating `rewrite.patch_functions()` / `rewrite.reshape_functions()` inline,
+/// so there is no `FnAccess`/`FnRequires` associated type here — the function
+/// rung is the method name, chosen at the call site.
 pub trait ModulePass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
     /// Capability rung: how much of the module this pass may rewrite.
     type Access: ModAccess;
@@ -1074,8 +1074,9 @@ where
 /// (`createModuleToFunctionPassAdaptor`, IR/PassManager.h). A module-pipeline
 /// member; its verdict is the wrapped function pipeline's verdict (a mutating
 /// function pipeline downgrades the module). Distinct from
-/// [`crate::pass_context::ModRewrite::for_each_function`], which is a mutator
-/// method for hand-written module passes.
+/// [`crate::pass_context::ModRewrite::patch_functions`] and its
+/// [`reshape_functions`](crate::pass_context::ModRewrite::reshape_functions)
+/// twin, which are mutator methods for hand-written module passes.
 pub struct ForEachFunction<P> {
     pipeline: FunctionPipeline<P>,
 }
@@ -1109,7 +1110,7 @@ where
         'ctx: 'pm,
     {
         let mut preserved = PreservedAnalyses::all();
-        for function in module.iter_functions() {
+        for function in module.functions() {
             // Skip declarations: only definitions have a body to run over.
             if function.entry_block().is_none() {
                 continue;

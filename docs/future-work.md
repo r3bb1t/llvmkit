@@ -61,6 +61,14 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
 
 ## Ergonomics backlog (from the core audit)
 
+- `Display` for the ~25 typed instruction handles (`LoadInst`, `CallInst`, …).
+  Cycle C gave `Display` to every public *value* handle, which prints the
+  operand form, but deliberately stopped at the instruction handles: their
+  natural rendering is a full instruction line, not an operand, so they need
+  an explicit decision (delegate to `InstructionView`'s `Display`, or print
+  the operand form for consistency with the value handles) rather than a
+  mechanical sweep. Whichever is chosen should be stated in each impl's
+  rustdoc, as the value handles now do.
 - `build_atomic_cmpxchg` / `build_atomicrmw` builder-pattern variants (mirror
   `CallBuilder`).
 - Load/store variant explosion (base / `_with_align` / `_volatile` /
@@ -142,6 +150,27 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   - `build_vec_splat` can't infer its element from the scalar (a Rust
     associated-type-projection limitation), so its callers annotate / turbofish
     the result.
+- **A proof token that *carries* the validated `TypeId`** (residual after the
+  unforgeable-markers cycle). The crate has five capability tokens -- `WrapWitness`
+  (`element.rs`), `ValidatedFunctionParams` / `ValidatedCallResult`
+  (`function_signature.rs`), `SelectNarrow` (`ir_builder.rs`), `ValidatedStructValue`
+  (`struct_schema.rs`) -- each defending the *external* boundary and each a *unit*
+  marker that proves "a check happened", not *which* type. The unforgeable-markers
+  cycle made the builder's **int / float / pointer append surface** structural instead:
+  a marker is attached to a freshly-appended instruction only through the typed-append
+  constructor family (`append_int_like` / `_at` / `_load`, `append_fp_*`, `append_ptr`
+  / `append_ptr_load`), each of which appends AT a typed handle so the marker matches
+  the runtime type *by construction* — those ~40 sites no longer carry an implicit proof.
+  What remains implicit is the smaller residual the family does not cover: the `CallInst`
+  / `PhiInst` result accessors in `instructions.rs`, the arena / parameter lifts in
+  `ssa_builder.rs` (`use_*_var`) and `function_signature.rs`, the vector / array append
+  wraps (no `append_vec` / `append_arr` constructor yet), and the `IntoIntValue` /
+  `IntoFloatValue` const-lifts in `int_width.rs` / `float_kind.rs`. A witness carrying the
+  validated `TypeId` would let those *state* their proof instead of implying it. Note the
+  confinement of `from_value_unchecked` is **audited, not compiler-enforced**: it stays
+  `pub(crate)` because a hard seal is impossible (`value` and `ir_builder` are sibling
+  modules and the constructors need `ir_builder`-private helpers), so the builder's fold
+  re-checks remain the runtime backstop.
 - `Width<M>`/`Width<N>` `WiderThan` relations blocked on stable
   const-generics (documented at `int_width.rs` ~105-116); revisit when
   `generic_const_exprs` stabilizes.
@@ -149,6 +178,21 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   only).
 - Address-space-typed pointers (`PointerValue` currently erases address
   space; audit item from infra report).
+- **Infallible statically-sized aggregate constants.**
+  `ArrayType<E, ArrLen<N>>::const_array([C; N])` /
+  `VectorType<E, Len<N>>::const_vector([C; N])` could drop the `IrResult`
+  entirely — the length is known at compile time and the elements would be
+  materialized at the type-level element `E` — but this needs typed
+  `ArrayType<E, ArrLen<N>>` / `VectorType<E, Len<N>>` **type constructors**
+  first: today every `const_array`/`const_vector` caller builds an *erased*
+  `ArrayType<ElemDyn, ArrLenDyn>` / `VectorType<ElemDyn, LenDyn>` via
+  `m.array_type(...)` / `m.vector_type(...)`, so an infallible static
+  constructor would be dead code (no statically-typed receiver exists to call
+  it on). The fallible `const_array`/`const_struct`/`const_vector` now accept
+  `impl IntoConstantValue` elements (literals work), but stay `IrResult` — the
+  element-vs-container type check still guards the erased receivers. Bundle the
+  infallible variants with a typed aggregate-**type**-constructor slice; the
+  same applies to a `StructSchema`-keyed tuple-struct constant.
 
 ## Session follow-ups
 
@@ -195,12 +239,16 @@ deferred it.
   test suite's undefined-variable-read fixture hardcodes `Some(0)` as the
   undefined variable index instead of drawing from `0..var_count`; a one-line
   improvement to widen coverage (noted during Task 19's review).
-- **`accept_folded/narrow_folded` helper-family factoring** -- the typed
-  folder's `accept_folded_int`/`accept_folded_fp`/`narrow_folded_int`/
-  `narrow_folded_fp` helper family (`ir_builder.rs`) is 4 near-identical
-  bodies, kept unfactored deliberately to keep monomorphization legible
-  (reviewer judged factoring optional during Task 5's review). Revisit if a
-  fifth category (e.g. vector) needs the same shape.
+- **`accept_folded/narrow_folded` helper-family factoring -- done**
+  (`feature-22/generic-narrowing`, the "no silent erasure" cycle). The four
+  near-identical bodies were folded into a single compare-and-report core,
+  `Type::require_match` (`type.rs`), which every fold- and variable-def seam
+  now routes through -- so the same type drift reports the same error wherever
+  it is caught. That unification was not the goal but a consequence: the seams
+  had to be touched anyway to delete a marker-keyed short-circuit, and leaving
+  four copies would have meant four places for the error shape to diverge again
+  (it already had -- `narrow_folded_int` reported `TypeMismatch { Integer,
+  Integer }` where the acceptor reported `OperandWidthMismatch`).
 
 ## Upstream-parity review follow-ups (2026-07-06)
 
@@ -269,11 +317,12 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
   but there is no `NAME`->pass-constructor registry, so a parsed pipeline
   cannot yet be *run*. A registry mapping each pass's `NAME` to a boxed-pass
   constructor would let a textual pipeline drive the `Dyn` containers.
-- **Per-function analyses in `ModRewrite::for_each_function`** -- the
-  module->function visitor (`pass_context.rs`) builds each per-function mutator
-  with empty results `()`, so a `FnPatch::analysis` call inside the visitor has
-  no members to select. A future revision threads a per-function `Requires`
-  list (prefetched per visited function) through the visitor.
+- **Per-function analyses in `ModRewrite::patch_functions` /
+  `reshape_functions`** -- the module->function iterators (`pass_context.rs`)
+  build each per-function mutator with empty results `()`, so a
+  `FnPatch::analysis` call inside the loop has no members to select. A future
+  revision threads a per-function `Requires` list (prefetched per yielded
+  function) through them.
 - **Instrumentation wiring** -- the `const NAME` / `const REQUIRED` pass
   members and `PassInstrumentationCallbacks` (`pass_instrumentation.rs`) exist,
   but the single-pass drivers and pipelines (`pass_manager.rs`) do not yet fire
@@ -284,6 +333,40 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
   single-function-body and whole-module rungs only; loop-nest and
   call-graph-SCC pass rungs (upstream `LoopPassManager` / `CGSCCPassManager`)
   are unmodeled.
+- **Typed `BlockCall` redirect twins -- REFUTED, not deferred.** A typed
+  `redirect_*_call(BlockCall<Params>)` surface on the pass-side edit handles
+  (`BrEdit`/`SwitchEdit`/`InvokeEdit`/`CallBrEdit`, `pass_context.rs`) would
+  move the phi-seeding arity/type check from run time to compile time, the
+  redirect analog of the shipped typed *creation* path
+  (`build_br_call`/`build_cond_br_call`). It was planned for cycle D and cut
+  after a four-source audit found it out-types every relevant consumer:
+  - **LLVM** has no atomic redirect at all -- the idiom is a manual two-step
+    (`replaceSuccessorWith` / `SwitchInst::setSuccessor` then
+    `BasicBlock::removePredecessor` to fix phis by hand). llvmkit's *erased*
+    `redirect_*(new_to, phi_values)` is already stronger (atomic, validated).
+  - **MLIR** -- the one upstream built around block arguments -- passes
+    successor operands *dynamically* (`BranchOpInterface::getSuccessorOperands`
+    returns a mutable `SuccessorOperands` range checked by the runtime
+    `verifyBranchSuccessorOperands`), not by a static per-block signature.
+  - **Mergen** (the C++ lifter this project's `bin_lift` consumer reimplements
+    and extends) redirects/rebuilds edges only on *runtime-recovered* CFGs:
+    `CustomPasses.hpp` rebuilds a `switch` with a runtime case count
+    (`CreateSwitch(op, default, newNumCases)` + `addCase` over discovered
+    constants) and seeds phis by looping `addIncoming(v, cb)` over runtime
+    predecessor vectors, returning `PreservedAnalyses::none()` -- the erased
+    `ReshapeCfg` floor. A static `BasicBlockLabel<Params>` schema is unknowable
+    in principle there: case counts, targets, and phi incomings are *recovered*,
+    not *authored*.
+  - **`bin_lift`'s `lift-core` `IrBuilder`** is creation-only (`new_block` /
+    `br` / `cond_br` / `switch`), with no redirect/split/phi/block-param surface.
+
+  Because pass-side labels arrive erased-by-origin (from
+  `FunctionView::basic_blocks()`), a typed twin would also force a narrowing
+  round-trip (`try_into_typed::<Params>`) that the erased redirect avoids. Typed
+  `BlockCall` earns its keep at block *creation*, where the typed label is in
+  hand; it has no consumer at pass-side redirect. Revisit only if a pass appears
+  that authors fresh, statically-shaped merge blocks *and* redirects existing
+  edges into them -- a shape none of the four surveyed systems exhibits.
 - **First-class `ModRewrite` runtime-symbol/global/ctor triple** -- the
   `RewriteModule` mutator (`ModRewrite`, `pass_context.rs` ~1247) exposes only the raw
   `module_mut()` token today; a sanitizer reaches the
@@ -338,12 +421,16 @@ driver marks preserved exactly what it watched repair). What remains deferred:
   Instruction-level events for value analyses (KnownBits/DemandedBits) are a
   possible extension, not designed here -- every mutating rung's floor already
   evicts them.
-- **`ModRewrite::for_each_function` reshape flush.** The module→function visitor
-  builds `FnReshape` mutators whose `done()` (and thus `CfgUpdate` log) the
-  visitor never surfaces, so those reshapes do not run the witnessed flush. This
-  is sound today: the enclosing `RewriteModule` floor is `none()`, which evicts
-  every CFG analysis anyway. Wire the flush through the visitor if per-function
-  analyses are ever threaded into `for_each_function`.
+- **`ModRewrite::reshape_functions` reshape flush.** The module→function
+  iterator yields `FnReshape` mutators whose `done()` (and thus `CfgUpdate` log)
+  never reaches the driver, so those reshapes do not run the witnessed flush.
+  This is sound today: the enclosing `RewriteModule` floor is `none()`, which
+  evicts every CFG analysis anyway. Reclaiming the lost *precision* means
+  raising that floor above `none()`, which in turn means witnessing the
+  module-structural mutation `ModRewrite::module_mut` deliberately hands out
+  unwitnessed -- so this waits on a decision about `module_mut`, not on
+  plumbing alone. Wire the flush through the iterators if per-function analyses
+  are ever threaded into them.
 - **New `.stderr` under the canonical-rustc bless caveat.**
   `reshape_stale_cfg_analysis_across_edit` is blessed on the local rustc like
   the pass-API fixtures above; its `E0502` borrow-error wording is stable
@@ -418,9 +505,9 @@ untouched. Two follow-ups remain deferred:
 (`feature-21/typed-terminator-operands`) — the program's move from a
 terminator's *edges* to its *operands*. The `switch` condition/case integer
 width is now a last, defaulted `W: IntWidth = IntDyn` parameter on
-`SwitchInst<'ctx, P, B, W>`; `IRBuilder::build_switch_typed::<W>` pins `W` and
+`SwitchInst<'ctx, P, B, W>`; `IRBuilder::build_switch::<W>` pins `W` and
 its `add_case` carries an `IntoIntValue<'ctx, W, B>` bound, so a wrong-width
-case value is a **compile error** (the erased `build_switch` keeps the runtime
+case value is a **compile error** (the erased `build_switch_dyn` keeps the runtime
 `TypeMismatch` check). And `build_indirectbr`'s address bound tightened from
 `IsValue` to `IntoPointerValue`, so a typed non-pointer jump address is a
 **compile error** (the pointer-ness check moves from `verify()` to build time;
@@ -432,12 +519,74 @@ shipped, the **"branching bugs impossible at the type level"** program's typed
 surfaces are largely complete. What remains is deliberately out of scope rather
 than pending:
 
-- **Universal per-function branding** — deferred on feasibility grounds (the
-  full-program lifetime/branding gymnastics do not pay for themselves versus the
-  per-module brand already in place); the locked API decisions from the program's
-  design remain, but this rung is not being pursued.
+- **Universal per-function branding (`build_body`)** — designed and spec'd
+  (`docs/superpowers/specs/2026-07-20-per-fn-branding-design.md`: a defaulted
+  `Fb: FnBrand = FnErased`, a generative `FnScoped<'fid>` opted into via
+  `func.build_body(|fb| …)`, with `build_br` requiring a matching brand so
+  branded labels cannot escape the body), then **deferred out of the type-safety
+  program** after re-analysis against the actual consumers. The evidence points
+  one way: (1) regular authoring gains nothing — the default is `FnErased`, so
+  existing `position_at_end` sites stay byte-identical and untouched, leaving the
+  brand pure opt-in ceremony for them; (2) the primary consumer, the `bin_lift`
+  lifter, stores SSA registers as **function arguments** (for concolic
+  constant-visibility) and **rebuilds CFGs from runtime-recovered structure**, so
+  a compile-time, un-nameable per-function `'fid` fights its model rather than
+  helping it — its edges are recovered, not statically authored. The locked API
+  decisions survive in the spec; the rung is not pursued in this program.
+  Revisit only as its own opt-in cycle if a concrete authoring need appears.
 - **Whole-graph verifier territory** — phi-incoming completeness against the
   final predecessor set for builder-constructed IR, and dominance, are permanent
   residents of `Module::verify()` (defense in depth). These are whole-graph facts
   that cannot be a local construction- or parse-time guarantee, so they stay the
   verifier's job by design, not a gap to close.
+
+## Constant-folding parity — deferred / known divergences (2026-07-23)
+
+The `feature-29/constfold-parity` cycle fixed the divergences a three-agent
+audit found against vendored `llvmorg-22.1.4` (see CHANGELOG "Constant-folding
+parity"). A whole-branch review confirmed no mis-folds and no over-folds; the
+items below are the deferred / known-remaining points.
+
+- **Constants are not uniqued like upstream `Constant*`.** llvmkit mints a fresh
+  arena id for every `GlobalValueRef` / `GepOffset` / `SymbolDelta` constant
+  (`intern_constant_global_value_ref` / `intern_constant_gep_offset` push without
+  a dedup lookup), whereas LLVM uniques `Constant*` so `@g` is always the same
+  pointer. Any fold that compares constants by identity therefore silently
+  **under**-folds (never mis-folds: `==`-true still implies same value). The
+  `icmp` same-base fold was fixed with `base_identity` (compare underlying global
+  id). Other pre-existing identity-comparison sites with the same latent
+  under-fold, all sound, none yet addressed: `fold_phi`
+  (`constant_folding.rs`, `previous != constant`), select `true_value ==
+  false_value` and `constant_splat_value` (`constant_fold.rs`). The general fix
+  is a constant-uniquing (hash-consed intern) layer for these constant kinds;
+  it would make identity comparison structural everywhere, matching upstream, and
+  retire the `base_identity` workaround — a dedicated cycle, since it changes a
+  deliberate arena characteristic and needs its own review.
+
+- **`ptrtoint`/`ptrtoaddr` mid-width on `pointer_size != index_size` (CHERI-like)
+  layouts — a deliberate, reasoned divergence (needs a decision).** In the
+  `isEliminableCastPair` case-11 *declined* sub-case (`MidSize < SrcSize &&
+  MidSize < DstSize`), llvmkit's `fold_ptr_to_int_pair` always two-steps through
+  the case-11 mid (`ptrtoint`→pointer size, `ptrtoaddr`→index/address size),
+  whereas upstream falls to its switch path (`ConstantFolding.cpp` ~1508:
+  `PtrToInt`→address type, `PtrToAddr`→int-ptr type — the inverse). Example on
+  `p:128:128:128:64`: `ptrtoaddr(inttoptr(i128 x)):i128` → llvmkit `x mod 2^64`
+  (the semantically-correct address extraction), upstream `x`. llvmkit's value is
+  arguably the *more correct* side; matching upstream would introduce a wrong
+  mask to copy an upstream quirk, only on layouts x86/bin_lift never use.
+  Deliberately NOT matched; recorded for an explicit decision if CHERI parity is
+  ever in scope.
+
+- **`SymbolicallyEvaluateGEP` sub-cases not ported (each only declines, never
+  mis-folds):** `CastGEPIndices` vector-index width normalization; nested-GEP
+  `in_range` preservation; the null/`inttoptr`-nonzero-base → `inttoptr` fold
+  (needs `mustNotIntroduceIntToPtr` / `APInt::insertBits`); "infer inbounds for
+  GEPs of globals" (needs a dereferenceable-bytes query). Each produces weaker /
+  fewer folds than upstream, never a wrong one.
+
+- **Proactive ApFloat bit-exactness audit (deferred to its own cycle).** No
+  constant-folder fix in this cycle touched ApFloat arithmetic, and the folding
+  audit found `ap_float` structurally faithful and test-backed. A full
+  bit-for-bit verification across all seven float semantics (incl. PPC
+  double-double, every rounding/denormal/NaN-payload path) against known IEEE /
+  LLVM `APFloat` values is a large, standalone effort worth its own cycle.

@@ -6,7 +6,9 @@
 //! Each `#[test]` cites `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest,
 //! CreateCondBr)` -- the canonical builder coverage for branch terminators.
 
-use llvmkit_ir::{IRBuilder, IntPredicate, IntValue, IrError, Linkage, Module, TerminatorKind};
+use llvmkit_ir::{
+    Dyn, IRBuilder, IntPredicate, IntValue, IrError, Linkage, Module, TerminatorKind,
+};
 
 /// Mirrors `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)`
 /// (unconditional-branch arm: `Builder.CreateBr(...)` produces `br label %...`).
@@ -15,13 +17,13 @@ fn build_br_emits_unconditional() -> Result<(), IrError> {
     Module::with_new("br", |m| {
         let void = m.void_type();
         let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("g", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let exit = f.append_basic_block(&m, "exit");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_br(&exit)?;
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(exit);
-        b.build_ret_void();
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(exit);
+        b.build_ret_void()?;
         let text = format!("{m}");
         assert!(text.contains("br label %exit"), "got:\n{text}");
         Ok(())
@@ -37,18 +39,18 @@ fn build_cond_br_branches_on_i1() -> Result<(), IrError> {
         let void = m.void_type();
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(void.as_type(), [i32_ty.as_type()], false);
-        let f = m.add_function::<(), _>("cb", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("cb", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
         let then_bb = f.append_basic_block(&m, "then");
         let else_bb = f.append_basic_block(&m, "else");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let n: IntValue<i32> = f.param(0)?.try_into()?;
         let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
         b.build_cond_br(cond, &then_bb, &else_bb)?;
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(then_bb);
-        b.build_ret_void();
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(else_bb);
-        b.build_ret_void();
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
+        b.build_ret_void()?;
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(else_bb);
+        b.build_ret_void()?;
         let text = format!("{m}");
         assert!(
             text.contains("br i1 %is_zero, label %then, label %else"),
@@ -67,9 +69,9 @@ fn build_unreachable_terminator() -> Result<(), IrError> {
     Module::with_new("u", |m| {
         let void = m.void_type();
         let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function::<(), _>("dead", fn_ty, Linkage::External)?;
+        let f = m.add_function_dyn("dead", fn_ty, Linkage::External)?;
         let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let (_sealed, inst) = b.build_unreachable();
         assert!(matches!(
             inst.terminator_kind(),

@@ -62,7 +62,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
         .build()?;
 
     let entry = add_fn.append_basic_block(m, "entry");
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let b = IRBuilder::at_end(entry);
 
     let rax: IntValue<i64> = add_fn.param(0)?.try_into()?;
     let rbx: IntValue<i64> = add_fn.param(1)?.try_into()?;
@@ -87,9 +87,9 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
         .return_attribute(AttrKind::NoUndef)
         .build()?;
     let entry = main_fn.append_basic_block(m, "entry");
-    let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
+    let b = IRBuilder::at_end(entry);
     let one = i32_ty.const_int(1_i32);
-    let one_v = IntValue::<i32>::try_from(one.as_value())?;
+    let one_v = IntValue::<i32>::try_from(one.into_erased())?;
     b.build_ret(one_v)?;
 
     Ok(())
