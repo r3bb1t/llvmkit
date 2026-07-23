@@ -6,7 +6,7 @@
 //! availability.
 
 use super::ap_float::{ApFloat, ApFloatSemantics, ApFloatSign};
-use super::cmp_predicate::CmpPredicate;
+use super::cmp_predicate::{CmpPredicate, IntPredicate};
 use super::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
 };
@@ -21,10 +21,11 @@ use super::constant_fold::{
 use super::constants::{ConstantFloatValue, ConstantIntValue};
 use super::data_layout::DataLayout;
 use super::denormal_mode::{DenormalMode, DenormalModeKind, DenormalModeSide};
-use super::derived_types::{FloatType, IntType, VectorType};
+use super::derived_types::{FloatType, IntType, PointerType, VectorType};
 use super::element::ElemDyn;
 use super::float_kind::FloatDyn;
 use super::fmf::FastMathFlags;
+use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::global_variable::GlobalVariable;
 use super::instr_types::{BinaryOpcode, CastOpcode, PhiData, UnaryOpcode};
 use super::instruction::{InstructionKindData, InstructionView};
@@ -671,6 +672,24 @@ where
 }
 
 /// Fold an integer or floating-point compare with caller-provided operands.
+///
+/// Mirrors `llvm::ConstantFoldCompareInstOperands`
+/// (`llvm/lib/Analysis/ConstantFolding.cpp`, lines 1199-1311). Before
+/// falling back to the target-independent compare, try (in upstream's exact
+/// order, with upstream's exact "commit once the precondition holds, don't
+/// keep trying more folds" control flow):
+///
+/// 1. `icmp pred (inttoptr x), null` -> `icmp pred x, 0` (lines 1213-1224),
+///    and its `icmp pred (ptrtoint x), 0` / `ptrtoaddr` sibling (lines
+///    1226-1236). The swapped `null`/`(inttoptr x)` forms are reached via
+///    the trailing operand swap (case 4 below).
+/// 2. `icmp pred (inttoptr x), (inttoptr y)` -> `icmp pred x, y`, and the
+///    `ptrtoint`/`ptrtoaddr` sibling (lines 1239-1266).
+/// 3. Base+offset stripping: `(base+off1) pred (base+off2)` ->
+///    `off1 pred off2`, for two pointers that peel down to the same
+///    underlying base (lines 1268-1291).
+/// 4. If only the right-hand operand is a constant expression, swap
+///    operands and predicate and retry (lines 1292-1297).
 pub fn constant_fold_compare_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
     predicate: CmpPredicate,
     lhs: Constant<'ctx, B>,
@@ -678,6 +697,34 @@ pub fn constant_fold_compare_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
     dl: &DataLayout,
     denormal_mode: Option<DenormalMode>,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
+    if is_constant_expr_like(lhs) {
+        if let Some(result) = fold_ptr_int_cast_vs_null(predicate, lhs, rhs, dl, denormal_mode)? {
+            return Ok(result);
+        }
+        if is_constant_expr_like(rhs)
+            && let Some(result) = fold_matching_cast_pair(predicate, lhs, rhs, dl, denormal_mode)?
+        {
+            return Ok(result);
+        }
+        if let CmpPredicate::Int(int_pred) = predicate
+            && matches!(lhs.ty().data(), TypeData::Pointer { .. })
+            && !int_pred.is_signed()
+            && let Some(result) = fold_pointer_base_offset(int_pred, lhs, rhs, dl)
+        {
+            return Ok(Some(result));
+        }
+    } else if is_constant_expr_like(rhs) {
+        // If RHS is a constant expression, but the left side isn't, swap the
+        // operands and try again.
+        return constant_fold_compare_inst_operands(
+            swap_cmp_predicate(predicate),
+            rhs,
+            lhs,
+            dl,
+            denormal_mode,
+        );
+    }
+
     let lhs = if lhs.ty().is_floating_point() {
         if let Some(mode) = denormal_mode {
             let Some(flushed) = flush_fp_constant(lhs, mode, DenormalModeSide::Input)? else {
@@ -702,8 +749,358 @@ pub fn constant_fold_compare_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
     } else {
         rhs
     };
-    let _ = dl;
     constant_fold_compare_instruction(predicate, lhs, rhs)
+}
+
+/// `dyn_cast<ConstantExpr>(V) != nullptr`, extended to llvmkit's compact
+/// `GepOffset` encoding of an inbounds `getelementptr` constant expression
+/// (see that variant's doc comment) so the folds below see through both
+/// representations exactly as upstream sees through the single
+/// `ConstantExpr` representation it has.
+fn is_constant_expr_like<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+    matches!(
+        &constant.into_erased().data().kind,
+        ValueKindData::Constant(ConstantData::Expr(_) | ConstantData::GepOffset { .. })
+    )
+}
+
+/// `dyn_cast<ConstantExpr>(V)`, general-expression form only. llvmkit's
+/// compact `GepOffset` encoding never carries one of the opcodes the folds
+/// below match against, so the narrower match is equivalent for their
+/// purposes.
+fn constant_expr_data<'ctx, B: ModuleBrand + 'ctx>(
+    constant: Constant<'ctx, B>,
+) -> Option<&'ctx ConstantExprData> {
+    match &constant.into_erased().data().kind {
+        ValueKindData::Constant(ConstantData::Expr(expr)) => Some(expr),
+        _ => None,
+    }
+}
+
+/// fold: `icmp pred (inttoptr x), null` -> `icmp pred x, 0`
+/// fold: `icmp pred (ptrtoint x), 0` (or `ptrtoaddr`) -> `icmp pred x, null`
+///
+/// Mirrors the `Ops1->isNullValue()` block of
+/// `ConstantFoldCompareInstOperands` (`ConstantFolding.cpp` lines
+/// 1213-1236). The outer `Option` reports whether upstream's opcode/width
+/// precondition held and committed to a recursive fold; when it did, the
+/// inner `Option` is that recursion's own (possibly declining) answer,
+/// which the caller must return as-is rather than trying more folds,
+/// mirroring upstream's unconditional `return` inside the `if`.
+fn fold_ptr_int_cast_vs_null<'ctx, B: ModuleBrand + 'ctx>(
+    predicate: CmpPredicate,
+    lhs: Constant<'ctx, B>,
+    rhs: Constant<'ctx, B>,
+    dl: &DataLayout,
+    denormal_mode: Option<DenormalMode>,
+) -> IrResult<Option<Option<Constant<'ctx, B>>>> {
+    if !constant_is_null_value(rhs) {
+        return Ok(None);
+    }
+    let Some(expr) = constant_expr_data(lhs) else {
+        return Ok(None);
+    };
+    let module = lhs.into_erased().module();
+
+    if expr.opcode == ConstantExprOpcode::IntToPtr
+        && let [operand_id] = expr.operands.as_ref()
+        && let Some(operand) = constant_from_id(module, *operand_id)
+        && let Some(addr_space) = pointer_address_space(lhs.ty())
+    {
+        let int_ptr_ty = int_type(module, dl.pointer_size_in_bits(addr_space))?;
+        if let Some(casted) = fold_integer_cast_constant(operand, int_ptr_ty.as_type(), false, dl)?
+        {
+            let null = int_ptr_ty.const_zero().as_constant();
+            return Ok(Some(constant_fold_compare_inst_operands(
+                predicate,
+                casted,
+                null,
+                dl,
+                denormal_mode,
+            )?));
+        }
+    }
+
+    // icmp only compares the address part of the pointer, so only do this
+    // transform if the integer size matches the address size.
+    if matches!(
+        expr.opcode,
+        ConstantExprOpcode::PtrToInt | ConstantExprOpcode::PtrToAddr
+    ) && let [operand_id] = expr.operands.as_ref()
+        && let Some(operand) = constant_from_id(module, *operand_id)
+        && let Some(addr_bits) = index_bits_for_pointer(operand.ty(), dl)
+        && let Ok(lhs_int_ty) = IntType::<IntDyn, B>::try_from(lhs.ty())
+        && lhs_int_ty.bit_width() == addr_bits
+        && let Ok(ptr_ty) = PointerType::<B>::try_from(operand.ty())
+    {
+        let null = ptr_ty.const_null().as_constant();
+        return Ok(Some(constant_fold_compare_inst_operands(
+            predicate,
+            operand,
+            null,
+            dl,
+            denormal_mode,
+        )?));
+    }
+
+    Ok(None)
+}
+
+/// fold: `icmp pred (inttoptr x), (inttoptr y)` -> `icmp pred x, y`
+/// fold: `icmp pred (ptrtoint x), (ptrtoint y)` -> `icmp pred x, y` (or
+/// `ptrtoaddr`)
+///
+/// Mirrors the `CE0->getOpcode() == CE1->getOpcode()` block of
+/// `ConstantFoldCompareInstOperands` (`ConstantFolding.cpp` lines
+/// 1239-1266). The caller has already confirmed both `lhs` and `rhs` are
+/// constant expressions. Same "commit once the precondition holds" contract
+/// as [`fold_ptr_int_cast_vs_null`].
+fn fold_matching_cast_pair<'ctx, B: ModuleBrand + 'ctx>(
+    predicate: CmpPredicate,
+    lhs: Constant<'ctx, B>,
+    rhs: Constant<'ctx, B>,
+    dl: &DataLayout,
+    denormal_mode: Option<DenormalMode>,
+) -> IrResult<Option<Option<Constant<'ctx, B>>>> {
+    let Some(lhs_expr) = constant_expr_data(lhs) else {
+        return Ok(None);
+    };
+    let Some(rhs_expr) = constant_expr_data(rhs) else {
+        return Ok(None);
+    };
+    if lhs_expr.opcode != rhs_expr.opcode {
+        return Ok(None);
+    }
+    let module = lhs.into_erased().module();
+
+    if lhs_expr.opcode == ConstantExprOpcode::IntToPtr
+        && let [lhs_operand_id] = lhs_expr.operands.as_ref()
+        && let [rhs_operand_id] = rhs_expr.operands.as_ref()
+        && let Some(lhs_operand) = constant_from_id(module, *lhs_operand_id)
+        && let Some(rhs_operand) = constant_from_id(module, *rhs_operand_id)
+        && let Some(addr_space) = pointer_address_space(lhs.ty())
+    {
+        let int_ptr_ty = int_type(module, dl.pointer_size_in_bits(addr_space))?;
+        // Convert both integer values to the right size to ensure we get
+        // the proper extension or truncation.
+        if let Some(c0) = fold_integer_cast_constant(lhs_operand, int_ptr_ty.as_type(), false, dl)?
+            && let Some(c1) =
+                fold_integer_cast_constant(rhs_operand, int_ptr_ty.as_type(), false, dl)?
+        {
+            return Ok(Some(constant_fold_compare_inst_operands(
+                predicate,
+                c0,
+                c1,
+                dl,
+                denormal_mode,
+            )?));
+        }
+    }
+
+    // icmp only compares the address part of the pointer, so only do this
+    // transform if the integer size matches the address size.
+    if matches!(
+        lhs_expr.opcode,
+        ConstantExprOpcode::PtrToInt | ConstantExprOpcode::PtrToAddr
+    ) && let [lhs_operand_id] = lhs_expr.operands.as_ref()
+        && let [rhs_operand_id] = rhs_expr.operands.as_ref()
+        && let Some(lhs_operand) = constant_from_id(module, *lhs_operand_id)
+        && let Some(rhs_operand) = constant_from_id(module, *rhs_operand_id)
+        && let Some(addr_bits) = index_bits_for_pointer(lhs_operand.ty(), dl)
+        && let Ok(lhs_int_ty) = IntType::<IntDyn, B>::try_from(lhs.ty())
+        && lhs_int_ty.bit_width() == addr_bits
+        && lhs_operand.ty() == rhs_operand.ty()
+    {
+        return Ok(Some(constant_fold_compare_inst_operands(
+            predicate,
+            lhs_operand,
+            rhs_operand,
+            dl,
+            denormal_mode,
+        )?));
+    }
+
+    Ok(None)
+}
+
+/// Convert pointer comparison `(base+offset1) pred (base+offset2)` into
+/// `offset1 pred offset2`, for two pointers that strip down to the same
+/// underlying base. Mirrors the final `if` block of
+/// `ConstantFoldCompareInstOperands` (`ConstantFolding.cpp` lines
+/// 1268-1291). The caller has already confirmed `lhs` is a constant
+/// expression, `lhs`'s type is a (scalar) pointer, and `predicate` is not a
+/// signed comparison.
+fn fold_pointer_base_offset<'ctx, B: ModuleBrand + 'ctx>(
+    predicate: IntPredicate,
+    lhs: Constant<'ctx, B>,
+    rhs: Constant<'ctx, B>,
+    dl: &DataLayout,
+) -> Option<Constant<'ctx, B>> {
+    let index_bits = index_bits_for_pointer(lhs.ty(), dl)?;
+    // This only works for equality and unsigned comparison, as inbounds
+    // permits crossing the sign boundary. However, the offset comparison
+    // itself is signed.
+    let is_eq_pred = matches!(predicate, IntPredicate::Eq | IntPredicate::Ne);
+    let (lhs_base, lhs_offset) =
+        strip_and_accumulate_constant_offset(lhs, index_bits, is_eq_pred, dl);
+    let (rhs_base, rhs_offset) =
+        strip_and_accumulate_constant_offset(rhs, index_bits, is_eq_pred, dl);
+    if lhs_base != rhs_base {
+        return None;
+    }
+    let signed_predicate = predicate.flip_signedness();
+    let result = compare_ap_int_with_predicate(signed_predicate, &lhs_offset, &rhs_offset);
+    let module = lhs.into_erased().module();
+    Some(module.bool_type().const_int(result).as_constant())
+}
+
+/// Peel `getelementptr`/`bitcast` constant-expression layers off `pointer`,
+/// accumulating the constant byte offset from the peeled base. A
+/// constant-expression-only slice of
+/// `Value::stripAndAccumulateConstantOffsets` (`llvm/lib/IR/Value.cpp`,
+/// used by [`fold_pointer_base_offset`] above): `getelementptr`, gated on
+/// `allow_non_inbounds` exactly like upstream's `AllowNonInbounds`
+/// parameter (the call site passes `IsEqPred`, matching upstream), and
+/// `bitcast` (always transparent, matching upstream).
+///
+/// `addrspacecast` is deliberately not peeled: upstream's own comment on
+/// `stripAndAccumulateConstantOffsets` notes that crossing an
+/// address-space cast can change the index width mid-walk, and this port
+/// keeps a single `index_bits` for the whole walk to avoid that
+/// complexity. `GlobalAlias` aliasee-stepping and the
+/// `inttoptr(add(ptrtoint p, off))` round trip upstream additionally peels
+/// under `LookThroughIntToPtr` are not ported either. All three are safe,
+/// narrower-coverage omissions: declining a peel only forgoes a fold
+/// upstream would still perform, never produces an incorrect one.
+fn strip_and_accumulate_constant_offset<'ctx, B: ModuleBrand + 'ctx>(
+    pointer: Constant<'ctx, B>,
+    index_bits: u32,
+    allow_non_inbounds: bool,
+    dl: &DataLayout,
+) -> (Constant<'ctx, B>, ApInt) {
+    let mut offset = ApInt::zero(index_bits);
+    let mut current = pointer;
+    loop {
+        let module = current.into_erased().module();
+        match &current.into_erased().data().kind {
+            ValueKindData::Constant(ConstantData::GepOffset { base_id, off }) => {
+                // Only ever constructed for an inbounds GEP (see
+                // `ConstantData::GepOffset`'s doc comment), so this compact
+                // form is always safe to peel regardless of
+                // `allow_non_inbounds`.
+                let Some(base) = constant_from_id(module, *base_id) else {
+                    return (current, offset);
+                };
+                let magnitude = ApInt::from_words(index_bits, &[off.unsigned_abs()]);
+                let addend = if *off < 0 {
+                    magnitude.negate()
+                } else {
+                    magnitude
+                };
+                offset = offset.wrapping_add(&addend);
+                current = base;
+            }
+            ValueKindData::Constant(ConstantData::Expr(expr)) => match expr.opcode {
+                ConstantExprOpcode::BitCast => {
+                    let [operand_id] = expr.operands.as_ref() else {
+                        return (current, offset);
+                    };
+                    let Some(operand) = constant_from_id(module, *operand_id) else {
+                        return (current, offset);
+                    };
+                    current = operand;
+                }
+                ConstantExprOpcode::GetElementPtr => {
+                    if !allow_non_inbounds && !gep_flags_are_inbounds(&expr.flags) {
+                        return (current, offset);
+                    }
+                    let Some(source_ty) = expr.source_ty else {
+                        return (current, offset);
+                    };
+                    let source_ty = Type::new(source_ty, module);
+                    let Some((base_id, index_ids)) = expr.operands.split_first() else {
+                        return (current, offset);
+                    };
+                    let Some(base) = constant_from_id(module, *base_id) else {
+                        return (current, offset);
+                    };
+                    let Some(gep_offset) =
+                        constant_gep_offset(source_ty, index_ids, module, index_bits, dl)
+                    else {
+                        return (current, offset);
+                    };
+                    offset = offset.wrapping_add(&gep_offset);
+                    current = base;
+                }
+                _ => return (current, offset),
+            },
+            _ => return (current, offset),
+        }
+    }
+}
+
+/// `GEPOperator::isInBounds` for a constant `getelementptr` expression's
+/// stored flags.
+fn gep_flags_are_inbounds(flags: &ConstantExprFlags) -> bool {
+    matches!(
+        flags,
+        ConstantExprFlags::Gep(gep_flags) if gep_flags.no_wrap().contains(GepNoWrapFlags::IN_BOUNDS)
+    )
+}
+
+/// `ICmpInst::compare` (`llvm/include/llvm/IR/InstrTypes.h`): evaluate a
+/// signed/unsigned/equality integer predicate directly against two
+/// `APInt`s.
+fn compare_ap_int_with_predicate(predicate: IntPredicate, lhs: &ApInt, rhs: &ApInt) -> bool {
+    match predicate {
+        IntPredicate::Eq => lhs.eq_ap_int(rhs),
+        IntPredicate::Ne => !lhs.eq_ap_int(rhs),
+        IntPredicate::Ugt => lhs.ugt(rhs),
+        IntPredicate::Uge => lhs.uge(rhs),
+        IntPredicate::Ult => lhs.ult(rhs),
+        IntPredicate::Ule => lhs.ule(rhs),
+        IntPredicate::Sgt => lhs.sgt(rhs),
+        IntPredicate::Sge => lhs.sge(rhs),
+        IntPredicate::Slt => lhs.slt(rhs),
+        IntPredicate::Sle => lhs.sle(rhs),
+    }
+}
+
+/// `CmpInst::getSwappedPredicate` (`llvm/lib/IR/Instructions.cpp`),
+/// dispatched across the combined int/float predicate space.
+fn swap_cmp_predicate(predicate: CmpPredicate) -> CmpPredicate {
+    match predicate {
+        CmpPredicate::Int(pred) => CmpPredicate::Int(pred.swapped()),
+        CmpPredicate::Float(pred) => CmpPredicate::Float(pred.swapped()),
+    }
+}
+
+/// `Constant::isNullValue` (`llvm/lib/IR/Constants.cpp`), restricted to the
+/// scalar/aggregate shapes reachable here. A local copy of the
+/// pure-IR-layer `constant_fold::constant_is_null_value` for this
+/// DataLayout-aware analysis module, mirroring that module's own existing
+/// `is_undef`/`is_poison` duplication here rather than threading
+/// cross-module visibility.
+fn constant_is_null_value<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+    match &constant.into_erased().data().kind {
+        ValueKindData::Constant(ConstantData::Int(_)) => is_zero_int_constant(constant),
+        ValueKindData::Constant(ConstantData::Float(_)) => {
+            ConstantFloatValue::<FloatDyn, B>::try_from(constant)
+                .is_ok_and(|value| value.ap_float().is_pos_zero())
+        }
+        ValueKindData::Constant(ConstantData::PointerNull) => true,
+        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
+            let module = constant.into_erased().module();
+            elements
+                .iter()
+                .all(|id| constant_from_id(module, *id).is_some_and(constant_is_null_value))
+        }
+        _ => false,
+    }
+}
+
+fn is_zero_int_constant<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+    ConstantIntValue::<IntDyn, B>::try_from(constant).is_ok_and(|value| value.ap_int().is_zero())
 }
 
 /// Fold a unary operation with a caller-provided constant operand.
