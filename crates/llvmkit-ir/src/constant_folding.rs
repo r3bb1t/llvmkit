@@ -21,8 +21,10 @@ use super::constant_fold::{
 use super::constants::{ConstantFloatValue, ConstantIntValue};
 use super::data_layout::DataLayout;
 use super::denormal_mode::{DenormalMode, DenormalModeKind, DenormalModeSide};
-use super::derived_types::{FloatType, IntType};
+use super::derived_types::{FloatType, IntType, VectorType};
+use super::element::ElemDyn;
 use super::float_kind::FloatDyn;
+use super::fmf::FastMathFlags;
 use super::global_variable::GlobalVariable;
 use super::instr_types::{BinaryOpcode, CastOpcode, PhiData, UnaryOpcode};
 use super::instruction::{InstructionKindData, InstructionView};
@@ -32,6 +34,7 @@ use super::module::{Brand, ModuleBrand, ModuleRef, ModuleView};
 use super::target_library_info::{LibFunc, TargetLibraryInfo};
 use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData};
 use super::value::{IsValue, Value, ValueId, ValueKindData};
+use super::vec_len::LenDyn;
 use super::{ApInt, Dyn, FunctionValue, IrError, IrResult};
 
 /// Whether folds that depend on host/libm floating-point determinism are allowed.
@@ -141,6 +144,42 @@ pub fn flush_fp_constant<'ctx, B: ModuleBrand + 'ctx>(
 
     if is_undef(operand) || is_poison(operand) {
         return Ok(Some(operand));
+    }
+
+    // Mirrors the `ConstantVector`/`ConstantDataVector` arms of upstream
+    // `FlushFPConstant` (`ConstantFolding.cpp`): flush every lane of a fixed
+    // FP vector and rebuild the vector constant. A whole-vector `undef`
+    // (upstream's `UndefValue` arm) is already handled above. llvmkit has no
+    // distinct `ConstantAggregateZero` representation — zero vectors are
+    // ordinary `Aggregate`s — so upstream's all-zero fast path falls out of
+    // this loop for free (0.0 is never denormal), and likewise upstream's
+    // splat fast path is just a performance shortcut this loop reaches the
+    // same answer without. Scalable vectors have no compile-time lane list to
+    // walk and fall through to the decline below, matching upstream's
+    // decline for a non-splat scalable operand.
+    if matches!(operand.ty().data(), TypeData::FixedVector { .. })
+        && let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
+            &operand.into_erased().data().kind
+    {
+        let module = operand.into_erased().module();
+        let mut flushed = Vec::with_capacity(elements.len());
+        for id in elements.iter().copied() {
+            let Some(element) = constant_from_id(module, id) else {
+                return Ok(None);
+            };
+            let Some(flushed_element) = flush_fp_constant(element, mode, side)? else {
+                return Ok(None);
+            };
+            flushed.push(flushed_element);
+        }
+        let Ok(vector_ty) = VectorType::<ElemDyn, LenDyn, B>::try_from(operand.ty()) else {
+            return Ok(None);
+        };
+        return Ok(Some(
+            vector_ty
+                .const_vector::<Constant<'ctx, B>, _>(flushed)?
+                .as_constant(),
+        ));
     }
 
     Ok(None)
@@ -446,6 +485,7 @@ where
                 *rhs,
                 dl,
                 denormal_mode_for_instruction(data.parent.get(), value.module(), value.ty()),
+                binary_op_fmf(&data.kind),
                 allow_non_deterministic,
             )
         } else {
@@ -715,6 +755,7 @@ pub fn constant_fold_fp_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
     rhs: Constant<'ctx, B>,
     dl: &DataLayout,
     denormal_mode: DenormalMode,
+    fmf: FastMathFlags,
     allow_non_deterministic: FoldNonDeterminism,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
     let Some(lhs) = flush_fp_constant(lhs, denormal_mode, DenormalModeSide::Input)? else {
@@ -723,6 +764,20 @@ pub fn constant_fold_fp_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
     let Some(rhs) = flush_fp_constant(rhs, denormal_mode, DenormalModeSide::Input)? else {
         return Ok(None);
     };
+    // Mirrors `ConstantFoldFPInstOperands`'s non-determinism guard in
+    // `llvm/lib/Analysis/ConstantFolding.cpp`: nsz/reassoc/contract/arcp let a
+    // later optimization change the FP result, so deterministic folding must
+    // decline rather than commit to one answer.
+    if matches!(allow_non_deterministic, FoldNonDeterminism::Deny)
+        && fmf.intersects(
+            FastMathFlags::NO_SIGNED_ZEROS
+                | FastMathFlags::ALLOW_REASSOC
+                | FastMathFlags::ALLOW_CONTRACT
+                | FastMathFlags::ALLOW_RECIPROCAL,
+        )
+    {
+        return Ok(None);
+    }
     let Some(folded) = constant_fold_binary_op_operands(opcode, lhs, rhs, dl)? else {
         return Ok(None);
     };
@@ -1397,6 +1452,22 @@ fn binary_opcode(kind: &InstructionKindData) -> Option<BinaryOpcode> {
     Some(opcode)
 }
 
+/// Fast-math flags carried by an FP binary instruction. Mirrors
+/// `FPMathOperator::getFastMathFlags`, reached in upstream
+/// `ConstantFoldFPInstOperands` via `dyn_cast_or_null<FPMathOperator>(I)`.
+/// Empty for every other opcode, matching `BinaryOpData::fmf` being unset for
+/// integer opcodes.
+fn binary_op_fmf(kind: &InstructionKindData) -> FastMathFlags {
+    match kind {
+        InstructionKindData::FAdd(b)
+        | InstructionKindData::FSub(b)
+        | InstructionKindData::FMul(b)
+        | InstructionKindData::FDiv(b)
+        | InstructionKindData::FRem(b) => b.fmf,
+        _ => FastMathFlags::empty(),
+    }
+}
+
 fn binary_opcode_from_constant_expr(opcode: ConstantExprOpcode) -> Option<BinaryOpcode> {
     match opcode {
         ConstantExprOpcode::Add => Some(BinaryOpcode::Add),
@@ -1652,9 +1723,15 @@ fn fold_ptr_to_int_pair<'ctx, B: ModuleBrand + 'ctx>(
     let Some(addr_space) = pointer_address_space(operand.ty()) else {
         return Ok(None);
     };
+    // `PtrToInt` mirrors `CastInst::isEliminableCastPair` case 11
+    // (`llvm/lib/IR/Instructions.cpp`): the `inttoptr`/`ptrtoint` collapse is
+    // sized by the *pointer* size (`getPointerTypeSizeInBits`), not the index
+    // size — unlike `PtrToAddr`, whose case-11 collapse sizes by the
+    // address/index size (`getAddressSizeInBits`). The two only diverge on
+    // fat-pointer/CHERI-like targets where pointer size != index size.
     let mid_bits = match opcode {
-        CastOpcode::PtrToInt => dl.index_size_in_bits(addr_space),
-        CastOpcode::PtrToAddr => dl.pointer_size_in_bits(addr_space),
+        CastOpcode::PtrToInt => dl.pointer_size_in_bits(addr_space),
+        CastOpcode::PtrToAddr => dl.index_size_in_bits(addr_space),
         _ => return Ok(None),
     };
     let mid_ty = int_type(module, mid_bits)?;

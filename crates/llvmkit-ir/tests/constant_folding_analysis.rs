@@ -11,11 +11,12 @@ use llvmkit_ir::instr_types::CastOpcode;
 use llvmkit_ir::{
     ApFloat, ApFloatSemantics, ApInt, AttrIndex, Attribute, BinaryIntrinsic, BinaryOpcode,
     CmpPredicate, ConstantExprOpcode, ConstantExprOptions, ConstantFloatValue, ConstantIntValue,
-    DataLayout, DenormalMode, DenormalModeKind, DenormalModeSide, FoldNonDeterminism, IRBuilder,
-    InstructionView, IntDyn, IntPredicate, IrError, LibFunc, Linkage, Module, NoFolder,
-    PreservedCastFlags, RoundingMode, TargetLibraryInfo, UnaryOpcode, attributes::AttributeStorage,
-    constant_fold_binary_intrinsic, constant_fold_binary_op_operands,
-    constant_fold_compare_inst_operands, constant_fold_constant, constant_fold_fp_inst_operands,
+    DataLayout, DenormalMode, DenormalModeKind, DenormalModeSide, FastMathFlags,
+    FoldNonDeterminism, IRBuilder, InstructionView, IntDyn, IntPredicate, IrError, LibFunc,
+    Linkage, Module, NoFolder, PreservedCastFlags, RoundingMode, TargetLibraryInfo, UnaryOpcode,
+    attributes::AttributeStorage, constant_fold_binary_intrinsic, constant_fold_binary_op_operands,
+    constant_fold_compare_inst_operands, constant_fold_constant,
+    constant_fold_extract_element_instruction, constant_fold_fp_inst_operands,
     constant_fold_inst_operands, constant_fold_integer_cast, constant_fold_load_from_uniform_value,
     constant_fold_load_through_bitcast, constant_fold_unary_op_operand,
     constant_offset_from_global, is_constant_offset_from_global, lossless_inv_cast,
@@ -76,10 +77,15 @@ fn load_from_const_ptr_oob_returns_poison() -> Result<(), IrError> {
     })
 }
 
-/// llvmkit-specific subset of `ConstantFolding.cpp::ConstantFoldCastOperand`:
-/// ptrtoint uses the pointer index size from `DataLayout`, not destination width.
+/// Port of `CastInst::isEliminableCastPair` case 11 (`llvm/lib/IR/Instructions.cpp`):
+/// the `ptrtoint(inttoptr x)` collapse is sized by the *pointer* size, not the
+/// index size — even though this layout's index size (32) is narrower than
+/// its pointer size (64), the round trip preserves the bit set above the
+/// index-size boundary (bit 32), because case 11 sizes the collapse using
+/// `getPointerTypeSizeInBits`, reached before the (unimplemented in llvmkit)
+/// index-size-based switch-fallback in `ConstantFoldCastOperand`.
 #[test]
-fn ptrtoint_respects_pointer_index_size() -> Result<(), IrError> {
+fn ptrtoint_of_inttoptr_uses_pointer_size() -> Result<(), IrError> {
     Module::with_new("analysis-ptr-index", |m| {
         let dl = DataLayout::parse("e-p:64:64:64:32")?;
         let i64_ty = m.i64_type();
@@ -94,9 +100,41 @@ fn ptrtoint_respects_pointer_index_size() -> Result<(), IrError> {
         .expect("inttoptr folds through analysis layer");
         let folded = constant_fold_cast_operand(CastOpcode::PtrToInt, ptr, i64_ty.as_type(), &dl)?
             .expect("ptrtoint folds through analysis layer");
-        let int = ConstantIntValue::<IntDyn>::try_from(folded)?;
 
-        assert_eq!(int.ap_int(), ApInt::from_words(64, &[1]));
+        // Pointer size (64) equals both the i64 source and i64 destination
+        // widths, so case 11 collapses the pair to a straight `BitCast` of
+        // the original value: the round trip is a lossless identity, even
+        // though the index size (32) would have masked off bit 32.
+        assert_eq!(folded, wide.as_constant());
+        Ok(())
+    })
+}
+
+/// llvmkit-specific pin for `CastInst::isEliminableCastPair` case 11 on a
+/// fat-pointer/CHERI-like layout where pointer size (128) and index size (64)
+/// genuinely differ: `ptrtoint(inttoptr x)` on an `i128` must collapse to `x`
+/// unmasked. Sizing the collapse by index width instead of pointer width
+/// would truncate the high 64 bits a real pointer round trip preserves.
+#[test]
+fn ptrtoint_of_inttoptr_i128_collapses_to_original_value() -> Result<(), IrError> {
+    Module::with_new("analysis-ptr-i128-pointer-size", |m| {
+        let dl = DataLayout::parse("e-p:128:128:128:64")?;
+        let i128_ty = m.i128_type();
+        let ptr_ty = m.ptr_type(0);
+        // Bit 64 (above the 64-bit index boundary, within the 128-bit
+        // pointer boundary) must survive the round trip.
+        let x = i128_ty.const_ap_int(&ApInt::from_words(128, &[1, 1]))?;
+        let ptr = constant_fold_cast_operand(
+            CastOpcode::IntToPtr,
+            x.as_constant(),
+            ptr_ty.as_type(),
+            &dl,
+        )?
+        .expect("inttoptr folds through analysis layer");
+        let folded = constant_fold_cast_operand(CastOpcode::PtrToInt, ptr, i128_ty.as_type(), &dl)?
+            .expect("ptrtoint folds through analysis layer");
+
+        assert_eq!(folded, x.as_constant());
         Ok(())
     })
 }
@@ -138,6 +176,58 @@ fn dynamic_denormal_mode_declines_flush() -> Result<(), IrError> {
             flush_fp_constant(operand, mode, DenormalModeSide::Input)?,
             None
         );
+        Ok(())
+    })
+}
+
+/// llvmkit-specific subset of `ConstantFolding.cpp::FlushFPConstant`: FP
+/// *vector* operands must flush and fold element-wise through the
+/// DataLayout-aware analysis path (`constant_fold_fp_inst_operands`), not
+/// just scalars — `flush_fp_constant`'s `ConstantVector`/`ConstantDataVector`
+/// arms. The IR-builder `ConstantFolder` shell already folds FP vectors
+/// element-wise through the target-independent core; this test is specific
+/// to the analysis-layer entry point, which used to decline every FP vector.
+#[test]
+fn fp_vector_fadd_folds_elementwise_through_analysis_path() -> Result<(), IrError> {
+    Module::with_new("analysis-fp-vector", |m| {
+        let dl = DataLayout::default();
+        let f32_ty = m.f32_type();
+        let i64_ty = m.i64_type();
+        let vec_ty = m.vector_type(f32_ty.as_type(), 2, false);
+
+        let lhs = vec_ty
+            .const_vector::<ConstantFloatValue<'_, f32>, _>([
+                f32_ty.const_float(1.0),
+                f32_ty.const_float(2.0),
+            ])?
+            .as_constant();
+        let rhs = vec_ty
+            .const_vector::<ConstantFloatValue<'_, f32>, _>([
+                f32_ty.const_float(3.0),
+                f32_ty.const_float(4.0),
+            ])?
+            .as_constant();
+
+        let folded = constant_fold_fp_inst_operands(
+            BinaryOpcode::FAdd,
+            lhs,
+            rhs,
+            &dl,
+            DenormalMode::ieee(),
+            FastMathFlags::empty(),
+            FoldNonDeterminism::Allow,
+        )?
+        .expect("fp vector fadd folds elementwise through the analysis path");
+
+        for (index, expected) in [(0_i64, 4.0_f64), (1, 6.0)] {
+            let element = constant_fold_extract_element_instruction(
+                folded,
+                i64_ty.const_int(index).as_constant(),
+            )?
+            .expect("lane extracts from the folded vector");
+            let fp = ConstantFloatValue::<f32>::try_from(element)?;
+            assert!(fp.ap_float().is_exactly_value_f64(expected));
+        }
         Ok(())
     })
 }
@@ -443,6 +533,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
                 two,
                 &dl,
                 DenormalMode::ieee(),
+                FastMathFlags::empty(),
                 FoldNonDeterminism::Allow,
             )?
             .is_some()
@@ -771,6 +862,57 @@ fn determinism_deny_declines_host_libm_but_keeps_apfloat_sqrt() -> Result<(), Ir
         let fp = ConstantFloatValue::<f64>::try_from(folded)?;
 
         assert!(fp.ap_float().is_exactly_value_f64(2.0));
+        Ok(())
+    })
+}
+
+/// Mirrors `ConstantFoldFPInstOperands`'s non-determinism guard in
+/// `llvm/lib/Analysis/ConstantFolding.cpp`: under `FoldNonDeterminism::Deny`,
+/// an FP instruction carrying `nsz` must decline to fold even though its
+/// operands are perfectly foldable constants — a later optimization pass
+/// could change the answer once `nsz` is exploited. `Allow` still folds the
+/// very same instruction, proving the decline is FMF-driven, not a general
+/// failure to fold. Exercises `constant_fold_inst_operands`, the only
+/// production path that threads a real instruction's fast-math flags to
+/// `constant_fold_fp_inst_operands`.
+#[test]
+fn deny_declines_fp_binop_with_nsz_flag() -> Result<(), IrError> {
+    Module::with_new("analysis-fp-determinism-nsz", |m| {
+        let dl = DataLayout::default();
+        let f32_ty = m.f32_type();
+        let fn_ty = m.fn_type_no_params(f32_ty, false);
+        let f = m.add_function_dyn("nsz_fadd", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let one = f32_ty.const_float(1.0);
+        let two = f32_ty.const_float(2.0);
+        let add =
+            b.build_fp_add_fmf::<f32, _, _, _>(one, two, FastMathFlags::NO_SIGNED_ZEROS, "sum")?;
+        let instruction = InstructionView::try_from(add.into_erased())?;
+        let operands = [one.as_constant(), two.as_constant()];
+
+        assert_eq!(
+            constant_fold_inst_operands(
+                &instruction,
+                &operands,
+                &dl,
+                None,
+                FoldNonDeterminism::Deny,
+            )?,
+            None,
+            "an nsz FP op must decline to fold under deterministic folding"
+        );
+        let folded = constant_fold_inst_operands(
+            &instruction,
+            &operands,
+            &dl,
+            None,
+            FoldNonDeterminism::Allow,
+        )?
+        .expect("the same nsz FP op still folds when non-determinism is allowed");
+        let fp = ConstantFloatValue::<f32>::try_from(folded)?;
+
+        assert!(fp.ap_float().is_exactly_value_f64(3.0));
         Ok(())
     })
 }
