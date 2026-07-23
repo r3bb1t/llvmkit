@@ -1217,6 +1217,128 @@ fn non_inbounds_same_base_gep_ult_declines_to_fold() -> Result<(), IrError> {
     })
 }
 
+/// Non-uniqued-constant parity guard. Unlike the `Expr`-form GEP pair above
+/// (whose `base` operand is one shared `Constant` handle reused for both
+/// sides), these two pointers are each built through
+/// `GlobalVariable::ptr_offset` — llvmkit's compact `GepOffset` encoding —
+/// called independently, which mints a *fresh* arena id every time
+/// (`intern_constant_gep_offset`, `llvm_context.rs`) rather than uniquing
+/// on `(global, offset)` the way LLVM uniques `Constant*`. Before the
+/// base-identity fix, `strip_and_accumulate_constant_offset` could not
+/// resolve a `GepOffset`'s `base_id` (it names the host global directly,
+/// never through a `Constant` wrapper) and bailed immediately with zero
+/// accumulated offset, so the two stripped "bases" were the two original,
+/// arena-distinct `ptr_offset` constants themselves — unequal under plain
+/// `==`, so the fold declined even though both pointers plainly share `@g`.
+#[test]
+fn same_base_gep_offset_ult_folds_via_offset_compare() -> Result<(), IrError> {
+    Module::with_new("analysis-gep-offset-base-offset-ult", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i8_ty = m.i8_type();
+        let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
+        let lhs = g.ptr_offset(4);
+        let rhs = g.ptr_offset(8);
+
+        let folded = constant_fold_compare_inst_operands(
+            CmpPredicate::Int(IntPredicate::Ult),
+            lhs,
+            rhs,
+            &dl,
+            None,
+        )?
+        .expect("same-base GepOffset pointers fold via offset comparison");
+
+        assert_eq!(folded, m.bool_type().const_int(true).as_constant());
+        Ok(())
+    })
+}
+
+/// Composed variant of the guard above: each side is a further `getelementptr`
+/// constant expression over its own independently-built `ptr_offset` mid
+/// (`@g + 4` in both cases, but as two arena-distinct `GepOffset`
+/// constants). Exercises the fixed `GepOffset` peel arm as reached
+/// mid-walk from an outer `Expr::GetElementPtr` layer rather than as the
+/// top-level constant, and proves the accumulated offset sums correctly
+/// across both peeled layers (4 + 1 = 5 vs. 4 + 2 = 6, not just the outer
+/// layer's 1 vs. 2): under the old bail, each strip walk stopped at its
+/// own mid `ptr_offset` node with only the outer layer's offset
+/// accumulated, and those two mid nodes — being independently minted —
+/// still compared unequal.
+#[test]
+fn nested_gep_over_gep_offset_mid_folds_via_offset_compare() -> Result<(), IrError> {
+    Module::with_new("analysis-gep-offset-nested-mid-ult", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i8_ty = m.i8_type();
+        let i64_ty = m.i64_type();
+        let ptr_ty = m.ptr_type(0);
+        let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
+        let mid_lhs = g.ptr_offset(4);
+        let mid_rhs = g.ptr_offset(4);
+        let one = i64_ty.const_int(1_i64).as_constant();
+        let two = i64_ty.const_int(2_i64).as_constant();
+        let inbounds = ConstantExprOptions::new()
+            .source_ty(i8_ty.as_type())
+            .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS));
+        let lhs = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [mid_lhs.into_erased(), one.into_erased()],
+            [],
+            [],
+            inbounds.clone(),
+        )?;
+        let rhs = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [mid_rhs.into_erased(), two.into_erased()],
+            [],
+            [],
+            inbounds,
+        )?;
+
+        let folded = constant_fold_compare_inst_operands(
+            CmpPredicate::Int(IntPredicate::Ult),
+            lhs,
+            rhs,
+            &dl,
+            None,
+        )?
+        .expect("nested GEPs over independently-built same-base mids fold");
+
+        assert_eq!(folded, m.bool_type().const_int(true).as_constant());
+        Ok(())
+    })
+}
+
+/// Soundness guard for the two fixes above: `base_identity` must still
+/// distinguish genuinely *different* underlying globals, not paper over
+/// every arena-id mismatch it sees. Two `ptr_offset` pointers into two
+/// distinct globals must not fold.
+#[test]
+fn different_base_gep_offset_declines_to_fold() -> Result<(), IrError> {
+    Module::with_new("analysis-gep-offset-different-base", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i8_ty = m.i8_type();
+        let g1 = m.add_global_constant("g1", i8_ty.const_int(0_i8))?;
+        let g2 = m.add_global_constant("g2", i8_ty.const_int(0_i8))?;
+        let lhs = g1.ptr_offset(4);
+        let rhs = g2.ptr_offset(8);
+
+        assert_eq!(
+            constant_fold_compare_inst_operands(
+                CmpPredicate::Int(IntPredicate::Ult),
+                lhs,
+                rhs,
+                &dl,
+                None,
+            )?,
+            None,
+            "pointers into two different globals must not fold"
+        );
+        Ok(())
+    })
+}
+
 // ---------------------------------------------------------------------------
 // D9: `SymbolicallyEvaluateGEP` symbolic offset evaluation
 // ---------------------------------------------------------------------------
