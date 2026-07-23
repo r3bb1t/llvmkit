@@ -4,7 +4,7 @@
 
 use super::align::Align;
 use super::ap_float::{ApFloatCmpResult, ApFloatSemantics, ApFloatSign, NanPayload};
-use super::ap_int::{ApInt, ApIntDivRem, ApIntSignedness};
+use super::ap_int::{ApInt, ApIntSignedness};
 use super::array_len::ArrLenDyn;
 use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 use super::constant::{
@@ -46,14 +46,22 @@ where
         return Ok(None);
     };
 
-    if let Some((opcode, lhs, rhs, is_exact)) = binary_instruction_parts(&data.kind) {
+    // Upstream's `ConstantFoldInstruction` never threads `PossiblyExactOperator`'s
+    // `isExact()` into the fold: `ConstantFoldInstOperandsImpl` (Analysis/
+    // ConstantFolding.cpp) always calls `ConstantFoldBinaryOpOperands`, which
+    // folds the plain value regardless of the instruction's `exact` flag. Only
+    // `IRBuilderFolder::FoldExactBinOp` (see `ir_builder/constant_folder.rs`)
+    // ever looks at exactness, and only to flag a lazily-built `ConstantExpr`;
+    // it too falls back to the plain fold for non-`ConstantExpr` opcodes like
+    // `udiv`/`sdiv`/`lshr`/`ashr`. So `is_exact` is intentionally dropped here.
+    if let Some((opcode, lhs, rhs)) = binary_instruction_parts(&data.kind) {
         let Some(lhs) = constant_from_id(module, lhs) else {
             return Ok(None);
         };
         let Some(rhs) = constant_from_id(module, rhs) else {
             return Ok(None);
         };
-        return constant_fold_exact_binary_instruction(opcode, lhs, rhs, is_exact);
+        return constant_fold_binary_instruction(opcode, lhs, rhs);
     }
 
     match &data.kind {
@@ -201,7 +209,7 @@ where
 
 fn binary_instruction_parts(
     kind: &InstructionKindData,
-) -> Option<(BinaryOpcode, ValueId, ValueId, bool)> {
+) -> Option<(BinaryOpcode, ValueId, ValueId)> {
     let (opcode, data) = match kind {
         InstructionKindData::Add(data) => (BinaryOpcode::Add, data),
         InstructionKindData::Sub(data) => (BinaryOpcode::Sub, data),
@@ -257,7 +265,7 @@ fn binary_instruction_parts(
         | InstructionKindData::Br(_)
         | InstructionKindData::Unreachable(_) => return None,
     };
-    Some((opcode, data.lhs.get(), data.rhs.get(), data.is_exact))
+    Some((opcode, data.lhs.get(), data.rhs.get()))
 }
 
 fn constant_from_id<'ctx, B: ModuleBrand + 'ctx>(
@@ -586,30 +594,6 @@ fn binary_constant_expr_opcode(opcode: BinaryOpcode) -> Option<ConstantExprOpcod
         | BinaryOpcode::FDiv
         | BinaryOpcode::FRem => None,
     }
-}
-
-/// Fold an exact-capable binary instruction with constant operands.
-pub(super) fn constant_fold_exact_binary_instruction<'ctx, B: ModuleBrand + 'ctx>(
-    opcode: BinaryOpcode,
-    lhs: Constant<'ctx, B>,
-    rhs: Constant<'ctx, B>,
-    is_exact: bool,
-) -> IrResult<Option<Constant<'ctx, B>>> {
-    if !is_exact || !is_exact_capable_binop(opcode) {
-        return constant_fold_binary_instruction(opcode, lhs, rhs);
-    }
-
-    if lhs.ty() != rhs.ty() {
-        return Ok(None);
-    }
-    if is_poison(lhs) || is_poison(rhs) {
-        return Ok(Some(poison_for(lhs.ty())));
-    }
-    if let Some(folded) = fold_undef_int_binary(opcode, lhs, rhs)? {
-        return Ok(Some(folded));
-    }
-
-    fold_exact_int_binary(opcode, lhs, rhs)
 }
 
 /// Fold a cast instruction with a constant operand.
@@ -1086,9 +1070,16 @@ fn evaluate_icmp_relation<'ctx, B: ModuleBrand + 'ctx>(
         if block_address_info(rhs).is_some() {
             return Some(IntPredicate::Ne);
         }
+        // GlobalVals can never be null unless they have external weak linkage
+        // (aliases are not evaluated here). Upstream additionally requires
+        // `!NullPointerIsDefined(nullptr, GV->getType()->getAddressSpace())`
+        // (ConstantFold.cpp), and `NullPointerIsDefined(nullptr, AS)`
+        // (Function.cpp) is `AS != 0`, i.e. defined (so the fold is unsound)
+        // whenever the global's address space isn't the default 0.
         if is_pointer_null(rhs)
             && !global_has_external_weak_linkage(lhs.into_erased().module(), lhs_global)
             && !global_is_alias(lhs.into_erased().module(), lhs_global)
+            && pointer_address_space(lhs.ty()) == Some(0)
         {
             return Some(IntPredicate::Ugt);
         }
@@ -1451,6 +1442,12 @@ pub fn constant_fold_select_instruction<'ctx, B: ModuleBrand + 'ctx>(
             .zip(true_elements)
             .zip(false_elements)
         {
+            // Upstream (ConstantFold.cpp) `break`s out of the per-element loop
+            // on a non-`ConstantInt` lane rather than bailing out of the whole
+            // fold: the partially-built `Result` is then discarded (its length
+            // no longer matches the lane count), and control falls through to
+            // the whole-value poison/undef checks below. That lets e.g.
+            // `select <2 x i1> <cond-exprs>, poison, %b` still fold to `%b`.
             let selected = if is_poison(condition) {
                 poison_for(value_element_ty)
             } else if true_element == false_element {
@@ -1461,19 +1458,20 @@ pub fn constant_fold_select_instruction<'ctx, B: ModuleBrand + 'ctx>(
                 } else {
                     false_element
                 }
-            } else {
-                let Some(condition) = bool_constant_value(condition) else {
-                    return Ok(None);
-                };
+            } else if let Some(condition) = bool_constant_value(condition) {
                 if condition {
                     true_element
                 } else {
                     false_element
                 }
+            } else {
+                break;
             };
             result.push(selected);
         }
-        return constant_aggregate_from_elements(true_value.ty(), result);
+        if result.len() == lane_count {
+            return constant_aggregate_from_elements(true_value.ty(), result);
+        }
     }
 
     if is_poison(condition) {
@@ -2257,85 +2255,6 @@ fn fold_int_binary<'ctx, B: ModuleBrand + 'ctx>(
     Ok(Some(lhs.ty().const_ap_int(&result)?.as_constant()))
 }
 
-fn fold_exact_int_binary<'ctx, B: ModuleBrand + 'ctx>(
-    opcode: BinaryOpcode,
-    lhs: Constant<'ctx, B>,
-    rhs: Constant<'ctx, B>,
-) -> IrResult<Option<Constant<'ctx, B>>> {
-    let Ok(lhs) = ConstantIntValue::<IntDyn, B>::try_from(lhs) else {
-        return Ok(None);
-    };
-    let Ok(rhs) = ConstantIntValue::<IntDyn, B>::try_from(rhs) else {
-        return Ok(None);
-    };
-    if lhs.bit_width() != rhs.bit_width() {
-        return Ok(None);
-    }
-
-    let lhs_ap = lhs.ap_int();
-    let rhs_ap = rhs.ap_int();
-    let result = match opcode {
-        BinaryOpcode::UDiv => exact_div_result(lhs_ap.udivrem(&rhs_ap)),
-        BinaryOpcode::SDiv => exact_div_result(lhs_ap.sdivrem(&rhs_ap)),
-        BinaryOpcode::LShr => {
-            exact_shift_result(&lhs_ap, &rhs_ap, |value, amount| value.checked_lshr(amount))
-        }
-        BinaryOpcode::AShr => {
-            exact_shift_result(&lhs_ap, &rhs_ap, |value, amount| value.checked_ashr(amount))
-        }
-        BinaryOpcode::Add
-        | BinaryOpcode::Sub
-        | BinaryOpcode::Mul
-        | BinaryOpcode::URem
-        | BinaryOpcode::SRem
-        | BinaryOpcode::Shl
-        | BinaryOpcode::And
-        | BinaryOpcode::Or
-        | BinaryOpcode::Xor
-        | BinaryOpcode::FAdd
-        | BinaryOpcode::FSub
-        | BinaryOpcode::FMul
-        | BinaryOpcode::FDiv
-        | BinaryOpcode::FRem => return Ok(None),
-    };
-
-    let Some(result) = result else {
-        return Ok(Some(poison_for(lhs.ty().as_type())));
-    };
-    Ok(Some(lhs.ty().const_ap_int(&result)?.as_constant()))
-}
-
-fn exact_div_result(qr: Option<ApIntDivRem>) -> Option<ApInt> {
-    let (quotient, remainder) = qr?.into_parts();
-    remainder.is_zero().then_some(quotient)
-}
-
-fn exact_shift_result(
-    lhs: &ApInt,
-    rhs: &ApInt,
-    f: impl FnOnce(&ApInt, u32) -> Option<ApInt>,
-) -> Option<ApInt> {
-    let amount = rhs.try_zext_u64()?;
-    let amount = u32::try_from(amount).ok()?;
-    if amount >= lhs.bit_width() || !shifted_out_bits_are_zero(lhs, amount) {
-        return None;
-    }
-    f(lhs, amount)
-}
-
-fn shifted_out_bits_are_zero(value: &ApInt, amount: u32) -> bool {
-    value
-        .bitand(&ApInt::low_bits_set(value.bit_width(), amount))
-        .is_zero()
-}
-
-fn is_exact_capable_binop(opcode: BinaryOpcode) -> bool {
-    matches!(
-        opcode,
-        BinaryOpcode::UDiv | BinaryOpcode::SDiv | BinaryOpcode::LShr | BinaryOpcode::AShr
-    )
-}
-
 fn fold_shift(
     lhs: &ApInt,
     rhs: &ApInt,
@@ -2771,16 +2690,19 @@ fn bool_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
         .map(|constant| Some(constant.as_constant()))
 }
 
+/// Mirrors `ICmpInst::isEquality`: true only for integer `eq`/`ne`.
+/// `ConstantFoldCompareInstruction` (ConstantFold.cpp) calls this via
+/// `ICmpInst::isEquality(Predicate)` even when `Predicate` may be an FP
+/// predicate — `ICMP_EQ`/`ICMP_NE` and `FCMP_OEQ`/`FCMP_ONE`/`FCMP_UEQ`/
+/// `FCMP_UNE` are distinct enumerators in the shared `CmpInst::Predicate`
+/// space, so the check is always false for FP predicates. An FP compare
+/// against undef therefore never takes the "either value could make it
+/// pass or fail" undef shortcut below; it falls through to the concrete
+/// `isUnordered(Predicate)` result instead.
 fn is_equality_predicate(predicate: CmpPredicate) -> bool {
     matches!(
         predicate,
         CmpPredicate::Int(IntPredicate::Eq | IntPredicate::Ne)
-            | CmpPredicate::Float(
-                FloatPredicate::Oeq
-                    | FloatPredicate::One
-                    | FloatPredicate::Ueq
-                    | FloatPredicate::Une,
-            )
     )
 }
 

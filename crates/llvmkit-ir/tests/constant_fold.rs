@@ -8,8 +8,8 @@ use llvmkit_ir::{
     Align, ApFloat, ApFloatSemantics, ApFloatSign, ApInt, BinaryOpcode, CmpPredicate, Constant,
     ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
     ConstantFloatValue, ConstantIntValue, FloatDyn, FloatPredicate, GepNoWrapFlags, IRBuilder,
-    InstructionView, IntDyn, IntPredicate, IrError, Linkage, MaybeAlign, Module, NoFolder,
-    RoundingMode, UDivFlags, UnaryOpcode, UnnamedAddr, constant_fold_binary_instruction,
+    InstructionView, IntDyn, IntPredicate, IntValue, IrError, Linkage, MaybeAlign, Module,
+    NoFolder, RoundingMode, UDivFlags, UnaryOpcode, UnnamedAddr, constant_fold_binary_instruction,
     constant_fold_cast_instruction, constant_fold_compare_instruction,
     constant_fold_extract_element_instruction, constant_fold_extract_value_instruction,
     constant_fold_get_element_ptr, constant_fold_insert_element_instruction,
@@ -899,10 +899,13 @@ fn analysis_instruction_fold_uses_apint_binary_folder() -> Result<(), IrError> {
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldBinaryInstruction`
-/// plus `PossiblyExactOperator`: instruction-level exact `udiv` with a non-zero
-/// remainder folds to poison.
+/// plus `Analysis/ConstantFolding.cpp::ConstantFoldBinaryOpOperands`: upstream
+/// `ConstantFoldInstruction` never threads `PossiblyExactOperator::isExact()`
+/// into the fold, so an instruction-level exact `udiv` with a non-zero
+/// remainder folds to the plain truncated quotient (`7 udiv 2 = 3`), not
+/// poison, exactly like non-exact `udiv`.
 #[test]
-fn analysis_instruction_fold_exact_udiv_inexact_returns_poison() -> Result<(), IrError> {
+fn analysis_instruction_fold_exact_udiv_inexact_matches_plain_udiv() -> Result<(), IrError> {
     Module::with_new("analysis-exact-fold", |m| {
         let ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(ty, false);
@@ -911,7 +914,7 @@ fn analysis_instruction_fold_exact_udiv_inexact_returns_poison() -> Result<(), I
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let value = b.build_int_udiv_with_flags::<i32, _, _, _>(
             ty.const_int(7_i32),
-            ty.const_int(3_i32),
+            ty.const_int(2_i32),
             UDivFlags::new().exact(),
             "q",
         )?;
@@ -919,7 +922,36 @@ fn analysis_instruction_fold_exact_udiv_inexact_returns_poison() -> Result<(), I
 
         let folded = constant_fold_instruction(&instruction)?.expect("exact udiv folds");
 
-        assert_eq!(folded, ty.as_type().get_poison().as_constant());
+        assert_eq!(folded, ty.const_int(3_i32).as_constant());
+        Ok(())
+    })
+}
+
+/// Companion to the inexact case above: the `X / 1 -> X` identity check runs
+/// unconditionally ahead of any divisor-remainder inspection, so `udiv exact
+/// undef, 1` folds to `undef` -- identical to non-exact `udiv undef, 1` --
+/// rather than being routed around the identity check the way the old
+/// exactness-threading path did.
+#[test]
+fn analysis_instruction_fold_exact_udiv_undef_identity() -> Result<(), IrError> {
+    Module::with_new("analysis-exact-fold-identity", |m| {
+        let ty = m.i32_type();
+        let fn_ty = m.fn_type_no_params(ty, false);
+        let f = m.add_function_dyn("exact", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let undef = IntValue::try_from(ty.as_type().get_undef().into_erased())?;
+        let value = b.build_int_udiv_with_flags::<i32, _, _, _>(
+            undef,
+            ty.const_int(1_i32),
+            UDivFlags::new().exact(),
+            "q",
+        )?;
+        let instruction = InstructionView::try_from(value.into_erased())?;
+
+        let folded = constant_fold_instruction(&instruction)?.expect("exact udiv identity folds");
+
+        assert_eq!(folded, ty.as_type().get_undef().as_constant());
         Ok(())
     })
 }
@@ -1587,6 +1619,61 @@ fn compare_undef_rules_fold_scalar_and_vector_results() -> Result<(), IrError> {
 }
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldCompareInstruction`
+/// lines 1116-1131: the undef-with-undef "either value could make it pass or
+/// fail" shortcut is gated on `ICmpInst::isEquality`, which is integer-only --
+/// `ICMP_EQ`/`ICMP_NE` are distinct enumerators from `FCMP_OEQ`/`FCMP_ONE`/
+/// `FCMP_UEQ`/`FCMP_UNE` in the shared `CmpInst::Predicate` space, so it is
+/// always `false` for FP predicates. An FP equality-flavored predicate with an
+/// undef operand therefore falls through to the concrete
+/// `CmpInst::isUnordered(Predicate)` result instead of folding to `undef`.
+#[test]
+fn fcmp_equality_predicates_with_undef_fold_to_concrete_bool() -> Result<(), IrError> {
+    Module::with_new("fold-fcmp-undef-equality", |m| {
+        let bool_ty = m.bool_type();
+        let f64_ty = m.f64_type();
+        let undef = f64_ty.as_type().get_undef().as_constant();
+        let one = f64_ty.const_double(1.0).as_constant();
+
+        // `oeq` is ordered: undef's worst case (NaN) always makes it fail.
+        let oeq_result = constant_fold_compare_instruction(
+            CmpPredicate::Float(FloatPredicate::Oeq),
+            undef,
+            one,
+        )?
+        .expect("ordered fp equality predicate with undef folds");
+        assert_eq!(oeq_result, bool_ty.const_int(false).as_constant());
+
+        // `one` (ordered-not-equal) is likewise ordered.
+        let one_result = constant_fold_compare_instruction(
+            CmpPredicate::Float(FloatPredicate::One),
+            undef,
+            one,
+        )?
+        .expect("ordered fp inequality predicate with undef folds");
+        assert_eq!(one_result, bool_ty.const_int(false).as_constant());
+
+        // `ueq` is unordered: undef's worst case (NaN) always makes it pass.
+        let ueq_result = constant_fold_compare_instruction(
+            CmpPredicate::Float(FloatPredicate::Ueq),
+            undef,
+            one,
+        )?
+        .expect("unordered fp equality predicate with undef folds");
+        assert_eq!(ueq_result, bool_ty.const_int(true).as_constant());
+
+        // `une` (unordered-not-equal) is likewise unordered.
+        let une_result = constant_fold_compare_instruction(
+            CmpPredicate::Float(FloatPredicate::Une),
+            undef,
+            one,
+        )?
+        .expect("unordered fp inequality predicate with undef folds");
+        assert_eq!(une_result, bool_ty.const_int(true).as_constant());
+        Ok(())
+    })
+}
+
+/// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldCompareInstruction`
 /// lines 1169-1179: splatted vector compares fold before the scalable-vector
 /// bailout, while non-splat scalable vectors still decline.
 #[test]
@@ -1871,6 +1958,54 @@ fn compare_global_pointer_relations_fold() -> Result<(), IrError> {
             constant_fold_compare_instruction(CmpPredicate::Int(IntPredicate::Ne), gep, null)?
                 .expect("inbounds global GEP != null relation folds");
         assert_eq!(gep_ne_null, bool_ty.const_int(true).as_constant());
+        Ok(())
+    })
+}
+
+/// llvmkit-specific subset of `ConstantFold.cpp::evaluateICmpRelation` (the
+/// `GV->hasExternalWeakLinkage()`/`isa<GlobalAlias>` branch) plus
+/// `Function.cpp::NullPointerIsDefined`: a global compared against `null`
+/// only folds to `Ugt` in the default address space `0`.
+/// `NullPointerIsDefined(nullptr, AS)` is `AS != 0`, so upstream refuses this
+/// fold whenever `null` may be a legitimate address in the global's address
+/// space -- address space `0` still folds exactly as before.
+#[test]
+fn compare_global_pointer_vs_null_respects_address_space() -> Result<(), IrError> {
+    Module::with_new("fold-compare-global-as", |m| {
+        let bool_ty = m.bool_type();
+        let i32_ty = m.i32_type();
+
+        // Address space 0: the fold still applies (same shape as the AS-0
+        // coverage in `compare_global_pointer_relations_fold` above).
+        let ptr_ty0 = m.ptr_type(0);
+        let g0 = m.add_global("g0", i32_ty.const_zero())?;
+        let null0 = ptr_ty0.const_null().as_constant();
+        let ugt0 = constant_fold_compare_instruction(
+            CmpPredicate::Int(IntPredicate::Ugt),
+            g0.as_global_constant_ptr(),
+            null0,
+        )?
+        .expect("address space 0 global > null relation still folds");
+        assert_eq!(ugt0, bool_ty.const_int(true).as_constant());
+
+        // Address space 1: null may be a valid address there, so upstream
+        // declines the fold entirely.
+        let ptr_ty1 = m.ptr_type(1);
+        let g1 = m
+            .global_builder("g1", i32_ty.as_type())
+            .address_space(1)
+            .initializer(i32_ty.const_zero())
+            .build()?;
+        let null1 = ptr_ty1.const_null().as_constant();
+        let declined = constant_fold_compare_instruction(
+            CmpPredicate::Int(IntPredicate::Ugt),
+            g1.as_global_constant_ptr(),
+            null1,
+        )?;
+        assert_eq!(
+            declined, None,
+            "address space 1 global vs null must not fold: null may be valid there"
+        );
         Ok(())
     })
 }
@@ -2201,6 +2336,53 @@ fn select_vector_shortcuts_and_constant_expr_arms_fold() -> Result<(), IrError> 
         let expected = vec_ty
             .const_vector::<Constant<'_>, _>([lane_zero, i32_ty.const_int(6_i32).as_constant()])?;
         assert_eq!(folded, expected.as_constant());
+        Ok(())
+    })
+}
+
+/// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldSelectInstruction`
+/// line 281: a non-`ConstantInt` condition lane `break`s the per-element loop
+/// instead of aborting the whole fold. The partially-built (and therefore
+/// discarded, since its length no longer matches the lane count) vector
+/// result then falls through to the whole-value poison/undef checks below, so
+/// `select <2 x i1> <cond-exprs>, poison, %b` still folds to `%b` via the
+/// `isa<PoisonValue>(V1) -> return V2` rule.
+#[test]
+fn select_vector_condition_with_unresolved_lane_falls_through_to_poison_rule() -> Result<(), IrError>
+{
+    Module::with_new("fold-select-vector-fallthrough", |m| {
+        let i1_ty = m.bool_type();
+        let i32_ty = m.i32_type();
+        let g = m.add_global("g", i32_ty.const_zero())?;
+        // `ptrtoint @g to i1` is a symbolic `ConstantExpr`: neither poison,
+        // undef, nor a `ConstantInt`, so the per-lane condition switch can't
+        // resolve it -- this is the "unresolved lane" upstream `break`s on.
+        let unresolved_cond = m.constant_expr(
+            i1_ty.as_type(),
+            ConstantExprOpcode::PtrToInt,
+            [g.as_global_constant_ptr().into_erased()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+        let cond_ty = m.vector_type(i1_ty.as_type(), 2, false);
+        let condition =
+            cond_ty.const_vector::<Constant<'_>, _>([unresolved_cond, unresolved_cond])?;
+
+        let vec_ty = m.vector_type(i32_ty.as_type(), 2, false);
+        let poison_true = vec_ty.as_type().get_poison().as_constant();
+        let false_value = vec_ty.const_vector::<ConstantIntValue<'_, i32>, _>([
+            i32_ty.const_int(5_i32),
+            i32_ty.const_int(6_i32),
+        ])?;
+
+        let folded = constant_fold_select_instruction(
+            condition.as_constant(),
+            poison_true,
+            false_value.as_constant(),
+        )?
+        .expect("unresolved vector condition still falls through to the poison-arm rule");
+        assert_eq!(folded, false_value.as_constant());
         Ok(())
     })
 }

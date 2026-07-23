@@ -10,12 +10,13 @@ use llvmkit_ir::constant_folding::{
 use llvmkit_ir::instr_types::CastOpcode;
 use llvmkit_ir::{
     ApFloat, ApFloatSemantics, ApInt, AttrIndex, Attribute, BinaryIntrinsic, BinaryOpcode,
-    CmpPredicate, ConstantExprOpcode, ConstantExprOptions, ConstantFloatValue, ConstantIntValue,
-    DataLayout, DenormalMode, DenormalModeKind, DenormalModeSide, FoldNonDeterminism, IRBuilder,
-    InstructionView, IntDyn, IntPredicate, IrError, LibFunc, Linkage, Module, NoFolder,
-    PreservedCastFlags, RoundingMode, TargetLibraryInfo, UnaryOpcode, attributes::AttributeStorage,
-    constant_fold_binary_intrinsic, constant_fold_binary_op_operands,
-    constant_fold_compare_inst_operands, constant_fold_constant, constant_fold_fp_inst_operands,
+    CmpPredicate, ConstantExprFlags, ConstantExprOpcode, ConstantExprOptions, ConstantFloatValue,
+    ConstantIntValue, DataLayout, DenormalMode, DenormalModeKind, DenormalModeSide, FastMathFlags,
+    FoldNonDeterminism, GepNoWrapFlags, IRBuilder, InstructionView, IntDyn, IntPredicate, IrError,
+    LibFunc, Linkage, Module, NoFolder, PreservedCastFlags, RoundingMode, TargetLibraryInfo,
+    UnaryOpcode, attributes::AttributeStorage, constant_fold_binary_intrinsic,
+    constant_fold_binary_op_operands, constant_fold_compare_inst_operands, constant_fold_constant,
+    constant_fold_extract_element_instruction, constant_fold_fp_inst_operands,
     constant_fold_inst_operands, constant_fold_integer_cast, constant_fold_load_from_uniform_value,
     constant_fold_load_through_bitcast, constant_fold_unary_op_operand,
     constant_offset_from_global, is_constant_offset_from_global, lossless_inv_cast,
@@ -76,10 +77,15 @@ fn load_from_const_ptr_oob_returns_poison() -> Result<(), IrError> {
     })
 }
 
-/// llvmkit-specific subset of `ConstantFolding.cpp::ConstantFoldCastOperand`:
-/// ptrtoint uses the pointer index size from `DataLayout`, not destination width.
+/// Port of `CastInst::isEliminableCastPair` case 11 (`llvm/lib/IR/Instructions.cpp`):
+/// the `ptrtoint(inttoptr x)` collapse is sized by the *pointer* size, not the
+/// index size — even though this layout's index size (32) is narrower than
+/// its pointer size (64), the round trip preserves the bit set above the
+/// index-size boundary (bit 32), because case 11 sizes the collapse using
+/// `getPointerTypeSizeInBits`, reached before the (unimplemented in llvmkit)
+/// index-size-based switch-fallback in `ConstantFoldCastOperand`.
 #[test]
-fn ptrtoint_respects_pointer_index_size() -> Result<(), IrError> {
+fn ptrtoint_of_inttoptr_uses_pointer_size() -> Result<(), IrError> {
     Module::with_new("analysis-ptr-index", |m| {
         let dl = DataLayout::parse("e-p:64:64:64:32")?;
         let i64_ty = m.i64_type();
@@ -94,9 +100,41 @@ fn ptrtoint_respects_pointer_index_size() -> Result<(), IrError> {
         .expect("inttoptr folds through analysis layer");
         let folded = constant_fold_cast_operand(CastOpcode::PtrToInt, ptr, i64_ty.as_type(), &dl)?
             .expect("ptrtoint folds through analysis layer");
-        let int = ConstantIntValue::<IntDyn>::try_from(folded)?;
 
-        assert_eq!(int.ap_int(), ApInt::from_words(64, &[1]));
+        // Pointer size (64) equals both the i64 source and i64 destination
+        // widths, so case 11 collapses the pair to a straight `BitCast` of
+        // the original value: the round trip is a lossless identity, even
+        // though the index size (32) would have masked off bit 32.
+        assert_eq!(folded, wide.as_constant());
+        Ok(())
+    })
+}
+
+/// llvmkit-specific pin for `CastInst::isEliminableCastPair` case 11 on a
+/// fat-pointer/CHERI-like layout where pointer size (128) and index size (64)
+/// genuinely differ: `ptrtoint(inttoptr x)` on an `i128` must collapse to `x`
+/// unmasked. Sizing the collapse by index width instead of pointer width
+/// would truncate the high 64 bits a real pointer round trip preserves.
+#[test]
+fn ptrtoint_of_inttoptr_i128_collapses_to_original_value() -> Result<(), IrError> {
+    Module::with_new("analysis-ptr-i128-pointer-size", |m| {
+        let dl = DataLayout::parse("e-p:128:128:128:64")?;
+        let i128_ty = m.i128_type();
+        let ptr_ty = m.ptr_type(0);
+        // Bit 64 (above the 64-bit index boundary, within the 128-bit
+        // pointer boundary) must survive the round trip.
+        let x = i128_ty.const_ap_int(&ApInt::from_words(128, &[1, 1]))?;
+        let ptr = constant_fold_cast_operand(
+            CastOpcode::IntToPtr,
+            x.as_constant(),
+            ptr_ty.as_type(),
+            &dl,
+        )?
+        .expect("inttoptr folds through analysis layer");
+        let folded = constant_fold_cast_operand(CastOpcode::PtrToInt, ptr, i128_ty.as_type(), &dl)?
+            .expect("ptrtoint folds through analysis layer");
+
+        assert_eq!(folded, x.as_constant());
         Ok(())
     })
 }
@@ -138,6 +176,58 @@ fn dynamic_denormal_mode_declines_flush() -> Result<(), IrError> {
             flush_fp_constant(operand, mode, DenormalModeSide::Input)?,
             None
         );
+        Ok(())
+    })
+}
+
+/// llvmkit-specific subset of `ConstantFolding.cpp::FlushFPConstant`: FP
+/// *vector* operands must flush and fold element-wise through the
+/// DataLayout-aware analysis path (`constant_fold_fp_inst_operands`), not
+/// just scalars — `flush_fp_constant`'s `ConstantVector`/`ConstantDataVector`
+/// arms. The IR-builder `ConstantFolder` shell already folds FP vectors
+/// element-wise through the target-independent core; this test is specific
+/// to the analysis-layer entry point, which used to decline every FP vector.
+#[test]
+fn fp_vector_fadd_folds_elementwise_through_analysis_path() -> Result<(), IrError> {
+    Module::with_new("analysis-fp-vector", |m| {
+        let dl = DataLayout::default();
+        let f32_ty = m.f32_type();
+        let i64_ty = m.i64_type();
+        let vec_ty = m.vector_type(f32_ty.as_type(), 2, false);
+
+        let lhs = vec_ty
+            .const_vector::<ConstantFloatValue<'_, f32>, _>([
+                f32_ty.const_float(1.0),
+                f32_ty.const_float(2.0),
+            ])?
+            .as_constant();
+        let rhs = vec_ty
+            .const_vector::<ConstantFloatValue<'_, f32>, _>([
+                f32_ty.const_float(3.0),
+                f32_ty.const_float(4.0),
+            ])?
+            .as_constant();
+
+        let folded = constant_fold_fp_inst_operands(
+            BinaryOpcode::FAdd,
+            lhs,
+            rhs,
+            &dl,
+            DenormalMode::ieee(),
+            FastMathFlags::empty(),
+            FoldNonDeterminism::Allow,
+        )?
+        .expect("fp vector fadd folds elementwise through the analysis path");
+
+        for (index, expected) in [(0_i64, 4.0_f64), (1, 6.0)] {
+            let element = constant_fold_extract_element_instruction(
+                folded,
+                i64_ty.const_int(index).as_constant(),
+            )?
+            .expect("lane extracts from the folded vector");
+            let fp = ConstantFloatValue::<f32>::try_from(element)?;
+            assert!(fp.ap_float().is_exactly_value_f64(expected));
+        }
         Ok(())
     })
 }
@@ -443,6 +533,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
                 two,
                 &dl,
                 DenormalMode::ieee(),
+                FastMathFlags::empty(),
                 FoldNonDeterminism::Allow,
             )?
             .is_some()
@@ -771,6 +862,725 @@ fn determinism_deny_declines_host_libm_but_keeps_apfloat_sqrt() -> Result<(), Ir
         let fp = ConstantFloatValue::<f64>::try_from(folded)?;
 
         assert!(fp.ap_float().is_exactly_value_f64(2.0));
+        Ok(())
+    })
+}
+
+/// Mirrors `ConstantFoldFPInstOperands`'s non-determinism guard in
+/// `llvm/lib/Analysis/ConstantFolding.cpp`: under `FoldNonDeterminism::Deny`,
+/// an FP instruction carrying `nsz` must decline to fold even though its
+/// operands are perfectly foldable constants — a later optimization pass
+/// could change the answer once `nsz` is exploited. `Allow` still folds the
+/// very same instruction, proving the decline is FMF-driven, not a general
+/// failure to fold. Exercises `constant_fold_inst_operands`, the only
+/// production path that threads a real instruction's fast-math flags to
+/// `constant_fold_fp_inst_operands`.
+#[test]
+fn deny_declines_fp_binop_with_nsz_flag() -> Result<(), IrError> {
+    Module::with_new("analysis-fp-determinism-nsz", |m| {
+        let dl = DataLayout::default();
+        let f32_ty = m.f32_type();
+        let fn_ty = m.fn_type_no_params(f32_ty, false);
+        let f = m.add_function_dyn("nsz_fadd", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let one = f32_ty.const_float(1.0);
+        let two = f32_ty.const_float(2.0);
+        let add =
+            b.build_fp_add_fmf::<f32, _, _, _>(one, two, FastMathFlags::NO_SIGNED_ZEROS, "sum")?;
+        let instruction = InstructionView::try_from(add.into_erased())?;
+        let operands = [one.as_constant(), two.as_constant()];
+
+        assert_eq!(
+            constant_fold_inst_operands(
+                &instruction,
+                &operands,
+                &dl,
+                None,
+                FoldNonDeterminism::Deny,
+            )?,
+            None,
+            "an nsz FP op must decline to fold under deterministic folding"
+        );
+        let folded = constant_fold_inst_operands(
+            &instruction,
+            &operands,
+            &dl,
+            None,
+            FoldNonDeterminism::Allow,
+        )?
+        .expect("the same nsz FP op still folds when non-determinism is allowed");
+        let fp = ConstantFloatValue::<f32>::try_from(folded)?;
+
+        assert!(fp.ap_float().is_exactly_value_f64(3.0));
+        Ok(())
+    })
+}
+
+// --------------------------------------------------------------------------
+// `ConstantFoldCompareInstOperands` pointer/integer rewrites
+// (`llvm/lib/Analysis/ConstantFolding.cpp` lines 1199-1311)
+// --------------------------------------------------------------------------
+
+/// fold #1: `icmp pred (inttoptr x), null` -> `icmp pred x, 0`
+/// (`ConstantFolding.cpp` lines 1213-1224).
+#[test]
+fn inttoptr_vs_null_folds_via_integer_compare() -> Result<(), IrError> {
+    Module::with_new("analysis-inttoptr-vs-null", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i64_ty = m.i64_type();
+        let ptr_ty = m.ptr_type(0);
+        let five = i64_ty.const_int(5_i64).as_constant();
+        let lhs = m.constant_expr(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::IntToPtr,
+            [five.into_erased()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+        let null = ptr_ty.const_null().as_constant();
+
+        let folded = constant_fold_compare_inst_operands(
+            CmpPredicate::Int(IntPredicate::Eq),
+            lhs,
+            null,
+            &dl,
+            None,
+        )?
+        .expect("inttoptr-vs-null rewrites to an integer compare that folds");
+
+        assert_eq!(folded, m.bool_type().const_int(false).as_constant());
+        Ok(())
+    })
+}
+
+/// fold #2: `icmp pred (ptrtoint x), 0` -> `icmp pred x, null`
+/// (`ConstantFolding.cpp` lines 1226-1236). A non-weak, non-alias global's
+/// address is provably non-null in address space 0, so the rewritten
+/// pointer compare folds all the way to a concrete bool through the
+/// target-independent `evaluateICmpRelation` port.
+#[test]
+fn ptrtoint_eq_null_folds_to_false_for_nonweak_global() -> Result<(), IrError> {
+    Module::with_new("analysis-ptrtoint-eq-null", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i8_ty = m.i8_type();
+        let i64_ty = m.i64_type();
+        let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
+        let ptrtoint = m.constant_expr(
+            i64_ty.as_type(),
+            ConstantExprOpcode::PtrToInt,
+            [g.as_global_constant_ptr().into_erased()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+        let zero = i64_ty.const_zero().as_constant();
+
+        let folded = constant_fold_compare_inst_operands(
+            CmpPredicate::Int(IntPredicate::Eq),
+            ptrtoint,
+            zero,
+            &dl,
+            None,
+        )?
+        .expect("ptrtoint-vs-zero rewrites to a pointer compare that folds");
+
+        assert_eq!(folded, m.bool_type().const_int(false).as_constant());
+        Ok(())
+    })
+}
+
+/// fold #3 (`inttoptr` branch): `icmp pred (inttoptr x), (inttoptr y)` ->
+/// `icmp pred x, y` (`ConstantFolding.cpp` lines 1239-1252).
+#[test]
+fn inttoptr_pair_ult_folds_via_integer_compare() -> Result<(), IrError> {
+    Module::with_new("analysis-inttoptr-pair-ult", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i64_ty = m.i64_type();
+        let ptr_ty = m.ptr_type(0);
+        let four = i64_ty.const_int(4_i64).as_constant();
+        let eight = i64_ty.const_int(8_i64).as_constant();
+        let lhs = m.constant_expr(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::IntToPtr,
+            [four.into_erased()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+        let rhs = m.constant_expr(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::IntToPtr,
+            [eight.into_erased()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+
+        let folded = constant_fold_compare_inst_operands(
+            CmpPredicate::Int(IntPredicate::Ult),
+            lhs,
+            rhs,
+            &dl,
+            None,
+        )?
+        .expect("matching inttoptr pair rewrites to an integer compare that folds");
+
+        assert_eq!(folded, m.bool_type().const_int(true).as_constant());
+        Ok(())
+    })
+}
+
+/// fold #3 (`ptrtoint` branch): `icmp pred (ptrtoint x), (ptrtoint y)` ->
+/// `icmp pred x, y` (`ConstantFolding.cpp` lines 1254-1264). Two distinct,
+/// non-alias, non-interposable globals are never provably equal, so the
+/// rewritten pointer compare folds to `false` for `eq`.
+#[test]
+fn ptrtoint_pair_eq_folds_via_pointer_operand_compare() -> Result<(), IrError> {
+    Module::with_new("analysis-ptrtoint-pair-eq", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i8_ty = m.i8_type();
+        let i64_ty = m.i64_type();
+        let g1 = m.add_global_constant("g1", i8_ty.const_int(0_i8))?;
+        let g2 = m.add_global_constant("g2", i8_ty.const_int(0_i8))?;
+        let lhs = m.constant_expr(
+            i64_ty.as_type(),
+            ConstantExprOpcode::PtrToInt,
+            [g1.as_global_constant_ptr().into_erased()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+        let rhs = m.constant_expr(
+            i64_ty.as_type(),
+            ConstantExprOpcode::PtrToInt,
+            [g2.as_global_constant_ptr().into_erased()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+
+        let folded = constant_fold_compare_inst_operands(
+            CmpPredicate::Int(IntPredicate::Eq),
+            lhs,
+            rhs,
+            &dl,
+            None,
+        )?
+        .expect("matching ptrtoint pair rewrites to a pointer compare that folds");
+
+        assert_eq!(folded, m.bool_type().const_int(false).as_constant());
+        Ok(())
+    })
+}
+
+/// fold #4: base+offset stripping, `(base+off1) pred (base+off2)` ->
+/// `off1 pred off2` (`ConstantFolding.cpp` lines 1268-1291). Unsigned
+/// ordering predicates require every stripped GEP to be `inbounds` (upstream
+/// passes `AllowNonInbounds = IsEqPred`, false here); both GEPs below are.
+#[test]
+fn same_base_inbounds_gep_ult_folds_via_offset_compare() -> Result<(), IrError> {
+    Module::with_new("analysis-gep-base-offset-inbounds", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i8_ty = m.i8_type();
+        let i64_ty = m.i64_type();
+        let ptr_ty = m.ptr_type(0);
+        let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
+        let base = g.as_global_constant_ptr();
+        let four = i64_ty.const_int(4_i64).as_constant();
+        let eight = i64_ty.const_int(8_i64).as_constant();
+        let inbounds = ConstantExprOptions::new()
+            .source_ty(i8_ty.as_type())
+            .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS));
+        let lhs = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [base.into_erased(), four.into_erased()],
+            [],
+            [],
+            inbounds.clone(),
+        )?;
+        let rhs = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [base.into_erased(), eight.into_erased()],
+            [],
+            [],
+            inbounds,
+        )?;
+
+        let folded = constant_fold_compare_inst_operands(
+            CmpPredicate::Int(IntPredicate::Ult),
+            lhs,
+            rhs,
+            &dl,
+            None,
+        )?
+        .expect("same-base inbounds GEP offsets fold via offset comparison");
+
+        assert_eq!(folded, m.bool_type().const_int(true).as_constant());
+        Ok(())
+    })
+}
+
+/// fold #4, equality case: upstream allows stripping non-`inbounds` GEPs for
+/// `eq`/`ne` (`AllowNonInbounds = IsEqPred = true`), unlike the ordering
+/// case above.
+#[test]
+fn non_inbounds_same_base_gep_eq_still_folds() -> Result<(), IrError> {
+    Module::with_new("analysis-gep-base-offset-noninbounds-eq", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i8_ty = m.i8_type();
+        let i64_ty = m.i64_type();
+        let ptr_ty = m.ptr_type(0);
+        let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
+        let base = g.as_global_constant_ptr();
+        let four = i64_ty.const_int(4_i64).as_constant();
+        let eight = i64_ty.const_int(8_i64).as_constant();
+        let lhs = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [base.into_erased(), four.into_erased()],
+            [],
+            [],
+            ConstantExprOptions::new().source_ty(i8_ty.as_type()),
+        )?;
+        let rhs = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [base.into_erased(), eight.into_erased()],
+            [],
+            [],
+            ConstantExprOptions::new().source_ty(i8_ty.as_type()),
+        )?;
+
+        let folded = constant_fold_compare_inst_operands(
+            CmpPredicate::Int(IntPredicate::Eq),
+            lhs,
+            rhs,
+            &dl,
+            None,
+        )?
+        .expect("non-inbounds same-base GEP offsets still fold for eq");
+
+        assert_eq!(folded, m.bool_type().const_int(false).as_constant());
+        Ok(())
+    })
+}
+
+/// fold #4 soundness guard: unlike the `eq` case above, a non-`inbounds` GEP
+/// pair must *not* fold under an unsigned ordering predicate — non-inbounds
+/// pointer arithmetic can wrap, so raw offset order would not necessarily
+/// match actual address order. Proves the port preserves upstream's
+/// `AllowNonInbounds = IsEqPred` guard instead of over-folding.
+#[test]
+fn non_inbounds_same_base_gep_ult_declines_to_fold() -> Result<(), IrError> {
+    Module::with_new("analysis-gep-base-offset-noninbounds-ult", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i8_ty = m.i8_type();
+        let i64_ty = m.i64_type();
+        let ptr_ty = m.ptr_type(0);
+        let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
+        let base = g.as_global_constant_ptr();
+        let four = i64_ty.const_int(4_i64).as_constant();
+        let eight = i64_ty.const_int(8_i64).as_constant();
+        let lhs = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [base.into_erased(), four.into_erased()],
+            [],
+            [],
+            ConstantExprOptions::new().source_ty(i8_ty.as_type()),
+        )?;
+        let rhs = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [base.into_erased(), eight.into_erased()],
+            [],
+            [],
+            ConstantExprOptions::new().source_ty(i8_ty.as_type()),
+        )?;
+
+        assert_eq!(
+            constant_fold_compare_inst_operands(
+                CmpPredicate::Int(IntPredicate::Ult),
+                lhs,
+                rhs,
+                &dl,
+                None,
+            )?,
+            None,
+            "non-inbounds GEPs must not fold under an unsigned ordering predicate"
+        );
+        Ok(())
+    })
+}
+
+/// Non-uniqued-constant parity guard. Unlike the `Expr`-form GEP pair above
+/// (whose `base` operand is one shared `Constant` handle reused for both
+/// sides), these two pointers are each built through
+/// `GlobalVariable::ptr_offset` — llvmkit's compact `GepOffset` encoding —
+/// called independently, which mints a *fresh* arena id every time
+/// (`intern_constant_gep_offset`, `llvm_context.rs`) rather than uniquing
+/// on `(global, offset)` the way LLVM uniques `Constant*`. Before the
+/// base-identity fix, `strip_and_accumulate_constant_offset` could not
+/// resolve a `GepOffset`'s `base_id` (it names the host global directly,
+/// never through a `Constant` wrapper) and bailed immediately with zero
+/// accumulated offset, so the two stripped "bases" were the two original,
+/// arena-distinct `ptr_offset` constants themselves — unequal under plain
+/// `==`, so the fold declined even though both pointers plainly share `@g`.
+#[test]
+fn same_base_gep_offset_ult_folds_via_offset_compare() -> Result<(), IrError> {
+    Module::with_new("analysis-gep-offset-base-offset-ult", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i8_ty = m.i8_type();
+        let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
+        let lhs = g.ptr_offset(4);
+        let rhs = g.ptr_offset(8);
+
+        let folded = constant_fold_compare_inst_operands(
+            CmpPredicate::Int(IntPredicate::Ult),
+            lhs,
+            rhs,
+            &dl,
+            None,
+        )?
+        .expect("same-base GepOffset pointers fold via offset comparison");
+
+        assert_eq!(folded, m.bool_type().const_int(true).as_constant());
+        Ok(())
+    })
+}
+
+/// Composed variant of the guard above: each side is a further `getelementptr`
+/// constant expression over its own independently-built `ptr_offset` mid
+/// (`@g + 4` in both cases, but as two arena-distinct `GepOffset`
+/// constants). Exercises the fixed `GepOffset` peel arm as reached
+/// mid-walk from an outer `Expr::GetElementPtr` layer rather than as the
+/// top-level constant, and proves the accumulated offset sums correctly
+/// across both peeled layers (4 + 1 = 5 vs. 4 + 2 = 6, not just the outer
+/// layer's 1 vs. 2): under the old bail, each strip walk stopped at its
+/// own mid `ptr_offset` node with only the outer layer's offset
+/// accumulated, and those two mid nodes — being independently minted —
+/// still compared unequal.
+#[test]
+fn nested_gep_over_gep_offset_mid_folds_via_offset_compare() -> Result<(), IrError> {
+    Module::with_new("analysis-gep-offset-nested-mid-ult", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i8_ty = m.i8_type();
+        let i64_ty = m.i64_type();
+        let ptr_ty = m.ptr_type(0);
+        let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
+        let mid_lhs = g.ptr_offset(4);
+        let mid_rhs = g.ptr_offset(4);
+        let one = i64_ty.const_int(1_i64).as_constant();
+        let two = i64_ty.const_int(2_i64).as_constant();
+        let inbounds = ConstantExprOptions::new()
+            .source_ty(i8_ty.as_type())
+            .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS));
+        let lhs = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [mid_lhs.into_erased(), one.into_erased()],
+            [],
+            [],
+            inbounds.clone(),
+        )?;
+        let rhs = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [mid_rhs.into_erased(), two.into_erased()],
+            [],
+            [],
+            inbounds,
+        )?;
+
+        let folded = constant_fold_compare_inst_operands(
+            CmpPredicate::Int(IntPredicate::Ult),
+            lhs,
+            rhs,
+            &dl,
+            None,
+        )?
+        .expect("nested GEPs over independently-built same-base mids fold");
+
+        assert_eq!(folded, m.bool_type().const_int(true).as_constant());
+        Ok(())
+    })
+}
+
+/// Soundness guard for the two fixes above: `base_identity` must still
+/// distinguish genuinely *different* underlying globals, not paper over
+/// every arena-id mismatch it sees. Two `ptr_offset` pointers into two
+/// distinct globals must not fold.
+#[test]
+fn different_base_gep_offset_declines_to_fold() -> Result<(), IrError> {
+    Module::with_new("analysis-gep-offset-different-base", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i8_ty = m.i8_type();
+        let g1 = m.add_global_constant("g1", i8_ty.const_int(0_i8))?;
+        let g2 = m.add_global_constant("g2", i8_ty.const_int(0_i8))?;
+        let lhs = g1.ptr_offset(4);
+        let rhs = g2.ptr_offset(8);
+
+        assert_eq!(
+            constant_fold_compare_inst_operands(
+                CmpPredicate::Int(IntPredicate::Ult),
+                lhs,
+                rhs,
+                &dl,
+                None,
+            )?,
+            None,
+            "pointers into two different globals must not fold"
+        );
+        Ok(())
+    })
+}
+
+// ---------------------------------------------------------------------------
+// D9: `SymbolicallyEvaluateGEP` symbolic offset evaluation
+// ---------------------------------------------------------------------------
+
+/// Mirrors `llvm/lib/Analysis/ConstantFolding.cpp::SymbolicallyEvaluateGEP`
+/// (lines 881-991), the headline case: an all-constant-index GEP over a
+/// sized element type canonicalises to a single `i8`-element GEP carrying
+/// the total byte offset — `getelementptr i32, ptr @g, i64 4` folds to
+/// `getelementptr inbounds (i8, ptr @g, i64 16)`, exactly the compact
+/// `GlobalVariable::ptr_offset` encoding.
+#[test]
+fn gep_i32_index_canonicalizes_to_i8_offset() -> Result<(), IrError> {
+    Module::with_new("analysis-gep-symbolic-i32", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i32_ty = m.i32_type();
+        let i64_ty = m.i64_type();
+        let ptr_ty = m.ptr_type(0);
+        let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
+        let four = i64_ty.const_int(4_i64).as_constant();
+        let gep = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [g.as_global_constant_ptr().into_erased(), four.into_erased()],
+            [],
+            [],
+            ConstantExprOptions::new()
+                .source_ty(i32_ty.as_type())
+                .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS)),
+        )?;
+
+        let folded = constant_fold_constant(gep, &dl, None)?;
+
+        assert_eq!(folded.to_string(), g.ptr_offset(16).to_string());
+        let resolved = constant_offset_from_global(folded, &dl)
+            .expect("canonical i8 GEP resolves to base + offset");
+        assert_eq!(resolved.global(), g);
+        assert_eq!(resolved.offset(), &ApInt::from_words(64, &[16]));
+        Ok(())
+    })
+}
+
+/// Mirrors `SymbolicallyEvaluateGEP`'s "if this is a GEP of a GEP, fold it
+/// all into a single GEP" merge (`ConstantFolding.cpp` lines 915-946): two
+/// nested inbounds GEPs (`ptr @g, i64 1` twice, over `i32`) collapse to one
+/// canonical `i8` GEP carrying the combined offset (4 + 4 = 8).
+#[test]
+fn nested_gep_merges_into_single_i8_offset() -> Result<(), IrError> {
+    Module::with_new("analysis-gep-symbolic-nested", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i32_ty = m.i32_type();
+        let i64_ty = m.i64_type();
+        let ptr_ty = m.ptr_type(0);
+        let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
+        let one = i64_ty.const_int(1_i64).as_constant();
+        let inbounds = ConstantExprOptions::new()
+            .source_ty(i32_ty.as_type())
+            .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS));
+        let inner = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [g.as_global_constant_ptr().into_erased(), one.into_erased()],
+            [],
+            [],
+            inbounds.clone(),
+        )?;
+        let outer = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [inner.into_erased(), one.into_erased()],
+            [],
+            [],
+            inbounds,
+        )?;
+
+        let folded = constant_fold_constant(outer, &dl, None)?;
+
+        assert_eq!(folded.to_string(), g.ptr_offset(8).to_string());
+        let resolved = constant_offset_from_global(folded, &dl)
+            .expect("merged nested GEP resolves to base + offset");
+        assert_eq!(resolved.global(), g);
+        assert_eq!(resolved.offset(), &ApInt::from_words(64, &[8]));
+        Ok(())
+    })
+}
+
+/// D9 zero-offset case: `SymbolicallyEvaluateGEP`'s tail always builds
+/// `getelementptr i8, ptr <base>, i64 <offset>` (`ConstantFolding.cpp` lines
+/// 986-990), but that construction's own `ConstantFoldGetElementPtr`
+/// (`IsNoOp`) collapses a zero total offset straight back to the base
+/// pointer unchanged. Proven via two nested GEPs whose offsets cancel
+/// (+4, -4) — neither individually a zero-index no-op the *pre-existing*
+/// fold would already have caught at construction time, so this only
+/// resolves to zero once the new offset arithmetic runs.
+#[test]
+fn nested_gep_cancelling_offsets_fold_to_base_pointer() -> Result<(), IrError> {
+    Module::with_new("analysis-gep-symbolic-cancel", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i32_ty = m.i32_type();
+        let i64_ty = m.i64_type();
+        let ptr_ty = m.ptr_type(0);
+        let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
+        let g_ptr = g.as_global_constant_ptr();
+        let one = i64_ty.const_int(1_i64).as_constant();
+        let neg_one = i64_ty.const_int(-1_i64).as_constant();
+        let inbounds = ConstantExprOptions::new()
+            .source_ty(i32_ty.as_type())
+            .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS));
+        let inner = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [g_ptr.into_erased(), one.into_erased()],
+            [],
+            [],
+            inbounds.clone(),
+        )?;
+        let outer = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [inner.into_erased(), neg_one.into_erased()],
+            [],
+            [],
+            inbounds,
+        )?;
+
+        let folded = constant_fold_constant(outer, &dl, None)?;
+
+        // Compare printed form rather than the `Constant` handle directly:
+        // llvmkit's `GlobalValueRef` constants are not interned/deduplicated
+        // (each construction — including the fresh one this fold's merge
+        // rewraps `g`'s id into — mints a distinct arena entry), so an
+        // independently-obtained `g_ptr` handle is a *different* id from the
+        // fold's result even though both denote the exact same value.
+        assert_eq!(folded.to_string(), g_ptr.to_string());
+        let resolved =
+            constant_offset_from_global(folded, &dl).expect("cancelling GEP resolves to base");
+        assert_eq!(resolved.global(), g);
+        assert_eq!(resolved.offset(), &ApInt::zero(64));
+        Ok(())
+    })
+}
+
+// ---------------------------------------------------------------------------
+// SymbolicallyEvaluateGEP merge-loop no-wrap-flag intersection (parity fix)
+// ---------------------------------------------------------------------------
+
+/// Mirrors `SymbolicallyEvaluateGEP`'s merge loop (`ConstantFolding.cpp`
+/// lines 915-946): `NW &= GEP->getNoWrapFlags();` (line 919) runs
+/// *unconditionally* for every nested GEP the loop looks at, strictly
+/// before the `AllConstantInt` check (lines 924-931) that decides whether
+/// the loop can actually accumulate that level's offset and keep going. So
+/// a nested GEP whose own index isn't a plain `ConstantInt` — which stops
+/// the offset merge — must still have contributed its own no-wrap flags to
+/// the running intersection first.
+///
+/// `getelementptr inbounds i32, ptr (getelementptr i32, ptr @g, i64
+/// ptrtoint(ptr @h to i64)), i64 4`: the inner GEP is *not* inbounds and its
+/// index (`ptrtoint(@h)`) is a constant expression rather than a
+/// `ConstantInt`, so the merge cannot fold the inner level's offset in — but
+/// per upstream, the inner level's (empty) no-wrap flags still get
+/// intersected with the outer's `inbounds`, so the result carries no
+/// no-wrap flags at all rather than inheriting `inbounds` from the outer
+/// GEP alone.
+#[test]
+fn nested_gep_non_constant_index_intersects_inner_no_wrap_flags() -> Result<(), IrError> {
+    Module::with_new("analysis-gep-symbolic-nw-intersect", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i8_ty = m.i8_type();
+        let i32_ty = m.i32_type();
+        let i64_ty = m.i64_type();
+        let ptr_ty = m.ptr_type(0);
+        let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
+        let h = m.add_global_constant("h", i32_ty.const_int(0_i32))?;
+        let h_int = m.constant_expr(
+            i64_ty.as_type(),
+            ConstantExprOpcode::PtrToInt,
+            [h.as_global_constant_ptr().into_erased()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+
+        // Inner GEP: deliberately *not* inbounds, and its index is a
+        // constant expression rather than a plain `ConstantInt` so the merge
+        // loop cannot accumulate its offset.
+        let inner = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [
+                g.as_global_constant_ptr().into_erased(),
+                h_int.into_erased(),
+            ],
+            [],
+            [],
+            ConstantExprOptions::new().source_ty(i32_ty.as_type()),
+        )?;
+        let four = i64_ty.const_int(4_i64).as_constant();
+        let outer = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [inner.into_erased(), four.into_erased()],
+            [],
+            [],
+            ConstantExprOptions::new()
+                .source_ty(i32_ty.as_type())
+                .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS)),
+        )?;
+
+        let folded = constant_fold_constant(outer, &dl, None)?;
+
+        // Expected: `getelementptr i8, ptr <inner>, i64 16` with NO no-wrap
+        // flags — `inbounds` (outer) intersected with empty (inner) is
+        // empty. Built independently, through the same general-form
+        // construction `build_canonical_i8_gep` falls back to, so the two
+        // printed forms line up exactly if (and only if) no flag survived.
+        let sixteen = i64_ty.const_int(16_i64).as_constant();
+        let expected = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [inner.into_erased(), sixteen.into_erased()],
+            [],
+            [],
+            ConstantExprOptions::new().source_ty(i8_ty.as_type()),
+        )?;
+        assert_eq!(folded.to_string(), expected.to_string());
+        assert!(!folded.to_string().contains("inbounds"));
+
+        // Non-vacuity: the pre-fix behavior kept the outer's `inbounds`
+        // unconditionally (the inner level's flags were computed but
+        // discarded when its offset failed to peel), which would print with
+        // an `inbounds` keyword this construction never gets.
+        let wrongly_inbounds = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [inner.into_erased(), sixteen.into_erased()],
+            [],
+            [],
+            ConstantExprOptions::new()
+                .source_ty(i8_ty.as_type())
+                .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS)),
+        )?;
+        assert_ne!(folded.to_string(), wrongly_inbounds.to_string());
+
         Ok(())
     })
 }

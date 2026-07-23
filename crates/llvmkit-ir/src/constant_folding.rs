@@ -6,9 +6,10 @@
 //! availability.
 
 use super::ap_float::{ApFloat, ApFloatSemantics, ApFloatSign};
-use super::cmp_predicate::CmpPredicate;
+use super::cmp_predicate::{CmpPredicate, IntPredicate};
 use super::constant::{
-    Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
+    Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprInRange,
+    ConstantExprOpcode,
 };
 use super::constant_fold::{
     constant_fold_binary_instruction, constant_fold_cast_instruction,
@@ -18,11 +19,14 @@ use super::constant_fold::{
     constant_fold_select_instruction, constant_fold_shuffle_vector_instruction,
     constant_fold_unary_instruction, shufflevector_mask_from_constant,
 };
-use super::constants::{ConstantFloatValue, ConstantIntValue};
+use super::constants::{ConstantExprOptions, ConstantFloatValue, ConstantIntValue};
 use super::data_layout::DataLayout;
 use super::denormal_mode::{DenormalMode, DenormalModeKind, DenormalModeSide};
-use super::derived_types::{FloatType, IntType};
+use super::derived_types::{FloatType, IntType, PointerType, VectorType};
+use super::element::ElemDyn;
 use super::float_kind::FloatDyn;
+use super::fmf::FastMathFlags;
+use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::global_variable::GlobalVariable;
 use super::instr_types::{BinaryOpcode, CastOpcode, PhiData, UnaryOpcode};
 use super::instruction::{InstructionKindData, InstructionView};
@@ -32,6 +36,7 @@ use super::module::{Brand, ModuleBrand, ModuleRef, ModuleView};
 use super::target_library_info::{LibFunc, TargetLibraryInfo};
 use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData};
 use super::value::{IsValue, Value, ValueId, ValueKindData};
+use super::vec_len::LenDyn;
 use super::{ApInt, Dyn, FunctionValue, IrError, IrResult};
 
 /// Whether folds that depend on host/libm floating-point determinism are allowed.
@@ -141,6 +146,42 @@ pub fn flush_fp_constant<'ctx, B: ModuleBrand + 'ctx>(
 
     if is_undef(operand) || is_poison(operand) {
         return Ok(Some(operand));
+    }
+
+    // Mirrors the `ConstantVector`/`ConstantDataVector` arms of upstream
+    // `FlushFPConstant` (`ConstantFolding.cpp`): flush every lane of a fixed
+    // FP vector and rebuild the vector constant. A whole-vector `undef`
+    // (upstream's `UndefValue` arm) is already handled above. llvmkit has no
+    // distinct `ConstantAggregateZero` representation — zero vectors are
+    // ordinary `Aggregate`s — so upstream's all-zero fast path falls out of
+    // this loop for free (0.0 is never denormal), and likewise upstream's
+    // splat fast path is just a performance shortcut this loop reaches the
+    // same answer without. Scalable vectors have no compile-time lane list to
+    // walk and fall through to the decline below, matching upstream's
+    // decline for a non-splat scalable operand.
+    if matches!(operand.ty().data(), TypeData::FixedVector { .. })
+        && let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
+            &operand.into_erased().data().kind
+    {
+        let module = operand.into_erased().module();
+        let mut flushed = Vec::with_capacity(elements.len());
+        for id in elements.iter().copied() {
+            let Some(element) = constant_from_id(module, id) else {
+                return Ok(None);
+            };
+            let Some(flushed_element) = flush_fp_constant(element, mode, side)? else {
+                return Ok(None);
+            };
+            flushed.push(flushed_element);
+        }
+        let Ok(vector_ty) = VectorType::<ElemDyn, LenDyn, B>::try_from(operand.ty()) else {
+            return Ok(None);
+        };
+        return Ok(Some(
+            vector_ty
+                .const_vector::<Constant<'ctx, B>, _>(flushed)?
+                .as_constant(),
+        ));
     }
 
     Ok(None)
@@ -446,6 +487,7 @@ where
                 *rhs,
                 dl,
                 denormal_mode_for_instruction(data.parent.get(), value.module(), value.ty()),
+                binary_op_fmf(&data.kind),
                 allow_non_deterministic,
             )
         } else {
@@ -534,12 +576,13 @@ where
             let Some((pointer, indices)) = operands.split_first() else {
                 return Ok(None);
             };
-            constant_fold_get_element_ptr(
-                Type::new(gep.source_ty, value.module()),
-                *pointer,
-                indices,
-                None,
-            )
+            let source_ty = Type::new(gep.source_ty, value.module());
+            if let Some(folded) =
+                symbolically_evaluate_gep(source_ty, *pointer, indices, gep.flags, None, dl)?
+            {
+                return Ok(Some(folded));
+            }
+            constant_fold_get_element_ptr(source_ty, *pointer, indices, None)
         }
         InstructionKindData::Load(load) => {
             if load.volatile {
@@ -631,6 +674,24 @@ where
 }
 
 /// Fold an integer or floating-point compare with caller-provided operands.
+///
+/// Mirrors `llvm::ConstantFoldCompareInstOperands`
+/// (`llvm/lib/Analysis/ConstantFolding.cpp`, lines 1199-1311). Before
+/// falling back to the target-independent compare, try (in upstream's exact
+/// order, with upstream's exact "commit once the precondition holds, don't
+/// keep trying more folds" control flow):
+///
+/// 1. `icmp pred (inttoptr x), null` -> `icmp pred x, 0` (lines 1213-1224),
+///    and its `icmp pred (ptrtoint x), 0` / `ptrtoaddr` sibling (lines
+///    1226-1236). The swapped `null`/`(inttoptr x)` forms are reached via
+///    the trailing operand swap (case 4 below).
+/// 2. `icmp pred (inttoptr x), (inttoptr y)` -> `icmp pred x, y`, and the
+///    `ptrtoint`/`ptrtoaddr` sibling (lines 1239-1266).
+/// 3. Base+offset stripping: `(base+off1) pred (base+off2)` ->
+///    `off1 pred off2`, for two pointers that peel down to the same
+///    underlying base (lines 1268-1291).
+/// 4. If only the right-hand operand is a constant expression, swap
+///    operands and predicate and retry (lines 1292-1297).
 pub fn constant_fold_compare_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
     predicate: CmpPredicate,
     lhs: Constant<'ctx, B>,
@@ -638,6 +699,34 @@ pub fn constant_fold_compare_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
     dl: &DataLayout,
     denormal_mode: Option<DenormalMode>,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
+    if is_constant_expr_like(lhs) {
+        if let Some(result) = fold_ptr_int_cast_vs_null(predicate, lhs, rhs, dl, denormal_mode)? {
+            return Ok(result);
+        }
+        if is_constant_expr_like(rhs)
+            && let Some(result) = fold_matching_cast_pair(predicate, lhs, rhs, dl, denormal_mode)?
+        {
+            return Ok(result);
+        }
+        if let CmpPredicate::Int(int_pred) = predicate
+            && matches!(lhs.ty().data(), TypeData::Pointer { .. })
+            && !int_pred.is_signed()
+            && let Some(result) = fold_pointer_base_offset(int_pred, lhs, rhs, dl)
+        {
+            return Ok(Some(result));
+        }
+    } else if is_constant_expr_like(rhs) {
+        // If RHS is a constant expression, but the left side isn't, swap the
+        // operands and try again.
+        return constant_fold_compare_inst_operands(
+            swap_cmp_predicate(predicate),
+            rhs,
+            lhs,
+            dl,
+            denormal_mode,
+        );
+    }
+
     let lhs = if lhs.ty().is_floating_point() {
         if let Some(mode) = denormal_mode {
             let Some(flushed) = flush_fp_constant(lhs, mode, DenormalModeSide::Input)? else {
@@ -662,8 +751,393 @@ pub fn constant_fold_compare_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
     } else {
         rhs
     };
-    let _ = dl;
     constant_fold_compare_instruction(predicate, lhs, rhs)
+}
+
+/// `dyn_cast<ConstantExpr>(V) != nullptr`, extended to llvmkit's compact
+/// `GepOffset` encoding of an inbounds `getelementptr` constant expression
+/// (see that variant's doc comment) so the folds below see through both
+/// representations exactly as upstream sees through the single
+/// `ConstantExpr` representation it has.
+fn is_constant_expr_like<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+    matches!(
+        &constant.into_erased().data().kind,
+        ValueKindData::Constant(ConstantData::Expr(_) | ConstantData::GepOffset { .. })
+    )
+}
+
+/// `dyn_cast<ConstantExpr>(V)`, general-expression form only. llvmkit's
+/// compact `GepOffset` encoding never carries one of the opcodes the folds
+/// below match against, so the narrower match is equivalent for their
+/// purposes.
+fn constant_expr_data<'ctx, B: ModuleBrand + 'ctx>(
+    constant: Constant<'ctx, B>,
+) -> Option<&'ctx ConstantExprData> {
+    match &constant.into_erased().data().kind {
+        ValueKindData::Constant(ConstantData::Expr(expr)) => Some(expr),
+        _ => None,
+    }
+}
+
+/// fold: `icmp pred (inttoptr x), null` -> `icmp pred x, 0`
+/// fold: `icmp pred (ptrtoint x), 0` (or `ptrtoaddr`) -> `icmp pred x, null`
+///
+/// Mirrors the `Ops1->isNullValue()` block of
+/// `ConstantFoldCompareInstOperands` (`ConstantFolding.cpp` lines
+/// 1213-1236). The outer `Option` reports whether upstream's opcode/width
+/// precondition held and committed to a recursive fold; when it did, the
+/// inner `Option` is that recursion's own (possibly declining) answer,
+/// which the caller must return as-is rather than trying more folds,
+/// mirroring upstream's unconditional `return` inside the `if`.
+fn fold_ptr_int_cast_vs_null<'ctx, B: ModuleBrand + 'ctx>(
+    predicate: CmpPredicate,
+    lhs: Constant<'ctx, B>,
+    rhs: Constant<'ctx, B>,
+    dl: &DataLayout,
+    denormal_mode: Option<DenormalMode>,
+) -> IrResult<Option<Option<Constant<'ctx, B>>>> {
+    if !constant_is_null_value(rhs) {
+        return Ok(None);
+    }
+    let Some(expr) = constant_expr_data(lhs) else {
+        return Ok(None);
+    };
+    let module = lhs.into_erased().module();
+
+    if expr.opcode == ConstantExprOpcode::IntToPtr
+        && let [operand_id] = expr.operands.as_ref()
+        && let Some(operand) = constant_from_id(module, *operand_id)
+        && let Some(addr_space) = pointer_address_space(lhs.ty())
+    {
+        let int_ptr_ty = int_type(module, dl.pointer_size_in_bits(addr_space))?;
+        if let Some(casted) = fold_integer_cast_constant(operand, int_ptr_ty.as_type(), false, dl)?
+        {
+            let null = int_ptr_ty.const_zero().as_constant();
+            return Ok(Some(constant_fold_compare_inst_operands(
+                predicate,
+                casted,
+                null,
+                dl,
+                denormal_mode,
+            )?));
+        }
+    }
+
+    // icmp only compares the address part of the pointer, so only do this
+    // transform if the integer size matches the address size.
+    if matches!(
+        expr.opcode,
+        ConstantExprOpcode::PtrToInt | ConstantExprOpcode::PtrToAddr
+    ) && let [operand_id] = expr.operands.as_ref()
+        && let Some(operand) = constant_from_id(module, *operand_id)
+        && let Some(addr_bits) = index_bits_for_pointer(operand.ty(), dl)
+        && let Ok(lhs_int_ty) = IntType::<IntDyn, B>::try_from(lhs.ty())
+        && lhs_int_ty.bit_width() == addr_bits
+        && let Ok(ptr_ty) = PointerType::<B>::try_from(operand.ty())
+    {
+        let null = ptr_ty.const_null().as_constant();
+        return Ok(Some(constant_fold_compare_inst_operands(
+            predicate,
+            operand,
+            null,
+            dl,
+            denormal_mode,
+        )?));
+    }
+
+    Ok(None)
+}
+
+/// fold: `icmp pred (inttoptr x), (inttoptr y)` -> `icmp pred x, y`
+/// fold: `icmp pred (ptrtoint x), (ptrtoint y)` -> `icmp pred x, y` (or
+/// `ptrtoaddr`)
+///
+/// Mirrors the `CE0->getOpcode() == CE1->getOpcode()` block of
+/// `ConstantFoldCompareInstOperands` (`ConstantFolding.cpp` lines
+/// 1239-1266). The caller has already confirmed both `lhs` and `rhs` are
+/// constant expressions. Same "commit once the precondition holds" contract
+/// as [`fold_ptr_int_cast_vs_null`].
+fn fold_matching_cast_pair<'ctx, B: ModuleBrand + 'ctx>(
+    predicate: CmpPredicate,
+    lhs: Constant<'ctx, B>,
+    rhs: Constant<'ctx, B>,
+    dl: &DataLayout,
+    denormal_mode: Option<DenormalMode>,
+) -> IrResult<Option<Option<Constant<'ctx, B>>>> {
+    let Some(lhs_expr) = constant_expr_data(lhs) else {
+        return Ok(None);
+    };
+    let Some(rhs_expr) = constant_expr_data(rhs) else {
+        return Ok(None);
+    };
+    if lhs_expr.opcode != rhs_expr.opcode {
+        return Ok(None);
+    }
+    let module = lhs.into_erased().module();
+
+    if lhs_expr.opcode == ConstantExprOpcode::IntToPtr
+        && let [lhs_operand_id] = lhs_expr.operands.as_ref()
+        && let [rhs_operand_id] = rhs_expr.operands.as_ref()
+        && let Some(lhs_operand) = constant_from_id(module, *lhs_operand_id)
+        && let Some(rhs_operand) = constant_from_id(module, *rhs_operand_id)
+        && let Some(addr_space) = pointer_address_space(lhs.ty())
+    {
+        let int_ptr_ty = int_type(module, dl.pointer_size_in_bits(addr_space))?;
+        // Convert both integer values to the right size to ensure we get
+        // the proper extension or truncation.
+        if let Some(c0) = fold_integer_cast_constant(lhs_operand, int_ptr_ty.as_type(), false, dl)?
+            && let Some(c1) =
+                fold_integer_cast_constant(rhs_operand, int_ptr_ty.as_type(), false, dl)?
+        {
+            return Ok(Some(constant_fold_compare_inst_operands(
+                predicate,
+                c0,
+                c1,
+                dl,
+                denormal_mode,
+            )?));
+        }
+    }
+
+    // icmp only compares the address part of the pointer, so only do this
+    // transform if the integer size matches the address size.
+    if matches!(
+        lhs_expr.opcode,
+        ConstantExprOpcode::PtrToInt | ConstantExprOpcode::PtrToAddr
+    ) && let [lhs_operand_id] = lhs_expr.operands.as_ref()
+        && let [rhs_operand_id] = rhs_expr.operands.as_ref()
+        && let Some(lhs_operand) = constant_from_id(module, *lhs_operand_id)
+        && let Some(rhs_operand) = constant_from_id(module, *rhs_operand_id)
+        && let Some(addr_bits) = index_bits_for_pointer(lhs_operand.ty(), dl)
+        && let Ok(lhs_int_ty) = IntType::<IntDyn, B>::try_from(lhs.ty())
+        && lhs_int_ty.bit_width() == addr_bits
+        && lhs_operand.ty() == rhs_operand.ty()
+    {
+        return Ok(Some(constant_fold_compare_inst_operands(
+            predicate,
+            lhs_operand,
+            rhs_operand,
+            dl,
+            denormal_mode,
+        )?));
+    }
+
+    Ok(None)
+}
+
+/// Convert pointer comparison `(base+offset1) pred (base+offset2)` into
+/// `offset1 pred offset2`, for two pointers that strip down to the same
+/// underlying base. Mirrors the final `if` block of
+/// `ConstantFoldCompareInstOperands` (`ConstantFolding.cpp` lines
+/// 1268-1291). The caller has already confirmed `lhs` is a constant
+/// expression, `lhs`'s type is a (scalar) pointer, and `predicate` is not a
+/// signed comparison.
+///
+/// Bases are compared via [`base_identity`] rather than `==`: upstream
+/// compares the stripped `Constant*` pointers directly (`Stripped0 ==
+/// Stripped1`), which is sound there only because LLVM uniques `Constant*`
+/// (`@g` always resolves to the same pointer). llvmkit does not unique its
+/// `GlobalValueRef`/`GepOffset` constants, so two independently-built
+/// pointers into the same global strip down to distinct `Constant` handles
+/// with distinct arena ids; `base_identity` resolves through that wrapper
+/// to the shared underlying global/function id instead.
+fn fold_pointer_base_offset<'ctx, B: ModuleBrand + 'ctx>(
+    predicate: IntPredicate,
+    lhs: Constant<'ctx, B>,
+    rhs: Constant<'ctx, B>,
+    dl: &DataLayout,
+) -> Option<Constant<'ctx, B>> {
+    let index_bits = index_bits_for_pointer(lhs.ty(), dl)?;
+    // This only works for equality and unsigned comparison, as inbounds
+    // permits crossing the sign boundary. However, the offset comparison
+    // itself is signed.
+    let is_eq_pred = matches!(predicate, IntPredicate::Eq | IntPredicate::Ne);
+    let (lhs_base, lhs_offset) =
+        strip_and_accumulate_constant_offset(lhs, index_bits, is_eq_pred, dl);
+    let (rhs_base, rhs_offset) =
+        strip_and_accumulate_constant_offset(rhs, index_bits, is_eq_pred, dl);
+    if base_identity(lhs_base) != base_identity(rhs_base) {
+        return None;
+    }
+    let signed_predicate = predicate.flip_signedness();
+    let result = compare_ap_int_with_predicate(signed_predicate, &lhs_offset, &rhs_offset);
+    let module = lhs.into_erased().module();
+    Some(module.bool_type().const_int(result).as_constant())
+}
+
+/// Canonical identity key for a base pointer returned by
+/// [`strip_and_accumulate_constant_offset`], standing in for upstream's
+/// direct `Constant*` equality (see [`fold_pointer_base_offset`]'s doc
+/// comment for why arena identity alone is insufficient here).
+///
+/// A global/function-backed base resolves to the underlying global's own
+/// [`ValueId`] regardless of how many distinct `GlobalValueRef` wrapper
+/// constants happen to name it — including a bare `GepOffset` base,
+/// defensively, though after stripping it should already have been
+/// re-wrapped as a `GlobalValueRef` by
+/// [`strip_and_accumulate_constant_offset`]. Anything else (`undef`, an
+/// unrecognized constant expression, ...) keeps its own arena id as the
+/// key, exactly like the arena-identity comparison this replaces: safe,
+/// since two such constants only compare equal when they are the literal
+/// same value.
+fn base_identity<'ctx, B: ModuleBrand + 'ctx>(base: Constant<'ctx, B>) -> ValueId {
+    match &base.into_erased().data().kind {
+        ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => *value,
+        ValueKindData::Function(_) | ValueKindData::GlobalVariable(_) => base.id(),
+        ValueKindData::Constant(ConstantData::GepOffset { base_id, .. }) => *base_id,
+        _ => base.id(),
+    }
+}
+
+/// Peel `getelementptr`/`bitcast` constant-expression layers off `pointer`,
+/// accumulating the constant byte offset from the peeled base. A
+/// constant-expression-only slice of
+/// `Value::stripAndAccumulateConstantOffsets` (`llvm/lib/IR/Value.cpp`,
+/// used by [`fold_pointer_base_offset`] above): `getelementptr`, gated on
+/// `allow_non_inbounds` exactly like upstream's `AllowNonInbounds`
+/// parameter (the call site passes `IsEqPred`, matching upstream), and
+/// `bitcast` (always transparent, matching upstream).
+///
+/// `addrspacecast` is deliberately not peeled: upstream's own comment on
+/// `stripAndAccumulateConstantOffsets` notes that crossing an
+/// address-space cast can change the index width mid-walk, and this port
+/// keeps a single `index_bits` for the whole walk to avoid that
+/// complexity. `GlobalAlias` aliasee-stepping and the
+/// `inttoptr(add(ptrtoint p, off))` round trip upstream additionally peels
+/// under `LookThroughIntToPtr` are not ported either. All three are safe,
+/// narrower-coverage omissions: declining a peel only forgoes a fold
+/// upstream would still perform, never produces an incorrect one.
+fn strip_and_accumulate_constant_offset<'ctx, B: ModuleBrand + 'ctx>(
+    pointer: Constant<'ctx, B>,
+    index_bits: u32,
+    allow_non_inbounds: bool,
+    dl: &DataLayout,
+) -> (Constant<'ctx, B>, ApInt) {
+    let mut offset = ApInt::zero(index_bits);
+    let mut current = pointer;
+    loop {
+        let module = current.into_erased().module();
+        match &current.into_erased().data().kind {
+            ValueKindData::Constant(ConstantData::GepOffset { base_id, off }) => {
+                // Only ever constructed for an inbounds GEP (see
+                // `ConstantData::GepOffset`'s doc comment), so this compact
+                // form is always safe to peel regardless of
+                // `allow_non_inbounds`. `base_id` names the host
+                // global/function directly rather than through a `Constant`
+                // wrapper (same doc comment), so it can't be resolved via
+                // `constant_from_id` like the other arms here — re-wrap it
+                // as a `GlobalValueRef` of the same pointer type instead,
+                // exactly as `peel_one_gep_level` does for the same
+                // encoding, and keep walking from there.
+                let ptr_ty = current.ty();
+                let wrapped = module
+                    .context()
+                    .intern_constant_global_value_ref(ptr_ty.id(), *base_id);
+                let base = Constant::from_parts(Value::from_parts(wrapped, module, ptr_ty.id()));
+                offset = offset.wrapping_add(&gep_offset_magnitude(*off, index_bits));
+                current = base;
+            }
+            ValueKindData::Constant(ConstantData::Expr(expr)) => match expr.opcode {
+                ConstantExprOpcode::BitCast => {
+                    let [operand_id] = expr.operands.as_ref() else {
+                        return (current, offset);
+                    };
+                    let Some(operand) = constant_from_id(module, *operand_id) else {
+                        return (current, offset);
+                    };
+                    current = operand;
+                }
+                ConstantExprOpcode::GetElementPtr => {
+                    if !allow_non_inbounds && !gep_flags_are_inbounds(&expr.flags) {
+                        return (current, offset);
+                    }
+                    let Some(source_ty) = expr.source_ty else {
+                        return (current, offset);
+                    };
+                    let source_ty = Type::new(source_ty, module);
+                    let Some((base_id, index_ids)) = expr.operands.split_first() else {
+                        return (current, offset);
+                    };
+                    let Some(base) = constant_from_id(module, *base_id) else {
+                        return (current, offset);
+                    };
+                    let Some(gep_offset) =
+                        constant_gep_offset(source_ty, index_ids, module, index_bits, dl)
+                    else {
+                        return (current, offset);
+                    };
+                    offset = offset.wrapping_add(&gep_offset);
+                    current = base;
+                }
+                _ => return (current, offset),
+            },
+            _ => return (current, offset),
+        }
+    }
+}
+
+/// `GEPOperator::isInBounds` for a constant `getelementptr` expression's
+/// stored flags.
+fn gep_flags_are_inbounds(flags: &ConstantExprFlags) -> bool {
+    matches!(
+        flags,
+        ConstantExprFlags::Gep(gep_flags) if gep_flags.no_wrap().contains(GepNoWrapFlags::IN_BOUNDS)
+    )
+}
+
+/// `ICmpInst::compare` (`llvm/include/llvm/IR/InstrTypes.h`): evaluate a
+/// signed/unsigned/equality integer predicate directly against two
+/// `APInt`s.
+fn compare_ap_int_with_predicate(predicate: IntPredicate, lhs: &ApInt, rhs: &ApInt) -> bool {
+    match predicate {
+        IntPredicate::Eq => lhs.eq_ap_int(rhs),
+        IntPredicate::Ne => !lhs.eq_ap_int(rhs),
+        IntPredicate::Ugt => lhs.ugt(rhs),
+        IntPredicate::Uge => lhs.uge(rhs),
+        IntPredicate::Ult => lhs.ult(rhs),
+        IntPredicate::Ule => lhs.ule(rhs),
+        IntPredicate::Sgt => lhs.sgt(rhs),
+        IntPredicate::Sge => lhs.sge(rhs),
+        IntPredicate::Slt => lhs.slt(rhs),
+        IntPredicate::Sle => lhs.sle(rhs),
+    }
+}
+
+/// `CmpInst::getSwappedPredicate` (`llvm/lib/IR/Instructions.cpp`),
+/// dispatched across the combined int/float predicate space.
+fn swap_cmp_predicate(predicate: CmpPredicate) -> CmpPredicate {
+    match predicate {
+        CmpPredicate::Int(pred) => CmpPredicate::Int(pred.swapped()),
+        CmpPredicate::Float(pred) => CmpPredicate::Float(pred.swapped()),
+    }
+}
+
+/// `Constant::isNullValue` (`llvm/lib/IR/Constants.cpp`), restricted to the
+/// scalar/aggregate shapes reachable here. A local copy of the
+/// pure-IR-layer `constant_fold::constant_is_null_value` for this
+/// DataLayout-aware analysis module, mirroring that module's own existing
+/// `is_undef`/`is_poison` duplication here rather than threading
+/// cross-module visibility.
+fn constant_is_null_value<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+    match &constant.into_erased().data().kind {
+        ValueKindData::Constant(ConstantData::Int(_)) => is_zero_int_constant(constant),
+        ValueKindData::Constant(ConstantData::Float(_)) => {
+            ConstantFloatValue::<FloatDyn, B>::try_from(constant)
+                .is_ok_and(|value| value.ap_float().is_pos_zero())
+        }
+        ValueKindData::Constant(ConstantData::PointerNull) => true,
+        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
+            let module = constant.into_erased().module();
+            elements
+                .iter()
+                .all(|id| constant_from_id(module, *id).is_some_and(constant_is_null_value))
+        }
+        _ => false,
+    }
+}
+
+fn is_zero_int_constant<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+    ConstantIntValue::<IntDyn, B>::try_from(constant).is_ok_and(|value| value.ap_int().is_zero())
 }
 
 /// Fold a unary operation with a caller-provided constant operand.
@@ -715,6 +1189,7 @@ pub fn constant_fold_fp_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
     rhs: Constant<'ctx, B>,
     dl: &DataLayout,
     denormal_mode: DenormalMode,
+    fmf: FastMathFlags,
     allow_non_deterministic: FoldNonDeterminism,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
     let Some(lhs) = flush_fp_constant(lhs, denormal_mode, DenormalModeSide::Input)? else {
@@ -723,6 +1198,20 @@ pub fn constant_fold_fp_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
     let Some(rhs) = flush_fp_constant(rhs, denormal_mode, DenormalModeSide::Input)? else {
         return Ok(None);
     };
+    // Mirrors `ConstantFoldFPInstOperands`'s non-determinism guard in
+    // `llvm/lib/Analysis/ConstantFolding.cpp`: nsz/reassoc/contract/arcp let a
+    // later optimization change the FP result, so deterministic folding must
+    // decline rather than commit to one answer.
+    if matches!(allow_non_deterministic, FoldNonDeterminism::Deny)
+        && fmf.intersects(
+            FastMathFlags::NO_SIGNED_ZEROS
+                | FastMathFlags::ALLOW_REASSOC
+                | FastMathFlags::ALLOW_CONTRACT
+                | FastMathFlags::ALLOW_RECIPROCAL,
+        )
+    {
+        return Ok(None);
+    }
     let Some(folded) = constant_fold_binary_op_operands(opcode, lhs, rhs, dl)? else {
         return Ok(None);
     };
@@ -1011,15 +1500,11 @@ fn constant_offset_from_global_with_offset<'ctx, B: ModuleBrand + 'ctx>(
                 return None;
             };
             let index_bits = index_bits_for_pointer(pointer.ty(), dl)?;
-            let magnitude = ApInt::from_words(index_bits, &[off.unsigned_abs()]);
-            let addend = if *off < 0 {
-                magnitude.negate()
-            } else {
-                magnitude
-            };
             Some(ConstantOffsetFromGlobal::new(
                 global,
-                offset.sext_or_trunc(index_bits).wrapping_add(&addend),
+                offset
+                    .sext_or_trunc(index_bits)
+                    .wrapping_add(&gep_offset_magnitude(*off, index_bits)),
             ))
         }
         ValueKindData::Constant(ConstantData::Expr(expr)) => match expr.opcode {
@@ -1132,6 +1617,327 @@ fn constant_gep_index<'ctx, B: ModuleBrand + 'ctx>(
 
 fn scaled_offset(index: &ApInt, scale: u64, index_bits: u32) -> ApInt {
     index.wrapping_mul(&ApInt::from_words(index_bits, &[scale]))
+}
+
+/// Mirrors `SymbolicallyEvaluateGEP` (`llvm/lib/Analysis/ConstantFolding.cpp`
+/// lines 881-991): canonicalise an all-constant-integer-index scalar
+/// `getelementptr` to a single `getelementptr i8, ptr <base>, i64 <total
+/// offset>`, merging through nested constant-GEP layers (both the general
+/// `ConstantExprOpcode::GetElementPtr` form and llvmkit's compact
+/// `ConstantData::GepOffset` form) and propagating no-wrap flags the same way
+/// upstream's merge loop does (lines 915-951, 982-984). Tried by both GEP
+/// dispatch sites *before* falling back to the existing
+/// [`constant_fold_get_element_ptr`] empty/poison/undef/noop/in-range folds,
+/// matching upstream's `ConstantFoldInstOperandsImpl` dispatch order (lines
+/// 1031-1041: `SymbolicallyEvaluateGEP` first, `ConstantExpr::getGetElementPtr`
+/// — whose own constructor re-runs the target-independent fold — second).
+///
+/// Narrower than upstream in four precise, safe-by-construction ways (each
+/// only forgoes a fold upstream would make; none mis-fold):
+///
+///  - **No `CastGEPIndices`** (index-width normalisation for vector-shaped
+///    indices/pointers, lines 843-878, called at 890-892). This port only
+///    handles a scalar pointer base (`index_bits_for_pointer` returns `None`
+///    for a vector-of-pointers type, matching upstream's own
+///    `!Ptr->getType()->isPointerTy()` bail at lines 894-896) with scalar
+///    `ConstantInt` indices. Upstream itself never symbolically evaluates an
+///    offset for a genuinely vector-shaped index either — `isa<ConstantInt>`
+///    always fails for a vector constant (lines 900-902) — so the only thing
+///    skipped is upstream's index-width-only recursive re-fold for that
+///    shape, never an offset canonicalisation this port would otherwise
+///    produce.
+///  - **No `in_range` support**: llvmkit's [`ConstantExprInRange`] has no
+///    `sextOrTrunc`/`subtract`/`intersectWith` (needed at lines 911-913,
+///    934-938). Any GEP — outer or merged-through — carrying `in_range`
+///    stops the fold immediately rather than dropping or mis-adjusting the
+///    range.
+///  - **No null/`inttoptr`-base fold** (lines 953-971): llvmkit models
+///    neither `DataLayout::mustNotIntroduceIntToPtr` nor `APInt::insertBits`.
+///    Rather than mis-canonicalising a from-null (or from-`inttoptr`-of-a-
+///    nonzero-constant) GEP into a `getelementptr i8, ptr null, ...` form
+///    upstream would instead fold to `inttoptr`, this bails to `None`
+///    whenever the fully-merged base is null or `inttoptr` of a nonzero
+///    `ConstantInt`.
+///  - **No "infer inbounds for GEPs of globals"** (lines 973-980,
+///    `Value::getPointerDereferenceableBytes`): llvmkit has no
+///    dereferenceable-bytes/pointer-capacity query. Simply omitted — the
+///    produced no-wrap flags can be weaker (missing an inferable `inbounds`)
+///    than upstream's, never wrong.
+fn symbolically_evaluate_gep<'ctx, B: ModuleBrand + 'ctx>(
+    source_ty: Type<'ctx, B>,
+    pointer: Constant<'ctx, B>,
+    indices: &[Constant<'ctx, B>],
+    nw: GepNoWrapFlags,
+    in_range: Option<&ConstantExprInRange>,
+    dl: &DataLayout,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // `SrcElemTy->isSized() && !isa<ScalableVectorType>(SrcElemTy)`.
+    if !source_ty.is_sized() || matches!(source_ty.data(), TypeData::ScalableVector { .. }) {
+        return Ok(None);
+    }
+    // Deferred: in_range preservation (see doc comment above).
+    if in_range.is_some() {
+        return Ok(None);
+    }
+    // `!Ptr->getType()->isPointerTy()` — also excludes vector-of-pointers,
+    // deferred alongside `CastGEPIndices` (see doc comment above).
+    let TypeData::Pointer { .. } = pointer.ty().data() else {
+        return Ok(None);
+    };
+    let Some(index_bits) = index_bits_for_pointer(pointer.ty(), dl) else {
+        return Ok(None);
+    };
+
+    let module = pointer.into_erased().module();
+    let index_ids: Vec<ValueId> = indices.iter().map(|index| index.id()).collect();
+    // `Offset = APInt(BitWidth, DL.getIndexedOffsetInType(SrcElemTy, Ops[1..]), ...)`.
+    // Bails (matching `for i in 1..: if (!isa<ConstantInt>(Ops[i])) return
+    // nullptr;`) whenever an index isn't a plain scalar `ConstantInt`.
+    let Some(mut offset) = constant_gep_offset(source_ty, &index_ids, module, index_bits, dl)
+    else {
+        return Ok(None);
+    };
+
+    // "If this is a GEP of a GEP, fold it all into a single GEP."
+    let mut nw = nw;
+    let mut overflow = false;
+    let mut ptr = pointer;
+    while let Some(level_nw) = gep_level_no_wrap_flags(ptr) {
+        // Upstream intersects a level's no-wrap flags unconditionally
+        // (`NW &= GEP->getNoWrapFlags();`, `ConstantFolding.cpp` line 919) —
+        // *before* it even checks whether that level's indices are all
+        // `ConstantInt` (lines 924-931). So this must run even when the
+        // peel below fails and the loop is about to stop.
+        nw &= level_nw;
+        let Some((base, level_offset)) = peel_one_gep_level(ptr, index_bits, dl) else {
+            break;
+        };
+        let (combined, this_overflowed) = offset.sadd_ov(&level_offset);
+        offset = combined;
+        overflow |= this_overflowed;
+        ptr = base;
+    }
+
+    // "Preserving nusw (without inbounds) also requires that the offset
+    // additions did not overflow."
+    if nw.contains(GepNoWrapFlags::NUSW) && !nw.contains(GepNoWrapFlags::IN_BOUNDS) && overflow {
+        nw = nw.difference(GepNoWrapFlags::IN_BOUNDS | GepNoWrapFlags::NUSW);
+    }
+
+    // Deferred: null/`inttoptr`-base -> `inttoptr` fold (see doc comment).
+    if is_null_or_inttoptr_nonzero_base(ptr) {
+        return Ok(None);
+    }
+
+    // Deferred: "infer inbounds for GEPs of globals" (see doc comment) — `nw`
+    // is used exactly as merged above, never upgraded to `inbounds` here.
+
+    // "nusw + nneg -> nuw"
+    if nw.contains(GepNoWrapFlags::NUSW) && offset.is_non_negative() {
+        nw |= GepNoWrapFlags::NUW;
+    }
+
+    build_canonical_i8_gep(ptr, &offset, nw)
+}
+
+/// Return the no-wrap flags of `ptr` if it is GEP-shaped — either llvmkit's
+/// compact [`ConstantData::GepOffset`] (always `inbounds`) or a general
+/// [`ConstantExprOpcode::GetElementPtr`] constant expression (its stored
+/// flags) — or `None` if `ptr` is not a GEP at all (upstream's merge-loop
+/// condition, `while (auto *GEP = dyn_cast<GEPOperator>(Ptr))`,
+/// `ConstantFolding.cpp` line 918).
+///
+/// Deliberately split out of [`peel_one_gep_level`]: upstream intersects a
+/// level's no-wrap flags into the running state *unconditionally* (`NW &=
+/// GEP->getNoWrapFlags();`, line 919) — before it even checks whether that
+/// level's indices are all `ConstantInt` (`AllConstantInt`, lines 924-931).
+/// Callers must consult this function first and intersect its result before
+/// attempting [`peel_one_gep_level`], so the intersection still happens on
+/// the level where the peel is about to fail and the merge loop is about to
+/// stop.
+fn gep_level_no_wrap_flags<'ctx, B: ModuleBrand + 'ctx>(
+    ptr: Constant<'ctx, B>,
+) -> Option<GepNoWrapFlags> {
+    match &ptr.into_erased().data().kind {
+        ValueKindData::Constant(ConstantData::GepOffset { .. }) => Some(GepNoWrapFlags::inbounds()),
+        ValueKindData::Constant(ConstantData::Expr(expr))
+            if expr.opcode == ConstantExprOpcode::GetElementPtr =>
+        {
+            Some(match &expr.flags {
+                ConstantExprFlags::Gep(flags) => flags.no_wrap(),
+                _ => GepNoWrapFlags::empty(),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Attempt to peel one level of a constant `getelementptr` — either
+/// llvmkit's compact [`ConstantData::GepOffset`] or the general
+/// [`ConstantExprOpcode::GetElementPtr`] constant expression — returning its
+/// base pointer and its own contribution to the running byte offset. Callers
+/// must already know `ptr` is GEP-shaped (via [`gep_level_no_wrap_flags`])
+/// before calling this; a non-GEP `ptr` still falls through to `None` here
+/// too, but no longer needs to for the caller's own no-wrap intersection.
+///
+/// `None` stops the caller's merge loop exactly where upstream's does past
+/// the unconditional `NW &=` (which [`gep_level_no_wrap_flags`] now covers):
+/// a nested GEP with a non-`ConstantInt` index (`AllConstantInt`,
+/// `ConstantFolding.cpp` lines 924-931), or (this port's addition) a nested
+/// GEP carrying `in_range` — see [`symbolically_evaluate_gep`]'s doc comment
+/// for why that last one isn't ported.
+fn peel_one_gep_level<'ctx, B: ModuleBrand + 'ctx>(
+    ptr: Constant<'ctx, B>,
+    index_bits: u32,
+    dl: &DataLayout,
+) -> Option<(Constant<'ctx, B>, ApInt)> {
+    let module = ptr.into_erased().module();
+    match &ptr.into_erased().data().kind {
+        ValueKindData::Constant(ConstantData::GepOffset { base_id, off }) => {
+            // `base_id` names the host global/function directly — its own
+            // `ValueKindData` is `GlobalVariable`/`Function`, never
+            // `Constant` (see `ConstantData::GepOffset`'s doc comment) — so
+            // it cannot be resolved through `constant_from_id`. Re-wrap it
+            // as a `GlobalValueRef` of the same pointer type as `ptr` itself
+            // (a GEP never changes address space), the same wrapping
+            // `GlobalVariable`/`FunctionValue::as_global_constant_ptr` build
+            // for the same kind of id elsewhere.
+            let ptr_ty = ptr.ty();
+            let wrapped = module
+                .context()
+                .intern_constant_global_value_ref(ptr_ty.id(), *base_id);
+            let base = Constant::from_parts(Value::from_parts(wrapped, module, ptr_ty.id()));
+            Some((base, gep_offset_magnitude(*off, index_bits)))
+        }
+        ValueKindData::Constant(ConstantData::Expr(expr))
+            if expr.opcode == ConstantExprOpcode::GetElementPtr =>
+        {
+            let in_range = match &expr.flags {
+                ConstantExprFlags::Gep(flags) => flags.in_range(),
+                _ => None,
+            };
+            if in_range.is_some() {
+                return None;
+            }
+            let source_ty = Type::new(expr.source_ty?, module);
+            let (base_id, index_ids) = expr.operands.split_first()?;
+            let base = constant_from_id(module, *base_id)?;
+            let level_offset = constant_gep_offset(source_ty, index_ids, module, index_bits, dl)?;
+            Some((base, level_offset))
+        }
+        _ => None,
+    }
+}
+
+/// Reinterpret a [`ConstantData::GepOffset`] byte offset as an
+/// `index_bits`-wide signed [`ApInt`]. Factored out of
+/// [`strip_and_accumulate_constant_offset`],
+/// [`constant_offset_from_global_with_offset`], and [`peel_one_gep_level`],
+/// which all peel the same compact encoding.
+fn gep_offset_magnitude(off: i64, index_bits: u32) -> ApInt {
+    let magnitude = ApInt::from_words(index_bits, &[off.unsigned_abs()]);
+    if off < 0 {
+        magnitude.negate()
+    } else {
+        magnitude
+    }
+}
+
+/// `Ptr->isNullValue()`, or `Ptr` is `inttoptr` of a literal nonzero
+/// `ConstantInt` — the precondition upstream uses (lines 963-964) to fold to
+/// `inttoptr` instead of a GEP. This port declines instead (see
+/// [`symbolically_evaluate_gep`]'s doc comment); `inttoptr` of anything else
+/// (a non-`ConstantInt` operand) does *not* match, mirroring upstream's
+/// `BaseIntVal` staying zero — and thus this condition staying false — for
+/// that shape (lines 955-961).
+fn is_null_or_inttoptr_nonzero_base<'ctx, B: ModuleBrand + 'ctx>(ptr: Constant<'ctx, B>) -> bool {
+    if constant_is_null_value(ptr) {
+        return true;
+    }
+    let ValueKindData::Constant(ConstantData::Expr(expr)) = &ptr.into_erased().data().kind else {
+        return false;
+    };
+    if expr.opcode != ConstantExprOpcode::IntToPtr {
+        return false;
+    }
+    let [operand_id] = expr.operands.as_ref() else {
+        return false;
+    };
+    let module = ptr.into_erased().module();
+    let Some(operand) = constant_from_id(module, *operand_id) else {
+        return false;
+    };
+    let Ok(operand_int) = ConstantIntValue::<IntDyn, B>::try_from(operand) else {
+        return false;
+    };
+    !operand_int.ap_int().is_zero()
+}
+
+/// Build `getelementptr i8, ptr <ptr>, i64 <offset>` with no-wrap flags `nw`,
+/// mirroring the tail of `SymbolicallyEvaluateGEP` (lines 986-990) plus the
+/// `IsNoOp`/poison/undef auto-collapse every `ConstantExpr::getGetElementPtr`
+/// construction gets for free upstream (`ConstantFold.cpp`'s
+/// `ConstantFoldGetElementPtr`, reached here through
+/// [`super::constants::ModuleCore::constant_expr_with_options`]'s own
+/// internal fold attempt).
+///
+/// Prefers llvmkit's compact [`ConstantData::GepOffset`] encoding — which can
+/// only represent a byte offset from a global/function reference, always
+/// under `inbounds` — falling back to the general constant-expression form
+/// (verbatim `nw`, any base) whenever `nw` isn't `inbounds` at all. A bare
+/// `nuw` alongside `inbounds` is silently dropped rather than forcing the
+/// general form: `inbounds` alone already implies everything `nuw` would add
+/// (no wrapping pointer arithmetic), so this only ever *under*-annotates the
+/// result — safe by the same "dropping a no-wrap flag is always
+/// conservative" principle no-wrap flags rely on everywhere else — never
+/// mis-annotates it.
+fn build_canonical_i8_gep<'ctx, B: ModuleBrand + 'ctx>(
+    ptr: Constant<'ctx, B>,
+    offset: &ApInt,
+    nw: GepNoWrapFlags,
+) -> IrResult<Option<Constant<'ctx, B>>> {
+    // Matches the single-zero-index case of `ConstantFoldGetElementPtr`'s
+    // `IsNoOp` (`in_range` is always `None` here — see the caller's doc
+    // comment): the canonical form we're about to build would immediately
+    // collapse back to `ptr` unchanged, so just return that directly.
+    if offset.is_zero() {
+        return Ok(Some(ptr));
+    }
+
+    let module = ptr.into_erased().module();
+
+    if nw.contains(GepNoWrapFlags::IN_BOUNDS)
+        && let ValueKindData::Constant(ConstantData::GlobalValueRef { value }) =
+            &ptr.into_erased().data().kind
+        && let Some(off) = offset.try_sext_i64()
+    {
+        let ptr_ty = ptr.ty();
+        let id = module
+            .context()
+            .intern_constant_gep_offset(ptr_ty.id(), *value, off);
+        return Ok(Some(Constant::from_parts(Value::from_parts(
+            id,
+            module,
+            ptr_ty.id(),
+        ))));
+    }
+
+    let idx_ty = int_type(module, offset.bit_width())?;
+    let i8_ty = int_type(module, 8)?;
+    let offset_const = idx_ty.const_ap_int(offset)?.as_constant();
+    module
+        .core_ref()
+        .constant_expr_with_options(
+            ptr.ty(),
+            ConstantExprOpcode::GetElementPtr,
+            [ptr.into_erased(), offset_const.into_erased()],
+            [],
+            [],
+            ConstantExprOptions::new()
+                .source_ty(i8_ty.as_type())
+                .flags(ConstantExprFlags::gep(nw)),
+        )
+        .map(Some)
 }
 
 fn constant_at_offset<'ctx, B: ModuleBrand + 'ctx>(
@@ -1318,16 +2124,17 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx>(
             let Some((pointer, indices)) = operands.split_first() else {
                 return Ok(None);
             };
-            let in_range = match &expr.flags {
-                ConstantExprFlags::Gep(flags) => flags.in_range(),
-                _ => None,
+            let source_ty = Type::new(source_ty, original.into_erased().module());
+            let (nw, in_range) = match &expr.flags {
+                ConstantExprFlags::Gep(flags) => (flags.no_wrap(), flags.in_range()),
+                _ => (GepNoWrapFlags::empty(), None),
             };
-            constant_fold_get_element_ptr(
-                Type::new(source_ty, original.into_erased().module()),
-                *pointer,
-                indices,
-                in_range,
-            )
+            if let Some(folded) =
+                symbolically_evaluate_gep(source_ty, *pointer, indices, nw, in_range, dl)?
+            {
+                return Ok(Some(folded));
+            }
+            constant_fold_get_element_ptr(source_ty, *pointer, indices, in_range)
         }
         ConstantExprOpcode::ShuffleVector => {
             let [lhs, rhs, mask] = operands else {
@@ -1395,6 +2202,22 @@ fn binary_opcode(kind: &InstructionKindData) -> Option<BinaryOpcode> {
         _ => return None,
     };
     Some(opcode)
+}
+
+/// Fast-math flags carried by an FP binary instruction. Mirrors
+/// `FPMathOperator::getFastMathFlags`, reached in upstream
+/// `ConstantFoldFPInstOperands` via `dyn_cast_or_null<FPMathOperator>(I)`.
+/// Empty for every other opcode, matching `BinaryOpData::fmf` being unset for
+/// integer opcodes.
+fn binary_op_fmf(kind: &InstructionKindData) -> FastMathFlags {
+    match kind {
+        InstructionKindData::FAdd(b)
+        | InstructionKindData::FSub(b)
+        | InstructionKindData::FMul(b)
+        | InstructionKindData::FDiv(b)
+        | InstructionKindData::FRem(b) => b.fmf,
+        _ => FastMathFlags::empty(),
+    }
 }
 
 fn binary_opcode_from_constant_expr(opcode: ConstantExprOpcode) -> Option<BinaryOpcode> {
@@ -1652,9 +2475,15 @@ fn fold_ptr_to_int_pair<'ctx, B: ModuleBrand + 'ctx>(
     let Some(addr_space) = pointer_address_space(operand.ty()) else {
         return Ok(None);
     };
+    // `PtrToInt` mirrors `CastInst::isEliminableCastPair` case 11
+    // (`llvm/lib/IR/Instructions.cpp`): the `inttoptr`/`ptrtoint` collapse is
+    // sized by the *pointer* size (`getPointerTypeSizeInBits`), not the index
+    // size — unlike `PtrToAddr`, whose case-11 collapse sizes by the
+    // address/index size (`getAddressSizeInBits`). The two only diverge on
+    // fat-pointer/CHERI-like targets where pointer size != index size.
     let mid_bits = match opcode {
-        CastOpcode::PtrToInt => dl.index_size_in_bits(addr_space),
-        CastOpcode::PtrToAddr => dl.pointer_size_in_bits(addr_space),
+        CastOpcode::PtrToInt => dl.pointer_size_in_bits(addr_space),
+        CastOpcode::PtrToAddr => dl.index_size_in_bits(addr_space),
         _ => return Ok(None),
     };
     let mid_ty = int_type(module, mid_bits)?;

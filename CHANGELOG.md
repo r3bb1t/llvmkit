@@ -7,6 +7,50 @@ tagged release is cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### Constant-folding parity with LLVM 22.1.4
+
+An audit against the vendored `llvmorg-22.1.4` sources found the constant folder
+faithful in the large, with a handful of divergences — one real bug, several
+safe-but-not-identical over-precisions, and some missing folds. All are now
+fixed so the folder mirrors upstream.
+
+#### Fixed
+
+- **Correctness:** `icmp` of a global vs `null` no longer folds in a non-zero
+  address space (matching upstream's `!NullPointerIsDefined(AS)` guard, where
+  `null` may be a valid address). It folded to a possibly-wrong constant before;
+  address space 0 is unaffected.
+- The instruction-level folder no longer threads the `exact` flag into a
+  poison-producing path: `udiv/sdiv/lshr/ashr exact` with an inexact result now
+  fold to the plain value (e.g. `udiv exact 7, 2 → 3`), and `x exact undef, 1`
+  folds to `undef`, exactly as upstream's flag-agnostic `ConstantFoldInstruction`
+  does — so llvmkit's two fold paths also agree with each other.
+- `fcmp` equality with an `undef` operand folds to the concrete `i1`
+  (`oeq undef,c → false`, `ueq undef,c → true`) rather than `undef` — the
+  undef→undef shortcut is integer-`eq`/`ne`-only, matching `ICmpInst::isEquality`.
+- A vector-condition `select` with an unresolvable lane falls through to the
+  whole-value poison/undef rules instead of declining (so a poison arm still
+  collapses to the other arm).
+
+#### Added folds (previously declined; now matching upstream)
+
+- FP **vector** arithmetic/compare through the DataLayout path (element-wise
+  denormal flush), the `AllowNonDeterministic` fast-math fold guard, and
+  `ptrtoint(inttoptr x)` sized by pointer width (`isEliminableCastPair` case 11).
+- Pointer/int-cast `icmp` folds: `inttoptr` vs `null`, `ptrtoint` vs `0`,
+  matching cast pairs, and same-base `(base+off1) pred (base+off2) → off1 pred
+  off2`.
+- `SymbolicallyEvaluateGEP` scalar offset canonicalization: an all-constant-index
+  `getelementptr` folds to the `i8`-element form (`gep i32, @g, 4 → gep i8, @g,
+  16`). Several upstream sub-cases (vector-index normalization, `in_range`,
+  null/`inttoptr`-base, inbounds-inference for globals) are deliberately
+  declined, never mis-folded.
+- Same-base pointer `icmp` folds now compare the stripped bases by their
+  underlying global rather than by arena identity — necessary because, unlike
+  upstream's uniqued `Constant*`, llvmkit mints fresh ids for
+  `GlobalValueRef`/`GepOffset` constants, so two independently-built pointers
+  into the same global would otherwise fail to be recognized as same-base.
+
 ### No silent erasure — the strict cut
 
 An erased `Value` / `Argument` / `Instruction` can no longer *silently* satisfy a
