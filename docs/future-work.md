@@ -333,6 +333,40 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
   single-function-body and whole-module rungs only; loop-nest and
   call-graph-SCC pass rungs (upstream `LoopPassManager` / `CGSCCPassManager`)
   are unmodeled.
+- **Typed `BlockCall` redirect twins -- REFUTED, not deferred.** A typed
+  `redirect_*_call(BlockCall<Params>)` surface on the pass-side edit handles
+  (`BrEdit`/`SwitchEdit`/`InvokeEdit`/`CallBrEdit`, `pass_context.rs`) would
+  move the phi-seeding arity/type check from run time to compile time, the
+  redirect analog of the shipped typed *creation* path
+  (`build_br_call`/`build_cond_br_call`). It was planned for cycle D and cut
+  after a four-source audit found it out-types every relevant consumer:
+  - **LLVM** has no atomic redirect at all -- the idiom is a manual two-step
+    (`replaceSuccessorWith` / `SwitchInst::setSuccessor` then
+    `BasicBlock::removePredecessor` to fix phis by hand). llvmkit's *erased*
+    `redirect_*(new_to, phi_values)` is already stronger (atomic, validated).
+  - **MLIR** -- the one upstream built around block arguments -- passes
+    successor operands *dynamically* (`BranchOpInterface::getSuccessorOperands`
+    returns a mutable `SuccessorOperands` range checked by the runtime
+    `verifyBranchSuccessorOperands`), not by a static per-block signature.
+  - **Mergen** (the C++ lifter this project's `bin_lift` consumer reimplements
+    and extends) redirects/rebuilds edges only on *runtime-recovered* CFGs:
+    `CustomPasses.hpp` rebuilds a `switch` with a runtime case count
+    (`CreateSwitch(op, default, newNumCases)` + `addCase` over discovered
+    constants) and seeds phis by looping `addIncoming(v, cb)` over runtime
+    predecessor vectors, returning `PreservedAnalyses::none()` -- the erased
+    `ReshapeCfg` floor. A static `BasicBlockLabel<Params>` schema is unknowable
+    in principle there: case counts, targets, and phi incomings are *recovered*,
+    not *authored*.
+  - **`bin_lift`'s `lift-core` `IrBuilder`** is creation-only (`new_block` /
+    `br` / `cond_br` / `switch`), with no redirect/split/phi/block-param surface.
+
+  Because pass-side labels arrive erased-by-origin (from
+  `FunctionView::basic_blocks()`), a typed twin would also force a narrowing
+  round-trip (`try_into_typed::<Params>`) that the erased redirect avoids. Typed
+  `BlockCall` earns its keep at block *creation*, where the typed label is in
+  hand; it has no consumer at pass-side redirect. Revisit only if a pass appears
+  that authors fresh, statically-shaped merge blocks *and* redirects existing
+  edges into them -- a shape none of the four surveyed systems exhibits.
 - **First-class `ModRewrite` runtime-symbol/global/ctor triple** -- the
   `RewriteModule` mutator (`ModRewrite`, `pass_context.rs` ~1247) exposes only the raw
   `module_mut()` token today; a sanitizer reaches the
