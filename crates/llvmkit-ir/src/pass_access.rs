@@ -215,7 +215,7 @@ impl ModAccess for RewriteModule {
 /// A [`FnAccess`] rung that permits mutation. Split from [`FnAccess`] so it can
 /// name the mutator types defined in [`crate::pass_context`]. Implemented for [`PatchBody`] and
 /// [`ReshapeCfg`] only — [`Inspect`] deliberately has no impl, which is exactly
-/// what removes `mutate()`/`unchanged()` from a read-only context (read-only is
+/// what removes `mutate()` from a read-only context (read-only is
 /// structural, not checked; D1). Sealed through the [`FnAccess`] supertrait.
 ///
 /// The mutator itself (`FnPatch`/`FnReshape`) carries the mutation token and the
@@ -245,34 +245,12 @@ pub trait MutatingFn: FnAccess {
         R: FunctionAnalysisList<'ctx, B>,
         'ctx: 'm,
         'ctx: 'r;
-
-    /// Build the mutator directly from a raw `&Module<Unverified>` token.
-    ///
-    /// Every mutating function rung's [`FnAccess::Token`] *is* a
-    /// `&Module<Unverified>`, but that equality is opaque behind the associated
-    /// type when the rung is a generic `FnA`, so a module→function visitor
-    /// ([`crate::pass_context::ModRewrite::for_each_function`]) that holds a
-    /// concrete module reference cannot feed it through [`Self::into_mutator`].
-    /// This entry point accepts the raw reference instead, dispatching to the
-    /// same `FnPatch`/`FnReshape` constructors. Internal plumbing; hidden from
-    /// authors.
-    #[doc(hidden)]
-    fn mutator_over_module<'m, 'r, 'ctx, B, R>(
-        module: &'m Module<'ctx, B, Unverified>,
-        function: FunctionView<'ctx, B>,
-        results: R::ResultRefs<'r>,
-    ) -> Self::Mutator<'m, 'r, 'ctx, B, R>
-    where
-        B: ModuleBrand + 'ctx,
-        R: FunctionAnalysisList<'ctx, B>,
-        'ctx: 'm,
-        'ctx: 'r;
 }
 
 /// A [`ModAccess`] rung that permits mutation — the module-level mirror of
 /// [`MutatingFn`]. Implemented for [`RewriteModule`] only; [`Inspect`]
 /// deliberately has no impl, which is exactly what removes
-/// `mutate()`/`unchanged()` from a read-only module context (read-only is
+/// `mutate()` from a read-only module context (read-only is
 /// structural, not checked; D1). Sealed through the [`ModAccess`] supertrait.
 ///
 /// The mutator itself (`ModRewrite`) carries the module mutation token and the

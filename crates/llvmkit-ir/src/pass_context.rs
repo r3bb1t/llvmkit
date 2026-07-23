@@ -6,9 +6,13 @@
 //! yields its mutator ([`FnPatch`]/[`FnReshape`]/[`ModRewrite`]) only through
 //! the *consuming* [`FnCx::mutate`]/[`ModCx::mutate`], so once a pass has begun
 //! mutating, the all-preserved report is no longer spellable (the context was
-//! moved). The mutator carries an unverified-module capability
-//! (`module_mut() -> &Module<Unverified>`) and its `done()` reports exactly the
-//! rung's preservation floor.
+//! moved). The mutator's `done()` reports exactly the rung's preservation
+//! floor, and its surface is cut to match that floor: only [`ModRewrite`],
+//! whose floor is `none()`, hands out the module's declaration capability
+//! ([`ModRewrite::module_mut`] `-> &Module<Unverified>`). The function rungs see
+//! the module through the read-only [`FnPatch::module`], which still carries the
+//! preservation-neutral type constructors — so "declared body-patching, then
+//! declared a global" has no spelling.
 //!
 //! [`Inspect`]: crate::Inspect
 //!
@@ -65,7 +69,8 @@ use super::dominator_tree::DominatorTreeAnalysis;
 use super::error::IrError;
 use super::function::{FunctionBasicBlocks, FunctionValue};
 use super::instruction::{Instruction, InstructionView, NonTerminator, TerminatorKind, state};
-use super::ir_builder::IRBuilder;
+use super::ir_builder::constant_folder::ConstantFolder;
+use super::ir_builder::{IRBuilder, InsertPoint, Positioned};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::pass_access::{
@@ -73,7 +78,7 @@ use super::pass_access::{
 };
 use super::phi_check::{check_phi_incoming, render_phi_violation};
 use super::r#type::{Type, TypeId};
-use super::value::{IsValue, Value, ValueId};
+use super::value::{IsValue, Typed, Value, ValueId};
 use super::worklist::Worklist;
 
 /// Read-only view of a basic block under its owning module brand.
@@ -474,7 +479,7 @@ impl FnReport {
 ///
 /// The typestate that makes a preservation lie unspellable: to change the IR a
 /// pass must call [`FnCx::mutate`], which **consumes** the context and returns a
-/// rung-specific mutator. Before `mutate()`, [`FnCx::unchanged`] yields an
+/// rung-specific mutator. Before `mutate()`, [`FnCx::done`] yields an
 /// all-preserved report; after it, the context is gone, so the only report left
 /// is the mutator's `done()` → the rung's derived preservation floor. This is
 /// the same consuming-handle discipline the crate already uses for terminated
@@ -564,17 +569,9 @@ where
     'ctx: 'pm,
     'ctx: 'r,
 {
-    /// The didn't-actually-mutate shortcut: report everything preserved without
-    /// entering the mutator. Consumes the context, so it cannot be paired with a
-    /// later `mutate()`.
-    #[inline]
-    pub fn unchanged(self) -> FnReport {
-        FnReport::from_pa(PreservedAnalyses::all())
-    }
-
     /// Transition into mutation: **consumes** the context and moves its token,
     /// function, and prefetched results into the rung's mutator. Once called,
-    /// `unchanged()`/`done()` on the context are unspellable — the only report
+    /// `done()` on the context is unspellable — the only report
     /// left is the mutator's `done()`, which carries the rung's preservation
     /// floor. This is the core honesty mechanism.
     #[inline]
@@ -669,10 +666,62 @@ where
         R::select(&self.results)
     }
 
-    /// Mutation-capable module token for saved-handle mutators / the IR builder.
+    /// Read-only module view. This is the whole module surface a body-patching
+    /// pass gets, and it is enough: type and constant construction live on
+    /// [`ModuleView`] because interning a type touches no function and no
+    /// global, so it invalidates nothing. Module *declarations* (`add_global`,
+    /// `add_function_dyn`, `set_struct_body`) are module-structural and belong
+    /// to the [`RewriteModule`] rung — reaching them from here would mean
+    /// mutating the module while reporting only the body-level preservation
+    /// floor, so they are unreachable rather than merely discouraged. Mirrors
+    /// [`ModRewrite::module`].
     #[inline]
-    pub fn module_mut(&self) -> &'m Module<'ctx, B, Unverified> {
+    pub fn module(&self) -> ModuleView<'ctx, B> {
+        self.module.as_view()
+    }
+
+    /// Mutation-capable module token for saved-handle mutators / the IR builder.
+    ///
+    /// `pub(crate)` on purpose: this token carries the module's declaration
+    /// surface, which the `PatchBody` floor ("everything but the body of this
+    /// function is preserved") does not account for. Pass authors reach types
+    /// through [`Self::module`], a positioned builder through
+    /// [`Self::builder_at`], and instruction construction through
+    /// [`IRBuilder::at_end`].
+    #[inline]
+    pub(crate) fn module_mut(&self) -> &'m Module<'ctx, B, Unverified> {
         self.module
+    }
+
+    /// A builder restored at a previously saved [`InsertPoint`], anchored in
+    /// this function's module. The first-class replacement for the
+    /// `IRBuilder::new(module_mut())` spelling that the now-crate-private
+    /// `module_mut` used to enable: it hands back exactly a positioned
+    /// builder, never the module's declaration surface. Errors the same way
+    /// [`IRBuilder::restore_insert_point`] does — an empty insert point, or a
+    /// block that has since grown a terminator.
+    ///
+    /// Handing out a positioned builder over the mutable module token is
+    /// intent-to-mutate, so the dirty flag is witnessed here on success. Unlike
+    /// [`Self::erase`] / [`Self::replace_all_uses`], a raw builder does not flip
+    /// the flag as it inserts, and `done()` would otherwise report
+    /// everything-preserved after a pass built through it — over-claiming the
+    /// body-analysis floor. Setting it here is conservative (a builder taken but
+    /// unused reports the rung floor rather than all-preserved) but never
+    /// dishonest, matching the doctrine that a report may lose precision, never
+    /// honesty. Set only after `restore_insert_point` succeeds: a rejected
+    /// insert point hands out no builder, so no mutation is possible.
+    #[inline]
+    pub fn builder_at<R2>(
+        &self,
+        ip: InsertPoint<'ctx, R2, B>,
+    ) -> IrResult<IRBuilder<'m, 'ctx, B, ConstantFolder, Positioned, R2>>
+    where
+        R2: ReturnMarker,
+    {
+        let builder = IRBuilder::new_for::<R2>(self.module).restore_insert_point(ip)?;
+        self.dirty.set(true);
+        Ok(builder)
     }
 
     /// Erase a non-terminator instruction from its parent block, deregistering
@@ -980,11 +1029,34 @@ where
         self.patch.is_dirty()
     }
 
-    /// Mutation-capable module token. Delegated from the inner [`FnPatch`].
+    /// Read-only module view. Delegated from the inner [`FnPatch`]; carries the
+    /// preservation-neutral type constructors, not the module's declaration
+    /// surface.
     #[inline]
-    pub fn module_mut(&self) -> &'m Module<'ctx, B, Unverified> {
-        self.patch.module_mut()
+    pub fn module(&self) -> ModuleView<'ctx, B> {
+        self.patch.module()
     }
+
+    /// A builder restored at a previously saved [`InsertPoint`]. Delegated from
+    /// the inner [`FnPatch`]; the supported way to reopen a block this mutator
+    /// has reshaped (for example the emptied source block after a
+    /// [`Self::split_block`]).
+    #[inline]
+    pub fn builder_at<R2>(
+        &self,
+        ip: InsertPoint<'ctx, R2, B>,
+    ) -> IrResult<IRBuilder<'m, 'ctx, B, ConstantFolder, Positioned, R2>>
+    where
+        R2: ReturnMarker,
+    {
+        self.patch.builder_at(ip)
+    }
+
+    // NB: no `module_mut` delegate. `FnPatch::module_mut` is `pub(crate)`
+    // (the `ReshapeCfg` floor covers this function's CFG, not the module's
+    // declarations) and every in-crate reshape method reaches the token through
+    // `self.patch.module_mut()` directly, so a re-export here would be dead
+    // code as well as a wider surface.
 
     /// Erase a non-terminator instruction. Delegated from the inner [`FnPatch`];
     /// an in-block erase preserves the CFG, so it records no [`CfgUpdate`].
@@ -1804,10 +1876,64 @@ where
         }
     }
 
-    /// Insert a fully-witnessed phi at `block`'s phi head and return its erased
-    /// result [`Value`].
+    /// Insert a fully-witnessed phi at `block`'s phi head from **typed**
+    /// incomings, and return its result as the same typed handle `V`.
     ///
-    /// Do not `insert_phi` into a block whose leading phis are block parameters
+    /// Every incoming shares the one handle type `V`, so the phi's result type is
+    /// derived from them (no restated type argument — the erased
+    /// [`Self::insert_phi_dyn`] is what takes a `Type`), and mixing a wrong-typed
+    /// incoming is a **compile error** rather than the runtime coherence error
+    /// the erased path raises. For a statically-marked `V` (`IntValue<i32>`,
+    /// `PointerValue`, `FloatValue<f64>`, …) the type-agreement obligation the
+    /// verifier and parser check is discharged at compile time; for an
+    /// erased-marker `V` (`IntValue<IntDyn>`) the width still varies per handle,
+    /// so the shared runtime coherence check still applies.
+    ///
+    /// The completeness and dominance obligations are *not* in the type (the CFG
+    /// shape is dynamic), so they are witnessed at the call exactly as
+    /// [`Self::insert_phi_dyn`] describes.
+    ///
+    /// Requires at least one incoming (the result type is read from the first);
+    /// a zero-incoming phi has no type to give — use [`Self::insert_phi_dyn`] for
+    /// that degenerate case.
+    ///
+    /// Errors: `IrError::InvalidOperation` if `incomings` is empty; otherwise the
+    /// same errors as [`Self::insert_phi_dyn`] (dominance / coherence).
+    #[inline]
+    pub fn insert_phi<V, I>(
+        &mut self,
+        block: &BasicBlockView<'ctx, B>,
+        incomings: &[(V, BasicBlockLabel<'ctx, Dyn, B>)],
+    ) -> IrResult<V>
+    where
+        V: IsValue<'ctx, B> + Typed<'ctx, B> + TryFrom<Value<'ctx, B>, Error = IrError>,
+        R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
+    {
+        let (first, _) = *incomings.first().ok_or(IrError::InvalidOperation {
+            message: "insert_phi: needs at least one typed incoming to derive the \
+                      result type; use insert_phi_dyn for the zero-incoming case",
+        })?;
+        let ty = first.ty();
+        let erased: Vec<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> = incomings
+            .iter()
+            .map(|(value, pred)| (value.into_erased(), *pred))
+            .collect();
+        let phi = self.insert_phi_dyn::<I>(block, ty, &erased)?;
+        // Total by construction: the phi was created with `ty` == `V`'s type, so
+        // narrowing back to `V` cannot fail. The map guards the invariant rather
+        // than trusting it.
+        V::try_from(phi).map_err(|_| IrError::InvalidOperation {
+            message: "insert_phi: constructed phi type disagreed with the incoming \
+                      handle type (internal invariant)",
+        })
+    }
+
+    /// Insert a fully-witnessed phi at `block`'s phi head from erased incomings,
+    /// and return its erased result [`Value`]. The `_dyn` (erased-type) twin of
+    /// [`Self::insert_phi`]; also the zero-incoming path, since it takes the
+    /// result `ty` explicitly instead of deriving it.
+    ///
+    /// Do not insert into a block whose leading phis are block parameters
     /// (created by [`IRBuilder::append_block_with_params`](crate::IRBuilder)):
     /// the new phi lands in that same head group, where the block-argument path
     /// would miscount it as an extra block parameter.
@@ -1845,7 +1971,7 @@ where
     /// phi check) if the incomings are incomplete, mistyped, or carry a
     /// differing duplicate for one predecessor.
     #[inline]
-    pub fn insert_phi<I>(
+    pub fn insert_phi_dyn<I>(
         &mut self,
         block: &BasicBlockView<'ctx, B>,
         ty: Type<'ctx, B>,
@@ -2412,21 +2538,6 @@ impl MutatingFn for PatchBody {
     {
         FnPatch::new(token, function, results)
     }
-
-    #[inline]
-    fn mutator_over_module<'m, 'r, 'ctx, B, R>(
-        module: &'m Module<'ctx, B, Unverified>,
-        function: FunctionView<'ctx, B>,
-        results: R::ResultRefs<'r>,
-    ) -> Self::Mutator<'m, 'r, 'ctx, B, R>
-    where
-        B: ModuleBrand + 'ctx,
-        R: FunctionAnalysisList<'ctx, B>,
-        'ctx: 'm,
-        'ctx: 'r,
-    {
-        FnPatch::new(module, function, results)
-    }
 }
 
 impl MutatingFn for ReshapeCfg {
@@ -2451,21 +2562,6 @@ impl MutatingFn for ReshapeCfg {
         'ctx: 'r,
     {
         FnReshape::new(token, function, results)
-    }
-
-    #[inline]
-    fn mutator_over_module<'m, 'r, 'ctx, B, R>(
-        module: &'m Module<'ctx, B, Unverified>,
-        function: FunctionView<'ctx, B>,
-        results: R::ResultRefs<'r>,
-    ) -> Self::Mutator<'m, 'r, 'ctx, B, R>
-    where
-        B: ModuleBrand + 'ctx,
-        R: FunctionAnalysisList<'ctx, B>,
-        'ctx: 'm,
-        'ctx: 'r,
-    {
-        FnReshape::new(module, function, results)
     }
 }
 
@@ -2520,7 +2616,7 @@ impl ModReport {
 ///
 /// The typestate that makes a preservation lie unspellable: to change the module
 /// a pass must call [`ModCx::mutate`], which **consumes** the context and returns
-/// a [`ModRewrite`]. Before `mutate()`, [`ModCx::unchanged`] yields an
+/// a [`ModRewrite`]. Before `mutate()`, [`ModCx::done`] yields an
 /// all-preserved report; after it, the context is gone, so the only report left
 /// is the mutator's `done()` → the [`RewriteModule`] floor (`none()` — a module
 /// rewrite is the heaviest rung and preserves nothing by default). `Inspect`
@@ -2644,19 +2740,11 @@ where
     'ctx: 'r,
     'ctx: 'f,
 {
-    /// The didn't-actually-mutate shortcut: report everything preserved without
-    /// entering the mutator. Consumes the context, so it cannot be paired with a
-    /// later `mutate()`.
-    #[inline]
-    pub fn unchanged(self) -> ModReport {
-        ModReport::from_pa(PreservedAnalyses::all())
-    }
-
     /// Transition into mutation: **consumes** the context and moves its module
     /// token and prefetched results into the rung's mutator. The `mam`/`fam`
     /// cache-peek borrows end here — the read-only query phase is over (today's
-    /// `for_each_function` needs no per-function prefetch). Once called,
-    /// `unchanged()`/`done()` on the context are unspellable — the only report
+    /// per-function descent needs no per-function prefetch). Once called,
+    /// `done()` on the context is unspellable — the only report
     /// left is the mutator's `done()`, which carries the rung's preservation
     /// floor. This is the core honesty mechanism.
     #[inline]
@@ -2711,6 +2799,14 @@ where
 
     /// Mutation-capable module token, exposing the module's existing
     /// [`Module::add_global`] / [`Module::add_function_dyn`] directly.
+    ///
+    /// This is the [`RewriteModule`] rung's deliberate module-**declaration**
+    /// surface, and the only rung that has one. Handing out the full token here
+    /// costs nothing in honesty: this rung's `done()` floor is already `none()`
+    /// (nothing preserved), so a declaration cannot invalidate an analysis the
+    /// report still claims. The function rungs' `module_mut` is `pub(crate)`
+    /// precisely because their floors *do* claim something; they see the module
+    /// through [`FnPatch::module`] instead.
     #[inline]
     pub fn module_mut(&self) -> &'m Module<'ctx, B, Unverified> {
         self.token
@@ -2729,40 +2825,57 @@ where
         R::select(&self.results)
     }
 
-    /// Visit every function *definition* in module order, handing the visitor a
-    /// per-function mutator (`FnPatch`/`FnReshape`, selected by `FnA`) built from
-    /// this module's mutation token. Declarations (no entry block) are skipped.
-    /// This is the load-bearing module→function visitor; the pass driver calls
-    /// `rewrite.for_each_function::<Self::FnAccess>(...)`.
+    /// Iterate every function *definition* in module order as a [`PatchBody`]
+    /// mutator built from this module's mutation token. Declarations (no entry
+    /// block) are skipped. This is the load-bearing module→function descent for
+    /// hand-written module passes:
     ///
-    /// Per-function analysis prefetch is deliberately future work: each
-    /// per-function mutator is built with empty results `()`, so a
-    /// `FnPatch::analysis` call inside the visitor has no members to select. A
-    /// future revision threads a per-function `Requires` list through here.
+    /// ```ignore
+    /// for patch in rewrite.patch_functions() {
+    ///     // `?`, `continue` and `break` all just work — this is a plain `for`.
+    /// }
+    /// ```
     ///
-    /// The visitor's mutator is spelled at this mutator's own `'m`/`'r` rather
-    /// than fresh higher-ranked lifetimes: the `MutatingFn::Mutator` GAT carries
-    /// `'ctx: 'm`/`'ctx: 'r` outlives bounds that a `for<'a, 'b>` quantification
-    /// cannot satisfy universally, so a concrete binding is the standalone-green
-    /// shape (each mutator is still built fresh per function from the same
-    /// module token).
+    /// [`Self::reshape_functions`] is the [`ReshapeCfg`] twin. The rung is the
+    /// method name rather than a turbofished access marker, so nothing here is
+    /// generic over the rung and no `MutatingFn::Mutator` GAT has to be spelled.
+    ///
+    /// The returned iterator borrows nothing from `self` — it copies the module
+    /// token and holds the same function *snapshot*
+    /// [`ModuleView::functions`](crate::ModuleView::functions) always takes — so
+    /// [`Self::module_mut`] stays callable inside the loop (declaring a global
+    /// per patched function is the sanitizer shape) and functions added while
+    /// iterating are simply not visited.
+    ///
+    /// Per-function analysis prefetch is deliberately future work: each mutator
+    /// is built with empty results `()`, so a [`FnPatch::analysis`] call inside
+    /// the loop has no members to select. A future revision threads a
+    /// per-function `Requires` list through here.
     #[inline]
-    pub fn for_each_function<FnA>(
-        &mut self,
-        mut visitor: impl FnMut(FnA::Mutator<'m, 'r, 'ctx, B, ()>) -> IrResult<()>,
-    ) -> IrResult<()>
-    where
-        FnA: MutatingFn,
-    {
-        for function in self.module().functions() {
-            if function.entry_block().is_none() {
-                continue;
-            }
-            let mutator: FnA::Mutator<'m, 'r, 'ctx, B, ()> =
-                FnA::mutator_over_module(self.token, function, ());
-            visitor(mutator)?;
+    pub fn patch_functions(&self) -> PatchFunctions<'m, 'ctx, B> {
+        PatchFunctions {
+            token: self.token,
+            functions: ModuleFunctionViews::new(self.module()),
         }
-        Ok(())
+    }
+
+    /// Iterate every function *definition* in module order as a [`ReshapeCfg`]
+    /// mutator — the CFG-editing twin of [`Self::patch_functions`], with the
+    /// same snapshot and skip-declarations semantics.
+    ///
+    /// A yielded [`FnReshape`]'s recorded [`CfgUpdate`] log does not reach the
+    /// driver's witnessed flush: this rung's own [`Self::done`] floor is already
+    /// `none()`, which evicts every CFG analysis anyway, so the log could only
+    /// have *added* preservation precision, never honesty. Reclaiming it would
+    /// mean raising this floor above `none()`, which is unavailable while
+    /// [`Self::module_mut`] hands out unwitnessed module-structural mutation —
+    /// deliberately, since that is the [`RewriteModule`] rung's reason to exist.
+    #[inline]
+    pub fn reshape_functions(&self) -> ReshapeFunctions<'m, 'ctx, B> {
+        ReshapeFunctions {
+            token: self.token,
+            functions: ModuleFunctionViews::new(self.module()),
+        }
     }
 
     /// Finish: report the [`RewriteModule`] preservation floor (`none()` —
@@ -2772,6 +2885,79 @@ where
         ModReport::from_pa(<RewriteModule as ModAccess>::preserved_floor())
     }
 }
+
+/// Iterator over per-function [`FnPatch`] mutators, one per function
+/// *definition* in module order. Returned by [`ModRewrite::patch_functions`].
+///
+/// Yielding a mutator out of an iterator (rather than into a closure) is sound
+/// because a mutator borrows the *module*, not the iterator: it holds a copy of
+/// the shared `&'m Module<Unverified>` token plus its own witnessed state, and
+/// IR mutation flows through that token's interior-mutable arena. So the items
+/// are independent of `next`'s `&mut self` — no lending iterator is needed, and
+/// several may be alive at once (they address distinct functions).
+///
+/// Dropping a yielded mutator without calling its `done()` discards that
+/// function's report. Sound by construction: [`ModRewrite::done`]'s floor is
+/// `none()`, so the module report already claims nothing.
+pub struct PatchFunctions<'m, 'ctx, B: ModuleBrand + 'ctx>
+where
+    'ctx: 'm,
+{
+    token: &'m Module<'ctx, B, Unverified>,
+    functions: ModuleFunctionViews<'ctx, B>,
+}
+
+impl<'m, 'ctx, B: ModuleBrand + 'ctx> Iterator for PatchFunctions<'m, 'ctx, B> {
+    // The `'r` (prefetched-results) slot is bound to `'m`: the `Requires` list
+    // is `()`, so the slot carries no borrow to keep separate.
+    type Item = FnPatch<'m, 'm, 'ctx, B, ()>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let function = self.functions.find(|f| f.entry_block().is_some())?;
+        Some(FnPatch::new(self.token, function, ()))
+    }
+
+    /// Lower bound 0 — the declarations skipped by [`Self::next`] are not known
+    /// until they are reached. The upper bound is the module's function count.
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, self.functions.size_hint().1)
+    }
+}
+
+// `find` over a fused iterator (`ModuleFunctionViews`) keeps returning `None`.
+impl<'m, 'ctx, B: ModuleBrand + 'ctx> FusedIterator for PatchFunctions<'m, 'ctx, B> {}
+
+/// Iterator over per-function [`FnReshape`] mutators, one per function
+/// *definition* in module order. Returned by
+/// [`ModRewrite::reshape_functions`]; the CFG-editing twin of
+/// [`PatchFunctions`], with the same soundness argument.
+pub struct ReshapeFunctions<'m, 'ctx, B: ModuleBrand + 'ctx>
+where
+    'ctx: 'm,
+{
+    token: &'m Module<'ctx, B, Unverified>,
+    functions: ModuleFunctionViews<'ctx, B>,
+}
+
+impl<'m, 'ctx, B: ModuleBrand + 'ctx> Iterator for ReshapeFunctions<'m, 'ctx, B> {
+    type Item = FnReshape<'m, 'm, 'ctx, B, ()>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let function = self.functions.find(|f| f.entry_block().is_some())?;
+        Some(FnReshape::new(self.token, function, ()))
+    }
+
+    /// Lower bound 0 — see [`PatchFunctions::size_hint`].
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, self.functions.size_hint().1)
+    }
+}
+
+impl<'m, 'ctx, B: ModuleBrand + 'ctx> FusedIterator for ReshapeFunctions<'m, 'ctx, B> {}
 
 impl MutatingModule for RewriteModule {
     type Mutator<'m, 'r, 'ctx, B, R>
@@ -2910,6 +3096,97 @@ mod tests {
             // CFG analyses survive an in-block edit; an arbitrary analysis does not.
             assert!(checker.preserved_set::<CFGAnalyses>());
             assert!(!checker.preserved());
+            Ok(())
+        })
+    }
+
+    /// Type and constant construction is preservation-**neutral**, so it stays
+    /// available at the body-patching rung through the read-only
+    /// [`super::FnPatch::module`] view: interning a type touches the context's
+    /// type table, never a function or a global, so it can invalidate nothing.
+    /// The witnessed dirty flag agrees — a run that only names a type and mints
+    /// a constant still reports everything preserved. The module's
+    /// *declaration* surface is what this rung cannot reach (pinned by the
+    /// `function_rung_cannot_declare_globals` trybuild fixture).
+    /// llvmkit-specific capability-context lock (no upstream analog).
+    #[test]
+    fn patchbody_reaches_types_through_module_view() -> Result<(), IrError> {
+        Module::with_new("patch-types", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type_no_params(i32_ty, false);
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+            b.build_ret(i32_ty.const_int(0_u32))?;
+
+            let function = FunctionView::from(f);
+            let mut fam = FunctionAnalysisManager::new();
+            Reqs::prefetch(&mut fam, function)?;
+            let results = Reqs::collect(&fam, function)?;
+
+            let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(&m, function, results);
+            let patch = cx.mutate();
+
+            // The read-only view carries the type constructors, and the type it
+            // hands back is the very same interned type the module named.
+            let ty = patch.module().i32_type();
+            assert_eq!(ty.as_type(), i32_ty.as_type());
+            // A constant mints against it with no module mutation at all.
+            let seven = ty.const_int(7_u32);
+            assert_eq!(seven.value_zext_u128(), Some(7));
+
+            // Nothing structural happened: no global appeared, and the
+            // witnessed dirty flag never flipped — so the honest report is
+            // still "everything preserved", not the rung floor.
+            assert_eq!(m.globals().len(), 0);
+            assert!(!patch.is_dirty());
+            assert!(patch.done().into_parts().0.are_all_preserved());
+            Ok(())
+        })
+    }
+
+    /// Taking a positioned builder through [`super::FnPatch::builder_at`] is
+    /// intent-to-mutate, so it witnesses the dirty flag: a `PatchBody` pass that
+    /// builds through it can no longer `done()` an everything-preserved report
+    /// and thereby over-claim the body-analysis floor. (A raw builder does not
+    /// flip the flag as it inserts, unlike `erase`/`replace_all_uses`, so
+    /// `builder_at` sets it on the author's behalf.) llvmkit-specific
+    /// capability-context lock.
+    #[test]
+    fn patchbody_builder_at_witnesses_dirty() -> Result<(), IrError> {
+        Module::with_new("patch-builder-dirty", |m| {
+            let i32_ty = m.i32_type();
+            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+            let entry = f.append_basic_block(&m, "entry");
+            // A second, deliberately-open block so an end-of-block insert point
+            // restores successfully (the terminated-block guard rejects only an
+            // end-of-block ip whose block has since grown a terminator).
+            let scratch = f.append_basic_block(&m, "scratch");
+            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            IRBuilder::new_for::<Dyn>(&m)
+                .position_at_end(entry)
+                .build_ret(x)?;
+            let ip = IRBuilder::new_for::<Dyn>(&m)
+                .position_at_end(scratch)
+                .save_insert_point();
+
+            let function = FunctionView::from(f);
+            let mut fam = FunctionAnalysisManager::new();
+            Reqs::prefetch(&mut fam, function)?;
+            let results = Reqs::collect(&fam, function)?;
+
+            let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(&m, function, results);
+            let patch = cx.mutate();
+
+            // Before: nothing mutated, the report would be all-preserved.
+            assert!(!patch.is_dirty());
+            // Taking the positioned builder alone flips the witness…
+            let _builder = patch.builder_at(ip)?;
+            assert!(patch.is_dirty());
+            // …so `done()` reports the rung floor, never everything-preserved —
+            // even though the pass has not (yet) inserted anything.
+            assert!(!patch.done().into_parts().0.are_all_preserved());
             Ok(())
         })
     }
@@ -3305,12 +3582,13 @@ mod tests {
         })
     }
 
-    /// [`super::ModRewrite::for_each_function`] visits every function *definition*
-    /// in module order (skipping the declaration) and hands each a
-    /// [`super::FnPatch`] that erases the function's dead instruction.
+    /// [`super::ModRewrite::patch_functions`] yields every function *definition*
+    /// in module order (skipping the declaration) as a [`super::FnPatch`] that
+    /// erases the function's dead instruction. Also locks that the iterator does
+    /// not borrow the mutator: `module_mut` is called *inside* the loop.
     /// llvmkit-specific capability-context lock (no upstream analog).
     #[test]
-    fn for_each_function_visits_defs_and_can_patch() -> Result<(), IrError> {
+    fn patch_functions_visits_defs_and_can_patch() -> Result<(), IrError> {
         Module::with_new("foreach-modcx", |m| {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
@@ -3352,10 +3630,10 @@ mod tests {
 
             let cx: ModCx<'_, '_, '_, '_, _, RewriteModule, ()> =
                 ModCx::new(module, &m, (), &mam, &mut fam);
-            let mut r = cx.mutate();
+            let r = cx.mutate();
 
             let mut visited: Vec<FunctionView<'_, _>> = Vec::new();
-            r.for_each_function::<PatchBody>(|p| {
+            for (i, p) in r.patch_functions().enumerate() {
                 let fv = p.function();
                 visited.push(fv);
                 for (f, dead) in &dead_by_fn {
@@ -3363,11 +3641,17 @@ mod tests {
                         p.erase(&dead.as_non_terminator().expect("dead is a non-terminator"));
                     }
                 }
-                Ok(())
-            })?;
+                // The iterator holds no borrow of `r`, so the module's own
+                // declaration surface stays reachable mid-loop — the sanitizer
+                // shape (a global per patched function).
+                r.module_mut()
+                    .add_global(format!("seen.{i}"), i32_ty.const_zero())?;
+            }
 
             // Both definitions were visited; the declaration was skipped.
             assert_eq!(visited.len(), 2);
+            // One global per visited definition, declared from inside the loop.
+            assert_eq!(module.globals().count(), 2);
             assert!(visited.contains(&fv1));
             assert!(visited.contains(&fv2));
             assert!(!visited.contains(&decl_view));

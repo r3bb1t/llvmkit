@@ -59,6 +59,66 @@ Erasure is still available, but it must be **spelled**.
   directly, so e.g. `build_bitcast_int_to_int(v, i8_ty, "bc")` needs no
   turbofish. Printed IR is unchanged.
 
+### Pass surface (cycle D)
+
+#### Breaking
+
+- Removed `FnCx::unchanged` / `ModCx::unchanged` — verbatim duplicates of the
+  `done()` on the same contexts (identical bodies, identical semantics, two
+  names for one operation). Migration: `cx.unchanged()` → `cx.done()`. The
+  honesty lock is unchanged: `done()` also takes `self` by value, so calling
+  it after `mutate()` is the same use-of-moved-value error.
+- The function-rung mutators no longer hand out the module's *declaration*
+  capability: `FnPatch::module_mut` is crate-internal and
+  `FnReshape::module_mut` is removed. Through them, a pass declared at
+  `PatchBody`/`ReshapeCfg` could `add_global` / `add_function_dyn` /
+  `set_struct_body` while still reporting only its body-level preservation
+  floor — the one rung-honesty leak left in the surface. The boundary that
+  replaces them: **type construction is preservation-neutral** (it only interns
+  into the context; no function, global, or CFG changes), so the read-only
+  view reached by `FnPatch::module()` / `FnReshape::module()` now carries the
+  type-constructor surface — while *declarations* stay exclusive to
+  `ModRewrite::module_mut`, whose `RewriteModule` floor is already `none()`.
+  Locked by `tests/compile_fail/function_rung_cannot_declare_globals.rs`,
+  which pins the boundary, not a ban: in one fixture, minting a type through
+  `patch.module()` compiles and `patch.module_mut()` is private.
+- `FnReshape::insert_phi` is now the **typed** phi inserter and
+  `insert_phi_dyn` is the erased twin (the naming law: bare = typed, `_dyn` =
+  erased type). The typed `insert_phi<V>(block, incomings: &[(V, label)])`
+  takes same-typed incomings (`IntValue<i32>`, `PointerValue`, …) and returns
+  that same handle `V` — so a wrong-typed incoming is a compile error and the
+  type is derived from the incomings rather than restated as a `Type` argument
+  (it needs ≥1 incoming for that; the zero-incoming case stays on
+  `insert_phi_dyn`). `insert_phi_dyn(block, ty, incomings: &[(Value, label)])`
+  is the previous erased signature verbatim, renamed. The completeness and
+  dominance obligations are witnessed at the call by both, exactly as before —
+  only the per-incoming type-agreement moves to compile time.
+
+- `ModRewrite::for_each_function::<FnA>(visitor)` is replaced by two
+  rung-named **iterators**: `patch_functions()` (yields `FnPatch`) and
+  `reshape_functions()` (yields `FnReshape`). External iteration is the
+  idiomatic shape the closure visitor could not be: `?`, `continue`, and
+  `break` just work, the rung is the method name instead of a turbofished
+  access marker, and the iterator borrows nothing from the mutator, so
+  `module_mut()` stays callable mid-loop (a global per patched function is
+  the sanitizer shape). Same semantics otherwise: definitions in module
+  order, declarations skipped, per-function `Requires` still `()`. The
+  doc-hidden `MutatingFn::mutator_over_module` plumbing (sealed trait) went
+  with it. The *pipeline adaptor* `for_each_function(function_pipeline((..)))`
+  is a different item and is unchanged.
+
+#### Added
+
+- `FnPatch::builder_at(ip)` / `FnReshape::builder_at(ip)` — a positioned
+  `IRBuilder` over the mutator's function, replacing the one legitimate use
+  the removed `module_mut` escape had. Taking one witnesses the mutator's
+  dirty flag (handing out a mutable-positioned builder is intent-to-mutate),
+  so a pass that builds through it cannot then `done()` an
+  everything-preserved report and over-claim its analysis floor.
+- `PatchFunctions` / `ReshapeFunctions` — the named iterator types behind
+  `patch_functions()` / `reshape_functions()`, public like the other pass-API
+  iterators (`ModuleFunctionViews` precedent).
+
 ### Idiomatic surface (cycle C)
 
 #### Breaking

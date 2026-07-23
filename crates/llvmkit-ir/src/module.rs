@@ -587,52 +587,216 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         self.core.metadata_store()
     }
 
+    // ---- Type constructors ----
+    //
+    // Constructing a type is preservation-**neutral**: it interns into the
+    // context's type table and touches no function, block, or global, so it can
+    // invalidate no analysis. That is why the read-only view carries the same
+    // constructor set as the [`Module<Unverified>`] token — code holding only a
+    // view (a pass at any capability rung, for instance) can still name the
+    // types it needs. *Declarations* — [`Module::add_global`],
+    // [`Module::add_function_dyn`], [`Module::set_struct_body`] and friends —
+    // are module-structural and deliberately stay on the token alone.
+
+    /// `void`.
     #[inline]
-    pub(super) fn bool_type(self) -> IntType<'ctx, bool, B> {
-        IntType::new(self.core.context().int_type(1), ModuleRef::new(self.core))
+    pub fn void_type(self) -> VoidType<'ctx, B> {
+        VoidType::new(self.core.ctx.void(), ModuleRef::new(self.core))
     }
 
+    /// `label`.
     #[inline]
-    pub(super) fn i8_type(self) -> IntType<'ctx, i8, B> {
-        IntType::new(self.core.context().int_type(8), ModuleRef::new(self.core))
+    pub fn label_type(self) -> LabelType<'ctx, B> {
+        LabelType::new(self.core.ctx.label(), ModuleRef::new(self.core))
     }
 
+    /// `metadata`.
     #[inline]
-    pub(super) fn i32_type(self) -> IntType<'ctx, i32, B> {
-        IntType::new(self.core.context().int_type(32), ModuleRef::new(self.core))
+    pub fn metadata_type(self) -> MetadataType<'ctx, B> {
+        MetadataType::new(self.core.ctx.metadata(), ModuleRef::new(self.core))
     }
 
+    /// `token`.
     #[inline]
-    pub(super) fn i64_type(self) -> IntType<'ctx, i64, B> {
-        IntType::new(self.core.context().int_type(64), ModuleRef::new(self.core))
+    pub fn token_type(self) -> TokenType<'ctx, B> {
+        TokenType::new(self.core.ctx.token(), ModuleRef::new(self.core))
     }
 
+    /// `half`.
     #[inline]
-    pub(super) fn struct_type<I, T>(
-        self,
-        elements: I,
-        packed: bool,
-    ) -> StructType<'ctx, StructBodyDyn, B>
+    pub fn half_type(self) -> FloatType<'ctx, Half, B> {
+        FloatType::new(self.core.ctx.half(), ModuleRef::new(self.core))
+    }
+
+    /// `bfloat`.
+    #[inline]
+    pub fn bfloat_type(self) -> FloatType<'ctx, BFloat, B> {
+        FloatType::new(self.core.ctx.bfloat(), ModuleRef::new(self.core))
+    }
+
+    /// `float` (32-bit IEEE 754).
+    #[inline]
+    pub fn f32_type(self) -> FloatType<'ctx, f32, B> {
+        FloatType::new(self.core.ctx.float(), ModuleRef::new(self.core))
+    }
+
+    /// `double` (64-bit IEEE 754).
+    #[inline]
+    pub fn f64_type(self) -> FloatType<'ctx, f64, B> {
+        FloatType::new(self.core.ctx.double(), ModuleRef::new(self.core))
+    }
+
+    /// `fp128`.
+    #[inline]
+    pub fn fp128_type(self) -> FloatType<'ctx, Fp128, B> {
+        FloatType::new(self.core.ctx.fp128(), ModuleRef::new(self.core))
+    }
+
+    /// `x86_fp80`.
+    #[inline]
+    pub fn x86_fp80_type(self) -> FloatType<'ctx, X86Fp80, B> {
+        FloatType::new(self.core.ctx.x86_fp80(), ModuleRef::new(self.core))
+    }
+
+    /// `ppc_fp128`.
+    #[inline]
+    pub fn ppc_fp128_type(self) -> FloatType<'ctx, PpcFp128, B> {
+        FloatType::new(self.core.ctx.ppc_fp128(), ModuleRef::new(self.core))
+    }
+
+    /// `x86_amx`.
+    #[inline]
+    pub fn x86_amx_type(self) -> Type<'ctx, B> {
+        Type::new(self.core.ctx.x86_amx(), ModuleRef::new(self.core))
+    }
+
+    /// `exnref`.
+    #[inline]
+    pub fn wasm_exnref_type(self) -> Type<'ctx, B> {
+        Type::new(self.core.ctx.wasm_exnref(), ModuleRef::new(self.core))
+    }
+
+    /// `i1`.
+    #[inline]
+    pub fn bool_type(self) -> IntType<'ctx, bool, B> {
+        IntType::new(self.core.ctx.int_type(1), ModuleRef::new(self.core))
+    }
+
+    /// Alias for [`Self::bool_type`].
+    #[inline]
+    pub fn i1_type(self) -> IntType<'ctx, bool, B> {
+        self.bool_type()
+    }
+
+    /// `i8`.
+    #[inline]
+    pub fn i8_type(self) -> IntType<'ctx, i8, B> {
+        IntType::new(self.core.ctx.int_type(8), ModuleRef::new(self.core))
+    }
+
+    /// `i16`.
+    #[inline]
+    pub fn i16_type(self) -> IntType<'ctx, i16, B> {
+        IntType::new(self.core.ctx.int_type(16), ModuleRef::new(self.core))
+    }
+
+    /// `i32`.
+    #[inline]
+    pub fn i32_type(self) -> IntType<'ctx, i32, B> {
+        IntType::new(self.core.ctx.int_type(32), ModuleRef::new(self.core))
+    }
+
+    /// `i64`.
+    #[inline]
+    pub fn i64_type(self) -> IntType<'ctx, i64, B> {
+        IntType::new(self.core.ctx.int_type(64), ModuleRef::new(self.core))
+    }
+
+    /// `i128`.
+    #[inline]
+    pub fn i128_type(self) -> IntType<'ctx, i128, B> {
+        IntType::new(self.core.ctx.int_type(128), ModuleRef::new(self.core))
+    }
+
+    /// Run-time-width integer type. Errors when `bits` falls outside
+    /// `MIN_INT_BITS..=MAX_INT_BITS`.
+    #[inline]
+    pub fn custom_width_int_type(self, bits: u32) -> IrResult<IntType<'ctx, IntDyn, B>> {
+        if !(MIN_INT_BITS..=MAX_INT_BITS).contains(&bits) {
+            return Err(IrError::InvalidIntegerWidth { bits });
+        }
+        Ok(IntType::new(
+            self.core.ctx.int_type(bits),
+            ModuleRef::new(self.core),
+        ))
+    }
+
+    /// Const-generic integer type. Const-evaluated range check at
+    /// monomorphisation: `N` outside `MIN_INT_BITS..=MAX_INT_BITS` is a
+    /// compile error.
+    #[inline]
+    pub fn int_type_n<const N: u32>(self) -> IntType<'ctx, Width<N>, B> {
+        const {
+            assert!(
+                N >= MIN_INT_BITS && N <= MAX_INT_BITS,
+                "integer width N outside [MIN_INT_BITS, MAX_INT_BITS]",
+            );
+        }
+        IntType::new(self.core.ctx.int_type(N), ModuleRef::new(self.core))
+    }
+
+    /// Opaque pointer in address space `addr_space` (`0` = default).
+    #[inline]
+    pub fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, B> {
+        PointerType::new(
+            self.core.ctx.ptr_type(addr_space),
+            ModuleRef::new(self.core),
+        )
+    }
+
+    /// Legacy typed pointer `T*` in address space `addr_space`.
+    #[inline]
+    pub fn typed_pointer_type<T>(self, pointee: T, addr_space: u32) -> TypedPointerType<'ctx, B>
     where
-        I: IntoIterator<Item = T>,
         T: Into<Type<'ctx, B>>,
     {
-        let elems: Box<[TypeId]> = elements.into_iter().map(|t| t.into().id()).collect();
-        StructType::new(
-            self.core.context().literal_struct_type(elems, packed),
+        let pointee_id = pointee.into().id();
+        TypedPointerType::new(
+            self.core.ctx.typed_pointer_type(pointee_id, addr_space),
             ModuleRef::new(self.core),
         )
     }
 
+    /// `[n x elem]`.
     #[inline]
-    pub(super) fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, B> {
-        PointerType::new(
-            self.core.ptr_type(addr_space).as_type().id(),
+    pub fn array_type<T>(self, elem: T, n: u64) -> ArrayType<'ctx, ElemDyn, ArrLenDyn, B>
+    where
+        T: Into<Type<'ctx, B>>,
+    {
+        let elem_id = elem.into().id();
+        ArrayType::new(
+            self.core.ctx.array_type(elem_id, n),
             ModuleRef::new(self.core),
         )
     }
+
+    /// Const-generic typed array `[N x E]`. The element marker `E` projects
+    /// the scalar element type and `N` pins the element count. Unlike
+    /// [`vector_type_n`](Self::vector_type_n), `N == 0` is **not** rejected:
+    /// LLVM permits zero-length arrays `[0 x T]`.
     #[inline]
-    pub(super) fn vector_type<T>(
+    pub fn array_type_n<E, const N: u64>(self) -> ArrayType<'ctx, E, ArrLen<N>, B>
+    where
+        E: StaticVecElem<'ctx, B>,
+    {
+        let elem = E::element_ir_type(ModuleRef::new(self.core));
+        let id = self.core.ctx.array_type(elem.id(), N);
+        ArrayType::new(id, ModuleRef::new(self.core))
+    }
+
+    /// Fixed `<n x elem>` or scalable `<vscale x n x elem>` vector.
+    #[inline]
+    pub fn vector_type<T>(
         self,
         elem: T,
         n: u32,
@@ -643,17 +807,92 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     {
         let elem_id = elem.into().id();
         let id = if scalable {
-            self.core.context().scalable_vector_type(elem_id, n)
+            self.core.ctx.scalable_vector_type(elem_id, n)
         } else {
-            self.core.context().fixed_vector_type(elem_id, n)
+            self.core.ctx.fixed_vector_type(elem_id, n)
         };
         VectorType::new(id, ModuleRef::new(self.core))
     }
 
+    /// Const-generic typed vector `<N x E>`. The element marker `E` projects
+    /// the scalar element type and `N` pins the lane count.
+    /// `const`-evaluated at monomorphisation: `N == 0` is a compile error.
     #[inline]
-    pub(super) fn label_type(self) -> LabelType<'ctx, B> {
-        LabelType::new(
-            self.core.label_type().as_type().id(),
+    pub fn vector_type_n<E, const N: u32>(self) -> VectorType<'ctx, E, Len<N>, B>
+    where
+        E: StaticVecElem<'ctx, B>,
+    {
+        const {
+            assert!(N > 0, "vector length must be >= 1");
+        }
+        let elem = E::element_ir_type(ModuleRef::new(self.core));
+        let id = self.core.ctx.fixed_vector_type(elem.id(), N);
+        VectorType::new(id, ModuleRef::new(self.core))
+    }
+
+    /// Literal (unnamed) struct type `{ .. }` / `<{ .. }>`.
+    #[inline]
+    pub fn struct_type<I, T>(self, elements: I, packed: bool) -> StructType<'ctx, StructBodyDyn, B>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Type<'ctx, B>>,
+    {
+        let elems: Box<[TypeId]> = elements.into_iter().map(|t| t.into().id()).collect();
+        StructType::new(
+            self.core.ctx.literal_struct_type(elems, packed),
+            ModuleRef::new(self.core),
+        )
+    }
+
+    /// Function type `ret (params...)`, variadic when `is_var_arg`.
+    #[inline]
+    pub fn fn_type<I, R, T>(self, ret: R, params: I, is_var_arg: bool) -> FunctionType<'ctx, B>
+    where
+        I: IntoIterator<Item = T>,
+        R: Into<Type<'ctx, B>>,
+        T: Into<Type<'ctx, B>>,
+    {
+        let ret = ret.into();
+        let params: Box<[TypeId]> = params.into_iter().map(|t| t.into().id()).collect();
+        FunctionType::new(
+            self.core.ctx.function_type(ret.id(), params, is_var_arg),
+            ModuleRef::new(self.core),
+        )
+    }
+
+    /// A function type with no parameters. Avoids the empty-`Vec::<Type>::new()`
+    /// inference cliff of [`fn_type`](Self::fn_type): with an empty iterator the
+    /// element type `T` cannot be inferred, so callers otherwise have to spell it
+    /// (`fn_type(ret, Vec::<Type>::new(), va)`). This pins the element type for
+    /// them — `fn_type_no_params(ret, is_var_arg)` is exactly
+    /// `fn_type(ret, [], is_var_arg)`.
+    #[inline]
+    pub fn fn_type_no_params<R>(self, ret: R, is_var_arg: bool) -> FunctionType<'ctx, B>
+    where
+        R: Into<Type<'ctx, B>>,
+    {
+        self.fn_type(ret, core::iter::empty::<Type<'ctx, B>>(), is_var_arg)
+    }
+
+    /// Target extension type `target("name", type_params..., int_params...)`.
+    #[inline]
+    pub fn target_ext_type<Name, I, T, J>(
+        self,
+        name: Name,
+        type_params: I,
+        int_params: J,
+    ) -> TargetExtType<'ctx, B>
+    where
+        Name: Into<String>,
+        I: IntoIterator<Item = T>,
+        T: Into<Type<'ctx, B>>,
+        J: IntoIterator<Item = u32>,
+    {
+        let name: String = name.into();
+        let type_params: Box<[TypeId]> = type_params.into_iter().map(|t| t.into().id()).collect();
+        let int_params: Box<[u32]> = int_params.into_iter().collect();
+        TargetExtType::new(
+            self.core.ctx.target_ext_type(name, type_params, int_params),
             ModuleRef::new(self.core),
         )
     }

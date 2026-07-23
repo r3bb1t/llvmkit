@@ -67,7 +67,7 @@ Doctrine: unrepresentable > witnessed > tested, never trusted.
 
 ### Slice 8 — Pass-side phi creation, dominance-witnessed
 
-- `FnReshape::insert_phi(block, ty, incomings) -> IrResult<...>` (handle shape pinned at planning): creates a phi at the block's phi head. A pass sees a **complete** CFG, so everything is witnessed at the call: completeness vs predecessors (slice-4 helper), types, duplicates, **and incoming-value dominance** (each value dominates its edge's source) via the pass context's dominator tree (`analysis_repaired::<DominatorTreeAnalysis>`, shipped in P4). Strikes the `FnReshape` "inserting PHIs is future work" note.
+- `FnReshape::insert_phi_dyn(block, ty, incomings) -> IrResult<...>` (this erased signature was named `insert_phi` at planning; cycle D added a typed `insert_phi<V>` twin and moved the erased form to `insert_phi_dyn`): creates a phi at the block's phi head. A pass sees a **complete** CFG, so everything is witnessed at the call: completeness vs predecessors (slice-4 helper), types, duplicates, **and incoming-value dominance** (each value dominates its edge's source) via the pass context's dominator tree (`analysis_repaired::<DominatorTreeAnalysis>`, shipped in P4). Strikes the `FnReshape` "inserting PHIs is future work" note.
 - Scope guard: phi-scoped insertion only; the general in-pass IRBuilder stays future work.
 
 ### Slice 9 — Edge ops with mandatory phi resolution

@@ -1,0 +1,10 @@
+error[E0624]: method `module_mut` is private
+  --> tests/compile_fail/function_rung_cannot_declare_globals.rs:40:15
+   |
+40 |         patch.module_mut().add_global("g", i32_ty.const_zero())?;
+   |               ^^^^^^^^^^ private method
+   |
+  ::: src/pass_context.rs
+   |
+   |     pub(crate) fn module_mut(&self) -> &'m Module<'ctx, B, Unverified> {
+   |     ------------------------------------------------------------------ private method defined here
