@@ -1216,3 +1216,144 @@ fn non_inbounds_same_base_gep_ult_declines_to_fold() -> Result<(), IrError> {
         Ok(())
     })
 }
+
+// ---------------------------------------------------------------------------
+// D9: `SymbolicallyEvaluateGEP` symbolic offset evaluation
+// ---------------------------------------------------------------------------
+
+/// Mirrors `llvm/lib/Analysis/ConstantFolding.cpp::SymbolicallyEvaluateGEP`
+/// (lines 881-991), the headline case: an all-constant-index GEP over a
+/// sized element type canonicalises to a single `i8`-element GEP carrying
+/// the total byte offset — `getelementptr i32, ptr @g, i64 4` folds to
+/// `getelementptr inbounds (i8, ptr @g, i64 16)`, exactly the compact
+/// `GlobalVariable::ptr_offset` encoding.
+#[test]
+fn gep_i32_index_canonicalizes_to_i8_offset() -> Result<(), IrError> {
+    Module::with_new("analysis-gep-symbolic-i32", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i32_ty = m.i32_type();
+        let i64_ty = m.i64_type();
+        let ptr_ty = m.ptr_type(0);
+        let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
+        let four = i64_ty.const_int(4_i64).as_constant();
+        let gep = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [g.as_global_constant_ptr().into_erased(), four.into_erased()],
+            [],
+            [],
+            ConstantExprOptions::new()
+                .source_ty(i32_ty.as_type())
+                .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS)),
+        )?;
+
+        let folded = constant_fold_constant(gep, &dl, None)?;
+
+        assert_eq!(folded.to_string(), g.ptr_offset(16).to_string());
+        let resolved = constant_offset_from_global(folded, &dl)
+            .expect("canonical i8 GEP resolves to base + offset");
+        assert_eq!(resolved.global(), g);
+        assert_eq!(resolved.offset(), &ApInt::from_words(64, &[16]));
+        Ok(())
+    })
+}
+
+/// Mirrors `SymbolicallyEvaluateGEP`'s "if this is a GEP of a GEP, fold it
+/// all into a single GEP" merge (`ConstantFolding.cpp` lines 915-946): two
+/// nested inbounds GEPs (`ptr @g, i64 1` twice, over `i32`) collapse to one
+/// canonical `i8` GEP carrying the combined offset (4 + 4 = 8).
+#[test]
+fn nested_gep_merges_into_single_i8_offset() -> Result<(), IrError> {
+    Module::with_new("analysis-gep-symbolic-nested", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i32_ty = m.i32_type();
+        let i64_ty = m.i64_type();
+        let ptr_ty = m.ptr_type(0);
+        let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
+        let one = i64_ty.const_int(1_i64).as_constant();
+        let inbounds = ConstantExprOptions::new()
+            .source_ty(i32_ty.as_type())
+            .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS));
+        let inner = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [g.as_global_constant_ptr().into_erased(), one.into_erased()],
+            [],
+            [],
+            inbounds.clone(),
+        )?;
+        let outer = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [inner.into_erased(), one.into_erased()],
+            [],
+            [],
+            inbounds,
+        )?;
+
+        let folded = constant_fold_constant(outer, &dl, None)?;
+
+        assert_eq!(folded.to_string(), g.ptr_offset(8).to_string());
+        let resolved = constant_offset_from_global(folded, &dl)
+            .expect("merged nested GEP resolves to base + offset");
+        assert_eq!(resolved.global(), g);
+        assert_eq!(resolved.offset(), &ApInt::from_words(64, &[8]));
+        Ok(())
+    })
+}
+
+/// D9 zero-offset case: `SymbolicallyEvaluateGEP`'s tail always builds
+/// `getelementptr i8, ptr <base>, i64 <offset>` (`ConstantFolding.cpp` lines
+/// 986-990), but that construction's own `ConstantFoldGetElementPtr`
+/// (`IsNoOp`) collapses a zero total offset straight back to the base
+/// pointer unchanged. Proven via two nested GEPs whose offsets cancel
+/// (+4, -4) — neither individually a zero-index no-op the *pre-existing*
+/// fold would already have caught at construction time, so this only
+/// resolves to zero once the new offset arithmetic runs.
+#[test]
+fn nested_gep_cancelling_offsets_fold_to_base_pointer() -> Result<(), IrError> {
+    Module::with_new("analysis-gep-symbolic-cancel", |m| {
+        let dl = DataLayout::parse("e-p:64:64:64")?;
+        let i32_ty = m.i32_type();
+        let i64_ty = m.i64_type();
+        let ptr_ty = m.ptr_type(0);
+        let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
+        let g_ptr = g.as_global_constant_ptr();
+        let one = i64_ty.const_int(1_i64).as_constant();
+        let neg_one = i64_ty.const_int(-1_i64).as_constant();
+        let inbounds = ConstantExprOptions::new()
+            .source_ty(i32_ty.as_type())
+            .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS));
+        let inner = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [g_ptr.into_erased(), one.into_erased()],
+            [],
+            [],
+            inbounds.clone(),
+        )?;
+        let outer = m.constant_expr_with_options(
+            ptr_ty.as_type(),
+            ConstantExprOpcode::GetElementPtr,
+            [inner.into_erased(), neg_one.into_erased()],
+            [],
+            [],
+            inbounds,
+        )?;
+
+        let folded = constant_fold_constant(outer, &dl, None)?;
+
+        // Compare printed form rather than the `Constant` handle directly:
+        // llvmkit's `GlobalValueRef` constants are not interned/deduplicated
+        // (each construction — including the fresh one this fold's merge
+        // rewraps `g`'s id into — mints a distinct arena entry), so an
+        // independently-obtained `g_ptr` handle is a *different* id from the
+        // fold's result even though both denote the exact same value.
+        assert_eq!(folded.to_string(), g_ptr.to_string());
+        let resolved =
+            constant_offset_from_global(folded, &dl).expect("cancelling GEP resolves to base");
+        assert_eq!(resolved.global(), g);
+        assert_eq!(resolved.offset(), &ApInt::zero(64));
+        Ok(())
+    })
+}
