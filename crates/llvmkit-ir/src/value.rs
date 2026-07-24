@@ -267,9 +267,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     where
         Name: Into<String>,
     {
-        if module_token.id() != self.module.id() {
-            return;
-        }
+        assert_eq!(
+            module_token.id(),
+            self.module.id(),
+            "set_name: the module token belongs to a different module than this value"
+        );
         let requested = name.into();
         if self.ty().is_void() {
             self.set_name_internal(None);
@@ -291,9 +293,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
 
     /// Clear the textual name.
     pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-        if module_token.id() != self.module.id() {
-            return;
-        }
+        assert_eq!(
+            module_token.id(),
+            self.module.id(),
+            "clear_name: the module token belongs to a different module than this value"
+        );
         if self.ty().is_void() {
             self.set_name_internal(None);
             return;

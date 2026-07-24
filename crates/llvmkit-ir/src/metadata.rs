@@ -11,11 +11,6 @@ use crate::value::ValueSlot;
 pub struct MetadataSlot(pub(crate) usize);
 
 impl MetadataSlot {
-    /// Construct from a raw index. Used by the parser to map `!N` slots.
-    pub fn from_index(index: usize) -> Self {
-        Self(index)
-    }
-
     /// Numeric index of this id. Used by the AsmWriter for slot numbering.
     pub fn index(self) -> usize {
         self.0
