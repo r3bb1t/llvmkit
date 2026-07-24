@@ -71,6 +71,7 @@ use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, Type
 use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{Value, ValueData, ValueKindData, ValueSlot, ValueUse};
+use super::value_id::ViewIn;
 use super::vec_len::{Len, LenDyn};
 
 fn reject_reserved_intrinsic_name(name: &str) -> IrResult<()> {
@@ -2249,6 +2250,59 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
     /// Verify the module's structural invariants without consuming it.
     pub fn verify_borrowed(&self) -> IrResult<()> {
         crate::verifier::Verifier::new(self.as_view()).run()
+    }
+
+    /// Resolve a storable value id (from [`Value::to_id`](crate::Value::to_id)
+    /// and its per-kind siblings) back into its borrowing handle — the
+    /// resolution boundary for the llvmkit 2.0 id family.
+    ///
+    /// This is the module-tag choke point: the id's tag is compared against
+    /// this module's [`ModuleId`] *before* the arena is touched, so an id
+    /// minted in a different module can never mis-resolve against an in-range
+    /// slot here. The kind of handle returned is chosen by the id type (e.g.
+    /// an [`IntValueId<W>`](crate::IntValueId) yields an
+    /// [`IntValue<W>`](crate::IntValue), a [`BlockId`](crate::BlockId) yields a
+    /// copyable [`BasicBlockLabel`](crate::BasicBlockLabel)).
+    ///
+    /// Works on both [`Unverified`] and [`Verified`] modules.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the id belongs to a different module (foreign tag) or its slot
+    /// is absent — a deterministic contract violation, like indexing a slice
+    /// out of bounds. Use [`try_view`](Self::try_view) for the fallible form.
+    ///
+    /// A slot whose value was *erased* is tombstoned in place (the arena keeps
+    /// it for id-stability); there is no cheap liveness flag, so `view`
+    /// validates the module tag and arena range only — full
+    /// tombstone-liveness detection is deferred (see the crate's `value_id`
+    /// notes).
+    #[inline]
+    pub fn view<I>(&self, id: I) -> I::View
+    where
+        I: ViewIn<'ctx, B>,
+    {
+        id.resolve_in(self.module_ref()).unwrap_or_else(|| {
+            panic!(
+                "Module::view: id does not resolve in this module \
+                 (foreign module tag or absent/tombstoned slot)"
+            )
+        })
+    }
+
+    /// Fallible [`view`](Self::view): resolve a storable value id into its
+    /// borrowing handle, returning [`None`] when the id belongs to a different
+    /// module (foreign tag) or its slot is absent.
+    ///
+    /// Like [`view`](Self::view), this validates the module tag and arena range
+    /// only; a tombstoned-but-in-range slot is not detected (no cheap liveness
+    /// flag exists). Works on both [`Unverified`] and [`Verified`] modules.
+    #[inline]
+    pub fn try_view<I>(&self, id: I) -> Option<I::View>
+    where
+        I: ViewIn<'ctx, B>,
+    {
+        id.resolve_in(self.module_ref())
     }
 }
 

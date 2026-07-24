@@ -24,6 +24,7 @@ use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverifie
 use super::r#type::{Type, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
+use super::value_id::GlobalId;
 
 use super::constants::ConstantIntValue;
 use super::metadata::MetadataAttachmentSet;
@@ -103,6 +104,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
             module: self.module,
             ty: self.ty,
         }
+    }
+
+    /// Storable, module-tagged [`GlobalId`] for this global (llvmkit 2.0),
+    /// resolvable via [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view).
+    #[inline]
+    pub fn to_id(self) -> GlobalId<B> {
+        GlobalId::from_raw(self.module.id(), self.id)
     }
 
     /// Widen to the erased [`Constant`] handle. Globals are

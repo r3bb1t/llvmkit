@@ -29,6 +29,7 @@ use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::TypeSlot;
 use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
+use super::value_id::BlockId;
 use super::{DebugLoc, IrError, IrResult, Type};
 use core::cell::RefCell;
 use core::iter::FusedIterator;
@@ -212,6 +213,15 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     #[inline]
     pub fn id(&self) -> ValueSlot {
         self.to_erased().id
+    }
+
+    /// Storable, module-tagged [`BlockId<R, B, Params>`] for this block
+    /// (llvmkit 2.0), resolvable via [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view) back into a copyable
+    /// [`BasicBlockLabel`]. Preserves the return-shape and parameter markers.
+    #[inline]
+    pub fn to_id(&self) -> BlockId<R, B, Params> {
+        BlockId::from_raw(self.module.id(), self.id)
     }
 
     /// Drop the typed parameter marker, yielding the parameter-erased
@@ -512,6 +522,17 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     #[inline]
     pub fn id(&self) -> ValueSlot {
         self.to_erased().id
+    }
+
+    /// Storable, module-tagged [`BlockId<R, B, Params>`] for this block
+    /// (llvmkit 2.0), resolvable via [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view) back into a copyable
+    /// [`BasicBlockLabel`]. The block handle is linear (`!Copy`), so this
+    /// borrows `self` and leaves it usable — minting a `Copy` id from a
+    /// non-`Copy` block.
+    #[inline]
+    pub fn to_id(&self) -> BlockId<R, B, Params> {
+        BlockId::from_raw(self.module.id(), self.id)
     }
 
     /// Erase the return-shape marker (and the parameter marker), producing

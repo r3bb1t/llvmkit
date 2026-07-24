@@ -136,6 +136,7 @@ pub mod typed_pointer_value;
 pub mod r#use;
 pub mod user;
 pub mod value;
+pub mod value_id;
 pub mod value_symbol_table;
 pub mod value_tracking;
 pub mod vec_len;
@@ -339,6 +340,9 @@ pub use user::User;
 pub use value::{
     ArrayValue, FloatValue, FunctionTypedValue, HasDebugLoc, HasName, IntValue, IntoPointerValue,
     IsValue, PointerValue, StructValue, Typed, Value, ValueCategory, ValueSlot, VectorValue,
+};
+pub use value_id::{
+    BlockId, FloatValueId, FunctionId, GlobalId, IntValueId, PointerValueId, ValueId, ViewIn,
 };
 pub use worklist::Worklist;
 

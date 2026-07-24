@@ -42,6 +42,7 @@ use super::instruction::{Instruction, InstructionData, InstructionView, state::A
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::struct_body_state::StructBodyDyn;
 use super::r#type::{Type, TypeData, TypeSlot};
+use super::value_id::{FloatValueId, IntValueId, PointerValueId, ValueId};
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
@@ -248,6 +249,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     #[inline]
     pub fn id(self) -> ValueSlot {
         self.id
+    }
+
+    /// Storable, module-tagged [`ValueId`] for this value (llvmkit 2.0).
+    ///
+    /// Unlike [`id`](Self::id) — which returns the bare, untagged arena
+    /// [`ValueSlot`] — the returned [`ValueId`] carries the owning
+    /// [`ModuleId`](crate::ModuleId) and can be resolved back into a handle
+    /// with [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view).
+    #[inline]
+    pub fn to_id(self) -> ValueId<B> {
+        ValueId::from_raw(self.module.id(), self.id)
     }
 
     /// Cached IR type of this value.
@@ -592,6 +605,7 @@ macro_rules! decl_value_handle {
     (
         $(#[$attr:meta])*
         $name:ident,
+        $id:ident,
         $type_label:ident,
         $type_handle:ident,
         type_predicate $pred:expr
@@ -609,6 +623,14 @@ macro_rules! decl_value_handle {
             #[inline]
             pub fn into_erased(self) -> Value<'ctx, B> {
                 Value { id: self.id, module: self.module, ty: self.ty }
+            }
+
+            /// Storable, module-tagged id for this value (llvmkit 2.0),
+            /// resolvable via [`Module::view`](crate::Module::view) /
+            /// [`Module::try_view`](crate::Module::try_view).
+            #[inline]
+            pub fn to_id(self) -> $id<B> {
+                $id::from_raw(self.module.id(), self.id)
             }
 
             /// Owning module reference.
@@ -749,7 +771,7 @@ macro_rules! decl_value_handle {
 // carry their width / kind markers.
 decl_value_handle!(
     /// Value whose type is a (opaque) pointer.
-    PointerValue, Pointer, PointerType,
+    PointerValue, PointerValueId, Pointer, PointerType,
     type_predicate |d| matches!(d, TypeData::Pointer { .. })
 );
 impl<'ctx, B: ModuleBrand + 'ctx> PointerValue<'ctx, B> {
@@ -1575,7 +1597,11 @@ decl_value_handle!(
     /// Value whose type is a function signature. Mostly seen as a
     /// `FunctionValue` operand, but the concrete category is checked
     /// elsewhere; this handle only refines the type, not the category.
-    FunctionTypedValue, Function, FunctionType,
+    ///
+    /// Has no dedicated id family (it refines only the *type*, not the value
+    /// category), so [`to_id`](FunctionTypedValue::to_id) mints the erased
+    /// [`ValueId`].
+    FunctionTypedValue, ValueId, Function, FunctionType,
     type_predicate |d| matches!(d, TypeData::Function { .. })
 );
 
@@ -1692,6 +1718,14 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
             module: self.module,
             ty: self.ty,
         }
+    }
+    /// Storable, module-tagged [`IntValueId<W>`] for this value (llvmkit 2.0),
+    /// resolvable via [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view). Preserves the width
+    /// marker `W`.
+    #[inline]
+    pub fn to_id(self) -> IntValueId<W, B> {
+        IntValueId::from_raw(self.module.id(), self.id)
     }
     /// Owning module reference.
     #[inline]
@@ -2054,6 +2088,14 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
             module: self.module,
             ty: self.ty,
         }
+    }
+    /// Storable, module-tagged [`FloatValueId<K>`] for this value (llvmkit
+    /// 2.0), resolvable via [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view). Preserves the
+    /// float-kind marker `K`.
+    #[inline]
+    pub fn to_id(self) -> FloatValueId<K, B> {
+        FloatValueId::from_raw(self.module.id(), self.id)
     }
     #[inline]
     pub fn module(self) -> ModuleView<'ctx, B> {

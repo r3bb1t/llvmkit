@@ -65,6 +65,7 @@ use super::unnamed_addr::UnnamedAddr;
 use super::value::{
     HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData, ValueSlot, sealed,
 };
+use super::value_id::FunctionId;
 use super::value_symbol_table::ValueSymbolTable;
 
 // --------------------------------------------------------------------------
@@ -231,6 +232,16 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             module: self.module,
             ty: self.signature,
         }
+    }
+
+    /// Storable, module-tagged [`FunctionId<R>`] for this function (llvmkit
+    /// 2.0), resolvable via [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view). Preserves the
+    /// return-shape marker `R`; the signature is recovered from the arena on
+    /// view.
+    #[inline]
+    pub fn to_id(self) -> FunctionId<R, B> {
+        FunctionId::from_raw(self.module.id(), self.id)
     }
 
     /// Erase the return-shape marker, producing a runtime-checked
