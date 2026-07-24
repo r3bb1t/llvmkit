@@ -24,8 +24,8 @@
 use core::hash::{Hash, Hasher};
 use core::iter::FusedIterator;
 use core::marker::PhantomData;
-use core::num::NonZeroU32;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::num::NonZeroU64;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::align::MaybeAlign;
 use super::array_len::{ArrLen, ArrLenDyn};
@@ -91,24 +91,29 @@ fn reject_reserved_intrinsic_name(name: &str) -> IrResult<()> {
 
 /// Globally-unique module identifier. Assigned at construction by an
 /// atomic counter; never reused within a process.
+///
+/// The counter is 64-bit: id handles pack this tag alongside an arena
+/// index, and a 64-bit tag can never be re-issued within a process (a
+/// `u32` counter could in principle wrap after `u32::MAX` module
+/// creations and hand a live successor the tag of a dropped module).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ModuleId(NonZeroU32);
+pub struct ModuleId(NonZeroU64);
 
 impl ModuleId {
     /// Allocate the next unused id. The counter starts at 1 so the
-    /// underlying `NonZeroU32` always has its niche populated.
+    /// underlying `NonZeroU64` always has its niche populated.
     fn fresh() -> Self {
         // `Relaxed` is fine: the counter only needs uniqueness, not
         // happens-before ordering with any other memory operation.
-        static NEXT: AtomicU32 = AtomicU32::new(1);
+        static NEXT: AtomicU64 = AtomicU64::new(1);
         let raw = NEXT.fetch_add(1, Ordering::Relaxed);
-        let nz = NonZeroU32::new(raw).expect("ModuleId counter overflow (>u32::MAX modules)");
+        let nz = NonZeroU64::new(raw).expect("ModuleId counter overflow (>u64::MAX modules)");
         Self(nz)
     }
 
     /// Raw integer value. Useful for diagnostics.
     #[inline]
-    pub fn as_u32(self) -> u32 {
+    pub fn as_u64(self) -> u64 {
         self.0.get()
     }
 }
