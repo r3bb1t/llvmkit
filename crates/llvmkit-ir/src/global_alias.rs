@@ -9,16 +9,16 @@ use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
 use super::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
 use super::metadata::MetadataAttachmentSet;
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
-use super::r#type::{Type, TypeId, TypeKind};
+use super::r#type::{Type, TypeKind, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
-use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
+use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
 
 #[derive(Debug)]
 pub(super) struct GlobalAliasData {
     pub(super) name: String,
-    pub(super) value_type: TypeId,
+    pub(super) value_type: TypeSlot,
     pub(super) address_space: u32,
-    pub(super) aliasee: Cell<ValueId>,
+    pub(super) aliasee: Cell<ValueSlot>,
     pub(super) linkage: Cell<Linkage>,
     pub(super) visibility: Cell<Visibility>,
     pub(super) dll_storage_class: Cell<DllStorageClass>,
@@ -30,14 +30,14 @@ pub(super) struct GlobalAliasData {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GlobalAlias<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     #[inline]
-    pub(super) fn from_parts_unchecked<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_parts_unchecked<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -201,7 +201,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
         self,
         _module: &Module<'ctx, B, Unverified>,
         kind: crate::metadata::MetadataAttachmentKind,
-        id: crate::metadata::MetadataId,
+        id: crate::metadata::MetadataSlot,
     ) {
         self.data().metadata.borrow_mut().insert(kind, id);
     }
@@ -292,9 +292,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalAlias<'ctx, 
 pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand = Brand<'ctx>> {
     module: ModuleRef<'ctx, B>,
     name: String,
-    value_type: TypeId,
-    aliasee: ValueId,
-    aliasee_type: TypeId,
+    value_type: TypeSlot,
+    aliasee: ValueSlot,
+    aliasee_type: TypeSlot,
     address_space: u32,
     linkage: Linkage,
     visibility: Visibility,

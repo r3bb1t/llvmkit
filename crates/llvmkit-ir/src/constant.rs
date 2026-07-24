@@ -9,8 +9,8 @@
 //! arena index into the same
 //! module's value arena. Per-kind refinement handles
 //! ([`ConstantIntValue`], [`ConstantFloatValue`], ...) live in
-//! [`crate::constants`] and follow the same `(ValueId, ModuleRef, ty:
-//! TypeId)` layout as the value handles.
+//! [`crate::constants`] and follow the same `(ValueSlot, ModuleRef, ty:
+//! TypeSlot)` layout as the value handles.
 //!
 //! ## What's shipped
 //!
@@ -31,8 +31,8 @@
 
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::module::{Module, ModuleRef, Unverified};
-use crate::r#type::{Type, TypeId};
-use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, sealed};
+use crate::r#type::{Type, TypeSlot};
+use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueSlot, sealed};
 use crate::{DebugLoc, IrError, IrResult};
 
 /// Opcode carried by a parser-needed LLVM `ConstantExpr`.
@@ -246,9 +246,9 @@ impl ConstantExprFlags {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ConstantExprData {
     pub(crate) opcode: ConstantExprOpcode,
-    pub(crate) result_ty: TypeId,
-    pub(crate) source_ty: Option<TypeId>,
-    pub(crate) operands: Box<[ValueId]>,
+    pub(crate) result_ty: TypeSlot,
+    pub(crate) source_ty: Option<TypeSlot>,
+    pub(crate) operands: Box<[ValueSlot]>,
     pub(crate) indices: Box<[u32]>,
     pub(crate) mask: Box<[i32]>,
     pub(crate) flags: ConstantExprFlags,
@@ -278,7 +278,7 @@ pub(crate) enum ConstantData {
     /// A pointer-typed constant reference to a function or global value.
     /// Mirrors `GlobalValue` being a `Constant` whose `getType()` is the
     /// pointer type while `getValueType()` stores the pointee/function type.
-    GlobalValueRef { value: ValueId },
+    GlobalValueRef { value: ValueSlot },
     /// `null` of a pointer or typed-pointer type.
     PointerNull,
     /// Temporary parser placeholder for a forward `blockaddress`.
@@ -287,14 +287,14 @@ pub(crate) enum ConstantData {
     /// Aggregate constant — `ConstantArray`, `ConstantStruct`, or
     /// `ConstantVector`. Element categorisation is determined by the
     /// owning aggregate type.
-    Aggregate(Box<[ValueId]>),
+    Aggregate(Box<[ValueSlot]>),
     /// A specialised byte-offset into a global, printed as the constant
     /// expression `getelementptr inbounds (i8, ptr @<base>, i64 <off>)`.
     /// `base_id` is the value-id of the host global/function; `off` is the byte
     /// offset. This compact form is kept for symbol-relative initializers that
     /// point into the *middle* of another global, such as a relocated pointer
     /// slot inside an embedded section. The owning value's type is `ptr`.
-    GepOffset { base_id: ValueId, off: i64 },
+    GepOffset { base_id: ValueSlot, off: i64 },
     /// Specialised link-time difference of two symbol addresses, printed as the
     /// constant expression `sub (i64 ptrtoint (ptr @hi to i64), i64 ptrtoint
     /// (ptr @lo to i64))`. Both ids are globals/functions; the owning value's
@@ -304,7 +304,7 @@ pub(crate) enum ConstantData {
     /// where a real address is reached as `anchor + (real - anchor)` and only
     /// the delta lives in data. The two ids must differ (a self-delta would be a
     /// constant zero; callers should use `Int(0)` for that).
-    SymbolDelta { hi_id: ValueId, lo_id: ValueId },
+    SymbolDelta { hi_id: ValueSlot, lo_id: ValueSlot },
     /// Link-time symbol difference plus a constant addend, printed as
     /// `add (i64 sub (i64 ptrtoint (ptr @hi to i64), i64 ptrtoint (ptr @lo to
     /// i64)), i64 <addend>)`. Like [`ConstantData::SymbolDelta`] but with a
@@ -315,27 +315,30 @@ pub(crate) enum ConstantData {
     /// computation the optimizer cannot fold away. The two symbol ids must
     /// differ; the owning value's type is `i64`.
     SymbolDeltaPlus {
-        hi_id: ValueId,
-        lo_id: ValueId,
+        hi_id: ValueSlot,
+        lo_id: ValueSlot,
         addend: i64,
     },
     /// `blockaddress(@function, %block)`.
-    BlockAddress { function: ValueId, block: ValueId },
+    BlockAddress {
+        function: ValueSlot,
+        block: ValueSlot,
+    },
     /// `dso_local_equivalent @function`.
-    DSOLocalEquivalent { function: ValueId },
+    DSOLocalEquivalent { function: ValueSlot },
     /// `no_cfi @function`.
-    NoCfi { function: ValueId },
+    NoCfi { function: ValueSlot },
     /// `token none`.
     TokenNone,
     /// `target(...) none`.
     TargetExtNone,
     /// `ptrauth (...)`.
     PtrAuth {
-        pointer: ValueId,
-        key: ValueId,
-        discriminator: ValueId,
-        addr_discriminator: ValueId,
-        deactivation_symbol: ValueId,
+        pointer: ValueSlot,
+        key: ValueSlot,
+        discriminator: ValueSlot,
+        addr_discriminator: ValueSlot,
+        deactivation_symbol: ValueSlot,
     },
     /// `undef` of any first-class type.
     Undef,
@@ -345,7 +348,7 @@ pub(crate) enum ConstantData {
 }
 
 impl ConstantData {
-    pub(crate) fn for_each_operand(&self, mut f: impl FnMut(ValueId)) {
+    pub(crate) fn for_each_operand(&self, mut f: impl FnMut(ValueSlot)) {
         match self {
             Self::Expr(data) => {
                 for operand in data.operands.iter().copied() {
@@ -427,9 +430,9 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> BlockAddressPlaceholder<'ctx, B
 /// [`ConstantIntValue`]: crate::constants::ConstantIntValue
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Constant<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
-    pub(crate) id: ValueId,
+    pub(crate) id: ValueSlot,
     pub(crate) module: ModuleRef<'ctx, B>,
-    pub(crate) ty: TypeId,
+    pub(crate) ty: TypeSlot,
 }
 
 impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Constant<'ctx, B> {

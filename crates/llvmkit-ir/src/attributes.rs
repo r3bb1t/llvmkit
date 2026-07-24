@@ -24,7 +24,7 @@ use std::fmt;
 
 use super::ApInt;
 use super::module::{Brand, ModuleBrand};
-use super::r#type::{Type, TypeId, TypeKind};
+use super::r#type::{Type, TypeKind, TypeSlot};
 
 /// Whether an operation references memory, modifies memory, both, or neither.
 /// Mirrors `llvm::ModRefInfo` in `llvm/include/llvm/Support/ModRef.h`.
@@ -801,7 +801,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AttributeList<'ctx, B> {
 // --------------------------------------------------------------------------
 
 /// Storage form of [`Attribute`] used inside the value arena. Each
-/// `Type<'ctx>` payload is collapsed to a [`TypeId`] so the enum is
+/// `Type<'ctx>` payload is collapsed to a [`TypeSlot`] so the enum is
 /// lifetime-free and can be embedded in [`crate::value::ValueData`].
 ///
 /// Conversions are total in both directions when paired with a
@@ -810,9 +810,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> AttributeList<'ctx, B> {
 pub(super) enum AttributeStored {
     Enum(AttrKind),
     Int(AttrKind, u64),
-    Type(AttrKind, TypeId),
+    Type(AttrKind, TypeSlot),
     Range {
-        ty: TypeId,
+        ty: TypeSlot,
         lower: ApInt,
         upper: ApInt,
     },

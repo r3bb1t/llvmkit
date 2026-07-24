@@ -4,8 +4,8 @@
 //! `.ll` parser; assertions match what the upstream test asserts.
 //!
 //! `replace_all_uses_with` is deferred to a future session because it
-//! requires an operand-mutation refactor (each `ValueId` slot becomes
-//! a `Cell<ValueId>`); the change is mechanical but touches every
+//! requires an operand-mutation refactor (each `ValueSlot` slot becomes
+//! a `Cell<ValueSlot>`); the change is mechanical but touches every
 //! reader. Erase + use-list tracking is what DCE-lite (Session 4)
 //! requires today.
 

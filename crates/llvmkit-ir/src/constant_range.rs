@@ -3,10 +3,10 @@
 use crate::ApInt;
 use crate::constant::ConstantData;
 use crate::error::{IrError, IrResult};
-use crate::metadata::{MetadataId, MetadataKind, MetadataStore};
+use crate::metadata::{MetadataKind, MetadataSlot, MetadataStore};
 use crate::module::ModuleCore;
-use crate::r#type::{TypeData, TypeId};
-use crate::value::{ValueId, ValueKindData};
+use crate::r#type::{TypeData, TypeSlot};
+use crate::value::{ValueKindData, ValueSlot};
 
 /// Half-open range `[lower, upper)` over a fixed-width integer domain.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -167,8 +167,8 @@ impl ConstantRange {
 pub(crate) fn constant_ranges_from_metadata(
     module: &ModuleCore,
     store: &MetadataStore,
-    id: MetadataId,
-    expected_scalar_ty: TypeId,
+    id: MetadataSlot,
+    expected_scalar_ty: TypeSlot,
 ) -> Option<Vec<ConstantRange>> {
     let MetadataKind::Tuple { operands, .. } = store.get(id)? else {
         return None;
@@ -195,15 +195,15 @@ pub(crate) fn constant_ranges_from_metadata(
 pub(crate) fn metadata_constant_int(
     module: &ModuleCore,
     store: &MetadataStore,
-    id: MetadataId,
-) -> Option<(TypeId, ApInt)> {
+    id: MetadataSlot,
+) -> Option<(TypeSlot, ApInt)> {
     let MetadataKind::Constant(value_id) = store.get(id)? else {
         return None;
     };
     constant_int_from_value(module, *value_id)
 }
 
-fn constant_int_from_value(module: &ModuleCore, id: ValueId) -> Option<(TypeId, ApInt)> {
+fn constant_int_from_value(module: &ModuleCore, id: ValueSlot) -> Option<(TypeSlot, ApInt)> {
     let data = module.context().value_data(id);
     let ValueKindData::Constant(ConstantData::Int(words)) = &data.kind else {
         return None;

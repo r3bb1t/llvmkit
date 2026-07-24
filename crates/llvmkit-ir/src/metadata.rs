@@ -4,18 +4,13 @@
 //! attachment sets, and the core specialized DI node surface the assembler
 //! parser needs to round-trip debug metadata without storing opaque IR text.
 
-use crate::value::ValueId;
+use crate::value::ValueSlot;
 
 /// Stable index into the module-level metadata arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MetadataId(pub(crate) usize);
+pub struct MetadataSlot(pub(crate) usize);
 
-impl MetadataId {
-    /// Construct from a raw index. Used by the parser to map `!N` slots.
-    pub fn from_index(index: usize) -> Self {
-        Self(index)
-    }
-
+impl MetadataSlot {
     /// Numeric index of this id. Used by the AsmWriter for slot numbering.
     pub fn index(self) -> usize {
         self.0
@@ -24,7 +19,7 @@ impl MetadataId {
 
 /// Public metadata reference. `None` is the "null" metadata operand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MetadataRef(pub MetadataId);
+pub struct MetadataRef(pub MetadataSlot);
 
 /// LLVM metadata attachment names with the upstream fixed set represented as
 /// enum variants. Unknown `!name` attachments are valid IR and stay custom.
@@ -250,18 +245,18 @@ impl MetadataField {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DebugMetadataOperand {
     Metadata(MetadataRef),
-    Value(ValueId),
+    Value(ValueSlot),
 }
 
 impl DebugMetadataOperand {
-    pub(crate) const fn value_id(self) -> Option<ValueId> {
+    pub(crate) const fn value_id(self) -> Option<ValueSlot> {
         match self {
             Self::Value(id) => Some(id),
             Self::Metadata(_) => None,
         }
     }
 
-    pub(crate) fn replace_value_id(&mut self, from: ValueId, to: ValueId) {
+    pub(crate) fn replace_value_id(&mut self, from: ValueSlot, to: ValueSlot) {
         if matches!(self, Self::Value(id) if *id == from) {
             *self = Self::Value(to);
         }
@@ -291,21 +286,21 @@ impl DebugVariableRecordKind {
 pub struct DebugVariableRecord {
     kind: DebugVariableRecordKind,
     location: DebugMetadataOperand,
-    variable: MetadataId,
-    expression: MetadataId,
-    assign_id: Option<MetadataId>,
+    variable: MetadataSlot,
+    expression: MetadataSlot,
+    assign_id: Option<MetadataSlot>,
     address_location: Option<DebugMetadataOperand>,
-    address_expression: Option<MetadataId>,
-    debug_loc: MetadataId,
+    address_expression: Option<MetadataSlot>,
+    debug_loc: MetadataSlot,
 }
 
 impl DebugVariableRecord {
     pub fn new(
         kind: DebugVariableRecordKind,
         location: DebugMetadataOperand,
-        variable: MetadataId,
-        expression: MetadataId,
-        debug_loc: MetadataId,
+        variable: MetadataSlot,
+        expression: MetadataSlot,
+        debug_loc: MetadataSlot,
     ) -> Self {
         Self {
             kind,
@@ -319,7 +314,7 @@ impl DebugVariableRecord {
         }
     }
 
-    pub fn with_assign_id(mut self, assign_id: MetadataId) -> Self {
+    pub fn with_assign_id(mut self, assign_id: MetadataSlot) -> Self {
         self.assign_id = Some(assign_id);
         self
     }
@@ -329,7 +324,7 @@ impl DebugVariableRecord {
         self
     }
 
-    pub fn with_address_expression(mut self, address_expression: MetadataId) -> Self {
+    pub fn with_address_expression(mut self, address_expression: MetadataSlot) -> Self {
         self.address_expression = Some(address_expression);
         self
     }
@@ -342,15 +337,15 @@ impl DebugVariableRecord {
         self.location
     }
 
-    pub const fn variable(&self) -> MetadataId {
+    pub const fn variable(&self) -> MetadataSlot {
         self.variable
     }
 
-    pub const fn expression(&self) -> MetadataId {
+    pub const fn expression(&self) -> MetadataSlot {
         self.expression
     }
 
-    pub const fn assign_id(&self) -> Option<MetadataId> {
+    pub const fn assign_id(&self) -> Option<MetadataSlot> {
         self.assign_id
     }
 
@@ -358,11 +353,11 @@ impl DebugVariableRecord {
         self.address_location
     }
 
-    pub const fn address_expression(&self) -> Option<MetadataId> {
+    pub const fn address_expression(&self) -> Option<MetadataSlot> {
         self.address_expression
     }
 
-    pub const fn debug_loc(&self) -> MetadataId {
+    pub const fn debug_loc(&self) -> MetadataSlot {
         self.debug_loc
     }
 }
@@ -371,13 +366,13 @@ impl DebugVariableRecord {
 pub enum DebugRecord {
     Variable(DebugVariableRecord),
     Label {
-        label: MetadataId,
-        debug_loc: MetadataId,
+        label: MetadataSlot,
+        debug_loc: MetadataSlot,
     },
 }
 
 impl DebugRecord {
-    pub(crate) fn for_each_value(&self, mut f: impl FnMut(ValueId)) {
+    pub(crate) fn for_each_value(&self, mut f: impl FnMut(ValueSlot)) {
         match self {
             Self::Variable(record) => {
                 if let Some(id) = record.location.value_id() {
@@ -393,7 +388,7 @@ impl DebugRecord {
         }
     }
 
-    pub(crate) fn replace_value_id(&mut self, from: ValueId, to: ValueId) {
+    pub(crate) fn replace_value_id(&mut self, from: ValueSlot, to: ValueSlot) {
         match self {
             Self::Variable(record) => {
                 record.location.replace_value_id(from, to);
@@ -462,14 +457,14 @@ pub enum MetadataKind {
     /// `!"..."` — a string node. Mirrors `MDString`.
     String(String),
     /// `i64 1`, `ptr null`, ... — a typed constant metadata operand.
-    Constant(ValueId),
+    Constant(ValueSlot),
     /// `!{ op, op, ... }` — a tuple. Mirrors `MDTuple`.
     Tuple {
         distinct: bool,
         operands: Vec<MetadataRef>,
     },
     /// `!N` — reference to an already-interned metadata node.
-    Ref(MetadataId),
+    Ref(MetadataSlot),
     /// `!DIFile(...)`, `!DILocation(...)`, and sibling specialized nodes.
     Specialized(SpecializedMetadataNode),
 }
@@ -478,7 +473,7 @@ pub enum MetadataKind {
 /// preserving insertion position, matching LLVM attachment semantics.
 #[derive(Debug, Clone, Default)]
 pub struct MetadataAttachmentSet {
-    entries: Vec<(MetadataAttachmentKind, MetadataId)>,
+    entries: Vec<(MetadataAttachmentKind, MetadataSlot)>,
 }
 
 impl MetadataAttachmentSet {
@@ -488,7 +483,7 @@ impl MetadataAttachmentSet {
         }
     }
 
-    pub fn insert(&mut self, kind: MetadataAttachmentKind, id: MetadataId) {
+    pub fn insert(&mut self, kind: MetadataAttachmentKind, id: MetadataSlot) {
         if let Some((_, existing)) = self.entries.iter_mut().find(|(k, _)| *k == kind) {
             *existing = id;
             return;
@@ -496,13 +491,13 @@ impl MetadataAttachmentSet {
         self.entries.push((kind, id));
     }
 
-    pub fn get(&self, kind: &MetadataAttachmentKind) -> Option<MetadataId> {
+    pub fn get(&self, kind: &MetadataAttachmentKind) -> Option<MetadataSlot> {
         self.entries
             .iter()
             .find_map(|(k, id)| if k == kind { Some(*id) } else { None })
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &(MetadataAttachmentKind, MetadataId)> {
+    pub fn iter(&self) -> impl Iterator<Item = &(MetadataAttachmentKind, MetadataSlot)> {
         self.entries.iter()
     }
 
@@ -521,7 +516,7 @@ pub struct MetadataStore {
 impl MetadataStore {
     /// Intern a string node. Returns an existing id if an identical string
     /// was already inserted (mirrors `MDString::get`).
-    pub fn get_string<S>(&mut self, s: S) -> MetadataId
+    pub fn get_string<S>(&mut self, s: S) -> MetadataSlot
     where
         S: Into<String>,
     {
@@ -530,16 +525,16 @@ impl MetadataStore {
             if let MetadataKind::String(existing) = node
                 && *existing == s
             {
-                return MetadataId(i);
+                return MetadataSlot(i);
             }
         }
-        let id = MetadataId(self.nodes.len());
+        let id = MetadataSlot(self.nodes.len());
         self.nodes.push(MetadataKind::String(s));
         id
     }
 
     /// Create a non-distinct tuple node.
-    pub fn get_tuple(&mut self, operands: Vec<MetadataRef>) -> MetadataId {
+    pub fn get_tuple(&mut self, operands: Vec<MetadataRef>) -> MetadataSlot {
         self.get_tuple_with_distinct(false, operands)
     }
 
@@ -548,29 +543,29 @@ impl MetadataStore {
         &mut self,
         distinct: bool,
         operands: Vec<MetadataRef>,
-    ) -> MetadataId {
-        let id = MetadataId(self.nodes.len());
+    ) -> MetadataSlot {
+        let id = MetadataSlot(self.nodes.len());
         self.nodes.push(MetadataKind::Tuple { distinct, operands });
         id
     }
 
     /// Store a typed constant metadata operand.
-    pub fn get_constant(&mut self, value: ValueId) -> MetadataId {
-        let id = MetadataId(self.nodes.len());
+    pub fn get_constant(&mut self, value: ValueSlot) -> MetadataSlot {
+        let id = MetadataSlot(self.nodes.len());
         self.nodes.push(MetadataKind::Constant(value));
         id
     }
 
     /// Create a specialized `DI*` metadata node.
-    pub fn get_specialized(&mut self, node: SpecializedMetadataNode) -> MetadataId {
-        let id = MetadataId(self.nodes.len());
+    pub fn get_specialized(&mut self, node: SpecializedMetadataNode) -> MetadataSlot {
+        let id = MetadataSlot(self.nodes.len());
         self.nodes.push(MetadataKind::Specialized(node));
         id
     }
 
     /// Reserve a fresh node id with placeholder content.
-    pub fn reserve(&mut self) -> MetadataId {
-        let id = MetadataId(self.nodes.len());
+    pub fn reserve(&mut self) -> MetadataSlot {
+        let id = MetadataSlot(self.nodes.len());
         self.nodes.push(MetadataKind::Tuple {
             distinct: false,
             operands: Vec::new(),
@@ -579,7 +574,7 @@ impl MetadataStore {
     }
 
     /// Overwrite the node at `id` with `kind`. No-op if `id` is out of range.
-    pub fn set(&mut self, id: MetadataId, kind: MetadataKind) {
+    pub fn set(&mut self, id: MetadataSlot, kind: MetadataKind) {
         if let Some(slot) = self.nodes.get_mut(id.0) {
             *slot = kind;
         }
@@ -596,15 +591,15 @@ impl MetadataStore {
     }
 
     /// Look up a metadata node by id.
-    pub fn get(&self, id: MetadataId) -> Option<&MetadataKind> {
+    pub fn get(&self, id: MetadataSlot) -> Option<&MetadataKind> {
         self.nodes.get(id.0)
     }
 
     /// Mutably look up a metadata node by id.
-    pub(crate) fn get_mut(&mut self, id: MetadataId) -> Option<&mut MetadataKind> {
+    pub(crate) fn get_mut(&mut self, id: MetadataSlot) -> Option<&mut MetadataKind> {
         self.nodes.get_mut(id.0)
     }
-    /// Slice over all nodes, indexed by their `MetadataId.index()`.
+    /// Slice over all nodes, indexed by their `MetadataSlot.index()`.
     pub(crate) fn nodes(&self) -> &[MetadataKind] {
         &self.nodes
     }

@@ -7,6 +7,46 @@ tagged release is cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### llvmkit 2.0 — id-first handles (cycle A: foundations)
+
+The first cycle of a redesign that replaces the closure-scoped, lifetime-branded
+handle system with owned modules and storable, module-tagged id handles. This
+cycle is additive and internal groundwork; later cycles flip the builders to
+return ids and delete `Module::with_new`. See `docs/` for the migration.
+
+#### Added
+
+- A public id family: `ValueId`, `IntValueId<W>`, `FloatValueId<K>`,
+  `PointerValueId`, `FunctionId<R>`, `GlobalId`, `BlockId<R, _, Params>` — each a
+  `Copy`, `Send`, module-tagged `{ module-tag, arena-slot }` pair that is stored
+  and passed by value with no borrow of the module. Mint one from any value
+  handle with `handle.to_id()`.
+- `Module::view(id)` and `Module::try_view(id)` resolve an id back into its
+  borrowing handle. `view` panics on an id from a different module (a caller
+  contract violation, like an out-of-bounds index); `try_view` returns `None`.
+  The module-tag check runs before any arena access.
+- The typed ids implement the operand-conversion traits (`IntoIntValue` /
+  `IntoFloatValue` / `IntoPointerValue`, and `IntoCallArg` for free), so they can
+  be passed where a value operand is expected; a foreign-module id yields
+  `Err(IrError::ForeignValueId)`. The erased `ValueId` deliberately does **not**
+  implement them — erased → typed stays a spelled narrowing (`try_view`).
+- `IrError::ForeignValueId` (non-breaking; the error enum is `#[non_exhaustive]`).
+
+#### Changed (breaking)
+
+- The internal arena-index types are renamed to `ValueSlot` / `TypeSlot` /
+  `MetadataSlot` (freeing the `ValueId` / `TypeId` names for the public id
+  family). `TypeId` and `MetadataId` are no longer re-exported under those names.
+- `ModuleId` widened to a 64-bit counter; `ModuleId::as_u32` → `as_u64`.
+- `Value::set_name` / `Value::clear_name` now panic when handed a module token
+  from a different module, instead of silently doing nothing. All correct uses
+  (which pass the value's own module token) are unaffected.
+
+#### Removed
+
+- The public `MetadataId::from_index` constructor (it had no callers and let
+  external code forge a metadata id from an arbitrary index).
+
 ### Constant-folding parity with LLVM 22.1.4
 
 An audit against the vendored `llvmorg-22.1.4` sources found the constant folder

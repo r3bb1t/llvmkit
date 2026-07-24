@@ -11,7 +11,7 @@ use super::function::FunctionValue;
 use super::instruction::{InstructionKindData, InstructionView};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, ModuleBrand, ModuleRef};
-use super::value::{ValueId, ValueKindData};
+use super::value::{ValueKindData, ValueSlot};
 
 /// A directed edge in a function CFG. Mirrors LLVM's `BasicBlockEdge`
 /// without pointer identity: endpoints are copyable block labels, not
@@ -49,8 +49,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockEdge<'ctx, B> {
 #[derive(Debug, Clone)]
 pub struct FunctionCfg<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
     function: FunctionValue<'ctx, Dyn, B>,
-    successors: HashMap<ValueId, Vec<ValueId>>,
-    predecessors: HashMap<ValueId, Vec<ValueId>>,
+    successors: HashMap<ValueSlot, Vec<ValueSlot>>,
+    predecessors: HashMap<ValueSlot, Vec<ValueSlot>>,
     edges: Vec<BasicBlockEdge<'ctx, B>>,
 }
 
@@ -61,7 +61,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
         let module_ref: ModuleRef<'ctx, B> = module.into();
         let label_ty = module.label_type().as_type().id();
         let mut successors = HashMap::new();
-        let mut predecessors: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
+        let mut predecessors: HashMap<ValueSlot, Vec<ValueSlot>> = HashMap::new();
         let mut edges = Vec::new();
 
         for block in function.basic_blocks() {
@@ -138,7 +138,7 @@ where
 
 fn ids_to_labels<'ctx, B: ModuleBrand + 'ctx>(
     module: ModuleRef<'ctx, B>,
-    ids: Option<&Vec<ValueId>>,
+    ids: Option<&Vec<ValueSlot>>,
 ) -> Vec<BasicBlockLabel<'ctx, Dyn, B>> {
     let label_ty = module.module().label_type().as_type().id();
     ids.into_iter()
@@ -147,7 +147,7 @@ fn ids_to_labels<'ctx, B: ModuleBrand + 'ctx>(
         .collect()
 }
 
-pub(super) fn successor_ids<'ctx, R, S, B>(block: &BasicBlock<'ctx, R, S, B>) -> Vec<ValueId>
+pub(super) fn successor_ids<'ctx, R, S, B>(block: &BasicBlock<'ctx, R, S, B>) -> Vec<ValueSlot>
 where
     R: ReturnMarker,
     S: BlockTerminationState,
@@ -161,14 +161,14 @@ where
 
 pub(super) fn instruction_successor_ids<'ctx, B: ModuleBrand + 'ctx>(
     inst: &InstructionView<'ctx, B>,
-) -> Vec<ValueId> {
+) -> Vec<ValueSlot> {
     match &inst.to_erased().data().kind {
         ValueKindData::Instruction(data) => kind_successor_ids(&data.kind),
         _ => Vec::new(),
     }
 }
 
-pub(super) fn kind_successor_ids(kind: &InstructionKindData) -> Vec<ValueId> {
+pub(super) fn kind_successor_ids(kind: &InstructionKindData) -> Vec<ValueSlot> {
     match kind {
         InstructionKindData::Ret(_)
         | InstructionKindData::Resume(_)
@@ -243,7 +243,7 @@ pub(super) fn kind_successor_ids(kind: &InstructionKindData) -> Vec<ValueId> {
     }
 }
 
-fn branch_successor_ids(d: &crate::instr_types::BranchInstData) -> Vec<ValueId> {
+fn branch_successor_ids(d: &crate::instr_types::BranchInstData) -> Vec<ValueSlot> {
     match &*d.kind.borrow() {
         crate::instr_types::BranchKind::Unconditional(target) => vec![*target],
         crate::instr_types::BranchKind::Conditional {

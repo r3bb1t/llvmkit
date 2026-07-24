@@ -41,11 +41,11 @@ use crate::instr_types::{
 };
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::marker::Dyn;
-use crate::metadata::{MetadataAttachmentKind, MetadataId, MetadataKind};
+use crate::metadata::{MetadataAttachmentKind, MetadataKind, MetadataSlot};
 use crate::module::{ModuleCore, ModuleView};
 use crate::phi_check::{PhiViolation, check_phi_incoming};
-use crate::r#type::{Type, TypeData, TypeId};
-use crate::value::{IsValue, ValueId, ValueKindData};
+use crate::r#type::{Type, TypeData, TypeSlot};
+use crate::value::{IsValue, ValueKindData, ValueSlot};
 
 // --------------------------------------------------------------------------
 // Verifier
@@ -56,9 +56,9 @@ use crate::value::{IsValue, ValueId, ValueKindData};
 /// per-function state inside `Verifier::visit*`.
 struct FunctionContext<'a> {
     /// Predecessor multiset per block id.
-    predecessors: &'a HashMap<ValueId, Vec<ValueId>>,
+    predecessors: &'a HashMap<ValueSlot, Vec<ValueSlot>>,
     /// Declaration-order index of every block in the parent function.
-    block_index: &'a HashMap<ValueId, usize>,
+    block_index: &'a HashMap<ValueSlot, usize>,
     /// Recomputed dominator tree for cross-block SSA dominance checks.
     dom_tree: &'a DominatorTree,
 }
@@ -381,8 +381,8 @@ impl<'ctx> Verifier<'ctx> {
         // Collect block ids in declaration order so use-before-def
         // can check forward references between blocks (cross-block
         // checks are conservative -- see deferred-coverage note).
-        let block_ids: Vec<ValueId> = f.basic_blocks().map(|bb| bb.id()).collect();
-        let block_index: HashMap<ValueId, usize> = block_ids
+        let block_ids: Vec<ValueSlot> = f.basic_blocks().map(|bb| bb.id()).collect();
+        let block_index: HashMap<ValueSlot, usize> = block_ids
             .iter()
             .copied()
             .enumerate()
@@ -711,8 +711,8 @@ impl<'ctx> Verifier<'ctx> {
         f: FunctionValue<'ctx, Dyn>,
         bb: &BasicBlock<'ctx, Dyn>,
         _inst: &InstructionView<'ctx>,
-        id: MetadataId,
-        expected_scalar_ty: TypeId,
+        id: MetadataSlot,
+        expected_scalar_ty: TypeSlot,
         kind: RangeLikeMetadataKind,
     ) -> IrResult<()> {
         self.verify_range_like_metadata(id, expected_scalar_ty, kind, |rule, message| {
@@ -723,8 +723,8 @@ impl<'ctx> Verifier<'ctx> {
     fn verify_range_like_metadata_global(
         &self,
         g: crate::global_variable::GlobalVariable<'ctx>,
-        id: MetadataId,
-        expected_scalar_ty: TypeId,
+        id: MetadataSlot,
+        expected_scalar_ty: TypeSlot,
         kind: RangeLikeMetadataKind,
     ) -> IrResult<()> {
         self.verify_range_like_metadata(id, expected_scalar_ty, kind, |rule, message| {
@@ -734,8 +734,8 @@ impl<'ctx> Verifier<'ctx> {
 
     fn verify_range_like_metadata<F>(
         &self,
-        id: MetadataId,
-        expected_scalar_ty: TypeId,
+        id: MetadataSlot,
+        expected_scalar_ty: TypeSlot,
         kind: RangeLikeMetadataKind,
         mut fail: F,
     ) -> IrResult<()>
@@ -2074,7 +2074,7 @@ impl<'ctx> Verifier<'ctx> {
         &self,
         f: FunctionValue<'ctx, Dyn>,
         bb: &BasicBlock<'ctx, Dyn>,
-        ty: TypeId,
+        ty: TypeSlot,
         kind: &str,
     ) -> IrResult<()> {
         if is_int_or_int_vector(self.module, ty)
@@ -2098,7 +2098,7 @@ impl<'ctx> Verifier<'ctx> {
         &self,
         f: FunctionValue<'ctx, Dyn>,
         bb: &BasicBlock<'ctx, Dyn>,
-        ty: TypeId,
+        ty: TypeSlot,
     ) -> IrResult<()> {
         let Some(bits) = type_bit_width(self.module, ty) else {
             // Pointers (no statically-known bit width) are accepted by
@@ -2283,9 +2283,9 @@ impl<'ctx> Verifier<'ctx> {
         &self,
         f: FunctionValue<'ctx, Dyn>,
         bb: &BasicBlock<'ctx, Dyn>,
-        callee_id: ValueId,
-        fn_ty: TypeId,
-        args: &[core::cell::Cell<ValueId>],
+        callee_id: ValueSlot,
+        fn_ty: TypeSlot,
+        args: &[core::cell::Cell<ValueSlot>],
     ) -> IrResult<()> {
         let callee_data = self.module.context().value_data(callee_id);
         let ValueKindData::Function(_) = &callee_data.kind else {
@@ -2402,7 +2402,7 @@ impl<'ctx> Verifier<'ctx> {
         bb: &BasicBlock<'ctx, Dyn>,
         inst: &InstructionView<'ctx>,
         p: &PhiData,
-        predecessors: &HashMap<ValueId, Vec<ValueId>>,
+        predecessors: &HashMap<ValueSlot, Vec<ValueSlot>>,
         reachable: bool,
     ) -> IrResult<()> {
         let result_ty = inst.ty().id;
@@ -2443,7 +2443,7 @@ impl<'ctx> Verifier<'ctx> {
         // the shared coherence core so the parser (which runs the same
         // helper) cannot drift from the verifier. Each `PhiViolation`
         // maps back to the verifier's existing byte-identical diagnostic.
-        let incoming: Vec<(ValueId, ValueId)> = p
+        let incoming: Vec<(ValueSlot, ValueSlot)> = p
             .incoming
             .borrow()
             .iter()
@@ -2468,7 +2468,7 @@ impl<'ctx> Verifier<'ctx> {
             ));
         }
 
-        let value_ty_of = |id: ValueId| self.value_type(id);
+        let value_ty_of = |id: ValueSlot| self.value_type(id);
         match check_phi_incoming(result_ty, &incoming, preds, &value_ty_of) {
             Ok(()) => Ok(()),
             Err(PhiViolation::CountMismatch { entries, preds }) => Err(self.fail(
@@ -2573,7 +2573,7 @@ impl<'ctx> Verifier<'ctx> {
         bb: &BasicBlock<'ctx, Dyn>,
         _inst: &InstructionView<'ctx>,
         d: &crate::instr_types::SwitchInstData,
-        block_index: &HashMap<ValueId, usize>,
+        block_index: &HashMap<ValueSlot, usize>,
     ) -> IrResult<()> {
         let cond_ty = self.value_type(d.cond.get());
         if self
@@ -2635,7 +2635,7 @@ impl<'ctx> Verifier<'ctx> {
         bb: &BasicBlock<'ctx, Dyn>,
         _inst: &InstructionView<'ctx>,
         d: &crate::instr_types::IndirectBrInstData,
-        block_index: &HashMap<ValueId, usize>,
+        block_index: &HashMap<ValueSlot, usize>,
     ) -> IrResult<()> {
         let addr_ty = self.value_type(d.addr.get());
         if !self.module.context().type_data(addr_ty).is_pointer_data() {
@@ -2672,7 +2672,7 @@ impl<'ctx> Verifier<'ctx> {
         bb: &BasicBlock<'ctx, Dyn>,
         _inst: &InstructionView<'ctx>,
         d: &crate::instr_types::InvokeInstData,
-        block_index: &HashMap<ValueId, usize>,
+        block_index: &HashMap<ValueSlot, usize>,
     ) -> IrResult<()> {
         if !block_index.contains_key(&d.normal_dest.get())
             || !block_index.contains_key(&d.unwind_dest.get())
@@ -2696,7 +2696,7 @@ impl<'ctx> Verifier<'ctx> {
         bb: &BasicBlock<'ctx, Dyn>,
         _inst: &InstructionView<'ctx>,
         d: &crate::instr_types::CallBrInstData,
-        block_index: &HashMap<ValueId, usize>,
+        block_index: &HashMap<ValueSlot, usize>,
     ) -> IrResult<()> {
         if !block_index.contains_key(&d.default_dest.get()) {
             return Err(self.fail(
@@ -2728,7 +2728,7 @@ impl<'ctx> Verifier<'ctx> {
         bb: &BasicBlock<'ctx, Dyn>,
         _inst: &InstructionView<'ctx>,
         b: &BranchInstData,
-        block_index: &HashMap<ValueId, usize>,
+        block_index: &HashMap<ValueSlot, usize>,
     ) -> IrResult<()> {
         match &*b.kind.borrow() {
             BranchKind::Unconditional(target) => {
@@ -2878,11 +2878,11 @@ impl<'ctx> Verifier<'ctx> {
         }
     }
 
-    fn value_type(&self, id: ValueId) -> TypeId {
+    fn value_type(&self, id: ValueSlot) -> TypeSlot {
         self.module.context().value_data(id).ty
     }
 
-    fn type_label(&self, id: TypeId) -> String {
+    fn type_label(&self, id: TypeSlot) -> String {
         format!("{}", Type::new(id, self.module))
     }
 
@@ -2892,7 +2892,7 @@ impl<'ctx> Verifier<'ctx> {
         &self,
         f: FunctionValue<'ctx, Dyn>,
         bb: &BasicBlock<'ctx, Dyn>,
-        ty: TypeId,
+        ty: TypeSlot,
         role: &str,
     ) -> IrResult<u32> {
         match self.module.context().type_data(ty).as_integer() {
@@ -2914,9 +2914,9 @@ impl<'ctx> Verifier<'ctx> {
 /// CFG predecessor map for one function. Mirrors LLVM's `pred_iterator`
 /// exposed via `BasicBlock::pred_begin`; shared successor semantics live in
 /// [`crate::cfg::FunctionCfg`] so every terminator family is handled in one place.
-fn build_predecessors(f: FunctionValue<'_, Dyn>) -> HashMap<ValueId, Vec<ValueId>> {
+fn build_predecessors(f: FunctionValue<'_, Dyn>) -> HashMap<ValueSlot, Vec<ValueSlot>> {
     let cfg = crate::cfg::FunctionCfg::new(f);
-    let mut preds: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
+    let mut preds: HashMap<ValueSlot, Vec<ValueSlot>> = HashMap::new();
     for edge in cfg.edges() {
         preds
             .entry(edge.end().id())
@@ -2927,12 +2927,12 @@ fn build_predecessors(f: FunctionValue<'_, Dyn>) -> HashMap<ValueId, Vec<ValueId
 }
 
 // --------------------------------------------------------------------------
-// Type predicates (lifetime-free, operate on TypeId via the context)
+// Type predicates (lifetime-free, operate on TypeSlot via the context)
 // --------------------------------------------------------------------------
 
 /// Recursively detects whether a type contains any scalable vector.
 /// Mirrors `Type::isScalableTy` in `llvm/lib/IR/Type.cpp`.
-fn type_contains_scalable(m: &ModuleCore, ty: TypeId) -> bool {
+fn type_contains_scalable(m: &ModuleCore, ty: TypeSlot) -> bool {
     match m.context().type_data(ty) {
         TypeData::ScalableVector { .. } => true,
         TypeData::FixedVector { elem, .. } | TypeData::Array { elem, .. } => {
@@ -2946,14 +2946,14 @@ fn type_contains_scalable(m: &ModuleCore, ty: TypeId) -> bool {
     }
 }
 
-fn scalar_type_id(m: &ModuleCore, ty: TypeId) -> TypeId {
+fn scalar_type_id(m: &ModuleCore, ty: TypeSlot) -> TypeSlot {
     match m.context().type_data(ty) {
         TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => *elem,
         _ => ty,
     }
 }
 
-fn is_int_or_int_vector(m: &ModuleCore, ty: TypeId) -> bool {
+fn is_int_or_int_vector(m: &ModuleCore, ty: TypeSlot) -> bool {
     let d = m.context().type_data(ty);
     if d.as_integer().is_some() {
         return true;
@@ -2967,15 +2967,15 @@ fn is_int_or_int_vector(m: &ModuleCore, ty: TypeId) -> bool {
 }
 
 enum AggWalkErr {
-    NotAggregate(TypeId),
+    NotAggregate(TypeSlot),
     OutOfRange { idx: u32, count: u32 },
 }
 
 fn walk_aggregate_path(
     m: &ModuleCore,
-    root: TypeId,
+    root: TypeSlot,
     indices: &[u32],
-) -> Result<TypeId, AggWalkErr> {
+) -> Result<TypeSlot, AggWalkErr> {
     let mut cur = root;
     for &idx in indices {
         let d = m.context().type_data(cur);
@@ -3009,7 +3009,7 @@ fn walk_aggregate_path(
     Ok(cur)
 }
 
-fn is_fp_or_fp_vector(m: &ModuleCore, ty: TypeId) -> bool {
+fn is_fp_or_fp_vector(m: &ModuleCore, ty: TypeSlot) -> bool {
     let d = m.context().type_data(ty);
     if is_fp_data(d) {
         return true;
@@ -3022,7 +3022,7 @@ fn is_fp_or_fp_vector(m: &ModuleCore, ty: TypeId) -> bool {
     false
 }
 
-fn is_pointer_or_pointer_vector(m: &ModuleCore, ty: TypeId) -> bool {
+fn is_pointer_or_pointer_vector(m: &ModuleCore, ty: TypeSlot) -> bool {
     let d = m.context().type_data(ty);
     if d.is_pointer_data() {
         return true;
@@ -3034,7 +3034,7 @@ fn is_pointer_or_pointer_vector(m: &ModuleCore, ty: TypeId) -> bool {
     }
     false
 }
-fn pointer_source_shape(m: &ModuleCore, ty: TypeId) -> Option<(u32, Option<(u32, bool)>)> {
+fn pointer_source_shape(m: &ModuleCore, ty: TypeSlot) -> Option<(u32, Option<(u32, bool)>)> {
     match m.context().type_data(ty) {
         TypeData::Pointer { addr_space } => Some((*addr_space, None)),
         TypeData::FixedVector { elem, n } => match m.context().type_data(*elem) {
@@ -3049,7 +3049,7 @@ fn pointer_source_shape(m: &ModuleCore, ty: TypeId) -> Option<(u32, Option<(u32,
     }
 }
 
-fn integer_result_shape(m: &ModuleCore, ty: TypeId) -> Option<(u32, Option<(u32, bool)>)> {
+fn integer_result_shape(m: &ModuleCore, ty: TypeSlot) -> Option<(u32, Option<(u32, bool)>)> {
     match m.context().type_data(ty) {
         TypeData::Integer { bits } => Some((*bits, None)),
         TypeData::FixedVector { elem, n } => match m.context().type_data(*elem) {
@@ -3064,11 +3064,11 @@ fn integer_result_shape(m: &ModuleCore, ty: TypeId) -> Option<(u32, Option<(u32,
     }
 }
 
-fn is_i1(m: &ModuleCore, ty: TypeId) -> bool {
+fn is_i1(m: &ModuleCore, ty: TypeSlot) -> bool {
     matches!(m.context().type_data(ty).as_integer(), Some(1))
 }
 
-fn is_i1_vector(m: &ModuleCore, ty: TypeId) -> bool {
+fn is_i1_vector(m: &ModuleCore, ty: TypeSlot) -> bool {
     if let Some((elem, _, _)) = m.context().type_data(ty).as_vector() {
         is_i1(m, elem)
     } else {
@@ -3099,7 +3099,7 @@ fn is_fp_data(d: &TypeData) -> bool {
 /// bits; LangRef accepts conversions in either direction so long as
 /// they are not the identity, which the per-opcode width check
 /// (`s != d`) catches separately.
-fn fp_rank(m: &ModuleCore, ty: TypeId) -> Option<u32> {
+fn fp_rank(m: &ModuleCore, ty: TypeSlot) -> Option<u32> {
     match m.context().type_data(ty) {
         TypeData::Half => Some(16),
         TypeData::BFloat => Some(16),
@@ -3115,7 +3115,7 @@ fn fp_rank(m: &ModuleCore, ty: TypeId) -> Option<u32> {
 /// Bit width of a value-bearing type, or `None` if it has no defined
 /// width (function/void/label/...). Mirrors `Type::getPrimitiveSizeInBits`
 /// for the cases bitcast cares about.
-fn type_bit_width(m: &ModuleCore, ty: TypeId) -> Option<u32> {
+fn type_bit_width(m: &ModuleCore, ty: TypeSlot) -> Option<u32> {
     match m.context().type_data(ty) {
         TypeData::Integer { bits } => Some(*bits),
         TypeData::Half | TypeData::BFloat => Some(16),
@@ -3139,7 +3139,7 @@ fn type_bit_width(m: &ModuleCore, ty: TypeId) -> Option<u32> {
 
 /// Best-effort label for a basic-block id. Used in diagnostics; not a
 /// faithful slot tracker.
-fn slot_label(m: &ModuleCore, block_id: ValueId) -> String {
+fn slot_label(m: &ModuleCore, block_id: ValueSlot) -> String {
     let v = m.context().value_data(block_id);
     if let Some(name) = v.name.borrow().as_ref() {
         return name.clone();
@@ -3193,16 +3193,16 @@ mod tests {
     use crate::instruction::{InstructionKindData, build_instruction_value};
     use crate::marker::Dyn;
     use crate::module::Module;
-    use crate::value::{ValueData, ValueId, ValueKindData};
+    use crate::value::{ValueData, ValueKindData, ValueSlot};
 
     /// Append a fabricated instruction to a block, bypassing the
     /// IRBuilder's typestate. Returns the new instruction's value id.
     fn fabricate_instruction(
         m: &Module<'_>,
-        bb_id: ValueId,
-        result_ty: TypeId,
+        bb_id: ValueSlot,
+        result_ty: TypeSlot,
         kind: InstructionKindData,
-    ) -> ValueId {
+    ) -> ValueSlot {
         let m = m.core_ref();
         let v = build_instruction_value(result_ty, bb_id, kind, None);
         let id = m.context().push_value(v);
@@ -3215,7 +3215,7 @@ mod tests {
     }
 
     /// Push a fresh constant-int value of the given type.
-    fn fab_const_int_id(m: &Module<'_>, ty: TypeId, value: u64) -> ValueId {
+    fn fab_const_int_id(m: &Module<'_>, ty: TypeSlot, value: u64) -> ValueSlot {
         let m = m.core_ref();
         m.context().push_value(ValueData {
             ty,
@@ -3227,7 +3227,7 @@ mod tests {
     }
 
     /// Push a fresh `ptr null` value.
-    fn fab_null_ptr_id(m: &Module<'_>, ptr_ty: TypeId) -> ValueId {
+    fn fab_null_ptr_id(m: &Module<'_>, ptr_ty: TypeSlot) -> ValueSlot {
         let m = m.core_ref();
         m.context().push_value(ValueData {
             ty: ptr_ty,
@@ -3242,7 +3242,7 @@ mod tests {
         ret_ty: crate::Type<'ctx>,
         params: &[crate::Type<'ctx>],
         name: &str,
-    ) -> (ValueId, ValueId) {
+    ) -> (ValueSlot, ValueSlot) {
         let fn_ty = m.fn_type(ret_ty, params.iter().copied(), false);
         let f = m.add_function_dyn(name, fn_ty, Linkage::External).unwrap();
         let bb = f.append_basic_block(m, "entry");
@@ -3256,7 +3256,7 @@ mod tests {
     }
 
     /// Append a `ret void` to a block via direct fabrication.
-    fn append_ret_void(m: &Module<'_>, bb_id: ValueId) {
+    fn append_ret_void(m: &Module<'_>, bb_id: ValueSlot) {
         fabricate_instruction(
             m,
             bb_id,
@@ -3464,7 +3464,7 @@ mod tests {
             // its arena index.
             let probe = fab_const_int_id(&m, i32_ty.id(), 0);
             let next_index = probe.arena_index() + 1;
-            let next_id = ValueId::from_index(next_index);
+            let next_id = ValueSlot::from_index(next_index);
             // Push an `add i32 next_id, probe` -- next_id IS this add's id.
             let pushed = fabricate_instruction(
                 &m,

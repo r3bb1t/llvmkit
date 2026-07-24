@@ -298,7 +298,11 @@ pub trait IntoFloatValue<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>>:
 
 /// Seals [`IntoFloatValue`] to the identity/lift handles plus the exact
 /// Rust floats (`f32`, `f64`). Erased handles are deliberately absent.
-mod into_float_value_sealed {
+///
+/// `pub(crate)` so the id-family `Sealed`/`IntoFloatValue` impls (for
+/// [`FloatValueId`](crate::FloatValueId)) can live beside the ids in
+/// `value_id.rs`; the trait inside stays crate-private, so the seal holds.
+pub(crate) mod into_float_value_sealed {
     pub trait Sealed {}
 }
 

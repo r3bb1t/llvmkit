@@ -136,6 +136,7 @@ pub mod typed_pointer_value;
 pub mod r#use;
 pub mod user;
 pub mod value;
+pub mod value_id;
 pub mod value_symbol_table;
 pub mod value_tracking;
 pub mod vec_len;
@@ -269,8 +270,8 @@ pub use ir_builder::{
 pub use known_bits::KnownBits;
 pub use marker::{Dyn, Ptr, ReturnMarker};
 pub use metadata::{
-    MetadataAttachmentKind, MetadataAttachmentSet, MetadataField, MetadataFieldValue, MetadataId,
-    MetadataKind, MetadataRef, SpecializedMetadataKind, SpecializedMetadataNode,
+    MetadataAttachmentKind, MetadataAttachmentSet, MetadataField, MetadataFieldValue, MetadataKind,
+    MetadataRef, MetadataSlot, SpecializedMetadataKind, SpecializedMetadataNode,
 };
 pub use module::{
     Brand, ComdatView, GlobalAliasView, GlobalIFuncView, GlobalVariableView, Module, ModuleBrand,
@@ -330,7 +331,7 @@ pub use struct_schema::{
 };
 pub use sync_scope::SyncScope;
 pub use target_library_info::{LibFunc, TargetLibraryInfo};
-pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeId, TypeKind};
+pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeKind, TypeSlot};
 pub use typed_pointer_type::TypedPointerType;
 pub use typed_pointer_value::TypedPointerValue;
 pub use unnamed_addr::UnnamedAddr;
@@ -338,7 +339,10 @@ pub use r#use::Use;
 pub use user::User;
 pub use value::{
     ArrayValue, FloatValue, FunctionTypedValue, HasDebugLoc, HasName, IntValue, IntoPointerValue,
-    IsValue, PointerValue, StructValue, Typed, Value, ValueCategory, ValueId, VectorValue,
+    IsValue, PointerValue, StructValue, Typed, Value, ValueCategory, ValueSlot, VectorValue,
+};
+pub use value_id::{
+    BlockId, FloatValueId, FunctionId, GlobalId, IntValueId, PointerValueId, ValueId, ViewIn,
 };
 pub use worklist::Worklist;
 

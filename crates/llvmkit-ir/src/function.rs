@@ -14,7 +14,7 @@
 //!   record per slot), so an `Argument<'ctx, B>` can be `Copy` and
 //!   round-trip through the user/use machinery exactly like any other
 //!   value.
-//! - Basic blocks live in a `RefCell<Vec<ValueId>>` so the IRBuilder
+//! - Basic blocks live in a `RefCell<Vec<ValueSlot>>` so the IRBuilder
 //!   can append while holding a `&'ctx ModuleCore` borrow.
 //!
 //! ## Return-type safety
@@ -60,11 +60,12 @@ use super::module::{
     validate_use_list_order_indexes,
 };
 use super::pass_context::FunctionView;
-use super::r#type::{Type, TypeData, TypeId};
+use super::r#type::{Type, TypeData, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
-    HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueId, ValueKindData, sealed,
+    HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData, ValueSlot, sealed,
 };
+use super::value_id::FunctionId;
 use super::value_symbol_table::ValueSymbolTable;
 
 // --------------------------------------------------------------------------
@@ -76,7 +77,7 @@ use super::value_symbol_table::ValueSymbolTable;
 #[derive(Debug)]
 pub(super) struct FunctionData {
     pub(super) name: String,
-    pub(super) signature: TypeId,
+    pub(super) signature: TypeSlot,
     pub(super) linkage: RefCell<Linkage>,
     pub(super) visibility: RefCell<Visibility>,
     pub(super) dll_storage_class: RefCell<DllStorageClass>,
@@ -88,16 +89,16 @@ pub(super) struct FunctionData {
     pub(super) partition: RefCell<Option<String>>,
     pub(super) align: RefCell<MaybeAlign>,
     pub(super) gc: RefCell<Option<String>>,
-    pub(super) prefix_data: Cell<Option<ValueId>>,
-    pub(super) prologue_data: Cell<Option<ValueId>>,
-    pub(super) personality_fn: Cell<Option<ValueId>>,
+    pub(super) prefix_data: Cell<Option<ValueSlot>>,
+    pub(super) prologue_data: Cell<Option<ValueSlot>>,
+    pub(super) personality_fn: Cell<Option<ValueSlot>>,
     pub(super) comdat: RefCell<Option<String>>,
     /// One value-id per parameter, in declaration order. Set once at
     /// function-creation time after every argument value-id is known;
     /// LLVM does not allow adding parameters in place afterwards, so
     /// this stays effectively immutable past the constructor.
-    pub(super) args: RefCell<Box<[ValueId]>>,
-    pub(super) basic_blocks: RefCell<Vec<ValueId>>,
+    pub(super) args: RefCell<Box<[ValueSlot]>>,
+    pub(super) basic_blocks: RefCell<Vec<ValueSlot>>,
     pub(super) attributes: RefCell<AttributeStorage>,
     pub(super) function_attr_groups: RefCell<Vec<u32>>,
     pub(super) use_list_orders: RefCell<Vec<UseListOrderRecord>>,
@@ -109,7 +110,7 @@ pub(super) struct FunctionData {
 impl FunctionData {
     pub(super) fn new(
         name: String,
-        signature: TypeId,
+        signature: TypeSlot,
         linkage: Linkage,
         calling_conv: CallingConv,
         intrinsic: Option<IntrinsicFunctionData>,
@@ -154,12 +155,12 @@ impl FunctionData {
 /// time (see [`crate::marker`]). Use [`FunctionValue::as_dyn`]
 /// to widen to the runtime-checked [`Dyn`] form.
 pub struct FunctionValue<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     /// Cached signature type id. The value's value-arena type is the
     /// pointer-to-function on real LLVM; here we cache the function-
     /// type id directly so `signature()` is a thin lookup.
-    pub(super) signature: TypeId,
+    pub(super) signature: TypeSlot,
     pub(super) _r: PhantomData<R>,
 }
 
@@ -201,7 +202,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// function-creation paths hand these out, after they've
     /// validated that the signature's return type matches `R`.
     #[inline]
-    pub(super) fn from_parts_unchecked<M>(id: ValueId, module: M) -> Self
+    pub(super) fn from_parts_unchecked<M>(id: ValueSlot, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -231,6 +232,16 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             module: self.module,
             ty: self.signature,
         }
+    }
+
+    /// Storable, module-tagged [`FunctionId<R>`] for this function (llvmkit
+    /// 2.0), resolvable via [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view). Preserves the
+    /// return-shape marker `R`; the signature is recovered from the arena on
+    /// view.
+    #[inline]
+    pub fn to_id(self) -> FunctionId<R, B> {
+        FunctionId::from_raw(self.module.id(), self.id)
     }
 
     /// Erase the return-shape marker, producing a runtime-checked
@@ -543,7 +554,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         self.data().personality_fn.set(None);
     }
 
-    fn checked_constant_id<C>(self, data: C) -> IrResult<ValueId>
+    fn checked_constant_id<C>(self, data: C) -> IrResult<ValueSlot>
     where
         C: IsConstant<'ctx, B>,
     {
@@ -577,7 +588,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         self,
         _module: &Module<'ctx, B, Unverified>,
         kind: crate::metadata::MetadataAttachmentKind,
-        id: crate::metadata::MetadataId,
+        id: crate::metadata::MetadataSlot,
     ) {
         self.data().metadata.borrow_mut().insert(kind, id);
     }
@@ -751,8 +762,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         let module = self.module;
         let parent = self.id;
         let signature = self.signature;
-        let args: Box<[ValueId]> = self.data().args.borrow().clone();
-        let param_types: Vec<TypeId> = FunctionType::new(signature, module)
+        let args: Box<[ValueSlot]> = self.data().args.borrow().clone();
+        let param_types: Vec<TypeSlot> = FunctionType::new(signature, module)
             .params()
             .map(|t| t.id())
             .collect();
@@ -841,7 +852,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     + 'ctx {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
-        let ids: Vec<ValueId> = self.data().basic_blocks.borrow().clone();
+        let ids: Vec<ValueSlot> = self.data().basic_blocks.borrow().clone();
         ids.into_iter()
             .map(move |id| BasicBlock::from_parts(id, self.module, label_ty))
     }
@@ -898,7 +909,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
     pub(super) fn set_local_value_name(
         self,
-        id: ValueId,
+        id: ValueSlot,
         requested: Option<&str>,
     ) -> Option<String> {
         let value = self.module.module().context().value_data(id);
@@ -911,7 +922,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         final_name
     }
 
-    pub(super) fn remove_local_value_name(self, id: ValueId) {
+    pub(super) fn remove_local_value_name(self, id: ValueSlot) {
         let value = self.module.module().context().value_data(id);
         if let Some(name) = value.name.borrow().as_deref() {
             self.data().symbol_table.remove_value_name(name, id);
@@ -969,9 +980,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 /// [`FunctionValue`]'s `IntoIterator`: it snapshots the function's block ids
 /// up front, so IR mutation during the walk does not disturb it.
 pub struct FunctionBasicBlocks<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
-    ids: std::vec::IntoIter<ValueId>,
+    ids: std::vec::IntoIter<ValueSlot>,
     module: ModuleRef<'ctx, B>,
-    label_ty: TypeId,
+    label_ty: TypeSlot,
     _r: PhantomData<R>,
 }
 
@@ -1026,7 +1037,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoIterator for FunctionValu
     fn into_iter(self) -> Self::IntoIter {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
-        let ids: Vec<ValueId> = self.data().basic_blocks.borrow().clone();
+        let ids: Vec<ValueSlot> = self.data().basic_blocks.borrow().clone();
         FunctionBasicBlocks {
             ids: ids.into_iter(),
             module: self.module,

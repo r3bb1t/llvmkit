@@ -175,7 +175,7 @@ struct TypeEntry<'ctx, B: ModuleBrand = Brand<'ctx>> {
 }
 
 struct MetadataSlotEntry {
-    id: llvmkit_ir::metadata::MetadataId,
+    id: llvmkit_ir::metadata::MetadataSlot,
     defined: bool,
     first_ref: Span,
 }
@@ -192,7 +192,7 @@ struct FunctionSuffix<'ctx, B: ModuleBrand = Brand<'ctx>> {
     personality_fn: Option<ParsedPersonalityFn<'ctx, B>>,
     metadata: Vec<(
         llvmkit_ir::metadata::MetadataAttachmentKind,
-        llvmkit_ir::metadata::MetadataId,
+        llvmkit_ir::metadata::MetadataSlot,
     )>,
     _marker: core::marker::PhantomData<&'ctx ()>,
 }
@@ -247,7 +247,7 @@ pub struct Parser<'src, 'm, 'ctx, B: ModuleBrand = Brand<'ctx>> {
     numbered_globals: NumberedValues<GlobalRef<'ctx, B>>,
     numbered_attr_groups: NumberedValues<llvmkit_ir::attributes::AttributeStorage>,
 
-    /// Maps a textual metadata slot (`!N`) to the `MetadataId` it names and
+    /// Maps a textual metadata slot (`!N`) to the `MetadataSlot` it names and
     /// whether a matching `!N = ...` definition was seen.
     metadata_slots: HashMap<u32, MetadataSlotEntry>,
     deferred_global_initializers: Vec<DeferredGlobalInitializer<'ctx, B>>,
@@ -900,7 +900,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         Self::new(src, module)
     }
 
-    fn resolve_md_slot(&mut self, slot: u32, loc: Span) -> llvmkit_ir::metadata::MetadataId {
+    fn resolve_md_slot(&mut self, slot: u32, loc: Span) -> llvmkit_ir::metadata::MetadataSlot {
         if let Some(entry) = self.metadata_slots.get(&slot) {
             return entry.id;
         }
@@ -921,7 +921,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         slot: u32,
         content: llvmkit_ir::metadata::MetadataKind,
         loc: Span,
-    ) -> ParseResult<llvmkit_ir::metadata::MetadataId> {
+    ) -> ParseResult<llvmkit_ir::metadata::MetadataSlot> {
         if let Some(entry) = self.metadata_slots.get_mut(&slot) {
             if entry.defined {
                 return Err(ParseError::Redefinition {
@@ -1993,7 +1993,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
 
     fn parse_metadata_attachment_operand(
         &mut self,
-    ) -> ParseResult<llvmkit_ir::metadata::MetadataId> {
+    ) -> ParseResult<llvmkit_ir::metadata::MetadataSlot> {
         match self.peek() {
             Token::MetadataVar(_) => {
                 let kind = self.parse_md_node_after_bang(false)?;
@@ -2021,7 +2021,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         &mut self,
     ) -> ParseResult<(
         llvmkit_ir::metadata::MetadataAttachmentKind,
-        llvmkit_ir::metadata::MetadataId,
+        llvmkit_ir::metadata::MetadataSlot,
     )> {
         let name = match self.peek() {
             Token::MetadataVar(bytes) => std::str::from_utf8(bytes.as_ref())
@@ -8895,7 +8895,7 @@ struct PerFunctionState<'ctx, B: ModuleBrand = Brand<'ctx>> {
     /// Source span of each parsed phi, keyed by its result name, so the
     /// end-of-function coherence check in `finish()` can point a diagnostic
     /// at the offending phi instead of at `Module::verify()`.
-    phi_locs: Vec<(llvmkit_ir::value::ValueId, Span)>,
+    phi_locs: Vec<(llvmkit_ir::value::ValueSlot, Span)>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {

@@ -4,8 +4,8 @@
 //! ## Representation
 //!
 //! Storage is index-based: every interned type lives in the owning
-//! module's interning context, identified by a crate-internal `TypeId`
-//! (a `NonZeroU32` newtype). Children are also `TypeId`s, so the
+//! module's interning context, identified by a crate-internal `TypeSlot`
+//! (a `NonZeroU32` newtype). Children are also `TypeSlot`s, so the
 //! storage payload `TypeData` is lifetime-free, has trivial `Hash`/`Eq`
 //! derivability at the storage layer, and never participates in
 //! pointer comparisons.
@@ -14,7 +14,7 @@
 //!
 //! - **Storage:** an internal `TypeData` enum, one variant
 //!   per LLVM `TypeID`.
-//! - **Public handle:** [`Type`] is `(TypeId, ModuleRef<'ctx>)`. Both
+//! - **Public handle:** [`Type`] is `(TypeSlot, ModuleRef<'ctx>)`. Both
 //!   fields are `Hash + Eq`, so the handle derives all of
 //!   `Copy + Clone + PartialEq + Eq + Hash + Debug` with no hand-written
 //!   impls.
@@ -48,9 +48,9 @@ pub const MAX_INT_BITS: u32 = 1 << 23;
 /// Stable index into the type arena. The numeric contents are opaque; callers
 /// may store and pass the handle back to this crate, but cannot construct one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TypeId(NonZeroU32);
+pub struct TypeSlot(NonZeroU32);
 
-impl TypeId {
+impl TypeSlot {
     /// Build from a 0-based arena index. Stored as `index + 1` so the
     /// underlying value is always non-zero.
     #[inline]
@@ -62,7 +62,7 @@ impl TypeId {
     /// Recover the 0-based arena index.
     #[inline]
     pub(crate) fn arena_index(self) -> usize {
-        // Subtraction is sound: every TypeId was produced by `from_index`,
+        // Subtraction is sound: every TypeSlot was produced by `from_index`,
         // which guarantees the underlying value is in `1..=u32::MAX`.
         let nz = u32::from(self.0);
         usize::try_from(nz - 1).expect("u32 fits in usize on supported targets")
@@ -76,7 +76,7 @@ impl TypeId {
 /// Internal payload for a single interned type.
 ///
 /// One variant per `Type::TypeID` (`Type.h`). Children are stored as
-/// [`TypeId`] indices into the same module's arena.
+/// [`TypeSlot`] indices into the same module's arena.
 #[derive(Debug)]
 pub(crate) enum TypeData {
     // ---- Primitive / sized-but-childless ----
@@ -105,27 +105,27 @@ pub(crate) enum TypeData {
 
     // ---- Derived ----
     Function {
-        ret: TypeId,
-        params: Box<[TypeId]>,
+        ret: TypeSlot,
+        params: Box<[TypeSlot]>,
         is_var_arg: bool,
     },
     Array {
-        elem: TypeId,
+        elem: TypeSlot,
         n: u64,
     },
     FixedVector {
-        elem: TypeId,
+        elem: TypeSlot,
         n: u32,
     },
     ScalableVector {
-        elem: TypeId,
+        elem: TypeSlot,
         min: u32,
     },
     Struct(StructTypeData),
     /// Typed pointer (legacy, only used by a few GPU targets in LLVM 22).
     /// Mirrors `TypedPointerType` (`TypedPointerType.h`).
     TypedPointer {
-        pointee: TypeId,
+        pointee: TypeSlot,
         addr_space: u32,
     },
     TargetExt(TargetExtTypeData),
@@ -134,7 +134,7 @@ pub(crate) enum TypeData {
 impl TypeData {
     // ---- Per-variant projection helpers ----
     //
-    // Every typed handle (IntType, ArrayType, ...) wraps a `TypeId` whose
+    // Every typed handle (IntType, ArrayType, ...) wraps a `TypeSlot` whose
     // payload, by construction, is the matching variant. Accessors on
     // those handles call the corresponding `as_*` helper here and rely on
     // `expect("<Foo> invariant")` to make the by-construction promise
@@ -159,7 +159,7 @@ impl TypeData {
         }
     }
     #[inline]
-    pub(crate) fn as_array(&self) -> Option<(TypeId, u64)> {
+    pub(crate) fn as_array(&self) -> Option<(TypeSlot, u64)> {
         if let Self::Array { elem, n } = *self {
             Some((elem, n))
         } else {
@@ -167,7 +167,7 @@ impl TypeData {
         }
     }
     #[inline]
-    pub(crate) fn as_vector(&self) -> Option<(TypeId, u32, bool)> {
+    pub(crate) fn as_vector(&self) -> Option<(TypeSlot, u32, bool)> {
         match *self {
             Self::FixedVector { elem, n } => Some((elem, n, false)),
             Self::ScalableVector { elem, min } => Some((elem, min, true)),
@@ -175,7 +175,7 @@ impl TypeData {
         }
     }
     #[inline]
-    pub(crate) fn as_function(&self) -> Option<(TypeId, &[TypeId], bool)> {
+    pub(crate) fn as_function(&self) -> Option<(TypeSlot, &[TypeSlot], bool)> {
         if let Self::Function {
             ret,
             params,
@@ -196,7 +196,7 @@ impl TypeData {
         }
     }
     #[inline]
-    pub(crate) fn as_typed_pointer(&self) -> Option<(TypeId, u32)> {
+    pub(crate) fn as_typed_pointer(&self) -> Option<(TypeSlot, u32)> {
         if let Self::TypedPointer {
             pointee,
             addr_space,
@@ -230,14 +230,14 @@ pub(crate) struct StructTypeData {
 
 #[derive(Debug, Clone)]
 pub(crate) struct StructBody {
-    pub(crate) elements: Box<[TypeId]>,
+    pub(crate) elements: Box<[TypeSlot]>,
     pub(crate) packed: bool,
 }
 
 #[derive(Debug)]
 pub(crate) struct TargetExtTypeData {
     pub(crate) name: String,
-    pub(crate) type_params: Box<[TypeId]>,
+    pub(crate) type_params: Box<[TypeSlot]>,
     pub(crate) int_params: Box<[u32]>,
 }
 
@@ -252,7 +252,7 @@ pub(crate) struct TargetExtTypeData {
 /// [`ModuleId`](crate::ModuleId), so the handle remains cheap to copy and
 /// store in maps.
 pub struct Type<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
-    pub(crate) id: TypeId,
+    pub(crate) id: TypeSlot,
     pub(crate) module: ModuleRef<'ctx, B>,
 }
 
@@ -292,7 +292,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     /// Construct from raw parts. Crate-internal: a public Module method
     /// is the only path that hands out type handles.
     #[inline]
-    pub(crate) fn new<M>(id: TypeId, module: M) -> Self
+    pub(crate) fn new<M>(id: TypeSlot, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -311,7 +311,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     /// Opaque arena id for structured side tables such as use-list order
     /// records.
     #[inline]
-    pub fn id(self) -> TypeId {
+    pub fn id(self) -> TypeSlot {
         self.id
     }
 
@@ -368,9 +368,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     /// both sides precisely — they too fall through.
     ///
     /// No false rejections: `llvm_context.rs` memoizes `int_type(bits)` by
-    /// width and `ptr_type(addr_space)` by address space, so `TypeId`
+    /// width and `ptr_type(addr_space)` by address space, so `TypeSlot`
     /// equality is structural type equality — a correctly typed value
-    /// always compares equal. Cost is one `TypeId` compare.
+    /// always compares equal. Cost is one `TypeSlot` compare.
     pub(crate) fn require_match(self, got: Self) -> IrResult<()> {
         if self.id == got.id {
             return Ok(());
@@ -700,7 +700,7 @@ impl<'ctx, B: ModuleBrand> fmt::Display for Type<'ctx, B> {
 // Helpers
 // --------------------------------------------------------------------------
 
-fn is_sized(module: &ModuleCore, id: TypeId) -> bool {
+fn is_sized(module: &ModuleCore, id: TypeSlot) -> bool {
     let data = module.context().type_data(id);
     match data {
         TypeData::Void

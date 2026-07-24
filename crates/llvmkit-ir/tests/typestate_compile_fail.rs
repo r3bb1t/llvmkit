@@ -154,4 +154,12 @@ fn typestate_compile_fail() {
     // moves from `verify()` to build/compile time. The primary error is our
     // own `IntoPointerValue` trait bound, stable across rustc versions.
     t.compile_fail("tests/compile_fail/indirectbr_non_pointer_address.rs");
+    // llvmkit 2.0 cycle A slice A4 (no-silent-erasure at operand positions):
+    // the three typed value ids lift into their handle via `IntoIntValue` &c,
+    // but the *erased* `ValueId` deliberately does not — erased -> typed must
+    // be spelled with `try_view`, never lifted implicitly. The primary error
+    // is our own unsatisfied `IntoIntValue` trait bound, stable across rustc
+    // versions (`B` is pinned by the argument brand, so no incidental
+    // inference failure masks it).
+    t.compile_fail("tests/compile_fail/erased_id_not_int_operand.rs");
 }

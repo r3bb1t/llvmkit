@@ -15,6 +15,11 @@ help: the following other types implement trait `IntoPointerValue<'ctx, B>`
    |   impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for ConstantPointerNull<'ctx, B> {
    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ConstantPointerNull<'ctx, B>`
    |
+  ::: src/value_id.rs
+   |
+   |   impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for PointerValueId<B> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `PointerValueId<B>`
+   |
   ::: src/typed_pointer_value.rs
    |
    | / impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B>

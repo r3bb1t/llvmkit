@@ -14,8 +14,8 @@
 //! - **Storage:** an internal record — one variant per LLVM value
 //!   category (`Constant`, `Argument`, `BasicBlock`, `Function`,
 //!   `Instruction`).
-//! - **Public handle:** [`Value<'ctx, B>`] is `(ValueId, ModuleRef<'ctx, B>,
-//!   ty: TypeId)`. `ty` is cached so `value.ty()` is a thin wrapper
+//! - **Public handle:** [`Value<'ctx, B>`] is `(ValueSlot, ModuleRef<'ctx, B>,
+//!   ty: TypeSlot)`. `ty` is cached so `value.ty()` is a thin wrapper
 //!   instead of an arena round-trip — the type of a value is an
 //!   immutable property by construction.
 //! - **Per-kind handles:** [`IntValue`], [`FloatValue`],
@@ -41,7 +41,8 @@ use super::function::FunctionData;
 use super::instruction::{Instruction, InstructionData, InstructionView, state::Attached};
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::struct_body_state::StructBodyDyn;
-use super::r#type::{Type, TypeData, TypeId};
+use super::r#type::{Type, TypeData, TypeSlot};
+use super::value_id::{FloatValueId, IntValueId, PointerValueId, ValueId};
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
@@ -53,15 +54,15 @@ use super::int_width::{IntDyn, IntWidth, Width};
 use super::vec_len::{Len, LenDyn, VecLen};
 
 // --------------------------------------------------------------------------
-// ValueId
+// ValueSlot
 // --------------------------------------------------------------------------
 
 /// Stable index into the value arena. The numeric contents are opaque; callers
 /// may store and pass the handle back to this crate, but cannot construct one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ValueId(NonZeroUsize);
+pub struct ValueSlot(NonZeroUsize);
 
-impl ValueId {
+impl ValueSlot {
     /// Build from a 0-based arena index.
     #[inline]
     pub(super) fn from_index(index: usize) -> Self {
@@ -72,7 +73,7 @@ impl ValueId {
         match NonZeroUsize::new(raw) {
             Some(nz) => Self(nz),
             None => unreachable!(
-                "ValueId arena exhausted: usize::MAX values allocated, exceeds addressable memory"
+                "ValueSlot arena exhausted: usize::MAX values allocated, exceeds addressable memory"
             ),
         }
     }
@@ -97,7 +98,7 @@ impl ValueId {
 /// kind needs without hung-off operands.
 #[derive(Debug)]
 pub(super) struct ValueData {
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) name: RefCell<Option<String>>,
     pub(super) debug_loc: Option<DebugLoc>,
     pub(super) kind: ValueKindData,
@@ -115,13 +116,13 @@ pub(super) struct ValueData {
 
 /// One reverse use-list edge for a value. Instruction operands, constants,
 /// metadata nodes, and debug records have different mutation paths, so the
-/// edge kind is part of the stored fact rather than inferred from a `ValueId`.
+/// edge kind is part of the stored fact rather than inferred from a `ValueSlot`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum ValueUse {
-    Instruction(ValueId),
-    Constant(ValueId),
-    Metadata(crate::metadata::MetadataId),
-    DebugRecord { inst: ValueId, record: usize },
+    Instruction(ValueSlot),
+    Constant(ValueSlot),
+    Metadata(crate::metadata::MetadataSlot),
+    DebugRecord { inst: ValueSlot, record: usize },
 }
 
 /// Discriminator over the closed value-category set.
@@ -134,7 +135,7 @@ pub(super) enum ValueUse {
 pub(super) enum ValueKindData {
     Constant(ConstantData),
     Argument {
-        parent_fn: ValueId,
+        parent_fn: ValueSlot,
         slot: u32,
     },
     BasicBlock(BasicBlockData),
@@ -149,7 +150,7 @@ pub(super) enum ValueKindData {
     /// such as a `call` argument of `metadata` type. Like a constant,
     /// it is context-global — it has no function-local SSA definition
     /// and is never assigned a `%N` slot.
-    MetadataAsValue(crate::metadata::MetadataId),
+    MetadataAsValue(crate::metadata::MetadataSlot),
     /// An inline-assembly value used as a `call` callee. Mirrors LLVM's
     /// `InlineAsm` (`llvm/include/llvm/IR/InlineAsm.h`). Like a
     /// `Function` or `Constant`, it is context-global — it has no
@@ -166,18 +167,18 @@ pub(super) enum ValueKindData {
 /// Erased public handle for any IR value.
 ///
 /// Three-field record:
-/// - `id: ValueId` — arena index.
+/// - `id: ValueSlot` — arena index.
 /// - `module: ModuleRef<'ctx>` — brand carrier; equality routes through
 ///   the process-global [`ModuleId`](crate::ModuleId).
-/// - `ty: TypeId` — cached type. Values do not change type, so caching
+/// - `ty: TypeSlot` — cached type. Values do not change type, so caching
 ///   here saves an arena lookup on every `value.ty()` access.
 ///
 /// Equality and hashing compare the branded module reference by `ModuleId`,
 /// so the handle remains cheap to copy and store in maps.
 pub struct Value<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 impl<B: ModuleBrand> Clone for Value<'_, B> {
@@ -220,7 +221,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     /// Construct from raw parts. Crate-internal: only the value-arena
     /// constructors hand these out.
     #[inline]
-    pub(super) fn from_parts<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_parts<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -246,8 +247,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     /// Opaque arena id for structured side tables such as use-list order
     /// records.
     #[inline]
-    pub fn id(self) -> ValueId {
+    pub fn id(self) -> ValueSlot {
         self.id
+    }
+
+    /// Storable, module-tagged [`ValueId`] for this value (llvmkit 2.0).
+    ///
+    /// Unlike [`id`](Self::id) — which returns the bare, untagged arena
+    /// [`ValueSlot`] — the returned [`ValueId`] carries the owning
+    /// [`ModuleId`](crate::ModuleId) and can be resolved back into a handle
+    /// with [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view).
+    #[inline]
+    pub fn to_id(self) -> ValueId<B> {
+        ValueId::from_raw(self.module.id(), self.id)
     }
 
     /// Cached IR type of this value.
@@ -267,9 +280,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     where
         Name: Into<String>,
     {
-        if module_token.id() != self.module.id() {
-            return;
-        }
+        assert_eq!(
+            module_token.id(),
+            self.module.id(),
+            "set_name: the module token belongs to a different module than this value"
+        );
         let requested = name.into();
         if self.ty().is_void() {
             self.set_name_internal(None);
@@ -291,9 +306,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
 
     /// Clear the textual name.
     pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-        if module_token.id() != self.module.id() {
-            return;
-        }
+        assert_eq!(
+            module_token.id(),
+            self.module.id(),
+            "clear_name: the module token belongs to a different module than this value"
+        );
         if self.ty().is_void() {
             self.set_name_internal(None);
             return;
@@ -319,7 +336,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
         *self.data().name.borrow_mut() = name;
     }
 
-    pub(super) fn local_parent_function_id(self) -> Option<ValueId> {
+    pub(super) fn local_parent_function_id(self) -> Option<ValueSlot> {
         match &self.data().kind {
             ValueKindData::Argument { parent_fn, .. } => Some(*parent_fn),
             ValueKindData::BasicBlock(data) => *data.parent.borrow(),
@@ -394,7 +411,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     + FusedIterator
     + 'ctx {
         let module = self.module;
-        let snapshot: Vec<ValueId> = self
+        let snapshot: Vec<ValueSlot> = self
             .data()
             .use_list
             .borrow()
@@ -513,7 +530,7 @@ pub trait IsValue<'ctx, B: ModuleBrand = Brand<'ctx>>:
     /// id of its erased [`Value`], so `x.id()` replaces the
     /// `x.into_erased().id` widen-then-project chain.
     #[inline]
-    fn id(self) -> ValueId {
+    fn id(self) -> ValueSlot {
         self.into_erased().id
     }
 }
@@ -588,6 +605,7 @@ macro_rules! decl_value_handle {
     (
         $(#[$attr:meta])*
         $name:ident,
+        $id:ident,
         $type_label:ident,
         $type_handle:ident,
         type_predicate $pred:expr
@@ -595,9 +613,9 @@ macro_rules! decl_value_handle {
         $(#[$attr])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub struct $name<'ctx, B: ModuleBrand = Brand<'ctx>> {
-            pub(super) id: ValueId,
+            pub(super) id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,
-            pub(super) ty: TypeId,
+            pub(super) ty: TypeSlot,
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
@@ -605,6 +623,14 @@ macro_rules! decl_value_handle {
             #[inline]
             pub fn into_erased(self) -> Value<'ctx, B> {
                 Value { id: self.id, module: self.module, ty: self.ty }
+            }
+
+            /// Storable, module-tagged id for this value (llvmkit 2.0),
+            /// resolvable via [`Module::view`](crate::Module::view) /
+            /// [`Module::try_view`](crate::Module::try_view).
+            #[inline]
+            pub fn to_id(self) -> $id<B> {
+                $id::from_raw(self.module.id(), self.id)
             }
 
             /// Owning module reference.
@@ -745,7 +771,7 @@ macro_rules! decl_value_handle {
 // carry their width / kind markers.
 decl_value_handle!(
     /// Value whose type is a (opaque) pointer.
-    PointerValue, Pointer, PointerType,
+    PointerValue, PointerValueId, Pointer, PointerType,
     type_predicate |d| matches!(d, TypeData::Pointer { .. })
 );
 impl<'ctx, B: ModuleBrand + 'ctx> PointerValue<'ctx, B> {
@@ -797,9 +823,9 @@ pub struct ArrayValue<
     L: ArrayLen = ArrLenDyn,
     B: ModuleBrand = Brand<'ctx>,
 > {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) _e: PhantomData<E>,
     pub(super) _l: PhantomData<L>,
 }
@@ -1091,9 +1117,9 @@ impl<'ctx, E: VecElem, const N: u64, B: ModuleBrand + 'ctx> From<ArrayValue<'ctx
 /// Value whose type is a struct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct StructValue<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> StructValue<'ctx, B> {
@@ -1277,9 +1303,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>> for St
 /// typed `<4 x i32>`.
 pub struct VectorValue<'ctx, E: VecElem = ElemDyn, L: VecLen = LenDyn, B: ModuleBrand = Brand<'ctx>>
 {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) _e: PhantomData<E>,
     pub(super) _l: PhantomData<L>,
 }
@@ -1571,7 +1597,11 @@ decl_value_handle!(
     /// Value whose type is a function signature. Mostly seen as a
     /// `FunctionValue` operand, but the concrete category is checked
     /// elsewhere; this handle only refines the type, not the category.
-    FunctionTypedValue, Function, FunctionType,
+    ///
+    /// Has no dedicated id family (it refines only the *type*, not the value
+    /// category), so [`to_id`](FunctionTypedValue::to_id) mints the erased
+    /// [`ValueId`].
+    FunctionTypedValue, ValueId, Function, FunctionType,
     type_predicate |d| matches!(d, TypeData::Function { .. })
 );
 
@@ -1585,9 +1615,9 @@ decl_value_handle!(
 /// bit-width at the type level, so the IRBuilder can reject mismatched
 /// widths at compile time.
 pub struct IntValue<'ctx, W: IntWidth, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) _w: PhantomData<W>,
 }
 
@@ -1688,6 +1718,14 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
             module: self.module,
             ty: self.ty,
         }
+    }
+    /// Storable, module-tagged [`IntValueId<W>`] for this value (llvmkit 2.0),
+    /// resolvable via [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view). Preserves the width
+    /// marker `W`.
+    #[inline]
+    pub fn to_id(self) -> IntValueId<W, B> {
+        IntValueId::from_raw(self.module.id(), self.id)
     }
     /// Owning module reference.
     #[inline]
@@ -1979,9 +2017,9 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> From<IntValue<'ctx, Width<N>, B>
 
 /// Value whose IR type is an IEEE / non-IEEE float.
 pub struct FloatValue<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) _k: PhantomData<K>,
 }
 
@@ -2050,6 +2088,14 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
             module: self.module,
             ty: self.ty,
         }
+    }
+    /// Storable, module-tagged [`FloatValueId<K>`] for this value (llvmkit
+    /// 2.0), resolvable via [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view). Preserves the
+    /// float-kind marker `K`.
+    #[inline]
+    pub fn to_id(self) -> FloatValueId<K, B> {
+        FloatValueId::from_raw(self.module.id(), self.id)
     }
     #[inline]
     pub fn module(self) -> ModuleView<'ctx, B> {

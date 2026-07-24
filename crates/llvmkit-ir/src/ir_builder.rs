@@ -87,11 +87,11 @@ use super::struct_body_state::StructBodyDyn;
 use super::struct_schema::{FieldOf, IntoIrField, IrField, StructFieldAt, StructSchema};
 use super::sync_scope::SyncScope;
 use super::term_open_state::Open;
-use super::r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeId};
+use super::r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeSlot};
 use super::typed_pointer_value::TypedPointerValue;
 use super::value::{
-    ArrayValue, FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Value, ValueId,
-    ValueKindData, ValueUse, VectorValue,
+    ArrayValue, FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Value,
+    ValueKindData, ValueSlot, ValueUse, VectorValue,
 };
 use super::vec_len::{LenDyn, StaticVecLen, VecLen};
 
@@ -201,8 +201,8 @@ impl BuilderPositionState for Positioned {}
 /// when the saved location was end-of-block.
 #[derive(Debug)]
 pub struct InsertPoint<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) block_id: Option<ValueId>,
-    pub(super) before: Option<ValueId>,
+    pub(super) block_id: Option<ValueSlot>,
+    pub(super) before: Option<ValueSlot>,
     pub(super) _marker: PhantomData<fn(&'ctx (), R, B)>,
 }
 
@@ -211,7 +211,7 @@ pub struct CallSiteConfig {
     name: String,
     calling_conv: CallingConv,
     attrs: CallAttributeData,
-    call_site_fn_ty: Option<TypeId>,
+    call_site_fn_ty: Option<TypeSlot>,
 }
 
 impl CallSiteConfig {
@@ -252,7 +252,7 @@ impl CallSiteConfig {
         self
     }
 
-    pub(super) fn call_site_fn_ty(&self) -> Option<TypeId> {
+    pub(super) fn call_site_fn_ty(&self) -> Option<TypeSlot> {
         self.call_site_fn_ty
     }
 
@@ -294,7 +294,7 @@ where
     /// inserted *before* the instruction with this id (mirrors upstream
     /// `IRBuilder::SetInsertPoint(Instruction*)`). When `None`, new
     /// instructions append to the end of `insert_block`.
-    insert_before: Option<ValueId>,
+    insert_before: Option<ValueSlot>,
     folder: F,
     fmf: super::fmf::FastMathFlags,
     _state: PhantomData<S>,
@@ -506,7 +506,7 @@ where
         // Find the first non-alloca instruction id, mirroring
         // `BasicBlock::getFirstNonPHIOrDbgOrAlloca`. We don't ship phi/dbg
         // filters yet, so the practical filter here is alloca-only.
-        let mut anchor: Option<ValueId> = None;
+        let mut anchor: Option<ValueSlot> = None;
         for inst in entry.instructions() {
             match inst.kind() {
                 Some(InstructionKind::Alloca(_)) => continue,
@@ -681,8 +681,8 @@ where
     /// id and hands back the erased [`Value`] rather than a typed phi handle.
     pub(crate) fn make_phi_in_block(
         &self,
-        block_id: ValueId,
-        ty: TypeId,
+        block_id: ValueSlot,
+        ty: TypeSlot,
         name: &str,
     ) -> Value<'ctx, B> {
         let payload = crate::instr_types::PhiData::new();
@@ -3487,7 +3487,7 @@ where
     /// The DataLayout ABI alignment of a type, materialised so load/store
     /// carry an explicit `align` like upstream (`computeLoadStoreDefaultAlign`
     /// = `getABITypeAlign`).
-    fn default_abi_align(&self, ty_id: TypeId) -> MaybeAlign {
+    fn default_abi_align(&self, ty_id: TypeSlot) -> MaybeAlign {
         let dl = self.module.data_layout();
         MaybeAlign::new(dl.abi_align_of_id(self.module, ty_id))
     }
@@ -3495,7 +3495,7 @@ where
     /// The DataLayout preferred alignment of a type, materialised so alloca
     /// carries an explicit `align` like upstream (`computeAllocaDefaultAlign`
     /// = `getPrefTypeAlign`).
-    fn default_pref_align(&self, ty_id: TypeId) -> MaybeAlign {
+    fn default_pref_align(&self, ty_id: TypeSlot) -> MaybeAlign {
         let dl = self.module.data_layout();
         MaybeAlign::new(dl.pref_align_of_id(self.module, ty_id))
     }
@@ -3597,8 +3597,8 @@ where
 
     fn build_alloca_inner(
         &self,
-        allocated_ty: TypeId,
-        num_elements: Option<ValueId>,
+        allocated_ty: TypeSlot,
+        num_elements: Option<ValueSlot>,
         align: MaybeAlign,
         addr_space: u32,
         flags: crate::instr_types::AllocaFlags,
@@ -4213,7 +4213,7 @@ where
     fn validate_call_site_args(
         &self,
         fn_ty: FunctionType<'ctx, B>,
-        args: &[ValueId],
+        args: &[ValueSlot],
     ) -> IrResult<()> {
         let params: Vec<Type<'ctx, B>> = fn_ty.params().collect();
         let expected = u32::try_from(params.len())
@@ -4375,7 +4375,7 @@ where
         Name: AsRef<str>,
     {
         let f = callee.as_function();
-        let mut arg_ids: Vec<ValueId> = fixed_args.lower(ModuleRef::new(self.module))?.into_vec();
+        let mut arg_ids: Vec<ValueSlot> = fixed_args.lower(ModuleRef::new(self.module))?.into_vec();
         arg_ids.extend(varargs.into_iter().map(|v| v.id()));
         let payload = crate::instr_types::CallInstData::new(
             f.id(),
@@ -4619,7 +4619,7 @@ where
                 got: fn_ty.return_type().kind_label(),
             });
         }
-        let mut arg_ids: Vec<ValueId> = Vec::new();
+        let mut arg_ids: Vec<ValueSlot> = Vec::new();
         for arg in args {
             let v = arg.into_erased();
             arg_ids.push(v.id);
@@ -4681,7 +4681,7 @@ where
                 got: fn_ty.return_type().kind_label(),
             });
         }
-        let mut arg_ids: Vec<ValueId> = Vec::new();
+        let mut arg_ids: Vec<ValueSlot> = Vec::new();
         for arg in args {
             let v = arg.into_erased();
             arg_ids.push(v.id);
@@ -6396,7 +6396,7 @@ where
         // grouped at the head) — the pattern the CFG splitter uses.
         let target_block =
             BasicBlock::<Dyn, Terminated, B>::from_parts(target.id(), module_ref, label_ty);
-        let mut param_phis: Vec<ValueId> = Vec::new();
+        let mut param_phis: Vec<ValueSlot> = Vec::new();
         for inst_id in target_block.instruction_ids() {
             let data = self.module.context().value_data(inst_id);
             let ValueKindData::Instruction(inst) = &data.kind else {
@@ -6452,7 +6452,7 @@ where
     /// value-ids, sourcing each id's IR type from the arena. Shared by the
     /// typed branch builders to feed the erased
     /// [`add_block_args`](Self::add_block_args) phi-seeding path.
-    fn block_call_arg_values(&self, arg_ids: &[ValueId]) -> Vec<Value<'ctx, B>> {
+    fn block_call_arg_values(&self, arg_ids: &[ValueSlot]) -> Vec<Value<'ctx, B>> {
         let module_ref = ModuleRef::<B>::new(self.module);
         arg_ids
             .iter()
@@ -6766,7 +6766,7 @@ where
         &self,
         callee: &FunctionValue<'ctx, R2, B>,
         config: &CallSiteConfig,
-    ) -> (FunctionType<'ctx, B>, TypeId) {
+    ) -> (FunctionType<'ctx, B>, TypeSlot) {
         match config.call_site_fn_ty() {
             Some(id) => {
                 let ft = FunctionType::<'ctx, B>::new(id, ModuleRef::<B>::new(self.module));
@@ -6798,7 +6798,7 @@ where
         let callee_v = callee.into_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
         let (name, calling_conv, attrs) = config.into_parts();
-        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.id()).collect();
+        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.id()).collect();
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let payload = crate::instr_types::InvokeInstData::new_with_attrs(
             callee_v.id,
@@ -6844,7 +6844,7 @@ where
         let callee_v = IsValue::into_erased(callee);
         let ret_ty = fn_ty.return_type().id();
         let (name, calling_conv, attrs) = config.into_parts();
-        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.id()).collect();
+        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.id()).collect();
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let payload = crate::instr_types::InvokeInstData::new_with_attrs(
             callee_v.id,
@@ -6919,7 +6919,7 @@ where
                 got: fn_ty.return_type().kind_label(),
             });
         }
-        let mut arg_ids: Vec<ValueId> = Vec::new();
+        let mut arg_ids: Vec<ValueSlot> = Vec::new();
         for arg in args {
             let v = arg.into_erased();
             arg_ids.push(v.id);
@@ -6993,9 +6993,9 @@ where
         let callee_v = callee.into_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
         let (name, calling_conv, attrs) = config.into_parts();
-        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.id()).collect();
+        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.id()).collect();
         self.validate_call_site_args(fn_ty, &arg_ids)?;
-        let indirect_ids: Vec<ValueId> = indirect_dests
+        let indirect_ids: Vec<ValueSlot> = indirect_dests
             .into_iter()
             .map(|d| d.into_basic_block_label().id())
             .collect();
@@ -7073,13 +7073,13 @@ where
                 got: fn_ty.return_type().kind_label(),
             });
         }
-        let mut arg_ids: Vec<ValueId> = Vec::new();
+        let mut arg_ids: Vec<ValueSlot> = Vec::new();
         for arg in args {
             let v = arg.into_erased();
             arg_ids.push(v.id);
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
-        let indirect_ids: Vec<ValueId> = indirect_dests
+        let indirect_ids: Vec<ValueSlot> = indirect_dests
             .into_iter()
             .map(|d| d.into_basic_block_label().id())
             .collect();
@@ -7180,7 +7180,7 @@ where
 
     fn build_cleanup_pad_raw<I, V, Name>(
         &self,
-        parent_id: Option<ValueId>,
+        parent_id: Option<ValueSlot>,
         args: I,
         name: Name,
     ) -> IrResult<CleanupPadInst<'ctx, B>>
@@ -7189,7 +7189,7 @@ where
         V: IsValue<'ctx, B>,
         Name: AsRef<str>,
     {
-        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.id()).collect();
+        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.id()).collect();
         let payload = crate::instr_types::CleanupPadInstData::new(parent_id, arg_ids);
         let token_ty = self.module.token_type().as_type().id();
         let inst =
@@ -7214,7 +7214,7 @@ where
         I: IntoIterator<Item = V>,
         V: IsValue<'ctx, B>,
     {
-        let arg_ids: Vec<ValueId> = args.into_iter().map(|a| a.id()).collect();
+        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.id()).collect();
         let payload = crate::instr_types::CatchPadInstData::new(Some(catch_switch.id), arg_ids);
         let token_ty = self.module.token_type().as_type().id();
         let inst = self.append_instruction(token_ty, InstructionKindData::CatchPad(payload), name);
@@ -7277,8 +7277,8 @@ where
 
     fn build_cleanup_ret_raw<Name>(
         self,
-        cleanup_pad_id: ValueId,
-        unwind_id: Option<ValueId>,
+        cleanup_pad_id: ValueSlot,
+        unwind_id: Option<ValueSlot>,
         name: Name,
     ) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
     where
@@ -7350,8 +7350,8 @@ where
 
     fn build_catch_switch_raw<Name>(
         self,
-        parent_id: Option<ValueId>,
-        unwind_id: Option<ValueId>,
+        parent_id: Option<ValueSlot>,
+        unwind_id: Option<ValueSlot>,
         name: Name,
     ) -> IrResult<TerminatedBlockCatchSwitch<'ctx, R, B>>
     where
@@ -7389,7 +7389,7 @@ where
     /// non-empty.
     fn append_instruction<N: AsRef<str>>(
         &self,
-        ty: TypeId,
+        ty: TypeSlot,
         kind: InstructionKindData,
         name: N,
     ) -> Instruction<'ctx, Attached, B> {
@@ -7576,7 +7576,7 @@ where
     /// construction rather than only by a verifier check.
     fn append_phi_instruction<N: AsRef<str>>(
         &self,
-        ty: TypeId,
+        ty: TypeSlot,
         kind: InstructionKindData,
         name: N,
     ) -> Instruction<'ctx, Attached, B> {
@@ -7675,7 +7675,7 @@ where
     fn checked_folded_value(
         &self,
         folded: Value<'ctx, B>,
-        expected_ty: TypeId,
+        expected_ty: TypeSlot,
     ) -> IrResult<Value<'ctx, B>> {
         Type::new(expected_ty, ModuleRef::<B>::new(self.module)).require_match(folded.ty())?;
         Ok(folded)
@@ -7969,10 +7969,10 @@ where
     RC: ReturnMarker,
 {
     parent: &'a IRBuilder<'m, 'ctx, B, F, Positioned, RP>,
-    callee_id: ValueId,
-    fn_ty: TypeId,
-    return_ty: TypeId,
-    args: Vec<ValueId>,
+    callee_id: ValueSlot,
+    fn_ty: TypeSlot,
+    return_ty: TypeSlot,
+    args: Vec<ValueSlot>,
     calling_conv: crate::CallingConv,
     tail_kind: crate::instr_types::TailCallKind,
     attrs: crate::instr_types::CallAttributeData,
@@ -8427,7 +8427,11 @@ where
 /// Walk the aggregate `root` by `indices` and return the leaf type.
 /// Mirrors `ExtractValueInst::getIndexedType` in `Instructions.cpp`, which
 /// rejects (rather than clamps) an index at or past the element count.
-fn walk_aggregate_for_builder(m: &ModuleCore, root: TypeId, indices: &[u32]) -> IrResult<TypeId> {
+fn walk_aggregate_for_builder(
+    m: &ModuleCore,
+    root: TypeSlot,
+    indices: &[u32],
+) -> IrResult<TypeSlot> {
     let mut cur = root;
     for &idx in indices {
         let d = m.context().type_data(cur);
@@ -8505,7 +8509,7 @@ mod tests {
     /// Unlike `tests/constant_folder_builder.rs`'s external
     /// `WideningDynFolder` (which can only override the erased
     /// `fold_bin_op_dyn` hook and so gets caught by
-    /// `folder::narrow_folded_int`'s TypeId re-check before the builder ever
+    /// `folder::narrow_folded_int`'s TypeSlot re-check before the builder ever
     /// sees the result), this folder overrides the *typed* hooks directly
     /// and answers with an `IntValue<'ctx, W, B>` built via the
     /// crate-internal `IntValue::from_value_unchecked` escape hatch
@@ -8665,7 +8669,7 @@ mod tests {
     /// short-circuit let through: the same `HostileTypedFolder` answers
     /// `build_int_add::<i32, _, _, _>` with its 64-bit `stored` payload
     /// rewrapped as `IntValue<'ctx, i32, B>`, and because the guard skipped
-    /// the TypeId compare whenever the marker was static, the builder
+    /// the TypeSlot compare whenever the marker was static, the builder
     /// accepted it -- handing back an `IntValue<'_, i32>` whose real IR type
     /// is `i64`. A mistyped handle escaping into user code.
     ///
@@ -8718,7 +8722,7 @@ mod tests {
     /// answers with its 64-bit `stored` payload rewrapped as
     /// `IntValue<'ctx, i32, B>`. Being a native override it bypasses
     /// `folder::narrow_folded_cast_int`, so `accept_folded_cast_int`'s
-    /// TypeId compare against `dst_ty` is the only thing between that lie
+    /// TypeSlot compare against `dst_ty` is the only thing between that lie
     /// and a mistyped handle -- and before `bf57e17` it was skipped outright
     /// for a static `Dst`.
     #[test]

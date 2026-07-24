@@ -14,7 +14,7 @@ use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
 use crate::module::{Brand, ModuleBrand, ModuleId, ModuleView};
 use crate::pass_context::FunctionView;
 use crate::pass_instrumentation::PassInstrumentationCallbacks;
-use crate::value::{IsValue, ValueId};
+use crate::value::{IsValue, ValueSlot};
 use crate::{IrError, IrResult};
 
 /// Explicit analysis identity used when no Rust type exists for a ported
@@ -496,7 +496,7 @@ struct CachedModuleResult<'ctx, B: ModuleBrand> {
 
 #[derive(Clone)]
 struct FunctionAnalysisSnapshot {
-    cached: HashSet<(ModuleId, TypeId, ValueId)>,
+    cached: HashSet<(ModuleId, TypeId, ValueSlot)>,
 }
 
 #[derive(Clone)]
@@ -561,7 +561,7 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisInvalidator<'a, 'ctx, B> {
 /// Caches function analyses by `(module id, analysis type, function id)`.
 pub struct FunctionAnalysisManager<'ctx, B: ModuleBrand = Brand<'ctx>> {
     analyses: HashMap<TypeId, FunctionRunner<'ctx, B>>,
-    results: HashMap<(ModuleId, TypeId, ValueId), CachedFunctionResult<'ctx, B>>,
+    results: HashMap<(ModuleId, TypeId, ValueSlot), CachedFunctionResult<'ctx, B>>,
     instrumentation: Option<PassInstrumentationCallbacks>,
     _brand: PhantomData<fn(B) -> B>,
 }
@@ -1061,7 +1061,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for Analyses<'ctx, B> {
     }
 }
 
-fn function_key<'ctx, A, B>(function: FunctionView<'ctx, B>) -> (ModuleId, TypeId, ValueId)
+fn function_key<'ctx, A, B>(function: FunctionView<'ctx, B>) -> (ModuleId, TypeId, ValueSlot)
 where
     A: 'static,
     B: ModuleBrand + 'ctx,

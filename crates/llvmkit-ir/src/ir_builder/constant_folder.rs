@@ -389,7 +389,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for ConstantFolder {
     //      could be changed without any signal here, and the builder's
     //      `accept_folded_*` acceptors trusted the marker rather than
     //      verifying it. `narrow` turns each audit into a proof at the point
-    //      of construction. It is a `TypeId` compare on a *successful fold*
+    //      of construction. It is a `TypeSlot` compare on a *successful fold*
     //      only, against types the context memoizes by width/kind -- so a
     //      correct fold still costs one integer compare and cannot be
     //      spuriously rejected. ----

@@ -10,27 +10,27 @@
 use super::function::FunctionValue;
 use super::marker::Dyn;
 use super::module::{Module, ModuleBrand, ModuleRef, Unverified};
-use super::r#type::{Type, TypeId};
-use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
+use super::r#type::{Type, TypeSlot};
+use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
 use super::{DebugLoc, IrError, IrResult};
 
 /// Typed handle for a function parameter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Argument<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
-    pub(super) parent_fn: ValueId,
+    pub(super) ty: TypeSlot,
+    pub(super) parent_fn: ValueSlot,
     pub(super) slot: u32,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
     #[inline]
     pub(super) fn from_parts<M>(
-        id: ValueId,
+        id: ValueSlot,
         module: M,
-        ty: TypeId,
-        parent_fn: ValueId,
+        ty: TypeSlot,
+        parent_fn: ValueSlot,
         slot: u32,
     ) -> Self
     where

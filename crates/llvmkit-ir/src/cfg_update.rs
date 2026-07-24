@@ -26,14 +26,14 @@
 
 #![deny(missing_docs)]
 
-use crate::value::ValueId;
+use crate::value::ValueSlot;
 
 /// A directed CFG edge, identified by its endpoint blocks' stable value IDs.
 ///
 /// Distinct from [`crate::cfg::BasicBlockEdge`] (which carries lifetime-bearing
 /// block *labels* for live CFG snapshots): this edge is lifetime-free so the
 /// reshape mutator can own a plain `Vec<CfgUpdate>` and the driver can drain it
-/// after the borrow of the function ends. The endpoints are the same `ValueId`s
+/// after the borrow of the function ends. The endpoints are the same `ValueSlot`s
 /// the dominator machinery already keys on.
 ///
 /// Fields are private: an edge — and therefore a [`CfgUpdate`] — can only be
@@ -42,25 +42,25 @@ use crate::value::ValueId;
 /// / [`Self::to`] but cannot fabricate one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CfgEdge {
-    from: ValueId,
-    to: ValueId,
+    from: ValueSlot,
+    to: ValueSlot,
 }
 
 impl CfgEdge {
     #[inline]
-    pub(crate) fn new(from: ValueId, to: ValueId) -> Self {
+    pub(crate) fn new(from: ValueSlot, to: ValueSlot) -> Self {
         Self { from, to }
     }
 
     /// Predecessor endpoint — the block the edge leaves.
     #[inline]
-    pub fn from(&self) -> ValueId {
+    pub fn from(&self) -> ValueSlot {
         self.from
     }
 
     /// Successor endpoint — the block the edge enters.
     #[inline]
-    pub fn to(&self) -> ValueId {
+    pub fn to(&self) -> ValueSlot {
         self.to
     }
 }
@@ -88,14 +88,14 @@ impl CfgUpdate {
     /// Record an inserted edge `from → to`. Crate-private: only a structural
     /// edit method may mint one.
     #[inline]
-    pub(crate) fn insert(from: ValueId, to: ValueId) -> Self {
+    pub(crate) fn insert(from: ValueSlot, to: ValueSlot) -> Self {
         Self::InsertEdge(CfgEdge::new(from, to))
     }
 
     /// Record a deleted edge `from → to`. Crate-private: only a structural edit
     /// method may mint one.
     #[inline]
-    pub(crate) fn delete(from: ValueId, to: ValueId) -> Self {
+    pub(crate) fn delete(from: ValueSlot, to: ValueSlot) -> Self {
         Self::DeleteEdge(CfgEdge::new(from, to))
     }
 

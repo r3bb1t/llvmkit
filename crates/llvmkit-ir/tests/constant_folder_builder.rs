@@ -846,7 +846,7 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
 /// only the erased `fold_bin_op_dyn` hook, so `build_int_add`'s call to
 /// `fold_int_bin_op` runs the trait's *default* body (`folder.rs`'s
 /// `fold_int_bin_op<W>` -- there is no native override here), which forwards
-/// to `fold_bin_op_dyn` and then re-narrows the erased result by `TypeId`
+/// to `fold_bin_op_dyn` and then re-narrows the erased result by `TypeSlot`
 /// through `narrow_folded_int`. That re-narrow call is where the wrong-width
 /// 64-bit replacement is rejected; the builder's own `accept_folded_int`
 /// type check (`ir_builder.rs`) is never reached on this path, because
@@ -924,7 +924,7 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B>
         // default body to bypass), so overriding only this hook routes the
         // typed `build_int_add::<IntDyn, ...>` call through
         // `fold_int_bin_op`'s *default* body, which re-narrows this erased
-        // result via `narrow_folded_int`'s TypeId check. That is the seam
+        // result via `narrow_folded_int`'s TypeSlot check. That is the seam
         // this test exercises -- not the builder's separate
         // `accept_folded_int` type check, which only runs behind a typed
         // hook's *native* override (see the struct doc comment above for
@@ -934,7 +934,7 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B>
 }
 
 /// `llvm/include/llvm/IR/IRBuilderFolder.h` `Value*` folder hook contract:
-/// locks the `IntValue<IntDyn>` builder-side `TypeId` re-check the
+/// locks the `IntValue<IntDyn>` builder-side `TypeSlot` re-check the
 /// typed-folder rewrite (task 5) preserves for erased markers -- an erased
 /// `fold_bin_op_dyn` override that answers with a wrong-width replacement
 /// must still be caught by `narrow_folded_int`'s runtime check rather than

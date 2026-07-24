@@ -38,9 +38,9 @@ use super::ir_builder::folder::IRBuilderFolder;
 use super::ir_builder::{BuilderPositionState, IntoReturnValue, Positioned, Unpositioned};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
-use super::r#type::TypeId;
+use super::r#type::TypeSlot;
 use super::value::{
-    FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Typed, Value, ValueId,
+    FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Typed, Value, ValueSlot,
 };
 use super::{FloatType, IntType, IrError, IrResult, PointerType};
 
@@ -102,7 +102,7 @@ pub struct SsaBuilderId(u32);
 pub struct IntVariable<'ctx, W: IntWidth, B: ModuleBrand = Brand<'ctx>> {
     index: u32,
     owner: SsaBuilderId,
-    ty: TypeId,
+    ty: TypeSlot,
     module: ModuleRef<'ctx, B>,
     _w: core::marker::PhantomData<fn() -> W>,
 }
@@ -157,7 +157,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntVariable<'ctx, W, B> {
 pub struct FloatVariable<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>> {
     index: u32,
     owner: SsaBuilderId,
-    ty: TypeId,
+    ty: TypeSlot,
     module: ModuleRef<'ctx, B>,
     _k: core::marker::PhantomData<fn() -> K>,
 }
@@ -210,7 +210,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatVariable<'ctx, K, B> {
 pub struct PointerVariable<'ctx, B: ModuleBrand = Brand<'ctx>> {
     index: u32,
     owner: SsaBuilderId,
-    ty: TypeId,
+    ty: TypeSlot,
     module: ModuleRef<'ctx, B>,
 }
 
@@ -320,14 +320,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> SsaBlock<'ctx, R, B> {
 // marker trait is a private submodule there), so `SsaBlock`'s impl lives
 // alongside the other implementors in that file instead of here.
 
-/// Resolve a block label to the [`ValueId`] the Braun engine's block-keyed
+/// Resolve a block label to the [`ValueSlot`] the Braun engine's block-keyed
 /// maps use. Blocks are values (`LabelType`), so the label's own value-id
 /// *is* the block id -- this mirrors how [`crate::cfg`] keys its
 /// successor/predecessor maps off `block.to_erased().id`.
 #[inline]
 fn label_value_id<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx>(
     label: &BasicBlockLabel<'ctx, R, B>,
-) -> ValueId {
+) -> ValueSlot {
     label.id()
 }
 
@@ -336,7 +336,7 @@ fn label_value_id<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx>(
 /// how the AsmWriter falls back to numbered slots.
 fn block_name<'ctx, B: ModuleBrand + 'ctx>(
     module: ModuleRef<'ctx, B>,
-    block_id: ValueId,
+    block_id: ValueSlot,
 ) -> String {
     let label_ty = module.module().label_type().as_type().id();
     let label = BasicBlock::<Dyn, Unterminated, B>::from_parts(block_id, module, label_ty).label();
@@ -358,7 +358,7 @@ enum VarCategory {
 }
 
 struct VarData {
-    ty: TypeId,
+    ty: TypeSlot,
     category: VarCategory,
     name: String,
     poison_on_undef: bool,
@@ -367,34 +367,34 @@ struct VarData {
 struct SsaState<'ctx, R: ReturnMarker, B: ModuleBrand> {
     vars: Vec<VarData>,
     /// Braun `currentDef`: `(block, var) -> definition value`.
-    current_def: HashMap<(ValueId, u32), ValueId>,
+    current_def: HashMap<(ValueSlot, u32), ValueSlot>,
     /// Trivial-phi forwarding (path-compressed on read).
-    resolved: RefCell<HashMap<ValueId, ValueId>>,
+    resolved: RefCell<HashMap<ValueSlot, ValueSlot>>,
     /// Recorded CFG edges, duplicates preserved (phi operand order).
-    preds: HashMap<ValueId, Vec<ValueId>>,
-    sealed: HashSet<ValueId>,
+    preds: HashMap<ValueSlot, Vec<ValueSlot>>,
+    sealed: HashSet<ValueSlot>,
     /// Braun `filledBlocks`: blocks that have received their terminator.
     /// Populated by the terminator-building methods (`br`/`cond_br`/
     /// `switch`/`ret`/`ret_void`/`unreachable`); consulted by
     /// `switch_to_block` (reject repositioning into a filled block --
     /// `IrError::SsaBlockAlreadyFilled`) and `finish` (every created
     /// block must be filled -- `IrError::SsaUnfilledBlock`).
-    filled: HashSet<ValueId>,
+    filled: HashSet<ValueSlot>,
     /// Braun `incompletePhis`: `block -> [(var index, phi value)]`.
-    incomplete_phis: HashMap<ValueId, Vec<(u32, ValueId)>>,
+    incomplete_phis: HashMap<ValueSlot, Vec<(u32, ValueSlot)>>,
     /// Linear insertion capabilities for not-yet-current blocks.
-    open_blocks: HashMap<ValueId, BasicBlock<'ctx, R, Unterminated, B>>,
+    open_blocks: HashMap<ValueSlot, BasicBlock<'ctx, R, Unterminated, B>>,
     /// Linear lifecycle handles for layer-created phis (RAUW / erase).
-    created_phis: HashMap<ValueId, Instruction<'ctx, Attached, B>>,
+    created_phis: HashMap<ValueSlot, Instruction<'ctx, Attached, B>>,
     /// `phi -> declaring variable index`, populated alongside
     /// `created_phis` in `emit_operandless_phi` (the one place that
     /// KNOWS which variable a phi was created for). Lets
     /// `undefined_phi_replacement` key strict/poison off `vars[idx]`
     /// directly instead of re-deriving the variable from the phi's
     /// cached type -- see that method's doc comment (D10).
-    phi_var: HashMap<ValueId, u32>,
+    phi_var: HashMap<ValueSlot, u32>,
     /// Deterministic iteration for a future `finish()`.
-    block_order: Vec<ValueId>,
+    block_order: Vec<ValueSlot>,
 }
 
 impl<'ctx, R: ReturnMarker, B: ModuleBrand> SsaState<'ctx, R, B> {
@@ -652,7 +652,7 @@ where
     /// phantom fields (the pointer variant has none).
     fn declare_var_raw<Name: Into<String>>(
         &mut self,
-        ty: TypeId,
+        ty: TypeSlot,
         name: Name,
         category: VarCategory,
         poison_on_undef: bool,
@@ -831,10 +831,10 @@ where
         }
     }
 
-    /// [`ValueId`] of the block this builder is currently positioned at
+    /// [`ValueSlot`] of the block this builder is currently positioned at
     /// -- the Braun engine's block key.
     #[inline]
-    fn current_block_id(&self) -> ValueId {
+    fn current_block_id(&self) -> ValueSlot {
         self.ins().insert_block().id()
     }
 
@@ -941,7 +941,7 @@ where
     /// `IntoPointerValue` happily lifts a pointer of ANY address space.
     /// This side therefore never had a static marker to key on, and is
     /// unconditional for the same reason the int and float sides now are:
-    /// a `TypeId` equality compare is negligible next to the rest of the
+    /// a `TypeSlot` equality compare is negligible next to the rest of the
     /// work, and skipping it would silently accept a wrong-address-space
     /// write. Honest rather than optimised.
     ///
@@ -1247,7 +1247,7 @@ where
 struct VarHandle<'ctx, B: ModuleBrand> {
     index: u32,
     owner: SsaBuilderId,
-    ty: TypeId,
+    ty: TypeSlot,
     module: ModuleRef<'ctx, B>,
 }
 
@@ -1291,17 +1291,17 @@ impl<'ctx, K: FloatKind, B: ModuleBrand> From<VarHandle<'ctx, B>> for FloatVaria
 
 /// Emit a category-dispatched, name-only, operandless phi through
 /// whichever positioned builder `emit_operandless_phi` has prepared for
-/// the target insertion point, returning the raw [`ValueId`] of the new
-/// phi instruction. `ty` is the declared variable's cached [`TypeId`];
+/// the target insertion point, returning the raw [`ValueSlot`] of the new
+/// phi instruction. `ty` is the declared variable's cached [`TypeSlot`];
 /// `module` resolves it back to the category-appropriate typed handle
 /// each dyn phi builder expects.
 fn build_typed_phi<'m, 'ctx, B, F, R>(
     builder: &super::ir_builder::IRBuilder<'m, 'ctx, B, F, Positioned, R>,
     category: VarCategory,
-    ty: TypeId,
+    ty: TypeSlot,
     module: ModuleRef<'ctx, B>,
     name: &str,
-) -> IrResult<ValueId>
+) -> IrResult<ValueSlot>
 where
     B: ModuleBrand + 'ctx,
     F: IRBuilderFolder<'ctx, B>,
@@ -1358,7 +1358,7 @@ where
     R: ReturnMarker,
 {
     /// Braun `writeVariable`.
-    fn write_variable(&mut self, var: u32, block: ValueId, value: ValueId) {
+    fn write_variable(&mut self, var: u32, block: ValueSlot, value: ValueSlot) {
         self.state.current_def.insert((block, var), value);
     }
 
@@ -1376,8 +1376,8 @@ where
     /// resolved id back to every block in `chased` before returning, so a
     /// second read from any point on the chain is O(1) instead of
     /// re-chasing the whole straight-line run.
-    fn read_variable_in(&mut self, var: u32, mut block: ValueId) -> IrResult<ValueId> {
-        let mut chased: Vec<ValueId> = Vec::new();
+    fn read_variable_in(&mut self, var: u32, mut block: ValueSlot) -> IrResult<ValueSlot> {
+        let mut chased: Vec<ValueSlot> = Vec::new();
         loop {
             if let Some(v) = self.state.current_def.get(&(block, var)) {
                 let resolved = self.resolve(*v);
@@ -1441,14 +1441,19 @@ where
     /// `current_def`/`incomplete_phis` entry from the branch above), so
     /// every write here is a genuinely new memoization rather than a
     /// redundant overwrite.
-    fn memoize_chase(&mut self, var: u32, chased: &[ValueId], resolved: ValueId) {
+    fn memoize_chase(&mut self, var: u32, chased: &[ValueSlot], resolved: ValueSlot) {
         for &block in chased {
             self.write_variable(var, block, resolved);
         }
     }
 
     /// Braun `addPhiOperands` + `tryRemoveTrivialPhi`.
-    fn add_phi_operands(&mut self, var: u32, phi: ValueId, block: ValueId) -> IrResult<ValueId> {
+    fn add_phi_operands(
+        &mut self,
+        var: u32,
+        phi: ValueSlot,
+        block: ValueSlot,
+    ) -> IrResult<ValueSlot> {
         let preds = self.state.preds.get(&block).cloned().unwrap_or_default();
         for pred in preds {
             let operand = self.read_variable_in(var, pred)?;
@@ -1462,8 +1467,8 @@ where
     /// with that value and erase the phi, then re-check any layer-created
     /// phi that used to reference it (removing this phi as an operand can
     /// make one of *those* trivial too).
-    fn try_remove_trivial_phi(&mut self, phi: ValueId) -> IrResult<ValueId> {
-        let mut same: Option<ValueId> = None;
+    fn try_remove_trivial_phi(&mut self, phi: ValueSlot) -> IrResult<ValueSlot> {
+        let mut same: Option<ValueSlot> = None;
         for op in self.phi_incoming_values(phi) {
             let op = self.resolve(op);
             if op == phi || Some(op) == same {
@@ -1484,11 +1489,11 @@ where
         // tracks -- a user that isn't in `created_phis` is either a
         // non-phi instruction (nothing to re-check) or a phi some earlier
         // step already resolved away.
-        let users: Vec<ValueId> = self.phi_user_ids(phi);
+        let users: Vec<ValueSlot> = self.phi_user_ids(phi);
         self.state.phi_var.remove(&phi);
         let handle = self.state.created_phis.remove(&phi).unwrap_or_else(|| {
             unreachable!(
-                "SsaBuilder invariant: every ValueId reachable through try_remove_trivial_phi \
+                "SsaBuilder invariant: every ValueSlot reachable through try_remove_trivial_phi \
                  was produced by Self::emit_operandless_phi, which always records its handle in \
                  created_phis before returning"
             )
@@ -1548,7 +1553,7 @@ where
     /// Path-compressed forwarding lookup: chase the `resolved` chain built
     /// by [`Self::try_remove_trivial_phi`] and flatten it so future
     /// lookups are O(1).
-    fn resolve(&self, mut v: ValueId) -> ValueId {
+    fn resolve(&self, mut v: ValueSlot) -> ValueSlot {
         let mut chain = Vec::new();
         loop {
             let next = self.state.resolved.borrow().get(&v).copied();
@@ -1590,7 +1595,7 @@ where
     ///   append (`&self`-based phi builders, `insert_before: None`) IS
     ///   that position. Otherwise the handle is borrowed out of
     ///   `open_blocks`, used, and stored back.
-    fn emit_operandless_phi(&mut self, var: u32, block: ValueId) -> IrResult<ValueId> {
+    fn emit_operandless_phi(&mut self, var: u32, block: ValueSlot) -> IrResult<ValueSlot> {
         let idx = usize::try_from(var).unwrap_or_else(|_| {
             unreachable!("SsaBuilder invariant: var indices are u32::try_from(vars.len())")
         });
@@ -1658,10 +1663,15 @@ where
     /// Add `(operand, pred)` to the layer-created phi named by `phi`.
     /// Thin wrapper over the same dyn phi-mutation idiom
     /// `IRBuilder::phi_add_incoming_from_value` uses, since the engine
-    /// only ever holds category-erased `ValueId`s. Pinned to `Dyn`: the
+    /// only ever holds category-erased `ValueSlot`s. Pinned to `Dyn`: the
     /// return-marker parameter is irrelevant to a payload-only mutation
     /// that never emits a terminator.
-    fn phi_add_incoming_raw(&self, phi: ValueId, operand: ValueId, pred: ValueId) -> IrResult<()> {
+    fn phi_add_incoming_raw(
+        &self,
+        phi: ValueSlot,
+        operand: ValueSlot,
+        pred: ValueSlot,
+    ) -> IrResult<()> {
         let module = self.module_ref();
         let phi_value = Value::from_parts(phi, module, module.value_data(phi).ty);
         let operand_value = Value::from_parts(operand, module, module.value_data(operand).ty);
@@ -1676,7 +1686,7 @@ where
     /// resolved through the same value-arena path `PhiInst::payload`
     /// uses (category-agnostic: works for the int/float/pointer phi
     /// handles alike, since they all share `InstructionKindData::Phi`).
-    fn phi_incoming_values(&self, phi: ValueId) -> Vec<ValueId> {
+    fn phi_incoming_values(&self, phi: ValueSlot) -> Vec<ValueSlot> {
         let module = self.module_ref();
         match &module.value_data(phi).kind {
             super::value::ValueKindData::Instruction(i) => match &i.kind {
@@ -1693,7 +1703,7 @@ where
 
     /// Structural users of `phi` restricted to other instructions (the
     /// only category the trivial-phi recursion cares about).
-    fn phi_user_ids(&self, phi: ValueId) -> Vec<ValueId> {
+    fn phi_user_ids(&self, phi: ValueSlot) -> Vec<ValueSlot> {
         let module = self.module_ref();
         let value = Value::from_parts(phi, module, module.value_data(phi).ty);
         value.users().map(|u| u.id()).collect()
@@ -1702,7 +1712,7 @@ where
     /// A strict variable's read reached function entry with no write on
     /// the path: `Err(SsaUseOfUndefinedVariable)`. A poison-on-undef
     /// variable instead materialises `poison <ty>` for that read.
-    fn undefined_read(&mut self, var: u32, block: ValueId) -> IrResult<ValueId> {
+    fn undefined_read(&mut self, var: u32, block: ValueSlot) -> IrResult<ValueSlot> {
         let idx = usize::try_from(var).unwrap_or_else(|_| {
             unreachable!("SsaBuilder invariant: var indices are u32::try_from(vars.len())")
         });
@@ -1723,7 +1733,7 @@ where
     /// an unreachable block, i.e. one whose only predecessors are
     /// themselves unreachable): same strict-vs-poison split as
     /// [`Self::undefined_read`], keyed by the phi's originating variable.
-    fn undefined_phi_replacement(&mut self, phi: ValueId) -> IrResult<ValueId> {
+    fn undefined_phi_replacement(&mut self, phi: ValueSlot) -> IrResult<ValueSlot> {
         let module = self.module_ref();
         let ty = module.value_data(phi).ty;
         let block_id = self
@@ -1764,7 +1774,7 @@ where
             // surviving instructions keep an operand naming an erased
             // value. Same snapshot-users / RAUW / erase / re-check-users
             // shape as the trivial path in `try_remove_trivial_phi`.
-            let users: Vec<ValueId> = self.phi_user_ids(phi);
+            let users: Vec<ValueSlot> = self.phi_user_ids(phi);
             self.state.phi_var.remove(&phi);
             let handle = self.state.created_phis.remove(&phi).unwrap_or_else(|| {
                 unreachable!(

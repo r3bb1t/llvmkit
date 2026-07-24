@@ -1,7 +1,7 @@
 //! Per-function name → value lookup. Mirrors the public face of
 //! `llvm/include/llvm/IR/ValueSymbolTable.h`.
 //!
-//! Storage shape is a flat `HashMap<String, ValueId>`. The upstream C++ class
+//! Storage shape is a flat `HashMap<String, ValueSlot>`. The upstream C++ class
 //! layers a `StringMap` on top of `Value::ValueName` slots to amortise renames;
 //! llvmkit keeps the simpler flat map while mirroring LLVM's `createValueName`,
 //! `removeValueName`, and local `LastUnique` suffix behavior.
@@ -15,13 +15,13 @@
 use core::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use crate::value::ValueId;
+use crate::value::ValueSlot;
 
 /// Flat name → value-id table. Wrapped in `RefCell` so the same
 /// `&'ctx Function<'ctx>` borrow can read and write it.
 #[derive(Debug, Default)]
 pub(crate) struct ValueSymbolTable {
-    by_name: RefCell<HashMap<String, ValueId>>,
+    by_name: RefCell<HashMap<String, ValueSlot>>,
     last_unique: Cell<u32>,
 }
 
@@ -33,7 +33,7 @@ impl ValueSymbolTable {
     pub(crate) fn create_value_name(
         &self,
         requested: &str,
-        id: ValueId,
+        id: ValueSlot,
         append_dot: bool,
     ) -> String {
         let mut map = self.by_name.borrow_mut();
@@ -61,7 +61,7 @@ impl ValueSymbolTable {
         }
     }
 
-    pub(crate) fn remove_value_name(&self, name: &str, id: ValueId) {
+    pub(crate) fn remove_value_name(&self, name: &str, id: ValueSlot) {
         let mut map = self.by_name.borrow_mut();
         if map.get(name).copied() == Some(id) {
             map.remove(name);
@@ -72,7 +72,7 @@ impl ValueSymbolTable {
         &self,
         current: Option<&str>,
         requested: Option<&str>,
-        id: ValueId,
+        id: ValueSlot,
         append_dot: bool,
     ) -> Option<String> {
         let current = current.filter(|name| !name.is_empty());

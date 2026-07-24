@@ -1,6 +1,6 @@
 //! Instruction worklist for fixpoint pass transforms.
 //!
-//! A SetVector (dedup set + LIFO stack) of instruction [`ValueId`]s, mirroring
+//! A SetVector (dedup set + LIFO stack) of instruction [`ValueSlot`]s, mirroring
 //! LLVM's `InstructionWorklist`. A worklist pass seeds it with the function
 //! body's non-terminators and drains it to a fixpoint; the mutator
 //! ([`crate::pass_context::FnPatch`]) maintains it as it edits — erasing an
@@ -21,13 +21,13 @@ use std::collections::HashSet;
 
 use crate::instruction::{InstructionView, NonTerminator};
 use crate::module::{ModuleBrand, ModuleRef};
-use crate::value::ValueId;
+use crate::value::ValueSlot;
 
 /// A dedup LIFO worklist of instruction ids for fixpoint transforms.
 #[derive(Debug, Default)]
 pub struct Worklist {
-    stack: Vec<ValueId>,
-    queued: HashSet<ValueId>,
+    stack: Vec<ValueSlot>,
+    queued: HashSet<ValueSlot>,
 }
 
 impl Worklist {
@@ -48,7 +48,7 @@ impl Worklist {
 
     /// Whether `id` is currently queued.
     #[inline]
-    pub fn contains(&self, id: ValueId) -> bool {
+    pub fn contains(&self, id: ValueSlot) -> bool {
         self.queued.contains(&id)
     }
 
@@ -56,7 +56,7 @@ impl Worklist {
     /// instruction ids (users are instructions; operand pushes are filtered),
     /// so [`Self::pop`]'s reconstruction is sound.
     #[inline]
-    pub fn push(&mut self, id: ValueId) {
+    pub fn push(&mut self, id: ValueSlot) {
         if self.queued.insert(id) {
             self.stack.push(id);
         }
@@ -66,7 +66,7 @@ impl Worklist {
     /// when it erases an instruction, so an erased id never surfaces from
     /// [`Self::pop`].
     #[inline]
-    pub fn remove(&mut self, id: ValueId) {
+    pub fn remove(&mut self, id: ValueSlot) {
         if self.queued.remove(&id) {
             self.stack.retain(|&other| other != id);
         }
@@ -237,7 +237,7 @@ mod tests {
 
             let a_id = a.id();
             // The `ret` terminator is the block's last instruction; reach it the
-            // same way `pass_context`'s tests do, then take its ValueId.
+            // same way `pass_context`'s tests do, then take its ValueSlot.
             let ret_id = FunctionView::from(f)
                 .entry_block()
                 .expect("definition has an entry block")
