@@ -10,9 +10,10 @@
 //! exercised until cycle C.
 
 use llvmkit_ir::{
-    BasicBlockLabel, BlockId, Dyn, FloatValueId, FunctionId, GlobalId, GlobalVariable, IntValue,
-    IntValueId, IrError, Linkage, Module, ModuleBrand, PointerValue, PointerValueId, Unverified,
-    Value, ValueId,
+    BasicBlockLabel, BlockId, Dyn, FloatValue, FloatValueId, FunctionId, GlobalId, GlobalVariable,
+    IntValue, IntValueId, IntoCallArg, IntoFloatValue, IntoIntValue, IntoPointerValue, IrError,
+    Linkage, Module, ModuleBrand, ModuleRef, PointerValue, PointerValueId, Unverified, Value,
+    ValueId,
 };
 
 /// Round-trip: every typed handle mints an id whose `view` reproduces the
@@ -161,4 +162,108 @@ fn foreign_tag_rejection_is_deferred_to_cycle_c() {
     // Intentionally empty: see the doc comment. The tag-check-passes branch is
     // covered by `try_view_returns_some_for_owned_ids`; the tag-check-fails
     // branch lands in cycle C.
+}
+
+/// A4: each *typed-value* id lifts back into its handle at a builder operand
+/// position via the fallible `Into*Value` conversions, reproducing the handle
+/// its `to_id` was minted from. This is the id analogue of the identity
+/// operand lifts (`IntValue: IntoIntValue`), exercised directly here because
+/// the builders do not accept ids until cycle B.
+#[test]
+fn typed_ids_lift_at_operand_positions() -> Result<(), IrError> {
+    Module::with_new("id-operand", |m| {
+        let i32_ty = m.i32_type();
+        let f32_ty = m.f32_type();
+        let ptr_ty = m.ptr_type(0);
+        let fn_ty = m.fn_type(
+            i32_ty,
+            [i32_ty.as_type(), f32_ty.as_type(), ptr_ty.as_type()],
+            false,
+        );
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+
+        let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let x: FloatValue<f32> = f.param(1)?.try_into()?;
+        let p: PointerValue = f.param(2)?.try_into()?;
+
+        let mref = ModuleRef::from(m.as_view());
+
+        // Owned id + owning module -> Ok(original handle).
+        assert_eq!(
+            a.to_id().into_int_value(mref)?,
+            a,
+            "IntValueId did not lift back to its IntValue operand",
+        );
+        assert_eq!(
+            x.to_id().into_float_value(mref)?,
+            x,
+            "FloatValueId did not lift back to its FloatValue operand",
+        );
+        assert_eq!(
+            p.to_id().into_pointer_value(mref)?,
+            p,
+            "PointerValueId did not lift back to its PointerValue operand",
+        );
+
+        Ok(())
+    })
+}
+
+/// A4: the typed ids satisfy `IntoCallArg` for free through its blanket impls
+/// over `IntoIntValue` / `IntoFloatValue` / `IntoPointerValue` — no dedicated
+/// impl was written. A *compile-time* witness: if the bound did not hold this
+/// test would not build.
+#[test]
+fn typed_ids_are_call_args() -> Result<(), IrError> {
+    fn assert_int_call_arg<'ctx, B>(_: &IntValueId<i32, B>)
+    where
+        B: ModuleBrand + 'ctx,
+        IntValueId<i32, B>: IntoCallArg<'ctx, i32, B>,
+    {
+    }
+    fn assert_float_call_arg<'ctx, B>(_: &FloatValueId<f32, B>)
+    where
+        B: ModuleBrand + 'ctx,
+        FloatValueId<f32, B>: IntoCallArg<'ctx, f32, B>,
+    {
+    }
+    fn assert_ptr_call_arg<'ctx, B>(_: &PointerValueId<B>)
+    where
+        B: ModuleBrand + 'ctx,
+        PointerValueId<B>: IntoCallArg<'ctx, llvmkit_ir::Ptr, B>,
+    {
+    }
+
+    Module::with_new("id-call-arg", |m| -> Result<(), IrError> {
+        let i32_ty = m.i32_type();
+        let f32_ty = m.f32_type();
+        let ptr_ty = m.ptr_type(0);
+        let fn_ty = m.fn_type(
+            i32_ty,
+            [i32_ty.as_type(), f32_ty.as_type(), ptr_ty.as_type()],
+            false,
+        );
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let x: FloatValue<f32> = f.param(1)?.try_into()?;
+        let p: PointerValue = f.param(2)?.try_into()?;
+        assert_int_call_arg(&a.to_id());
+        assert_float_call_arg(&x.to_id());
+        assert_ptr_call_arg(&p.to_id());
+        Ok(())
+    })
+}
+
+/// A4: the foreign-tag rejection branch of the operand lifts (an id minted in
+/// module A, lifted against module B -> `Err(IrError::ForeignValueId)`) is
+/// deferred to cycle C for the same reason as
+/// [`foreign_tag_rejection_is_deferred_to_cycle_c`]: two `Module::with_new`
+/// closures carry distinct lifetime brands, so a cross-module lift is rejected
+/// at compile time and never reaches the runtime tag comparison. A genuine
+/// runtime foreign-tag test needs two modules sharing a brand *type*, available
+/// in cycle C.
+#[test]
+fn foreign_tag_operand_rejection_is_deferred_to_cycle_c() {
+    // Intentionally empty: see the doc comment. The tag-check-passes branch is
+    // covered by `typed_ids_lift_at_operand_positions`.
 }

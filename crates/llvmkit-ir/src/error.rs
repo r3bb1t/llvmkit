@@ -895,6 +895,16 @@ pub enum IrError {
     #[error("SSA block belongs to a different SsaBuilder")]
     SsaForeignBlock,
 
+    /// A storable value id (e.g. [`crate::IntValueId`]) was resolved against a
+    /// different [`Module`](crate::Module) than the one that minted it. The
+    /// id's module tag did not match the target module, so it cannot name a
+    /// value there. Raised by the fallible operand conversions
+    /// ([`IntoIntValue`](crate::IntoIntValue) /
+    /// [`IntoFloatValue`](crate::IntoFloatValue) /
+    /// [`IntoPointerValue`](crate::IntoPointerValue)) when handed a foreign id.
+    #[error("value id belongs to a different Module")]
+    ForeignValueId,
+
     /// [`crate::SsaBuilder::for_function`] /
     /// `with_folder_for_function` was given a function that already has
     /// a body. The layer must observe every CFG edge from birth (Braun's

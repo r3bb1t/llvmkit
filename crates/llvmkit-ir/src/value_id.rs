@@ -35,14 +35,18 @@ use core::marker::PhantomData;
 
 use crate::basic_block::BasicBlockLabel;
 use crate::block_params::{BlockParams, BlockParamsDyn};
-use crate::float_kind::FloatKind;
+use crate::error::{IrError, IrResult};
+use crate::float_kind::{FloatKind, IntoFloatValue, into_float_value_sealed};
 use crate::function::{FunctionValue, signature_matches_marker};
 use crate::global_variable::GlobalVariable;
-use crate::int_width::IntWidth;
+use crate::int_width::{IntWidth, IntoIntValue, into_int_value_sealed};
 use crate::marker::ReturnMarker;
 use crate::module::{Invariant, ModuleBrand, ModuleId, ModuleRef};
 use crate::r#type::TypeData;
-use crate::value::{FloatValue, IntValue, PointerValue, Value, ValueKindData, ValueSlot};
+use crate::value::{
+    FloatValue, IntValue, IntoPointerValue, PointerValue, Value, ValueKindData, ValueSlot,
+    into_pointer_value_sealed,
+};
 
 // --------------------------------------------------------------------------
 // The id family
@@ -412,5 +416,50 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams> ViewIn<'
             _r: PhantomData,
             _params: PhantomData,
         })
+    }
+}
+
+// --------------------------------------------------------------------------
+// Into*-id: typed ids as builder operands
+// --------------------------------------------------------------------------
+//
+// The three *typed-value* ids lift into their handle at an operand position,
+// so that (in cycle B) `build_int_add(some_int_id, 2i32, "x")` compiles. Each
+// conversion is *fallible* on a foreign module tag — unlike
+// [`Module::view`](crate::Module::view), which panics — because the operand
+// path is already `IrResult` and a foreign id is a recoverable caller error
+// ([`IrError::ForeignValueId`]).
+//
+// The body delegates to the same [`ViewIn::resolve_in`] resolver the
+// view-minting API uses (keeping one tag-check + arena-recovery path, including
+// its debug-assert marker checks) and maps its `None` — reached *only* on a
+// foreign tag for these three typed ids — to [`IrError::ForeignValueId`].
+//
+// Deliberately NOT implemented for the erased [`ValueId`]: erased -> typed must
+// stay a *spelled* narrowing ([`Module::try_view`](crate::Module::try_view) /
+// `TryFrom`), never a silent operand lift. See the compile-fail fixture
+// `tests/compile_fail/erased_id_not_int_operand.rs`.
+
+impl<W: IntWidth, B: ModuleBrand> into_int_value_sealed::Sealed for IntValueId<W, B> {}
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B> for IntValueId<W, B> {
+    #[inline]
+    fn into_int_value(self, module: ModuleRef<'ctx, B>) -> IrResult<IntValue<'ctx, W, B>> {
+        self.resolve_in(module).ok_or(IrError::ForeignValueId)
+    }
+}
+
+impl<K: FloatKind, B: ModuleBrand> into_float_value_sealed::Sealed for FloatValueId<K, B> {}
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IntoFloatValue<'ctx, K, B> for FloatValueId<K, B> {
+    #[inline]
+    fn into_float_value(self, module: ModuleRef<'ctx, B>) -> IrResult<FloatValue<'ctx, K, B>> {
+        self.resolve_in(module).ok_or(IrError::ForeignValueId)
+    }
+}
+
+impl<B: ModuleBrand> into_pointer_value_sealed::Sealed for PointerValueId<B> {}
+impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for PointerValueId<B> {
+    #[inline]
+    fn into_pointer_value(self, module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>> {
+        self.resolve_in(module).ok_or(IrError::ForeignValueId)
     }
 }

@@ -626,7 +626,11 @@ pub trait IntoIntValue<'ctx, W: IntWidth, B: ModuleBrand = Brand<'ctx>>:
 /// Seals [`IntoIntValue`] to the identity/lift handles plus the kept
 /// exact-width Rust scalars. Erased `Value`/`Argument`/`Instruction` are
 /// deliberately absent.
-mod into_int_value_sealed {
+///
+/// `pub(crate)` so the id-family `Sealed`/`IntoIntValue` impls (for
+/// [`IntValueId`](crate::IntValueId)) can live beside the ids in
+/// `value_id.rs`; the trait inside stays crate-private, so the seal holds.
+pub(crate) mod into_int_value_sealed {
     pub trait Sealed {}
 }
 
