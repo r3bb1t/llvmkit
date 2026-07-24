@@ -11,7 +11,7 @@
 //!
 //! For the foundation we deliberately do **not** ship that machinery.
 //! Operand storage lives inside the per-instruction storage record
-//! as a plain `Vec<ValueId>`, and a [`Use`] view is materialized on
+//! as a plain `Vec<ValueSlot>`, and a [`Use`] view is materialized on
 //! demand by [`User::operand_use`](crate::user::User::operand_use).
 //! Rebuilding the view is `O(1)` per edge, and analyses that need to
 //! iterate `value.users()` will get a cheap linear scan over the arena

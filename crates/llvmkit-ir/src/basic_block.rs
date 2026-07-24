@@ -27,8 +27,8 @@ use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::{IRBuilder, Positioned};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
-use super::r#type::TypeId;
-use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
+use super::r#type::TypeSlot;
+use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
 use super::{DebugLoc, IrError, IrResult, Type};
 use core::cell::RefCell;
 use core::iter::FusedIterator;
@@ -44,15 +44,15 @@ use core::marker::PhantomData;
 pub(super) struct BasicBlockData {
     /// Owning function. `None` for an orphan block (no function yet
     /// attached). Mirrors LLVM's `BasicBlock::Parent`.
-    pub(super) parent: RefCell<Option<ValueId>>,
+    pub(super) parent: RefCell<Option<ValueSlot>>,
     /// Linear list of instruction value ids in program order.
-    pub(super) instructions: RefCell<Vec<ValueId>>,
+    pub(super) instructions: RefCell<Vec<ValueSlot>>,
 }
 
 impl BasicBlockData {
     /// Construct an empty block, optionally already attached to a
     /// parent function.
-    pub(super) fn new(parent: Option<ValueId>) -> Self {
+    pub(super) fn new(parent: Option<ValueSlot>) -> Self {
         Self {
             parent: RefCell::new(parent),
             instructions: RefCell::new(Vec::new()),
@@ -90,9 +90,9 @@ pub struct BasicBlock<
     B: ModuleBrand = Brand<'ctx>,
     Params: BlockParams = BlockParamsDyn,
 > {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) _r: PhantomData<R>,
     pub(super) _term: PhantomData<Term>,
     pub(super) _params: PhantomData<Params>,
@@ -141,9 +141,9 @@ pub struct BasicBlockLabel<
     B: ModuleBrand = Brand<'ctx>,
     Params: BlockParams = BlockParamsDyn,
 > {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) _r: PhantomData<R>,
     pub(super) _params: PhantomData<Params>,
 }
@@ -210,7 +210,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     /// Opaque arena id of the underlying value (same id as
     /// [`to_erased`](Self::to_erased)).
     #[inline]
-    pub fn id(&self) -> ValueId {
+    pub fn id(&self) -> ValueSlot {
         self.to_erased().id
     }
 
@@ -368,7 +368,7 @@ pub struct BlockCall<
     /// arity and per-position types are already fixed by the compile-time
     /// [`CallArgs<Params>`](crate::CallArgs) bound, so this only carries the
     /// value-level fallibility of [`CallArgs::lower`].
-    lowered: IrResult<Box<[ValueId]>>,
+    lowered: IrResult<Box<[ValueSlot]>>,
 }
 
 impl<'ctx, R, B, Params> BasicBlockLabel<'ctx, R, B, Params>
@@ -442,7 +442,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     /// lowered-or-deferred block-arguments. Crate-internal: the typed branch
     /// builders consume the bundle here, then reuse the erased phi-seeding path.
     #[inline]
-    pub(crate) fn into_parts(self) -> (BasicBlockLabel<'ctx, R, B>, IrResult<Box<[ValueId]>>) {
+    pub(crate) fn into_parts(self) -> (BasicBlockLabel<'ctx, R, B>, IrResult<Box<[ValueSlot]>>) {
         (self.target.erase_params(), self.lowered)
     }
 }
@@ -451,7 +451,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     BasicBlock<'ctx, R, Term, B, Params>
 {
     #[inline]
-    pub(super) fn from_parts<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_parts<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -510,7 +510,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// Opaque arena id of the underlying value (same id as
     /// [`to_erased`](Self::to_erased)).
     #[inline]
-    pub fn id(&self) -> ValueId {
+    pub fn id(&self) -> ValueSlot {
         self.to_erased().id
     }
 
@@ -607,7 +607,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     }
 
     /// Owning function value-id, or `None` if the block is an orphan.
-    pub(super) fn parent_id(&self) -> Option<ValueId> {
+    pub(super) fn parent_id(&self) -> Option<ValueSlot> {
         *self.data().parent.borrow()
     }
 
@@ -624,10 +624,10 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     }
 
     /// Iterate the instruction value-ids in program order. Returns
-    /// `ValueId`s rather than full instruction handles so the caller
+    /// `ValueSlot`s rather than full instruction handles so the caller
     /// can decide which view (raw operand-traversal vs typed
     /// `Instruction<'ctx>` handle) it wants.
-    pub(crate) fn instruction_ids(&self) -> Vec<ValueId> {
+    pub(crate) fn instruction_ids(&self) -> Vec<ValueSlot> {
         self.data().instructions.borrow().clone()
     }
 
@@ -662,7 +662,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 
     /// Append an instruction value-id to the block. Crate-internal:
     /// only the IR builder calls this.
-    pub(super) fn append_instruction(&self, instr: ValueId) {
+    pub(super) fn append_instruction(&self, instr: ValueSlot) {
         self.data().instructions.borrow_mut().push(instr);
     }
 
@@ -674,7 +674,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     ///
     /// Mirrors LLVM's `BasicBlock::getInstList().remove(I)`
     /// (`lib/IR/BasicBlock.cpp`).
-    pub(super) fn remove_instruction(&self, instr: ValueId) -> bool {
+    pub(super) fn remove_instruction(&self, instr: ValueSlot) -> bool {
         let mut list = self.data().instructions.borrow_mut();
         if let Some(pos) = list.iter().position(|id| *id == instr) {
             list.remove(pos);
@@ -693,8 +693,8 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// (`lib/IR/BasicBlock.cpp`).
     pub(super) fn insert_instruction_before(
         &self,
-        instr: ValueId,
-        before: ValueId,
+        instr: ValueSlot,
+        before: ValueSlot,
     ) -> IrResult<()> {
         let mut list = self.data().instructions.borrow_mut();
         match list.iter().position(|id| *id == before) {
@@ -711,7 +711,11 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// Insert `instr` immediately after `after` in this block's
     /// instruction list. Errors with [`IrError::InvalidOperation`] if
     /// `after` is not present in this block.
-    pub(super) fn insert_instruction_after(&self, instr: ValueId, after: ValueId) -> IrResult<()> {
+    pub(super) fn insert_instruction_after(
+        &self,
+        instr: ValueSlot,
+        after: ValueSlot,
+    ) -> IrResult<()> {
         let mut list = self.data().instructions.borrow_mut();
         match list.iter().position(|id| *id == after) {
             Some(pos) => {
@@ -731,7 +735,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// the cursor sits past a non-phi still lands at the phi head. Mirrors
     /// the placement `IRBuilder::SetInsertPoint(&BB.getFirstNonPHI())`
     /// gives phis in `llvm/lib/IR/IRBuilder.cpp`.
-    pub(crate) fn insert_instruction_at_phi_head(&self, id: ValueId) {
+    pub(crate) fn insert_instruction_at_phi_head(&self, id: ValueSlot) {
         let mut list = self.data().instructions.borrow_mut();
         let at = list
             .iter()
@@ -770,7 +774,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         let dest_fn_id = dest.parent_id();
         let rehome_names = source_fn_id != dest_fn_id;
         let dest_id = dest.id();
-        let drained: Vec<ValueId> = {
+        let drained: Vec<ValueSlot> = {
             let mut src = self.data().instructions.borrow_mut();
             core::mem::take(&mut *src)
         };
@@ -830,7 +834,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
             FunctionValue::<'ctx, R, B>::from_parts_unchecked(parent_fn_id, self.module);
         let new_block = parent_fn.append_basic_block(module_token, name);
         let split_id = before.id();
-        let suffix: Vec<ValueId> = {
+        let suffix: Vec<ValueSlot> = {
             let mut src = self.data().instructions.borrow_mut();
             let pos =
                 src.iter()

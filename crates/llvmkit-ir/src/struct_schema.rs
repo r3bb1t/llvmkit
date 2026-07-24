@@ -19,7 +19,7 @@ use crate::marker::{Dyn, Ptr, ReturnMarker};
 use crate::module::{Brand, Module, ModuleBrand, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeData};
 use crate::value::{
-    FloatValue, IntValue, IntoPointerValue, PointerValue, StructValue, Value, ValueId,
+    FloatValue, IntValue, IntoPointerValue, PointerValue, StructValue, Value, ValueSlot,
 };
 
 #[doc(hidden)]
@@ -635,7 +635,7 @@ where
     S: StructSchema,
     A: CallArgs<'ctx, S::FieldParams, B>,
 {
-    fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueId]>> {
+    fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueSlot]>> {
         <A as CallArgs<'ctx, S::FieldParams, B>>::lower(self, module)
     }
 }

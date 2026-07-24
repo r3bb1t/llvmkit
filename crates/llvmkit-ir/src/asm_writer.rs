@@ -39,8 +39,8 @@ use super::marker::Dyn;
 use super::module::{
     ModuleBrand, ModuleCore, ModuleView, UseListOrderBBRecord, UseListOrderRecord,
 };
-use super::r#type::{StructBody, Type, TypeData, TypeId};
-use super::value::{IsValue, Value, ValueId, ValueKindData};
+use super::r#type::{StructBody, Type, TypeData, TypeSlot};
+use super::value::{IsValue, Value, ValueKindData, ValueSlot};
 use super::{ApInt, ApIntSignedness, AttrIndex};
 
 // --------------------------------------------------------------------------
@@ -53,9 +53,9 @@ use super::{ApInt, ApIntSignedness, AttrIndex};
 pub(super) struct SlotTracker {
     /// Local-scope slots: function arguments + instructions that
     /// produce a non-void result and lack a name.
-    local: HashMap<ValueId, u32>,
+    local: HashMap<ValueSlot, u32>,
     /// Basic-block slots: unnamed blocks get `; <label>:N`.
-    blocks: HashMap<ValueId, u32>,
+    blocks: HashMap<ValueSlot, u32>,
 }
 
 impl SlotTracker {
@@ -99,11 +99,11 @@ impl SlotTracker {
         Self { local, blocks }
     }
 
-    pub(super) fn local(&self, id: ValueId) -> Option<u32> {
+    pub(super) fn local(&self, id: ValueSlot) -> Option<u32> {
         self.local.get(&id).copied()
     }
 
-    pub(super) fn block(&self, id: ValueId) -> Option<u32> {
+    pub(super) fn block(&self, id: ValueSlot) -> Option<u32> {
         self.blocks.get(&id).copied()
     }
 }
@@ -456,14 +456,14 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn is_zero_int_constant(module: &ModuleCore, id: ValueId) -> bool {
+fn is_zero_int_constant(module: &ModuleCore, id: ValueSlot) -> bool {
     matches!(
         &module.context().value_data(id).kind,
         ValueKindData::Constant(ConstantData::Int(words)) if words.iter().all(|word| *word == 0)
     )
 }
 
-fn is_null_pointer_constant(module: &ModuleCore, id: ValueId) -> bool {
+fn is_null_pointer_constant(module: &ModuleCore, id: ValueSlot) -> bool {
     matches!(
         &module.context().value_data(id).kind,
         ValueKindData::Constant(ConstantData::PointerNull)
@@ -540,7 +540,7 @@ fn fmt_constant_expr<'ctx, B: ModuleBrand + 'ctx>(
     }
     f.write_str(")")
 }
-fn infer_gep_source_ty(module: &ModuleCore, expr: &ConstantExprData) -> TypeId {
+fn infer_gep_source_ty(module: &ModuleCore, expr: &ConstantExprData) -> TypeSlot {
     let Some(first) = expr.operands.first() else {
         return expr.result_ty;
     };
@@ -765,7 +765,7 @@ fn fmt_global_value_ref<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn module_global_slot(module: &ModuleCore, id: ValueId) -> Option<u32> {
+fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
     let mut next = 0_u32;
     for global in module.iter_globals::<crate::module::Brand<'_>>() {
         if global.into_erased().name().is_none() {
@@ -809,7 +809,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueId) -> Option<u32> {
 fn collect_byte_string<B: ModuleBrand>(
     module: &crate::module::ModuleCore,
     ty: Type<'_, B>,
-    elem_ids: &[ValueId],
+    elem_ids: &[ValueSlot],
 ) -> Option<Vec<u8>> {
     match ty.data() {
         TypeData::Array { elem, .. } => match module.context().type_data(*elem) {
@@ -836,7 +836,7 @@ fn collect_byte_string<B: ModuleBrand>(
     }
 }
 
-fn is_zero_initializer_value(module: &ModuleCore, id: ValueId) -> bool {
+fn is_zero_initializer_value(module: &ModuleCore, id: ValueSlot) -> bool {
     let data = module.context().value_data(id);
     match &data.kind {
         ValueKindData::Constant(ConstantData::Int(words)) => words.iter().all(|word| *word == 0),
@@ -849,12 +849,12 @@ fn is_zero_initializer_value(module: &ModuleCore, id: ValueId) -> bool {
     }
 }
 
-fn aggregate_splat_id(elem_ids: &[ValueId]) -> Option<ValueId> {
+fn aggregate_splat_id(elem_ids: &[ValueSlot]) -> Option<ValueSlot> {
     let first = elem_ids.first().copied()?;
     elem_ids.iter().all(|id| *id == first).then_some(first)
 }
 
-fn is_int_or_fp_splat_value(module: &ModuleCore, id: ValueId) -> bool {
+fn is_int_or_fp_splat_value(module: &ModuleCore, id: ValueSlot) -> bool {
     matches!(
         module.context().value_data(id).kind,
         ValueKindData::Constant(ConstantData::Int(_) | ConstantData::Float(_))
@@ -864,7 +864,7 @@ fn is_int_or_fp_splat_value(module: &ModuleCore, id: ValueId) -> bool {
 fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
     host: Value<'ctx, B>,
-    elem_ids: &[ValueId],
+    elem_ids: &[ValueSlot],
 ) -> fmt::Result {
     let module = host.module();
     let ty = host.ty();
@@ -1900,8 +1900,8 @@ fn fmt_funclet_pad(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
     keyword: &str,
-    parent_pad: &core::cell::Cell<Option<crate::value::ValueId>>,
-    args: &[core::cell::Cell<crate::value::ValueId>],
+    parent_pad: &core::cell::Cell<Option<crate::value::ValueSlot>>,
+    args: &[core::cell::Cell<crate::value::ValueSlot>],
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `<keyword> within <parent> [<arg-ty> <arg>, ...]`
@@ -2941,7 +2941,7 @@ fn fmt_metadata_attachments(
 /// referenced by the module metadata slot map.
 fn fmt_metadata_operand(
     f: &mut fmt::Formatter<'_>,
-    id: crate::metadata::MetadataId,
+    id: crate::metadata::MetadataSlot,
     module: &ModuleCore,
     store: &crate::metadata::MetadataStore,
     slots: &[Option<usize>],

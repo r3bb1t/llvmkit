@@ -2,7 +2,7 @@
 //! `llvm/include/llvm/IR/Instructions.h`.
 //!
 //! Each handle is a thin view onto an attached instruction in some basic
-//! block. Internally it stores the `(ValueId, ModuleRef, TypeId)` triple ---
+//! block. Internally it stores the `(ValueSlot, ModuleRef, TypeSlot)` triple ---
 //! the same shape `Value` uses --- so it does not depend on
 //! [`Instruction`](crate::Instruction)'s `!Copy` lifecycle handle. Copyable handles expose
 //! [`InstructionView`] for read-only rediscovery;
@@ -50,9 +50,9 @@ use super::module::{Brand, Module, ModuleBrand, ModuleRef, Unverified};
 use super::phi_state::{Closed, Open, PhiState};
 use super::sync_scope::SyncScope;
 use super::term_open_state::{Closed as TermClosed, Open as TermOpen, TermOpenState};
-use super::r#type::{Type, TypeData, TypeId};
+use super::r#type::{Type, TypeData, TypeSlot};
 use super::value::{
-    FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Value, ValueId, ValueKindData,
+    FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Value, ValueKindData, ValueSlot,
     ValueUse,
 };
 
@@ -65,14 +65,14 @@ macro_rules! decl_binop_handle {
         $(#[$attr])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub struct $name<'ctx, B: ModuleBrand = Brand<'ctx>> {
-            pub(super) id: ValueId,
+            pub(super) id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,
-            pub(super) ty: TypeId,
+            pub(super) ty: TypeSlot,
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
             #[inline]
-            pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+            pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
             where
                 M: Into<ModuleRef<'ctx, B>>,
             {
@@ -219,9 +219,9 @@ decl_binop_handle!(
 /// [`InstructionKind::as_binary_op`](crate::InstructionKind::as_binary_op).
 #[derive(Debug, Clone, Copy)]
 pub struct BinaryOp<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) opcode: BinaryOpcode,
 }
 
@@ -323,9 +323,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> BinaryOp<'ctx, B> {
 /// [`InstructionKind::as_cmp`](crate::InstructionKind::as_cmp).
 #[derive(Debug, Clone, Copy)]
 pub struct Cmp<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Cmp<'ctx, B> {
@@ -405,7 +405,7 @@ macro_rules! decl_handle_scaffold {
     ($name:ident) => {
         impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
             #[inline]
-            pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+            pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
             where
                 M: Into<ModuleRef<'ctx, B>>,
             {
@@ -437,9 +437,9 @@ macro_rules! decl_handle_scaffold {
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AllocaInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(AllocaInst);
@@ -479,9 +479,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> AllocaInst<'ctx, B> {
 /// `load` instruction. Mirrors `LoadInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LoadInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(LoadInst);
@@ -542,9 +542,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> LoadInst<'ctx, B> {
 /// `store` instruction. Mirrors `StoreInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StoreInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(StoreInst);
@@ -601,9 +601,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> StoreInst<'ctx, B> {
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GepInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(GepInst);
@@ -636,7 +636,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GepInst<'ctx, B> {
     ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
     {
         let module = self.module.module();
-        let ids: Vec<ValueId> = self.payload().indices.iter().map(|c| c.get()).collect();
+        let ids: Vec<ValueSlot> = self.payload().indices.iter().map(|c| c.get()).collect();
         ids.into_iter().map(move |id| {
             let data = module.context().value_data(id);
             Value::from_parts(id, self.module, data.ty)
@@ -666,9 +666,9 @@ pub enum Callee<'ctx, B: ModuleBrand = Brand<'ctx>> {
 /// [`crate::IrError::TypeMismatch`].
 #[derive(Debug)]
 pub struct CallInst<'ctx, R: ReturnMarker = Dyn, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     _r: core::marker::PhantomData<R>,
 }
 
@@ -695,7 +695,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand> core::hash::Hash for CallInst<'ctx, 
 
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
     #[inline]
-    pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -780,7 +780,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
     ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
     {
         let module = self.module.module();
-        let ids: Vec<ValueId> = self.payload().args.iter().map(|c| c.get()).collect();
+        let ids: Vec<ValueSlot> = self.payload().args.iter().map(|c| c.get()).collect();
         ids.into_iter().map(move |id| {
             let data = module.context().value_data(id);
             Value::from_parts(id, self.module, data.ty)
@@ -945,9 +945,9 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> TypedCallInst<'ctx, Ret, 
 /// `select` instruction. Mirrors `SelectInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SelectInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(SelectInst);
@@ -987,9 +987,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> SelectInst<'ctx, B> {
 /// `Instructions.h`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RetInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(RetInst);
@@ -1029,9 +1029,9 @@ macro_rules! decl_cast_handle {
         $(#[$attr])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub struct $name<'ctx, B: ModuleBrand = Brand<'ctx>> {
-            pub(super) id: ValueId,
+            pub(super) id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,
-            pub(super) ty: TypeId,
+            pub(super) ty: TypeSlot,
         }
 
         decl_handle_scaffold!($name);
@@ -1153,9 +1153,9 @@ decl_cast_handle!(
 /// `icmp` integer comparison. Mirrors `ICmpInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ICmpInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(ICmpInst);
@@ -1194,9 +1194,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> ICmpInst<'ctx, B> {
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FCmpInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(FCmpInst);
@@ -1238,9 +1238,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FCmpInst<'ctx, B> {
 /// `br` terminator. Mirrors `BranchInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BranchInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(BranchInst);
@@ -1274,7 +1274,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> BranchInst<'ctx, B> {
         }
     }
     /// Iterator over successor block-ids.
-    pub(super) fn successor_ids(self) -> Vec<ValueId> {
+    pub(super) fn successor_ids(self) -> Vec<ValueSlot> {
         match &*self.payload().kind.borrow() {
             BranchKind::Unconditional(t) => vec![*t],
             BranchKind::Conditional {
@@ -1301,9 +1301,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> BranchInst<'ctx, B> {
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UnreachableInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(UnreachableInst);
@@ -1323,16 +1323,16 @@ decl_handle_scaffold!(UnreachableInst);
 /// only read accessors.
 #[derive(Debug)]
 pub struct PhiInst<'ctx, W: IntWidth, P: PhiState = Open, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     _w: core::marker::PhantomData<fn() -> W>,
     _p: core::marker::PhantomData<P>,
 }
 
 impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, B> {
     #[inline]
-    pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -1386,7 +1386,7 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
     /// Opaque arena id of the underlying value (same id as
     /// [`to_erased`](Self::to_erased)).
     #[inline]
-    pub fn id(&self) -> ValueId {
+    pub fn id(&self) -> ValueSlot {
         self.to_erased().id
     }
 
@@ -1443,7 +1443,7 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
         let module_ref = self.module;
-        let entries: Vec<(ValueId, ValueId)> = self
+        let entries: Vec<(ValueSlot, ValueSlot)> = self
             .payload()
             .incoming
             .borrow()
@@ -1554,16 +1554,16 @@ impl<'ctx, W: IntWidth, P: PhiState> core::hash::Hash for PhiInst<'ctx, W, P> {
 /// would force every read accessor through dyn dispatch).
 #[derive(Debug)]
 pub struct FpPhiInst<'ctx, K: FloatKind, P: PhiState = Open, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     _k: core::marker::PhantomData<fn() -> K>,
     _p: core::marker::PhantomData<P>,
 }
 
 impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, P, B> {
     #[inline]
-    pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -1615,7 +1615,7 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
     /// Opaque arena id of the underlying value (same id as
     /// [`to_erased`](Self::to_erased)).
     #[inline]
-    pub fn id(&self) -> ValueId {
+    pub fn id(&self) -> ValueSlot {
         self.to_erased().id
     }
 
@@ -1671,7 +1671,7 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
         let module_ref = self.module;
-        let entries: Vec<(ValueId, ValueId)> = self
+        let entries: Vec<(ValueSlot, ValueSlot)> = self
             .payload()
             .incoming
             .borrow()
@@ -1772,15 +1772,15 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand> core::hash::Hash
 /// the type id), so the handle is parameterised only by `P: PhiState`.
 #[derive(Debug)]
 pub struct PointerPhiInst<'ctx, P: PhiState = Open, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     _p: core::marker::PhantomData<P>,
 }
 
 impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
     #[inline]
-    pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -1830,7 +1830,7 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
     /// Opaque arena id of the underlying value (same id as
     /// [`to_erased`](Self::to_erased)).
     #[inline]
-    pub fn id(&self) -> ValueId {
+    pub fn id(&self) -> ValueSlot {
         self.to_erased().id
     }
 
@@ -1886,7 +1886,7 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
         let module_ref = self.module;
-        let entries: Vec<(ValueId, ValueId)> = self
+        let entries: Vec<(ValueSlot, ValueSlot)> = self
             .payload()
             .incoming
             .borrow()
@@ -1982,9 +1982,9 @@ impl<'ctx, P: PhiState> core::hash::Hash for PointerPhiInst<'ctx, P> {
 /// [`PhiKind`](crate::PhiKind) exists to remove).
 #[derive(Debug, Clone, Copy)]
 pub struct OtherPhiInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(OtherPhiInst);
@@ -2047,7 +2047,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
         let module_ref = self.module;
-        let entries: Vec<(ValueId, ValueId)> = self
+        let entries: Vec<(ValueSlot, ValueSlot)> = self
             .payload()
             .incoming
             .borrow()
@@ -2073,9 +2073,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
 /// `FPMathOperator`-class instruction (`Operator.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FNegInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(FNegInst);
@@ -2108,9 +2108,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FNegInst<'ctx, B> {
 /// (`Instructions.h`). The result type matches the operand type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FreezeInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(FreezeInst);
@@ -2140,9 +2140,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FreezeInst<'ctx, B> {
 /// type lives on [`Self::result_type`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VAArgInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(VAArgInst);
@@ -2181,9 +2181,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> VAArgInst<'ctx, B> {
 /// constant indices. Mirrors `ExtractValueInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExtractValueInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(ExtractValueInst);
@@ -2216,9 +2216,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> ExtractValueInst<'ctx, B> {
 /// constant indices. Mirrors `InsertValueInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InsertValueInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(InsertValueInst);
@@ -2259,9 +2259,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> InsertValueInst<'ctx, B> {
 /// `ExtractElementInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExtractElementInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(ExtractElementInst);
@@ -2295,9 +2295,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> ExtractElementInst<'ctx, B> {
 /// Mirrors `InsertElementInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InsertElementInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(InsertElementInst);
@@ -2338,9 +2338,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> InsertElementInst<'ctx, B> {
 /// `ShuffleVectorInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ShuffleVectorInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(ShuffleVectorInst);
@@ -2383,9 +2383,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> ShuffleVectorInst<'ctx, B> {
 /// No SSA operands; carries memory ordering and synchronization scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FenceInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(FenceInst);
@@ -2416,9 +2416,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FenceInst<'ctx, B> {
 /// `{ <pointee>, i1 }`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AtomicCmpXchgInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(AtomicCmpXchgInst);
@@ -2478,9 +2478,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicCmpXchgInst<'ctx, B> {
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AtomicRMWInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(AtomicRMWInst);
@@ -2598,9 +2598,9 @@ pub struct SwitchInst<
     B: ModuleBrand = Brand<'ctx>,
     W: IntWidth = IntDyn,
 > {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     _p: core::marker::PhantomData<P>,
     _w: core::marker::PhantomData<W>,
 }
@@ -2623,7 +2623,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand, W: IntWidth> core::hash::Hash
 
 impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, P, B, W> {
     #[inline]
-    pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -2698,7 +2698,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
         let module_ref = self.module;
-        let entries: Vec<(ValueId, ValueId)> = self
+        let entries: Vec<(ValueSlot, ValueSlot)> = self
             .payload()
             .cases
             .borrow()
@@ -2812,9 +2812,9 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: StaticIntWidth> SwitchInst<'ctx, TermOpen, 
 /// declared destination blocks at runtime.
 #[derive(Debug)]
 pub struct IndirectBrInst<'ctx, P: TermOpenState = TermOpen, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     _p: core::marker::PhantomData<P>,
 }
 
@@ -2834,7 +2834,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand> core::hash::Hash for IndirectBrInst
 
 impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
     #[inline]
-    pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -2897,7 +2897,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
     + 'ctx {
         let label_ty = self.module.module().label_type().as_type().id();
         let module_ref = self.module;
-        let ids: Vec<ValueId> = self.payload().destinations.borrow().clone();
+        let ids: Vec<ValueSlot> = self.payload().destinations.borrow().clone();
         ids.into_iter().map(move |bid| {
             BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label()
         })
@@ -2934,9 +2934,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
 /// [`CallInst`]'s typed-return marker.
 #[derive(Debug)]
 pub struct InvokeInst<'ctx, R: ReturnMarker = Dyn, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     _r: core::marker::PhantomData<R>,
 }
 
@@ -2963,7 +2963,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand> core::hash::Hash for InvokeInst<'ctx
 
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     #[inline]
-    pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -3028,7 +3028,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
     {
         let module = self.module.module();
-        let ids: Vec<ValueId> = self.payload().args.iter().map(|c| c.get()).collect();
+        let ids: Vec<ValueSlot> = self.payload().args.iter().map(|c| c.get()).collect();
         ids.into_iter().map(move |id| {
             let data = module.context().value_data(id);
             Value::from_parts(id, self.module, data.ty)
@@ -3064,9 +3064,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
 /// or more indirect destination labels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CallBrInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(CallBrInst);
@@ -3096,7 +3096,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
     ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
     {
         let module = self.module.module();
-        let ids: Vec<ValueId> = self.payload().args.iter().map(|c| c.get()).collect();
+        let ids: Vec<ValueSlot> = self.payload().args.iter().map(|c| c.get()).collect();
         ids.into_iter().map(move |id| {
             let data = module.context().value_data(id);
             Value::from_parts(id, self.module, data.ty)
@@ -3123,7 +3123,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
     + 'ctx {
         let module = self.module.module();
         let label_ty = module.label_type().as_type().id();
-        let ids: Vec<ValueId> = self
+        let ids: Vec<ValueSlot> = self
             .payload()
             .indirect_dests
             .iter()
@@ -3146,9 +3146,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
 /// Open mutators are gated to `P = Open`; `finish` moves the open handle.
 #[derive(Debug)]
 pub struct LandingPadInst<'ctx, P: TermOpenState = TermOpen, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     _p: core::marker::PhantomData<P>,
 }
 
@@ -3168,7 +3168,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand> core::hash::Hash for LandingPadInst
 
 impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, P, B> {
     #[inline]
-    pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -3229,7 +3229,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, P, B> {
     + 'ctx {
         let module = self.module.module();
         let module_ref = self.module;
-        let entries: Vec<(LandingPadClauseKind, ValueId)> = self
+        let entries: Vec<(LandingPadClauseKind, ValueSlot)> = self
             .payload()
             .clauses
             .borrow()
@@ -3293,9 +3293,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
 /// Single value operand (typically a `landingpad` result).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ResumeInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(ResumeInst);
@@ -3327,9 +3327,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> ResumeInst<'ctx, B> {
 /// Result is a `token`-typed value used as a funclet pad.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CleanupPadInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(CleanupPadInst);
@@ -3358,7 +3358,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CleanupPadInst<'ctx, B> {
     ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
     {
         let module = self.module.module();
-        let ids: Vec<ValueId> = self.payload().args.iter().map(|c| c.get()).collect();
+        let ids: Vec<ValueSlot> = self.payload().args.iter().map(|c| c.get()).collect();
         ids.into_iter().map(move |id| {
             let data = module.context().value_data(id);
             Value::from_parts(id, self.module, data.ty)
@@ -3371,9 +3371,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> CleanupPadInst<'ctx, B> {
 /// be a `catchswitch` (verifier rule).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CatchPadInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(CatchPadInst);
@@ -3400,7 +3400,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchPadInst<'ctx, B> {
     ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
     {
         let module = self.module.module();
-        let ids: Vec<ValueId> = self.payload().args.iter().map(|c| c.get()).collect();
+        let ids: Vec<ValueSlot> = self.payload().args.iter().map(|c| c.get()).collect();
         ids.into_iter().map(move |id| {
             let data = module.context().value_data(id);
             Value::from_parts(id, self.module, data.ty)
@@ -3411,9 +3411,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchPadInst<'ctx, B> {
 /// `catchret` terminator. Mirrors `CatchReturnInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CatchReturnInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(CatchReturnInst);
@@ -3450,9 +3450,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchReturnInst<'ctx, B> {
 /// `cleanupret` terminator. Mirrors `CleanupReturnInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CleanupReturnInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(CleanupReturnInst);
@@ -3487,9 +3487,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> CleanupReturnInst<'ctx, B> {
 /// Variable-arity handler list with optional unwind destination.
 #[derive(Debug)]
 pub struct CatchSwitchInst<'ctx, P: TermOpenState = TermOpen, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     _p: core::marker::PhantomData<P>,
 }
 
@@ -3509,7 +3509,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand> core::hash::Hash for CatchSwitchIns
 
 impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> {
     #[inline]
-    pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -3579,7 +3579,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
     + 'ctx {
         let label_ty = self.module.module().label_type().as_type().id();
         let module_ref = self.module;
-        let ids: Vec<ValueId> = self.payload().handlers.borrow().clone();
+        let ids: Vec<ValueSlot> = self.payload().handlers.borrow().clone();
         ids.into_iter().map(move |bid| {
             BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label()
         })
@@ -3612,7 +3612,7 @@ mod tests {
     /// Locks `TypedCallInst::result` as the `CallResult` GAT's narrowing
     /// path: wrapping a raw `CallInst<'ctx, i32, B>` and reading
     /// `result()` back must yield an `IntValue<'ctx, i32, B>` that names
-    /// the exact same underlying value (same `ValueId`) as the call
+    /// the exact same underlying value (same `ValueSlot`) as the call
     /// instruction itself -- i.e. `result()` narrows the derived
     /// `CallResult` GAT without losing or renaming the value.
     ///

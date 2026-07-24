@@ -9,7 +9,7 @@ use crate::attributes::{AttrIndex, AttrKind, Attribute, AttributeStorage, Memory
 use crate::derived_types::FunctionType;
 use crate::error::{IrError, IrResult};
 use crate::module::{Brand, Module, ModuleBrand, ModuleRef};
-use crate::r#type::{Type, TypeData, TypeId};
+use crate::r#type::{Type, TypeData, TypeSlot};
 use crate::value::{Value, ValueKindData};
 use std::borrow::Cow;
 
@@ -25,7 +25,7 @@ pub struct IntrinsicDescriptor<'ctx, B: ModuleBrand = Brand<'ctx>> {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct IntrinsicFunctionData {
     pub id: IntrinsicId,
-    pub overloads: Box<[TypeId]>,
+    pub overloads: Box<[TypeSlot]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

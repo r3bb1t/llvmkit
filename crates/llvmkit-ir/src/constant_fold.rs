@@ -24,7 +24,7 @@ use super::int_width::IntDyn;
 use super::module::{ModuleBrand, ModuleRef, ModuleView};
 use super::r#type::{Type, TypeData};
 use super::unnamed_addr::UnnamedAddr;
-use super::value::{IsValue, Value, ValueId, ValueKindData};
+use super::value::{IsValue, Value, ValueKindData, ValueSlot};
 use super::vec_len::LenDyn;
 use super::{IrError, IrResult, RoundingMode};
 
@@ -209,7 +209,7 @@ where
 
 fn binary_instruction_parts(
     kind: &InstructionKindData,
-) -> Option<(BinaryOpcode, ValueId, ValueId)> {
+) -> Option<(BinaryOpcode, ValueSlot, ValueSlot)> {
     let (opcode, data) = match kind {
         InstructionKindData::Add(data) => (BinaryOpcode::Add, data),
         InstructionKindData::Sub(data) => (BinaryOpcode::Sub, data),
@@ -270,7 +270,7 @@ fn binary_instruction_parts(
 
 fn constant_from_id<'ctx, B: ModuleBrand + 'ctx>(
     module: ModuleView<'ctx, B>,
-    id: ValueId,
+    id: ValueSlot,
 ) -> Option<Constant<'ctx, B>> {
     let data = module.context().value_data(id);
     match &data.kind {
@@ -291,7 +291,7 @@ fn constant_from_id<'ctx, B: ModuleBrand + 'ctx>(
 
 fn constants_from_ids<'ctx, B: ModuleBrand + 'ctx>(
     module: ModuleView<'ctx, B>,
-    ids: impl IntoIterator<Item = ValueId>,
+    ids: impl IntoIterator<Item = ValueSlot>,
 ) -> Option<Vec<Constant<'ctx, B>>> {
     let mut constants = Vec::new();
     for id in ids {
@@ -1149,7 +1149,7 @@ fn gep_expr_data<'ctx, B: ModuleBrand + 'ctx>(
 fn gep_base_global<'ctx, B: ModuleBrand + 'ctx>(
     module: ModuleView<'ctx, B>,
     expr: &ConstantExprData,
-) -> Option<ValueId> {
+) -> Option<ValueSlot> {
     let base = constant_from_id(module, *expr.operands.first()?)?;
     global_value_ref(base)
 }
@@ -1250,14 +1250,14 @@ fn constant_relation_complexity<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<
     }
 }
 
-fn global_value_ref<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> Option<ValueId> {
+fn global_value_ref<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> Option<ValueSlot> {
     global_value_ref_from_id(constant.into_erased().module(), constant.id())
 }
 
 fn global_value_ref_from_id<B: ModuleBrand>(
     module: ModuleView<'_, B>,
-    id: ValueId,
-) -> Option<ValueId> {
+    id: ValueSlot,
+) -> Option<ValueSlot> {
     match &module.context().value_data(id).kind {
         ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Some(*value),
         ValueKindData::Function(_)
@@ -1270,7 +1270,7 @@ fn global_value_ref_from_id<B: ModuleBrand>(
 
 fn block_address_info<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx, B>,
-) -> Option<(ValueId, ValueId)> {
+) -> Option<(ValueSlot, ValueSlot)> {
     let ValueKindData::Constant(ConstantData::BlockAddress { function, block }) =
         &constant.into_erased().data().kind
     else {
@@ -1288,8 +1288,8 @@ fn is_pointer_null<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> 
 
 fn are_globals_potentially_equal<B: ModuleBrand>(
     module: ModuleView<'_, B>,
-    lhs: ValueId,
-    rhs: ValueId,
+    lhs: ValueSlot,
+    rhs: ValueSlot,
 ) -> Option<IntPredicate> {
     if lhs == rhs {
         return Some(IntPredicate::Eq);
@@ -1303,7 +1303,7 @@ fn are_globals_potentially_equal<B: ModuleBrand>(
     Some(IntPredicate::Ne)
 }
 
-fn global_is_unsafe_for_equality<B: ModuleBrand>(module: ModuleView<'_, B>, id: ValueId) -> bool {
+fn global_is_unsafe_for_equality<B: ModuleBrand>(module: ModuleView<'_, B>, id: ValueSlot) -> bool {
     if global_linkage(module, id).is_some_and(linkage_is_interposable)
         || global_has_global_unnamed_addr(module, id)
     {
@@ -1340,12 +1340,12 @@ fn linkage_is_weak_for_linker(linkage: Linkage) -> bool {
 
 fn global_has_external_weak_linkage<B: ModuleBrand>(
     module: ModuleView<'_, B>,
-    id: ValueId,
+    id: ValueSlot,
 ) -> bool {
     global_linkage(module, id).is_some_and(|linkage| linkage == Linkage::ExternalWeak)
 }
 
-fn global_linkage<B: ModuleBrand>(module: ModuleView<'_, B>, id: ValueId) -> Option<Linkage> {
+fn global_linkage<B: ModuleBrand>(module: ModuleView<'_, B>, id: ValueSlot) -> Option<Linkage> {
     match &module.context().value_data(id).kind {
         ValueKindData::GlobalVariable(data) => Some(data.linkage.get()),
         ValueKindData::Function(data) => Some(*data.linkage.borrow()),
@@ -1355,7 +1355,10 @@ fn global_linkage<B: ModuleBrand>(module: ModuleView<'_, B>, id: ValueId) -> Opt
     }
 }
 
-fn global_has_global_unnamed_addr<B: ModuleBrand>(module: ModuleView<'_, B>, id: ValueId) -> bool {
+fn global_has_global_unnamed_addr<B: ModuleBrand>(
+    module: ModuleView<'_, B>,
+    id: ValueSlot,
+) -> bool {
     match &module.context().value_data(id).kind {
         ValueKindData::GlobalVariable(data) => data.unnamed_addr.get() == UnnamedAddr::Global,
         ValueKindData::Function(data) => *data.unnamed_addr.borrow() == UnnamedAddr::Global,
@@ -1364,7 +1367,7 @@ fn global_has_global_unnamed_addr<B: ModuleBrand>(module: ModuleView<'_, B>, id:
     }
 }
 
-fn global_is_alias<B: ModuleBrand>(module: ModuleView<'_, B>, id: ValueId) -> bool {
+fn global_is_alias<B: ModuleBrand>(module: ModuleView<'_, B>, id: ValueSlot) -> bool {
     matches!(
         &module.context().value_data(id).kind,
         ValueKindData::GlobalAlias(_)
@@ -2141,7 +2144,7 @@ fn fold_global_pointer_and_mask<'ctx, B: ModuleBrand + 'ctx>(
 
 fn ptr_to_int_global_operand<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx, B>,
-) -> Option<ValueId> {
+) -> Option<ValueSlot> {
     let ValueKindData::Constant(ConstantData::Expr(expr)) = &constant.into_erased().data().kind
     else {
         return None;
@@ -2161,7 +2164,7 @@ fn ptr_to_int_global_operand<'ctx, B: ModuleBrand + 'ctx>(
 
 fn global_pointer_alignment<B: ModuleBrand>(
     module: ModuleView<'_, B>,
-    global_id: ValueId,
+    global_id: ValueSlot,
 ) -> Option<Align> {
     match &module.context().value_data(global_id).kind {
         ValueKindData::Function(data) => {

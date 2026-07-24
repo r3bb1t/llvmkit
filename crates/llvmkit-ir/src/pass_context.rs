@@ -77,8 +77,8 @@ use super::pass_access::{
     FnAccess, ModAccess, MutatingFn, MutatingModule, PatchBody, ReshapeCfg, RewriteModule,
 };
 use super::phi_check::{check_phi_incoming, render_phi_violation};
-use super::r#type::{Type, TypeId};
-use super::value::{IsValue, Typed, Value, ValueId};
+use super::r#type::{Type, TypeSlot};
+use super::value::{IsValue, Typed, Value, ValueSlot};
 use super::worklist::Worklist;
 
 /// Read-only view of a basic block under its owning module brand.
@@ -88,9 +88,9 @@ use super::worklist::Worklist;
 /// is `Copy` like its sibling [`FunctionView`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BasicBlockView<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    id: ValueId,
+    id: ValueSlot,
     module: ModuleRef<'ctx, B>,
-    ty: TypeId,
+    ty: TypeSlot,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
@@ -158,7 +158,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
 /// instruction ids up front, so IR mutation during the walk does not disturb
 /// it.
 pub struct BlockInstructionViews<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    ids: std::vec::IntoIter<ValueId>,
+    ids: std::vec::IntoIter<ValueSlot>,
     module: ModuleRef<'ctx, B>,
 }
 
@@ -786,7 +786,7 @@ where
         // promise). The `borrow()` is a let-RHS temporary, released before the
         // later `borrow_mut()`. Users must be captured *before* the RAUW rewires
         // them.
-        let users: Vec<ValueId> = if self.worklist.borrow().is_some() {
+        let users: Vec<ValueSlot> = if self.worklist.borrow().is_some() {
             view.into_erased().users().map(|u| u.id()).collect()
         } else {
             Vec::new()
@@ -907,7 +907,7 @@ where
 #[derive(Clone, Copy)]
 enum EditSlot {
     /// Every `switch` case whose destination is the carried id.
-    SwitchCase(ValueId),
+    SwitchCase(ValueSlot),
     /// The `switch` default edge.
     SwitchDefault,
     /// The `then` arm of a `cond_br`.
@@ -1232,13 +1232,13 @@ where
     fn drop_incoming_from_pred(
         &self,
         block: &BasicBlock<'ctx, Dyn, Terminated, B>,
-        pred_id: ValueId,
+        pred_id: ValueSlot,
         keep: usize,
     ) -> IrResult<()> {
         let ctx = self.patch.module_mut().core_ref().context();
         // Pass 1: drop `pred_id`'s incomings beyond the first `keep`, collecting
         // phis left with none.
-        let mut emptied: Vec<ValueId> = Vec::new();
+        let mut emptied: Vec<ValueSlot> = Vec::new();
         for inst_id in block.instruction_ids() {
             let crate::value::ValueKindData::Instruction(inst) = &ctx.value_data(inst_id).kind
             else {
@@ -1247,7 +1247,7 @@ where
             let crate::instruction::InstructionKindData::Phi(p) = &inst.kind else {
                 break;
             };
-            let mut dropped_values: Vec<ValueId> = Vec::new();
+            let mut dropped_values: Vec<ValueSlot> = Vec::new();
             {
                 // Retain the first `keep` incomings from `pred_id` (one per
                 // surviving parallel edge); drop the rest.
@@ -1318,7 +1318,7 @@ where
     fn remove_slot(
         &self,
         from: &BasicBlockView<'ctx, B>,
-        term_id: ValueId,
+        term_id: ValueSlot,
         slot: EditSlot,
     ) -> IrResult<()> {
         let from_block = from.as_basic_block();
@@ -1338,7 +1338,7 @@ where
                 // Drop every case targeting `to`, deregistering the switch from
                 // each dropped case-value's use-list (the case value is an SSA
                 // operand of the switch).
-                let mut dropped_case_values: Vec<ValueId> = Vec::new();
+                let mut dropped_case_values: Vec<ValueSlot> = Vec::new();
                 switch.cases.borrow_mut().retain(|(case_val, dest)| {
                     if *dest == to_id {
                         dropped_case_values.push(case_val.get());
@@ -1458,7 +1458,7 @@ where
     fn redirect_slot(
         &self,
         from: &BasicBlockView<'ctx, B>,
-        term_id: ValueId,
+        term_id: ValueSlot,
         slot: EditSlot,
         new_to: &BasicBlockLabel<'ctx, Dyn, B>,
         phi_values: &[Value<'ctx, B>],
@@ -1490,7 +1490,7 @@ where
         // the block-argument branch builder.
         let new_block =
             BasicBlock::<Dyn, Terminated, B>::from_parts(new_to.id, new_to.module, new_to.ty);
-        let mut param_phis: Vec<ValueId> = Vec::new();
+        let mut param_phis: Vec<ValueSlot> = Vec::new();
         for inst_id in new_block.instruction_ids() {
             let crate::value::ValueKindData::Instruction(inst) = &ctx.value_data(inst_id).kind
             else {
@@ -1680,7 +1680,7 @@ where
     /// Read the current `default` destination id of the `switch` terminator
     /// `term_id`. Used by [`SwitchEdit::remove_successor`] to reject removing
     /// the default edge (a `switch` must keep its default).
-    fn switch_default_dest(&self, term_id: ValueId) -> ValueId {
+    fn switch_default_dest(&self, term_id: ValueSlot) -> ValueSlot {
         let ctx = self.patch.module_mut().core_ref().context();
         let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind else {
             unreachable!("switch_default_dest: terminator is not an instruction");
@@ -1698,7 +1698,7 @@ where
     /// role-named ops — they must witness that it names a real case; the
     /// classic "is not a successor" rejection). The
     /// default edge is deliberately not a case, so this returns `false` for it.
-    fn switch_has_case_successor(&self, term_id: ValueId, dest_id: ValueId) -> bool {
+    fn switch_has_case_successor(&self, term_id: ValueSlot, dest_id: ValueSlot) -> bool {
         let ctx = self.patch.module_mut().core_ref().context();
         let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind else {
             unreachable!("switch_has_case_successor: terminator is not an instruction");
@@ -1986,7 +1986,7 @@ where
         // the function's blocks (the pattern `check_function_phi_coherence`
         // uses), keeping edge multiplicity so a multi-edge is counted once per
         // edge.
-        let mut preds: Vec<ValueId> = Vec::new();
+        let mut preds: Vec<ValueSlot> = Vec::new();
         for bb in self.function().basic_blocks() {
             let handle = bb.as_basic_block();
             let pred_id = handle.id();
@@ -2000,12 +2000,12 @@ where
         // (2) Completeness / type / differing-duplicate: the authoritative
         // per-phi coherence algorithm, mapped to an `IrError` on failure.
         let ty_id = ty.id();
-        let incoming_ids: Vec<(ValueId, ValueId)> = incomings
+        let incoming_ids: Vec<(ValueSlot, ValueSlot)> = incomings
             .iter()
             .map(|(value, pred)| (value.id, pred.id()))
             .collect();
         let ctx = self.patch.module_mut().core_ref().context();
-        let value_ty_of = |id: ValueId| ctx.value_data(id).ty;
+        let value_ty_of = |id: ValueSlot| ctx.value_data(id).ty;
         if let Err(violation) = check_phi_incoming(ty_id, &incoming_ids, &preds, &value_ty_of) {
             // Same renderer the .ll parser uses for its coherence diagnostics,
             // so a pass-side insert and a parse report the same message for the
@@ -2017,7 +2017,7 @@ where
 
         // (3) SSA dominance. `dt` borrows `&mut self`, so settle every verdict
         // into owned ids and drop the borrow BEFORE any IR mutation runs.
-        let mut dom_failure: Option<(ValueId, ValueId)> = None;
+        let mut dom_failure: Option<(ValueSlot, ValueSlot)> = None;
         {
             let dt = self.analysis_repaired::<DominatorTreeAnalysis, _>();
             for (value, pred) in incomings {
@@ -2122,7 +2122,7 @@ where
 {
     reshape: &'e FnReshape<'m, 'r, 'ctx, B, R>,
     from: BasicBlockView<'ctx, B>,
-    term_id: ValueId,
+    term_id: ValueSlot,
 }
 
 impl<'e, 'm, 'r, 'ctx, B, R> BrEdit<'e, 'm, 'r, 'ctx, B, R>
@@ -2165,7 +2165,7 @@ where
 {
     reshape: &'e FnReshape<'m, 'r, 'ctx, B, R>,
     from: BasicBlockView<'ctx, B>,
-    term_id: ValueId,
+    term_id: ValueSlot,
 }
 
 impl<'e, 'm, 'r, 'ctx, B, R> CondBrEdit<'e, 'm, 'r, 'ctx, B, R>
@@ -2245,7 +2245,7 @@ where
 {
     reshape: &'e FnReshape<'m, 'r, 'ctx, B, R>,
     from: BasicBlockView<'ctx, B>,
-    term_id: ValueId,
+    term_id: ValueSlot,
 }
 
 impl<'e, 'm, 'r, 'ctx, B, R> SwitchEdit<'e, 'm, 'r, 'ctx, B, R>
@@ -2378,7 +2378,7 @@ where
 {
     reshape: &'e FnReshape<'m, 'r, 'ctx, B, R>,
     from: BasicBlockView<'ctx, B>,
-    term_id: ValueId,
+    term_id: ValueSlot,
 }
 
 impl<'e, 'm, 'r, 'ctx, B, R> InvokeEdit<'e, 'm, 'r, 'ctx, B, R>
@@ -2437,7 +2437,7 @@ where
 {
     reshape: &'e FnReshape<'m, 'r, 'ctx, B, R>,
     from: BasicBlockView<'ctx, B>,
-    term_id: ValueId,
+    term_id: ValueSlot,
 }
 
 impl<'e, 'm, 'r, 'ctx, B, R> CallBrEdit<'e, 'm, 'r, 'ctx, B, R>

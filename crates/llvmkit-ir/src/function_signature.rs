@@ -22,7 +22,7 @@ use crate::ir_builder::{IRBuilder, Unpositioned, constant_folder::ConstantFolder
 use crate::marker::{Ptr, ReturnMarker};
 use crate::module::{Brand, Module, ModuleBrand, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeKind};
-use crate::value::{FloatValue, IntValue, IntoPointerValue, PointerValue, Value, ValueId};
+use crate::value::{FloatValue, IntValue, IntoPointerValue, PointerValue, Value, ValueSlot};
 
 #[doc(hidden)]
 pub mod token {
@@ -1253,13 +1253,13 @@ pub trait CallArgs<'ctx, Params: FunctionParamList, B: ModuleBrand = Brand<'ctx>
     Sized + call_args_sealed::Sealed
 {
     #[doc(hidden)]
-    fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueId]>>;
+    fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueSlot]>>;
 }
 
 impl call_args_sealed::Sealed for () {}
 impl<'ctx, B: ModuleBrand + 'ctx> CallArgs<'ctx, (), B> for () {
     #[inline]
-    fn lower(self, _module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueId]>> {
+    fn lower(self, _module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueSlot]>> {
         Ok(Box::new([]))
     }
 }
@@ -1274,7 +1274,7 @@ macro_rules! impl_call_args_tuple {
             $($p: FunctionParam,)+
             $($v: IntoCallArg<'ctx, $p, B>,)+
         {
-            fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueId]>> {
+            fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueSlot]>> {
                 let ($($x,)+) = self;
                 Ok(Box::new([$( $x.into_call_arg(module)?.id(), )+]))
             }

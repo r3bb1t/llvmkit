@@ -9,15 +9,15 @@ use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
 use super::global_value::{Linkage, Visibility};
 use super::metadata::MetadataAttachmentSet;
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
-use super::r#type::{Type, TypeId, TypeKind};
-use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
+use super::r#type::{Type, TypeKind, TypeSlot};
+use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
 
 #[derive(Debug)]
 pub(super) struct GlobalIFuncData {
     pub(super) name: String,
-    pub(super) value_type: TypeId,
+    pub(super) value_type: TypeSlot,
     pub(super) address_space: u32,
-    pub(super) resolver: Cell<ValueId>,
+    pub(super) resolver: Cell<ValueSlot>,
     pub(super) linkage: Cell<Linkage>,
     pub(super) visibility: Cell<Visibility>,
     pub(super) partition: RefCell<Option<String>>,
@@ -26,14 +26,14 @@ pub(super) struct GlobalIFuncData {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GlobalIFunc<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
     #[inline]
-    pub(super) fn from_parts_unchecked<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_parts_unchecked<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -159,7 +159,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
         self,
         _module: &Module<'ctx, B, Unverified>,
         kind: crate::metadata::MetadataAttachmentKind,
-        id: crate::metadata::MetadataId,
+        id: crate::metadata::MetadataSlot,
     ) {
         self.data().metadata.borrow_mut().insert(kind, id);
     }
@@ -250,9 +250,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalIFunc<'ctx, 
 pub struct GlobalIFuncBuilder<'ctx, B: ModuleBrand = Brand<'ctx>> {
     module: ModuleRef<'ctx, B>,
     name: String,
-    value_type: TypeId,
-    resolver: ValueId,
-    resolver_type: TypeId,
+    value_type: TypeSlot,
+    resolver: ValueSlot,
+    resolver_type: TypeSlot,
     address_space: u32,
     linkage: Linkage,
     visibility: Visibility,

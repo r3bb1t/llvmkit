@@ -61,16 +61,16 @@ use super::intrinsics::{
 use super::llvm_context::Context;
 use super::marker::Dyn;
 use super::metadata::{
-    MetadataAttachmentSet, MetadataId, MetadataKind, MetadataRef, MetadataStore,
+    MetadataAttachmentSet, MetadataKind, MetadataRef, MetadataSlot, MetadataStore,
     SpecializedMetadataNode,
 };
 use super::named_md_node::NamedMDNode;
 use super::struct_body_state::StructBodyDyn;
 use super::struct_schema::StructSchema;
-use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, TypeId};
+use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, TypeSlot};
 use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
-use super::value::{Value, ValueData, ValueId, ValueKindData, ValueUse};
+use super::value::{Value, ValueData, ValueKindData, ValueSlot, ValueUse};
 use super::vec_len::{Len, LenDyn};
 
 fn reject_reserved_intrinsic_name(name: &str) -> IrResult<()> {
@@ -183,17 +183,17 @@ impl<'ctx, B: ModuleBrand> ModuleRef<'ctx, B> {
         self.core.id
     }
 
-    /// Crate-internal: resolve a [`TypeId`] to its payload via the
+    /// Crate-internal: resolve a [`TypeSlot`] to its payload via the
     /// owning module's context.
     #[inline]
-    pub(super) fn type_data(self, id: TypeId) -> &'ctx TypeData {
+    pub(super) fn type_data(self, id: TypeSlot) -> &'ctx TypeData {
         self.core.context().type_data(id)
     }
 
-    /// Crate-internal: resolve a [`ValueId`](crate::value::ValueId) to its
+    /// Crate-internal: resolve a [`ValueSlot`](crate::value::ValueSlot) to its
     /// payload via the owning module's context.
     #[inline]
-    pub(super) fn value_data(self, id: ValueId) -> &'ctx ValueData {
+    pub(super) fn value_data(self, id: ValueSlot) -> &'ctx ValueData {
         self.core.context().value_data(id)
     }
 }
@@ -837,7 +837,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         I: IntoIterator<Item = T>,
         T: Into<Type<'ctx, B>>,
     {
-        let elems: Box<[TypeId]> = elements.into_iter().map(|t| t.into().id()).collect();
+        let elems: Box<[TypeSlot]> = elements.into_iter().map(|t| t.into().id()).collect();
         StructType::new(
             self.core.ctx.literal_struct_type(elems, packed),
             ModuleRef::new(self.core),
@@ -853,7 +853,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         T: Into<Type<'ctx, B>>,
     {
         let ret = ret.into();
-        let params: Box<[TypeId]> = params.into_iter().map(|t| t.into().id()).collect();
+        let params: Box<[TypeSlot]> = params.into_iter().map(|t| t.into().id()).collect();
         FunctionType::new(
             self.core.ctx.function_type(ret.id(), params, is_var_arg),
             ModuleRef::new(self.core),
@@ -889,7 +889,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         J: IntoIterator<Item = u32>,
     {
         let name: String = name.into();
-        let type_params: Box<[TypeId]> = type_params.into_iter().map(|t| t.into().id()).collect();
+        let type_params: Box<[TypeSlot]> = type_params.into_iter().map(|t| t.into().id()).collect();
         let int_params: Box<[u32]> = int_params.into_iter().collect();
         TargetExtType::new(
             self.core.ctx.target_ext_type(name, type_params, int_params),
@@ -1025,13 +1025,13 @@ impl<B: ModuleBrand> core::fmt::Display for ModuleView<'_, B> {
 /// Structured `uselistorder Type Value, { ... }` record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UseListOrderRecord {
-    value: ValueId,
-    value_ty: TypeId,
+    value: ValueSlot,
+    value_ty: TypeSlot,
     indexes: Box<[u32]>,
 }
 
 impl UseListOrderRecord {
-    pub fn new<Indexes>(value: ValueId, value_ty: TypeId, indexes: Indexes) -> IrResult<Self>
+    pub fn new<Indexes>(value: ValueSlot, value_ty: TypeSlot, indexes: Indexes) -> IrResult<Self>
     where
         Indexes: Into<Box<[u32]>>,
     {
@@ -1044,11 +1044,11 @@ impl UseListOrderRecord {
         })
     }
 
-    pub fn value(&self) -> ValueId {
+    pub fn value(&self) -> ValueSlot {
         self.value
     }
 
-    pub fn value_type(&self) -> TypeId {
+    pub fn value_type(&self) -> TypeSlot {
         self.value_ty
     }
 
@@ -1060,13 +1060,13 @@ impl UseListOrderRecord {
 /// Structured `uselistorder_bb @function, %block, { ... }` record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UseListOrderBBRecord {
-    function: ValueId,
-    block: ValueId,
+    function: ValueSlot,
+    block: ValueSlot,
     indexes: Box<[u32]>,
 }
 
 impl UseListOrderBBRecord {
-    pub fn new<Indexes>(function: ValueId, block: ValueId, indexes: Indexes) -> IrResult<Self>
+    pub fn new<Indexes>(function: ValueSlot, block: ValueSlot, indexes: Indexes) -> IrResult<Self>
     where
         Indexes: Into<Box<[u32]>>,
     {
@@ -1079,11 +1079,11 @@ impl UseListOrderBBRecord {
         })
     }
 
-    pub fn function(&self) -> ValueId {
+    pub fn function(&self) -> ValueSlot {
         self.function
     }
 
-    pub fn block(&self) -> ValueId {
+    pub fn block(&self) -> ValueSlot {
         self.block
     }
 
@@ -1115,22 +1115,23 @@ pub(super) struct ModuleCore {
     source_filename: core::cell::RefCell<Option<String>>,
     ctx: Context,
     /// Functions defined in this module, in declaration order.
-    /// Stored as a `RefCell<Vec<ValueId>>` so the function-declaring
+    /// Stored as a `RefCell<Vec<ValueSlot>>` so the function-declaring
     /// constructors can mutate while the same `&'ctx self` borrow is
     /// held by call sites.
-    functions: core::cell::RefCell<Vec<ValueId>>,
+    functions: core::cell::RefCell<Vec<ValueSlot>>,
     /// Module-level name -> function value-id table.
-    function_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueId>>,
+    function_by_name:
+        core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueSlot>>,
     /// Globals defined in this module, in declaration order.
     /// Mirrors `Module::GlobalList`. Stored under the same shape as
     /// `functions` so the AsmWriter can iterate in source order.
-    globals: core::cell::RefCell<Vec<ValueId>>,
+    globals: core::cell::RefCell<Vec<ValueSlot>>,
     /// Module-level name -> global value-id table.
-    global_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueId>>,
-    aliases: core::cell::RefCell<Vec<ValueId>>,
-    alias_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueId>>,
-    ifuncs: core::cell::RefCell<Vec<ValueId>>,
-    ifunc_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueId>>,
+    global_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueSlot>>,
+    aliases: core::cell::RefCell<Vec<ValueSlot>>,
+    alias_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueSlot>>,
+    ifuncs: core::cell::RefCell<Vec<ValueSlot>>,
+    ifunc_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueSlot>>,
     /// Module-level COMDAT entries. Mirrors `Module::ComdatSymTab`.
     /// Stored in a `boxcar::Vec` for stable `&ComdatData` references
     /// under `&self`, so [`ComdatRef`](ComdatRef) can
@@ -1163,7 +1164,7 @@ pub(super) struct ModuleCore {
     /// same node return the identical `Value`. Mirrors LLVM's uniqued
     /// `MetadataAsValue::get`.
     metadata_as_value_cache: core::cell::RefCell<
-        std::collections::HashMap<crate::metadata::MetadataId, crate::value::ValueId>,
+        std::collections::HashMap<crate::metadata::MetadataSlot, crate::value::ValueSlot>,
     >,
     /// Monotonic id source for [`crate::ssa_builder::SsaBuilder`] instances
     /// created against this module. Mirrors the module-scoped counter shape
@@ -1261,7 +1262,7 @@ impl<'ctx> ModuleCore {
     /// into a [`Type`](crate::r#type::Type) via `Type::new(id, self)` to emit
     /// the `%Name = type {...}` identity block.
     #[inline]
-    pub(super) fn iter_named_struct_ids(&self) -> Vec<TypeId> {
+    pub(super) fn iter_named_struct_ids(&self) -> Vec<TypeSlot> {
         self.ctx.iter_named_structs()
     }
 
@@ -1460,7 +1461,7 @@ impl<'ctx> ModuleCore {
             use_list: core::cell::RefCell::new(Vec::new()),
         });
 
-        let param_types: Vec<TypeId> = signature.params().map(|t| t.id()).collect();
+        let param_types: Vec<TypeSlot> = signature.params().map(|t| t.id()).collect();
         let mut arg_ids = Vec::with_capacity(param_types.len());
         for (slot, &ty) in param_types.iter().enumerate() {
             let slot_u32 = u32::try_from(slot)
@@ -1578,7 +1579,7 @@ impl<'ctx> ModuleCore {
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
-        let ids: Vec<ValueId> = self.functions.borrow().clone();
+        let ids: Vec<ValueSlot> = self.functions.borrow().clone();
         ids.into_iter().map(move |id| {
             FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(id, ModuleRef::<B>::new(self))
         })
@@ -1610,7 +1611,7 @@ impl<'ctx> ModuleCore {
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
-        let ids: Vec<ValueId> = self.globals.borrow().clone();
+        let ids: Vec<ValueSlot> = self.globals.borrow().clone();
         ids.into_iter().map(move |id| {
             let value_data = self.ctx.value_data(id);
             GlobalVariable::from_parts_unchecked(id, ModuleRef::<B>::new(self), value_data.ty)
@@ -1621,7 +1622,7 @@ impl<'ctx> ModuleCore {
         &'ctx self,
     ) -> impl ExactSizeIterator<Item = GlobalAlias<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
     {
-        let ids: Vec<ValueId> = self.aliases.borrow().clone();
+        let ids: Vec<ValueSlot> = self.aliases.borrow().clone();
         ids.into_iter().map(move |id| {
             let value_data = self.ctx.value_data(id);
             GlobalAlias::from_parts_unchecked(id, ModuleRef::<B>::new(self), value_data.ty)
@@ -1636,7 +1637,7 @@ impl<'ctx> ModuleCore {
         &'ctx self,
     ) -> impl ExactSizeIterator<Item = GlobalIFunc<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
     {
-        let ids: Vec<ValueId> = self.ifuncs.borrow().clone();
+        let ids: Vec<ValueSlot> = self.ifuncs.borrow().clone();
         ids.into_iter().map(move |id| {
             let value_data = self.ctx.value_data(id);
             GlobalIFunc::from_parts_unchecked(id, ModuleRef::<B>::new(self), value_data.ty)
@@ -1859,7 +1860,7 @@ impl<'ctx> ModuleCore {
 
     /// Intern a metadata string node. Returns an existing id if an
     /// identical string was already interned. Mirrors `MDString::get`.
-    pub fn metadata_string<S>(&self, s: S) -> MetadataId
+    pub fn metadata_string<S>(&self, s: S) -> MetadataSlot
     where
         S: Into<String>,
     {
@@ -1871,7 +1872,7 @@ impl<'ctx> ModuleCore {
     /// Accepts anything that borrows as a slice of
     /// [`MetadataRef`](crate::metadata::MetadataRef) — both an owned
     /// `Vec` and a borrowed `&[..]` work.
-    pub fn metadata_tuple<Ops>(&self, operands: Ops) -> MetadataId
+    pub fn metadata_tuple<Ops>(&self, operands: Ops) -> MetadataSlot
     where
         Ops: AsRef<[crate::metadata::MetadataRef]>,
     {
@@ -1880,7 +1881,7 @@ impl<'ctx> ModuleCore {
             .get_tuple(operands.as_ref().to_vec())
     }
     /// Create a tuple node with explicit distinctness.
-    pub fn metadata_tuple_with_distinct<Ops>(&self, distinct: bool, operands: Ops) -> MetadataId
+    pub fn metadata_tuple_with_distinct<Ops>(&self, distinct: bool, operands: Ops) -> MetadataSlot
     where
         Ops: AsRef<[MetadataRef]>,
     {
@@ -1890,11 +1891,11 @@ impl<'ctx> ModuleCore {
     }
 
     /// Create a specialized debug metadata node.
-    pub fn metadata_specialized(&self, node: SpecializedMetadataNode) -> MetadataId {
+    pub fn metadata_specialized(&self, node: SpecializedMetadataNode) -> MetadataSlot {
         self.metadata.borrow_mut().get_specialized(node)
     }
     /// Store an already-parsed metadata node and return its id.
-    pub fn metadata_node(&self, kind: MetadataKind) -> MetadataId {
+    pub fn metadata_node(&self, kind: MetadataKind) -> MetadataSlot {
         let (id, value_use) = {
             let mut store = self.metadata.borrow_mut();
             match kind {
@@ -1925,13 +1926,13 @@ impl<'ctx> ModuleCore {
     /// filled via [`metadata_set`](Self::metadata_set). Used by the parser
     /// to resolve forward references without assuming textual `!N` slots
     /// equal arena indices.
-    pub fn metadata_reserve(&self) -> MetadataId {
+    pub fn metadata_reserve(&self) -> MetadataSlot {
         self.metadata.borrow_mut().reserve()
     }
 
     /// Overwrite a reserved metadata node with concrete content. Pairs
     /// with [`metadata_reserve`](Self::metadata_reserve).
-    pub fn metadata_set(&self, id: MetadataId, kind: MetadataKind) {
+    pub fn metadata_set(&self, id: MetadataSlot, kind: MetadataKind) {
         if let Some(MetadataKind::Constant(value_id)) = self.metadata.borrow().get(id).cloned() {
             self.deregister_metadata_value_use(id, value_id);
         }
@@ -1949,13 +1950,13 @@ impl<'ctx> ModuleCore {
         }
     }
 
-    pub(super) fn metadata_constant_value(&self, value_id: ValueId) -> MetadataId {
+    pub(super) fn metadata_constant_value(&self, value_id: ValueSlot) -> MetadataSlot {
         let id = self.metadata.borrow_mut().get_constant(value_id);
         self.register_metadata_value_use(id, value_id);
         id
     }
 
-    pub(super) fn rewrite_metadata_value(&self, id: MetadataId, from: ValueId, to: ValueId) {
+    pub(super) fn rewrite_metadata_value(&self, id: MetadataSlot, from: ValueSlot, to: ValueSlot) {
         let mut store = self.metadata.borrow_mut();
         if let Some(MetadataKind::Constant(value_id)) = store.get_mut(id)
             && *value_id == from
@@ -1964,7 +1965,7 @@ impl<'ctx> ModuleCore {
         }
     }
 
-    fn register_metadata_value_use(&self, metadata_id: MetadataId, value_id: ValueId) {
+    fn register_metadata_value_use(&self, metadata_id: MetadataSlot, value_id: ValueSlot) {
         self.ctx
             .value_data(value_id)
             .use_list
@@ -1972,7 +1973,7 @@ impl<'ctx> ModuleCore {
             .push(ValueUse::Metadata(metadata_id));
     }
 
-    fn deregister_metadata_value_use(&self, metadata_id: MetadataId, value_id: ValueId) {
+    fn deregister_metadata_value_use(&self, metadata_id: MetadataSlot, value_id: ValueSlot) {
         let mut uses = self.ctx.value_data(value_id).use_list.borrow_mut();
         if let Some(pos) = uses
             .iter()
@@ -1985,7 +1986,7 @@ impl<'ctx> ModuleCore {
     /// Look up a metadata node by id.
     pub fn metadata_get(
         &self,
-        id: crate::metadata::MetadataId,
+        id: crate::metadata::MetadataSlot,
     ) -> Option<crate::metadata::MetadataKind> {
         self.metadata.borrow().get(id).cloned()
     }
@@ -2596,7 +2597,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         I: IntoIterator<Item = T>,
         T: Into<Type<'ctx, B>>,
     {
-        let elems: Box<[TypeId]> = elements.into_iter().map(|t| t.into().id()).collect();
+        let elems: Box<[TypeSlot]> = elements.into_iter().map(|t| t.into().id()).collect();
         StructType::new(
             self.core.ctx.literal_struct_type(elems, packed),
             self.module_ref(),
@@ -2648,7 +2649,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
             });
         }
         let field_types = S::field_types(self)?;
-        let elements: Box<[TypeId]> = field_types.iter().map(|t| t.id()).collect();
+        let elements: Box<[TypeSlot]> = field_types.iter().map(|t| t.id()).collect();
         let (id, _existed) = self.core.ctx.get_or_create_named_struct(S::NAME);
         let data = self
             .core
@@ -2693,7 +2694,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         I: IntoIterator<Item = T>,
         T: Into<Type<'ctx, B>>,
     {
-        let elems: Box<[TypeId]> = elements.into_iter().map(|t| t.into().id()).collect();
+        let elems: Box<[TypeSlot]> = elements.into_iter().map(|t| t.into().id()).collect();
         let body = StructBody {
             elements: elems,
             packed,
@@ -2723,7 +2724,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         I: IntoIterator<Item = T>,
         T: Into<Type<'ctx, B>>,
     {
-        let elems: Box<[TypeId]> = elements.into_iter().map(|t| t.into().id()).collect();
+        let elems: Box<[TypeSlot]> = elements.into_iter().map(|t| t.into().id()).collect();
         let body = StructBody {
             elements: elems,
             packed,
@@ -2739,7 +2740,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         T: Into<Type<'ctx, B>>,
     {
         let ret = ret.into();
-        let params: Box<[TypeId]> = params.into_iter().map(|t| t.into().id()).collect();
+        let params: Box<[TypeSlot]> = params.into_iter().map(|t| t.into().id()).collect();
         FunctionType::new(
             self.core.ctx.function_type(ret.id(), params, is_var_arg),
             self.module_ref(),
@@ -2813,7 +2814,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         J: IntoIterator<Item = u32>,
     {
         let name: String = name.into();
-        let type_params: Box<[TypeId]> = type_params.into_iter().map(|t| t.into().id()).collect();
+        let type_params: Box<[TypeSlot]> = type_params.into_iter().map(|t| t.into().id()).collect();
         let int_params: Box<[u32]> = int_params.into_iter().collect();
         TargetExtType::new(
             self.core.ctx.target_ext_type(name, type_params, int_params),
@@ -3259,28 +3260,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         crate::inline_asm::InlineAsm::from_parts(id, self.module_ref(), ptr_ty)
     }
 
-    pub fn metadata_string<S>(&self, s: S) -> MetadataId
+    pub fn metadata_string<S>(&self, s: S) -> MetadataSlot
     where
         S: Into<String>,
     {
         self.core.metadata_string(s)
     }
 
-    pub fn metadata_tuple<Ops>(&self, operands: Ops) -> MetadataId
+    pub fn metadata_tuple<Ops>(&self, operands: Ops) -> MetadataSlot
     where
         Ops: AsRef<[MetadataRef]>,
     {
         self.core.metadata_tuple(operands)
     }
 
-    pub fn metadata_tuple_with_distinct<Ops>(&self, distinct: bool, operands: Ops) -> MetadataId
+    pub fn metadata_tuple_with_distinct<Ops>(&self, distinct: bool, operands: Ops) -> MetadataSlot
     where
         Ops: AsRef<[MetadataRef]>,
     {
         self.core.metadata_tuple_with_distinct(distinct, operands)
     }
 
-    pub fn metadata_constant<C>(&self, c: C) -> MetadataId
+    pub fn metadata_constant<C>(&self, c: C) -> MetadataSlot
     where
         C: IsConstant<'ctx, B>,
     {
@@ -3288,17 +3289,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         self.core.metadata_constant_value(id)
     }
 
-    pub fn metadata_specialized(&self, node: SpecializedMetadataNode) -> MetadataId {
+    pub fn metadata_specialized(&self, node: SpecializedMetadataNode) -> MetadataSlot {
         self.core.metadata_specialized(node)
     }
 
-    pub fn metadata_node(&self, kind: MetadataKind) -> MetadataId {
+    pub fn metadata_node(&self, kind: MetadataKind) -> MetadataSlot {
         self.core.metadata_node(kind)
     }
 
     pub fn metadata_as_value(
         &self,
-        md: crate::metadata::MetadataId,
+        md: crate::metadata::MetadataSlot,
     ) -> crate::value::Value<'ctx, B> {
         let ty = self.core.ctx.metadata();
         if let Some(&id) = self.core.metadata_as_value_cache.borrow().get(&md) {
@@ -3318,13 +3319,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         crate::value::Value::from_parts(id, self.module_ref(), ty)
     }
 
-    pub fn metadata_reserve(&self) -> MetadataId {
+    pub fn metadata_reserve(&self) -> MetadataSlot {
         self.core.metadata_reserve()
     }
 
     pub fn metadata_set(
         &self,
-        id: crate::metadata::MetadataId,
+        id: crate::metadata::MetadataSlot,
         kind: crate::metadata::MetadataKind,
     ) {
         self.core.metadata_set(id, kind);
@@ -3332,7 +3333,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
 
     pub fn metadata_get(
         &self,
-        id: crate::metadata::MetadataId,
+        id: crate::metadata::MetadataSlot,
     ) -> Option<crate::metadata::MetadataKind> {
         self.core.metadata_get(id)
     }

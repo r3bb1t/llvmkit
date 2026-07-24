@@ -43,15 +43,15 @@ use super::instructions::{
 };
 use super::int_width::IntDyn;
 use super::marker::{Dyn, ReturnMarker};
-use super::metadata::{DebugRecord, MetadataAttachmentKind, MetadataAttachmentSet, MetadataId};
+use super::metadata::{DebugRecord, MetadataAttachmentKind, MetadataAttachmentSet, MetadataSlot};
 use super::module::{Brand, Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified};
 use super::phi_state::Closed as PhiClosed;
 use super::term_open_state::Closed as TermClosed;
-use super::r#type::TypeId;
+use super::r#type::TypeSlot;
 use super::r#use::Use;
 use super::user::User;
 use super::value::{
-    HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueId, ValueKindData, ValueUse,
+    HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData, ValueSlot, ValueUse,
     sealed,
 };
 use super::{DebugLoc, IrError, IrResult, Type, TypeKind};
@@ -64,14 +64,14 @@ use super::{DebugLoc, IrError, IrResult, Type, TypeKind};
 /// [`ValueKindData::Instruction`](crate::value::ValueKindData::Instruction).
 #[derive(Debug)]
 pub(super) struct InstructionData {
-    pub(super) parent: core::cell::Cell<ValueId>,
+    pub(super) parent: core::cell::Cell<ValueSlot>,
     pub(super) kind: InstructionKindData,
     pub(super) metadata: core::cell::RefCell<MetadataAttachmentSet>,
     pub(super) debug_records: core::cell::RefCell<Vec<DebugRecord>>,
 }
 
 impl InstructionData {
-    pub(super) fn new(parent: ValueId, kind: InstructionKindData) -> Self {
+    pub(super) fn new(parent: ValueSlot, kind: InstructionKindData) -> Self {
         Self {
             parent: core::cell::Cell::new(parent),
             kind,
@@ -143,12 +143,12 @@ pub(super) enum InstructionKindData {
 }
 
 impl InstructionKindData {
-    /// Operand `ValueId`s in declaration order. Mirrors
+    /// Operand `ValueSlot`s in declaration order. Mirrors
     /// `User::operands`. Block references in branch terminators and
     /// phi incoming pairs are NOT SSA operands at this layer; they
     /// live in the per-variant payload and are surfaced via
     /// per-opcode handles.
-    pub(super) fn operand_ids(&self) -> Vec<ValueId> {
+    pub(super) fn operand_ids(&self) -> Vec<ValueSlot> {
         match self {
             Self::Add(b)
             | Self::Sub(b)
@@ -230,12 +230,12 @@ impl InstructionKindData {
             Self::LandingPad(l) => l.clauses.borrow().iter().map(|(_, c)| c.get()).collect(),
             Self::Resume(r) => vec![r.value.get()],
             Self::CleanupPad(p) => {
-                let mut v: Vec<ValueId> = p.parent_pad.get().into_iter().collect();
+                let mut v: Vec<ValueSlot> = p.parent_pad.get().into_iter().collect();
                 v.extend(p.args.iter().map(|c| c.get()));
                 v
             }
             Self::CatchPad(p) => {
-                let mut v: Vec<ValueId> = p.parent_pad.get().into_iter().collect();
+                let mut v: Vec<ValueSlot> = p.parent_pad.get().into_iter().collect();
                 v.extend(p.args.iter().map(|c| c.get()));
                 v
             }
@@ -327,9 +327,9 @@ pub struct Instruction<
     S: state::InstructionState = state::Attached,
     B: ModuleBrand = Brand<'ctx>,
 > {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) _state: core::marker::PhantomData<S>,
 }
 /// Copyable read-only instruction view. This is the rediscovery shape for
@@ -338,9 +338,9 @@ pub struct Instruction<
 /// mutation capabilities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InstructionView<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 // Hand-rolled trait impls so that consumers do not have to spell `S`
@@ -387,7 +387,7 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
     /// Opaque arena id of the underlying value (same id as
     /// [`to_erased`](Self::to_erased)).
     #[inline]
-    pub fn id(&self) -> ValueId {
+    pub fn id(&self) -> ValueSlot {
         self.to_erased().id
     }
 
@@ -430,7 +430,7 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
     }
 
     /// Set or replace one metadata attachment.
-    pub fn set_metadata(&self, kind: MetadataAttachmentKind, id: MetadataId) {
+    pub fn set_metadata(&self, kind: MetadataAttachmentKind, id: MetadataSlot) {
         self.as_view().set_metadata(kind, id);
     }
 
@@ -485,7 +485,7 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
 impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     /// Construct a read-only view from raw parts.
     #[inline]
-    pub(super) fn from_parts<M>(id: ValueId, module: M) -> Self
+    pub(super) fn from_parts<M>(id: ValueSlot, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -543,7 +543,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     }
 
     /// Set or replace one metadata attachment.
-    pub fn set_metadata(&self, kind: MetadataAttachmentKind, id: MetadataId) {
+    pub fn set_metadata(&self, kind: MetadataAttachmentKind, id: MetadataSlot) {
         self.data().metadata.borrow_mut().insert(kind, id);
     }
 
@@ -843,7 +843,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
 
     /// Operand value-ids in declaration order. Crate-internal helper
     /// used by the use-list machinery.
-    pub(super) fn operand_ids(&self) -> Vec<ValueId> {
+    pub(super) fn operand_ids(&self) -> Vec<ValueSlot> {
         self.data().kind.operand_ids()
     }
 }
@@ -853,7 +853,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// only the IR builder hands these out, and only after the value-id
     /// has been pushed onto the parent block's instruction list.
     #[inline]
-    pub(super) fn from_parts<M>(id: ValueId, module: M) -> Self
+    pub(super) fn from_parts<M>(id: ValueSlot, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -876,7 +876,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
 
     /// Replace every existing use of this instruction's result with
     /// `replacement`. Walks the reverse use-list, rewriting each
-    /// operand `Cell<ValueId>` slot in place, and migrates the entries
+    /// operand `Cell<ValueSlot>` slot in place, and migrates the entries
     /// onto `replacement`'s use-list. Mirrors `Value::replaceAllUsesWith`
     /// in `lib/IR/Value.cpp`.
     ///
@@ -1143,17 +1143,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
 // Crate-private operand-walker helpers
 // --------------------------------------------------------------------------
 
-/// For each operand `Cell<ValueId>` in `kind` whose current value is
+/// For each operand `Cell<ValueSlot>` in `kind` whose current value is
 /// `from`, replace it with `to`. The match arms are exhaustive so
 /// future opcodes will fail to compile until they are added here.
-pub(super) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueId, to: ValueId) {
+pub(super) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueSlot, to: ValueSlot) {
     use super::instr_types::BranchKind;
-    let swap = |c: &core::cell::Cell<ValueId>| {
+    let swap = |c: &core::cell::Cell<ValueSlot>| {
         if c.get() == from {
             c.set(to);
         }
     };
-    let swap_opt = |c: &core::cell::Cell<Option<ValueId>>| {
+    let swap_opt = |c: &core::cell::Cell<Option<ValueSlot>>| {
         if c.get() == Some(from) {
             c.set(Some(to));
         }
@@ -1314,9 +1314,9 @@ pub(super) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueId, t
 
 /// Remove `inst_id` from the reverse use-list of every operand it
 /// references. Used by both `erase_from_parent` and `drop_detached`.
-fn deregister_operand_uses(inst_id: ValueId, kind: &InstructionKindData, module: &ModuleCore) {
+fn deregister_operand_uses(inst_id: ValueSlot, kind: &InstructionKindData, module: &ModuleCore) {
     use std::collections::HashMap;
-    let mut occurrences: HashMap<ValueId, usize> = HashMap::new();
+    let mut occurrences: HashMap<ValueSlot, usize> = HashMap::new();
     for op_id in kind.operand_ids() {
         *occurrences.entry(op_id).or_insert(0) += 1;
     }
@@ -1335,7 +1335,7 @@ fn deregister_operand_uses(inst_id: ValueId, kind: &InstructionKindData, module:
 }
 
 fn register_debug_record_uses(
-    inst_id: ValueId,
+    inst_id: ValueSlot,
     record_index: usize,
     record: &DebugRecord,
     module: &ModuleCore,
@@ -1353,7 +1353,7 @@ fn register_debug_record_uses(
     });
 }
 
-fn deregister_debug_record_uses(inst_id: ValueId, module: &ModuleCore) {
+fn deregister_debug_record_uses(inst_id: ValueSlot, module: &ModuleCore) {
     let data = module.context().value_data(inst_id);
     let ValueKindData::Instruction(inst) = &data.kind else {
         return;
@@ -1374,10 +1374,10 @@ fn deregister_debug_record_uses(inst_id: ValueId, module: &ModuleCore) {
 
 pub(super) fn rewrite_debug_record_value(
     module: &ModuleCore,
-    inst_id: ValueId,
+    inst_id: ValueSlot,
     record_index: usize,
-    from: ValueId,
-    to: ValueId,
+    from: ValueSlot,
+    to: ValueSlot,
 ) {
     let data = module.context().value_data(inst_id);
     let ValueKindData::Instruction(inst) = &data.kind else {
@@ -1395,7 +1395,10 @@ fn remove_local_name_from_parent<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx,
     }
 }
 
-fn reinsert_local_name<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>, parent_fn_id: ValueId) {
+fn reinsert_local_name<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    parent_fn_id: ValueSlot,
+) {
     let current_name = value.name();
     if let Some(name) = current_name.as_deref() {
         value.set_name_internal(None);
@@ -1404,7 +1407,7 @@ fn reinsert_local_name<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>, paren
     }
 }
 
-fn update_instruction_parent(module: &ModuleCore, inst_id: ValueId, new_parent: ValueId) {
+fn update_instruction_parent(module: &ModuleCore, inst_id: ValueSlot, new_parent: ValueSlot) {
     let data = module.context().value_data(inst_id);
     if let ValueKindData::Instruction(_) = &data.kind {
         // The parent field is plain; mutate via a dedicated helper on
@@ -1911,7 +1914,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> NonTerminator<'ctx, B> {
     /// Opaque arena id of the underlying value (same id as
     /// [`to_erased`](Self::to_erased)).
     #[inline]
-    pub fn id(&self) -> ValueId {
+    pub fn id(&self) -> ValueSlot {
         self.view.id()
     }
 
@@ -1925,8 +1928,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> NonTerminator<'ctx, B> {
 /// Crate-internal helper: create a `ValueData` for an instruction with
 /// the given parent block and kind payload.
 pub(super) fn build_instruction_value(
-    ty: TypeId,
-    parent_bb: ValueId,
+    ty: TypeSlot,
+    parent_bb: ValueSlot,
     kind: InstructionKindData,
     name: Option<String>,
 ) -> ValueData {

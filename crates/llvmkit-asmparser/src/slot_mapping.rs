@@ -31,7 +31,7 @@ use std::collections::HashMap;
 
 use llvmkit_ir::{
     Brand, Dyn, FunctionValue, GlobalAlias, GlobalIFunc, GlobalVariable, ModuleBrand, Type,
-    attributes::AttributeStorage, metadata::MetadataId,
+    attributes::AttributeStorage, metadata::MetadataSlot,
 };
 
 use crate::numbered_values::NumberedValues;
@@ -102,7 +102,7 @@ pub struct SlotMapping<'ctx, B: ModuleBrand = Brand<'ctx>> {
     /// Numbered attribute groups — `#0`, `#1`, ...
     pub attribute_groups: NumberedValues<AttributeStorage>,
     /// Numbered metadata nodes — `!0`, `!1`, ...
-    pub metadata_nodes: NumberedValues<MetadataId>,
+    pub metadata_nodes: NumberedValues<MetadataSlot>,
 }
 
 impl<'ctx, B: ModuleBrand> Default for SlotMapping<'ctx, B> {

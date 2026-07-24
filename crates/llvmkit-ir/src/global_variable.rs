@@ -21,9 +21,9 @@ use super::derived_types::PointerType;
 use super::error::{IrError, IrResult, ValueCategoryLabel};
 use super::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
-use super::r#type::{Type, TypeId};
+use super::r#type::{Type, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
-use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
+use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
 
 use super::constants::ConstantIntValue;
 use super::metadata::MetadataAttachmentSet;
@@ -42,11 +42,11 @@ pub(super) struct GlobalVariableData {
     /// Type of the data the global holds (the *pointee* type). The
     /// outer [`crate::value::ValueData::ty`] is the *pointer* type
     /// (`ptr addrspace(N)`).
-    pub(super) value_type: TypeId,
+    pub(super) value_type: TypeSlot,
     pub(super) address_space: u32,
     pub(super) is_constant: bool,
     pub(super) externally_initialized: Cell<bool>,
-    pub(super) initializer: Cell<Option<ValueId>>,
+    pub(super) initializer: Cell<Option<ValueSlot>>,
     pub(super) linkage: Cell<Linkage>,
     pub(super) visibility: Cell<Visibility>,
     pub(super) dll_storage_class: Cell<DllStorageClass>,
@@ -76,15 +76,15 @@ pub(super) struct GlobalVariableData {
 /// initializer when one is present.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GlobalVariable<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     /// Cached pointer type id (`ptr addrspace(N)`).
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     #[inline]
-    pub(super) fn from_parts_unchecked<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_parts_unchecked<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -486,7 +486,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         self,
         _module: &Module<'ctx, B, Unverified>,
         kind: crate::metadata::MetadataAttachmentKind,
-        id: crate::metadata::MetadataId,
+        id: crate::metadata::MetadataSlot,
     ) {
         self.data().metadata.borrow_mut().insert(kind, id);
     }
@@ -591,11 +591,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalVariable<'ct
 pub struct GlobalBuilder<'ctx, B: ModuleBrand = Brand<'ctx>> {
     module: ModuleRef<'ctx, B>,
     name: String,
-    value_type: TypeId,
+    value_type: TypeSlot,
     address_space: u32,
     is_constant: bool,
     externally_initialized: bool,
-    initializer: Option<ValueId>,
+    initializer: Option<ValueSlot>,
     linkage: Linkage,
     visibility: Visibility,
     dll_storage_class: DllStorageClass,
@@ -734,7 +734,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
         self.module.module().install_global_variable::<B>(self)
     }
 
-    pub(super) fn into_data(self) -> (String, GlobalVariableData, Option<ValueId>, u32, TypeId) {
+    pub(super) fn into_data(
+        self,
+    ) -> (String, GlobalVariableData, Option<ValueSlot>, u32, TypeSlot) {
         let GlobalBuilder {
             module: _,
             name,

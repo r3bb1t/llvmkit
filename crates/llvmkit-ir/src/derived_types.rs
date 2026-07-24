@@ -2,7 +2,7 @@
 //! `llvm/include/llvm/IR/DerivedTypes.h`.
 //!
 //! Each handle (`IntType<'ctx>`, `FloatType<'ctx>`, ...) is a
-//! `(TypeId, ModuleRef<'ctx>)` record. Both fields are themselves `Hash`
+//! `(TypeSlot, ModuleRef<'ctx>)` record. Both fields are themselves `Hash`
 //! and `Eq`, so every handle derives the full
 //! `Copy + Clone + PartialEq + Eq + Hash + Debug` surface without any
 //! hand-written impls.
@@ -30,7 +30,7 @@ use core::iter::FusedIterator;
 
 use super::error::{IrError, IrResult, TypeKindLabel};
 use super::module::{Brand, ModuleBrand, ModuleRef};
-use super::r#type::{Type, TypeData, TypeId, TypeKind};
+use super::r#type::{Type, TypeData, TypeKind, TypeSlot};
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
@@ -54,13 +54,13 @@ macro_rules! decl_type_handle {
         $(#[$attr])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub struct $name<'ctx, B: ModuleBrand = Brand<'ctx>> {
-            pub(super) id: TypeId,
+            pub(super) id: TypeSlot,
             pub(super) module: ModuleRef<'ctx, B>,
         }
 
         impl<'ctx, B: ModuleBrand> $name<'ctx, B> {
             #[inline]
-            pub(super) fn new<M>(id: TypeId, module: M) -> Self
+            pub(super) fn new<M>(id: TypeSlot, module: M) -> Self
             where
                 M: Into<ModuleRef<'ctx, B>>,
             {
@@ -144,7 +144,7 @@ pub struct ArrayType<
     L: ArrayLen = ArrLenDyn,
     B: ModuleBrand = Brand<'ctx>,
 > {
-    pub(super) id: TypeId,
+    pub(super) id: TypeSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) _e: PhantomData<E>,
     pub(super) _l: PhantomData<L>,
@@ -181,7 +181,7 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> fmt::Debug for ArrayType<'ct
 
 impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L, B> {
     #[inline]
-    pub(super) fn new<M>(id: TypeId, module: M) -> Self
+    pub(super) fn new<M>(id: TypeSlot, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -278,7 +278,7 @@ impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for ArrayType<'ctx, ElemDyn, A
 /// BodySet>`. The runtime-checked default keeps existing parsed-IR /
 /// literal-struct call sites working without churn.
 pub struct StructType<'ctx, Body: StructBodyState = StructBodyDyn, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: TypeId,
+    pub(super) id: TypeSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) _b: core::marker::PhantomData<Body>,
 }
@@ -310,7 +310,7 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand> core::fmt::Debug for StructTyp
 
 impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, B> {
     #[inline]
-    pub(super) fn new<M>(id: TypeId, module: M) -> Self
+    pub(super) fn new<M>(id: TypeSlot, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -407,7 +407,7 @@ impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for StructType<'ctx, StructBod
 /// compile time. Runtime-checked defaults keep existing call sites working.
 pub struct VectorType<'ctx, E: VecElem = ElemDyn, L: VecLen = LenDyn, B: ModuleBrand = Brand<'ctx>>
 {
-    pub(super) id: TypeId,
+    pub(super) id: TypeSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) _e: PhantomData<E>,
     pub(super) _l: PhantomData<L>,
@@ -444,7 +444,7 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand> fmt::Debug for VectorType<'ctx
 
 impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, B> {
     #[inline]
-    pub(super) fn new<M>(id: TypeId, module: M) -> Self
+    pub(super) fn new<M>(id: TypeSlot, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -571,7 +571,7 @@ decl_type_handle!(
 /// Use [`IntType<'ctx, IntDyn>`](IntDyn) when the width
 /// is only known at runtime (parsed `.ll`).
 pub struct IntType<'ctx, W: IntWidth, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: TypeId,
+    pub(super) id: TypeSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) _w: PhantomData<W>,
 }
@@ -610,7 +610,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand> fmt::Debug for IntType<'ctx, W, B> {
 
 impl<'ctx, W: IntWidth, B: ModuleBrand> IntType<'ctx, W, B> {
     #[inline]
-    pub(super) fn new<M>(id: TypeId, module: M) -> Self
+    pub(super) fn new<M>(id: TypeSlot, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -765,7 +765,7 @@ impl_int_type_static_to_dyn!(i128);
 /// Use [`FloatDyn`] when the kind is only known
 /// at runtime.
 pub struct FloatType<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: TypeId,
+    pub(super) id: TypeSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) _k: PhantomData<K>,
 }
@@ -801,7 +801,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand> fmt::Debug for FloatType<'ctx, K, B> {
 
 impl<'ctx, K: FloatKind, B: ModuleBrand> FloatType<'ctx, K, B> {
     #[inline]
-    pub(super) fn new<M>(id: TypeId, module: M) -> Self
+    pub(super) fn new<M>(id: TypeSlot, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {

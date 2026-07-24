@@ -23,7 +23,7 @@ use super::block_state::{BlockTerminationState, Unterminated};
 use super::instruction::{Instruction, state};
 use super::marker::ReturnMarker;
 use super::module::{Brand, ModuleBrand};
-use super::value::ValueId;
+use super::value::ValueSlot;
 
 /// Single-pass cursor over an instruction list. Each [`Self::next`]
 /// call yields the instruction at the current position together with a
@@ -46,7 +46,7 @@ pub struct BlockCursor<
     /// not perturb the iteration order. The cursor walks the original
     /// observation; the caller is responsible for any extra-curricular
     /// mutations they might perform on the live list.
-    snapshot: Vec<ValueId>,
+    snapshot: Vec<ValueSlot>,
     next_index: usize,
 }
 

@@ -59,7 +59,7 @@ pub trait ReturnMarker: sealed::Sealed + Copy + 'static + fmt::Debug {
     /// Crate-internal: project the marker into the
     /// [`ExpectedRetKind`] discriminator so the runtime
     /// signature-validation path can inspect it without resorting to
-    /// `core::any::TypeId`.
+    /// `core::any::TypeSlot`.
     #[doc(hidden)]
     fn expected_kind() -> ExpectedRetKind;
 }

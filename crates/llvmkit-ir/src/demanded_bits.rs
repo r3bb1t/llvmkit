@@ -20,7 +20,7 @@ use super::pass_access::PatchBody;
 use super::pass_context::{FnCx, FnPatch, FnReport, FunctionView};
 use super::pass_manager::FunctionPass;
 use super::r#type::{Type, TypeKind};
-use super::value::{Value, ValueId, ValueKindData, ValueUse};
+use super::value::{Value, ValueKindData, ValueSlot, ValueUse};
 use super::value_tracking::{ValueTrackingQuery, compute_known_bits};
 use super::{ApInt, IrError, IrResult, KnownBits};
 use core::ops::Not;
@@ -106,11 +106,11 @@ pub fn simplify_demanded_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// Cached demanded-bits result for one function.
 pub struct DemandedBits {
     data_layout: DataLayout,
-    alive_bits: HashMap<ValueId, ApInt>,
-    operand_bits: HashMap<(ValueId, usize), ApInt>,
-    dead_uses: HashSet<(ValueId, usize)>,
-    visited_non_integer: HashSet<ValueId>,
-    always_live: HashSet<ValueId>,
+    alive_bits: HashMap<ValueSlot, ApInt>,
+    operand_bits: HashMap<(ValueSlot, usize), ApInt>,
+    dead_uses: HashSet<(ValueSlot, usize)>,
+    visited_non_integer: HashSet<ValueSlot>,
+    always_live: HashSet<ValueSlot>,
 }
 
 impl DemandedBits {
@@ -582,7 +582,7 @@ impl DemandedBits {
     fn intrinsic_operand_bits<'ctx, B: ModuleBrand + 'ctx>(
         &self,
         user: Value<'ctx, B>,
-        callee_id: ValueId,
+        callee_id: ValueSlot,
         operand_index: usize,
         alive_out: &ApInt,
     ) -> IrResult<Option<ApInt>> {
@@ -1096,7 +1096,7 @@ fn drop_zext_nneg_for_replaced_uses<'ctx, B: ModuleBrand + 'ctx>(value: Value<'c
 
 fn drop_zext_nneg_for_replaced_uses_recursive<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
-    visited: &mut HashSet<ValueId>,
+    visited: &mut HashSet<ValueSlot>,
 ) {
     if !visited.insert(value.id()) {
         return;
@@ -1110,7 +1110,7 @@ fn drop_zext_nneg_for_replaced_uses_recursive<'ctx, B: ModuleBrand + 'ctx>(
 
 fn drop_zext_nneg_for_replaced_operand<'ctx, B: ModuleBrand + 'ctx>(
     user: Value<'ctx, B>,
-    old_operand: ValueId,
+    old_operand: ValueSlot,
 ) {
     let ValueKindData::Instruction(inst) = &user.data().kind else {
         return;
@@ -1187,7 +1187,7 @@ fn simplify_xor_constant_operand<'ctx, B: ModuleBrand + 'ctx>(
 
 fn shrink_demanded_constant_operand<'ctx, B: ModuleBrand + 'ctx>(
     user: Value<'ctx, B>,
-    operand: &core::cell::Cell<ValueId>,
+    operand: &core::cell::Cell<ValueSlot>,
     demanded: &ApInt,
 ) -> IrResult<bool> {
     let current = value_from_id(user, operand.get());
@@ -1206,7 +1206,7 @@ fn shrink_demanded_constant_operand<'ctx, B: ModuleBrand + 'ctx>(
 
 fn replace_instruction_operand<'ctx, B: ModuleBrand + 'ctx>(
     user: Value<'ctx, B>,
-    operand: &core::cell::Cell<ValueId>,
+    operand: &core::cell::Cell<ValueSlot>,
     replacement: Value<'ctx, B>,
 ) -> IrResult<bool> {
     let old_id = operand.get();
@@ -1260,7 +1260,7 @@ fn constant_ap_int<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option
 
 fn instruction_operands<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
-) -> IrResult<Vec<ValueId>> {
+) -> IrResult<Vec<ValueSlot>> {
     match &value.data().kind {
         ValueKindData::Instruction(inst) => Ok(inst.kind.operand_ids()),
         other => Err(IrError::ValueCategoryMismatch {
@@ -1314,7 +1314,7 @@ fn is_simplify_candidate<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> 
     )
 }
 
-fn enqueue(id: ValueId, worklist: &mut VecDeque<ValueId>, queued: &mut HashSet<ValueId>) {
+fn enqueue(id: ValueSlot, worklist: &mut VecDeque<ValueSlot>, queued: &mut HashSet<ValueSlot>) {
     if queued.insert(id) {
         worklist.push_back(id);
     }
@@ -1326,7 +1326,7 @@ fn is_instruction_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> b
 
 fn value_from_id<'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
-    id: ValueId,
+    id: ValueSlot,
 ) -> Value<'ctx, B> {
     let module = module_ref(anchor);
     let data = module.value_data(id);

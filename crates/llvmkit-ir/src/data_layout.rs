@@ -30,7 +30,7 @@ use core::fmt;
 use crate::align::{Align, MaybeAlign};
 use crate::error::{IrError, IrResult};
 use crate::module::ModuleCore;
-use crate::r#type::{Type, TypeData, TypeId};
+use crate::r#type::{Type, TypeData, TypeSlot};
 
 // --------------------------------------------------------------------------
 // Sub-records
@@ -630,15 +630,15 @@ impl DataLayout {
     }
 
     /// ABI alignment of a type by id (brand-free; for builder/parser paths
-    /// that hold a `&ModuleCore` and a `TypeId`). Same walk as
+    /// that hold a `&ModuleCore` and a `TypeSlot`). Same walk as
     /// [`Self::abi_type_align`].
-    pub(crate) fn abi_align_of_id(&self, module: &ModuleCore, id: TypeId) -> Align {
+    pub(crate) fn abi_align_of_id(&self, module: &ModuleCore, id: TypeSlot) -> Align {
         self.alignment(module, id, true)
     }
 
     /// Preferred alignment of a type by id (brand-free). Same walk as
     /// [`Self::pref_type_align`].
-    pub(crate) fn pref_align_of_id(&self, module: &ModuleCore, id: TypeId) -> Align {
+    pub(crate) fn pref_align_of_id(&self, module: &ModuleCore, id: TypeSlot) -> Align {
         self.alignment(module, id, false)
     }
 }
@@ -648,7 +648,7 @@ impl DataLayout {
 // --------------------------------------------------------------------------
 
 impl DataLayout {
-    fn type_size_in_bits_inner(&self, module: &ModuleCore, id: TypeId) -> u64 {
+    fn type_size_in_bits_inner(&self, module: &ModuleCore, id: TypeSlot) -> u64 {
         match module.context().type_data(id) {
             TypeData::Label => u64::from(self.pointer_size_in_bits(0)),
             TypeData::Pointer { addr_space } => u64::from(self.pointer_size_in_bits(*addr_space)),
@@ -687,7 +687,7 @@ impl DataLayout {
         }
     }
 
-    fn type_alloc_size_inner(&self, module: &ModuleCore, id: TypeId) -> u64 {
+    fn type_alloc_size_inner(&self, module: &ModuleCore, id: TypeSlot) -> u64 {
         match module.context().type_data(id) {
             TypeData::Array { elem, n } => {
                 n.saturating_mul(self.type_alloc_size_inner(module, *elem))
@@ -730,12 +730,12 @@ impl DataLayout {
         }
     }
 
-    fn type_store_size_inner(&self, module: &ModuleCore, id: TypeId) -> u64 {
+    fn type_store_size_inner(&self, module: &ModuleCore, id: TypeSlot) -> u64 {
         let bits = self.type_size_in_bits_inner(module, id);
         align_to_power_of_two(bits, 8) / 8
     }
 
-    fn alignment(&self, module: &ModuleCore, id: TypeId, abi_or_pref: bool) -> Align {
+    fn alignment(&self, module: &ModuleCore, id: TypeSlot, abi_or_pref: bool) -> Align {
         match module.context().type_data(id) {
             TypeData::Integer { bits } => self.integer_alignment(*bits, abi_or_pref),
             TypeData::Half
@@ -859,7 +859,7 @@ impl DataLayout {
         self.struct_layout_inner(ty.module().core_ref(), ty.id())
     }
 
-    fn struct_layout_inner(&self, module: &ModuleCore, id: TypeId) -> StructLayoutInfo {
+    fn struct_layout_inner(&self, module: &ModuleCore, id: TypeSlot) -> StructLayoutInfo {
         let s = match module.context().type_data(id) {
             TypeData::Struct(s) => s,
             _ => unreachable!("struct_layout invariant: TypeData::Struct"),
@@ -868,7 +868,7 @@ impl DataLayout {
         let body = body
             .as_ref()
             .unwrap_or_else(|| unreachable!("struct_layout invariant: opaque structs are unsized"));
-        let elements: &[TypeId] = &body.elements;
+        let elements: &[TypeSlot] = &body.elements;
         let packed = body.packed;
 
         let mut size_bytes: u64 = 0;
@@ -1485,7 +1485,7 @@ fn parse_addr_space_and_name(s: &str) -> IrResult<(u32, String)> {
 /// (`aarch64.svcount`), RISC-V (`riscv.vector.tuple`), DirectX
 /// (`dx.*`), AMDGPU (`amdgcn.named.barrier`), and the test
 /// extension (`llvm.test.vectorelement`).
-fn target_ext_layout_type(module: &ModuleCore, id: TypeId) -> Option<TypeId> {
+fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Option<TypeSlot> {
     let data = module.context().type_data(id);
     let TypeData::TargetExt(ext) = data else {
         return None;

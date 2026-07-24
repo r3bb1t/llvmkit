@@ -46,9 +46,9 @@ use super::instr_types::{BinaryOpcode, CastOpcode};
 use super::instruction::{rewrite_debug_record_value, rewrite_operand_cells};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, Module, ModuleBrand, ModuleCore, ModuleRef, Unverified};
-use super::r#type::{Type, TypeData, TypeId};
+use super::r#type::{Type, TypeData, TypeSlot};
 use super::value::{
-    HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, ValueUse, sealed,
+    HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, ValueUse, sealed,
 };
 use super::vec_len::VecLen;
 use core::convert::Infallible;
@@ -75,9 +75,9 @@ macro_rules! decl_constant_handle {
         $(#[$attr])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub struct $name<'ctx, B: ModuleBrand = Brand<'ctx>> {
-            pub(super) id: ValueId,
+            pub(super) id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,
-            pub(super) ty: TypeId,
+            pub(super) ty: TypeSlot,
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
@@ -197,9 +197,9 @@ decl_constant_handle!(
 
 /// Integer constant of width `W`.
 pub struct ConstantIntValue<'ctx, W: IntWidth, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) _w: PhantomData<W>,
 }
 
@@ -408,9 +408,9 @@ impl_constant_int_static_try_from!(i128, 128);
 
 /// Floating-point constant of kind `K`.
 pub struct ConstantFloatValue<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) _k: PhantomData<K>,
 }
 
@@ -1381,7 +1381,7 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx>(
 
 fn constant_expr_operands<'ctx, B: ModuleBrand + 'ctx>(
     module: &'ctx ModuleCore,
-    operands: &[ValueId],
+    operands: &[ValueSlot],
 ) -> Option<Vec<Constant<'ctx, B>>> {
     operands
         .iter()
@@ -1409,7 +1409,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     }
 }
 
-fn is_int_constant_with_type(module: &ModuleCore, id: ValueId, ty: TypeId) -> bool {
+fn is_int_constant_with_type(module: &ModuleCore, id: ValueSlot, ty: TypeSlot) -> bool {
     module.context().value_data(id).ty == ty
         && matches!(
             &module.context().value_data(id).kind,
@@ -1417,7 +1417,7 @@ fn is_int_constant_with_type(module: &ModuleCore, id: ValueId, ty: TypeId) -> bo
         )
 }
 
-fn is_global_value_or_null_constant(module: &ModuleCore, id: ValueId) -> bool {
+fn is_global_value_or_null_constant(module: &ModuleCore, id: ValueSlot) -> bool {
     matches!(
         &module.context().value_data(id).kind,
         ValueKindData::Constant(ConstantData::GlobalValueRef { .. } | ConstantData::PointerNull)
@@ -1526,10 +1526,10 @@ fn canonicalize_gep_operands(module: &ModuleCore, data: &mut ConstantExprData) -
 
 fn vector_splat_constant(
     module: &ModuleCore,
-    scalar: ValueId,
+    scalar: ValueSlot,
     lanes: u32,
     scalable: bool,
-) -> IrResult<ValueId> {
+) -> IrResult<ValueSlot> {
     let lane_count = usize::try_from(lanes).map_err(|_| IrError::InvalidOperation {
         message: "invalid getelementptr constant expression",
     })?;
@@ -1541,7 +1541,7 @@ fn vector_splat_constant(
 }
 fn valid_shufflevector_mask_constant(
     module: &ModuleCore,
-    mask: ValueId,
+    mask: ValueSlot,
     lhs_lanes: u32,
     lhs_scalable: bool,
 ) -> bool {
@@ -1573,14 +1573,14 @@ fn valid_shufflevector_mask_constant(
     }
 }
 
-fn constant_id_is_undef_or_poison(module: &ModuleCore, id: ValueId) -> bool {
+fn constant_id_is_undef_or_poison(module: &ModuleCore, id: ValueSlot) -> bool {
     matches!(
         &module.context().value_data(id).kind,
         ValueKindData::Constant(ConstantData::Undef | ConstantData::Poison)
     )
 }
 
-fn constant_id_is_zero_value(module: &ModuleCore, id: ValueId) -> bool {
+fn constant_id_is_zero_value(module: &ModuleCore, id: ValueSlot) -> bool {
     match &module.context().value_data(id).kind {
         ValueKindData::Constant(ConstantData::Int(_)) => {
             const_index_u64(module, id).is_some_and(|value| value == 0)
@@ -1593,7 +1593,7 @@ fn constant_id_is_zero_value(module: &ModuleCore, id: ValueId) -> bool {
     }
 }
 
-fn vector_splat_value(module: &ModuleCore, vector: ValueId) -> Option<ValueId> {
+fn vector_splat_value(module: &ModuleCore, vector: ValueSlot) -> Option<ValueSlot> {
     let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
         &module.context().value_data(vector).kind
     else {
@@ -1623,8 +1623,8 @@ pub(super) fn replace_constant_uses_with<'ctx, B: ModuleBrand + 'ctx>(
 
 fn replace_value_uses_with_constant(
     module: &ModuleCore,
-    from_id: ValueId,
-    replacement_id: ValueId,
+    from_id: ValueSlot,
+    replacement_id: ValueSlot,
 ) -> IrResult<()> {
     let user_edges = module
         .context()
@@ -1677,10 +1677,10 @@ fn replace_value_uses_with_constant(
 
 fn constant_with_replaced_operand(
     module: &ModuleCore,
-    user_id: ValueId,
-    from_id: ValueId,
-    replacement_id: ValueId,
-) -> IrResult<Option<ValueId>> {
+    user_id: ValueSlot,
+    from_id: ValueSlot,
+    replacement_id: ValueSlot,
+) -> IrResult<Option<ValueSlot>> {
     let user_data = module.context().value_data(user_id);
     let ty = user_data.ty;
     let ValueKindData::Constant(data) = &user_data.kind else {
@@ -1787,9 +1787,9 @@ fn constant_with_replaced_operand(
 
 pub(crate) fn advance_gep_index_type(
     module: &ModuleCore,
-    current: TypeId,
-    index: ValueId,
-) -> Option<TypeId> {
+    current: TypeSlot,
+    index: ValueSlot,
+) -> Option<TypeSlot> {
     match module.context().type_data(current) {
         TypeData::Array { elem, .. }
         | TypeData::FixedVector { elem, .. }
@@ -1811,9 +1811,9 @@ pub(crate) fn advance_gep_index_type(
 /// (`StructType::indexValid`), or an index that walks past a non-aggregate.
 pub(crate) fn gep_indexed_type(
     module: &ModuleCore,
-    source_ty: TypeId,
-    indices: &[ValueId],
-) -> Option<TypeId> {
+    source_ty: TypeSlot,
+    indices: &[ValueSlot],
+) -> Option<TypeSlot> {
     let mut current = source_ty;
     for index in indices.iter().skip(1) {
         // `StructType::indexValid` requires an i32 index; the shared walker
@@ -2229,14 +2229,14 @@ fn validate_gep_constant_expr(
     validate_gep_indices(module, source_ty.id(), &data.operands[1..])
 }
 
-fn scalar_int_bits(module: &ModuleCore, id: TypeId) -> Option<u32> {
+fn scalar_int_bits(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
     match module.context().type_data(scalar_type_id(module, id)) {
         TypeData::Integer { bits } => Some(*bits),
         _ => None,
     }
 }
 
-fn scalar_type_id(module: &ModuleCore, id: TypeId) -> TypeId {
+fn scalar_type_id(module: &ModuleCore, id: TypeSlot) -> TypeSlot {
     module
         .context()
         .type_data(id)
@@ -2244,7 +2244,7 @@ fn scalar_type_id(module: &ModuleCore, id: TypeId) -> TypeId {
         .map_or(id, |(elem, _, _)| elem)
 }
 
-fn type_contains_scalable_vector(module: &ModuleCore, id: TypeId) -> bool {
+fn type_contains_scalable_vector(module: &ModuleCore, id: TypeSlot) -> bool {
     match module.context().type_data(id) {
         TypeData::ScalableVector { .. } => true,
         TypeData::Array { elem, .. } | TypeData::FixedVector { elem, .. } => {
@@ -2259,7 +2259,7 @@ fn type_contains_scalable_vector(module: &ModuleCore, id: TypeId) -> bool {
     }
 }
 
-fn vector_shape(module: &ModuleCore, id: TypeId) -> Option<(u32, bool)> {
+fn vector_shape(module: &ModuleCore, id: TypeSlot) -> Option<(u32, bool)> {
     module
         .context()
         .type_data(id)
@@ -2267,11 +2267,11 @@ fn vector_shape(module: &ModuleCore, id: TypeId) -> Option<(u32, bool)> {
         .map(|(_, lanes, scalable)| (lanes, scalable))
 }
 
-fn lane_shape_matches(module: &ModuleCore, lhs: TypeId, rhs: TypeId) -> bool {
+fn lane_shape_matches(module: &ModuleCore, lhs: TypeSlot, rhs: TypeSlot) -> bool {
     vector_shape(module, lhs) == vector_shape(module, rhs)
 }
 
-fn pointer_bitcast_shape_matches(module: &ModuleCore, src: TypeId, dst: TypeId) -> bool {
+fn pointer_bitcast_shape_matches(module: &ModuleCore, src: TypeSlot, dst: TypeSlot) -> bool {
     match (vector_shape(module, src), vector_shape(module, dst)) {
         (None, None) => true,
         (Some(src_shape), Some(dst_shape)) => src_shape == dst_shape,
@@ -2280,21 +2280,21 @@ fn pointer_bitcast_shape_matches(module: &ModuleCore, src: TypeId, dst: TypeId) 
     }
 }
 
-fn is_ptr_or_ptr_vector(module: &ModuleCore, id: TypeId) -> bool {
+fn is_ptr_or_ptr_vector(module: &ModuleCore, id: TypeSlot) -> bool {
     matches!(
         module.context().type_data(scalar_type_id(module, id)),
         TypeData::Pointer { .. }
     )
 }
 
-fn pointer_address_space(module: &ModuleCore, id: TypeId) -> Option<u32> {
+fn pointer_address_space(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
     match module.context().type_data(id) {
         TypeData::Pointer { addr_space } => Some(*addr_space),
         _ => None,
     }
 }
 
-fn valid_bitcast_constant(module: &ModuleCore, src: TypeId, dst: TypeId) -> bool {
+fn valid_bitcast_constant(module: &ModuleCore, src: TypeSlot, dst: TypeSlot) -> bool {
     let src_scalar = scalar_type_id(module, src);
     let dst_scalar = scalar_type_id(module, dst);
     let src_ptr = pointer_address_space(module, src_scalar);
@@ -2316,8 +2316,8 @@ fn valid_bitcast_constant(module: &ModuleCore, src: TypeId, dst: TypeId) -> bool
 
 fn validate_gep_indices(
     module: &ModuleCore,
-    source_ty: TypeId,
-    indices: &[ValueId],
+    source_ty: TypeSlot,
+    indices: &[ValueSlot],
 ) -> IrResult<()> {
     let mut current = source_ty;
     let mut first = true;
@@ -2363,7 +2363,7 @@ fn validate_gep_indices(
     Ok(())
 }
 
-fn const_index_u64(module: &ModuleCore, id: ValueId) -> Option<u64> {
+fn const_index_u64(module: &ModuleCore, id: ValueSlot) -> Option<u64> {
     match &module.context().value_data(id).kind {
         ValueKindData::Constant(ConstantData::Int(words)) if words.len() <= 1 => {
             Some(words.first().copied().unwrap_or(0))
@@ -2375,14 +2375,14 @@ fn const_index_u64(module: &ModuleCore, id: ValueId) -> Option<u64> {
 /// `true` when `id` is a constant integer equal to 1. Mirrors the check in
 /// `AllocaInst::isArrayAllocation` (a size operand of constant 1 is NOT an
 /// array allocation) and the matching AsmWriter size-print suppression.
-pub(crate) fn is_constant_int_one(module: &ModuleCore, id: ValueId) -> bool {
+pub(crate) fn is_constant_int_one(module: &ModuleCore, id: ValueSlot) -> bool {
     matches!(
         &module.context().value_data(id).kind,
         ValueKindData::Constant(ConstantData::Int(words)) if words.len() == 1 && words[0] == 1
     )
 }
 
-fn type_bit_width(module: &ModuleCore, id: TypeId) -> Option<u32> {
+fn type_bit_width(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
     match module.context().type_data(id) {
         TypeData::Half | TypeData::BFloat => Some(16),
         TypeData::Float => Some(32),
@@ -2401,7 +2401,7 @@ fn type_bit_width(module: &ModuleCore, id: TypeId) -> Option<u32> {
     }
 }
 
-fn is_int_or_int_vector(module: &ModuleCore, id: TypeId) -> bool {
+fn is_int_or_int_vector(module: &ModuleCore, id: TypeSlot) -> bool {
     match module.context().type_data(id) {
         TypeData::Integer { .. } => true,
         TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
@@ -2483,7 +2483,7 @@ fn intern_poison<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> PoisonValue<
 
 pub(super) fn intern_aggregate<'ctx, B: ModuleBrand + 'ctx>(
     ty: Type<'ctx, B>,
-    ids: Box<[ValueId]>,
+    ids: Box<[ValueSlot]>,
 ) -> ConstantAggregate<'ctx, B> {
     let module = ty.module();
     let id = module.context().intern_constant_aggregate(ty.id(), ids);
@@ -2491,7 +2491,7 @@ pub(super) fn intern_aggregate<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 #[inline]
-fn constant_handle<'ctx, B, M>(id: ValueId, module: M, ty: TypeId) -> Constant<'ctx, B>
+fn constant_handle<'ctx, B, M>(id: ValueSlot, module: M, ty: TypeSlot) -> Constant<'ctx, B>
 where
     B: ModuleBrand + 'ctx,
     M: Into<ModuleRef<'ctx, B>>,

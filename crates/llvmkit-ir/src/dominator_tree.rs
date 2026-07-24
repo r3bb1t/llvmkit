@@ -17,7 +17,7 @@ use super::marker::{Dyn, ReturnMarker};
 use super::module::ModuleBrand;
 use super::pass_context::BasicBlockView;
 use super::r#use::Use;
-use super::value::{IsValue, Value, ValueId, ValueKindData};
+use super::value::{IsValue, Value, ValueKindData, ValueSlot};
 
 /// Analysis marker for caching a [`DominatorTree`] in the new-pass-manager
 /// substrate. Its invalidation rule is wired in `analysis.rs`: preserved by
@@ -31,13 +31,13 @@ pub struct DominatorTreeAnalysis;
 /// handles and compare their stable IDs.
 #[derive(Debug, Clone)]
 pub struct DominatorTree {
-    reachable: HashSet<ValueId>,
-    dominators: HashMap<ValueId, HashSet<ValueId>>,
-    predecessors: HashMap<ValueId, Vec<ValueId>>,
-    normal_dest: HashMap<ValueId, ValueId>,
-    phi_incoming_blocks: HashMap<ValueId, Vec<ValueId>>,
-    instruction_parent: HashMap<ValueId, ValueId>,
-    instruction_order: HashMap<ValueId, (ValueId, usize)>,
+    reachable: HashSet<ValueSlot>,
+    dominators: HashMap<ValueSlot, HashSet<ValueSlot>>,
+    predecessors: HashMap<ValueSlot, Vec<ValueSlot>>,
+    normal_dest: HashMap<ValueSlot, ValueSlot>,
+    phi_incoming_blocks: HashMap<ValueSlot, Vec<ValueSlot>>,
+    instruction_parent: HashMap<ValueSlot, ValueSlot>,
+    instruction_order: HashMap<ValueSlot, (ValueSlot, usize)>,
 }
 
 mod dominator_block_sealed {
@@ -46,7 +46,7 @@ mod dominator_block_sealed {
 
 /// Basic-block identity accepted by dominator-tree block queries.
 pub trait DominatorTreeBlock<'ctx>: dominator_block_sealed::Sealed {
-    fn dominator_block_id(self) -> ValueId;
+    fn dominator_block_id(self) -> ValueSlot;
 }
 
 impl<'ctx, R, S, B> dominator_block_sealed::Sealed for BasicBlock<'ctx, R, S, B>
@@ -64,7 +64,7 @@ where
     B: ModuleBrand + 'ctx,
 {
     #[inline]
-    fn dominator_block_id(self) -> ValueId {
+    fn dominator_block_id(self) -> ValueSlot {
         self.id()
     }
 }
@@ -84,7 +84,7 @@ where
     B: ModuleBrand + 'ctx,
 {
     #[inline]
-    fn dominator_block_id(self) -> ValueId {
+    fn dominator_block_id(self) -> ValueSlot {
         self.id()
     }
 }
@@ -102,7 +102,7 @@ where
     B: ModuleBrand + 'ctx,
 {
     #[inline]
-    fn dominator_block_id(self) -> ValueId {
+    fn dominator_block_id(self) -> ValueSlot {
         self.id()
     }
 }
@@ -120,7 +120,7 @@ where
     B: ModuleBrand + 'ctx,
 {
     #[inline]
-    fn dominator_block_id(self) -> ValueId {
+    fn dominator_block_id(self) -> ValueSlot {
         self.id()
     }
 }
@@ -129,7 +129,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> dominator_block_sealed::Sealed for BasicBlockV
 
 impl<'ctx, B: ModuleBrand + 'ctx> DominatorTreeBlock<'ctx> for BasicBlockView<'ctx, B> {
     #[inline]
-    fn dominator_block_id(self) -> ValueId {
+    fn dominator_block_id(self) -> ValueSlot {
         self.as_basic_block().id()
     }
 }
@@ -320,9 +320,9 @@ impl DominatorTree {
 
     fn dominates_edge_use_ids(
         &self,
-        start_id: ValueId,
-        end_id: ValueId,
-        user_id: ValueId,
+        start_id: ValueSlot,
+        end_id: ValueSlot,
+        user_id: ValueSlot,
         use_index: u32,
     ) -> bool {
         if self
@@ -344,7 +344,12 @@ impl DominatorTree {
         self.dominates_edge_ids(start_id, end_id, use_bb_id)
     }
 
-    fn dominates_edge_ids(&self, start_id: ValueId, end_id: ValueId, use_bb_id: ValueId) -> bool {
+    fn dominates_edge_ids(
+        &self,
+        start_id: ValueSlot,
+        end_id: ValueSlot,
+        use_bb_id: ValueSlot,
+    ) -> bool {
         if !self.dominates_block_ids(end_id, use_bb_id) {
             return false;
         }
@@ -367,7 +372,7 @@ impl DominatorTree {
         start_edge_seen
     }
 
-    fn dominates_block_ids(&self, a_id: ValueId, b_id: ValueId) -> bool {
+    fn dominates_block_ids(&self, a_id: ValueSlot, b_id: ValueSlot) -> bool {
         if a_id == b_id {
             return true;
         }
@@ -384,7 +389,7 @@ impl DominatorTree {
             .is_some_and(|doms| doms.contains(&a_id))
     }
 
-    fn use_block_id(&self, user_id: ValueId, use_index: u32) -> ValueId {
+    fn use_block_id(&self, user_id: ValueSlot, use_index: u32) -> ValueSlot {
         if let Some(blocks) = self.phi_incoming_blocks.get(&user_id)
             && let Some(index) = usize::try_from(use_index).ok()
             && let Some(block_id) = blocks.get(index)
@@ -397,7 +402,7 @@ impl DominatorTree {
             .unwrap_or(user_id)
     }
 
-    fn instruction_comes_before(&self, def: ValueId, user: ValueId) -> bool {
+    fn instruction_comes_before(&self, def: ValueSlot, user: ValueSlot) -> bool {
         let Some((def_bb, def_index)) = self.instruction_order.get(&def) else {
             return false;
         };
@@ -429,7 +434,7 @@ fn compute<'ctx, B: ModuleBrand + 'ctx>(function: FunctionValue<'ctx, Dyn, B>) -
 fn compute_reachable<'ctx, B: ModuleBrand + 'ctx>(
     function: FunctionValue<'ctx, Dyn, B>,
     cfg: &FunctionCfg<'ctx, B>,
-) -> HashSet<ValueId> {
+) -> HashSet<ValueSlot> {
     let mut reachable = HashSet::new();
     let Some(entry) = function.entry_block().map(|bb| bb.label()) else {
         return reachable;
@@ -452,13 +457,13 @@ fn compute_reachable<'ctx, B: ModuleBrand + 'ctx>(
 fn compute_dominators<'ctx, B: ModuleBrand + 'ctx>(
     function: FunctionValue<'ctx, Dyn, B>,
     cfg: &FunctionCfg<'ctx, B>,
-    reachable: &HashSet<ValueId>,
-) -> HashMap<ValueId, HashSet<ValueId>> {
+    reachable: &HashSet<ValueSlot>,
+) -> HashMap<ValueSlot, HashSet<ValueSlot>> {
     let Some(entry) = function.entry_block().map(|bb| bb.as_dyn()) else {
         return HashMap::new();
     };
     let all_reachable = reachable.clone();
-    let mut doms: HashMap<ValueId, HashSet<ValueId>> = HashMap::new();
+    let mut doms: HashMap<ValueSlot, HashSet<ValueSlot>> = HashMap::new();
     for block in function.basic_blocks().map(|bb| bb.as_dyn()) {
         let id = block.id();
         if !reachable.contains(&id) {
@@ -500,8 +505,8 @@ fn compute_dominators<'ctx, B: ModuleBrand + 'ctx>(
 
 fn compute_predecessors<'ctx, B: ModuleBrand + 'ctx>(
     cfg: &FunctionCfg<'ctx, B>,
-) -> HashMap<ValueId, Vec<ValueId>> {
-    let mut predecessors: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
+) -> HashMap<ValueSlot, Vec<ValueSlot>> {
+    let mut predecessors: HashMap<ValueSlot, Vec<ValueSlot>> = HashMap::new();
     for edge in cfg.edges() {
         predecessors
             .entry(edge.end().id())
@@ -512,10 +517,10 @@ fn compute_predecessors<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 type InstructionMaps = (
-    HashMap<ValueId, ValueId>,
-    HashMap<ValueId, (ValueId, usize)>,
-    HashMap<ValueId, ValueId>,
-    HashMap<ValueId, Vec<ValueId>>,
+    HashMap<ValueSlot, ValueSlot>,
+    HashMap<ValueSlot, (ValueSlot, usize)>,
+    HashMap<ValueSlot, ValueSlot>,
+    HashMap<ValueSlot, Vec<ValueSlot>>,
 );
 
 fn compute_instruction_maps<'ctx, B: ModuleBrand + 'ctx>(
