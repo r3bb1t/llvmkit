@@ -93,7 +93,7 @@ use super::value::{
     ArrayValue, FloatValue, IntValue, IntoErasedValue, IntoPointerValue, IsValue, PointerValue,
     Value, ValueKindData, ValueSlot, ValueUse, VectorValue,
 };
-use super::value_id::{IntValueId, ValueId, ViewIn};
+use super::value_id::{FloatValueId, IntValueId, PointerValueId, ValueId, ViewIn};
 use super::vec_len::{LenDyn, StaticVecLen, VecLen};
 
 /// Pair returned by terminator builders: the terminated insertion block and
@@ -1826,14 +1826,33 @@ where
     }
 
     // ---- Floating-point arithmetic ----
+    //
+    // Like the integer-arithmetic family above, every builder here hands back
+    // a *storable id* (`FloatValueId<K, B>`), not a borrowing handle. Feeding
+    // the result into the next builder costs nothing -- an id satisfies
+    // `IntoFloatValue` / `IntoCallArg` -- while a *read* (`.ty()`,
+    // `.into_erased()`, `{}`) goes through `IRBuilder::view` / `Module::view`.
+    // The floating-point *comparisons* below return `IntValueId<bool, B>`,
+    // because `fcmp` yields `i1`.
 
     /// Produce `fadd lhs, rhs`. Mirrors `IRBuilder::CreateFAdd`.
+    ///
+    /// Returns the storable [`FloatValueId<K, B>`](crate::FloatValueId) naming
+    /// the result -- like every builder in this family. Pass it straight into
+    /// the next builder call; take [`view`](Self::view) when you need to *read*
+    /// from it:
+    ///
+    /// ```ignore
+    /// let s = b.build_fp_add::<f32, _, _, _>(x, y, "s")?;
+    /// let p = b.build_fp_mul::<f32, _, _, _>(s, y, "p")?; // operand: no view
+    /// let ty = b.view(s).ty();                             // read: view
+    /// ```
     pub fn build_fp_add<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, K, B>>
+    ) -> IrResult<FloatValueId<K, B>>
     where
         Name: AsRef<str>,
         K: FloatKind,
@@ -1847,6 +1866,7 @@ where
             name,
             InstructionKindData::FAdd,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `fsub lhs, rhs`. Mirrors `IRBuilder::CreateFSub`.
@@ -1855,7 +1875,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, K, B>>
+    ) -> IrResult<FloatValueId<K, B>>
     where
         Name: AsRef<str>,
         K: FloatKind,
@@ -1869,6 +1889,7 @@ where
             name,
             InstructionKindData::FSub,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `fmul lhs, rhs`. Mirrors `IRBuilder::CreateFMul`.
@@ -1877,7 +1898,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, K, B>>
+    ) -> IrResult<FloatValueId<K, B>>
     where
         Name: AsRef<str>,
         K: FloatKind,
@@ -1891,6 +1912,7 @@ where
             name,
             InstructionKindData::FMul,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `fdiv lhs, rhs`. Mirrors `IRBuilder::CreateFDiv`.
@@ -1899,7 +1921,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, K, B>>
+    ) -> IrResult<FloatValueId<K, B>>
     where
         Name: AsRef<str>,
         K: FloatKind,
@@ -1913,6 +1935,7 @@ where
             name,
             InstructionKindData::FDiv,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `frem lhs, rhs`. Mirrors `IRBuilder::CreateFRem`.
@@ -1921,7 +1944,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, K, B>>
+    ) -> IrResult<FloatValueId<K, B>>
     where
         Name: AsRef<str>,
         K: FloatKind,
@@ -1935,6 +1958,7 @@ where
             name,
             InstructionKindData::FRem,
         )
+        .map(|v| v.id())
     }
 
     /// Crate-internal helper for float binops. Same shape as
@@ -2002,7 +2026,7 @@ where
         rhs: Rhs,
         fmf: crate::fmf::FastMathFlags,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, K, B>>
+    ) -> IrResult<FloatValueId<K, B>>
     where
         Name: AsRef<str>,
         K: FloatKind,
@@ -2017,6 +2041,7 @@ where
             name,
             InstructionKindData::FAdd,
         )
+        .map(|v| v.id())
     }
 
     /// `fsub` with an explicit [`crate::fmf::FastMathFlags`] parameter.
@@ -2026,7 +2051,7 @@ where
         rhs: Rhs,
         fmf: crate::fmf::FastMathFlags,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, K, B>>
+    ) -> IrResult<FloatValueId<K, B>>
     where
         Name: AsRef<str>,
         K: FloatKind,
@@ -2041,6 +2066,7 @@ where
             name,
             InstructionKindData::FSub,
         )
+        .map(|v| v.id())
     }
 
     /// `fmul` with an explicit [`crate::fmf::FastMathFlags`] parameter.
@@ -2050,7 +2076,7 @@ where
         rhs: Rhs,
         fmf: crate::fmf::FastMathFlags,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, K, B>>
+    ) -> IrResult<FloatValueId<K, B>>
     where
         Name: AsRef<str>,
         K: FloatKind,
@@ -2065,6 +2091,7 @@ where
             name,
             InstructionKindData::FMul,
         )
+        .map(|v| v.id())
     }
 
     /// `fdiv` with an explicit [`crate::fmf::FastMathFlags`] parameter.
@@ -2074,7 +2101,7 @@ where
         rhs: Rhs,
         fmf: crate::fmf::FastMathFlags,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, K, B>>
+    ) -> IrResult<FloatValueId<K, B>>
     where
         Name: AsRef<str>,
         K: FloatKind,
@@ -2089,6 +2116,7 @@ where
             name,
             InstructionKindData::FDiv,
         )
+        .map(|v| v.id())
     }
 
     /// `frem` with an explicit [`crate::fmf::FastMathFlags`] parameter.
@@ -2098,7 +2126,7 @@ where
         rhs: Rhs,
         fmf: crate::fmf::FastMathFlags,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, K, B>>
+    ) -> IrResult<FloatValueId<K, B>>
     where
         Name: AsRef<str>,
         K: FloatKind,
@@ -2113,6 +2141,7 @@ where
             name,
             InstructionKindData::FRem,
         )
+        .map(|v| v.id())
     }
 
     /// `fcmp` with an explicit [`crate::fmf::FastMathFlags`] parameter.
@@ -2124,7 +2153,7 @@ where
         rhs: Rhs,
         fmf: crate::fmf::FastMathFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         K: FloatKind,
@@ -2135,11 +2164,13 @@ where
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
         let i1 = ModuleView::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_fp_cmp(pred, lhs, rhs)? {
-            return Ok(folded);
+            return Ok(folded.id());
         }
         let mut payload = crate::instr_types::FCmpInstData::new(pred, lhs.slot(), rhs.slot());
         payload.fmf = fmf;
-        Ok(self.append_int_at(i1, InstructionKindData::FCmp(payload), name))
+        Ok(self
+            .append_int_at(i1, InstructionKindData::FCmp(payload), name)
+            .id())
     }
 
     /// Produce `fcmp <pred> lhs, rhs`. Mirrors
@@ -2150,7 +2181,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         K: FloatKind,
@@ -2161,12 +2192,14 @@ where
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
         let i1 = ModuleView::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_fp_cmp(pred, lhs, rhs)? {
-            return Ok(folded);
+            return Ok(folded.id());
         }
         let mut payload = crate::instr_types::FCmpInstData::new(pred, lhs.slot(), rhs.slot());
         // Apply builder-context FMF (`fcmp` is an `FPMathOperator` upstream).
         payload.fmf = self.fmf;
-        Ok(self.append_int_at(i1, InstructionKindData::FCmp(payload), name))
+        Ok(self
+            .append_int_at(i1, InstructionKindData::FCmp(payload), name)
+            .id())
     }
 
     // ---- Per-predicate fcmp wrappers ----
@@ -2181,7 +2214,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
@@ -2202,7 +2235,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
@@ -2223,7 +2256,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
@@ -2244,7 +2277,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
@@ -2265,7 +2298,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
@@ -2286,7 +2319,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
@@ -2307,7 +2340,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
@@ -2328,7 +2361,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
@@ -2349,7 +2382,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
@@ -2370,7 +2403,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
@@ -2391,7 +2424,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
@@ -2412,7 +2445,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
@@ -2433,7 +2466,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
@@ -2454,7 +2487,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::FloatKind,
@@ -2474,11 +2507,7 @@ where
     /// Produce `fneg <value>`. Mirrors `IRBuilder::CreateFNeg` in
     /// `IRBuilder.h`. The result handle has the same float kind as the
     /// operand (Doctrine D4).
-    pub fn build_float_neg<K, V, Name>(
-        &self,
-        value: V,
-        name: Name,
-    ) -> IrResult<FloatValue<'ctx, K, B>>
+    pub fn build_float_neg<K, V, Name>(&self, value: V, name: Name) -> IrResult<FloatValueId<K, B>>
     where
         Name: AsRef<str>,
         K: FloatKind,
@@ -2495,7 +2524,7 @@ where
         value: V,
         fmf: crate::fmf::FastMathFlags,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, K, B>>
+    ) -> IrResult<FloatValueId<K, B>>
     where
         Name: AsRef<str>,
         K: FloatKind,
@@ -2503,10 +2532,12 @@ where
     {
         let v = value.into_float_value(ModuleRef::new(self.module))?;
         if let Some(folded) = self.folder.fold_fp_un_op(UnaryOpcode::FNeg, v, fmf)? {
-            return self.accept_folded_fp(folded, v);
+            return self.accept_folded_fp(folded, v).map(|v| v.id());
         }
         let payload = FNegInstData::new(v.slot(), fmf);
-        Ok(self.append_fp_like(v, InstructionKindData::FNeg(payload), name))
+        Ok(self
+            .append_fp_like(v, InstructionKindData::FNeg(payload), name)
+            .id())
     }
 
     /// Produce `freeze <value>`. Mirrors `IRBuilder::CreateFreeze`.
@@ -3269,6 +3300,15 @@ where
     }
 
     // ---- Casts: trunc / zext / sext ----
+    //
+    // Every cast builder in this file (integer casts here, the float casts and
+    // pointer casts further down) returns a *storable id* rather than a
+    // borrowing handle: `IntValueId<W, B>` / `FloatValueId<K, B>` /
+    // `PointerValueId<B>` per the result kind, and `ValueId<B>` for the two
+    // fully-erased forms (`build_bitcast_dyn`, `build_ptr_to_addr_dyn`) whose
+    // result may be a vector. Note the cast builders take their source operand
+    // as a *concrete handle*, not an `Into*Value` bound, so chaining one cast
+    // into the next is spelled `b.build_sext(b.view(t), i64_ty, "e")`.
 
     /// Produce `trunc <value> to <dst_ty>`. Mirrors
     /// `IRBuilder::CreateTrunc`.
@@ -3285,7 +3325,7 @@ where
         value: IntValue<'ctx, Src, B>,
         dst_ty: IntType<'ctx, Dst, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, Dst, B>>
+    ) -> IrResult<IntValueId<Dst, B>>
     where
         Name: AsRef<str>,
         Src: crate::int_width::WiderThan<Dst>,
@@ -3296,10 +3336,12 @@ where
             value.into_erased(),
             dst_ty,
         )? {
-            return self.accept_folded_cast_int(folded, dst_ty);
+            return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.slot());
-        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     /// `trunc nuw/nsw` with explicit [`crate::TruncFlags`]. Mirrors
@@ -3320,7 +3362,7 @@ where
         dst_ty: IntType<'ctx, Dst, B>,
         flags: crate::instr_types::TruncFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, Dst, B>>
+    ) -> IrResult<IntValueId<Dst, B>>
     where
         Name: AsRef<str>,
         Src: crate::int_width::WiderThan<Dst>,
@@ -3331,12 +3373,14 @@ where
             value.into_erased(),
             dst_ty,
         )? {
-            return self.accept_folded_cast_int(folded, dst_ty);
+            return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.slot());
         payload.nuw.set(flags.nuw);
         payload.nsw.set(flags.nsw);
-        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     /// Produce `zext <value> to <dst_ty>`. Mirrors
@@ -3350,7 +3394,7 @@ where
         value: IntValue<'ctx, Src, B>,
         dst_ty: IntType<'ctx, Dst, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, Dst, B>>
+    ) -> IrResult<IntValueId<Dst, B>>
     where
         Name: AsRef<str>,
         Src: IntWidth,
@@ -3361,10 +3405,12 @@ where
             value.into_erased(),
             dst_ty,
         )? {
-            return self.accept_folded_cast_int(folded, dst_ty);
+            return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, value.slot());
-        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     /// `zext nneg` with explicit [`crate::ZExtFlags`]. Mirrors
@@ -3379,7 +3425,7 @@ where
         dst_ty: IntType<'ctx, Dst, B>,
         flags: crate::instr_types::ZExtFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, Dst, B>>
+    ) -> IrResult<IntValueId<Dst, B>>
     where
         Name: AsRef<str>,
         Src: IntWidth,
@@ -3390,11 +3436,13 @@ where
             value.into_erased(),
             dst_ty,
         )? {
-            return self.accept_folded_cast_int(folded, dst_ty);
+            return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, value.slot());
         payload.nneg.set(flags.nneg);
-        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     /// Produce `sext <value> to <dst_ty>`. Mirrors
@@ -3408,7 +3456,7 @@ where
         value: IntValue<'ctx, Src, B>,
         dst_ty: IntType<'ctx, Dst, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, Dst, B>>
+    ) -> IrResult<IntValueId<Dst, B>>
     where
         Name: AsRef<str>,
         Src: IntWidth,
@@ -3419,10 +3467,12 @@ where
             value.into_erased(),
             dst_ty,
         )? {
-            return self.accept_folded_cast_int(folded, dst_ty);
+            return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::SExt, value.slot());
-        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     // ---- Dyn fallbacks (runtime-checked) ----
@@ -3435,7 +3485,7 @@ where
         value: IntValue<'ctx, IntDyn, B>,
         dst_ty: IntType<'ctx, IntDyn, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, IntDyn, B>>
+    ) -> IrResult<IntValueId<IntDyn, B>>
     where
         Name: AsRef<str>,
     {
@@ -3453,10 +3503,12 @@ where
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
+            return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded).id());
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.slot());
-        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     /// `trunc nuw/nsw` with explicit [`crate::TruncFlags`]. Runtime-checked
@@ -3468,7 +3520,7 @@ where
         dst_ty: IntType<'ctx, IntDyn, B>,
         flags: crate::instr_types::TruncFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, IntDyn, B>>
+    ) -> IrResult<IntValueId<IntDyn, B>>
     where
         Name: AsRef<str>,
     {
@@ -3486,12 +3538,14 @@ where
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
+            return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded).id());
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.slot());
         payload.nuw.set(flags.nuw);
         payload.nsw.set(flags.nsw);
-        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     /// Runtime-checked `zext` for `IntValue<Dyn>` operands.
@@ -3502,11 +3556,12 @@ where
         value: IntValue<'ctx, IntDyn, B>,
         dst_ty: IntType<'ctx, IntDyn, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, IntDyn, B>>
+    ) -> IrResult<IntValueId<IntDyn, B>>
     where
         Name: AsRef<str>,
     {
         self.build_int_extend_dyn(value, dst_ty, name, crate::instr_types::CastOpcode::ZExt)
+            .map(|v| v.id())
     }
 
     /// `zext nneg` with explicit [`crate::ZExtFlags`]. Runtime-checked
@@ -3518,7 +3573,7 @@ where
         dst: IntType<'ctx, IntDyn, B>,
         flags: crate::instr_types::ZExtFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, IntDyn, B>>
+    ) -> IrResult<IntValueId<IntDyn, B>>
     where
         Name: AsRef<str>,
     {
@@ -3536,11 +3591,13 @@ where
             dst.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst.as_type().id())?;
-            return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
+            return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded).id());
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, src.slot());
         payload.nneg.set(flags.nneg);
-        Ok(self.append_int_at(dst, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_int_at(dst, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     /// Runtime-checked `sext` for `IntValue<Dyn>` operands.
@@ -3551,11 +3608,12 @@ where
         value: IntValue<'ctx, IntDyn, B>,
         dst_ty: IntType<'ctx, IntDyn, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, IntDyn, B>>
+    ) -> IrResult<IntValueId<IntDyn, B>>
     where
         Name: AsRef<str>,
     {
         self.build_int_extend_dyn(value, dst_ty, name, crate::instr_types::CastOpcode::SExt)
+            .map(|v| v.id())
     }
 
     /// Crate-internal helper for `build_zext_dyn` / `build_sext_dyn`.
@@ -5055,13 +5113,14 @@ where
         value: FloatValue<'ctx, Src, B>,
         dst_ty: FloatType<'ctx, Dst, B>,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, Dst, B>>
+    ) -> IrResult<FloatValueId<Dst, B>>
     where
         Name: AsRef<str>,
         Src: FloatKind,
         Dst: FloatKind + FloatWiderThan<Src>,
     {
         self.build_fp_cast(value, dst_ty, name, crate::instr_types::CastOpcode::FpExt)
+            .map(|v| v.id())
     }
 
     /// Produce `fptrunc <value> to <dst>`. Compile-time check:
@@ -5071,13 +5130,14 @@ where
         value: FloatValue<'ctx, Src, B>,
         dst_ty: FloatType<'ctx, Dst, B>,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, Dst, B>>
+    ) -> IrResult<FloatValueId<Dst, B>>
     where
         Name: AsRef<str>,
         Src: FloatKind + FloatWiderThan<Dst>,
         Dst: FloatKind,
     {
         self.build_fp_cast(value, dst_ty, name, crate::instr_types::CastOpcode::FpTrunc)
+            .map(|v| v.id())
     }
 
     /// Runtime-kind `fptrunc`. Mirrors [`Self::build_fp_trunc`] but
@@ -5092,7 +5152,7 @@ where
         value: FloatValue<'ctx, FloatDyn, B>,
         dst_ty: FloatType<'ctx, FloatDyn, B>,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, FloatDyn, B>>
+    ) -> IrResult<FloatValueId<FloatDyn, B>>
     where
         Name: AsRef<str>,
     {
@@ -5103,10 +5163,12 @@ where
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded));
+            return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded).id());
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::FpTrunc, v.id);
-        Ok(self.append_fp_at(dst_ty, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     /// Runtime-kind `fpext`. Mirrors [`Self::build_fp_ext`] but accepts
@@ -5121,7 +5183,7 @@ where
         value: FloatValue<'ctx, FloatDyn, B>,
         dst_ty: FloatType<'ctx, FloatDyn, B>,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, FloatDyn, B>>
+    ) -> IrResult<FloatValueId<FloatDyn, B>>
     where
         Name: AsRef<str>,
     {
@@ -5131,10 +5193,12 @@ where
                 .fold_cast_dyn(crate::instr_types::CastOpcode::FpExt, v, dst_ty.as_type())?
         {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded));
+            return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded).id());
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::FpExt, v.id);
-        Ok(self.append_fp_at(dst_ty, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     /// Crate-internal helper for `build_fp_ext` / `build_fp_trunc`.
@@ -5164,13 +5228,14 @@ where
         value: FloatValue<'ctx, K, B>,
         dst_ty: IntType<'ctx, W, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         K: FloatKind,
         W: IntWidth,
     {
         self.build_fp_to_int(value, dst_ty, name, crate::instr_types::CastOpcode::FpToUI)
+            .map(|v| v.id())
     }
 
     /// Produce `fptosi <value> to <dst>`. Mirrors
@@ -5180,13 +5245,14 @@ where
         value: FloatValue<'ctx, K, B>,
         dst_ty: IntType<'ctx, W, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         K: FloatKind,
         W: IntWidth,
     {
         self.build_fp_to_int(value, dst_ty, name, crate::instr_types::CastOpcode::FpToSI)
+            .map(|v| v.id())
     }
 
     fn build_fp_to_int<K, W>(
@@ -5215,13 +5281,14 @@ where
         value: IntValue<'ctx, W, B>,
         dst_ty: FloatType<'ctx, K, B>,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, K, B>>
+    ) -> IrResult<FloatValueId<K, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
         K: FloatKind,
     {
         self.build_int_to_fp(value, dst_ty, name, crate::instr_types::CastOpcode::UIToFp)
+            .map(|v| v.id())
     }
 
     /// `uitofp nneg` with explicit [`crate::UIToFpFlags`]. Mirrors
@@ -5233,7 +5300,7 @@ where
         dst_ty: FloatType<'ctx, K, B>,
         flags: crate::instr_types::UIToFpFlags,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, K, B>>
+    ) -> IrResult<FloatValueId<K, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -5244,11 +5311,13 @@ where
             self.folder
                 .fold_cast_to_fp(crate::instr_types::CastOpcode::UIToFp, v, dst_ty)?
         {
-            return self.accept_folded_cast_fp(folded, dst_ty);
+            return self.accept_folded_cast_fp(folded, dst_ty).map(|v| v.id());
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::UIToFp, v.id);
         payload.nneg.set(flags.nneg);
-        Ok(self.append_fp_at(dst_ty, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     /// Produce `sitofp <value> to <dst>`. Mirrors
@@ -5258,13 +5327,14 @@ where
         value: IntValue<'ctx, W, B>,
         dst_ty: FloatType<'ctx, K, B>,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, K, B>>
+    ) -> IrResult<FloatValueId<K, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
         K: FloatKind,
     {
         self.build_int_to_fp(value, dst_ty, name, crate::instr_types::CastOpcode::SIToFp)
+            .map(|v| v.id())
     }
 
     /// `uitofp nneg` with explicit [`crate::UIToFpFlags`]. The `nneg` flag
@@ -5276,7 +5346,7 @@ where
         dst: FloatType<'ctx, FloatDyn, B>,
         flags: crate::instr_types::UIToFpFlags,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, FloatDyn, B>>
+    ) -> IrResult<FloatValueId<FloatDyn, B>>
     where
         Name: AsRef<str>,
     {
@@ -5286,11 +5356,13 @@ where
             dst.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst.as_type().id())?;
-            return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded));
+            return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded).id());
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::UIToFp, src.slot());
         payload.nneg.set(flags.nneg);
-        Ok(self.append_fp_at(dst, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_fp_at(dst, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     fn build_int_to_fp<W, K>(
@@ -5322,14 +5394,14 @@ where
         &self,
         value: PointerValue<'ctx, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, IntDyn, B>>
+    ) -> IrResult<IntValueId<IntDyn, B>>
     where
         Name: AsRef<str>,
     {
         let value = value.into_erased();
         let dst_ty = self.ptr_to_addr_result_type(value.ty())?;
         let result = self.build_ptr_to_addr_dyn(value, dst_ty, name)?;
-        Ok(IntValue::<IntDyn, B>::from_value_unchecked(result))
+        Ok(IntValue::<IntDyn, B>::from_value_unchecked(self.view(result)).id())
     }
 
     /// Runtime-typed `ptrtoaddr`. Accepts either a scalar pointer or a
@@ -5341,7 +5413,7 @@ where
         value: Value<'ctx, B>,
         dst_ty: Type<'ctx, B>,
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
     {
@@ -5355,11 +5427,13 @@ where
             .folder
             .fold_cast_dyn(CastOpcode::PtrToAddr, value, dst_ty)?
         {
-            return self.checked_folded_value(folded, dst_ty.id());
+            return self
+                .checked_folded_value(folded, dst_ty.id())
+                .map(|v| v.id());
         }
         let payload = CastOpData::new(CastOpcode::PtrToAddr, value.id);
         let inst = self.append_instruction(dst_ty.id(), InstructionKindData::Cast(payload), name);
-        Ok(inst.to_erased())
+        Ok(inst.to_erased().id())
     }
 
     /// Produce `ptrtoint <value> to <dst>`. Mirrors
@@ -5369,7 +5443,7 @@ where
         value: PointerValue<'ctx, B>,
         dst_ty: IntType<'ctx, W, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -5379,10 +5453,12 @@ where
             self.folder
                 .fold_cast_to_int(crate::instr_types::CastOpcode::PtrToInt, v, dst_ty)?
         {
-            return self.accept_folded_cast_int(folded, dst_ty);
+            return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::PtrToInt, v.id);
-        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     /// Produce `inttoptr <value> to <dst>`. Mirrors
@@ -5392,7 +5468,7 @@ where
         value: IntValue<'ctx, W, B>,
         dst_ty: PointerType<'ctx, B>,
         name: Name,
-    ) -> IrResult<PointerValue<'ctx, B>>
+    ) -> IrResult<PointerValueId<B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -5404,10 +5480,12 @@ where
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(PointerValue::from_value_unchecked(folded));
+            return Ok(PointerValue::from_value_unchecked(folded).id());
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::IntToPtr, v.id);
-        Ok(self.append_ptr(dst_ty, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_ptr(dst_ty, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     /// Generic bitcast on values of equal bit width. Mirrors
@@ -5423,7 +5501,7 @@ where
         value: IntValue<'ctx, Src, B>,
         dst_ty: IntType<'ctx, Dst, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, Dst, B>>
+    ) -> IrResult<IntValueId<Dst, B>>
     where
         Name: AsRef<str>,
         Src: super::int_width::StaticIntWidth,
@@ -5442,10 +5520,12 @@ where
             v_value,
             dst_ty,
         )? {
-            return self.accept_folded_cast_int(folded, dst_ty);
+            return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
-        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     /// Bitcast an integer value to a same-bit-width float. Mirrors the
@@ -5457,7 +5537,7 @@ where
         value: IntValue<'ctx, W, B>,
         dst_ty: FloatType<'ctx, K, B>,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, K, B>>
+    ) -> IrResult<FloatValueId<K, B>>
     where
         Name: AsRef<str>,
         W: super::int_width::StaticIntWidth,
@@ -5475,10 +5555,12 @@ where
             self.folder
                 .fold_cast_to_fp(super::instr_types::CastOpcode::BitCast, v_value, dst_ty)?
         {
-            return self.accept_folded_cast_fp(folded, dst_ty);
+            return self.accept_folded_cast_fp(folded, dst_ty).map(|v| v.id());
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
-        Ok(self.append_fp_at(dst_ty, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     /// Bitcast a float to a same-bit-width integer. Mirrors the
@@ -5490,7 +5572,7 @@ where
         value: FloatValue<'ctx, K, B>,
         dst_ty: IntType<'ctx, W, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::StaticFloatKind,
@@ -5509,10 +5591,12 @@ where
             v_value,
             dst_ty,
         )? {
-            return self.accept_folded_cast_int(folded, dst_ty);
+            return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
-        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     /// Bitcast a float to a same-bit-width float. Used for
@@ -5524,7 +5608,7 @@ where
         value: FloatValue<'ctx, Src, B>,
         dst_ty: FloatType<'ctx, Dst, B>,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, Dst, B>>
+    ) -> IrResult<FloatValueId<Dst, B>>
     where
         Name: AsRef<str>,
         Src: super::float_kind::StaticFloatKind,
@@ -5542,10 +5626,12 @@ where
             self.folder
                 .fold_cast_to_fp(super::instr_types::CastOpcode::BitCast, v_value, dst_ty)?
         {
-            return self.accept_folded_cast_fp(folded, dst_ty);
+            return self.accept_folded_cast_fp(folded, dst_ty).map(|v| v.id());
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, v_value.id);
-        Ok(self.append_fp_at(dst_ty, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     /// Runtime-typed bitcast: produce `bitcast <src> to <dst>` with both
@@ -5559,7 +5645,7 @@ where
         value: Value<'ctx, B>,
         dst_ty: Type<'ctx, B>,
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
     {
@@ -5567,11 +5653,13 @@ where
             self.folder
                 .fold_cast_dyn(super::instr_types::CastOpcode::BitCast, value, dst_ty)?
         {
-            return self.checked_folded_value(folded, dst_ty.id());
+            return self
+                .checked_folded_value(folded, dst_ty.id())
+                .map(|v| v.id());
         }
         let payload = CastOpData::new(super::instr_types::CastOpcode::BitCast, value.id);
         let inst = self.append_instruction(dst_ty.id(), InstructionKindData::Cast(payload), name);
-        Ok(inst.to_erased())
+        Ok(inst.to_erased().id())
     }
 
     /// Produce `addrspacecast <value> to <dst>`. Mirrors
@@ -5581,7 +5669,7 @@ where
         value: PointerValue<'ctx, B>,
         dst_ty: PointerType<'ctx, B>,
         name: Name,
-    ) -> IrResult<PointerValue<'ctx, B>>
+    ) -> IrResult<PointerValueId<B>>
     where
         Name: AsRef<str>,
     {
@@ -5592,10 +5680,12 @@ where
             dst_ty.as_type(),
         )? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(PointerValue::from_value_unchecked(folded));
+            return Ok(PointerValue::from_value_unchecked(folded).id());
         }
         let payload = CastOpData::new(crate::instr_types::CastOpcode::AddrSpaceCast, v.id);
-        Ok(self.append_ptr(dst_ty, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_ptr(dst_ty, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     /// Pointer cast: pick `bitcast` for same-addrspace pointer-to-pointer
@@ -5608,7 +5698,7 @@ where
         value: PointerValue<'ctx, B>,
         dst_ty: PointerType<'ctx, B>,
         name: Name,
-    ) -> IrResult<PointerValue<'ctx, B>>
+    ) -> IrResult<PointerValueId<B>>
     where
         Name: AsRef<str>,
     {
@@ -5624,14 +5714,16 @@ where
                 .create_pointer_bitcast_or_addrspace_cast(constant, dst_ty.as_type())?
         {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(PointerValue::from_value_unchecked(folded));
+            return Ok(PointerValue::from_value_unchecked(folded).id());
         }
         if let Some(folded) = self.folder.fold_cast_dyn(opcode, v, dst_ty.as_type())? {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
-            return Ok(PointerValue::from_value_unchecked(folded));
+            return Ok(PointerValue::from_value_unchecked(folded).id());
         }
         let payload = CastOpData::new(opcode, v.id);
-        Ok(self.append_ptr(dst_ty, InstructionKindData::Cast(payload), name))
+        Ok(self
+            .append_ptr(dst_ty, InstructionKindData::Cast(payload), name)
+            .id())
     }
 
     /// `icmp eq <ptr>, null` -- pointer-null test. Mirrors
@@ -5641,7 +5733,7 @@ where
         &self,
         ptr: PointerValue<'ctx, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
     {
@@ -5660,7 +5752,7 @@ where
         &self,
         ptr: PointerValue<'ctx, B>,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
     {
@@ -5683,7 +5775,7 @@ where
         lhs: L,
         rhs: R2,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         L: IntoPointerValue<'ctx, B>,
@@ -5697,11 +5789,13 @@ where
             IsValue::into_erased(rhs),
         )?;
         if let Some(folded) = folder::narrow_folded_bool(folded)? {
-            return Ok(folded);
+            return Ok(folded.id());
         }
         let payload = super::instr_types::CmpInstData::new(pred, lhs.slot(), rhs.slot());
         let i1 = ModuleView::<B>::new(self.module).bool_type();
-        Ok(self.append_int_at(i1, InstructionKindData::ICmp(payload), name))
+        Ok(self
+            .append_int_at(i1, InstructionKindData::ICmp(payload), name)
+            .id())
     }
 
     // ---- Vector splat / ptr arithmetic / aggregate ret convenience ----
@@ -5808,19 +5902,24 @@ where
     }
 
     // ---- Integer comparison ----
+    //
+    // `icmp` yields `i1`, so every builder in this family -- and the `fcmp`
+    // family above, and `build_pointer_cmp` / `build_is_null` /
+    // `build_is_not_null` -- returns the storable `IntValueId<bool, B>`.
 
     /// Produce `icmp <pred> <ty> <lhs>, <rhs>`. Mirrors
     /// `IRBuilder::CreateICmp`.
     ///
     /// Both operands share width `W` at the type level. The result
-    /// type is always `i1` (`IntValue<'ctx, bool, B>`).
+    /// type is always `i1`, named by an
+    /// [`IntValueId<bool, B>`](crate::IntValueId).
     pub fn build_int_cmp<W, Lhs, Rhs, Name>(
         &self,
         pred: crate::cmp_predicate::IntPredicate,
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -5831,10 +5930,12 @@ where
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
         let i1 = ModuleView::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_int_cmp(pred, lhs, rhs)? {
-            return Ok(folded);
+            return Ok(folded.id());
         }
         let payload = crate::instr_types::CmpInstData::new(pred, lhs.slot(), rhs.slot());
-        Ok(self.append_int_at(i1, InstructionKindData::ICmp(payload), name))
+        Ok(self
+            .append_int_at(i1, InstructionKindData::ICmp(payload), name)
+            .id())
     }
 
     /// `icmp samesign` with explicit [`crate::ICmpFlags`]. Mirrors
@@ -5853,7 +5954,7 @@ where
         rhs: Rhs,
         flags: crate::instr_types::ICmpFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -5864,11 +5965,13 @@ where
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
         let i1 = ModuleView::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_int_cmp(predicate, lhs, rhs)? {
-            return Ok(folded);
+            return Ok(folded.id());
         }
         let mut payload = crate::instr_types::CmpInstData::new(predicate, lhs.slot(), rhs.slot());
         payload.samesign = flags.samesign;
-        Ok(self.append_int_at(i1, InstructionKindData::ICmp(payload), name))
+        Ok(self
+            .append_int_at(i1, InstructionKindData::ICmp(payload), name)
+            .id())
     }
 
     /// `icmp samesign` with explicit [`crate::ICmpFlags`]. Both operands
@@ -5881,17 +5984,19 @@ where
         rhs: IntValue<'ctx, IntDyn, B>,
         flags: crate::instr_types::ICmpFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
     {
         let i1 = ModuleView::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_int_cmp(pred, lhs, rhs)? {
-            return Ok(folded);
+            return Ok(folded.id());
         }
         let mut payload = crate::instr_types::CmpInstData::new(pred, lhs.slot(), rhs.slot());
         payload.samesign = flags.samesign;
-        Ok(self.append_int_at(i1, InstructionKindData::ICmp(payload), name))
+        Ok(self
+            .append_int_at(i1, InstructionKindData::ICmp(payload), name)
+            .id())
     }
 
     // Per-predicate convenience wrappers. Mirror the LLVM C++
@@ -5911,7 +6016,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -5929,7 +6034,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -5947,7 +6052,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -5970,7 +6075,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -5993,7 +6098,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -6016,7 +6121,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -6039,7 +6144,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -6062,7 +6167,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -6085,7 +6190,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -6108,7 +6213,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, bool, B>>
+    ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,

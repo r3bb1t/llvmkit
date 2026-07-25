@@ -918,7 +918,7 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
         // branch — the collapse deregistered it. Nothing in `verify()` checks
         // use-list consistency, so assert it directly.
         assert!(
-            !c.into_erased().has_uses(),
+            !out.view(c).into_erased().has_uses(),
             "the collapse must deregister the dead condition operand"
         );
 

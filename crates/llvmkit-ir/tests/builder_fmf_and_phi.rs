@@ -10,7 +10,7 @@
 
 use llvmkit_ir::{
     Brand, ConstantFolder, Dyn, FastMathFlags, FloatValue, IRBuilder, InstructionKind,
-    InstructionView, IntValue, IrError, Linkage, Module, PointerValue, Positioned,
+    InstructionView, IntValueId, IrError, Linkage, Module, PointerValue, Positioned,
 };
 
 // --- Builder-context FMF -----------------------------------------------
@@ -189,7 +189,7 @@ fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
         let p: FloatValue<f32> = f.param(0)?.try_into()?;
         let n0 = b.build_float_neg::<f32, _, _>(p, "n0")?;
         let Some(InstructionKind::FNeg(n0_inst)) =
-            InstructionView::try_from(n0.into_erased())?.kind()
+            InstructionView::try_from(b.view(n0).into_erased())?.kind()
         else {
             panic!("expected n0 to be fneg");
         };
@@ -197,7 +197,7 @@ fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
         let fmf = FastMathFlags::NO_NANS | FastMathFlags::NO_SIGNED_ZEROS;
         let n1 = b.build_float_neg_with_flags::<f32, _, _>(n0, fmf, "n1")?;
         let Some(InstructionKind::FNeg(n1_inst)) =
-            InstructionView::try_from(n1.into_erased())?.kind()
+            InstructionView::try_from(b.view(n1).into_erased())?.kind()
         else {
             panic!("expected n1 to be fneg");
         };
@@ -345,7 +345,7 @@ where
         &IRBuilder<'_, 'ctx, Brand<'ctx>, ConstantFolder, Positioned, Dyn>,
         FloatValue<'ctx, f32>,
         FloatValue<'ctx, f32>,
-    ) -> Result<IntValue<'ctx, bool>, IrError>,
+    ) -> Result<IntValueId<bool, Brand<'ctx>>, IrError>,
 {
     Module::with_new("a", |m| {
         let f32_ty = m.f32_type();

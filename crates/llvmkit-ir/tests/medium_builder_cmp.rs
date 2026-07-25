@@ -9,8 +9,8 @@
 //! `test/Assembler/` exercising integer predicates.
 
 use llvmkit_ir::{
-    Constant, ConstantIntValue, Dyn, ICmpFlags, IRBuilder, IntPredicate, IntValue, IrError,
-    Linkage, Module,
+    Constant, ConstantIntValue, Dyn, ICmpFlags, IRBuilder, IntPredicate, IntValue, IntValueId,
+    IrError, Linkage, Module,
 };
 
 fn build_eq_module() -> Result<String, IrError> {
@@ -75,7 +75,8 @@ fn build_int_cmp_returns_i1_for_chaining() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let n: IntValue<i32> = f.param(0)?.try_into()?;
-        let r: IntValue<bool> = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ne, n, 1_i32, "r")?;
+        let r: IntValueId<bool, _> =
+            b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ne, n, 1_i32, "r")?;
         b.build_ret(r)?;
         Ok(())
     })
@@ -114,7 +115,8 @@ fn default_constant_folder_folds_integer_compare() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let result = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ugt, 9_i32, 3_i32, "is_gt")?;
-        let folded = ConstantIntValue::<bool>::try_from(Constant::try_from(result.into_erased())?)?;
+        let folded =
+            ConstantIntValue::<bool>::try_from(Constant::try_from(b.view(result).into_erased())?)?;
         assert!(folded.ap_int().try_zext_u64() == Some(1));
         Ok(())
     })

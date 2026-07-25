@@ -6353,7 +6353,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let r = b
             .build_int_cmp_with_flags_dyn(pred, lhs, rhs, flags, name)
             .map_err(|e| self.builder_err("icmp", e))?;
-        Ok(r.into_erased())
+        Ok(b.view(r).into_erased())
     }
 
     /// `trunc [nuw] [nsw] TYPE VALUE to TYPE` / `zext [nneg] TYPE VALUE to TYPE` / `sext TYPE VALUE to TYPE`.
@@ -6400,7 +6400,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     b.build_trunc_dyn(src_int, dst_int, name)
                 }
                 .map_err(|e| self.builder_err("trunc", e))?
-                .into_erased()
             }
             IntCast::ZExt => if zext_nneg {
                 b.build_zext_with_flags_dyn(
@@ -6412,14 +6411,12 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             } else {
                 b.build_zext_dyn(src_int, dst_int, name)
             }
-            .map_err(|e| self.builder_err("zext", e))?
-            .into_erased(),
+            .map_err(|e| self.builder_err("zext", e))?,
             IntCast::SExt => b
                 .build_sext_dyn(src_int, dst_int, name)
-                .map_err(|e| self.builder_err("sext", e))?
-                .into_erased(),
+                .map_err(|e| self.builder_err("sext", e))?,
         };
-        Ok(v)
+        Ok(b.view(v).into_erased())
     }
 
     /// `ptrtoint TYPE VALUE to TYPE`. Mirrors `LLParser::parseCast`
@@ -6444,7 +6441,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_ptr_to_int(src_ptr, dst_int, result_name.as_str())
             .map_err(|e| self.builder_err("ptrtoint", e))?;
-        Ok(v.into_erased())
+        Ok(b.view(v).into_erased())
     }
 
     /// `inttoptr TYPE VALUE to TYPE`. Mirrors `LLParser::parseCast`
@@ -6469,7 +6466,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_int_to_ptr(src_int, dst_ptr, result_name.as_str())
             .map_err(|e| self.builder_err("inttoptr", e))?;
-        Ok(v.into_erased())
+        Ok(b.view(v).into_erased())
     }
 
     /// `fneg [nnan ninf ...] TYPE VALUE`. Mirrors `LLParser::parseUnaryOp` for `Instruction::FNeg`.
@@ -6491,7 +6488,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             b.build_float_neg_with_flags::<FloatDyn, _, _>(f, fmf, result_name.as_str())
         }
         .map_err(|e| self.builder_err("fneg", e))?;
-        Ok(r.into_erased())
+        Ok(b.view(r).into_erased())
     }
 
     /// `OP [nnan ninf ...] TYPE LHS, RHS` for fadd/fsub/fmul/fdiv/frem.
@@ -6521,38 +6518,33 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             } else {
                 b.build_fp_add_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
             }
-            .map_err(|e| self.builder_err("fadd", e))?
-            .into_erased(),
+            .map_err(|e| self.builder_err("fadd", e))?,
             FpBinOp::Sub => if fmf.is_empty() {
                 b.build_fp_sub::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, name)
             } else {
                 b.build_fp_sub_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
             }
-            .map_err(|e| self.builder_err("fsub", e))?
-            .into_erased(),
+            .map_err(|e| self.builder_err("fsub", e))?,
             FpBinOp::Mul => if fmf.is_empty() {
                 b.build_fp_mul::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, name)
             } else {
                 b.build_fp_mul_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
             }
-            .map_err(|e| self.builder_err("fmul", e))?
-            .into_erased(),
+            .map_err(|e| self.builder_err("fmul", e))?,
             FpBinOp::Div => if fmf.is_empty() {
                 b.build_fp_div::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, name)
             } else {
                 b.build_fp_div_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
             }
-            .map_err(|e| self.builder_err("fdiv", e))?
-            .into_erased(),
+            .map_err(|e| self.builder_err("fdiv", e))?,
             FpBinOp::Rem => if fmf.is_empty() {
                 b.build_fp_rem::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, name)
             } else {
                 b.build_fp_rem_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
             }
-            .map_err(|e| self.builder_err("frem", e))?
-            .into_erased(),
+            .map_err(|e| self.builder_err("frem", e))?,
         };
-        Ok(v)
+        Ok(b.view(v).into_erased())
     }
 
     /// `fcmp [nnan ninf ...] PRED TYPE LHS, RHS`. Mirrors `LLParser::parseCompare` FP arm.
@@ -6598,13 +6590,11 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let r = if fmf.is_empty() {
             b.build_fp_cmp::<llvmkit_ir::FloatDyn, _, _, _>(pred, lhs, rhs, name)
                 .map_err(|e| self.builder_err("fcmp", e))?
-                .into_erased()
         } else {
             b.build_fp_cmp_fmf::<llvmkit_ir::FloatDyn, _, _, _>(pred, lhs, rhs, fmf, name)
                 .map_err(|e| self.builder_err("fcmp", e))?
-                .into_erased()
         };
-        Ok(r)
+        Ok(b.view(r).into_erased())
     }
 
     /// `alloca TYPE [, TYPE COUNT] [, align N]`.
@@ -6958,14 +6948,12 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = match op {
             FpToInt::FpToSI => b
                 .build_fp_to_si(src_fp, dst_int, name)
-                .map_err(|e| self.builder_err("fptosi", e))?
-                .into_erased(),
+                .map_err(|e| self.builder_err("fptosi", e))?,
             FpToInt::FpToUI => b
                 .build_fp_to_ui(src_fp, dst_int, name)
-                .map_err(|e| self.builder_err("fptoui", e))?
-                .into_erased(),
+                .map_err(|e| self.builder_err("fptoui", e))?,
         };
-        Ok(v)
+        Ok(b.view(v).into_erased())
     }
 
     /// `sitofp`/`uitofp TYPE VALUE to TYPE`. Mirrors `LLParser::parseCast`
@@ -6993,8 +6981,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = match op {
             IntToFp::SIToFp => b
                 .build_si_to_fp(src_int, dst_fp, name)
-                .map_err(|e| self.builder_err("sitofp", e))?
-                .into_erased(),
+                .map_err(|e| self.builder_err("sitofp", e))?,
             IntToFp::UIToFp => {
                 if nneg {
                     b.build_ui_to_fp_with_flags_dyn(
@@ -7004,15 +6991,13 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                         name,
                     )
                     .map_err(|e| self.builder_err("uitofp", e))?
-                    .into_erased()
                 } else {
                     b.build_ui_to_fp(src_int, dst_fp, name)
                         .map_err(|e| self.builder_err("uitofp", e))?
-                        .into_erased()
                 }
             }
         };
-        Ok(v)
+        Ok(b.view(v).into_erased())
     }
 
     /// `addrspacecast ptr VALUE to ptr`. Mirrors `LLParser::parseCast`
@@ -7037,7 +7022,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_addrspace_cast(src_ptr, dst_ptr, result_name.as_str())
             .map_err(|e| self.builder_err("addrspacecast", e))?;
-        Ok(v.into_erased())
+        Ok(b.view(v).into_erased())
     }
 
     // ── S3.2: new opcode parsers ──────────────────────────────────────────
@@ -7061,7 +7046,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_bitcast_dyn(src_v, dst_ty, name)
             .map_err(|e| self.builder_err("bitcast", e))?;
-        Ok(v)
+        Ok(b.view(v))
     }
 
     /// `fptrunc <fp-ty> <val> to <fp-ty>`. Mirrors `LLParser::parseCast`
@@ -7088,7 +7073,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_fp_trunc_dyn(sv, df, result_name.as_str())
             .map_err(|e| self.builder_err("fptrunc", e))?;
-        Ok(v.into_erased())
+        Ok(b.view(v).into_erased())
     }
 
     /// `fpext <fp-ty> <val> to <fp-ty>`. Mirrors `LLParser::parseCast`
@@ -7115,7 +7100,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_fp_ext_dyn(sv, df, result_name.as_str())
             .map_err(|e| self.builder_err("fpext", e))?;
-        Ok(v.into_erased())
+        Ok(b.view(v).into_erased())
     }
 
     /// `ptrtoaddr <ptr-or-vector-ty> <val> to <int-or-vector-ty>`. Mirrors
@@ -7135,7 +7120,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_ptr_to_addr_dyn(src_v, dst_ty, result_name.as_str())
             .map_err(|e| self.builder_err("ptrtoaddr", e))?;
-        Ok(v)
+        Ok(b.view(v))
     }
 
     /// `extractelement <vec-ty> <vec>, <idx-ty> <idx>`.

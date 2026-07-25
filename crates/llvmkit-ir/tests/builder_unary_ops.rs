@@ -93,7 +93,7 @@ fn default_constant_folder_folds_fneg_to_constant() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let result = b.build_float_neg::<f64, _, _>(f64_ty.const_double(1.25), "neg")?;
         let folded =
-            ConstantFloatValue::<f64>::try_from(Constant::try_from(result.into_erased())?)?;
+            ConstantFloatValue::<f64>::try_from(Constant::try_from(b.view(result).into_erased())?)?;
         assert!(folded.ap_float().is_exactly_value_f64(-1.25));
         assert!(
             !format!("{m}").contains("fneg"),

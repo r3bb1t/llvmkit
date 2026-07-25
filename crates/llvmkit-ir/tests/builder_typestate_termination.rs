@@ -26,7 +26,7 @@ fn cond_br_terminator_terminates_block() -> Result<(), IrError> {
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let lhs: IntValue<i32> = f.param(0)?.try_into()?;
-        let cond: IntValue<bool> =
+        let cond: llvmkit_ir::IntValueId<bool, _> =
             b.build_int_cmp(llvmkit_ir::IntPredicate::Eq, lhs, 0_i32, "cond")?;
         let (terminated_entry, term) = b.build_cond_br(cond, &then_bb, &else_bb)?;
 

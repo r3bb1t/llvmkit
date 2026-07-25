@@ -8,9 +8,9 @@ use llvmkit_ir::instr_types::CastOpcode;
 use llvmkit_ir::{
     BinaryIntrinsic, BinaryOpcode, CastKind, Constant, ConstantFloatValue, ConstantFolder,
     ConstantIntValue, Dyn, GepNoWrapFlags, IRBuilder, IRBuilderFolder, InstructionKind,
-    InstructionView, IntDyn, IntPredicate, IntValue, IntWidth, IrError, IrResult, Linkage, Module,
-    MulFlags, NoFolder, OverflowFlags, PointerValue, ShlFlags, Type, UDivFlags, Value,
-    constant_fold_binary_instruction,
+    InstructionView, IntDyn, IntPredicate, IntValue, IntValueId, IntWidth, IrError, IrResult,
+    Linkage, Module, MulFlags, NoFolder, OverflowFlags, PointerValue, ShlFlags, Type, UDivFlags,
+    Value, constant_fold_binary_instruction,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -91,7 +91,7 @@ fn constant_folder_folds_fneg_constant_without_instruction() -> Result<(), IrErr
         let result = b.build_float_neg::<f32, _, _>(f32_ty.const_float(1.0), "n")?;
 
         let folded =
-            ConstantFloatValue::<f32>::try_from(Constant::try_from(result.into_erased())?)?;
+            ConstantFloatValue::<f32>::try_from(Constant::try_from(b.view(result).into_erased())?)?;
         assert!(folded.ap_float().is_exactly_value_f64(-1.0));
         assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
@@ -434,7 +434,7 @@ fn constant_folder_folds_is_null_of_constant_null_without_instruction() -> Resul
         let result = b.build_is_null(null, "isn")?;
 
         assert_eq!(
-            Constant::try_from(result.into_erased())?,
+            Constant::try_from(b.view(result).into_erased())?,
             bool_ty.const_int(true).as_constant()
         );
         assert_eq!(b.insert_block().instructions().len(), 0);
@@ -459,7 +459,7 @@ fn constant_folder_folds_is_not_null_of_constant_null_without_instruction() -> R
         let result = b.build_is_not_null(null, "ok")?;
 
         assert_eq!(
-            Constant::try_from(result.into_erased())?,
+            Constant::try_from(b.view(result).into_erased())?,
             bool_ty.const_int(false).as_constant()
         );
         assert_eq!(b.insert_block().instructions().len(), 0);
@@ -488,11 +488,11 @@ fn constant_folder_folds_pointer_cmp_global_vs_null_without_instruction() -> Res
         let ne = b.build_pointer_cmp(IntPredicate::Ne, gp, ptr_ty.const_null(), "ne")?;
 
         assert_eq!(
-            Constant::try_from(eq.into_erased())?,
+            Constant::try_from(b.view(eq).into_erased())?,
             bool_ty.const_int(false).as_constant()
         );
         assert_eq!(
-            Constant::try_from(ne.into_erased())?,
+            Constant::try_from(b.view(ne).into_erased())?,
             bool_ty.const_int(true).as_constant()
         );
         assert_eq!(b.insert_block().instructions().len(), 0);
@@ -681,7 +681,7 @@ fn no_folder_emits_ptrtoaddr_instruction_with_address_type() -> Result<(), IrErr
         let ptr: PointerValue = f.param(0)?.try_into()?;
 
         let result = b.build_ptr_to_addr(ptr, "addr")?;
-        let instruction = InstructionView::try_from(result.into_erased())?;
+        let instruction = InstructionView::try_from(b.view(result).into_erased())?;
         // Match the exact cast opcode through the nested `CastKind`; the
         // `PtrToAddr` handle exposes a statically pointer-typed `src()`.
         let Some(InstructionKind::Cast(CastKind::PtrToAddr(cast))) = instruction.kind() else {
@@ -691,9 +691,12 @@ fn no_folder_emits_ptrtoaddr_instruction_with_address_type() -> Result<(), IrErr
         assert_eq!(cast.opcode(), CastOpcode::PtrToAddr);
         let src: PointerValue = cast.src();
         assert_eq!(src.into_erased(), ptr.into_erased());
-        let typed_result: IntValue<IntDyn> = result;
-        assert_eq!(typed_result.ty().bit_width(), 32);
-        assert_eq!(typed_result.into_erased().name().as_deref(), Some("addr"));
+        let typed_result: IntValueId<IntDyn, _> = result;
+        assert_eq!(b.view(typed_result).ty().bit_width(), 32);
+        assert_eq!(
+            b.view(typed_result).into_erased().name().as_deref(),
+            Some("addr")
+        );
         assert_eq!(b.insert_block().instructions().len(), 1);
         Ok(())
     })
@@ -713,7 +716,7 @@ fn no_folder_emits_pointer_cmp_instruction_for_constant_nulls() -> Result<(), Ir
         let null = ptr_ty.const_null();
 
         let result = b.build_pointer_cmp(IntPredicate::Eq, null, null, "isn")?;
-        let instruction = InstructionView::try_from(result.into_erased())?;
+        let instruction = InstructionView::try_from(b.view(result).into_erased())?;
         let Some(InstructionKind::ICmp(icmp)) = instruction.kind() else {
             panic!("expected icmp instruction");
         };
@@ -721,7 +724,7 @@ fn no_folder_emits_pointer_cmp_instruction_for_constant_nulls() -> Result<(), Ir
         assert_eq!(icmp.predicate(), IntPredicate::Eq);
         assert_eq!(icmp.lhs(), null.into_erased());
         assert_eq!(icmp.rhs(), null.into_erased());
-        assert_eq!(result.into_erased().name().as_deref(), Some("isn"));
+        assert_eq!(b.view(result).into_erased().name().as_deref(), Some("isn"));
         assert_eq!(b.insert_block().instructions().len(), 1);
         Ok(())
     })

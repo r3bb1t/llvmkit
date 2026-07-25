@@ -158,21 +158,24 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
 
         assert_eq!(known(select.into_erased(), &query)?.to_string(), "10101?10");
         assert_eq!(known(phi, &query)?.to_string(), "00000?11");
-        assert_eq!(known(trunc.into_erased(), &query)?.to_string(), "11110000");
         assert_eq!(
-            known(zext.into_erased(), &query)?.to_string(),
+            known(b.view(trunc).into_erased(), &query)?.to_string(),
+            "11110000"
+        );
+        assert_eq!(
+            known(b.view(zext).into_erased(), &query)?.to_string(),
             "0000000010101010"
         );
         assert_eq!(
-            known(sext.into_erased(), &query)?.to_string(),
+            known(b.view(sext).into_erased(), &query)?.to_string(),
             "1111111110101010"
         );
         assert_eq!(
-            known(bitcast.into_erased(), &query)?.to_string(),
+            known(b.view(bitcast).into_erased(), &query)?.to_string(),
             "01011010"
         );
         assert_eq!(known(freeze.to_erased(), &query)?.to_string(), "10101010");
-        assert_eq!(known(cmp.into_erased(), &query)?.to_string(), "1");
+        assert_eq!(known(b.view(cmp).into_erased(), &query)?.to_string(), "1");
         Ok(())
     })
 }
@@ -310,11 +313,11 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         m.verify_borrowed()?;
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert_eq!(known(cmp0.into_erased(), &query)?.to_string(), "1");
-        assert_eq!(known(cmp1.into_erased(), &query)?.to_string(), "1");
-        assert_eq!(known(cmp2.into_erased(), &query)?.to_string(), "?");
+        assert_eq!(known(m.view(cmp0).into_erased(), &query)?.to_string(), "1");
+        assert_eq!(known(m.view(cmp1).into_erased(), &query)?.to_string(), "1");
+        assert_eq!(known(m.view(cmp2).into_erased(), &query)?.to_string(), "?");
         let query_without_instr_info = ValueTrackingQuery::new(&dl).without_instruction_info();
-        assert!(known(cmp0.into_erased(), &query_without_instr_info)?.is_unknown());
+        assert!(known(m.view(cmp0).into_erased(), &query_without_instr_info)?.is_unknown());
         Ok(())
     })
 }
@@ -355,7 +358,7 @@ fn call_return_range_attribute_contributes_known_bits() -> Result<(), IrError> {
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert_eq!(known(cmp.into_erased(), &query)?.to_string(), "1");
+        assert_eq!(known(m.view(cmp).into_erased(), &query)?.to_string(), "1");
         let text = format!("{m}");
         assert!(text.contains("call range(i8 0, 64) i8 @callee()"), "{text}");
         Ok(())
@@ -739,7 +742,7 @@ fn addrspacecast_drops_source_pointer_known_bits() -> Result<(), IrError> {
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert!(known(cast.into_erased(), &query)?.is_unknown());
+        assert!(known(b.view(cast).into_erased(), &query)?.is_unknown());
         Ok(())
     })
 }

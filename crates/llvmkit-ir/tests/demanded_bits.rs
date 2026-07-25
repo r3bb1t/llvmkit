@@ -26,7 +26,7 @@ fn demanded_bits_basic_trunc_zext_chain() -> Result<(), IrError> {
         let mul = b.build_int_mul::<i32, _, _, _>(add, b_arg, "mul")?;
         let trunc_i8 = b.build_trunc(b.view(mul), i8_ty, "lo8")?;
         let trunc_i1 = b.build_trunc(b.view(mul), i1_ty, "lo1")?;
-        let zext = b.build_zext(trunc_i1, i8_ty, "wide")?;
+        let zext = b.build_zext(b.view(trunc_i1), i8_ty, "wide")?;
         let sum = b.build_int_add::<i8, _, _, _>(trunc_i8, zext, "sum")?;
         b.build_ret(sum)?;
 
@@ -43,23 +43,23 @@ fn demanded_bits_basic_trunc_zext_chain() -> Result<(), IrError> {
             "00000000000000000000000011111111"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(trunc_i8.into_erased())),
+            bits(demanded.get_demanded_bits(m.view(trunc_i8).into_erased())),
             "11111111"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(trunc_i1.into_erased())),
+            bits(demanded.get_demanded_bits(m.view(trunc_i1).into_erased())),
             "1"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(zext.into_erased())),
+            bits(demanded.get_demanded_bits(m.view(zext).into_erased())),
             "11111111"
         );
         assert_eq!(
-            bits(demanded.get_operand_demanded_bits(trunc_i1.into_erased(), 0)?),
+            bits(demanded.get_operand_demanded_bits(m.view(trunc_i1).into_erased(), 0)?),
             "00000000000000000000000000000001"
         );
         assert_eq!(
-            bits(demanded.get_operand_demanded_bits(zext.into_erased(), 0)?),
+            bits(demanded.get_operand_demanded_bits(m.view(zext).into_erased(), 0)?),
             "1"
         );
         Ok(())
@@ -624,7 +624,7 @@ fn simplify_demanded_bits_pass_ports_and_zext_and() -> Result<(), IrError> {
         let op2_rhs = i5_ty.const_ap_int(&ApInt::from_words(5, &[14]))?;
         let op1 = b.build_int_and::<Width<3>, _, _, _>(a, op1_rhs, "op1")?;
         let cast = b.build_zext_dyn(b.view(op1).as_dyn(), i5_ty.as_dyn(), "cast")?;
-        let op2 = b.build_int_and_dyn(cast.into_erased(), op2_rhs.into_erased(), "op2")?;
+        let op2 = b.build_int_and_dyn(b.view(cast).into_erased(), op2_rhs.into_erased(), "op2")?;
         b.build_ret(op2)?;
 
         let before = format!("{m}");
@@ -677,7 +677,7 @@ fn simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement()
             "cast",
         )?;
         let low_mask = i5_ty.const_ap_int(&ApInt::from_words(5, &[3]))?;
-        let low = b.build_int_and_dyn(cast.into_erased(), low_mask.into_erased(), "low")?;
+        let low = b.build_int_and_dyn(b.view(cast).into_erased(), low_mask.into_erased(), "low")?;
         b.build_ret(low)?;
 
         let mutate_fn_ty = m.fn_type(i5_ty, [i3_ty.as_type()], false);
@@ -698,7 +698,7 @@ fn simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement()
             "cast.mut",
         )?;
         let low_mut = mutate_b.build_int_and_dyn(
-            cast_mut.into_erased(),
+            mutate_b.view(cast_mut).into_erased(),
             low_mask.into_erased(),
             "low.mut",
         )?;

@@ -757,7 +757,7 @@ fn function_denormal_f32_attribute_overrides_generic_mode() -> Result<(), IrErro
         let lhs = f32_ty.const_ap_float(&denormal)?;
         let rhs = f32_ty.const_ap_float(&denormal)?;
         let add = b.build_fp_add::<f32, _, _, _>(lhs, rhs, "sum")?;
-        let instruction = InstructionView::try_from(add.into_erased())?;
+        let instruction = InstructionView::try_from(b.view(add).into_erased())?;
 
         let folded = constant_fold_instruction(&instruction, &dl, None)?
             .expect("f32 denormal inputs fold after f32 attribute flush");
@@ -799,7 +799,7 @@ fn function_denormal_attribute_group_overrides_generic_mode() -> Result<(), IrEr
         let lhs = f32_ty.const_ap_float(&denormal)?;
         let rhs = f32_ty.const_ap_float(&denormal)?;
         let add = b.build_fp_add::<f32, _, _, _>(lhs, rhs, "sum")?;
-        let instruction = InstructionView::try_from(add.into_erased())?;
+        let instruction = InstructionView::try_from(b.view(add).into_erased())?;
 
         let folded = constant_fold_instruction(&instruction, &dl, None)?
             .expect("f32 denormal inputs fold after attribute-group f32 flush");
@@ -888,7 +888,7 @@ fn deny_declines_fp_binop_with_nsz_flag() -> Result<(), IrError> {
         let two = f32_ty.const_float(2.0);
         let add =
             b.build_fp_add_fmf::<f32, _, _, _>(one, two, FastMathFlags::NO_SIGNED_ZEROS, "sum")?;
-        let instruction = InstructionView::try_from(add.into_erased())?;
+        let instruction = InstructionView::try_from(b.view(add).into_erased())?;
         let operands = [one.as_constant(), two.as_constant()];
 
         assert_eq!(

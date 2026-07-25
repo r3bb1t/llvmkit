@@ -120,7 +120,7 @@ fn binop_and_cmp_groupings() -> Result<(), IrError> {
         assert_eq!(bop.lhs(), x.into_erased());
         assert_eq!(bop.rhs(), y.into_erased());
 
-        let cmp_view = InstructionView::try_from(cmp.into_erased())?;
+        let cmp_view = InstructionView::try_from(b.view(cmp).into_erased())?;
         let cv = cmp_view
             .kind()
             .and_then(|k| k.as_cmp())
