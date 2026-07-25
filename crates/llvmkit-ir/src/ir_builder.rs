@@ -93,6 +93,7 @@ use super::value::{
     ArrayValue, FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Value,
     ValueKindData, ValueSlot, ValueUse, VectorValue,
 };
+use super::value_id::ViewIn;
 use super::vec_len::{LenDyn, StaticVecLen, VecLen};
 
 /// Pair returned by terminator builders: the terminated insertion block and
@@ -466,6 +467,54 @@ where
     S: BuilderPositionState,
     R: ReturnMarker,
 {
+    /// Resolve a storable value id minted in this builder's module back into
+    /// its borrowing handle — the builder-side twin of
+    /// [`Module::view`](crate::Module::view).
+    ///
+    /// Builder methods hand back ids (the storable currency); a handle is the
+    /// ephemeral *view* you take when you need to read from a value
+    /// (`b.view(sum).ty()`). At a build site the owning [`Module`] token is
+    /// frequently not in scope while the builder always is, so this is the
+    /// canonical read path inside a function body.
+    ///
+    /// The module-tag check happens exactly as in
+    /// [`Module::view`](crate::Module::view): the id's tag is compared against
+    /// this builder's module *before* the arena is touched, so an id minted in
+    /// a different module can never mis-resolve against an in-range slot here.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the id belongs to a different module (foreign tag) or its slot
+    /// is absent. Use [`try_view`](Self::try_view) for the fallible form.
+    #[inline]
+    pub fn view<I>(&self, id: I) -> I::View
+    where
+        I: ViewIn<'ctx, B>,
+    {
+        id.resolve_in(ModuleRef::new(self.module))
+            .unwrap_or_else(|| {
+                panic!(
+                    "IRBuilder::view: id does not resolve in this module \
+                 (foreign module tag or absent/tombstoned slot)"
+                )
+            })
+    }
+
+    /// Fallible [`view`](Self::view): resolve a storable value id into its
+    /// borrowing handle, returning [`None`] when the id belongs to a different
+    /// module (foreign tag) or its slot is absent.
+    ///
+    /// Like [`view`](Self::view), this validates the module tag and arena range
+    /// only; a tombstoned-but-in-range slot is not detected (no cheap liveness
+    /// flag exists).
+    #[inline]
+    pub fn try_view<I>(&self, id: I) -> Option<I::View>
+    where
+        I: ViewIn<'ctx, B>,
+    {
+        id.resolve_in(ModuleRef::new(self.module))
+    }
+
     /// Re-anchor the builder *before* the given attached instruction.
     /// New instructions land between the prior instruction and `anchor`.
     /// Mirrors `IRBuilder::SetInsertPoint(Instruction *I)` in `IRBuilder.h`,

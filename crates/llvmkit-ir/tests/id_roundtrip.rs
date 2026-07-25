@@ -11,9 +11,9 @@
 
 use llvmkit_ir::{
     BasicBlockLabel, BlockId, Dyn, FloatValue, FloatValueId, FunctionId, GlobalId, GlobalVariable,
-    IntValue, IntValueId, IntoCallArg, IntoFloatValue, IntoIntValue, IntoPointerValue, IrError,
-    Linkage, Module, ModuleBrand, ModuleRef, PointerValue, PointerValueId, Unverified, Value,
-    ValueId,
+    IRBuilder, IntValue, IntValueId, IntoCallArg, IntoFloatValue, IntoIntValue, IntoPointerValue,
+    IrError, Linkage, Module, ModuleBrand, ModuleRef, PointerValue, PointerValueId, Unverified,
+    Value, ValueId,
 };
 
 /// Round-trip: every typed handle mints an id whose `view` reproduces the
@@ -162,6 +162,45 @@ fn foreign_tag_rejection_is_deferred_to_cycle_c() {
     // Intentionally empty: see the doc comment. The tag-check-passes branch is
     // covered by `try_view_returns_some_for_owned_ids`; the tag-check-fails
     // branch lands in cycle C.
+}
+
+/// B1a: [`IRBuilder::view`] / [`IRBuilder::try_view`] are the builder-side
+/// twins of the module pair — at a build site the `Module` token is often not
+/// in scope but the builder always is, so `b.view(id)` is the canonical read.
+/// Both must agree with `Module::view` / `Module::try_view` for the same id,
+/// and both must work on an *unpositioned* builder (the methods live on the
+/// state-generic impl block).
+#[test]
+fn builder_view_agrees_with_module_view() -> Result<(), IrError> {
+    Module::with_new("builder-view", |m| {
+        let i32_ty = m.i32_type();
+        let ptr_ty = m.ptr_type(0);
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), ptr_ty.as_type()], false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+
+        let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let p: PointerValue = f.param(1)?.try_into()?;
+        let v: Value = a.into_erased();
+
+        let b = IRBuilder::new(&m);
+
+        assert_eq!(
+            b.view(a.id()),
+            m.view(a.id()),
+            "builder view != module view"
+        );
+        assert_eq!(b.view(p.id()), p, "PointerValueId did not survive b.view");
+        assert_eq!(b.view(v.id()), v, "erased ValueId did not survive b.view");
+        assert_eq!(b.view(f.id()), f, "FunctionId did not survive b.view");
+
+        assert_eq!(
+            b.try_view(a.id()),
+            Some(a),
+            "try_view rejected an id minted in this builder's module",
+        );
+
+        Ok(())
+    })
 }
 
 /// A4: each *typed-value* id lifts back into its handle at a builder operand
