@@ -113,6 +113,7 @@ macro_rules! decl_constant_handle {
             #[inline]
             fn into_erased(self) -> Value<'ctx, B> { Self::into_erased(self) }
         }
+        crate::value::impl_into_erased_value_for_handle!($name);
         impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for $name<'ctx, B> {
             #[inline]
             fn as_constant(self) -> Constant<'ctx, B> { Self::as_constant(self) }
@@ -287,6 +288,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for ConstantIntV
         Self::into_erased(self)
     }
 }
+crate::value::impl_into_erased_value_for_handle!(ConstantIntValue[W: IntWidth]);
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IsConstant<'ctx, B>
     for ConstantIntValue<'ctx, W, B>
 {
@@ -498,6 +500,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IsValue<'ctx, B>
         Self::into_erased(self)
     }
 }
+crate::value::impl_into_erased_value_for_handle!(ConstantFloatValue[K: FloatKind]);
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IsConstant<'ctx, B>
     for ConstantFloatValue<'ctx, K, B>
 {

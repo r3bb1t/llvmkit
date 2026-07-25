@@ -479,6 +479,7 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> IsValue<'ctx, B> for Constant<'
         Constant::into_erased(self)
     }
 }
+crate::value::impl_into_erased_value_for_handle!(Constant);
 impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Typed<'ctx, B> for Constant<'ctx, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {

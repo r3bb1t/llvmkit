@@ -1096,6 +1096,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for Function
         FunctionValue::into_erased(self)
     }
 }
+crate::value::impl_into_erased_value_for_handle!(FunctionValue[R: ReturnMarker]);
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Typed<'ctx, B> for FunctionValue<'ctx, R, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {

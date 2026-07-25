@@ -48,8 +48,8 @@ use crate::marker::ReturnMarker;
 use crate::module::{Invariant, ModuleBrand, ModuleId, ModuleRef};
 use crate::r#type::TypeData;
 use crate::value::{
-    FloatValue, IntValue, IntoPointerValue, PointerValue, Value, ValueKindData, ValueSlot,
-    into_pointer_value_sealed,
+    FloatValue, IntValue, IntoErasedValue, IntoPointerValue, IsValue, PointerValue, Value,
+    ValueKindData, ValueSlot, into_erased_value_sealed, into_pointer_value_sealed,
 };
 
 // --------------------------------------------------------------------------
@@ -467,3 +467,61 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for PointerValueId<B
         self.resolve_in(module).ok_or(IrError::ForeignValueId)
     }
 }
+
+// --------------------------------------------------------------------------
+// IntoErasedValue: every id at an erased-by-design operand slot
+// --------------------------------------------------------------------------
+//
+// The counterpart to the block above for operand slots whose declared type is
+// the *erased* [`Value`] — `build_store`'s stored value, the call-argument
+// lists, the aggregate element slots, ... Every id lifts here, including the
+// erased [`ValueId`], because widening an erased id to an erased operand is
+// not the erased -> typed narrowing the `Into*Value` traits forbid; the
+// compile-fail fixture `tests/compile_fail/erased_id_not_int_operand.rs` keeps
+// that narrowing rejected at the *typed* positions.
+//
+// Each body reuses the same [`ViewIn::resolve_in`] resolver (one tag-check +
+// arena-recovery path, debug-assert marker checks included) and maps its
+// `None` to [`IrError::ForeignValueId`]. For the four value-shaped ids `None`
+// is reached only on a foreign module tag; [`FunctionId`] and [`GlobalId`]
+// additionally return `None` on a value-category mismatch, which their
+// minting accessors make unreachable — a foreign tag is likewise the only
+// error a caller can actually provoke.
+//
+// [`BlockId`] is absent: its handle [`BasicBlockLabel`] is not an [`IsValue`]
+// and a block is never an operand at these slots — it reaches a terminator
+// through `IntoBasicBlockLabel`, not through the erased value path.
+
+/// Implement [`IntoErasedValue`] for an id whose [`ViewIn`] handle is an
+/// [`IsValue`], by resolving then widening. Optional square-bracketed marker
+/// parameters are emitted ahead of the brand `B`, matching the id declarations.
+macro_rules! impl_into_erased_value_for_id {
+    ($( $name:ident $([$($mk:ident : $mkb:path),+ $(,)?])? ),+ $(,)?) => { $(
+        impl<$($($mk: $mkb,)+)? B: ModuleBrand> into_erased_value_sealed::Sealed
+            for $name<$($($mk,)+)? B>
+        {
+        }
+        impl<'ctx, $($($mk: $mkb,)+)? B: ModuleBrand + 'ctx> IntoErasedValue<'ctx, B>
+            for $name<$($($mk,)+)? B>
+        {
+            #[inline]
+            fn into_erased_value(
+                self,
+                module: ModuleRef<'ctx, B>,
+            ) -> IrResult<Value<'ctx, B>> {
+                self.resolve_in(module)
+                    .map(IsValue::into_erased)
+                    .ok_or(IrError::ForeignValueId)
+            }
+        }
+    )+ };
+}
+
+impl_into_erased_value_for_id!(
+    ValueId,
+    IntValueId[W: IntWidth],
+    FloatValueId[K: FloatKind],
+    PointerValueId,
+    FunctionId[R: ReturnMarker],
+    GlobalId,
+);

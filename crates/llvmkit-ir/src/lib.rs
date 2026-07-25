@@ -338,8 +338,9 @@ pub use unnamed_addr::UnnamedAddr;
 pub use r#use::Use;
 pub use user::User;
 pub use value::{
-    ArrayValue, FloatValue, FunctionTypedValue, HasDebugLoc, HasName, IntValue, IntoPointerValue,
-    IsValue, PointerValue, StructValue, Typed, Value, ValueCategory, ValueSlot, VectorValue,
+    ArrayValue, FloatValue, FunctionTypedValue, HasDebugLoc, HasName, IntValue, IntoErasedValue,
+    IntoPointerValue, IsValue, PointerValue, StructValue, Typed, Value, ValueCategory, ValueSlot,
+    VectorValue,
 };
 pub use value_id::{
     BlockId, FloatValueId, FunctionId, GlobalId, IntValueId, PointerValueId, ValueId, ViewIn,

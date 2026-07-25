@@ -90,8 +90,8 @@ use super::term_open_state::Open;
 use super::r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeSlot};
 use super::typed_pointer_value::TypedPointerValue;
 use super::value::{
-    ArrayValue, FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Value,
-    ValueKindData, ValueSlot, ValueUse, VectorValue,
+    ArrayValue, FloatValue, IntValue, IntoErasedValue, IntoPointerValue, IsValue, PointerValue,
+    Value, ValueKindData, ValueSlot, ValueUse, VectorValue,
 };
 use super::value_id::{IntValueId, ValueId, ViewIn};
 use super::vec_len::{LenDyn, StaticVecLen, VecLen};
@@ -2510,14 +2510,14 @@ where
     }
 
     /// Produce `freeze <value>`. Mirrors `IRBuilder::CreateFreeze`.
-    /// Accepts any [`IsValue`] operand; the result type
-    /// matches the operand type.
+    /// Accepts any [`IntoErasedValue`] operand — every value handle plus the
+    /// storable ids; the result type matches the operand type.
     pub fn build_freeze<V, Name>(&self, value: V, name: Name) -> IrResult<FreezeInst<'ctx, B>>
     where
         Name: AsRef<str>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
     {
-        let v = value.into_erased();
+        let v = value.into_erased_value(ModuleRef::new(self.module))?;
         let payload = crate::instr_types::FreezeInstData::new(v.id);
         let inst = self.append_instruction(v.ty, InstructionKindData::Freeze(payload), name);
         Ok(FreezeInst::<B>::from_raw(
@@ -2568,7 +2568,7 @@ where
     ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
     {
         const {
             assert!(N > 0, "extractvalue requires at least one index");
@@ -2593,9 +2593,9 @@ where
     ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
     {
-        let agg = aggregate.into_erased();
+        let agg = aggregate.into_erased_value(ModuleRef::new(self.module))?;
         if indices.is_empty() {
             return Err(IrError::InvalidOperation {
                 message: "extractvalue indices must not be empty",
@@ -2629,8 +2629,8 @@ where
     ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
-        A: IsValue<'ctx, B>,
-        V: IsValue<'ctx, B>,
+        A: IntoErasedValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
     {
         const {
             assert!(N > 0, "insertvalue requires at least one index");
@@ -2658,11 +2658,11 @@ where
     ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
-        A: IsValue<'ctx, B>,
-        V: IsValue<'ctx, B>,
+        A: IntoErasedValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
     {
-        let agg = aggregate.into_erased();
-        let val = value.into_erased();
+        let agg = aggregate.into_erased_value(ModuleRef::new(self.module))?;
+        let val = value.into_erased_value(ModuleRef::new(self.module))?;
         if indices.is_empty() {
             return Err(IrError::InvalidOperation {
                 message: "insertvalue indices must not be empty",
@@ -2745,11 +2745,11 @@ where
     ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         W: crate::int_width::IntWidth,
         I: IntoIntValue<'ctx, W, B>,
     {
-        let vec = vector.into_erased();
+        let vec = vector.into_erased_value(ModuleRef::new(self.module))?;
         let idx_v = index.into_int_value(ModuleRef::new(self.module))?;
         let idx = IsValue::into_erased(idx_v);
         let elem_ty = match self.module.context().type_data(vec.ty).as_vector() {
@@ -2781,13 +2781,13 @@ where
     ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
-        V: IsValue<'ctx, B>,
-        E: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
+        E: IntoErasedValue<'ctx, B>,
         W: crate::int_width::IntWidth,
         I: IntoIntValue<'ctx, W, B>,
     {
-        let vec = vector.into_erased();
-        let val = elt.into_erased();
+        let vec = vector.into_erased_value(ModuleRef::new(self.module))?;
+        let val = elt.into_erased_value(ModuleRef::new(self.module))?;
         let idx_v = index.into_int_value(ModuleRef::new(self.module))?;
         let idx = IsValue::into_erased(idx_v);
         if let Some(folded) = self.folder.fold_insert_element_dyn(vec, val, idx)? {
@@ -2812,11 +2812,11 @@ where
     ) -> IrResult<Value<'ctx, B>>
     where
         Name: AsRef<str>,
-        L: IsValue<'ctx, B>,
-        Rhs2: IsValue<'ctx, B>,
+        L: IntoErasedValue<'ctx, B>,
+        Rhs2: IntoErasedValue<'ctx, B>,
     {
-        let l = lhs.into_erased();
-        let r = rhs.into_erased();
+        let l = lhs.into_erased_value(ModuleRef::new(self.module))?;
+        let r = rhs.into_erased_value(ModuleRef::new(self.module))?;
         if l.ty != r.ty {
             return Err(IrError::TypeMismatch {
                 expected: l.ty().kind_label(),
@@ -3213,13 +3213,13 @@ where
     ) -> IrResult<AtomicCmpXchgInst<'ctx, B>>
     where
         Name: AsRef<str>,
-        P: IsValue<'ctx, B>,
-        C: IsValue<'ctx, B>,
-        N: IsValue<'ctx, B>,
+        P: IntoErasedValue<'ctx, B>,
+        C: IntoErasedValue<'ctx, B>,
+        N: IntoErasedValue<'ctx, B>,
     {
-        let p = ptr.into_erased();
-        let c = cmp.into_erased();
-        let n = new_val.into_erased();
+        let p = ptr.into_erased_value(ModuleRef::new(self.module))?;
+        let c = cmp.into_erased_value(ModuleRef::new(self.module))?;
+        let n = new_val.into_erased_value(ModuleRef::new(self.module))?;
         if c.ty != n.ty {
             return Err(IrError::TypeMismatch {
                 expected: c.ty().kind_label(),
@@ -3254,11 +3254,11 @@ where
     ) -> IrResult<AtomicRMWInst<'ctx, B>>
     where
         Name: AsRef<str>,
-        P: IsValue<'ctx, B>,
-        V: IsValue<'ctx, B>,
+        P: IntoErasedValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
     {
-        let p = ptr.into_erased();
-        let v = value.into_erased();
+        let p = ptr.into_erased_value(ModuleRef::new(self.module))?;
+        let v = value.into_erased_value(ModuleRef::new(self.module))?;
         let payload = crate::instr_types::AtomicRMWInstData::new(op, p.id, v.id, config);
         let inst = self.append_instruction(v.ty, InstructionKindData::AtomicRMW(payload), name);
         Ok(AtomicRMWInst::<B>::from_raw(
@@ -4060,7 +4060,7 @@ where
     /// `IRBuilder::CreateStore`.
     pub fn build_store<V, P>(&self, value: V, ptr: P) -> IrResult<StoreInst<'ctx, B>>
     where
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         P: IntoPointerValue<'ctx, B>,
     {
         let payload = self.store_payload(
@@ -4082,7 +4082,7 @@ where
         align: Align,
     ) -> IrResult<StoreInst<'ctx, B>>
     where
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         P: IntoPointerValue<'ctx, B>,
     {
         let payload = self.store_payload(
@@ -4131,7 +4131,7 @@ where
     /// Mirrors `IRBuilder::CreateStore(V, P, /*isVolatile=*/true)`.
     pub fn build_store_volatile<V, P>(&self, value: V, ptr: P) -> IrResult<StoreInst<'ctx, B>>
     where
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         P: IntoPointerValue<'ctx, B>,
     {
         let payload = self.store_payload(
@@ -4154,7 +4154,7 @@ where
         align: Align,
     ) -> IrResult<StoreInst<'ctx, B>>
     where
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         P: IntoPointerValue<'ctx, B>,
     {
         let payload = self.store_payload(
@@ -4191,10 +4191,10 @@ where
         sync_scope: SyncScope,
     ) -> IrResult<StoreInstData>
     where
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         P: IntoPointerValue<'ctx, B>,
     {
-        let v = value.into_erased();
+        let v = value.into_erased_value(ModuleRef::new(self.module))?;
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         // Materialise the DataLayout default off the stored value's type,
         // like upstream (`computeLoadStoreDefaultAlign` /
@@ -4291,7 +4291,7 @@ where
         config: super::instr_types::AtomicStoreConfig,
     ) -> IrResult<StoreInst<'ctx, B>>
     where
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         P: IntoPointerValue<'ctx, B>,
     {
         let payload = self.store_payload(
@@ -4458,7 +4458,7 @@ where
 
     /// TYPED varargs call: the fixed-prefix arguments are schema-typed
     /// through `Params` exactly like [`Self::build_call`]; the trailing
-    /// `varargs` are erased [`IsValue`] handles, matching LLVM's own
+    /// `varargs` are erased [`IntoErasedValue`] operands, matching LLVM's own
     /// variadic-argument contract (the `...` tail carries no static
     /// type checking — only the fixed prefix does). Mirrors
     /// `IRBuilder::CreateCall` against a variadic `FunctionCallee`.
@@ -4474,12 +4474,14 @@ where
         Params: FunctionParamList,
         A: CallArgs<'ctx, Params, B>,
         I: IntoIterator<Item = V>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         Name: AsRef<str>,
     {
         let f = callee.as_function();
         let mut arg_ids: Vec<ValueSlot> = fixed_args.lower(ModuleRef::new(self.module))?.into_vec();
-        arg_ids.extend(varargs.into_iter().map(|v| v.slot()));
+        for v in varargs {
+            arg_ids.push(v.into_erased_value(ModuleRef::new(self.module))?.slot());
+        }
         let payload = crate::instr_types::CallInstData::new(
             f.slot(),
             f.signature().as_type().id(),
@@ -4513,7 +4515,7 @@ where
         Name: AsRef<str>,
         R2: crate::marker::ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
     {
         let mut builder = self.call_builder(callee).name(name);
         for arg in args {
@@ -4564,7 +4566,7 @@ where
         IntrinsicName: AsRef<str>,
         ResultName: AsRef<str>,
         I: IntoIterator<Item = V>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
     {
         let mut builder = self
             .intrinsic_call_builder_by_id(id, intrinsic_name)?
@@ -4633,6 +4635,7 @@ where
             attrs: crate::instr_types::CallAttributeData::default(),
             name: String::new(),
             intrinsic_descriptor: None,
+            arg_error: None,
             _rp: PhantomData,
             _rc: PhantomData,
         }
@@ -4711,7 +4714,7 @@ where
         Name: AsRef<str>,
         R2: crate::marker::ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
     {
         let callee_v = IsValue::into_erased(callee);
         let ret_data = self.module.context().type_data(fn_ty.return_type().id());
@@ -4724,7 +4727,7 @@ where
         }
         let mut arg_ids: Vec<ValueSlot> = Vec::new();
         for arg in args {
-            let v = arg.into_erased();
+            let v = arg.into_erased_value(ModuleRef::new(self.module))?;
             arg_ids.push(v.id);
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
@@ -4769,7 +4772,7 @@ where
         Name: AsRef<str>,
         R2: crate::marker::ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
     {
         let asm_v = asm.into_erased();
         let fn_ty = asm.function_type();
@@ -4786,7 +4789,7 @@ where
         }
         let mut arg_ids: Vec<ValueSlot> = Vec::new();
         for arg in args {
-            let v = arg.into_erased();
+            let v = arg.into_erased_value(ModuleRef::new(self.module))?;
             arg_ids.push(v.id);
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
@@ -5718,14 +5721,14 @@ where
     ) -> IrResult<VectorValue<'ctx, ElemDyn, LenDyn, B>>
     where
         Name: AsRef<str>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
     {
         if count == 0 {
             return Err(IrError::InvalidOperation {
                 message: "build_vector_splat requires at least one lane",
             });
         }
-        let scalar_value = scalar.into_erased();
+        let scalar_value = scalar.into_erased_value(ModuleRef::new(self.module))?;
         let elem_ty = scalar_value.ty();
         let vec_ty = ModuleView::<B>::new(self.module).vector_type(elem_ty, count, false);
         let poison = vec_ty.as_type().get_poison();
@@ -5738,7 +5741,15 @@ where
             format!("{name_ref}.splatinsert")
         };
         let inserted =
-            self.build_insert_element::<_, _, i64, _, _>(poison, scalar, zero_idx, insert_name)?;
+            // Forward the already-erased scalar: `IntoErasedValue` consumes
+            // its input (an id is not re-usable after resolution), and the
+            // element slot erases it anyway.
+            self.build_insert_element::<_, _, i64, _, _>(
+                poison,
+                scalar_value,
+                zero_idx,
+                insert_name,
+            )?;
         let n = usize::try_from(count).map_err(|_| IrError::InvalidOperation {
             message: "vector splat lane count exceeds the platform address range",
         })?;
@@ -6697,7 +6708,7 @@ where
     /// (chainable) and seals the case list with
     /// [`SwitchInst::finish`](SwitchInst::finish).
     ///
-    /// `cond` is bound by [`IsValue`], so the condition's width is not
+    /// `cond` is bound by [`IntoErasedValue`], so the condition's width is not
     /// pinned and `add_case` checks each case value at *runtime*
     /// ([`IrError::TypeMismatch`]). Prefer the typed
     /// [`build_switch`](Self::build_switch) where the width is statically
@@ -6712,11 +6723,11 @@ where
     ) -> IrResult<TerminatedBlockSwitch<'ctx, R, B>>
     where
         Name: AsRef<str>,
-        C: IsValue<'ctx, B>,
+        C: IntoErasedValue<'ctx, B>,
         DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let default_target = default_target.into_basic_block_label();
-        let cond_v = cond.into_erased();
+        let cond_v = cond.into_erased_value(ModuleRef::new(self.module))?;
         let void_ty = self.module.void_type().as_type().id();
         let payload = crate::instr_types::SwitchInstData::new(cond_v.id, default_target.slot());
         let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
@@ -6848,7 +6859,7 @@ where
         Name: AsRef<str>,
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         Normal: IntoBasicBlockLabel<'ctx, R, B>,
         Unwind: IntoBasicBlockLabel<'ctx, R, B>,
     {
@@ -6892,7 +6903,7 @@ where
     where
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         Normal: IntoBasicBlockLabel<'ctx, R, B>,
         Unwind: IntoBasicBlockLabel<'ctx, R, B>,
     {
@@ -6901,7 +6912,13 @@ where
         let callee_v = callee.into_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
         let (name, calling_conv, attrs) = config.into_parts();
-        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.slot()).collect();
+        let arg_ids: Vec<ValueSlot> = args
+            .into_iter()
+            .map(|a| {
+                a.into_erased_value(ModuleRef::new(self.module))
+                    .map(|v| v.slot())
+            })
+            .collect::<IrResult<_>>()?;
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let payload = crate::instr_types::InvokeInstData::new_with_attrs(
             callee_v.id,
@@ -6938,7 +6955,7 @@ where
     where
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         Normal: IntoBasicBlockLabel<'ctx, R, B>,
         Unwind: IntoBasicBlockLabel<'ctx, R, B>,
     {
@@ -6947,7 +6964,13 @@ where
         let callee_v = IsValue::into_erased(callee);
         let ret_ty = fn_ty.return_type().id();
         let (name, calling_conv, attrs) = config.into_parts();
-        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.slot()).collect();
+        let arg_ids: Vec<ValueSlot> = args
+            .into_iter()
+            .map(|a| {
+                a.into_erased_value(ModuleRef::new(self.module))
+                    .map(|v| v.slot())
+            })
+            .collect::<IrResult<_>>()?;
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let payload = crate::instr_types::InvokeInstData::new_with_attrs(
             callee_v.id,
@@ -6980,7 +7003,7 @@ where
         Name: AsRef<str>,
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         Normal: IntoBasicBlockLabel<'ctx, R, B>,
         Unwind: IntoBasicBlockLabel<'ctx, R, B>,
     {
@@ -7005,7 +7028,7 @@ where
     where
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         Normal: IntoBasicBlockLabel<'ctx, R, B>,
         Unwind: IntoBasicBlockLabel<'ctx, R, B>,
     {
@@ -7024,7 +7047,7 @@ where
         }
         let mut arg_ids: Vec<ValueSlot> = Vec::new();
         for arg in args {
-            let v = arg.into_erased();
+            let v = arg.into_erased_value(ModuleRef::new(self.module))?;
             arg_ids.push(v.id);
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
@@ -7061,7 +7084,7 @@ where
         Name: AsRef<str>,
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         Default: IntoBasicBlockLabel<'ctx, R, B>,
         Indirects: IntoIterator<Item = Indirect>,
         Indirect: IntoBasicBlockLabel<'ctx, R, B>,
@@ -7087,7 +7110,7 @@ where
     where
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         Default: IntoBasicBlockLabel<'ctx, R, B>,
         Indirects: IntoIterator<Item = Indirect>,
         Indirect: IntoBasicBlockLabel<'ctx, R, B>,
@@ -7096,7 +7119,13 @@ where
         let callee_v = callee.into_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
         let (name, calling_conv, attrs) = config.into_parts();
-        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.slot()).collect();
+        let arg_ids: Vec<ValueSlot> = args
+            .into_iter()
+            .map(|a| {
+                a.into_erased_value(ModuleRef::new(self.module))
+                    .map(|v| v.slot())
+            })
+            .collect::<IrResult<_>>()?;
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let indirect_ids: Vec<ValueSlot> = indirect_dests
             .into_iter()
@@ -7133,7 +7162,7 @@ where
         Name: AsRef<str>,
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         Default: IntoBasicBlockLabel<'ctx, R, B>,
         Indirects: IntoIterator<Item = Indirect>,
         Indirect: IntoBasicBlockLabel<'ctx, R, B>,
@@ -7159,7 +7188,7 @@ where
     where
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         Default: IntoBasicBlockLabel<'ctx, R, B>,
         Indirects: IntoIterator<Item = Indirect>,
         Indirect: IntoBasicBlockLabel<'ctx, R, B>,
@@ -7178,7 +7207,7 @@ where
         }
         let mut arg_ids: Vec<ValueSlot> = Vec::new();
         for arg in args {
-            let v = arg.into_erased();
+            let v = arg.into_erased_value(ModuleRef::new(self.module))?;
             arg_ids.push(v.id);
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
@@ -7240,9 +7269,9 @@ where
     ) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
     where
         Name: AsRef<str>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
     {
-        let v = value.into_erased();
+        let v = value.into_erased_value(ModuleRef::new(self.module))?;
         let void_ty = self.module.void_type().as_type().id();
         let payload = crate::instr_types::ResumeInstData::new(v.id);
         let inst = self.append_instruction(void_ty, InstructionKindData::Resume(payload), name);
@@ -7260,7 +7289,7 @@ where
     ) -> IrResult<CleanupPadInst<'ctx, B>>
     where
         I: IntoIterator<Item = V>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         Name: AsRef<str>,
     {
         self.build_cleanup_pad_raw(Some(parent_pad.id), args, name)
@@ -7275,7 +7304,7 @@ where
     ) -> IrResult<CleanupPadInst<'ctx, B>>
     where
         I: IntoIterator<Item = V>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         Name: AsRef<str>,
     {
         self.build_cleanup_pad_raw(None, args, name)
@@ -7289,10 +7318,16 @@ where
     ) -> IrResult<CleanupPadInst<'ctx, B>>
     where
         I: IntoIterator<Item = V>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
         Name: AsRef<str>,
     {
-        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.slot()).collect();
+        let arg_ids: Vec<ValueSlot> = args
+            .into_iter()
+            .map(|a| {
+                a.into_erased_value(ModuleRef::new(self.module))
+                    .map(|v| v.slot())
+            })
+            .collect::<IrResult<_>>()?;
         let payload = crate::instr_types::CleanupPadInstData::new(parent_id, arg_ids);
         let token_ty = self.module.token_type().as_type().id();
         let inst =
@@ -7315,9 +7350,15 @@ where
     where
         Name: AsRef<str>,
         I: IntoIterator<Item = V>,
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
     {
-        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.slot()).collect();
+        let arg_ids: Vec<ValueSlot> = args
+            .into_iter()
+            .map(|a| {
+                a.into_erased_value(ModuleRef::new(self.module))
+                    .map(|v| v.slot())
+            })
+            .collect::<IrResult<_>>()?;
         let payload = crate::instr_types::CatchPadInstData::new(Some(catch_switch.id), arg_ids);
         let token_ty = self.module.token_type().as_type().id();
         let inst = self.append_instruction(token_ty, InstructionKindData::CatchPad(payload), name);
@@ -7878,11 +7919,11 @@ where
 /// now-sealed lift traits ([`IntoIntValue`] / [`IntoFloatValue`] /
 /// [`IntoPointerValue`]), so a typed builder accepts every Rust scalar /
 /// typed handle that lifts to the correct IR type and an erased handle is
-/// rejected; the [`Dyn`] builder blankets over [`IsValue`] and accepts any
-/// value handle with a runtime type check. This trait is not itself sealed
-/// with a private supertrait — its extension surface is closed
+/// rejected; the [`Dyn`] builder blankets over [`IntoErasedValue`] and accepts
+/// any value handle or id with a runtime type check. This trait is not itself
+/// sealed with a private supertrait — its extension surface is closed
 /// transitively by those sealed lift-trait bounds plus the sealed
-/// [`IsValue`].
+/// [`IntoErasedValue`].
 pub trait IntoReturnValue<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>>: Sized {
     #[doc(hidden)]
     fn into_return_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>>;
@@ -7952,14 +7993,15 @@ where
     }
 }
 
-// Top-level erased `Dyn` accepts anything implementing `IsValue`.
+// Top-level erased `Dyn` accepts any erased-operand source: every value
+// handle, plus the storable ids (which resolve against `module`).
 impl<'ctx, B: ModuleBrand + 'ctx, V> IntoReturnValue<'ctx, Dyn, B> for V
 where
-    V: IsValue<'ctx, B>,
+    V: IntoErasedValue<'ctx, B>,
 {
     #[inline]
-    fn into_return_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(self.into_erased())
+    fn into_return_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+        self.into_erased_value(module)
     }
 }
 
@@ -7975,7 +8017,7 @@ where
     /// function takes any `IntoIntValue<'ctx, i32, B>`, the float / ptr
     /// builders take their corresponding handles, and a [`Dyn`]
     /// builder accepts anything implementing
-    /// [`IsValue`] but runs an extra runtime
+    /// [`IntoErasedValue`] but runs an extra runtime
     /// type-equality check.
     pub fn build_ret<V>(self, value: V) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
     where
@@ -8062,7 +8104,7 @@ where
 /// Builder for [`crate::IRBuilder::call_builder`]. Accumulates
 /// per-arg / flag state via chainable methods, then emits the call
 /// instruction on `.build()`. Each `.arg(...)` call is statically
-/// dispatched against `V: IsValue<'ctx, B>`; arg types can vary
+/// dispatched against `V: IntoErasedValue<'ctx, B>`; arg types can vary
 /// across calls without trait objects.
 pub struct CallBuilder<'a, 'm, 'ctx, B, F, RP, RC>
 where
@@ -8081,6 +8123,12 @@ where
     attrs: crate::instr_types::CallAttributeData,
     name: String,
     intrinsic_descriptor: Option<IntrinsicDescriptor<'ctx, B>>,
+    /// First error raised by an [`arg`](CallBuilder::arg) operand, replayed by
+    /// [`build`](CallBuilder::build). `arg` returns `Self` to keep the chain
+    /// spellable, so a failed operand lift has nowhere to surface until the
+    /// terminal call. Only an id from a *foreign* module can set this — every
+    /// value handle lifts infallibly — so no pre-existing input can reach it.
+    arg_error: Option<IrError>,
     _rp: PhantomData<RP>,
     _rc: PhantomData<RC>,
 }
@@ -8092,11 +8140,20 @@ where
     RP: ReturnMarker,
     RC: ReturnMarker,
 {
-    /// Add an argument. Statically dispatched per `V: IsValue` so
-    /// mixed-type argument lists work without homogeneity.
-    pub fn arg<V: IsValue<'ctx, B>>(mut self, value: V) -> Self {
-        let v = value.into_erased();
-        self.args.push(v.id);
+    /// Add an argument. Statically dispatched per `V: IntoErasedValue` so
+    /// mixed-type argument lists work without homogeneity, and a storable id
+    /// is accepted alongside a borrowing handle.
+    ///
+    /// Infallible for every value handle. An id from a foreign module is the
+    /// one input that can fail; because the chain returns `Self`, that error
+    /// is parked in `arg_error` and reported by [`build`](Self::build).
+    pub fn arg<V: IntoErasedValue<'ctx, B>>(mut self, value: V) -> Self {
+        match value.into_erased_value(ModuleRef::<B>::new(self.parent.module)) {
+            Ok(v) => self.args.push(v.id),
+            Err(e) => {
+                self.arg_error.get_or_insert(e);
+            }
+        }
         self
     }
 
@@ -8160,7 +8217,10 @@ where
     }
 
     /// Emit the call instruction.
-    pub fn build(self) -> IrResult<CallInst<'ctx, RC, B>> {
+    pub fn build(mut self) -> IrResult<CallInst<'ctx, RC, B>> {
+        if let Some(e) = self.arg_error.take() {
+            return Err(e);
+        }
         self.validate_intrinsic_descriptor_args()?;
         let fn_ty =
             FunctionType::<'ctx, B>::new(self.fn_ty, ModuleRef::<B>::new(self.parent.module));
@@ -8321,9 +8381,11 @@ where
     F: IRBuilderFolder<'ctx, B>,
     RP: ReturnMarker,
 {
-    /// Add an argument. Statically dispatched per `V: IsValue` so
-    /// mixed-type argument lists work without homogeneity.
-    pub fn arg<V: IsValue<'ctx, B>>(mut self, value: V) -> Self {
+    /// Add an argument. Statically dispatched per `V: IntoErasedValue` so
+    /// mixed-type argument lists work without homogeneity, and a storable id
+    /// is accepted alongside a borrowing handle. A foreign-module id surfaces
+    /// from [`build`](Self::build), as on the wrapped [`CallBuilder`].
+    pub fn arg<V: IntoErasedValue<'ctx, B>>(mut self, value: V) -> Self {
         self.inner = self.inner.arg(value);
         self
     }

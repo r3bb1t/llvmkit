@@ -1425,6 +1425,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for InstructionView<'ctx, B> 
         InstructionView::to_erased(&self)
     }
 }
+crate::value::impl_into_erased_value_for_handle!(InstructionView);
 impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for InstructionView<'ctx, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {

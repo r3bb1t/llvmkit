@@ -11,9 +11,9 @@
 
 use llvmkit_ir::{
     BasicBlockLabel, BlockId, Dyn, FloatValue, FloatValueId, FunctionId, GlobalId, GlobalVariable,
-    IRBuilder, IntValue, IntValueId, IntoCallArg, IntoFloatValue, IntoIntValue, IntoPointerValue,
-    IrError, Linkage, Module, ModuleBrand, ModuleRef, PointerValue, PointerValueId, Unverified,
-    Value, ValueId,
+    IRBuilder, IntValue, IntValueId, IntoCallArg, IntoErasedValue, IntoFloatValue, IntoIntValue,
+    IntoPointerValue, IrError, Linkage, Module, ModuleBrand, ModuleRef, PointerValue,
+    PointerValueId, Unverified, Value, ValueId,
 };
 
 /// Round-trip: every typed handle mints an id whose `view` reproduces the
@@ -305,4 +305,90 @@ fn typed_ids_are_call_args() -> Result<(), IrError> {
 fn foreign_tag_operand_rejection_is_deferred_to_cycle_c() {
     // Intentionally empty: see the doc comment. The tag-check-passes branch is
     // covered by `typed_ids_lift_at_operand_positions`.
+}
+
+// --------------------------------------------------------------------------
+// B1-ops: `IntoErasedValue` — every id at an erased-by-design operand slot
+// --------------------------------------------------------------------------
+
+/// B1-ops: every id in the family — including the *erased* [`ValueId`] —
+/// satisfies [`IntoErasedValue`], the bound carried by operand slots whose
+/// declared parameter type is the erased `Value`. A *compile-time* witness:
+/// if any bound did not hold this test would not build.
+///
+/// The erased `ValueId` is admitted here and nowhere else. These slots are
+/// erased *by design*, so erased-in / erased-out is not the silent
+/// erased -> typed narrowing that `IntoIntValue` & co. forbid — a doctrine the
+/// compile-fail fixture `erased_id_not_int_operand.rs` still locks.
+#[test]
+fn every_id_is_an_erased_operand() {
+    fn assert_erased_operand<'ctx, B, I>(_: &I)
+    where
+        B: ModuleBrand + 'ctx,
+        I: IntoErasedValue<'ctx, B>,
+    {
+    }
+
+    Module::with_new("id-erased-operand", |m| {
+        let i32_ty = m.i32_type();
+        let f32_ty = m.f32_type();
+        let ptr_ty = m.ptr_type(0);
+        let fn_ty = m.fn_type(
+            i32_ty,
+            [i32_ty.as_type(), f32_ty.as_type(), ptr_ty.as_type()],
+            false,
+        );
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
+        let g: GlobalVariable = m.add_global("g", i32_ty.const_int(0_u32)).unwrap();
+
+        let a: IntValue<i32> = f.param(0).unwrap().try_into().unwrap();
+        let x: FloatValue<f32> = f.param(1).unwrap().try_into().unwrap();
+        let p: PointerValue = f.param(2).unwrap().try_into().unwrap();
+
+        assert_erased_operand(&a.into_erased().id());
+        assert_erased_operand(&a.id());
+        assert_erased_operand(&x.id());
+        assert_erased_operand(&p.id());
+        assert_erased_operand(&f.id());
+        assert_erased_operand(&g.id());
+    });
+}
+
+/// B1-ops: a stored id drives an erased operand slot end-to-end, with no
+/// intervening `view`. The typed id goes in at `build_store`'s value operand
+/// and the erased id at `build_freeze`'s — both slots that took only a
+/// borrowing handle before this slice — and the emitted IR is exactly what the
+/// handle spelling produces.
+#[test]
+fn ids_drive_erased_operand_slots_without_a_view() -> Result<(), IrError> {
+    Module::with_new("id-erased-store", |m| {
+        let ptr_ty = m.ptr_type(0);
+        let fn_ty = m.fn_type(m.void_type().as_type(), [ptr_ty.as_type()], false);
+        let f = m.add_function_dyn("inc", fn_ty, Linkage::External)?;
+        let entry = f.append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let p: PointerValue = f.param(0)?.try_into()?;
+
+        let v = b.build_int_load::<i32, _, _>(p, "v")?;
+        // `build_int_add` already hands back a storable id (cycle B1a).
+        let n: IntValueId<i32, _> = b.build_int_add(v, 1_i32, "n")?;
+
+        // Typed id straight into the erased *stored value* operand.
+        b.build_store(n, p)?;
+        // Erased id straight into `freeze`'s erased operand.
+        let erased: ValueId<_> = b.view(n).into_erased().id();
+        b.build_freeze(erased, "fr")?;
+        b.build_ret_void()?;
+
+        let text = format!("{m}");
+        assert!(
+            text.contains("store i32 %n, ptr %0, align 4\n"),
+            "typed id did not reach the store operand; got:\n{text}"
+        );
+        assert!(
+            text.contains("%fr = freeze i32 %n\n"),
+            "erased id did not reach the freeze operand; got:\n{text}"
+        );
+        Ok(())
+    })
 }

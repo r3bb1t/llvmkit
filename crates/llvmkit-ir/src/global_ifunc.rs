@@ -187,6 +187,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalIFunc<'ctx, B> {
         GlobalIFunc::into_erased(self)
     }
 }
+crate::value::impl_into_erased_value_for_handle!(GlobalIFunc);
 impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for GlobalIFunc<'ctx, B> {
     #[inline]
     fn as_constant(self) -> Constant<'ctx, B> {
