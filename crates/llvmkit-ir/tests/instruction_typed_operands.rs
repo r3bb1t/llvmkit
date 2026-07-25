@@ -70,7 +70,7 @@ fn classify_is_total() -> Result<(), IrError> {
         let x: IntValue<i32> = f.param(0)?.try_into()?;
         let y: IntValue<i32> = f.param(1)?.try_into()?;
         let sum = b.build_int_add::<i32, _, _, _>(x, y, "s")?;
-        b.build_ret(m.view(sum))?;
+        b.build_ret(sum)?;
 
         let sum_view = InstructionView::try_from(m.view(sum).into_erased())?;
         assert!(matches!(

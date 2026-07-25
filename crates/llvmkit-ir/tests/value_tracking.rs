@@ -672,7 +672,7 @@ fn known_bits_analysis_invalidates_with_dominator_tree_dependency() -> Result<()
             i8_ty.const_int(0b1010_1010_u8),
             "known",
         )?;
-        b.build_ret(m.view(value))?;
+        b.build_ret(value)?;
 
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(DominatorTreeAnalysis);
@@ -714,7 +714,7 @@ fn shift_with_possible_invalid_amount_is_unknown_after_freeze() -> Result<(), Ir
         let eight = i4_ty.const_ap_int(&ApInt::from_words(4, &[8]))?;
         let shift = b.build_int_and::<Width<4>, _, _, _>(x, eight, "shift")?;
         let shl = b.build_int_shl::<Width<4>, _, _, _>(one, shift, "shl")?;
-        let frozen = b.build_freeze(b.view(shl), "fr")?;
+        let frozen = b.build_freeze(shl, "fr")?;
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
@@ -761,7 +761,7 @@ fn freeze_of_exact_shift_that_can_poison_is_unknown() -> Result<(), IrError> {
             LShrFlags::new().exact(),
             "lshr",
         )?;
-        let frozen = b.build_freeze(b.view(lshr), "fr")?;
+        let frozen = b.build_freeze(lshr, "fr")?;
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);

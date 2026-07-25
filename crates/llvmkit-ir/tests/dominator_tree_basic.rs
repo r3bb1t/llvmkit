@@ -86,12 +86,12 @@ fn same_block_instruction_order_and_unreachable_use_semantics() -> Result<(), Ir
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let y1 = b.build_int_add(x, 1_i32, "y1")?;
         let y2 = b.build_int_add(y1, 1_i32, "y2")?;
-        b.build_ret(m.view(y2))?;
+        b.build_ret(y2)?;
 
         let bd = IRBuilder::new_for::<Dyn>(&m).position_at_end(dead);
         let z1 = bd.build_int_add(x, 1_i32, "z1")?;
         let z2 = bd.build_int_add(z1, 1_i32, "z2")?;
-        bd.build_ret(m.view(z2))?;
+        bd.build_ret(z2)?;
 
         let y1i = inst(m.view(y1).into_erased())?;
         let y2i = inst(m.view(y2).into_erased())?;
@@ -197,7 +197,7 @@ fn invoke_result_dominates_normal_destination_but_not_unwind() -> Result<(), IrE
 
         let bn = IRBuilder::new_for::<Dyn>(&m).position_at_end(normal);
         let normal_use = bn.build_int_add(invoke_value, 1_i32, "normal_use")?;
-        bn.build_ret(m.view(normal_use))?;
+        bn.build_ret(normal_use)?;
         let bu = IRBuilder::new_for::<Dyn>(&m).position_at_end(unwind);
         let unwind_use = bu.build_int_add(invoke_value, 1_i32, "unwind_use")?;
         bu.build_ret(x)?;

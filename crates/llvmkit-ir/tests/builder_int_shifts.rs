@@ -23,7 +23,7 @@ fn shl_plain() -> Result<(), IrError> {
         let lhs: IntValue<i64> = f.param(0)?.try_into()?;
         let rhs: IntValue<i64> = f.param(1)?.try_into()?;
         let r = b.build_int_shl(lhs, rhs, "z")?;
-        b.build_ret(m.view(r))?;
+        b.build_ret(r)?;
         let text = format!("{m}");
         assert!(text.contains("%z = shl i64 %0, %1"), "got:\n{text}");
         Ok(())
@@ -42,7 +42,7 @@ fn lshr_plain() -> Result<(), IrError> {
         let lhs: IntValue<i64> = f.param(0)?.try_into()?;
         let rhs: IntValue<i64> = f.param(1)?.try_into()?;
         let r = b.build_int_lshr(lhs, rhs, "z")?;
-        b.build_ret(m.view(r))?;
+        b.build_ret(r)?;
         let text = format!("{m}");
         assert!(text.contains("%z = lshr i64 %0, %1"), "got:\n{text}");
         Ok(())
@@ -61,7 +61,7 @@ fn ashr_plain() -> Result<(), IrError> {
         let lhs: IntValue<i64> = f.param(0)?.try_into()?;
         let rhs: IntValue<i64> = f.param(1)?.try_into()?;
         let r = b.build_int_ashr(lhs, rhs, "z")?;
-        b.build_ret(m.view(r))?;
+        b.build_ret(r)?;
         let text = format!("{m}");
         assert!(text.contains("%z = ashr i64 %0, %1"), "got:\n{text}");
         Ok(())
@@ -81,7 +81,7 @@ fn shl_nuw_nsw() -> Result<(), IrError> {
         let lhs: IntValue<i64> = f.param(0)?.try_into()?;
         let rhs: IntValue<i64> = f.param(1)?.try_into()?;
         let r = b.build_int_shl_with_flags(lhs, rhs, ShlFlags::new().nuw().nsw(), "z")?;
-        b.build_ret(m.view(r))?;
+        b.build_ret(r)?;
         let text = format!("{m}");
         assert!(text.contains("%z = shl nuw nsw i64 %0, %1"), "got:\n{text}");
         Ok(())
@@ -100,7 +100,7 @@ fn lshr_exact() -> Result<(), IrError> {
         let lhs: IntValue<i64> = f.param(0)?.try_into()?;
         let rhs: IntValue<i64> = f.param(1)?.try_into()?;
         let r = b.build_int_lshr_with_flags(lhs, rhs, LShrFlags::new().exact(), "z")?;
-        b.build_ret(m.view(r))?;
+        b.build_ret(r)?;
         let text = format!("{m}");
         assert!(text.contains("%z = lshr exact i64 %0, %1"), "got:\n{text}");
         Ok(())
@@ -119,7 +119,7 @@ fn ashr_exact() -> Result<(), IrError> {
         let lhs: IntValue<i64> = f.param(0)?.try_into()?;
         let rhs: IntValue<i64> = f.param(1)?.try_into()?;
         let r = b.build_int_ashr_with_flags(lhs, rhs, AShrFlags::new().exact(), "z")?;
-        b.build_ret(m.view(r))?;
+        b.build_ret(r)?;
         let text = format!("{m}");
         assert!(text.contains("%z = ashr exact i64 %0, %1"), "got:\n{text}");
         Ok(())

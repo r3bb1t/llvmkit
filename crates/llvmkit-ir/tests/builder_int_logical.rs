@@ -26,7 +26,7 @@ fn module_with(op: &str) -> Result<String, IrError> {
             "xor" => b.build_int_xor(x, y, "z")?,
             _ => unreachable!(),
         };
-        b.build_ret(m.view(r))?;
+        b.build_ret(r)?;
         Ok(format!("{m}"))
     })
 }

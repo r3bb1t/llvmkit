@@ -30,7 +30,7 @@ fn build_int_add_accepts_int_value_and_rust_literal() -> Result<(), IrError> {
         let n: IntValue<i32> = f.param(0)?.try_into()?;
         // Rust literal as RHS.
         let next = b.build_int_add(n, 1_i32, "next")?;
-        b.build_ret(m.view(next))?;
+        b.build_ret(next)?;
 
         let text = format!("{m}");
         assert!(text.contains("%next = add i32 %0, 1\n"), "got:\n{text}");
@@ -56,7 +56,7 @@ fn build_int_ops_unique_duplicate_requested_names() -> Result<(), IrError> {
         let second_push = b.build_int_sub::<i64, _, _, _>(first_push, 8_i64, "push_sp")?;
         let first_af = b.build_int_xor::<i64, _, _, _>(first_push, second_push, "af_lhs_rhs")?;
         let second_af = b.build_int_xor::<i64, _, _, _>(second_push, first_af, "af_lhs_rhs")?;
-        b.build_ret(m.view(second_af))?;
+        b.build_ret(second_af)?;
 
         assert_eq!(m.view(first_push).name().as_deref(), Some("push_sp"));
         assert_eq!(m.view(second_push).name().as_deref(), Some("push_sp1"));
@@ -92,7 +92,7 @@ fn build_int_sub_accepts_constant_and_argument() -> Result<(), IrError> {
         let c = i32_ty.const_int(10_i32);
         // ConstantIntValue as LHS, IntValue as RHS.
         let r = b.build_int_sub(c, n, "r")?;
-        b.build_ret(m.view(r))?;
+        b.build_ret(r)?;
 
         let text = format!("{m}");
         // Folder doesn't fire (one operand is non-constant); the

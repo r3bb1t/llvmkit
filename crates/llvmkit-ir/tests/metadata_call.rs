@@ -361,7 +361,7 @@ fn range_metadata_rejects_non_load_call_invoke_user() -> Result<(), IrError> {
         let range = m.metadata_tuple([MetadataRef(lo), MetadataRef(hi)]);
         let inst = InstructionView::try_from(b.view(add).into_erased())?;
         inst.set_metadata(MetadataAttachmentKind::Range, range);
-        b.build_ret(m.view(add))?;
+        b.build_ret(add)?;
 
         let err = m
             .verify_borrowed()

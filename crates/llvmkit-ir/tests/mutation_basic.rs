@@ -148,7 +148,7 @@ fn erase_releases_local_name_for_reuse() -> Result<(), IrError> {
         let block = cursor.into_block();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(block);
         let live = b.build_int_add::<i32, _, _, _>(arg, 2_i32, "tmp")?;
-        b.build_ret(m.view(live))?;
+        b.build_ret(live)?;
 
         assert_eq!(m.view(live).name().as_deref(), Some("tmp"));
         let text = format!("{m}");
@@ -243,7 +243,7 @@ fn detached_set_name_updates_carried_name_without_old_parent_binding() -> Result
         let inserted = detached.append_to(&m, b.insert_block())?;
         let inserted_value: IntValue<i32> = inserted.try_into()?;
         let sum = b.build_int_add::<i32, _, _, _>(live, inserted_value, "sum")?;
-        b.build_ret(m.view(sum))?;
+        b.build_ret(sum)?;
 
         assert_eq!(m.view(live).name().as_deref(), Some("tmp"));
         assert_eq!(inserted_value.name().as_deref(), Some("renamed"));
@@ -349,7 +349,7 @@ fn self_anchored_instruction_moves_are_no_ops() -> Result<(), IrError> {
 
         let block = cursor.into_block();
         let builder = IRBuilder::with_folder(&m, NoFolder).position_at_end(block);
-        builder.build_ret(m.view(b))?;
+        builder.build_ret(b)?;
         let text = format!("{m}");
         assert!(text.contains("%a = add i32 1, 2"), "{text}");
         assert!(text.contains("%b = add i32 %a, 3"), "{text}");

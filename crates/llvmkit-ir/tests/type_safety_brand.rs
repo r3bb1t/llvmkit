@@ -25,7 +25,7 @@ fn exercise_tables<'ctx>(module: Module<'ctx>) -> IrResult<()> {
     let rhs: IntValue<'ctx, i64> = (*values.get("parameter").expect("value")).try_into()?;
     let builder = IRBuilder::new_for::<Dyn>(&module).position_at_end(entry);
     let sum = builder.build_int_add(lhs, rhs, "sum")?;
-    builder.build_ret(module.view(sum))?;
+    builder.build_ret(sum)?;
 
     let text = format!("{module}");
     assert!(text.contains("add i64"));

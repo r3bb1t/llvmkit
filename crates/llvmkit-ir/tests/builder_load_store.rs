@@ -127,7 +127,7 @@ fn load_add_store_round_trip() -> Result<(), IrError> {
         let p: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
         let v = b.build_int_load::<i32, _, _>(p, "v")?;
         let n = b.build_int_add(v, 1_i32, "n")?;
-        b.build_store(b.view(n), p)?;
+        b.build_store(n, p)?;
         b.build_ret_void()?;
         let text = format!("{m}");
         assert!(

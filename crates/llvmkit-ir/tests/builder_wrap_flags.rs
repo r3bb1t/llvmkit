@@ -65,7 +65,7 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
         } else {
             panic!("expected Sub");
         }
-        b.build_ret(m.view(r))?;
+        b.build_ret(r)?;
 
         let mul_fn = m.add_function_dyn("mul_f", fn_ty, Linkage::External)?;
         let entry = mul_fn.append_basic_block(&m, "entry");
@@ -79,7 +79,7 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
         } else {
             panic!("expected Mul");
         }
-        b.build_ret(m.view(r))?;
+        b.build_ret(r)?;
 
         let shl_fn = m.add_function_dyn("shl_f", fn_ty, Linkage::External)?;
         let entry = shl_fn.append_basic_block(&m, "entry");
@@ -93,7 +93,7 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
         } else {
             panic!("expected Shl");
         }
-        b.build_ret(m.view(r))?;
+        b.build_ret(r)?;
         Ok(())
     })
 }
@@ -122,7 +122,7 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
         } else {
             panic!("expected UDiv");
         }
-        b.build_ret(m.view(r))?;
+        b.build_ret(r)?;
 
         let sdiv_fn = m.add_function_dyn("sdiv_f", fn_ty, Linkage::External)?;
         let entry = sdiv_fn.append_basic_block(&m, "entry");
@@ -136,7 +136,7 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
         } else {
             panic!("expected SDiv");
         }
-        b.build_ret(m.view(r))?;
+        b.build_ret(r)?;
 
         let lshr_fn = m.add_function_dyn("lshr_f", fn_ty, Linkage::External)?;
         let entry = lshr_fn.append_basic_block(&m, "entry");
@@ -150,7 +150,7 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
         } else {
             panic!("expected LShr");
         }
-        b.build_ret(m.view(r))?;
+        b.build_ret(r)?;
 
         let ashr_fn = m.add_function_dyn("ashr_f", fn_ty, Linkage::External)?;
         let entry = ashr_fn.append_basic_block(&m, "entry");
@@ -164,7 +164,7 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
         } else {
             panic!("expected AShr");
         }
-        b.build_ret(m.view(r))?;
+        b.build_ret(r)?;
         Ok(())
     })
 }

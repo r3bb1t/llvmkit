@@ -26,7 +26,7 @@ fn module_prints_simple_add_function() -> Result<(), IrError> {
         let lhs: IntValue<i32> = f.param(0)?.try_into()?;
         let rhs: IntValue<i32> = f.param(1)?.try_into()?;
         let sum = b.build_int_add(lhs, rhs, "sum")?;
-        b.build_ret(m.view(sum))?;
+        b.build_ret(sum)?;
 
         let text = format!("{m}");
         let expected = "; ModuleID = 'demo'\n\
@@ -86,7 +86,7 @@ fn dollar_names_print_without_quotes() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let arg: IntValue<i32> = f.param(0)?.try_into()?;
         let sum = b.build_int_add::<i32, _, _, _>(arg, 1_i32, "sum$value")?;
-        b.build_ret(m.view(sum))?;
+        b.build_ret(sum)?;
 
         let text = format!("{m}");
         assert!(text.contains("define i32 @foo$bar(i32 %0)"), "{text}");
@@ -147,7 +147,7 @@ fn set_name_reinserts_and_frees_old_binding() -> Result<(), IrError> {
         let second = b.build_int_add::<i32, _, _, _>(first, 1_i32, "other")?;
         b.view(second).set_name(&m, "tmp");
         let third = b.build_int_add::<i32, _, _, _>(second, first, "other")?;
-        b.build_ret(m.view(third))?;
+        b.build_ret(third)?;
 
         assert_eq!(m.view(second).name().as_deref(), Some("tmp1"));
         assert_eq!(m.view(third).name().as_deref(), Some("other"));
@@ -187,7 +187,7 @@ fn module_prints_const_folded_arithmetic() -> Result<(), IrError> {
             IntValue::<i32>::try_from(bb.into_erased())?,
             "sum",
         )?;
-        b.build_ret(m.view(folded))?;
+        b.build_ret(folded)?;
 
         let text = format!("{m}");
         // The folded value is a constant; it should print as `42`.

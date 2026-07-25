@@ -26,7 +26,7 @@ fn position_before_inserts_between_prev_and_anchor() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let n: IntValue<i32> = f.param(0)?.try_into()?;
         let a = b.build_int_add(n, 1_i32, "a")?;
-        let (sealed_block, ret_inst) = b.build_ret(m.view(a))?;
+        let (sealed_block, ret_inst) = b.build_ret(a)?;
         let _ = sealed_block;
         let b2 = IRBuilder::new_for::<i32>(&m).position_before(&ret_inst.as_view());
         let _ = b2.build_int_sub(a, 0_i32, "noop")?;
@@ -90,7 +90,7 @@ fn save_and_restore_insert_point_before_terminator() -> Result<(), IrError> {
         let a = b.build_int_add(n, 1_i32, "a")?;
         let b2 = IRBuilder::new_for::<Dyn>(&m).restore_insert_point(saved)?;
         let extra = b2.build_int_add(n, 2_i32, "extra")?;
-        b2.build_ret(m.view(extra))?;
+        b2.build_ret(extra)?;
         let _ = a;
         Ok(())
     })
@@ -110,7 +110,7 @@ fn restore_insert_point_rejects_terminated_block() -> Result<(), IrError> {
         let saved = b.save_insert_point();
         let n: IntValue<i32> = f.param(0)?.try_into()?;
         let a = b.build_int_add(n, 1_i32, "a")?;
-        let _ = b.build_ret(m.view(a))?;
+        let _ = b.build_ret(a)?;
         let err = match IRBuilder::new_for::<Dyn>(&m).restore_insert_point(saved) {
             Ok(_) => panic!("terminated block cannot be reopened from a saved insert point"),
             Err(err) => err,
@@ -137,7 +137,7 @@ fn build_int_neg_emits_sub_zero() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let n: IntValue<i32> = f.param(0)?.try_into()?;
         let neg = b.build_int_neg(n, "neg")?;
-        b.build_ret(m.view(neg))?;
+        b.build_ret(neg)?;
         let text = format!("{m}");
         assert!(text.contains("%neg = sub i32 0, %0\n"), "got:\n{text}");
         Ok(())
@@ -159,7 +159,7 @@ fn build_int_neg_nsw_emits_sub_nsw() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let n: IntValue<i32> = f.param(0)?.try_into()?;
         let neg = b.build_int_neg_nsw(n, "neg")?;
-        b.build_ret(m.view(neg))?;
+        b.build_ret(neg)?;
         let text = format!("{m}");
         assert!(text.contains("%neg = sub nsw i32 0, %0\n"), "got:\n{text}");
         let _ = SubFlags::new().nsw();
@@ -181,7 +181,7 @@ fn build_int_not_emits_xor_minus_one() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let n: IntValue<i32> = f.param(0)?.try_into()?;
         let inv = b.build_int_not(n, "inv")?;
-        b.build_ret(m.view(inv))?;
+        b.build_ret(inv)?;
         let text = format!("{m}");
         assert!(text.contains("%inv = xor i32 %0, -1\n"), "got:\n{text}");
         Ok(())

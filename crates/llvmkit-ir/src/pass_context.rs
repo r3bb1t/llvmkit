@@ -3863,7 +3863,7 @@ mod tests {
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             let x: IntValue<i32> = f.param(0)?.try_into()?;
             let sum = b.build_int_add(x, 1_i32, "sum")?;
-            b.build_ret(m.view(sum))?;
+            b.build_ret(sum)?;
 
             let function = FunctionView::from(f);
             let block = function
