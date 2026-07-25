@@ -38,7 +38,7 @@ fn build_int_phi_two_predecessors_emits_phi() -> Result<(), IrError> {
         // join: phi i32 [ 1, %entry ], [ 2, %other ]; ret i32 %p
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
         let phi = b
-            .build_int_phi::<i32, _>("p")?
+            .view(b.build_int_phi::<i32, _>("p")?)
             .add_incoming(1_i32, entry_label)?
             .add_incoming(2_i32, other_label)?;
         b.build_ret(phi.as_int_value())?;
@@ -77,7 +77,7 @@ fn phi_with_post_creation_add_incoming() -> Result<(), IrError> {
         b.build_br(join_label)?;
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
-        let phi = b.build_int_phi::<i32, _>("p")?;
+        let phi = b.view(b.build_int_phi::<i32, _>("p")?);
         let phi = phi
             .add_incoming(10_i32, entry_label)?
             .add_incoming(20_i32, other_label)?;

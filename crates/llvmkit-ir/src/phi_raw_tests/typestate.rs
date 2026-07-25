@@ -1,50 +1,56 @@
-//! Relocated raw-phi typestate mechanics: the `Open -> Closed -> finish`
-//! finalisation lifecycle, `add_incoming` linearity, `PhiKind` rediscovery,
-//! phi-head placement, and a deliberately self-referential phi-iteration
-//! shape. These cases drive the raw `build_*_phi`/`add_incoming`/`finish`
-//! typestate that block-argument authoring cannot express. Ported verbatim
-//! from `tests/builder_typestate_phi.rs` and the phi test extracted from
-//! `tests/builder_typestate_termination.rs` (only the `llvmkit_ir::` paths
-//! are rewritten to `crate::`); dormant until wired into the crate's
-//! `#[cfg(test)]` tree.
+//! Relocated raw-phi construction mechanics: the builder-id → typed-handle
+//! round-trip for every phi family, `PhiKind` rediscovery, phi-head placement,
+//! and a deliberately self-referential phi-iteration shape. These cases drive
+//! the raw `build_*_phi`/`add_incoming` surface that block-argument authoring
+//! cannot express. Ported from `tests/builder_typestate_phi.rs` and the phi
+//! test extracted from `tests/builder_typestate_termination.rs`.
+//!
+//! The `Open -> Closed -> finish` finalisation typestate these cases were
+//! written against was retired in cycle B (slice B1g): the phi builders now
+//! hand back a `Copy` [`crate::PhiInstId`]-family id, and a re-mintable view
+//! cannot carry a linear "only one open capability" guarantee — so the marker
+//! would have gated nothing. What the guarantee actually rests on is
+//! visibility: `build_*_phi` and `add_incoming` are crate-internal, so no
+//! external caller can observe or extend a phi mid-construction. The
+//! assertions below are otherwise unchanged.
 
 use crate::{
     Dyn, FloatDyn, FloatValue, IRBuilder, InstructionKind, IntValue, IrError, Linkage, Module,
     PhiKind,
 };
 
-/// The `Open -> Closed` finalisation applies to every phi family, not just the
-/// integer one: finishing an `fp` and a `pointer` phi consumes the open handle
-/// and yields a `Closed` view that still reads back its incoming count. Covers
-/// `FpPhiInst::finish` / `PointerPhiInst::finish` (the int case is
-/// `phi_finishes_after_all_incomings`).
+/// The builder-id → typed-handle round-trip applies to every phi family, not
+/// just the integer one: viewing the `fp` and `pointer` ids yields the
+/// family-typed handles, which read back their (zero) incoming count. Covers
+/// `FpPhiInstId`/`PointerPhiInstId` (the int case is
+/// `phi_reads_back_all_incomings`).
 #[test]
-fn fp_and_pointer_phi_finish_to_closed() -> Result<(), IrError> {
-    Module::with_new("phi_finish_fp_ptr", |m| {
+fn fp_and_pointer_phi_ids_view_back_to_typed_handles() -> Result<(), IrError> {
+    Module::with_new("phi_view_fp_ptr", |m| {
         let f64_ty = m.f64_type();
         let fn_ty = m.fn_type_no_params(f64_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let bb = m.view(f).append_basic_block(&m, "bb");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
 
-        // `finish()` consumes the Open handle for the fp and pointer families
-        // exactly as it does for the int family. No incomings are added, so the
-        // closed handles read back a count of zero.
-        let fp_closed = b.build_fp_phi::<f64, _>("fp")?.finish();
-        let ptr_closed = b.build_pointer_phi("pp")?.finish();
-        assert_eq!(fp_closed.incoming_count(), 0);
-        assert_eq!(ptr_closed.incoming_count(), 0);
+        // The ids resolve to the fp and pointer handles exactly as the int id
+        // resolves to `PhiInst`. No incomings are added, so both read back a
+        // count of zero.
+        let fp_phi = b.view(b.build_fp_phi::<f64, _>("fp")?);
+        let ptr_phi = b.view(b.build_pointer_phi("pp")?);
+        assert_eq!(fp_phi.incoming_count(), 0);
+        assert_eq!(ptr_phi.incoming_count(), 0);
         Ok(())
     })
 }
 
 /// Port of `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest,
-/// CreateCondBr)` constructive shape, extended to exercise the phi
-/// `Open -> Closed` typestate. The structural assertions
+/// CreateCondBr)` constructive shape, extended to read the phi back after
+/// every incoming is in place. The structural assertions
 /// (`incoming_count`, two distinct incoming blocks) mirror upstream's
 /// `EXPECT_EQ(P->getNumIncomingValues(), 2)` style.
 #[test]
-fn phi_finishes_after_all_incomings() -> Result<(), IrError> {
+fn phi_reads_back_all_incomings() -> Result<(), IrError> {
     Module::with_new("phi_finish", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
@@ -61,21 +67,19 @@ fn phi_finishes_after_all_incomings() -> Result<(), IrError> {
         b.build_br(&join)?;
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
-        let phi_open = b.build_int_phi::<i32, _>("p")?;
-        let phi_closed = phi_open
+        let phi = b
+            .view(b.build_int_phi::<i32, _>("p")?)
             .add_incoming(1_i32, entry_label)?
-            .add_incoming(2_i32, other_label)?
-            .finish();
+            .add_incoming(2_i32, other_label)?;
 
-        // Closed handles still expose read accessors. Mirrors upstream
-        // `P->getNumIncomingValues()`.
-        assert_eq!(phi_closed.incoming_count(), 2);
-        let (_, incoming0) = phi_closed.incoming(0)?;
-        let (_, incoming1) = phi_closed.incoming(1)?;
+        // Read accessors. Mirrors upstream `P->getNumIncomingValues()`.
+        assert_eq!(phi.incoming_count(), 2);
+        let (_, incoming0) = phi.incoming(0)?;
+        let (_, incoming1) = phi.incoming(1)?;
         assert_ne!(incoming0, incoming1);
 
-        // The phi result is still usable after finish().
-        b.build_ret(phi_closed.as_int_value())?;
+        // The phi result is usable as an operand.
+        b.build_ret(phi.as_int_value())?;
         let text = format!("{m}");
         assert!(
             text.contains("%p = phi i32 [ 1, %entry ], [ 2, %other ]"),
@@ -98,9 +102,9 @@ fn rediscovered_phi_narrows_to_result_type() -> Result<(), IrError> {
         let bb = m.view(f).append_basic_block(&m, "bb");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
 
-        let int_phi = b.build_int_phi::<i32, _>("ip")?;
-        let fp_phi = b.build_fp_phi::<f64, _>("fp")?;
-        let ptr_phi = b.build_pointer_phi("pp")?;
+        let int_phi = b.view(b.build_int_phi::<i32, _>("ip")?);
+        let fp_phi = b.view(b.build_fp_phi::<f64, _>("fp")?);
+        let ptr_phi = b.view(b.build_pointer_phi("pp")?);
 
         assert!(matches!(
             int_phi.as_view().kind(),
@@ -153,7 +157,7 @@ fn build_phi_inserts_at_phi_head_not_cursor() -> Result<(), IrError> {
         let _x = b.build_int_add(a, 1_i32, "x")?;
         let i32_dyn = m.custom_width_int_type(32)?;
         let _phi = b
-            .build_int_phi_dyn(i32_dyn, "p")?
+            .view(b.build_int_phi_dyn(i32_dyn, "p")?)
             .add_incoming(a.as_dyn(), entry_label)?
             .add_incoming(a.as_dyn(), other_label)?;
         b.build_ret(a)?;
@@ -203,11 +207,11 @@ fn two_phis_built_after_nonphi_keep_relative_order() -> Result<(), IrError> {
         // p1 then p2, both after the add. Head placement must not reverse
         // them: p1 stays ahead of p2.
         let _p1 = b
-            .build_int_phi::<i32, _>("p1")?
+            .view(b.build_int_phi::<i32, _>("p1")?)
             .add_incoming(1_i32, entry_label)?
             .add_incoming(2_i32, other_label)?;
         let _p2 = b
-            .build_int_phi::<i32, _>("p2")?
+            .view(b.build_int_phi::<i32, _>("p2")?)
             .add_incoming(3_i32, entry_label)?
             .add_incoming(4_i32, other_label)?;
         b.build_ret(a)?;
@@ -250,9 +254,9 @@ fn phi_range_iterates_three_phis() -> Result<(), IrError> {
         let bb_label = bb.id();
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
-        let p1 = b.build_int_phi::<i32, _>("phi.1")?;
-        let p2 = b.build_int_phi::<i32, _>("phi.2")?;
-        let p3 = b.build_int_phi::<i32, _>("phi.3")?;
+        let p1 = b.view(b.build_int_phi::<i32, _>("phi.1")?);
+        let p2 = b.view(b.build_int_phi::<i32, _>("phi.2")?);
+        let p3 = b.view(b.build_int_phi::<i32, _>("phi.3")?);
         // Upstream wires `P1->addIncoming(P2, BB)` etc. via the same `BB`
         // (cycle). We add poisons referencing self -- the structural shape
         // matches the upstream phi count assertion regardless of operand
@@ -260,9 +264,9 @@ fn phi_range_iterates_three_phis() -> Result<(), IrError> {
         let p1_value = p1.as_int_value();
         let p2_value = p2.as_int_value();
         let p3_value = p3.as_int_value();
-        p1.add_incoming(0_i32, bb_label)?.finish();
-        p2.add_incoming(0_i32, bb_label)?.finish();
-        p3.add_incoming(0_i32, bb_label)?.finish();
+        p1.add_incoming(0_i32, bb_label)?;
+        p2.add_incoming(0_i32, bb_label)?;
+        p3.add_incoming(0_i32, bb_label)?;
         let _sum = b.build_int_add(p1_value, p2_value, "sum")?;
         let (terminated_bb, _) = b.build_ret(p3_value)?;
 
@@ -277,7 +281,7 @@ fn phi_range_iterates_three_phis() -> Result<(), IrError> {
 }
 
 /// `incomings()` yields exactly the pairs the indexed `incoming(i)` accessor
-/// yields, in the same order — on both the typed closed handle and the
+/// yields, in the same order — on both the typed handle and the
 /// variant-independent [`PhiKind`] rediscovery surface. Locks the snapshot
 /// mirror of `SwitchInst::cases` added for idiomatic iteration; the indexed
 /// accessor stays beside it.
@@ -300,10 +304,9 @@ fn phi_incomings_match_indexed_access() -> Result<(), IrError> {
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
         let phi = b
-            .build_int_phi::<i32, _>("p")?
+            .view(b.build_int_phi::<i32, _>("p")?)
             .add_incoming(1_i32, entry_label)?
-            .add_incoming(2_i32, other_label)?
-            .finish();
+            .add_incoming(2_i32, other_label)?;
         b.build_ret(phi.as_int_value())?;
 
         // Typed handle: `incomings()` mirrors `incoming(i)` pair-for-pair.

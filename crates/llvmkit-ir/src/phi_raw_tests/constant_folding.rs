@@ -21,7 +21,7 @@ fn phi_same_constant_folds() -> Result<(), IrError> {
         let entry_label = entry.id();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let phi = b
-            .build_int_phi::<i32, _>("p")?
+            .view(b.build_int_phi::<i32, _>("p")?)
             .add_incoming(7_i32, entry_label)?
             .add_incoming(7_i32, entry_label)?;
         let instruction = InstructionView::try_from(phi.as_int_value().into_erased())?;
@@ -57,7 +57,7 @@ fn phi_poison_and_undef_incomings_fold_to_undef() -> Result<(), IrError> {
         // the *same* block is ill-formed (AmbiguousPhi); the folder arm under
         // test folds by value regardless of predecessor identity.
         let phi = b
-            .build_int_phi::<i32, _>("p")?
+            .view(b.build_int_phi::<i32, _>("p")?)
             .add_incoming(poison, entry_label)?
             .add_incoming(undef, other_label)?;
         let instruction = InstructionView::try_from(phi.as_int_value().into_erased())?;
@@ -89,7 +89,7 @@ fn phi_poison_beside_constant_folds_to_the_constant() -> Result<(), IrError> {
         // ill-formed (AmbiguousPhi); the poison-skipping folder arm folds by
         // value regardless of predecessor identity.
         let phi = b
-            .build_int_phi::<i32, _>("p")?
+            .view(b.build_int_phi::<i32, _>("p")?)
             .add_incoming(poison, entry_label)?
             .add_incoming(7_i32, other_label)?;
         let instruction = InstructionView::try_from(phi.as_int_value().into_erased())?;

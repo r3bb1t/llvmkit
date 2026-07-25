@@ -123,7 +123,6 @@ pub mod pass_pipeline;
 pub(crate) mod phi_check;
 #[cfg(test)]
 mod phi_raw_tests;
-pub mod phi_state;
 pub mod ssa_builder;
 pub mod struct_body_state;
 pub mod struct_schema;
@@ -315,7 +314,6 @@ pub use pass_pipeline::{
     SIMPLIFYCFG, cleanup_lift_pipeline, cleanup_min_pipeline, cleanup_o1_ish_pipeline,
     default_o0_pipeline, default_o1_pipeline, default_pipeline, parse_pass_pipeline_text,
 };
-pub use phi_state::{Closed, Open, PhiState};
 // Internal contract for llvmkit-asmparser; not public API, may change
 // without notice. The parser runs the verifier's phi-coherence algorithm
 // via this shared helper so the two cannot drift.
@@ -343,10 +341,10 @@ pub use value::{
     VectorValue,
 };
 pub use value_id::{
-    AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FloatValueId, FreezeInstId,
-    FunctionId, GlobalAliasId, GlobalIFuncId, GlobalId, IntValueId, IntrinsicInstId,
-    PointerValueId, TypedCallInstId, TypedFunctionId, TypedVarArgsFunctionId, VAArgInstId, ValueId,
-    ViewIn,
+    AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FloatValueId, FpPhiInstId,
+    FreezeInstId, FunctionId, GlobalAliasId, GlobalIFuncId, GlobalId, IntValueId, IntrinsicInstId,
+    OtherPhiInstId, PhiInstId, PointerPhiInstId, PointerValueId, TypedCallInstId, TypedFunctionId,
+    TypedVarArgsFunctionId, VAArgInstId, ValueId, ViewIn,
 };
 pub use worklist::Worklist;
 

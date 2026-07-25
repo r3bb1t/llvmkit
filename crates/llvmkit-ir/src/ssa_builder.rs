@@ -1297,15 +1297,18 @@ where
     let id = match category {
         VarCategory::Int => {
             let int_ty = IntType::<super::int_width::IntDyn, B>::new(ty, module);
-            builder.build_int_phi_dyn(int_ty, name)?.id()
+            let phi = builder.build_int_phi_dyn(int_ty, name)?;
+            builder.view(phi).slot()
         }
         VarCategory::Float => {
             let float_ty = FloatType::<super::float_kind::FloatDyn, B>::new(ty, module);
-            builder.build_fp_phi_dyn(float_ty, name)?.id()
+            let phi = builder.build_fp_phi_dyn(float_ty, name)?;
+            builder.view(phi).slot()
         }
         VarCategory::Pointer => {
             let ptr_ty = PointerType::<B>::new(ty, module);
-            builder.build_pointer_phi_in_addrspace(ptr_ty, name)?.id()
+            let phi = builder.build_pointer_phi_in_addrspace(ptr_ty, name)?;
+            builder.view(phi).slot()
         }
     };
     Ok(id)

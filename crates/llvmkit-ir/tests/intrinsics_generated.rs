@@ -274,7 +274,7 @@ fn descriptor_call_builder_returns_intrinsic_view() -> Result<(), IrError> {
             .name("abs")
             .build()?;
         let view = b.view(view);
-        assert_eq!(view.id(), IntrinsicId::ABS);
+        assert_eq!(view.intrinsic_id(), IntrinsicId::ABS);
         assert_eq!(view.descriptor()?, descriptor);
         let ret: IntValue<i32> = view.return_value().expect("abs returns value").try_into()?;
         b.build_ret(ret)?;

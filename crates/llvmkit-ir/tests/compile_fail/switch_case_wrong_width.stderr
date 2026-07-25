@@ -16,7 +16,7 @@ help: the trait `IntoIntValue<'_, i32, Brand<'_>>` is not implemented for `i64`
    | impl_into_int_value_static!(i64, i64, i64_type);
    | ----------------------------------------------- in this macro invocation
    = help: for that trait implementation, expected `i64`, found `i32`
-note: required by a bound in `SwitchInst::<'ctx, llvmkit_ir::term_open_state::Open, B, W>::add_case`
+note: required by a bound in `SwitchInst::<'ctx, Open, B, W>::add_case`
   --> src/instructions.rs
    |
    |     pub fn add_case<V, R, Target>(self, case_value: V, target: Target) -> IrResult<Self>

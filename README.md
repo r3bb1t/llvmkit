@@ -330,17 +330,18 @@ and no label plumbing to get wrong. Compare the loop body of
 (auto-SSA) -- both are byte-parity locked to print the identical `.ll`:
 
 ```rust
-// Manual phi wiring (examples/factorial.rs): declare empty phis up front,
-// build the loop body, then patch both incoming edges by hand.
-let acc_phi = b.build_int_phi::<i32, _>("acc")?;
-let i_phi = b.build_int_phi::<i32, _>("i")?;
+// Manual phi wiring (the crate-internal raw-phi shape): declare empty phis up
+// front, build the loop body, then patch both incoming edges by hand. The
+// builders hand back storable phi ids; `b.view(..)` reaches the typed handle.
+let acc_phi = b.view(b.build_int_phi::<i32, _>("acc")?);
+let i_phi = b.view(b.build_int_phi::<i32, _>("i")?);
 let acc = acc_phi.as_int_value();
 let i = i_phi.as_int_value();
 let next_acc = b.build_int_mul(acc, i, "next_acc")?;
 let next_i = b.build_int_sub(i, 1_i32, "next_i")?;
 // ... build the rest of the loop body, then:
-acc_phi.add_incoming(1_i32, entry_label)?.add_incoming(next_acc, loop_label)?.finish();
-i_phi.add_incoming(n, entry_label)?.add_incoming(next_i, loop_label)?.finish();
+acc_phi.add_incoming(1_i32, entry_label)?.add_incoming(next_acc, loop_label)?;
+i_phi.add_incoming(n, entry_label)?.add_incoming(next_i, loop_label)?;
 ```
 
 ```rust

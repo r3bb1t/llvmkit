@@ -736,7 +736,7 @@ where
     /// cannot fail.
     #[inline]
     pub fn erase(&self, target: &NonTerminator<'ctx, B>) {
-        let id = target.id();
+        let id = target.slot();
         let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
         // Capture operand ids before erasing (erase drops their uses). Push them
         // all unconditionally — `Worklist::pop` is panic-safe and skips any id that
@@ -824,7 +824,7 @@ where
         );
         let mut wl = Worklist::new();
         for inst in self.body_instructions() {
-            wl.push(inst.id());
+            wl.push(inst.slot());
         }
         *self.worklist.borrow_mut() = Some(wl);
         WorklistScope { patch: self }
@@ -3757,9 +3757,9 @@ mod tests {
             // instructions are still attached.
             let scope = patch.worklist();
             let first = scope.next().expect("seed pops b first (LIFO)");
-            assert_eq!(first.id(), b_id, "LIFO seed order: b before a");
+            assert_eq!(first.slot(), b_id, "LIFO seed order: b before a");
             let second = scope.next().expect("seed pops a second");
-            assert_eq!(second.id(), a_id);
+            assert_eq!(second.slot(), a_id);
             assert!(scope.next().is_none(), "seed fully drained");
 
             // Erase `b` through the active worklist: this must push `b`'s
@@ -3773,7 +3773,7 @@ mod tests {
             assert_eq!(
                 resurfaced
                     .expect("a re-pushed by erase's operand cascade")
-                    .id(),
+                    .slot(),
                 a_id,
             );
             drop(scope);

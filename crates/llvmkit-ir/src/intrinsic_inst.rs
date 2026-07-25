@@ -7,6 +7,7 @@ use super::intrinsics::{IntrinsicDescriptor, IntrinsicId, descriptor_for_callee}
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, ModuleBrand};
 use super::value::Value;
+use super::value_id::IntrinsicInstId;
 
 /// A call whose callee is a generated LLVM intrinsic declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -55,10 +56,18 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntrinsicInst<'ctx, R, B> {
         self.id
     }
 
-    /// Backward-compatible short ID accessor.
+    /// Storable, module-tagged [`IntrinsicInstId<R>`](crate::IntrinsicInstId)
+    /// for this call (llvmkit 2.0) — the id its builder handed back,
+    /// re-mintable from a handle recovered through
+    /// [`Module::view`](crate::Module::view).
+    ///
+    /// Note this is the *instruction* id, not the intrinsic's identity: that
+    /// is [`intrinsic_id`](Self::intrinsic_id), which `id` used to alias. The
+    /// alias was retired in cycle B so that `.id()` means exactly one thing —
+    /// "the storable id of this handle" — across the whole surface.
     #[inline]
-    pub const fn id(self) -> IntrinsicId {
-        self.intrinsic_id()
+    pub fn id(self) -> IntrinsicInstId<R, B> {
+        IntrinsicInstId::from_raw(self.call.to_erased().module().id(), self.call.slot())
     }
 
     /// Generated descriptor matched from the callee declaration.

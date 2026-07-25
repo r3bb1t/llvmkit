@@ -113,7 +113,9 @@ fn build_single_pred_phi<'ctx>(
 
     // to: %p = phi i32 [ %x, entry ] ; %u = add %p, 1 ; ret %u
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(to);
-    let p = b.build_int_phi::<i32, _>("p")?.add_incoming(x, entry_lbl)?;
+    let p = b
+        .view(b.build_int_phi::<i32, _>("p")?)
+        .add_incoming(x, entry_lbl)?;
     let u = b.build_int_add(p.as_int_value(), 1_i32, "u")?;
     b.build_ret(u)?;
 
@@ -207,7 +209,9 @@ fn build_redirect_single_pred_phi<'ctx>(
 
     // old_to: %p = phi i32 [ %x, entry ] ; %u = add %p, 1 ; ret %u
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(old_to);
-    let p = b.build_int_phi::<i32, _>("p")?.add_incoming(x, entry_lbl)?;
+    let p = b
+        .view(b.build_int_phi::<i32, _>("p")?)
+        .add_incoming(x, entry_lbl)?;
     let u = b.build_int_add(p.as_int_value(), 1_i32, "u")?;
     b.build_ret(u)?;
 
@@ -302,7 +306,7 @@ fn zero_incoming_phi_in_reachable_block_is_rejected() -> Result<(), IrError> {
 
         // b: %p = phi i32   (no add_incoming) ; ret 0
         let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(b);
-        let _p = bld.build_int_phi::<i32, _>("p")?.finish();
+        let _p = bld.view(bld.build_int_phi::<i32, _>("p")?);
         bld.build_ret(i32_ty.const_int(0_u32))?;
 
         let err = m
@@ -344,7 +348,7 @@ fn zero_incoming_phi_in_unreachable_block_is_accepted() -> Result<(), IrError> {
 
         // u: %q = phi i32   (no add_incoming) ; ret 0
         let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(u);
-        let _q = bld.build_int_phi::<i32, _>("q")?.finish();
+        let _q = bld.view(bld.build_int_phi::<i32, _>("q")?);
         bld.build_ret(i32_ty.const_int(0_u32))?;
 
         m.verify_borrowed()

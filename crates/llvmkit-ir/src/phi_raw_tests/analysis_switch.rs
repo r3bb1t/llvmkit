@@ -131,7 +131,7 @@ fn build_switch_merge<'ctx>(
     // merge: %p = phi i32 [ %e, entry ], [ %d, dflt ] ; ret %p
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(merge);
     let p = b
-        .build_int_phi::<i32, _>("p")?
+        .view(b.build_int_phi::<i32, _>("p")?)
         .add_incoming(e, entry_lbl)?
         .add_incoming(d, dflt_lbl)?;
     b.build_ret(p.as_int_value())?;
@@ -310,7 +310,7 @@ fn build_switch_default_parallel<'ctx>(
     // shared: %p = phi i32 [ %e, entry ] (default), [ %e, entry ] (case 0), [ %mv, mid ] ; ret %p
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(shared);
     let p = b
-        .build_int_phi::<i32, _>("p")?
+        .view(b.build_int_phi::<i32, _>("p")?)
         .add_incoming(e, entry_lbl)?
         .add_incoming(e, entry_lbl)?
         .add_incoming(mv, mid_lbl)?;

@@ -8,10 +8,10 @@
 //! `Module::verify()`.
 //!
 //! The raw typed-phi builders (`build_int_phi`, `build_fp_phi`,
-//! `build_pointer_phi`) and the open-phi `add_incoming`/`finish` mutators are
-//! now `pub(crate)`, so external code cannot name them. This fixture pins that
-//! guarantee: the three marker-form `build_*_phi` builders are unnameable from
-//! outside the crate.
+//! `build_pointer_phi`) and the `add_incoming` mutator are `pub(crate)`, so
+//! external code cannot name them — that visibility is what keeps a phi
+//! unobservable mid-construction from outside the crate. This fixture pins it:
+//! the three marker-form `build_*_phi` builders are unnameable from outside.
 
 use llvmkit_ir::{Dyn, IRBuilder, Linkage, Module};
 

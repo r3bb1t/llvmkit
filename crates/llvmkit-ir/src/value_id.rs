@@ -14,10 +14,14 @@
 //! [`id`](crate::Value::id)-style accessor that mints its id, while the
 //! builders kept returning borrowing handles. Cycle B rewires the builders to
 //! return ids, one family at a time — arithmetic, casts, comparisons, memory,
-//! aggregates, vectors, calls and the module-level declarations have flipped;
-//! blocks/branches and phi still hand back handles.
-//! [`IRBuilder::view`](crate::IRBuilder::view) is the builder-side twin of
-//! [`Module::view`](crate::Module::view) for reading at a build site.
+//! aggregates, vectors, calls, the module-level declarations, blocks/branches
+//! and phi have all flipped, so no builder hands back a borrowing handle any
+//! more. [`IRBuilder::view`](crate::IRBuilder::view) is the builder-side twin
+//! of [`Module::view`](crate::Module::view) for reading at a build site.
+//!
+//! One naming rule holds across the whole surface: `handle.id()` mints the
+//! storable, module-tagged id, and `handle.slot()` is the bare arena index
+//! (crate-internal side tables only).
 //!
 //! Two shapes of id live here: the **value ids** ([`ValueId`], [`IntValueId`],
 //! ...), which name a value and nothing more, and the **instruction ids**
@@ -57,7 +61,8 @@ use crate::global_ifunc::GlobalIFunc;
 use crate::global_variable::GlobalVariable;
 use crate::instruction::InstructionKindData;
 use crate::instructions::{
-    AtomicCmpXchgInst, AtomicRMWInst, CallInst, FreezeInst, TypedCallInst, VAArgInst,
+    AtomicCmpXchgInst, AtomicRMWInst, CallInst, FpPhiInst, FreezeInst, OtherPhiInst, PhiInst,
+    PointerPhiInst, TypedCallInst, VAArgInst,
 };
 use crate::int_width::{IntWidth, IntoIntValue, into_int_value_sealed};
 use crate::intrinsic_inst::IntrinsicInst;
@@ -379,6 +384,38 @@ decl_value_id! {
     /// Storable, module-tagged id for a `cmpxchg` instruction, resolved into an
     /// [`AtomicCmpXchgInst`].
     AtomicCmpXchgInstId
+}
+
+decl_value_id! {
+    /// Storable, module-tagged id for an integer-typed `phi`, resolved into a
+    /// [`PhiInst<W>`](crate::PhiInst). The width marker `W` is preserved on the
+    /// id and re-attached on view, so the typed phi surface
+    /// ([`PhiInst::as_int_value`](crate::PhiInst::as_int_value),
+    /// [`PhiInst::incomings`](crate::PhiInst::incomings),
+    /// [`PhiInst::remove_incoming`](crate::PhiInst::remove_incoming)) survives a
+    /// single [`view`](crate::IRBuilder::view).
+    PhiInstId [W: IntWidth => _w]
+}
+
+decl_value_id! {
+    /// Storable, module-tagged id for a floating-point `phi`, resolved into an
+    /// [`FpPhiInst<K>`](crate::FpPhiInst). The float-kind marker `K` is
+    /// preserved on the id and re-attached on view.
+    FpPhiInstId [K: FloatKind => _k]
+}
+
+decl_value_id! {
+    /// Storable, module-tagged id for a pointer-typed `phi`, resolved into a
+    /// [`PointerPhiInst`].
+    PointerPhiInstId
+}
+
+decl_value_id! {
+    /// Storable, module-tagged id for a `phi` whose result type is neither
+    /// integer, float, nor pointer (vector / array / struct), resolved into an
+    /// [`OtherPhiInst`] — the erased phi handle
+    /// [`PhiKind::Other`](crate::PhiKind) also surfaces.
+    OtherPhiInstId
 }
 
 // --------------------------------------------------------------------------
@@ -743,7 +780,88 @@ impl_view_in_for_instruction_id!(
     VAArgInstId => VAArgInst [VAArg],
     AtomicRMWInstId => AtomicRMWInst [AtomicRMW],
     AtomicCmpXchgInstId => AtomicCmpXchgInst [AtomicCmpXchg],
+    OtherPhiInstId => OtherPhiInst [Phi],
 );
+
+/// Tag-check `tag`/`slot` against `module`, confirm the slot really holds a
+/// `phi`, and yield the phi's result type from the arena. The phi twin of
+/// [`call_result_type_in`], shared by the three *typed* phi ids (the erased
+/// [`OtherPhiInstId`] goes through [`impl_view_in_for_instruction_id`], which
+/// performs the same two checks).
+fn phi_result_type_in<B: ModuleBrand>(
+    tag: ModuleId,
+    slot: ValueSlot,
+    module: ModuleRef<'_, B>,
+) -> Option<TypeSlot> {
+    if tag != module.id() {
+        return None;
+    }
+    let data = module.value_data(slot);
+    let ValueKindData::Instruction(inst) = &data.kind else {
+        return None;
+    };
+    if !matches!(inst.kind, InstructionKindData::Phi(_)) {
+        return None;
+    }
+    Some(data.ty)
+}
+
+impl<W: IntWidth, B: ModuleBrand> sealed::Sealed for PhiInstId<W, B> {}
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PhiInstId<W, B> {
+    type View = PhiInst<'ctx, W, B>;
+
+    #[inline]
+    fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
+        let ty = phi_result_type_in(self.tag, self.slot, module)?;
+        debug_assert!(
+            matches!(
+                module.type_data(ty),
+                TypeData::Integer { bits } if W::static_bits().is_none_or(|w| w == *bits)
+            ),
+            "PhiInstId width marker does not match the arena result type at its slot",
+        );
+        Some(PhiInst::from_raw(self.slot, module, ty))
+    }
+}
+
+impl<K: FloatKind, B: ModuleBrand> sealed::Sealed for FpPhiInstId<K, B> {}
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FpPhiInstId<K, B> {
+    type View = FpPhiInst<'ctx, K, B>;
+
+    #[inline]
+    fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
+        let ty = phi_result_type_in(self.tag, self.slot, module)?;
+        debug_assert!(
+            matches!(
+                module.type_data(ty),
+                TypeData::Half
+                    | TypeData::BFloat
+                    | TypeData::Float
+                    | TypeData::Double
+                    | TypeData::X86Fp80
+                    | TypeData::Fp128
+                    | TypeData::PpcFp128
+            ),
+            "FpPhiInstId kind marker does not match the arena result type at its slot",
+        );
+        Some(FpPhiInst::from_raw(self.slot, module, ty))
+    }
+}
+
+impl<B: ModuleBrand> sealed::Sealed for PointerPhiInstId<B> {}
+impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerPhiInstId<B> {
+    type View = PointerPhiInst<'ctx, B>;
+
+    #[inline]
+    fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
+        let ty = phi_result_type_in(self.tag, self.slot, module)?;
+        debug_assert!(
+            matches!(module.type_data(ty), TypeData::Pointer { .. }),
+            "PointerPhiInstId points at a non-pointer phi result type at its slot",
+        );
+        Some(PointerPhiInst::from_raw(self.slot, module, ty))
+    }
+}
 
 // --------------------------------------------------------------------------
 // Into*-id: typed ids as builder operands
@@ -864,9 +982,14 @@ impl_into_erased_value_for_id!(
 /// `typed_call_void_result_use` / `call_void_no_return_accessor` keep that
 /// rejection locked.
 macro_rules! impl_into_erased_value_for_instruction_id {
-    ($($name:ident),+ $(,)?) => { $(
-        impl<B: ModuleBrand> into_erased_value_sealed::Sealed for $name<B> {}
-        impl<'ctx, B: ModuleBrand + 'ctx> IntoErasedValue<'ctx, B> for $name<B> {
+    ($( $name:ident $([$($mk:ident : $mkb:path),+ $(,)?])? ),+ $(,)?) => { $(
+        impl<$($($mk: $mkb,)+)? B: ModuleBrand> into_erased_value_sealed::Sealed
+            for $name<$($($mk,)+)? B>
+        {
+        }
+        impl<'ctx, $($($mk: $mkb,)+)? B: ModuleBrand + 'ctx> IntoErasedValue<'ctx, B>
+            for $name<$($($mk,)+)? B>
+        {
             #[inline]
             fn into_erased_value(
                 self,
@@ -885,4 +1008,8 @@ impl_into_erased_value_for_instruction_id!(
     VAArgInstId,
     AtomicRMWInstId,
     AtomicCmpXchgInstId,
+    PhiInstId[W: IntWidth],
+    FpPhiInstId[K: FloatKind],
+    PointerPhiInstId,
+    OtherPhiInstId,
 );

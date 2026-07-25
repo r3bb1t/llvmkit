@@ -46,7 +46,6 @@ use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::{IntDyn, IntWidth, IntoIntValue, StaticIntWidth};
 use super::marker::{Dyn, Ptr, ReturnMarker};
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, Unverified};
-use super::phi_state::{Closed, Open, PhiState};
 use super::sync_scope::SyncScope;
 use super::term_open_state::{Closed as TermClosed, Open as TermOpen, TermOpenState};
 use super::r#type::{Type, TypeData, TypeSlot};
@@ -54,7 +53,10 @@ use super::value::{
     FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Value, ValueKindData, ValueSlot,
     ValueUse,
 };
-use super::value_id::BlockId;
+use super::value_id::{
+    AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FpPhiInstId, FreezeInstId,
+    OtherPhiInstId, PhiInstId, PointerPhiInstId, TypedCallInstId, VAArgInstId,
+};
 
 macro_rules! decl_binop_handle {
     (
@@ -433,6 +435,44 @@ macro_rules! decl_handle_scaffold {
     };
 }
 
+/// Give a marker-free opcode handle the two id accessors every handle in the
+/// crate shares (llvmkit 2.0): `.id()` mints the storable, module-tagged
+/// instruction id its builder hands back — so a handle recovered through
+/// [`Module::view`](crate::Module::view) or an [`InstructionKind`] match can go
+/// back into a side table — and `.slot()` is the bare arena index.
+///
+/// Only opcodes with a dedicated id type appear here; the rest reach an id
+/// through `to_erased().id()`, which is the honest spelling for a handle whose
+/// only storable identity is its result value.
+macro_rules! decl_instruction_id_accessors {
+    ($( $name:ident => $id:ident ),+ $(,)?) => { $(
+        impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
+            #[doc = concat!(
+                "Storable, module-tagged [`", stringify!($id), "`](crate::",
+                stringify!($id), ") for this instruction."
+            )]
+            #[inline]
+            pub fn id(&self) -> $id<B> {
+                $id::from_raw(self.module.id(), self.id)
+            }
+
+            /// Bare arena slot of this instruction. Untagged: prefer
+            /// [`id`](Self::id).
+            #[inline]
+            pub fn slot(&self) -> ValueSlot {
+                self.id
+            }
+        }
+    )+ };
+}
+
+decl_instruction_id_accessors!(
+    FreezeInst => FreezeInstId,
+    VAArgInst => VAArgInstId,
+    AtomicRMWInst => AtomicRMWInstId,
+    AtomicCmpXchgInst => AtomicCmpXchgInstId,
+);
+
 /// `alloca` stack-slot allocation. Mirrors `AllocaInst`
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -721,6 +761,23 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
+    /// Bare arena slot of this call. Untagged: prefer [`id`](Self::id).
+    #[inline]
+    pub fn slot(&self) -> ValueSlot {
+        self.id
+    }
+
+    /// Storable, module-tagged [`CallInstId<R>`](crate::CallInstId) for this
+    /// call — the id its builder handed back, re-mintable from a handle
+    /// recovered through [`Module::view`](crate::Module::view) or an
+    /// [`InstructionKind`](crate::InstructionKind) match, so a rediscovered call
+    /// can go back into a
+    /// side table.
+    #[inline]
+    pub fn id(&self) -> CallInstId<R, B> {
+        CallInstId::from_raw(self.module.id(), self.id)
+    }
+
     /// Re-tag the return marker. Crate-internal: only [`build_call_dyn`]
     /// flows the typed marker; [`as_dyn`] erases it.
     #[inline]
@@ -927,6 +984,20 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> TypedCallInst<'ctx, Ret, 
     #[inline]
     pub fn as_call_inst(self) -> CallInst<'ctx, Ret::Marker, B> {
         self.inner
+    }
+
+    /// Bare arena slot of this call. Untagged: prefer [`id`](Self::id).
+    #[inline]
+    pub fn slot(&self) -> ValueSlot {
+        self.inner.slot()
+    }
+
+    /// Storable, module-tagged [`TypedCallInstId<Ret>`](crate::TypedCallInstId)
+    /// for this call — the schema rides on the id, so viewing it recovers the
+    /// infallible [`result`](Self::result) without a re-narrowing step.
+    #[inline]
+    pub fn id(&self) -> TypedCallInstId<Ret, B> {
+        TypedCallInstId::from_raw(self.inner.module.id(), self.inner.id)
     }
 
     /// Fully-erased handle (D3).
@@ -1308,25 +1379,85 @@ decl_handle_scaffold!(UnreachableInst);
 // Phi
 // --------------------------------------------------------------------------
 
+/// Shared body of the four phi handles' `remove_incoming`, mirroring
+/// `PHINode::removeIncomingValue(Idx, /*DeletePHIIfEmpty=*/false)`
+/// (`lib/IR/Instructions.cpp`).
+///
+/// Upstream backfills the vacated slot from the **end** of the incoming list
+/// rather than shifting, so incoming order is not preserved; that behaviour is
+/// mirrored exactly so a rewriter that follows LLVM's algorithm prints the same
+/// text. The removed value's reverse use-list loses exactly one
+/// `Instruction(phi)` edge — one edge per incoming was registered by
+/// `add_incoming` / `phi_add_incoming_from_value`, so a value that is incoming
+/// on several edges keeps the rest.
+///
+/// The `DeletePHIIfEmpty` half of upstream's contract is deliberately **not**
+/// mirrored: llvmkit erases through
+/// [`Instruction::erase_from_parent`](crate::Instruction::erase_from_parent),
+/// which consumes the linear lifecycle handle so that use-after-erase is a
+/// compile error, and a `Copy` opcode handle cannot express that consumption —
+/// self-erasure here would hand the caller a live handle to an erased
+/// instruction. The auto-erase behaviour already ships where it *can* be
+/// sound, inside the `ReshapeCfg` pass surface (`FnReshape`'s edge edits RAUW
+/// an emptied phi with poison and erase it, LLVM `removePredecessor`). Emptying
+/// a phi here is legal but leaves a node with no printable textual form; the
+/// caller owns finishing the job, and
+/// [`Module::verify`](crate::Module::verify) flags the leftover through the
+/// existing incoming-count-vs-predecessor rule.
+fn phi_remove_incoming<'ctx, B: ModuleBrand + 'ctx>(
+    phi_id: ValueSlot,
+    module: ModuleRef<'ctx, B>,
+    payload: &PhiData,
+    index: u32,
+) -> IrResult<Value<'ctx, B>> {
+    let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
+    let removed = {
+        let mut incoming = payload.incoming.borrow_mut();
+        let count = u32::try_from(incoming.len())
+            .unwrap_or_else(|_| unreachable!("phi has more than u32::MAX incoming"));
+        if slot >= incoming.len() {
+            return Err(crate::IrError::ArgumentIndexOutOfRange { index, count });
+        }
+        // `swap_remove` is exactly upstream's "swap with the end, nuke the
+        // last" — the vacated slot is backfilled from the tail.
+        incoming.swap_remove(slot).0.get()
+    };
+    // Deregister one phi-use of the removed value.
+    {
+        let core = module.module();
+        let mut uses = core.context().value_data(removed).use_list.borrow_mut();
+        if let Some(pos) = uses
+            .iter()
+            .position(|edge| *edge == ValueUse::Instruction(phi_id))
+        {
+            uses.remove(pos);
+        }
+    }
+    let ty = module.module().context().value_data(removed).ty;
+    Ok(Value::from_parts(removed, module, ty))
+}
+
 /// `phi` node. Mirrors `PHINode` (`Instructions.h`). Mutable
 /// `add_incoming` mirrors `PHINode::addIncoming`; the factorial
 /// example needs it because the loop-edge incoming value is defined
 /// later in the same block.
 ///
-/// The `P: PhiState` parameter (default [`Open`]) tracks whether the
-/// phi handle accepts `add_incoming` calls. Calling `PhiInst::finish` consumes
-/// the open handle and returns a [`Closed`] handle; the closed handle exposes
-/// only read accessors.
+/// The handle is a copyable read/edit view, minted from the storable
+/// [`PhiInstId<W>`](crate::PhiInstId) the phi builders hand back. Authoring
+/// (`add_incoming`) is crate-internal — block arguments
+/// ([`IRBuilder::append_block_with_params`](crate::IRBuilder::append_block_with_params))
+/// are the public phi-authoring surface — while
+/// [`remove_incoming`](Self::remove_incoming) is public for CFG rewriters and
+/// takes an `Unverified` module token as its mutation-capability witness.
 #[derive(Debug)]
-pub struct PhiInst<'ctx, W: IntWidth, P: PhiState = Open, B: ModuleBrand = Brand<'ctx>> {
+pub struct PhiInst<'ctx, W: IntWidth, B: ModuleBrand = Brand<'ctx>> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
     _w: core::marker::PhantomData<fn() -> W>,
-    _p: core::marker::PhantomData<P>,
 }
 
-impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, B> {
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
     #[inline]
     pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
@@ -1337,21 +1468,6 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
             module: module.into(),
             ty,
             _w: core::marker::PhantomData,
-            _p: core::marker::PhantomData,
-        }
-    }
-
-    /// Re-tag the phi-state marker. Crate-internal: only [`finish`]
-    /// flips the public marker.
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[inline]
-    pub(super) fn retag<P2: PhiState>(self) -> PhiInst<'ctx, W, P2, B> {
-        PhiInst {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-            _w: core::marker::PhantomData,
-            _p: core::marker::PhantomData,
         }
     }
 
@@ -1379,11 +1495,21 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
         Value::from_parts(self.id, self.module, self.ty)
     }
 
-    /// Opaque arena id of the underlying value (same id as
-    /// [`to_erased`](Self::to_erased)).
+    /// Bare arena slot of the underlying value (same slot as
+    /// [`to_erased`](Self::to_erased)). Untagged: prefer [`id`](Self::id),
+    /// which carries the owning module and resolves back through
+    /// [`Module::view`](crate::Module::view).
     #[inline]
-    pub fn id(&self) -> ValueSlot {
+    pub fn slot(&self) -> ValueSlot {
         self.to_erased().id
+    }
+
+    /// Storable, module-tagged [`PhiInstId<W>`](crate::PhiInstId) for this phi
+    /// — the id its builder handed back, re-mintable from a rediscovered
+    /// handle.
+    #[inline]
+    pub fn id(&self) -> PhiInstId<W, B> {
+        PhiInstId::from_raw(self.module.id(), self.id)
     }
 
     /// Result handle for the phi node, narrowed to the static width
@@ -1447,15 +1573,42 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
             (value, block)
         })
     }
+
+    /// Remove the incoming `(value, block)` pair at `index` and return the
+    /// removed value. Mirrors `PHINode::removeIncomingValue`, which real CFG
+    /// rewriters call when a predecessor edge disappears.
+    ///
+    /// Like upstream, the vacated slot is backfilled from the **end** of the
+    /// incoming list, so **incoming order is not preserved**. Errors with
+    /// [`IrError::ArgumentIndexOutOfRange`](crate::IrError::ArgumentIndexOutOfRange)
+    /// when `index` is past the end.
+    ///
+    /// Requires an `Unverified` module token: like
+    /// [`AtomicRMWInst::set_value_operand`], this mutates the IR and must not be
+    /// reachable without proof of mutation capability.
+    ///
+    /// Unlike upstream's default `DeletePHIIfEmpty = true`, removing the last
+    /// incoming leaves the (now unprintable) phi in place — see
+    /// the module-level note on this file's `phi_remove_incoming` helper for why
+    /// self-erasure cannot be sound on a `Copy` handle, and use the `ReshapeCfg`
+    /// edge edits when the whole predecessor edge is going away.
+    pub fn remove_incoming(
+        &self,
+        module_token: &Module<'ctx, B, Unverified>,
+        index: u32,
+    ) -> IrResult<Value<'ctx, B>> {
+        let _ = module_token;
+        phi_remove_incoming(self.id, self.module, self.payload(), index)
+    }
 }
 
-// The typed open-phi mutation surface is crate-internal since slice 7 (block
+// The typed phi *authoring* surface is crate-internal since slice 7 (block
 // arguments are the public phi-authoring surface). It has no production caller
 // today — the parser and SSA builder add incomings through the erased
 // `phi_add_incoming_from_value` path — so `dead_code` is allowed in non-test
-// builds; the in-crate phi typestate tests exercise it.
+// builds; the in-crate raw-phi tests exercise it.
 #[cfg_attr(not(test), allow(dead_code))]
-impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, Open, B> {
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
     /// Append `(value, block)` to the incoming list. Mirrors
     /// `PHINode::addIncoming`. Returns `Self` so calls chain.
     /// Errors if `value`'s type does not match the phi's result type.
@@ -1506,25 +1659,22 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, Open, B> {
             })
         }
     }
-
-    /// Consume the open phi and return its [`Closed`] view. After
-    /// `finish`, `add_incoming` is no longer in scope at the type
-    /// level; the closed handle exposes only read accessors. Mirrors
-    /// the implicit "phi is finalised" convention upstream where the
-    /// verifier subsequently runs `Verifier::visitPHINode`.
-    #[inline]
-    pub(crate) fn finish(self) -> PhiInst<'ctx, W, Closed, B> {
-        self.retag::<Closed>()
-    }
 }
 
-impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand> PartialEq for PhiInst<'ctx, W, P, B> {
+impl<'ctx, W: IntWidth, B: ModuleBrand> Clone for PhiInst<'ctx, W, B> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'ctx, W: IntWidth, B: ModuleBrand> Copy for PhiInst<'ctx, W, B> {}
+impl<'ctx, W: IntWidth, B: ModuleBrand> PartialEq for PhiInst<'ctx, W, B> {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
     }
 }
-impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand> Eq for PhiInst<'ctx, W, P, B> {}
-impl<'ctx, W: IntWidth, P: PhiState> core::hash::Hash for PhiInst<'ctx, W, P> {
+impl<'ctx, W: IntWidth, B: ModuleBrand> Eq for PhiInst<'ctx, W, B> {}
+impl<'ctx, W: IntWidth> core::hash::Hash for PhiInst<'ctx, W> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
@@ -1542,15 +1692,14 @@ impl<'ctx, W: IntWidth, P: PhiState> core::hash::Hash for PhiInst<'ctx, W, P> {
 /// per-opcode handle pattern in this crate (the unified-trait alternative
 /// would force every read accessor through dyn dispatch).
 #[derive(Debug)]
-pub struct FpPhiInst<'ctx, K: FloatKind, P: PhiState = Open, B: ModuleBrand = Brand<'ctx>> {
+pub struct FpPhiInst<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
     _k: core::marker::PhantomData<fn() -> K>,
-    _p: core::marker::PhantomData<P>,
 }
 
-impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, P, B> {
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
     #[inline]
     pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
@@ -1561,19 +1710,6 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
             module: module.into(),
             ty,
             _k: core::marker::PhantomData,
-            _p: core::marker::PhantomData,
-        }
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[inline]
-    pub(super) fn retag<P2: PhiState>(self) -> FpPhiInst<'ctx, K, P2, B> {
-        FpPhiInst {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-            _k: core::marker::PhantomData,
-            _p: core::marker::PhantomData,
         }
     }
 
@@ -1601,11 +1737,18 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
         Value::from_parts(self.id, self.module, self.ty)
     }
 
-    /// Opaque arena id of the underlying value (same id as
-    /// [`to_erased`](Self::to_erased)).
+    /// Bare arena slot of the underlying value (same slot as
+    /// [`to_erased`](Self::to_erased)). Untagged: prefer [`id`](Self::id).
     #[inline]
-    pub fn id(&self) -> ValueSlot {
+    pub fn slot(&self) -> ValueSlot {
         self.to_erased().id
+    }
+
+    /// Storable, module-tagged [`FpPhiInstId<K>`](crate::FpPhiInstId) for this
+    /// phi.
+    #[inline]
+    pub fn id(&self) -> FpPhiInstId<K, B> {
+        FpPhiInstId::from_raw(self.module.id(), self.id)
     }
 
     /// Result handle for the phi, narrowed to the static kind `K`.
@@ -1668,10 +1811,23 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
             (value, block)
         })
     }
+
+    /// Remove the incoming `(value, block)` pair at `index` and return the
+    /// removed value — the float-phi twin of
+    /// [`PhiInst::remove_incoming`], with the same upstream-mirroring
+    /// swap-with-last semantics and the same non-deleting empty-phi contract.
+    pub fn remove_incoming(
+        &self,
+        module_token: &Module<'ctx, B, Unverified>,
+        index: u32,
+    ) -> IrResult<Value<'ctx, B>> {
+        let _ = module_token;
+        phi_remove_incoming(self.id, self.module, self.payload(), index)
+    }
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
     /// Append `(value, block)` to the incoming list. Mirrors
     /// `PHINode::addIncoming`. Errors if `value`'s type does not match
     /// the phi's result type. Rejects a second entry for the same block with
@@ -1721,23 +1877,22 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
             })
         }
     }
-
-    /// Consume the open phi and return its [`Closed`] view.
-    #[inline]
-    pub(crate) fn finish(self) -> FpPhiInst<'ctx, K, Closed, B> {
-        self.retag::<Closed>()
-    }
 }
 
-impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand> PartialEq for FpPhiInst<'ctx, K, P, B> {
+impl<'ctx, K: FloatKind, B: ModuleBrand> Clone for FpPhiInst<'ctx, K, B> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'ctx, K: FloatKind, B: ModuleBrand> Copy for FpPhiInst<'ctx, K, B> {}
+impl<'ctx, K: FloatKind, B: ModuleBrand> PartialEq for FpPhiInst<'ctx, K, B> {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
     }
 }
-impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand> Eq for FpPhiInst<'ctx, K, P, B> {}
-impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand> core::hash::Hash
-    for FpPhiInst<'ctx, K, P, B>
-{
+impl<'ctx, K: FloatKind, B: ModuleBrand> Eq for FpPhiInst<'ctx, K, B> {}
+impl<'ctx, K: FloatKind, B: ModuleBrand> core::hash::Hash for FpPhiInst<'ctx, K, B> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
@@ -1751,16 +1906,15 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand> core::hash::Hash
 
 /// `phi` node whose result type is a pointer. Pointers carry no
 /// element-kind type parameter (only addrspace, which is encoded in
-/// the type id), so the handle is parameterised only by `P: PhiState`.
-#[derive(Debug)]
-pub struct PointerPhiInst<'ctx, P: PhiState = Open, B: ModuleBrand = Brand<'ctx>> {
+/// the type id), so the handle carries no marker beyond the brand.
+#[derive(Debug, Clone, Copy)]
+pub struct PointerPhiInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
-    _p: core::marker::PhantomData<P>,
 }
 
-impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
     #[inline]
     pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
@@ -1770,18 +1924,6 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
             id,
             module: module.into(),
             ty,
-            _p: core::marker::PhantomData,
-        }
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[inline]
-    pub(super) fn retag<P2: PhiState>(self) -> PointerPhiInst<'ctx, P2, B> {
-        PointerPhiInst {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-            _p: core::marker::PhantomData,
         }
     }
 
@@ -1809,11 +1951,17 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
-    /// Opaque arena id of the underlying value (same id as
-    /// [`to_erased`](Self::to_erased)).
+    /// Bare arena slot of the underlying value (same slot as
+    /// [`to_erased`](Self::to_erased)). Untagged: prefer [`id`](Self::id).
     #[inline]
-    pub fn id(&self) -> ValueSlot {
+    pub fn slot(&self) -> ValueSlot {
         self.to_erased().id
+    }
+
+    /// Storable, module-tagged [`PointerPhiInstId`] for this phi.
+    #[inline]
+    pub fn id(&self) -> PointerPhiInstId<B> {
+        PointerPhiInstId::from_raw(self.module.id(), self.id)
     }
 
     /// Result handle for the phi, narrowed to a [`PointerValue`].
@@ -1876,10 +2024,23 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
             (value, block)
         })
     }
+
+    /// Remove the incoming `(value, block)` pair at `index` and return the
+    /// removed value — the pointer-phi twin of
+    /// [`PhiInst::remove_incoming`], with the same upstream-mirroring
+    /// swap-with-last semantics and the same non-deleting empty-phi contract.
+    pub fn remove_incoming(
+        &self,
+        module_token: &Module<'ctx, B, Unverified>,
+        index: u32,
+    ) -> IrResult<Value<'ctx, B>> {
+        let _ = module_token;
+        phi_remove_incoming(self.id, self.module, self.payload(), index)
+    }
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, Open, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
     /// Append `(value, block)` to the incoming list. Rejects a second entry
     /// for the same block with a different value
     /// ([`IrError::AmbiguousPhiIncoming`](crate::IrError::AmbiguousPhiIncoming));
@@ -1924,21 +2085,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, Open, B> {
             })
         }
     }
-
-    /// Consume the open phi and return its [`Closed`] view.
-    #[inline]
-    pub(crate) fn finish(self) -> PointerPhiInst<'ctx, Closed, B> {
-        self.retag::<Closed>()
-    }
 }
 
-impl<'ctx, P: PhiState, B: ModuleBrand> PartialEq for PointerPhiInst<'ctx, P, B> {
+impl<'ctx, B: ModuleBrand> PartialEq for PointerPhiInst<'ctx, B> {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
     }
 }
-impl<'ctx, P: PhiState, B: ModuleBrand> Eq for PointerPhiInst<'ctx, P, B> {}
-impl<'ctx, P: PhiState> core::hash::Hash for PointerPhiInst<'ctx, P> {
+impl<'ctx, B: ModuleBrand> Eq for PointerPhiInst<'ctx, B> {}
+impl<'ctx> core::hash::Hash for PointerPhiInst<'ctx> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
@@ -1974,6 +2129,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
             },
             _ => unreachable!("OtherPhiInst invariant: kind is Instruction"),
         }
+    }
+
+    /// Bare arena slot of the underlying value (same slot as
+    /// [`to_erased`](Self::to_erased)). Untagged: prefer [`id`](Self::id).
+    #[inline]
+    pub fn slot(&self) -> ValueSlot {
+        self.id
+    }
+
+    /// Storable, module-tagged [`OtherPhiInstId`] for this phi.
+    #[inline]
+    pub fn id(&self) -> OtherPhiInstId<B> {
+        OtherPhiInstId::from_raw(self.module.id(), self.id)
+    }
+
+    /// Remove the incoming `(value, block)` pair at `index` and return the
+    /// removed value — the erased-phi twin of [`PhiInst::remove_incoming`],
+    /// with the same upstream-mirroring swap-with-last semantics and the same
+    /// non-deleting empty-phi contract.
+    pub fn remove_incoming(
+        &self,
+        module_token: &Module<'ctx, B, Unverified>,
+        index: u32,
+    ) -> IrResult<Value<'ctx, B>> {
+        let _ = module_token;
+        phi_remove_incoming(self.id, self.module, self.payload(), index)
     }
 
     /// Number of incoming `(value, block)` edges.
@@ -2675,7 +2856,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> {
-    /// Consume the open switch and return its [`Closed`] view, preserving
+    /// Consume the open switch and return its [`TermClosed`] view, preserving
     /// the condition width `W`. Mirrors the implicit "switch is finalised"
     /// convention upstream where the verifier subsequently runs
     /// `Verifier::visitSwitchInst`.
@@ -2872,7 +3053,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
             .push(target.into_basic_block_label(self.module)?.slot());
         Ok(self)
     }
-    /// Consume the open `indirectbr` and return its [`Closed`] view.
+    /// Consume the open `indirectbr` and return its [`TermClosed`] view.
     #[inline]
     pub fn finish(self) -> IndirectBrInst<'ctx, TermClosed, B> {
         self.retag()
@@ -3211,7 +3392,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
             .push(ValueUse::Instruction(self.id));
         Ok(self)
     }
-    /// Consume the open landingpad and return its [`Closed`] view.
+    /// Consume the open landingpad and return its [`TermClosed`] view.
     #[inline]
     pub fn finish(self) -> LandingPadInst<'ctx, TermClosed, B> {
         self.retag()

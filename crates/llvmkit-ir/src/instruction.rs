@@ -45,7 +45,6 @@ use super::int_width::IntDyn;
 use super::marker::{Dyn, ReturnMarker};
 use super::metadata::{DebugRecord, MetadataAttachmentKind, MetadataAttachmentSet, MetadataSlot};
 use super::module::{Brand, Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified};
-use super::phi_state::Closed as PhiClosed;
 use super::term_open_state::Closed as TermClosed;
 use super::r#type::TypeSlot;
 use super::r#use::Use;
@@ -385,10 +384,17 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
         self.as_view().to_erased()
     }
 
-    /// Opaque arena id of the underlying value (same id as
+    /// Bare arena slot of the underlying value (same slot as
     /// [`to_erased`](Self::to_erased)).
+    ///
+    /// Named `slot` rather than `id` since cycle B: across the crate `.id()`
+    /// mints a *storable, module-tagged* id, and an instruction — which may be
+    /// void, hence value-less — has none of its own. Reach a storable id
+    /// through `to_erased().id()` (a value-defining instruction) or through the
+    /// per-opcode handle's `id()` ([`CallInst::id`](crate::CallInst::id),
+    /// [`PhiInst::id`](crate::PhiInst::id), ...).
     #[inline]
-    pub fn id(&self) -> ValueSlot {
+    pub fn slot(&self) -> ValueSlot {
         self.to_erased().id
     }
 
@@ -1679,9 +1685,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> CastKind<'ctx, B> {
 /// Deliberately **exhaustive** for the same reason as [`InstructionKind`].
 #[derive(Debug)]
 pub enum PhiKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    Int(PhiInst<'ctx, IntDyn, PhiClosed, B>),
-    Fp(FpPhiInst<'ctx, FloatDyn, PhiClosed, B>),
-    Ptr(PointerPhiInst<'ctx, PhiClosed, B>),
+    Int(PhiInst<'ctx, IntDyn, B>),
+    Fp(FpPhiInst<'ctx, FloatDyn, B>),
+    Ptr(PointerPhiInst<'ctx, B>),
     Other(OtherPhiInst<'ctx, B>),
 }
 
@@ -1729,6 +1735,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> PhiKind<'ctx, B> {
             Self::Other(p) => p.incomings().collect(),
         };
         entries.into_iter()
+    }
+
+    /// Remove the incoming `(value, block)` pair at `index` and return the
+    /// removed value, independent of variant — the variant-independent form of
+    /// [`PhiInst::remove_incoming`](crate::PhiInst::remove_incoming), which is
+    /// the shape a CFG rewriter reaching a phi through rediscovery wants.
+    /// Mirrors `PHINode::removeIncomingValue`, including its
+    /// order-not-preserved backfill; see
+    /// [`PhiInst::remove_incoming`](crate::PhiInst::remove_incoming) for the
+    /// empty-phi contract.
+    pub fn remove_incoming(
+        &self,
+        module_token: &Module<'ctx, B, Unverified>,
+        index: u32,
+    ) -> IrResult<Value<'ctx, B>> {
+        match self {
+            Self::Int(p) => p.remove_incoming(module_token, index),
+            Self::Fp(p) => p.remove_incoming(module_token, index),
+            Self::Ptr(p) => p.remove_incoming(module_token, index),
+            Self::Other(p) => p.remove_incoming(module_token, index),
+        }
     }
 
     /// Read-only erased instruction view for this phi.
@@ -1909,10 +1936,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> NonTerminator<'ctx, B> {
         self.view.to_erased()
     }
 
-    /// Opaque arena id of the underlying value (same id as
-    /// [`to_erased`](Self::to_erased)).
+    /// Bare arena slot of the underlying value (same slot as
+    /// [`to_erased`](Self::to_erased)). Named `slot` rather than `id` for the
+    /// reason given on [`Instruction::slot`].
     #[inline]
-    pub fn id(&self) -> ValueSlot {
+    pub fn slot(&self) -> ValueSlot {
         self.view.slot()
     }
 

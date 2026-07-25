@@ -71,8 +71,8 @@ use super::instruction::{
     state::Attached,
 };
 use super::instructions::{
-    CallBrInst, CallInst, CatchPadInst, CatchSwitchInst, CleanupPadInst, FpPhiInst, IndirectBrInst,
-    InvokeInst, LandingPadInst, OtherPhiInst, PhiInst, PointerPhiInst, StoreInst, SwitchInst,
+    CallBrInst, CallInst, CatchPadInst, CatchSwitchInst, CleanupPadInst, IndirectBrInst,
+    InvokeInst, LandingPadInst, StoreInst, SwitchInst,
 };
 use super::int_width::{IntDyn, IntWidth, IntoIntValue, StaticIntWidth};
 use super::intrinsic_inst::IntrinsicInst;
@@ -81,7 +81,6 @@ use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::folder::IRBuilderFolder;
 use super::marker::{Dyn, Ptr, ReturnMarker};
 use super::module::{Brand, Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified};
-use super::phi_state::Open as PhiOpen;
 use super::struct_body_state::StructBodyDyn;
 use super::struct_schema::{FieldOf, IntoIrField, IrField, StructFieldAt, StructSchema};
 use super::sync_scope::SyncScope;
@@ -93,8 +92,9 @@ use super::value::{
     Value, ValueKindData, ValueSlot, ValueUse, VectorValue,
 };
 use super::value_id::{
-    AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FloatValueId, FreezeInstId,
-    IntValueId, IntrinsicInstId, PointerValueId, TypedCallInstId, VAArgInstId, ValueId, ViewIn,
+    AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FloatValueId, FpPhiInstId,
+    FreezeInstId, IntValueId, IntrinsicInstId, OtherPhiInstId, PhiInstId, PointerPhiInstId,
+    PointerValueId, TypedCallInstId, VAArgInstId, ValueId, ViewIn,
 };
 use super::vec_len::{LenDyn, StaticVecLen, VecLen};
 
@@ -699,26 +699,33 @@ where
     /// already carry the builder brand `B`; remaining predecessor-set
     /// coherence is verified by [`Module::verify`](crate::Module::verify).
     ///
+    /// Every parameter speaks the storable-id currency (llvmkit 2.0): `phi_val`
+    /// and `val` take anything that lifts to an erased value — including the
+    /// phi ids the phi builders hand back and any value id — and `block` takes
+    /// any [`IntoBasicBlockLabel`], so a [`BlockId`] recovered from a
+    /// predecessor walk goes straight in without a view.
+    ///
     /// [`PhiInst::add_incoming`]: crate::PhiInst::add_incoming
     /// Internal contract shared with the in-tree `.ll` parser and the SSA
     /// builder (hence `#[doc(hidden)]`); block arguments are the public
     /// phi-authoring surface, so this is not part of the supported API and may
     /// change without notice.
     #[doc(hidden)]
-    pub fn phi_add_incoming_from_value<RBb, SBb, Phi, Val>(
+    pub fn phi_add_incoming_from_value<RBb, Phi, Val, Block>(
         &self,
         phi_val: Phi,
         val: Val,
-        block: BasicBlock<'ctx, RBb, SBb, B>,
+        block: Block,
     ) -> IrResult<()>
     where
         RBb: crate::marker::ReturnMarker,
-        SBb: crate::block_state::BlockTerminationState,
         Phi: IntoErasedValue<'ctx, B>,
         Val: IntoErasedValue<'ctx, B>,
+        Block: IntoBasicBlockLabel<'ctx, RBb, B>,
     {
         let phi_val = phi_val.into_erased_value(ModuleRef::new(self.module))?;
         let val = val.into_erased_value(ModuleRef::new(self.module))?;
+        let block = block.into_basic_block_label(ModuleRef::new(self.module))?;
         // Access the phi payload via the module's instruction data.
         let inst_data = self.module.context().value_data(phi_val.id);
         let inst_kind_data = match &inst_data.kind {
@@ -2648,7 +2655,7 @@ where
         let v = value.into_erased_value(ModuleRef::new(self.module))?;
         let payload = crate::instr_types::FreezeInstData::new(v.id);
         let inst = self.append_instruction(v.ty, InstructionKindData::Freeze(payload), name);
-        Ok(FreezeInstId::from_raw(self.module.id(), inst.id()))
+        Ok(FreezeInstId::from_raw(self.module.id(), inst.slot()))
     }
 
     /// Produce `va_arg <list>, <ty>`. Mirrors `IRBuilder::CreateVAArg`.
@@ -2669,7 +2676,7 @@ where
         let v = IsValue::into_erased(list_ptr);
         let payload = crate::instr_types::VAArgInstData::new(v.id);
         let inst = self.append_instruction(result_ty.id, InstructionKindData::VAArg(payload), name);
-        Ok(VAArgInstId::from_raw(self.module.id(), inst.id()))
+        Ok(VAArgInstId::from_raw(self.module.id(), inst.slot()))
     }
 
     // ---- Aggregate ops: extractvalue / insertvalue ----
@@ -3317,7 +3324,7 @@ where
         let void_ty = self.module.void_type().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Fence(payload), name);
         Ok(crate::instructions::FenceInst::from_raw(
-            inst.id(),
+            inst.slot(),
             self.module,
             void_ty,
         ))
@@ -3358,7 +3365,7 @@ where
         let result_id = result_ty.as_type().id();
         let inst =
             self.append_instruction(result_id, InstructionKindData::AtomicCmpXchg(payload), name);
-        Ok(AtomicCmpXchgInstId::from_raw(self.module.id(), inst.id()))
+        Ok(AtomicCmpXchgInstId::from_raw(self.module.id(), inst.slot()))
     }
 
     /// Produce `atomicrmw [volatile] <op> <ptr-ty> <ptr>, <val-ty> <val>
@@ -3384,7 +3391,7 @@ where
         let v = value.into_erased_value(ModuleRef::new(self.module))?;
         let payload = crate::instr_types::AtomicRMWInstData::new(op, p.id, v.id, config);
         let inst = self.append_instruction(v.ty, InstructionKindData::AtomicRMW(payload), name);
-        Ok(AtomicRMWInstId::from_raw(self.module.id(), inst.id()))
+        Ok(AtomicRMWInstId::from_raw(self.module.id(), inst.slot()))
     }
 
     // ---- Casts: trunc / zext / sext ----
@@ -4340,7 +4347,7 @@ where
         let void_ty = self.module.void_type().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Store(payload), "");
         Ok(StoreInst::from_raw(
-            inst.id(),
+            inst.slot(),
             ModuleRef::<B>::new(self.module),
             inst.ty().id(),
         ))
@@ -4555,7 +4562,7 @@ where
             InstructionKindData::Call(payload),
             name,
         );
-        Ok(TypedCallInstId::from_raw(self.module.id(), inst.id()))
+        Ok(TypedCallInstId::from_raw(self.module.id(), inst.slot()))
     }
 
     /// Typed flat call with explicit call-site configuration
@@ -4588,7 +4595,7 @@ where
             InstructionKindData::Call(payload),
             name,
         );
-        Ok(TypedCallInstId::from_raw(self.module.id(), inst.id()))
+        Ok(TypedCallInstId::from_raw(self.module.id(), inst.slot()))
     }
 
     /// Typed chainable call builder: same schema guarantees as
@@ -4654,7 +4661,7 @@ where
             InstructionKindData::Call(payload),
             name,
         );
-        Ok(TypedCallInstId::from_raw(self.module.id(), inst.id()))
+        Ok(TypedCallInstId::from_raw(self.module.id(), inst.slot()))
     }
 
     /// Flat call form: pass a [`FunctionValue`] callee, an iterable of
@@ -4849,7 +4856,7 @@ where
             InstructionKindData::Call(payload),
             name,
         );
-        Ok(TypedCallInstId::from_raw(self.module.id(), inst.id()))
+        Ok(TypedCallInstId::from_raw(self.module.id(), inst.slot()))
     }
 
     /// Produce an indirect `call` through a function-pointer **value** (not a
@@ -4903,7 +4910,7 @@ where
             InstructionKindData::Call(payload),
             name,
         );
-        Ok(CallInstId::from_raw(self.module.id(), inst.id()))
+        Ok(CallInstId::from_raw(self.module.id(), inst.slot()))
     }
 
     /// Produce a `call` whose callee is an inline-assembly value. Mirrors
@@ -4962,7 +4969,7 @@ where
             InstructionKindData::Call(payload),
             name,
         );
-        Ok(CallInstId::from_raw(self.module.id(), inst.id()))
+        Ok(CallInstId::from_raw(self.module.id(), inst.slot()))
     }
 
     // ---- GEP ----
@@ -6373,21 +6380,19 @@ where
     /// [`crate::StaticIntWidth`], so callers spell it as
     /// `b.build_int_phi::<i32, _>("acc")?` without first binding
     /// `let i32_ty = m.i32_type();`. Mirrors `IRBuilder::CreatePHI`
-    /// followed by zero `PHINode::addIncoming` calls. Subsequent
-    /// edges are added through [`crate::PhiInst::add_incoming`],
-    /// which returns `Self` so calls chain. Inserted at the block's phi
-    /// head regardless of cursor position, so phi placement is correct by
-    /// construction.
+    /// followed by zero `PHINode::addIncoming` calls. Returns the storable
+    /// [`PhiInstId<W, B>`](crate::PhiInstId); view it
+    /// ([`view`](Self::view)) to reach the typed phi surface, and add edges
+    /// through [`crate::PhiInst::add_incoming`], which returns `Self` so calls
+    /// chain. Inserted at the block's phi head regardless of cursor position,
+    /// so phi placement is correct by construction.
     /// Crate-internal since slice 7 — block arguments
     /// (`append_block_with_params`) are the only public phi-authoring surface.
     /// No production caller today (parser/SSA use the `_dyn`/erased paths), so
-    /// `dead_code` is allowed in non-test builds; the in-crate typestate tests
+    /// `dead_code` is allowed in non-test builds; the in-crate raw-phi tests
     /// exercise it.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn build_int_phi<W, Name>(
-        &self,
-        name: Name,
-    ) -> IrResult<PhiInst<'ctx, W, PhiOpen, B>>
+    pub(crate) fn build_int_phi<W, Name>(&self, name: Name) -> IrResult<PhiInstId<W, B>>
     where
         Name: AsRef<str>,
         W: crate::int_width::StaticIntWidth,
@@ -6396,18 +6401,12 @@ where
         let payload = crate::instr_types::PhiData::new();
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
-        Ok({
-            let _i = inst;
-            PhiInst::<W, PhiOpen, B>::from_raw(
-                _i.id(),
-                ModuleRef::<B>::new(self.module),
-                _i.ty().id(),
-            )
-        })
+        Ok(PhiInstId::from_raw(self.module.id(), inst.slot()))
     }
 
     /// Runtime-width phi for the [`crate::IntDyn`] case. Takes the
-    /// type explicitly because the marker carries no static width.
+    /// type explicitly because the marker carries no static width. Returns the
+    /// storable [`PhiInstId<IntDyn, B>`](crate::PhiInstId).
     /// Inserted at the block's phi head regardless of cursor position, so
     /// phi placement is correct by construction.
     /// Internal contract shared with the in-tree `.ll` parser (hence
@@ -6417,38 +6416,29 @@ where
         &self,
         ty: IntType<'ctx, IntDyn, B>,
         name: Name,
-    ) -> IrResult<PhiInst<'ctx, IntDyn, PhiOpen, B>>
+    ) -> IrResult<PhiInstId<IntDyn, B>>
     where
         Name: AsRef<str>,
     {
         let payload = crate::instr_types::PhiData::new();
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
-        Ok({
-            let _i = inst;
-            PhiInst::<IntDyn, PhiOpen, B>::from_raw(
-                _i.id(),
-                ModuleRef::<B>::new(self.module),
-                _i.ty().id(),
-            )
-        })
+        Ok(PhiInstId::from_raw(self.module.id(), inst.slot()))
     }
 
     /// Float-typed phi: `phi <fpty>`. Marker-only form keyed on
     /// `K: StaticFloatKind`. Mirrors `IRBuilder::CreatePHI(Type*, ...)`
-    /// applied to a floating-point type. Inserted at the block's phi head
-    /// regardless of cursor position, so phi placement is correct by
+    /// applied to a floating-point type. Returns the storable
+    /// [`FpPhiInstId<K, B>`](crate::FpPhiInstId). Inserted at the block's phi
+    /// head regardless of cursor position, so phi placement is correct by
     /// construction.
     /// Crate-internal since slice 7 — block arguments
     /// (`append_block_with_params`) are the only public phi-authoring surface.
     /// No production caller today (parser/SSA use the `_dyn`/erased paths), so
-    /// `dead_code` is allowed in non-test builds; the in-crate typestate tests
+    /// `dead_code` is allowed in non-test builds; the in-crate raw-phi tests
     /// exercise it.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn build_fp_phi<K, Name>(
-        &self,
-        name: Name,
-    ) -> IrResult<FpPhiInst<'ctx, K, PhiOpen, B>>
+    pub(crate) fn build_fp_phi<K, Name>(&self, name: Name) -> IrResult<FpPhiInstId<K, B>>
     where
         Name: AsRef<str>,
         K: super::float_kind::StaticFloatKind,
@@ -6457,17 +6447,14 @@ where
         let payload = super::instr_types::PhiData::new();
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
-        Ok(FpPhiInst::<K, PhiOpen, B>::from_raw(
-            inst.id(),
-            ModuleRef::<B>::new(self.module),
-            inst.ty().id(),
-        ))
+        Ok(FpPhiInstId::from_raw(self.module.id(), inst.slot()))
     }
 
     /// Runtime-kind float phi: takes the type explicitly because
-    /// [`crate::FloatDyn`] carries no static kind. Inserted at the block's
-    /// phi head regardless of cursor position, so phi placement is correct
-    /// by construction.
+    /// [`crate::FloatDyn`] carries no static kind. Returns the storable
+    /// [`FpPhiInstId<FloatDyn, B>`](crate::FpPhiInstId). Inserted at the
+    /// block's phi head regardless of cursor position, so phi placement is
+    /// correct by construction.
     /// Internal contract shared with the in-tree `.ll` parser (hence
     /// `#[doc(hidden)]`); block arguments are the public phi-authoring surface.
     #[doc(hidden)]
@@ -6475,34 +6462,28 @@ where
         &self,
         ty: FloatType<'ctx, FloatDyn, B>,
         name: Name,
-    ) -> IrResult<FpPhiInst<'ctx, FloatDyn, PhiOpen, B>>
+    ) -> IrResult<FpPhiInstId<FloatDyn, B>>
     where
         Name: AsRef<str>,
     {
         let payload = super::instr_types::PhiData::new();
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
-        Ok(FpPhiInst::<FloatDyn, PhiOpen, B>::from_raw(
-            inst.id(),
-            ModuleRef::<B>::new(self.module),
-            inst.ty().id(),
-        ))
+        Ok(FpPhiInstId::from_raw(self.module.id(), inst.slot()))
     }
 
     /// Pointer-typed phi in the default address space (addrspace 0).
     /// Mirrors `IRBuilder::CreatePHI(PointerType::getUnqual(...), ...)`.
+    /// Returns the storable [`PointerPhiInstId<B>`](crate::PointerPhiInstId).
     /// Inserted at the block's phi head regardless of cursor position, so
     /// phi placement is correct by construction.
     /// Crate-internal since slice 7 — block arguments
     /// (`append_block_with_params`) are the only public phi-authoring surface.
     /// No production caller today (parser/SSA use the `_dyn`/erased paths), so
-    /// `dead_code` is allowed in non-test builds; the in-crate typestate tests
+    /// `dead_code` is allowed in non-test builds; the in-crate raw-phi tests
     /// exercise it.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn build_pointer_phi<Name>(
-        &self,
-        name: Name,
-    ) -> IrResult<PointerPhiInst<'ctx, PhiOpen, B>>
+    pub(crate) fn build_pointer_phi<Name>(&self, name: Name) -> IrResult<PointerPhiInstId<B>>
     where
         Name: AsRef<str>,
     {
@@ -6510,15 +6491,12 @@ where
         let payload = super::instr_types::PhiData::new();
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
-        Ok(PointerPhiInst::<PhiOpen, B>::from_raw(
-            inst.id(),
-            ModuleRef::<B>::new(self.module),
-            inst.ty().id(),
-        ))
+        Ok(PointerPhiInstId::from_raw(self.module.id(), inst.slot()))
     }
 
     /// Pointer-typed phi in a caller-specified address space. Mirrors
-    /// `IRBuilder::CreatePHI(PointerType::get(Ctx, AS), ...)`. Inserted at
+    /// `IRBuilder::CreatePHI(PointerType::get(Ctx, AS), ...)`. Returns the
+    /// storable [`PointerPhiInstId<B>`](crate::PointerPhiInstId). Inserted at
     /// the block's phi head regardless of cursor position, so phi
     /// placement is correct by construction.
     /// Internal contract shared with the in-tree `.ll` parser (hence
@@ -6528,25 +6506,22 @@ where
         &self,
         ty: PointerType<'ctx, B>,
         name: Name,
-    ) -> IrResult<PointerPhiInst<'ctx, PhiOpen, B>>
+    ) -> IrResult<PointerPhiInstId<B>>
     where
         Name: AsRef<str>,
     {
         let payload = super::instr_types::PhiData::new();
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
-        Ok(PointerPhiInst::<PhiOpen, B>::from_raw(
-            inst.id(),
-            ModuleRef::<B>::new(self.module),
-            inst.ty().id(),
-        ))
+        Ok(PointerPhiInstId::from_raw(self.module.id(), inst.slot()))
     }
 
     /// Runtime-typed phi for an *arbitrary* first-class result type — the
     /// vector / array / struct cases the int / float / pointer `_dyn`
     /// builders don't cover. Takes the [`Type`] explicitly (the erased
-    /// handle carries no static shape) and yields the read-only
-    /// [`OtherPhiInst`], the same erased classification
+    /// handle carries no static shape) and yields the storable
+    /// [`OtherPhiInstId<B>`](crate::OtherPhiInstId), whose view is the erased
+    /// [`OtherPhiInst`] — the same classification
     /// [`PhiKind::Other`](crate::PhiKind) surfaces for such phis. Incoming
     /// edges are added through the type-checked
     /// [`phi_add_incoming_from_value`](Self::phi_add_incoming_from_value)
@@ -6571,21 +6546,13 @@ where
     /// (hence `#[doc(hidden)]`); it is not part of the supported public
     /// surface and may change without notice.
     #[doc(hidden)]
-    pub fn build_phi_dyn<Name>(
-        &self,
-        ty: Type<'ctx, B>,
-        name: Name,
-    ) -> IrResult<OtherPhiInst<'ctx, B>>
+    pub fn build_phi_dyn<Name>(&self, ty: Type<'ctx, B>, name: Name) -> IrResult<OtherPhiInstId<B>>
     where
         Name: AsRef<str>,
     {
         let payload = crate::instr_types::PhiData::new();
         let inst = self.append_phi_instruction(ty.id(), InstructionKindData::Phi(payload), name);
-        Ok(OtherPhiInst::<B>::from_raw(
-            inst.id(),
-            ModuleRef::<B>::new(self.module),
-            inst.ty().id(),
-        ))
+        Ok(OtherPhiInstId::from_raw(self.module.id(), inst.slot()))
     }
 
     // ---- Branch / Unreachable ----
@@ -6945,7 +6912,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            SwitchInst::<Open, B, W>::from_raw(inst.id(), module_ref, void_ty),
+            SwitchInst::<Open, B, W>::from_raw(inst.slot(), module_ref, void_ty),
         ))
     }
 
@@ -6985,7 +6952,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            SwitchInst::<Open, B>::from_raw(inst.id(), module_ref, void_ty),
+            SwitchInst::<Open, B>::from_raw(inst.slot(), module_ref, void_ty),
         ))
     }
 
@@ -7021,7 +6988,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            IndirectBrInst::<Open, B>::from_raw(inst.id(), module_ref, void_ty),
+            IndirectBrInst::<Open, B>::from_raw(inst.slot(), module_ref, void_ty),
         ))
     }
 
@@ -7091,7 +7058,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            InvokeInst::<Dyn, B>::from_raw(inst.id(), module_ref, ret_ty).retag::<Ret::Marker>(),
+            InvokeInst::<Dyn, B>::from_raw(inst.slot(), module_ref, ret_ty).retag::<Ret::Marker>(),
         ))
     }
 
@@ -7184,7 +7151,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            InvokeInst::<Dyn, B>::from_raw(inst.id(), module_ref, ret_ty).retag::<R2>(),
+            InvokeInst::<Dyn, B>::from_raw(inst.slot(), module_ref, ret_ty).retag::<R2>(),
         ))
     }
 
@@ -7238,7 +7205,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            InvokeInst::<Dyn, B>::from_raw(inst.id(), module_ref, ret_ty).retag::<R2>(),
+            InvokeInst::<Dyn, B>::from_raw(inst.slot(), module_ref, ret_ty).retag::<R2>(),
         ))
     }
 
@@ -7318,7 +7285,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            InvokeInst::<Dyn, B>::from_raw(inst.id(), module_ref, ret_ty).retag::<R2>(),
+            InvokeInst::<Dyn, B>::from_raw(inst.slot(), module_ref, ret_ty).retag::<R2>(),
         ))
     }
 
@@ -7400,7 +7367,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            CallBrInst::<B>::from_raw(inst.id(), module_ref, ret_ty),
+            CallBrInst::<B>::from_raw(inst.slot(), module_ref, ret_ty),
         ))
     }
 
@@ -7488,7 +7455,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            CallBrInst::<B>::from_raw(inst.id(), module_ref, ret_ty),
+            CallBrInst::<B>::from_raw(inst.slot(), module_ref, ret_ty),
         ))
     }
 
@@ -7512,7 +7479,7 @@ where
         let inst =
             self.append_instruction(result_ty.id, InstructionKindData::LandingPad(payload), name);
         Ok(LandingPadInst::<Open, B>::from_raw(
-            inst.id(),
+            inst.slot(),
             ModuleRef::<B>::new(self.module),
             result_ty.id,
         ))
@@ -7593,7 +7560,7 @@ where
         let inst =
             self.append_instruction(token_ty, InstructionKindData::CleanupPad(payload), name);
         Ok(CleanupPadInst::<B>::from_raw(
-            inst.id(),
+            inst.slot(),
             ModuleRef::<B>::new(self.module),
             token_ty,
         ))
@@ -7625,7 +7592,7 @@ where
         let token_ty = self.module.token_type().as_type().id();
         let inst = self.append_instruction(token_ty, InstructionKindData::CatchPad(payload), name);
         Ok(CatchPadInst::<B>::from_raw(
-            inst.id(),
+            inst.slot(),
             ModuleRef::<B>::new(self.module),
             token_ty,
         ))
@@ -7781,7 +7748,7 @@ where
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
-            CatchSwitchInst::<Open, B>::from_raw(inst.id(), module_ref, token_ty),
+            CatchSwitchInst::<Open, B>::from_raw(inst.slot(), module_ref, token_ty),
         ))
     }
 
@@ -8493,7 +8460,7 @@ where
     pub fn build(self) -> IrResult<CallInstId<RC, B>> {
         let module_id = self.parent.module.id();
         let inst = self.emit()?;
-        Ok(CallInstId::from_raw(module_id, inst.id()))
+        Ok(CallInstId::from_raw(module_id, inst.slot()))
     }
 
     /// Validate and append the call, handing back the freshly attached
@@ -8638,7 +8605,7 @@ where
         );
         Ok(TypedCallInstId::from_raw(
             self.parent.module.id(),
-            inst.id(),
+            inst.slot(),
         ))
     }
 }
@@ -8707,7 +8674,7 @@ where
         let descriptor = self.inner.intrinsic_descriptor.clone();
         let module = ModuleRef::<B>::new(self.inner.parent.module);
         let inst = self.inner.emit()?;
-        let call = CallInst::<Dyn, B>::from_raw(inst.id(), module, inst.ty().id());
+        let call = CallInst::<Dyn, B>::from_raw(inst.slot(), module, inst.ty().id());
         // Reject an ordinary call, exactly as `IntrinsicInst::from_call` does
         // — the id is only minted once the callee is a generated intrinsic
         // declaration, so viewing it can never fail that check afterwards.
@@ -8719,7 +8686,7 @@ where
                     .unwrap_or_else(|| "intrinsic call".to_owned()),
             });
         }
-        Ok(IntrinsicInstId::from_raw(module.id(), inst.id()))
+        Ok(IntrinsicInstId::from_raw(module.id(), inst.slot()))
     }
 }
 
