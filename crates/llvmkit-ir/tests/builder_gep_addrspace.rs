@@ -35,7 +35,7 @@ fn gep_result_preserves_base_pointer_address_space() -> Result<(), IrError> {
 
         // The result type itself must be `ptr addrspace(33)`, not plain `ptr`.
         assert_eq!(
-            gep.ty().as_type().to_string(),
+            m.view(gep).ty().as_type().to_string(),
             "ptr addrspace(33)",
             "GEP result type must preserve the base pointer's address space"
         );

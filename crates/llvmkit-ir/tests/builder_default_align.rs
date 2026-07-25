@@ -84,7 +84,7 @@ fn alloca_uses_datalayout_alloca_address_space() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let p = b.build_alloca(m.i32_type(), "p")?;
-        assert_eq!(p.ty().address_space(), 5);
+        assert_eq!(b.view(p).ty().address_space(), 5);
         b.build_ret_void()?;
 
         let text = format!("{m}");

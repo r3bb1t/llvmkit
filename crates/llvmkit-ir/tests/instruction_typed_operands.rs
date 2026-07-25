@@ -24,7 +24,7 @@ fn load_pointer_operand_is_typed() -> Result<(), IrError> {
         let p: PointerValue = f.param(0)?.try_into()?;
         let loaded = b.build_load(i32_ty, p, "v")?;
 
-        let view = InstructionView::try_from(loaded)?;
+        let view = InstructionView::try_from(b.view(loaded))?;
         let Some(InstructionKind::Load(load)) = view.kind() else {
             panic!("expected a load instruction");
         };

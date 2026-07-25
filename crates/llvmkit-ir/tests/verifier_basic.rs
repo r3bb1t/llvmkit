@@ -396,7 +396,7 @@ fn verify_memory_gep_select_control() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let slot = b.build_alloca(i32_ty, "slot")?;
         b.build_store_with_align(v, slot, Align::new(4)?)?;
-        let loaded: IntValue<i32> = b.build_int_load::<i32, _, _>(p, "ld")?;
+        let loaded: IntValue<i32> = b.view(b.build_int_load::<i32, _, _>(p, "ld")?);
         let cmp = b.build_int_cmp(IntPredicate::Slt, loaded, 0_i32, "cmp")?;
         let arr_ty = m.array_type(i32_ty, 4);
         let v_dyn: IntValue<llvmkit_ir::IntDyn> = v.into();
@@ -411,7 +411,8 @@ fn verify_memory_gep_select_control() -> Result<(), IrError> {
         // `SelectArm` (constants narrow through value not int-value path).
         let _ = (one_const, two_const);
         let sel = bt.build_select(cmp, loaded, loaded, "sel")?;
-        bt.build_br_with_args(join_label, &[sel.into_erased()])?;
+        let sel_arg = bt.view(sel).into_erased();
+        bt.build_br_with_args(join_label, &[sel_arg])?;
 
         let be = IRBuilder::new_for::<Dyn>(&m).position_at_end(else_bb);
         be.build_br_with_args(join_label, &[loaded.into_erased()])?;

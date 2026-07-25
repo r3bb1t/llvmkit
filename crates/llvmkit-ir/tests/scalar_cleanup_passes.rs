@@ -190,8 +190,8 @@ fn instsimplify_pass_keeps_load_from_interposable_constant_global() -> Result<()
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let weak_ptr = PointerValue::try_from(weak.as_global_constant_ptr().into_erased())?;
         let strong_ptr = PointerValue::try_from(strong.as_global_constant_ptr().into_erased())?;
-        let w = IntValue::try_from(b.build_load(i32_ty.as_type(), weak_ptr, "w")?)?;
-        let s = IntValue::try_from(b.build_load(i32_ty.as_type(), strong_ptr, "s")?)?;
+        let w = IntValue::try_from(b.view(b.build_load(i32_ty.as_type(), weak_ptr, "w")?))?;
+        let s = IntValue::try_from(b.view(b.build_load(i32_ty.as_type(), strong_ptr, "s")?))?;
         let sum = b.build_int_add::<i32, _, _, _>(w, s, "sum")?;
         b.build_ret(sum)?;
 

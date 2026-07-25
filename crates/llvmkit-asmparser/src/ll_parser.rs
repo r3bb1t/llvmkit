@@ -6625,7 +6625,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let r = b
             .build_alloca_dyn(ty, size, align, addr_space, flags, result_name.as_str())
             .map_err(|e| self.builder_err("alloca", e))?;
-        Ok(r.into_erased())
+        Ok(b.view(r).into_erased())
     }
 
     /// Optional `, <intty> <size>` array-size operand for `alloca`, present
@@ -6712,7 +6712,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             let v = b
                 .build_load_atomic(ty, ptr, config, result_name.as_str())
                 .map_err(|e| self.builder_err("load", e))?;
-            Ok(v)
+            Ok(b.view(v))
         } else {
             let align = self.parse_optional_comma_align()?;
             let v = if volatile {
@@ -6727,7 +6727,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
             }
             .map_err(|e| self.builder_err("load", e))?;
-            Ok(v)
+            Ok(b.view(v))
         }
     }
 
@@ -6818,7 +6818,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_gep_with_flags(source_ty, ptr, indices, flags, name)
             .map_err(|e| self.builder_err("getelementptr", e))?;
-        Ok(v.into_erased())
+        Ok(b.view(v).into_erased())
     }
 
     /// `select i1 COND, TYPE TRUE, TYPE FALSE`. Dispatches to
@@ -6888,9 +6888,11 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 let f: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = false_v
                     .try_into()
                     .map_err(|_| self.expected("int-typed select arm"))?;
-                b.build_select(cond_i1, t, f, name)
-                    .map_err(|e| self.builder_err("select", e))?
-                    .into_erased()
+                b.view(
+                    b.build_select(cond_i1, t, f, name)
+                        .map_err(|e| self.builder_err("select", e))?,
+                )
+                .into_erased()
             }
             AnyTypeEnum::Float(_) => {
                 let t: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn, B> = true_v
@@ -6900,9 +6902,11 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     false_v
                         .try_into()
                         .map_err(|_| self.expected("float-typed select arm"))?;
-                b.build_select(cond_i1, t, f, name)
-                    .map_err(|e| self.builder_err("select", e))?
-                    .into_erased()
+                b.view(
+                    b.build_select(cond_i1, t, f, name)
+                        .map_err(|e| self.builder_err("select", e))?,
+                )
+                .into_erased()
             }
             AnyTypeEnum::Pointer(_) => {
                 let t: llvmkit_ir::PointerValue<'ctx, B> = true_v
@@ -6911,9 +6915,11 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 let f: llvmkit_ir::PointerValue<'ctx, B> = false_v
                     .try_into()
                     .map_err(|_| self.expected("ptr-typed select arm"))?;
-                b.build_select(cond_i1, t, f, name)
-                    .map_err(|e| self.builder_err("select", e))?
-                    .into_erased()
+                b.view(
+                    b.build_select(cond_i1, t, f, name)
+                        .map_err(|e| self.builder_err("select", e))?,
+                )
+                .into_erased()
             }
             _ => {
                 return Err(
@@ -7144,7 +7150,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_extract_element(vec_v, idx, result_name.as_str())
             .map_err(|e| self.builder_err("extractelement", e))?;
-        Ok(v)
+        Ok(b.view(v))
     }
 
     /// `insertelement <vec-ty> <vec>, <elt-ty> <elt>, <idx-ty> <idx>`.
@@ -7171,7 +7177,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_insert_element(vec_v, elt_v, idx, result_name.as_str())
             .map_err(|e| self.builder_err("insertelement", e))?;
-        Ok(v)
+        Ok(b.view(v))
     }
 
     /// `shufflevector <vec-ty> <v1>, <vec-ty> <v2>, <mask>`.
@@ -7196,7 +7202,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_shuffle_vector(v1, v2, &mask, result_name.as_str())
             .map_err(|e| self.builder_err("shufflevector", e))?;
-        Ok(v)
+        Ok(b.view(v))
     }
 
     /// Parse a shufflevector mask typed constant operand and decode it with
@@ -7254,7 +7260,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_extract_value_dyn(agg_v, &indices, result_name.as_str())
             .map_err(|e| self.builder_err("extractvalue", e))?;
-        Ok(v)
+        Ok(b.view(v))
     }
 
     /// `insertvalue <agg-ty> <agg>, <elt-ty> <elt>, <idx>, ...`. Mirrors
@@ -7280,7 +7286,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_insert_value_dyn(agg_v, elt_v, &indices, result_name.as_str())
             .map_err(|e| self.builder_err("insertvalue", e))?;
-        Ok(v)
+        Ok(b.view(v))
     }
 
     /// `phi <ty> [ <val>, <label> ], ...`. Handles any first-class *data*
@@ -7896,7 +7902,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_va_arg(list_ptr, result_ty, result_name.as_str())
             .map_err(|e| self.builder_err("va_arg", e))?;
-        Ok(v.to_erased())
+        Ok(b.view(v))
     }
 
     /// `freeze <ty> <val>`. Mirrors `LLParser::parseFreeze`.
@@ -7913,7 +7919,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let r = b
             .build_freeze(v, result_name.as_str())
             .map_err(|e| self.builder_err("freeze", e))?;
-        Ok(r.to_erased())
+        Ok(b.view(r))
     }
 
     /// `switch <ty> <val>, label %default [ <ty> N, label %case ... ]`.
@@ -8063,7 +8069,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_atomic_cmpxchg(ptr, cmp_v, new_v, config, result_name.as_str())
             .map_err(|e| self.builder_err("cmpxchg", e))?;
-        Ok(v.to_erased())
+        Ok(b.view(v))
     }
 
     /// `atomicrmw [volatile] <op> ptr <ptr>, <ty> <val>
@@ -8102,16 +8108,17 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_atomicrmw(op, ptr, val_v, config, result_name.as_str())
             .map_err(|e| self.builder_err("atomicrmw", e))?;
+        let v = b.view(v);
         if let Some((val_ref, loc)) = deferred_value {
             state
                 .deferred_atomicrmw_values
                 .push(DeferredAtomicRmwValue {
-                    inst: v,
+                    inst: atomicrmw_opcode_handle(v),
                     val_ref,
                     loc,
                 });
         }
-        Ok(v.to_erased())
+        Ok(v)
     }
 
     /// Parse an `atomicrmw` operation keyword.
@@ -8832,6 +8839,25 @@ struct DeferredPhiEdge<'ctx, B: ModuleBrand = Brand<'ctx>> {
 enum DeferredLocalValueRef {
     Named(String),
     Numbered(u32),
+}
+
+/// Recover the `atomicrmw` opcode handle from a viewed builder result.
+///
+/// `IRBuilder::build_atomicrmw` hands back the storable erased
+/// `ValueId` rather than the opcode handle, but the deferred forward-value
+/// fixup in [`PerFunctionState::finish`] needs the handle to reach
+/// `AtomicRMWInst::set_value_operand`. The narrowing cannot fail: `v` is the
+/// `atomicrmw` the builder just appended.
+fn atomicrmw_opcode_handle<'ctx, B: ModuleBrand + 'ctx>(
+    v: llvmkit_ir::Value<'ctx, B>,
+) -> llvmkit_ir::AtomicRMWInst<'ctx, B> {
+    match llvmkit_ir::InstructionView::try_from(v)
+        .ok()
+        .and_then(|inst| inst.kind())
+    {
+        Some(llvmkit_ir::InstructionKind::AtomicRMW(inst)) => inst,
+        _ => unreachable!("build_atomicrmw appends an `atomicrmw` instruction"),
+    }
 }
 
 struct DeferredAtomicRmwValue<'ctx, B: ModuleBrand = Brand<'ctx>> {

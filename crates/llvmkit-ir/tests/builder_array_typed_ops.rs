@@ -128,7 +128,7 @@ fn typed_array_type_allocas() {
 
         // `build_alloca` takes any `IrType`; the typed array handle qualifies.
         let slot = b.build_alloca(arr_ty, "slot").expect("alloca");
-        let _ = slot.into_erased();
+        let _ = b.view(slot).into_erased();
 
         b.build_ret_void().expect("ret void");
 

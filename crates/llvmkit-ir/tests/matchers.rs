@@ -146,7 +146,7 @@ fn load_of_gep_binds_base() -> Result<(), IrError> {
         let load = b.build_load(i32_ty, gep, "v")?;
 
         let (bound,): (Value,) = m_load(m_gep(m_value()))
-            .match_view(&view_of(load))
+            .match_view(&view_of(b.view(load)))
             .expect("load-of-gep should match");
         assert_eq!(bound, base.into_erased());
         Ok(())

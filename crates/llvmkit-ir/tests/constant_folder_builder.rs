@@ -531,8 +531,8 @@ fn default_builder_folds_insert_extract_element_chain() -> Result<(), IrError> {
         let x2 =
             b.build_extract_element::<_, i32, _, _>(vec, m.i32_type().const_int(2_i32), "x2")?;
 
-        assert_eq!(Constant::try_from(x1)?, elt1.as_constant());
-        assert_eq!(Constant::try_from(x2)?, elt2.as_constant());
+        assert_eq!(Constant::try_from(b.view(x1))?, elt1.as_constant());
+        assert_eq!(Constant::try_from(b.view(x2))?, elt2.as_constant());
         assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
     })

@@ -71,9 +71,9 @@ use super::instruction::{
     state::Attached,
 };
 use super::instructions::{
-    AtomicCmpXchgInst, AtomicRMWInst, CallBrInst, CallInst, CatchPadInst, CatchSwitchInst,
-    CleanupPadInst, FpPhiInst, FreezeInst, IndirectBrInst, InvokeInst, LandingPadInst,
-    OtherPhiInst, PhiInst, PointerPhiInst, StoreInst, SwitchInst, TypedCallInst, VAArgInst,
+    CallBrInst, CallInst, CatchPadInst, CatchSwitchInst, CleanupPadInst, FpPhiInst, IndirectBrInst,
+    InvokeInst, LandingPadInst, OtherPhiInst, PhiInst, PointerPhiInst, StoreInst, SwitchInst,
+    TypedCallInst,
 };
 use super::int_width::{IntDyn, IntWidth, IntoIntValue, StaticIntWidth};
 use super::intrinsic_inst::IntrinsicInst;
@@ -2583,7 +2583,7 @@ where
     /// Produce `freeze <value>`. Mirrors `IRBuilder::CreateFreeze`.
     /// Accepts any [`IntoErasedValue`] operand — every value handle plus the
     /// storable ids; the result type matches the operand type.
-    pub fn build_freeze<V, Name>(&self, value: V, name: Name) -> IrResult<FreezeInst<'ctx, B>>
+    pub fn build_freeze<V, Name>(&self, value: V, name: Name) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
         V: IntoErasedValue<'ctx, B>,
@@ -2591,11 +2591,7 @@ where
         let v = value.into_erased_value(ModuleRef::new(self.module))?;
         let payload = crate::instr_types::FreezeInstData::new(v.id);
         let inst = self.append_instruction(v.ty, InstructionKindData::Freeze(payload), name);
-        Ok(FreezeInst::<B>::from_raw(
-            inst.id(),
-            ModuleRef::<B>::new(self.module),
-            v.ty,
-        ))
+        Ok(inst.to_erased().id())
     }
 
     /// Produce `va_arg <list>, <ty>`. Mirrors `IRBuilder::CreateVAArg`.
@@ -2606,7 +2602,7 @@ where
         list_ptr: P,
         result_ty: Type<'ctx, B>,
         name: Name,
-    ) -> IrResult<VAArgInst<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
@@ -2615,11 +2611,7 @@ where
         let v = IsValue::into_erased(list_ptr);
         let payload = crate::instr_types::VAArgInstData::new(v.id);
         let inst = self.append_instruction(result_ty.id, InstructionKindData::VAArg(payload), name);
-        Ok(VAArgInst::<B>::from_raw(
-            inst.id(),
-            ModuleRef::<B>::new(self.module),
-            result_ty.id,
-        ))
+        Ok(inst.to_erased().id())
     }
 
     // ---- Aggregate ops: extractvalue / insertvalue ----
@@ -2638,7 +2630,7 @@ where
         aggregate: V,
         indices: [u32; N],
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
         V: IntoErasedValue<'ctx, B>,
@@ -2663,7 +2655,7 @@ where
         aggregate: V,
         indices: &[u32],
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
         V: IntoErasedValue<'ctx, B>,
@@ -2676,12 +2668,12 @@ where
         }
         let leaf_ty = walk_aggregate_for_builder(self.module, agg.ty, indices)?;
         if let Some(folded) = self.folder.fold_extract_value_dyn(agg, indices)? {
-            return self.checked_folded_value(folded, leaf_ty);
+            return self.checked_folded_value(folded, leaf_ty).map(|v| v.id());
         }
         let payload = crate::instr_types::ExtractValueInstData::new(agg.id, indices.to_vec());
         let inst =
             self.append_instruction(leaf_ty, InstructionKindData::ExtractValue(payload), name);
-        Ok(inst.to_erased())
+        Ok(inst.to_erased().id())
     }
 
     /// Produce `insertvalue <agg-ty> <agg>, <elt-ty> <elt>, idx0, ...`.
@@ -2699,7 +2691,7 @@ where
         value: V,
         indices: [u32; N],
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
         A: IntoErasedValue<'ctx, B>,
@@ -2728,7 +2720,7 @@ where
         value: V,
         indices: &[u32],
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
         A: IntoErasedValue<'ctx, B>,
@@ -2749,12 +2741,12 @@ where
             });
         }
         if let Some(folded) = self.folder.fold_insert_value_dyn(agg, val, indices)? {
-            return self.checked_folded_value(folded, agg.ty);
+            return self.checked_folded_value(folded, agg.ty).map(|v| v.id());
         }
         let payload =
             crate::instr_types::InsertValueInstData::new(agg.id, val.id, indices.to_vec());
         let inst = self.append_instruction(agg.ty, InstructionKindData::InsertValue(payload), name);
-        Ok(inst.to_erased())
+        Ok(inst.to_erased().id())
     }
 
     /// Extract a named-struct schema field and return the field's typed wrapper.
@@ -2780,7 +2772,7 @@ where
                 got: leaf.kind_label(),
             });
         }
-        let raw = self.build_extract_value(aggregate, [index], name)?;
+        let raw = self.view(self.build_extract_value(aggregate, [index], name)?);
         Field::value_from_ir_value(raw)
     }
 
@@ -2802,7 +2794,7 @@ where
         let module = ModuleRef::new(self.module);
         let aggregate = aggregate.into_ir_field(module)?;
         let value = value.into_ir_field(module)?;
-        let raw = self.build_insert_value(aggregate, value, [index], name)?;
+        let raw = self.view(self.build_insert_value(aggregate, value, [index], name)?);
         <S as IrField>::value_from_ir_value(raw)
     }
 
@@ -2815,7 +2807,7 @@ where
         vector: V,
         index: I,
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
         V: IntoErasedValue<'ctx, B>,
@@ -2835,12 +2827,12 @@ where
             }
         };
         if let Some(folded) = self.folder.fold_extract_element_dyn(vec, idx)? {
-            return self.checked_folded_value(folded, elem_ty);
+            return self.checked_folded_value(folded, elem_ty).map(|v| v.id());
         }
         let payload = crate::instr_types::ExtractElementInstData::new(vec.id, idx.id);
         let inst =
             self.append_instruction(elem_ty, InstructionKindData::ExtractElement(payload), name);
-        Ok(inst.to_erased())
+        Ok(inst.to_erased().id())
     }
 
     /// Produce `insertelement <vec-ty> <vec>, <elt-ty> <elt>, <idx-ty> <idx>`.
@@ -2851,7 +2843,7 @@ where
         elt: E,
         index: I,
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
         V: IntoErasedValue<'ctx, B>,
@@ -2864,12 +2856,12 @@ where
         let idx_v = index.into_int_value(ModuleRef::new(self.module))?;
         let idx = IsValue::into_erased(idx_v);
         if let Some(folded) = self.folder.fold_insert_element_dyn(vec, val, idx)? {
-            return self.checked_folded_value(folded, vec.ty);
+            return self.checked_folded_value(folded, vec.ty).map(|v| v.id());
         }
         let payload = crate::instr_types::InsertElementInstData::new(vec.id, val.id, idx.id);
         let inst =
             self.append_instruction(vec.ty, InstructionKindData::InsertElement(payload), name);
-        Ok(inst.to_erased())
+        Ok(inst.to_erased().id())
     }
 
     /// Produce `shufflevector <ty> <v1>, <ty> <v2>, <mask>`. Mirrors
@@ -2882,7 +2874,7 @@ where
         rhs: Rhs2,
         mask: &[i32],
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
         L: IntoErasedValue<'ctx, B>,
@@ -2917,7 +2909,9 @@ where
         })?;
         let result_ty_id = self.module.context().fixed_vector_type(elem, mask_len);
         if let Some(folded) = self.folder.fold_shuffle_vector_dyn(l, r, mask)? {
-            return self.checked_folded_value(folded, result_ty_id);
+            return self
+                .checked_folded_value(folded, result_ty_id)
+                .map(|v| v.id());
         }
         let payload =
             crate::instr_types::ShuffleVectorInstData::new(l.id, r.id, mask.iter().copied());
@@ -2926,7 +2920,7 @@ where
             InstructionKindData::ShuffleVector(payload),
             name,
         );
-        Ok(inst.to_erased())
+        Ok(inst.to_erased().id())
     }
 
     // ---- Typed vector ops: element/length-checked siblings ----
@@ -3141,7 +3135,7 @@ where
         I: IntoIntValue<'ctx, W, B>,
         Name: AsRef<str>,
     {
-        let raw = self.build_extract_element::<_, W, _, _>(vec, index, name)?;
+        let raw = self.view(self.build_extract_element::<_, W, _, _>(vec, index, name)?);
         Ok(E::wrap_value(raw, WrapWitness::new()))
     }
 
@@ -3164,7 +3158,7 @@ where
         I: IntoIntValue<'ctx, W, B>,
         Name: AsRef<str>,
     {
-        let raw = self.build_insert_element::<_, _, W, _, _>(vec, element, index, name)?;
+        let raw = self.view(self.build_insert_element::<_, _, W, _, _>(vec, element, index, name)?);
         Ok(VectorValue::from_value_unchecked(raw))
     }
 
@@ -3217,7 +3211,7 @@ where
         L: ArrayLen,
         Name: AsRef<str>,
     {
-        let raw = self.build_extract_value(array, [index], name)?;
+        let raw = self.view(self.build_extract_value(array, [index], name)?);
         Ok(E::wrap_value(raw, WrapWitness::new()))
     }
 
@@ -3243,7 +3237,7 @@ where
         L: ArrayLen,
         Name: AsRef<str>,
     {
-        let raw = self.build_insert_value(array, element, [index], name)?;
+        let raw = self.view(self.build_insert_value(array, element, [index], name)?);
         Ok(ArrayValue::from_value_unchecked(raw))
     }
 
@@ -3283,7 +3277,7 @@ where
         new_val: N,
         config: crate::instr_types::AtomicCmpXchgConfig,
         name: Name,
-    ) -> IrResult<AtomicCmpXchgInst<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
         P: IntoErasedValue<'ctx, B>,
@@ -3305,11 +3299,7 @@ where
         let result_id = result_ty.as_type().id();
         let inst =
             self.append_instruction(result_id, InstructionKindData::AtomicCmpXchg(payload), name);
-        Ok(AtomicCmpXchgInst::<B>::from_raw(
-            inst.id(),
-            ModuleRef::<B>::new(self.module),
-            result_id,
-        ))
+        Ok(inst.to_erased().id())
     }
 
     /// Produce `atomicrmw [volatile] <op> <ptr-ty> <ptr>, <val-ty> <val>
@@ -3324,7 +3314,7 @@ where
         value: V,
         config: crate::instr_types::AtomicRMWConfig,
         name: Name,
-    ) -> IrResult<AtomicRMWInst<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
         P: IntoErasedValue<'ctx, B>,
@@ -3334,11 +3324,7 @@ where
         let v = value.into_erased_value(ModuleRef::new(self.module))?;
         let payload = crate::instr_types::AtomicRMWInstData::new(op, p.id, v.id, config);
         let inst = self.append_instruction(v.ty, InstructionKindData::AtomicRMW(payload), name);
-        Ok(AtomicRMWInst::<B>::from_raw(
-            inst.id(),
-            ModuleRef::<B>::new(self.module),
-            v.ty,
-        ))
+        Ok(inst.to_erased().id())
     }
 
     // ---- Casts: trunc / zext / sext ----
@@ -3731,8 +3717,9 @@ where
 
     /// Produce `alloca <ty>`. Mirrors `IRBuilder::CreateAlloca`.
     /// The result is a `ptr` in the DataLayout's alloca address space, with
-    /// the type's preferred alignment materialised.
-    pub fn build_alloca<T, Name>(&self, ty: T, name: Name) -> IrResult<PointerValue<'ctx, B>>
+    /// the type's preferred alignment materialised, named by the storable
+    /// [`PointerValueId<B>`](crate::PointerValueId).
+    pub fn build_alloca<T, Name>(&self, ty: T, name: Name) -> IrResult<PointerValueId<B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -3754,7 +3741,7 @@ where
         ty: T,
         num_elements: N,
         name: Name,
-    ) -> IrResult<PointerValue<'ctx, B>>
+    ) -> IrResult<PointerValueId<B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -3779,7 +3766,7 @@ where
         num_elements: N,
         align: Align,
         name: Name,
-    ) -> IrResult<PointerValue<'ctx, B>>
+    ) -> IrResult<PointerValueId<B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -3803,7 +3790,7 @@ where
         ty: T,
         align: Align,
         name: Name,
-    ) -> IrResult<PointerValue<'ctx, B>>
+    ) -> IrResult<PointerValueId<B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -3826,7 +3813,7 @@ where
         addr_space: u32,
         flags: crate::instr_types::AllocaFlags,
         name: impl AsRef<str>,
-    ) -> IrResult<PointerValue<'ctx, B>> {
+    ) -> IrResult<PointerValueId<B>> {
         // Materialise the DataLayout preferred alignment when omitted, like
         // upstream — every alloca funnels through here
         // (`computeAllocaDefaultAlign`).
@@ -3843,7 +3830,9 @@ where
             flags,
         );
         let ptr_ty = ModuleView::<B>::new(self.module).ptr_type(addr_space);
-        Ok(self.append_ptr(ptr_ty, InstructionKindData::Alloca(payload), name))
+        Ok(self
+            .append_ptr(ptr_ty, InstructionKindData::Alloca(payload), name)
+            .id())
     }
 
     /// Erased `alloca` construction (D3 dyn twin of the typed
@@ -3859,7 +3848,7 @@ where
         addr_space: Option<u32>,
         flags: crate::instr_types::AllocaFlags,
         name: Name,
-    ) -> IrResult<PointerValue<'ctx, B>>
+    ) -> IrResult<PointerValueId<B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -3880,15 +3869,16 @@ where
         Name: AsRef<str>,
     {
         let ty = T::ir_type(&Module::from_core(self.module))?;
-        let ptr = self.build_alloca(ty, name)?;
+        let ptr = self.view(self.build_alloca(ty, name)?);
         Ok(ptr.with_pointee::<T>())
     }
 
     /// Erased load: `load <ty>, ptr <ptr>`. Result type is whatever
-    /// `ty` decodes to at runtime; returned as a [`Value`] handle the
-    /// caller narrows via `try_into()`. Mirrors
+    /// `ty` decodes to at runtime; named by the erased storable
+    /// [`ValueId<B>`](crate::ValueId), which the caller narrows by viewing
+    /// it (`try_view` / `view` + `try_into()`). Mirrors
     /// `IRBuilder::CreateLoad`.
-    pub fn build_load<T, P, Name>(&self, ty: T, ptr: P, name: Name) -> IrResult<Value<'ctx, B>>
+    pub fn build_load<T, P, Name>(&self, ty: T, ptr: P, name: Name) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -3905,7 +3895,7 @@ where
             SyncScope::System,
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.to_erased())
+        Ok(inst.to_erased().id())
     }
 
     /// `load <ty>, ptr <ptr>, align N`. Non-volatile non-atomic load with explicit
@@ -3916,7 +3906,7 @@ where
         ptr: P,
         align: Align,
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -3933,13 +3923,13 @@ where
             SyncScope::System,
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.to_erased())
+        Ok(inst.to_erased().id())
     }
 
     /// Typed integer load: `load iN, ptr <ptr>`. Marker-only form:
     /// the result type comes from `W` via [`crate::StaticIntWidth`].
     /// Mirrors `IRBuilder::CreateLoad` with a fixed integer width.
-    pub fn build_int_load<W, P, Name>(&self, ptr: P, name: Name) -> IrResult<IntValue<'ctx, W, B>>
+    pub fn build_int_load<W, P, Name>(&self, ptr: P, name: Name) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: crate::int_width::StaticIntWidth,
@@ -3955,7 +3945,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        self.append_int_load(ty, payload, name)
+        self.append_int_load(ty, payload, name).map(|v| v.id())
     }
 
     /// Runtime-width integer load. Takes the type explicitly because
@@ -3965,7 +3955,7 @@ where
         ty: IntType<'ctx, IntDyn, B>,
         ptr: P,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, IntDyn, B>>
+    ) -> IrResult<IntValueId<IntDyn, B>>
     where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
@@ -3979,11 +3969,11 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        self.append_int_load(ty, payload, name)
+        self.append_int_load(ty, payload, name).map(|v| v.id())
     }
 
     /// Typed float load: `load <fpty>, ptr <ptr>`. Marker-only.
-    pub fn build_fp_load<K, P, Name>(&self, ptr: P, name: Name) -> IrResult<FloatValue<'ctx, K, B>>
+    pub fn build_fp_load<K, P, Name>(&self, ptr: P, name: Name) -> IrResult<FloatValueId<K, B>>
     where
         Name: AsRef<str>,
         K: crate::float_kind::StaticFloatKind,
@@ -3999,7 +3989,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        self.append_fp_load(ty, payload, name)
+        self.append_fp_load(ty, payload, name).map(|v| v.id())
     }
 
     /// Runtime-kind float load. Takes the type explicitly because
@@ -4009,7 +3999,7 @@ where
         ty: FloatType<'ctx, FloatDyn, B>,
         ptr: P,
         name: Name,
-    ) -> IrResult<FloatValue<'ctx, FloatDyn, B>>
+    ) -> IrResult<FloatValueId<FloatDyn, B>>
     where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
@@ -4023,14 +4013,14 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        self.append_fp_load(ty, payload, name)
+        self.append_fp_load(ty, payload, name).map(|v| v.id())
     }
 
     /// Pointer-typed load: `load ptr, ptr <ptr>`. Pointer types are
     /// uniform (only address space varies); the loaded ptr is in the
     /// default address space. Use [`Self::build_load`] erased form for
     /// other address spaces.
-    pub fn build_pointer_load<P, Name>(&self, ptr: P, name: Name) -> IrResult<PointerValue<'ctx, B>>
+    pub fn build_pointer_load<P, Name>(&self, ptr: P, name: Name) -> IrResult<PointerValueId<B>>
     where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
@@ -4045,7 +4035,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        self.append_ptr_load(ty, payload, name)
+        self.append_ptr_load(ty, payload, name).map(|v| v.id())
     }
 
     /// Same as [`Self::build_int_load`] plus an explicit alignment.
@@ -4054,7 +4044,7 @@ where
         ptr: P,
         align: Align,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: crate::int_width::StaticIntWidth,
@@ -4070,7 +4060,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        self.append_int_load(ty, payload, name)
+        self.append_int_load(ty, payload, name).map(|v| v.id())
     }
 
     /// Typed `load`: the result type is derived from the pointer's
@@ -4086,7 +4076,7 @@ where
         Name: AsRef<str>,
     {
         let ty = T::ir_type(&Module::from_core(self.module))?;
-        let raw = self.build_load(ty, ptr.as_pointer_value(), name)?;
+        let raw = self.view(self.build_load(ty, ptr.as_pointer_value(), name)?);
         T::value_from_ir_value(raw)
     }
 
@@ -4102,7 +4092,7 @@ where
         Name: AsRef<str>,
     {
         let ty = T::ir_type(&Module::from_core(self.module))?;
-        let raw = self.build_load_with_align(ty, ptr.as_pointer_value(), align, name)?;
+        let raw = self.view(self.build_load_with_align(ty, ptr.as_pointer_value(), align, name)?);
         T::value_from_ir_value(raw)
     }
 
@@ -4123,12 +4113,7 @@ where
 
     /// `load volatile <ty>, ptr <ptr>`. Non-atomic volatile load.
     /// Mirrors `IRBuilder::CreateLoad` with `isVolatile = true`.
-    pub fn build_load_volatile<T, P, Name>(
-        &self,
-        ty: T,
-        ptr: P,
-        name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    pub fn build_load_volatile<T, P, Name>(&self, ty: T, ptr: P, name: Name) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -4145,7 +4130,7 @@ where
             SyncScope::System,
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.to_erased())
+        Ok(inst.to_erased().id())
     }
 
     /// `load volatile <ty>, ptr <ptr>, align N`. Volatile load with explicit
@@ -4156,7 +4141,7 @@ where
         ptr: P,
         align: Align,
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -4173,7 +4158,7 @@ where
             SyncScope::System,
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.to_erased())
+        Ok(inst.to_erased().id())
     }
 
     /// Produce `store <value>, ptr <ptr>`. Mirrors
@@ -4350,7 +4335,7 @@ where
         ptr: P,
         config: super::instr_types::AtomicLoadConfig,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: super::int_width::StaticIntWidth,
@@ -4366,19 +4351,19 @@ where
             config.ordering_value(),
             config.sync_scope_value().clone(),
         );
-        self.append_int_load(ty, payload, name)
+        self.append_int_load(ty, payload, name).map(|v| v.id())
     }
 
     /// Erased atomic load. Same upstream constructor as
     /// [`Self::build_int_load_atomic`] but with an explicit pointee type
-    /// (caller narrows the returned [`Value`]).
+    /// (caller narrows the returned [`ValueId`] by viewing it).
     pub fn build_load_atomic<T, P, Name>(
         &self,
         ty: T,
         ptr: P,
         config: super::instr_types::AtomicLoadConfig,
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -4395,7 +4380,7 @@ where
             config.sync_scope_value().clone(),
         );
         let inst = self.build_load_inner(payload, name)?;
-        Ok(inst.to_erased())
+        Ok(inst.to_erased().id())
     }
 
     /// Atomic store: `store atomic [volatile] <ty> <val>, ptr <ptr>
@@ -4947,7 +4932,7 @@ where
         ptr: P,
         indices: I,
         name: Name,
-    ) -> IrResult<PointerValue<'ctx, B>>
+    ) -> IrResult<PointerValueId<B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -4972,7 +4957,7 @@ where
         ptr: P,
         indices: I,
         name: Name,
-    ) -> IrResult<PointerValue<'ctx, B>>
+    ) -> IrResult<PointerValueId<B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -5001,7 +4986,7 @@ where
         ptr: P,
         idx: u32,
         name: Name,
-    ) -> IrResult<PointerValue<'ctx, B>>
+    ) -> IrResult<PointerValueId<B>>
     where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
@@ -5039,7 +5024,7 @@ where
         Name: AsRef<str>,
     {
         let struct_ty = S::ir_type(&Module::from_core(self.module))?.as_dyn();
-        let raw = self.build_struct_gep(struct_ty, ptr.as_pointer_value(), I, name)?;
+        let raw = self.view(self.build_struct_gep(struct_ty, ptr.as_pointer_value(), I, name)?);
         Ok(raw.with_pointee::<FieldOf<S, I>>())
     }
 
@@ -5061,12 +5046,12 @@ where
     {
         let elem_ty = T::ir_type(&Module::from_core(self.module))?;
         let idx_value = index.into_int_value(ModuleRef::new(self.module))?;
-        let raw = self.build_gep(
+        let raw = self.view(self.build_gep(
             elem_ty,
             ptr.as_pointer_value(),
             core::iter::once(idx_value.as_dyn()),
             name,
-        )?;
+        )?);
         Ok(raw.with_pointee::<T>())
     }
 
@@ -5087,12 +5072,12 @@ where
     {
         let elem_ty = T::ir_type(&Module::from_core(self.module))?;
         let idx_value = index.into_int_value(ModuleRef::new(self.module))?;
-        let raw = self.build_inbounds_gep(
+        let raw = self.view(self.build_inbounds_gep(
             elem_ty,
             ptr.as_pointer_value(),
             core::iter::once(idx_value.as_dyn()),
             name,
-        )?;
+        )?);
         Ok(raw.with_pointee::<T>())
     }
 
@@ -5106,7 +5091,7 @@ where
         indices: I,
         flags: crate::gep_no_wrap_flags::GepNoWrapFlags,
         name: Name,
-    ) -> IrResult<PointerValue<'ctx, B>>
+    ) -> IrResult<PointerValueId<B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -5124,7 +5109,7 @@ where
         indices: I,
         flags: crate::gep_no_wrap_flags::GepNoWrapFlags,
         name: impl AsRef<str>,
-    ) -> IrResult<PointerValue<'ctx, B>>
+    ) -> IrResult<PointerValueId<B>>
     where
         T: IrType<'ctx, B>,
         P: IntoPointerValue<'ctx, B>,
@@ -5159,7 +5144,7 @@ where
             .fold_gep_dyn(source_ty, ptr_value, &idx_values, flags)?
         {
             let folded = self.checked_folded_value(folded, result_ty)?;
-            return Ok(PointerValue::from_value_unchecked(folded));
+            return Ok(PointerValue::from_value_unchecked(folded).id());
         }
         let payload = crate::instr_types::GepInstData::new(
             source_ty_id,
@@ -5167,7 +5152,9 @@ where
             idx_ids.into_boxed_slice(),
             flags,
         );
-        Ok(self.append_ptr(result_ptr_ty, InstructionKindData::Gep(payload), name))
+        Ok(self
+            .append_ptr(result_ptr_ty, InstructionKindData::Gep(payload), name)
+            .id())
     }
 
     // ---- Floating-point casts ----
@@ -5957,7 +5944,7 @@ where
         } else {
             format!("{name_ref}.splat")
         };
-        let shuf = self.build_shuffle_vector(inserted, poison, &mask, splat_name)?;
+        let shuf = self.view(self.build_shuffle_vector(inserted, poison, &mask, splat_name)?);
         Ok(VectorValue::from_value_unchecked(shuf))
     }
 
@@ -5971,7 +5958,7 @@ where
         ptr: P,
         offset: O,
         name: Name,
-    ) -> IrResult<PointerValue<'ctx, B>>
+    ) -> IrResult<PointerValueId<B>>
     where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
@@ -5992,7 +5979,7 @@ where
         ptr: P,
         offset: O,
         name: Name,
-    ) -> IrResult<PointerValue<'ctx, B>>
+    ) -> IrResult<PointerValueId<B>>
     where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
@@ -8708,10 +8695,14 @@ pub mod select_narrow_token {
 pub use select_narrow_token::SelectNarrow;
 
 /// Sealed: types that can appear as the true/false arms of a
-/// `select`. The associated `Output` pins the result handle's
-/// shape so `b.build_select(cond, a, b)` returns the same handle
-/// type the user passed in. Mirrors LangRef's invariant that the
-/// two arms must have identical IR types.
+/// `select`. The associated `Output` pins the result *id*'s shape to the
+/// arm category, so `b.build_select(cond, a, b)` on `IntValue<W>` arms
+/// yields an [`IntValueId<W, B>`](crate::IntValueId), on `FloatValue<K>`
+/// arms a [`FloatValueId<K, B>`](crate::FloatValueId), and on
+/// [`PointerValue`] arms a [`PointerValueId<B>`](crate::PointerValueId).
+/// The narrowing itself is unchanged — only the currency the builder hands
+/// back. Mirrors LangRef's invariant that the two arms must have identical
+/// IR types.
 pub trait SelectArm<'ctx, B: ModuleBrand = Brand<'ctx>>: Sized + select_arm_sealed::Sealed {
     type Output;
     #[doc(hidden)]
@@ -8731,10 +8722,10 @@ mod select_arm_sealed {
 }
 
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for IntValue<'ctx, W, B> {
-    type Output = IntValue<'ctx, W, B>;
+    type Output = IntValueId<W, B>;
     #[inline]
     fn from_select_value(v: Value<'ctx, B>, _narrow: &SelectNarrow<'_>) -> Self::Output {
-        IntValue::<W, B>::from_value_unchecked(v)
+        IntValue::<W, B>::from_value_unchecked(v).id()
     }
     #[inline]
     fn arm_value(self) -> Value<'ctx, B> {
@@ -8743,10 +8734,10 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for IntValue<'
 }
 
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for FloatValue<'ctx, K, B> {
-    type Output = FloatValue<'ctx, K, B>;
+    type Output = FloatValueId<K, B>;
     #[inline]
     fn from_select_value(v: Value<'ctx, B>, _narrow: &SelectNarrow<'_>) -> Self::Output {
-        FloatValue::<K, B>::from_value_unchecked(v)
+        FloatValue::<K, B>::from_value_unchecked(v).id()
     }
     #[inline]
     fn arm_value(self) -> Value<'ctx, B> {
@@ -8755,10 +8746,10 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for FloatValu
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for PointerValue<'ctx, B> {
-    type Output = PointerValue<'ctx, B>;
+    type Output = PointerValueId<B>;
     #[inline]
     fn from_select_value(v: Value<'ctx, B>, _narrow: &SelectNarrow<'_>) -> Self::Output {
-        PointerValue::from_value_unchecked(v)
+        PointerValue::from_value_unchecked(v).id()
     }
     #[inline]
     fn arm_value(self) -> Value<'ctx, B> {
@@ -8776,7 +8767,7 @@ where
     /// Mirrors `IRBuilder::CreateSelect`.
     ///
     /// Both arms must share the same Rust type `A`, which pins the
-    /// IR-type invariant that LangRef requires. The returned handle
+    /// IR-type invariant that LangRef requires. The returned storable id
     /// is `A::Output`, statically tied to the arm category.
     pub fn build_select<C, A, Name>(
         &self,

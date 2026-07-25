@@ -156,7 +156,10 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
 
-        assert_eq!(known(select.into_erased(), &query)?.to_string(), "10101?10");
+        assert_eq!(
+            known(b.view(select).into_erased(), &query)?.to_string(),
+            "10101?10"
+        );
         assert_eq!(known(phi, &query)?.to_string(), "00000?11");
         assert_eq!(
             known(b.view(trunc).into_erased(), &query)?.to_string(),
@@ -174,7 +177,7 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
             known(b.view(bitcast).into_erased(), &query)?.to_string(),
             "01011010"
         );
-        assert_eq!(known(freeze.to_erased(), &query)?.to_string(), "10101010");
+        assert_eq!(known(b.view(freeze), &query)?.to_string(), "10101010");
         assert_eq!(known(b.view(cmp).into_erased(), &query)?.to_string(), "1");
         Ok(())
     })
@@ -244,7 +247,7 @@ fn pointer_null_and_alloca_alignment_compute_low_zero_bits() -> Result<(), IrErr
         let ptr_width = usize::try_from(dl.pointer_size_in_bits(0)).expect("u32 fits usize");
         assert_eq!(null_bits.to_string(), zeros(ptr_width));
 
-        let alloca_bits = known(alloca.into_erased(), &query)?;
+        let alloca_bits = known(b.view(alloca).into_erased(), &query)?;
         for bit in 0..4 {
             assert!(
                 alloca_bits.is_known_zero(bit),
@@ -274,7 +277,7 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         let lo0 = m.metadata_constant(i8_ty.const_int(-50_i8));
         let hi0 = m.metadata_constant(i8_ty.const_int(0_i8));
         let range0 = m.metadata_tuple([MetadataRef(lo0), MetadataRef(hi0)]);
-        let val0_inst = InstructionView::try_from(val0.into_erased())?;
+        let val0_inst = InstructionView::try_from(b0.view(val0).into_erased())?;
         val0_inst.set_metadata(MetadataAttachmentKind::Range, range0);
         let mask128 = i8_ty.const_ap_int(&ApInt::from_words(8, &[128]))?;
         let and0 = b0.build_int_and::<i8, _, _, _>(val0, mask128, "and")?;
@@ -289,7 +292,7 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         let lo1 = m.metadata_constant(i8_ty.const_int(64_i8));
         let hi1 = m.metadata_constant(i8_ty.const_ap_int(&ApInt::from_words(8, &[128]))?);
         let range1 = m.metadata_tuple([MetadataRef(lo1), MetadataRef(hi1)]);
-        let val1_inst = InstructionView::try_from(val1.into_erased())?;
+        let val1_inst = InstructionView::try_from(b1.view(val1).into_erased())?;
         val1_inst.set_metadata(MetadataAttachmentKind::Range, range1);
         let mask64 = i8_ty.const_int(64_i8);
         let and1 = b1.build_int_and::<i8, _, _, _>(val1, mask64, "and")?;
@@ -304,7 +307,7 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         let lo2 = m.metadata_constant(i8_ty.const_int(64_i8));
         let hi2 = m.metadata_constant(i8_ty.const_ap_int(&ApInt::from_words(8, &[129]))?);
         let range2 = m.metadata_tuple([MetadataRef(lo2), MetadataRef(hi2)]);
-        let val2_inst = InstructionView::try_from(val2.into_erased())?;
+        let val2_inst = InstructionView::try_from(b2.view(val2).into_erased())?;
         val2_inst.set_metadata(MetadataAttachmentKind::Range, range2);
         let and2 = b2.build_int_and::<i8, _, _, _>(val2, mask64, "and")?;
         let cmp2 = b2.build_icmp_eq::<i8, _, _, _>(and2, mask64, "is.eq")?;
@@ -610,7 +613,7 @@ fn query_carries_context_demanded_elements_and_instr_info_policy() -> Result<(),
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let p: PointerValue = f.param(0)?.try_into()?;
         let load = b.build_int_load::<i8, _, _>(p, "load")?;
-        let load_inst = InstructionView::try_from(load.into_erased())?;
+        let load_inst = InstructionView::try_from(b.view(load).into_erased())?;
         let demanded = ApInt::from_words(1, &[1]);
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl)
@@ -721,7 +724,7 @@ fn shift_with_possible_invalid_amount_is_unknown_after_freeze() -> Result<(), Ir
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert!(known(frozen.to_erased(), &query)?.is_unknown());
+        assert!(known(b.view(frozen), &query)?.is_unknown());
         Ok(())
     })
 }
@@ -768,10 +771,10 @@ fn freeze_of_exact_shift_that_can_poison_is_unknown() -> Result<(), IrError> {
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert!(known(frozen.to_erased(), &query)?.is_unknown());
+        assert!(known(b.view(frozen), &query)?.is_unknown());
         let query_without_instr_info = ValueTrackingQuery::new(&dl).without_instruction_info();
         assert_eq!(
-            known(frozen.to_erased(), &query_without_instr_info)?.to_string(),
+            known(b.view(frozen), &query_without_instr_info)?.to_string(),
             "0000"
         );
         Ok(())
@@ -821,13 +824,16 @@ fn gep_and_vector_lane_operations_compute_known_bits() -> Result<(), IrError> {
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        let ptr_bits = known(ptr.into_erased(), &query)?;
+        let ptr_bits = known(b.view(ptr).into_erased(), &query)?;
         assert!(ptr_bits.is_known_zero(0), "{ptr_bits}");
         assert!(ptr_bits.is_known_zero(1), "{ptr_bits}");
         assert!(ptr_bits.is_known_zero(2), "{ptr_bits}");
         assert!(ptr_bits.is_known_one(3), "{ptr_bits}");
-        assert_eq!(known(extract, &query)?.to_string(), "00001111");
-        assert_eq!(known(shuffle_extract, &query)?.to_string(), "00001111");
+        assert_eq!(known(b.view(extract), &query)?.to_string(), "00001111");
+        assert_eq!(
+            known(b.view(shuffle_extract), &query)?.to_string(),
+            "00001111"
+        );
         Ok(())
     })
 }

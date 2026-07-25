@@ -249,7 +249,7 @@ fn range_metadata_on_load_verifies_and_prints() -> Result<(), IrError> {
         let lo = m.metadata_constant(i8_ty.const_int(0x10_u8));
         let hi = m.metadata_constant(i8_ty.const_int(0x20_u8));
         let range = m.metadata_tuple([MetadataRef(lo), MetadataRef(hi)]);
-        let inst = InstructionView::try_from(ld.into_erased())?;
+        let inst = InstructionView::try_from(b.view(ld).into_erased())?;
         inst.set_metadata(MetadataAttachmentKind::Range, range);
         b.build_ret(ld)?;
 
@@ -276,7 +276,7 @@ fn range_metadata_rejects_odd_operand_count() -> Result<(), IrError> {
         let ld = b.build_int_load::<i8, _, _>(p, "v")?;
         let lo = m.metadata_constant(i8_ty.const_int(0x10_u8));
         let range = m.metadata_tuple([MetadataRef(lo)]);
-        let inst = InstructionView::try_from(ld.into_erased())?;
+        let inst = InstructionView::try_from(b.view(ld).into_erased())?;
         inst.set_metadata(MetadataAttachmentKind::Range, range);
         b.build_ret(ld)?;
 
