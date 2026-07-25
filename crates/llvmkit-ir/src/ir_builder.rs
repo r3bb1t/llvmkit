@@ -93,7 +93,7 @@ use super::value::{
     ArrayValue, FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Value,
     ValueKindData, ValueSlot, ValueUse, VectorValue,
 };
-use super::value_id::ViewIn;
+use super::value_id::{IntValueId, ValueId, ViewIn};
 use super::vec_len::{LenDyn, StaticVecLen, VecLen};
 
 /// Pair returned by terminator builders: the terminated insertion block and
@@ -988,6 +988,14 @@ where
     }
 
     // ---- Integer arithmetic ----
+    //
+    // Every builder in this family hands back a *storable id*
+    // (`IntValueId<W, B>`), not a borrowing handle. Ids are the currency you
+    // keep; a handle is the ephemeral view you take to read from a value.
+    // Chaining costs nothing -- an id satisfies `IntoIntValue` and
+    // `IntoCallArg`, so it drops straight into the next builder's operand
+    // slot -- while a *read* (`.ty()`, `.into_erased()`, `{}`) goes through
+    // `IRBuilder::view` / `Module::view`.
 
     /// Produce `add lhs, rhs`. Mirrors `IRBuilder::CreateAdd`.
     ///
@@ -995,12 +1003,23 @@ where
     /// type system. Either side accepts any [`crate::IntoIntValue<'ctx, W, B>`]:
     /// already-typed [`IntValue`]s, [`crate::ConstantIntValue`]s, and
     /// Rust scalar literals (`5_i32`, `true`, ...) all work.
+    ///
+    /// Returns the storable [`IntValueId<W, B>`](crate::IntValueId) naming the
+    /// result -- like every builder in this family. Pass it directly into the
+    /// next builder call; take [`view`](Self::view) when you need to *read*
+    /// from it:
+    ///
+    /// ```ignore
+    /// let sum = b.build_int_add::<i32, _, _, _>(x, 1_i32, "sum")?;
+    /// let wide = b.build_int_mul::<i32, _, _, _>(sum, 2_i32, "wide")?; // operand: no view
+    /// let ty = b.view(sum).ty();                                        // read: view
+    /// ```
     pub fn build_int_add<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1010,10 +1029,12 @@ where
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
         if let Some(folded) = self.folder.fold_int_bin_op(BinaryOpcode::Add, lhs, rhs)? {
-            return self.accept_folded_int(folded, lhs);
+            return self.accept_folded_int(folded, lhs).map(|v| v.id());
         }
         let payload = BinaryOpData::new(lhs.slot(), rhs.slot());
-        Ok(self.append_int_like(lhs, InstructionKindData::Add(payload), name))
+        Ok(self
+            .append_int_like(lhs, InstructionKindData::Add(payload), name)
+            .id())
     }
 
     /// Produce `sub lhs, rhs`. Mirrors `IRBuilder::CreateSub`.
@@ -1022,7 +1043,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1032,10 +1053,12 @@ where
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
         if let Some(folded) = self.folder.fold_int_bin_op(BinaryOpcode::Sub, lhs, rhs)? {
-            return self.accept_folded_int(folded, lhs);
+            return self.accept_folded_int(folded, lhs).map(|v| v.id());
         }
         let payload = BinaryOpData::new(lhs.slot(), rhs.slot());
-        Ok(self.append_int_like(lhs, InstructionKindData::Sub(payload), name))
+        Ok(self
+            .append_int_like(lhs, InstructionKindData::Sub(payload), name)
+            .id())
     }
 
     /// Produce `mul lhs, rhs`. Mirrors `IRBuilder::CreateMul`.
@@ -1044,7 +1067,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1059,6 +1082,7 @@ where
             crate::instr_types::MulFlags::new(),
             InstructionKindData::Mul,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `udiv lhs, rhs`. Mirrors `IRBuilder::CreateUDiv`.
@@ -1067,7 +1091,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1081,6 +1105,7 @@ where
             name,
             InstructionKindData::UDiv,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `sdiv lhs, rhs`. Mirrors `IRBuilder::CreateSDiv`.
@@ -1089,7 +1114,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1103,6 +1128,7 @@ where
             name,
             InstructionKindData::SDiv,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `urem lhs, rhs`. Mirrors `IRBuilder::CreateURem`.
@@ -1111,7 +1137,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1125,6 +1151,7 @@ where
             name,
             InstructionKindData::URem,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `srem lhs, rhs`. Mirrors `IRBuilder::CreateSRem`.
@@ -1133,7 +1160,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1147,6 +1174,7 @@ where
             name,
             InstructionKindData::SRem,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `shl lhs, rhs`. Mirrors `IRBuilder::CreateShl`.
@@ -1155,7 +1183,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1170,6 +1198,7 @@ where
             crate::instr_types::ShlFlags::new(),
             InstructionKindData::Shl,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `lshr lhs, rhs`. Mirrors `IRBuilder::CreateLShr`.
@@ -1178,7 +1207,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1192,6 +1221,7 @@ where
             name,
             InstructionKindData::LShr,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `ashr lhs, rhs`. Mirrors `IRBuilder::CreateAShr`.
@@ -1200,7 +1230,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1214,6 +1244,7 @@ where
             name,
             InstructionKindData::AShr,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `and lhs, rhs`. Mirrors `IRBuilder::CreateAnd`.
@@ -1222,7 +1253,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1230,6 +1261,7 @@ where
         Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop(BinaryOpcode::And, lhs, rhs, name, InstructionKindData::And)
+            .map(|v| v.id())
     }
 
     /// Produce `or lhs, rhs`. Mirrors `IRBuilder::CreateOr`.
@@ -1238,7 +1270,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1246,6 +1278,7 @@ where
         Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop(BinaryOpcode::Or, lhs, rhs, name, InstructionKindData::Or)
+            .map(|v| v.id())
     }
 
     /// Produce `or disjoint lhs, rhs` with explicit [`crate::OrFlags`].
@@ -1257,7 +1290,7 @@ where
         rhs: Rhs,
         flags: crate::instr_types::OrFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1272,6 +1305,7 @@ where
             flags,
             InstructionKindData::Or,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `xor lhs, rhs`. Mirrors `IRBuilder::CreateXor`.
@@ -1280,7 +1314,7 @@ where
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1288,6 +1322,7 @@ where
         Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.build_int_binop(BinaryOpcode::Xor, lhs, rhs, name, InstructionKindData::Xor)
+            .map(|v| v.id())
     }
 
     /// Produce `add lhs, rhs` with explicit [`crate::AddFlags`]. Mirrors
@@ -1300,7 +1335,7 @@ where
         rhs: Rhs,
         flags: crate::instr_types::AddFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1315,6 +1350,7 @@ where
             flags,
             InstructionKindData::Add,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `sub lhs, rhs` with explicit [`crate::SubFlags`].
@@ -1324,7 +1360,7 @@ where
         rhs: Rhs,
         flags: crate::instr_types::SubFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1339,6 +1375,7 @@ where
             flags,
             InstructionKindData::Sub,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `mul lhs, rhs` with explicit [`crate::MulFlags`].
@@ -1348,7 +1385,7 @@ where
         rhs: Rhs,
         flags: crate::instr_types::MulFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1363,6 +1400,7 @@ where
             flags,
             InstructionKindData::Mul,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `shl lhs, rhs` with explicit [`crate::ShlFlags`].
@@ -1372,7 +1410,7 @@ where
         rhs: Rhs,
         flags: crate::instr_types::ShlFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1387,6 +1425,7 @@ where
             flags,
             InstructionKindData::Shl,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `udiv lhs, rhs` with explicit [`crate::UDivFlags`].
@@ -1396,7 +1435,7 @@ where
         rhs: Rhs,
         flags: crate::instr_types::UDivFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1411,6 +1450,7 @@ where
             flags,
             InstructionKindData::UDiv,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `sdiv lhs, rhs` with explicit [`crate::SDivFlags`].
@@ -1420,7 +1460,7 @@ where
         rhs: Rhs,
         flags: crate::instr_types::SDivFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1435,6 +1475,7 @@ where
             flags,
             InstructionKindData::SDiv,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `lshr lhs, rhs` with explicit [`crate::LShrFlags`].
@@ -1444,7 +1485,7 @@ where
         rhs: Rhs,
         flags: crate::instr_types::LShrFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1459,6 +1500,7 @@ where
             flags,
             InstructionKindData::LShr,
         )
+        .map(|v| v.id())
     }
 
     /// Produce `ashr lhs, rhs` with explicit [`crate::AShrFlags`].
@@ -1468,7 +1510,7 @@ where
         rhs: Rhs,
         flags: crate::instr_types::AShrFlags,
         name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
@@ -1483,11 +1525,12 @@ where
             flags,
             InstructionKindData::AShr,
         )
+        .map(|v| v.id())
     }
 
     /// Integer negation: `sub 0, V`. Mirrors `IRBuilder::CreateNeg(V, Name)`,
     /// which expands to `CreateSub(Constant::getNullValue(V->getType()), V, Name)`.
-    pub fn build_int_neg<W, V, Name>(&self, value: V, name: Name) -> IrResult<IntValue<'ctx, W, B>>
+    pub fn build_int_neg<W, V, Name>(&self, value: V, name: Name) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: super::int_width::StaticIntWidth,
@@ -1500,11 +1543,7 @@ where
 
     /// Integer NSW negation. Mirrors `IRBuilder::CreateNSWNeg(V, Name)` ->
     /// `CreateNeg(V, Name, /*HasNSW=*/true)` -> `CreateSub` with `nsw`.
-    pub fn build_int_neg_nsw<W, V, Name>(
-        &self,
-        value: V,
-        name: Name,
-    ) -> IrResult<IntValue<'ctx, W, B>>
+    pub fn build_int_neg_nsw<W, V, Name>(&self, value: V, name: Name) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: super::int_width::StaticIntWidth,
@@ -1517,7 +1556,7 @@ where
 
     /// Bitwise complement: `xor V, -1`. Mirrors `IRBuilder::CreateNot(V, Name)`,
     /// which expands to `CreateXor(V, Constant::getAllOnesValue(V->getType()))`.
-    pub fn build_int_not<W, V, Name>(&self, value: V, name: Name) -> IrResult<IntValue<'ctx, W, B>>
+    pub fn build_int_not<W, V, Name>(&self, value: V, name: Name) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: super::int_width::StaticIntWidth,
@@ -1609,6 +1648,12 @@ where
     // untyped cast builder [`build_bitcast_dyn`]. The result type is the
     // LHS operand's type; the caller is responsible for operand-type
     // agreement (the LLVM verifier rejects ill-formed binops).
+    //
+    // Because the result may be a *vector*, these return the erased
+    // `ValueId<B>` rather than the typed `IntValueId<W, B>` the scalar family
+    // mints -- the id analogue of the erased `Value` they used to return.
+    // Their operands stay concrete `Value`s, so chaining one `_dyn` result
+    // into the next takes a `view`.
 
     /// Crate-internal: emit an integer binop on erased [`Value`] operands
     /// (scalar `iN` or integer vector `<N x iM>`), the result taking the LHS
@@ -1640,11 +1685,12 @@ where
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
     {
         self.build_int_binop_dyn(BinaryOpcode::Add, lhs, rhs, name, InstructionKindData::Add)
+            .map(|v| v.id())
     }
 
     /// `sub lhs, rhs` on erased operands (scalar or integer vector).
@@ -1654,11 +1700,12 @@ where
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
     {
         self.build_int_binop_dyn(BinaryOpcode::Sub, lhs, rhs, name, InstructionKindData::Sub)
+            .map(|v| v.id())
     }
 
     /// `mul lhs, rhs` on erased operands (scalar or integer vector).
@@ -1668,11 +1715,12 @@ where
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
     {
         self.build_int_binop_dyn(BinaryOpcode::Mul, lhs, rhs, name, InstructionKindData::Mul)
+            .map(|v| v.id())
     }
 
     /// `xor lhs, rhs` on erased operands (scalar or integer vector).
@@ -1682,11 +1730,12 @@ where
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
     {
         self.build_int_binop_dyn(BinaryOpcode::Xor, lhs, rhs, name, InstructionKindData::Xor)
+            .map(|v| v.id())
     }
 
     /// `and lhs, rhs` on erased operands (scalar or integer vector).
@@ -1696,11 +1745,12 @@ where
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
     {
         self.build_int_binop_dyn(BinaryOpcode::And, lhs, rhs, name, InstructionKindData::And)
+            .map(|v| v.id())
     }
 
     /// `or lhs, rhs` on erased operands (scalar or integer vector).
@@ -1710,11 +1760,12 @@ where
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
     {
         self.build_int_binop_dyn(BinaryOpcode::Or, lhs, rhs, name, InstructionKindData::Or)
+            .map(|v| v.id())
     }
 
     /// `shl lhs, rhs` on erased operands (scalar or integer vector).
@@ -1724,11 +1775,12 @@ where
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
     {
         self.build_int_binop_dyn(BinaryOpcode::Shl, lhs, rhs, name, InstructionKindData::Shl)
+            .map(|v| v.id())
     }
 
     /// `lshr lhs, rhs` on erased operands (scalar or integer vector).
@@ -1738,7 +1790,7 @@ where
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
     {
@@ -1749,6 +1801,7 @@ where
             name,
             InstructionKindData::LShr,
         )
+        .map(|v| v.id())
     }
 
     /// `ashr lhs, rhs` on erased operands (scalar or integer vector).
@@ -1758,7 +1811,7 @@ where
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
         name: Name,
-    ) -> IrResult<Value<'ctx, B>>
+    ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
     {
@@ -1769,6 +1822,7 @@ where
             name,
             InstructionKindData::AShr,
         )
+        .map(|v| v.id())
     }
 
     // ---- Floating-point arithmetic ----

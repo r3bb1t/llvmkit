@@ -64,7 +64,7 @@ fn use_test_sort_setup_registers_eight_users() -> Result<(), IrError> {
         assert_eq!(users.len(), 8);
         let expected_value_ids: Vec<_> = [v0, v2, v5, v1, v3, v7, v6, v4]
             .iter()
-            .map(|iv| iv.into_erased())
+            .map(|iv| m.view(*iv).into_erased())
             .collect();
         let user_value_ids: Vec<_> = users.iter().map(|inst| inst.to_erased()).collect();
         assert_eq!(user_value_ids, expected_value_ids);
@@ -100,9 +100,9 @@ fn erase_no_invalidation() -> Result<(), IrError> {
         // Pre-erase order before the terminator is emitted: I1, I2, I3.
         let pre: Vec<_> = bb.instructions().map(|i| i.to_erased()).collect();
         assert_eq!(pre.len(), 3);
-        assert_eq!(pre[0], i1.into_erased());
-        assert_eq!(pre[1], i2.into_erased());
-        assert_eq!(pre[2], i3.into_erased());
+        assert_eq!(pre[0], m.view(i1).into_erased());
+        assert_eq!(pre[1], m.view(i2).into_erased());
+        assert_eq!(pre[2], m.view(i3).into_erased());
 
         // Erase I2. Upstream: `I2->eraseFromParent(); I2 = nullptr;`
         let cursor = BlockCursor::at_start(bb);
@@ -117,8 +117,8 @@ fn erase_no_invalidation() -> Result<(), IrError> {
         // iterator-equality; we assert the iteration order directly.
         let post: Vec<_> = bb.instructions().map(|i| i.to_erased()).collect();
         assert_eq!(post.len(), 3);
-        assert_eq!(post[0], i1.into_erased());
-        assert_eq!(post[1], i3.into_erased());
+        assert_eq!(post[0], m.view(i1).into_erased());
+        assert_eq!(post[1], m.view(i3).into_erased());
         assert_eq!(post[2], ret.to_erased());
 
         // Upstream's invariant `EXPECT_EQ(std::next(I1->getIterator()),
@@ -148,9 +148,9 @@ fn erase_releases_local_name_for_reuse() -> Result<(), IrError> {
         let block = cursor.into_block();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(block);
         let live = b.build_int_add::<i32, _, _, _>(arg, 2_i32, "tmp")?;
-        b.build_ret(live)?;
+        b.build_ret(m.view(live))?;
 
-        assert_eq!(live.name().as_deref(), Some("tmp"));
+        assert_eq!(m.view(live).name().as_deref(), Some("tmp"));
         let text = format!("{m}");
         assert!(!text.contains("%tmp1"), "{text}");
         assert!(text.contains("%tmp = add i32 %0, 2\n"), "{text}");
@@ -195,7 +195,7 @@ fn detached_append_reinserts_and_uniques_against_destination() -> Result<(), IrE
         let appended_value: IntValue<i32> = appended.try_into()?;
         to_b.build_ret(appended_value)?;
 
-        assert_eq!(existing.name().as_deref(), Some("tmp"));
+        assert_eq!(m.view(existing).name().as_deref(), Some("tmp"));
         assert_eq!(appended_value.name().as_deref(), Some("tmp1"));
         let text = format!("{m}");
         assert!(
@@ -243,9 +243,9 @@ fn detached_set_name_updates_carried_name_without_old_parent_binding() -> Result
         let inserted = detached.append_to(&m, b.insert_block())?;
         let inserted_value: IntValue<i32> = inserted.try_into()?;
         let sum = b.build_int_add::<i32, _, _, _>(live, inserted_value, "sum")?;
-        b.build_ret(sum)?;
+        b.build_ret(m.view(sum))?;
 
-        assert_eq!(live.name().as_deref(), Some("tmp"));
+        assert_eq!(m.view(live).name().as_deref(), Some("tmp"));
         assert_eq!(inserted_value.name().as_deref(), Some("renamed"));
         let text = format!("{m}");
         assert!(text.contains("%tmp = add i32 3, 4\n"), "{text}");
@@ -291,9 +291,9 @@ fn erase_deregisters_from_operand_use_lists() -> Result<(), IrError> {
         // Post-erase: x has 2 users (only the surviving adds).
         assert_eq!(x.into_erased().num_uses(), 2);
         let users: Vec<_> = x.into_erased().users().map(|i| i.to_erased()).collect();
-        assert!(users.contains(&i1.into_erased()));
-        assert!(users.contains(&i3.into_erased()));
-        assert!(!users.contains(&i2.into_erased()));
+        assert!(users.contains(&m.view(i1).into_erased()));
+        assert!(users.contains(&m.view(i3).into_erased()));
+        assert!(!users.contains(&m.view(i2).into_erased()));
         Ok(())
     })
 }
@@ -349,7 +349,7 @@ fn self_anchored_instruction_moves_are_no_ops() -> Result<(), IrError> {
 
         let block = cursor.into_block();
         let builder = IRBuilder::with_folder(&m, NoFolder).position_at_end(block);
-        builder.build_ret(b)?;
+        builder.build_ret(m.view(b))?;
         let text = format!("{m}");
         assert!(text.contains("%a = add i32 1, 2"), "{text}");
         assert!(text.contains("%b = add i32 %a, 3"), "{text}");
@@ -430,19 +430,19 @@ fn debug_record_value_operand_is_rewritten_by_rauw() -> Result<(), IrError> {
         let md = m.metadata_tuple(Vec::<MetadataRef>::new());
         anchor_inst.push_debug_record(DebugRecord::Variable(DebugVariableRecord::new(
             DebugVariableRecordKind::Value,
-            DebugMetadataOperand::Value(source.into_erased().slot()),
+            DebugMetadataOperand::Value(m.view(source).into_erased().slot()),
             md,
             md,
             md,
         )));
 
         let replacement = i32_ty.const_int(42_i32);
-        assert_eq!(source.into_erased().num_uses(), 1);
+        assert_eq!(m.view(source).into_erased().num_uses(), 1);
         assert_eq!(replacement.into_erased().num_uses(), 0);
 
         source_inst.replace_all_uses_with(&m, replacement)?;
 
-        assert_eq!(source.into_erased().num_uses(), 0);
+        assert_eq!(m.view(source).into_erased().num_uses(), 0);
         assert_eq!(replacement.into_erased().num_uses(), 1);
         let records = anchor_inst.debug_records();
         let DebugRecord::Variable(record) = &records[0] else {

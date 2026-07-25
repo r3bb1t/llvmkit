@@ -28,7 +28,7 @@ fn add_sub_allones_binds_operands() -> Result<(), IrError> {
         let neg_one = i32_ty.const_int(-1_i32);
         let add = b.build_int_add::<i32, _, _, _>(sub, neg_one, "r")?;
 
-        let view = view_of(add.into_erased());
+        let view = view_of(b.view(add).into_erased());
         let (mx, my) = m_add(m_one_use(m_sub(m_value(), m_value())), m_all_ones())
             .match_view(&view)
             .expect("pattern should match");
@@ -56,7 +56,7 @@ fn one_use_gate_rejects_multi_use_subexpr() -> Result<(), IrError> {
         // Second user of `sub`, so it no longer has one use.
         let _other = b.build_int_add::<i32, _, _, _>(sub, x, "o")?;
 
-        let view = view_of(add.into_erased());
+        let view = view_of(b.view(add).into_erased());
         assert!(
             m_add(m_one_use(m_sub(m_value(), m_value())), m_all_ones())
                 .match_view(&view)
@@ -87,7 +87,7 @@ fn commutative_add_matches_swapped_operands() -> Result<(), IrError> {
         // add %y, %x  (x is the second operand)
         let add = b.build_int_add::<i32, _, _, _>(y, x, "r")?;
 
-        let view = view_of(add.into_erased());
+        let view = view_of(b.view(add).into_erased());
         // Non-commutative fails (x is not operand 0)...
         assert!(
             m_add(m_specific(x.into_erased()), m_value())
@@ -117,12 +117,12 @@ fn not_and_neg_sugar() -> Result<(), IrError> {
         let neg = b.build_int_sub::<i32, _, _, _>(i32_ty.const_int(0_i32), v, "g")?;
 
         let (nv,) = m_not(m_value())
-            .match_view(&view_of(not.into_erased()))
+            .match_view(&view_of(b.view(not).into_erased()))
             .expect("m_not should match xor v, -1");
         assert_eq!(nv, v.into_erased());
 
         let (gv,) = m_neg(m_value())
-            .match_view(&view_of(neg.into_erased()))
+            .match_view(&view_of(b.view(neg).into_erased()))
             .expect("m_neg should match sub 0, v");
         assert_eq!(gv, v.into_erased());
         Ok(())
@@ -207,12 +207,12 @@ fn two_step_specific_reuse() -> Result<(), IrError> {
 
         // Step 1: bind (a, b) from the `or`.
         let (a, bb) = m_or(m_value(), m_value())
-            .match_view(&view_of(or.into_erased()))
+            .match_view(&view_of(b.view(or).into_erased()))
             .expect("or matches");
         // Step 2: require the `and` to use exactly those, in either order.
         assert!(
             m_c_and(m_specific(a), m_specific(bb))
-                .match_view(&view_of(and.into_erased()))
+                .match_view(&view_of(b.view(and).into_erased()))
                 .is_some()
         );
         Ok(())
@@ -263,7 +263,7 @@ fn m_phi_rejects_non_phi() -> Result<(), IrError> {
         let y: IntValue<i32> = f.param(1)?.try_into()?;
         let add = b.build_int_add::<i32, _, _, _>(x, y, "r")?;
 
-        let view = view_of(add.into_erased());
+        let view = view_of(b.view(add).into_erased());
         assert!(m_phi().match_view(&view).is_none());
         Ok(())
     })

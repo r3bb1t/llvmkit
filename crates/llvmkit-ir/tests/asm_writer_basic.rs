@@ -26,7 +26,7 @@ fn module_prints_simple_add_function() -> Result<(), IrError> {
         let lhs: IntValue<i32> = f.param(0)?.try_into()?;
         let rhs: IntValue<i32> = f.param(1)?.try_into()?;
         let sum = b.build_int_add(lhs, rhs, "sum")?;
-        b.build_ret(sum)?;
+        b.build_ret(m.view(sum))?;
 
         let text = format!("{m}");
         let expected = "; ModuleID = 'demo'\n\
@@ -86,7 +86,7 @@ fn dollar_names_print_without_quotes() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let arg: IntValue<i32> = f.param(0)?.try_into()?;
         let sum = b.build_int_add::<i32, _, _, _>(arg, 1_i32, "sum$value")?;
-        b.build_ret(sum)?;
+        b.build_ret(m.view(sum))?;
 
         let text = format!("{m}");
         assert!(text.contains("define i32 @foo$bar(i32 %0)"), "{text}");
@@ -116,7 +116,7 @@ fn function_local_names_share_argument_block_and_instruction_namespace() -> Resu
 
         assert_eq!(f.param(0)?.name().as_deref(), Some("entry"));
         assert_eq!(entry_name.as_deref(), Some("entry1"));
-        assert_eq!(result.name().as_deref(), Some("entry2"));
+        assert_eq!(m.view(result).name().as_deref(), Some("entry2"));
 
         let expected = "; ModuleID = 'local_names'\n\
             define i32 @f(i32 %entry) {\n\
@@ -145,12 +145,12 @@ fn set_name_reinserts_and_frees_old_binding() -> Result<(), IrError> {
 
         let first = b.build_int_add::<i32, _, _, _>(arg, 1_i32, "tmp")?;
         let second = b.build_int_add::<i32, _, _, _>(first, 1_i32, "other")?;
-        second.set_name(&m, "tmp");
+        b.view(second).set_name(&m, "tmp");
         let third = b.build_int_add::<i32, _, _, _>(second, first, "other")?;
-        b.build_ret(third)?;
+        b.build_ret(m.view(third))?;
 
-        assert_eq!(second.name().as_deref(), Some("tmp1"));
-        assert_eq!(third.name().as_deref(), Some("other"));
+        assert_eq!(m.view(second).name().as_deref(), Some("tmp1"));
+        assert_eq!(m.view(third).name().as_deref(), Some("other"));
         let text = format!("{m}");
         assert!(text.contains("%tmp = add i32 %0, 1\n"), "{text}");
         assert!(text.contains("%tmp1 = add i32 %tmp, 1\n"), "{text}");
@@ -187,7 +187,7 @@ fn module_prints_const_folded_arithmetic() -> Result<(), IrError> {
             IntValue::<i32>::try_from(bb.into_erased())?,
             "sum",
         )?;
-        b.build_ret(folded)?;
+        b.build_ret(m.view(folded))?;
 
         let text = format!("{m}");
         // The folded value is a constant; it should print as `42`.

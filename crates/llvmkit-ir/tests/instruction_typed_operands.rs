@@ -70,9 +70,9 @@ fn classify_is_total() -> Result<(), IrError> {
         let x: IntValue<i32> = f.param(0)?.try_into()?;
         let y: IntValue<i32> = f.param(1)?.try_into()?;
         let sum = b.build_int_add::<i32, _, _, _>(x, y, "s")?;
-        b.build_ret(sum)?;
+        b.build_ret(m.view(sum))?;
 
-        let sum_view = InstructionView::try_from(sum.into_erased())?;
+        let sum_view = InstructionView::try_from(m.view(sum).into_erased())?;
         assert!(matches!(
             sum_view.classify(),
             Classified::Inst(InstructionKind::Add(_))
@@ -110,7 +110,7 @@ fn binop_and_cmp_groupings() -> Result<(), IrError> {
         let sum = b.build_int_add::<i32, _, _, _>(x, y, "s")?;
         let cmp = b.build_icmp_slt::<i32, _, _, _>(x, y, "c")?;
 
-        let sum_view = InstructionView::try_from(sum.into_erased())?;
+        let sum_view = InstructionView::try_from(b.view(sum).into_erased())?;
         let bop = sum_view
             .kind()
             .and_then(|k| k.as_binary_op())

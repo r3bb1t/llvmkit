@@ -109,7 +109,7 @@ fn build_single_pred_phi<'ctx>(
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(to);
     let p = b.build_int_phi::<i32, _>("p")?.add_incoming(x, entry_lbl)?;
     let u = b.build_int_add(p.as_int_value(), 1_i32, "u")?;
-    b.build_ret(u)?;
+    b.build_ret(m.view(u))?;
 
     // other: ret 0
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(other);
@@ -205,7 +205,7 @@ fn build_redirect_single_pred_phi<'ctx>(
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(old_to);
     let p = b.build_int_phi::<i32, _>("p")?.add_incoming(x, entry_lbl)?;
     let u = b.build_int_add(p.as_int_value(), 1_i32, "u")?;
-    b.build_ret(u)?;
+    b.build_ret(m.view(u))?;
 
     // other: ret 0
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(other);

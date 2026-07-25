@@ -10,9 +10,13 @@
 //! [`Module::try_view`](crate::Module::try_view) to resolve an id back into a
 //! borrowing handle.
 //!
-//! This slice is purely **additive**: builders still return the borrowing
-//! handles; each handle merely gains a [`id`](crate::Value::id)-style
-//! accessor that mints its id. Cycle B rewires the builders to return ids.
+//! Cycle A was purely **additive**: every handle gained a
+//! [`id`](crate::Value::id)-style accessor that mints its id, while the
+//! builders kept returning borrowing handles. Cycle B rewires the builders to
+//! return ids, one family at a time — the integer-arithmetic family
+//! (`build_int_add` & co.) has flipped, the rest still hand back handles.
+//! [`IRBuilder::view`](crate::IRBuilder::view) is the builder-side twin of
+//! [`Module::view`](crate::Module::view) for reading at a build site.
 //!
 //! # Representation
 //!

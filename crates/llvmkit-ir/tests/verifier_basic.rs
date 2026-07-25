@@ -285,7 +285,7 @@ fn verify_int_arithmetic_full() -> Result<(), IrError> {
         let aa = b.build_int_and(ar, x, "aa")?;
         let oo = b.build_int_or(aa, x, "oo")?;
         let xx = b.build_int_xor(oo, x, "xx")?;
-        b.build_ret(xx)?;
+        b.build_ret(m.view(xx))?;
         m.verify_borrowed()?;
         Ok(())
     })
@@ -364,7 +364,7 @@ fn verify_casts_full() -> Result<(), IrError> {
         let _ac: PointerValue = b.build_addrspace_cast(p, ptr_ty, "ac")?;
         let sum = b.build_int_add(e, z, "sum")?;
         let total = b.build_int_add(sum, fi, "total")?;
-        b.build_ret(total)?;
+        b.build_ret(m.view(total))?;
         m.verify_borrowed()?;
         Ok(())
     })
@@ -439,7 +439,7 @@ fn verify_call() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(cb);
         let x: IntValue<i32> = callee.param(0)?.try_into()?;
         let r = b.build_int_add(x, 1_i32, "r")?;
-        b.build_ret(r)?;
+        b.build_ret(m.view(r))?;
 
         let caller = m.add_function_dyn("dbl", fn_ty, Linkage::External)?;
         let bb = caller.append_basic_block(&m, "entry");
@@ -451,7 +451,7 @@ fn verify_call() -> Result<(), IrError> {
             .expect("non-void call returns a value")
             .try_into()?;
         let two = b.build_int_add(one, 1_i32, "two")?;
-        b.build_ret(two)?;
+        b.build_ret(m.view(two))?;
 
         m.verify_borrowed()?;
         Ok(())
@@ -584,7 +584,7 @@ fn verify_cross_block_dominated_use_passes() -> Result<(), IrError> {
         b.build_br(next_label)?;
         let bn = IRBuilder::new_for::<Dyn>(&m).position_at_end(next);
         let z = bn.build_int_add(y, 1_i32, "z")?;
-        bn.build_ret(z)?;
+        bn.build_ret(m.view(z))?;
 
         m.verify_borrowed()?;
         Ok(())
@@ -621,7 +621,7 @@ fn verify_cross_block_branch_value_used_after_join_fails() -> Result<(), IrError
             .build_br(join_label)?;
         let bj = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
         let z = bj.build_int_add(y, 1_i32, "z")?;
-        bj.build_ret(z)?;
+        bj.build_ret(m.view(z))?;
 
         let err = m
             .verify_borrowed()
@@ -666,7 +666,7 @@ fn verify_phi_incoming_edge_dominance_passes() -> Result<(), IrError> {
             .build_cond_br(cond, then_label, else_label)?;
         let bt = IRBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
         let y = bt.build_int_add(x, 1_i32, "y")?;
-        bt.build_br_with_args(join_label, &[y.into_erased()])?;
+        bt.build_br_with_args(join_label, &[m.view(y).into_erased()])?;
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(else_bb)
             .build_br_with_args(join_label, &[x.into_erased()])?;
@@ -712,7 +712,7 @@ fn verify_invoke_result_used_on_unwind_edge_fails() -> Result<(), IrError> {
             .build_ret(invoke_value)?;
         let bu = IRBuilder::new_for::<Dyn>(&m).position_at_end(unwind);
         let bad = bu.build_int_add(invoke_value, x, "bad")?;
-        bu.build_ret(bad)?;
+        bu.build_ret(m.view(bad))?;
 
         let err = m
             .verify_borrowed()

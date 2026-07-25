@@ -113,7 +113,7 @@ fn constant_folder_folds_udiv_by_zero_to_poison_without_instruction() -> Result<
             b.build_int_udiv::<i32, _, _, _>(i32_ty.const_int(42_i32), i32_ty.const_zero(), "q")?;
 
         assert_eq!(
-            Constant::try_from(result.into_erased())?,
+            Constant::try_from(b.view(result).into_erased())?,
             i32_ty.as_type().get_poison().as_constant()
         );
         assert_eq!(b.insert_block().instructions().len(), 0);
@@ -142,7 +142,7 @@ fn constant_folder_exact_udiv_inexact_constants_match_upstream_plain_fold() -> R
         )?;
 
         assert_eq!(
-            Constant::try_from(result.into_erased())?,
+            Constant::try_from(b.view(result).into_erased())?,
             i32_ty.const_int(2_i32).as_constant()
         );
         assert_eq!(b.insert_block().instructions().len(), 0);
@@ -569,7 +569,7 @@ fn custom_folder_no_wrap_hook_receives_mul() -> Result<(), IrError> {
             "mul",
         )?;
 
-        assert_eq!(result.into_erased(), folded);
+        assert_eq!(b.view(result).into_erased(), folded);
         assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
     })
@@ -606,7 +606,7 @@ fn custom_folder_no_wrap_hook_receives_shl() -> Result<(), IrError> {
             "shl",
         )?;
 
-        assert_eq!(result.into_erased(), folded);
+        assert_eq!(b.view(result).into_erased(), folded);
         assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
     })
@@ -629,9 +629,9 @@ fn no_folder_names_add_instruction_exactly() -> Result<(), IrError> {
             "add",
         )?;
 
-        let name = add.into_erased().name();
+        let name = b.view(add).into_erased().name();
         assert_eq!(name.as_deref(), Some("add"));
-        assert!(InstructionView::try_from(add.into_erased()).is_ok());
+        assert!(InstructionView::try_from(b.view(add).into_erased()).is_ok());
         assert_eq!(b.insert_block().instructions().len(), 1);
         Ok(())
     })
@@ -651,7 +651,7 @@ fn no_folder_emits_udiv_instruction_for_constants() -> Result<(), IrError> {
         let rhs = i32_ty.const_zero();
 
         let result = b.build_int_udiv::<i32, _, _, _>(lhs, rhs, "q")?;
-        let instruction = InstructionView::try_from(result.into_erased())?;
+        let instruction = InstructionView::try_from(b.view(result).into_erased())?;
         let Some(InstructionKind::UDiv(udiv)) = instruction.kind() else {
             panic!("expected udiv instruction");
         };
@@ -659,7 +659,7 @@ fn no_folder_emits_udiv_instruction_for_constants() -> Result<(), IrError> {
         assert_eq!(udiv.lhs(), lhs.into_erased());
         assert_eq!(udiv.rhs(), rhs.into_erased());
         assert!(!udiv.is_exact());
-        assert_eq!(result.into_erased().name().as_deref(), Some("q"));
+        assert_eq!(b.view(result).into_erased().name().as_deref(), Some("q"));
         assert_eq!(b.insert_block().instructions().len(), 1);
         Ok(())
     })
@@ -741,7 +741,7 @@ fn constant_folder_does_not_simplify_nonconstant_add_zero() -> Result<(), IrErro
 
         let result = b.build_int_add(x, i32_ty.const_zero(), "sum")?;
 
-        assert!(InstructionView::try_from(result.into_erased()).is_ok());
+        assert!(InstructionView::try_from(b.view(result).into_erased()).is_ok());
         assert_eq!(b.insert_block().instructions().len(), 1);
         Ok(())
     })
@@ -807,7 +807,7 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
         )?;
 
         assert_eq!(
-            Constant::try_from(result.into_erased())?,
+            Constant::try_from(b.view(result).into_erased())?,
             i32_ty.const_int(16_i32).as_constant()
         );
         assert_eq!(b.insert_block().instructions().len(), 0);
@@ -828,7 +828,7 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
         )?;
 
         assert_eq!(
-            Constant::try_from(result)?,
+            Constant::try_from(b.view(result))?,
             i32_ty.const_int(16_i32).as_constant()
         );
         assert_eq!(b.insert_block().instructions().len(), 0);

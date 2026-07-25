@@ -27,7 +27,7 @@ fn module_for(op: &str) -> Result<String, IrError> {
             "srem" => b.build_int_srem(x, y, "z")?,
             _ => unreachable!(),
         };
-        b.build_ret(r)?;
+        b.build_ret(m.view(r))?;
         Ok(format!("{m}"))
     })
 }
@@ -78,7 +78,7 @@ fn udiv_exact() -> Result<(), IrError> {
         let lhs: IntValue<i64> = f.param(0)?.try_into()?;
         let rhs: IntValue<i64> = f.param(1)?.try_into()?;
         let r = b.build_int_udiv_with_flags(lhs, rhs, UDivFlags::new().exact(), "z")?;
-        b.build_ret(r)?;
+        b.build_ret(m.view(r))?;
         let text = format!("{m}");
         assert!(text.contains("%z = udiv exact i64 %0, %1"), "got:\n{text}");
         Ok(())
@@ -97,7 +97,7 @@ fn sdiv_exact() -> Result<(), IrError> {
         let lhs: IntValue<i64> = f.param(0)?.try_into()?;
         let rhs: IntValue<i64> = f.param(1)?.try_into()?;
         let r = b.build_int_sdiv_with_flags(lhs, rhs, SDivFlags::new().exact(), "z")?;
-        b.build_ret(r)?;
+        b.build_ret(m.view(r))?;
         let text = format!("{m}");
         assert!(text.contains("%z = sdiv exact i64 %0, %1"), "got:\n{text}");
         Ok(())

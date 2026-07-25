@@ -1546,7 +1546,7 @@ fn dead_block_poison_read_user_is_rerouted_to_poison() -> Result<(), IrError> {
         let mut b = b.switch_to_block(dead)?;
         let read = b.use_int_var(x)?;
         let sum = b.ins().build_int_add(read, 1_i32, "sum")?;
-        let b = b.ret(sum)?;
+        let b = b.ret(m.view(sum))?;
 
         // finish() seals `dead` with zero predecessors: the incomplete phi
         // collapses through `undefined_phi_replacement`'s poison arm, which

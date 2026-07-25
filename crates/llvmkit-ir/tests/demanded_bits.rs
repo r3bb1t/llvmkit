@@ -24,22 +24,22 @@ fn demanded_bits_basic_trunc_zext_chain() -> Result<(), IrError> {
 
         let add = b.build_int_add::<i32, _, _, _>(a, i32_ty.const_int(5_u32), "add")?;
         let mul = b.build_int_mul::<i32, _, _, _>(add, b_arg, "mul")?;
-        let trunc_i8 = b.build_trunc(mul, i8_ty, "lo8")?;
-        let trunc_i1 = b.build_trunc(mul, i1_ty, "lo1")?;
+        let trunc_i8 = b.build_trunc(b.view(mul), i8_ty, "lo8")?;
+        let trunc_i1 = b.build_trunc(b.view(mul), i1_ty, "lo1")?;
         let zext = b.build_zext(trunc_i1, i8_ty, "wide")?;
         let sum = b.build_int_add::<i8, _, _, _>(trunc_i8, zext, "sum")?;
-        b.build_ret(sum)?;
+        b.build_ret(m.view(sum))?;
 
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(DemandedBitsAnalysis);
         let demanded = fam.get_result::<DemandedBitsAnalysis, _>(f)?;
 
         assert_eq!(
-            bits(demanded.get_demanded_bits(add.into_erased())),
+            bits(demanded.get_demanded_bits(m.view(add).into_erased())),
             "00000000000000000000000011111111"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(mul.into_erased())),
+            bits(demanded.get_demanded_bits(m.view(mul).into_erased())),
             "00000000000000000000000011111111"
         );
         assert_eq!(
@@ -97,49 +97,49 @@ fn demanded_bits_add_and_or_carry_propagation() -> Result<(), IrError> {
         let or_dbc = b.build_int_or::<i32, _, _, _>(and_d, or_bc, "or.dbc")?;
         let add = b.build_int_add::<i32, _, _, _>(and_a, or_dbc, "add")?;
         let mask = b.build_int_and::<i32, _, _, _>(add, i32_ty.const_int(16_u32), "mask")?;
-        b.build_ret(mask)?;
+        b.build_ret(m.view(mask))?;
 
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(DemandedBitsAnalysis);
         let demanded = fam.get_result::<DemandedBitsAnalysis, _>(f)?;
 
         assert_eq!(
-            bits(demanded.get_demanded_bits(and_a.into_erased())),
+            bits(demanded.get_demanded_bits(m.view(and_a).into_erased())),
             "00000000000000000000000000011110"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(and_b.into_erased())),
+            bits(demanded.get_demanded_bits(m.view(and_b).into_erased())),
             "00000000000000000000000000011010"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(and_c.into_erased())),
+            bits(demanded.get_demanded_bits(m.view(and_c).into_erased())),
             "00000000000000000000000000011010"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(and_d.into_erased())),
+            bits(demanded.get_demanded_bits(m.view(and_d).into_erased())),
             "00000000000000000000000000011010"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(or_bc.into_erased())),
+            bits(demanded.get_demanded_bits(m.view(or_bc).into_erased())),
             "00000000000000000000000000011010"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(or_dbc.into_erased())),
+            bits(demanded.get_demanded_bits(m.view(or_dbc).into_erased())),
             "00000000000000000000000000011010"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(add.into_erased())),
+            bits(demanded.get_demanded_bits(m.view(add).into_erased())),
             "00000000000000000000000000010000"
         );
         assert_eq!(
-            bits(demanded.get_demanded_bits(mask.into_erased())),
+            bits(demanded.get_demanded_bits(m.view(mask).into_erased())),
             "11111111111111111111111111111111"
         );
         assert_eq!(
-            bits(demanded.get_operand_demanded_bits(and_d.into_erased(), 0)?),
+            bits(demanded.get_operand_demanded_bits(m.view(and_d).into_erased(), 0)?),
             "00000000000000000000000000000000"
         );
-        assert!(demanded.is_use_dead(and_d.into_erased(), 0)?);
+        assert!(demanded.is_use_dead(m.view(and_d).into_erased(), 0)?);
         Ok(())
     })
 }
@@ -169,7 +169,7 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
             .expect("bitreverse returns value")
             .try_into()?;
         let rev_mask = rev_b.build_int_and::<i8, _, _, _>(rev, i8_ty.const_int(0x0f_u8), "mask")?;
-        rev_b.build_ret(rev_mask)?;
+        rev_b.build_ret(m.view(rev_mask))?;
 
         let swap_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.bswap.i16")?;
         let swap_host_ty = m.fn_type(i16_ty, [i16_ty.as_type()], false);
@@ -187,7 +187,7 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
             .try_into()?;
         let swap_mask =
             swap_b.build_int_and::<i16, _, _, _>(swap, i16_ty.const_int(0x00ff_u16), "mask")?;
-        swap_b.build_ret(swap_mask)?;
+        swap_b.build_ret(m.view(swap_mask))?;
 
         let fshl_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.fshl.i8")?;
         let fshl_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
@@ -208,7 +208,7 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
             .try_into()?;
         let fshl_mask =
             fshl_b.build_int_and::<i8, _, _, _>(fshl, i8_ty.const_int(0x0f_u8), "mask")?;
-        fshl_b.build_ret(fshl_mask)?;
+        fshl_b.build_ret(m.view(fshl_mask))?;
 
         let fshr_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.fshr.i8")?;
         let fshr_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
@@ -229,7 +229,7 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
             .try_into()?;
         let fshr_mask =
             fshr_b.build_int_and::<i8, _, _, _>(fshr, i8_ty.const_int(0x0f_u8), "mask")?;
-        fshr_b.build_ret(fshr_mask)?;
+        fshr_b.build_ret(m.view(fshr_mask))?;
 
         let fshr_zero_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
         let fshr_zero_host =
@@ -253,7 +253,7 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
             i8_ty.const_int(0x0f_u8),
             "mask",
         )?;
-        fshr_zero_b.build_ret(fshr_zero_mask)?;
+        fshr_zero_b.build_ret(m.view(fshr_zero_mask))?;
 
         let wide_fshl_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.fshl.i128")?;
         let wide_fshl_host_ty = m.fn_type(i128_ty, [i128_ty.as_type(), i128_ty.as_type()], false);
@@ -277,7 +277,7 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let wide_fshl_mask = i128_ty.const_ap_int(&ApInt::from_words(128, &[0xff]))?;
         let wide_fshl_masked =
             wide_fshl_b.build_int_and::<i128, _, _, _>(wide_fshl, wide_fshl_mask, "mask")?;
-        wide_fshl_b.build_ret(wide_fshl_masked)?;
+        wide_fshl_b.build_ret(m.view(wide_fshl_masked))?;
 
         let umax_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.umax.i8")?;
         let umax_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
@@ -297,7 +297,7 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
             .try_into()?;
         let umax_mask =
             umax_b.build_int_and::<i8, _, _, _>(umax, i8_ty.const_int(0xf0_u8), "mask")?;
-        umax_b.build_ret(umax_mask)?;
+        umax_b.build_ret(m.view(umax_mask))?;
 
         let umin_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.umin.i8")?;
         let umin_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
@@ -317,7 +317,7 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
             .try_into()?;
         let umin_mask =
             umin_b.build_int_and::<i8, _, _, _>(umin, i8_ty.const_int(0xf0_u8), "mask")?;
-        umin_b.build_ret(umin_mask)?;
+        umin_b.build_ret(m.view(umin_mask))?;
 
         let smax_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.smax.i8")?;
         let smax_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
@@ -337,7 +337,7 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
             .try_into()?;
         let smax_mask =
             smax_b.build_int_and::<i8, _, _, _>(smax, i8_ty.const_int(0xf0_u8), "mask")?;
-        smax_b.build_ret(smax_mask)?;
+        smax_b.build_ret(m.view(smax_mask))?;
 
         let smin_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.smin.i8")?;
         let smin_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
@@ -357,7 +357,7 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
             .try_into()?;
         let smin_mask =
             smin_b.build_int_and::<i8, _, _, _>(smin, i8_ty.const_int(0xf0_u8), "mask")?;
-        smin_b.build_ret(smin_mask)?;
+        smin_b.build_ret(m.view(smin_mask))?;
 
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(DemandedBitsAnalysis);
@@ -497,7 +497,7 @@ fn demanded_bits_ignore_mismatched_intrinsic_declarations() -> Result<(), IrErro
             .expect("lookalike returns value")
             .try_into()?;
         let masked = b.build_int_and::<i16, _, _, _>(call, i16_ty.const_int(0x00ff_u16), "mask")?;
-        b.build_ret(masked)?;
+        b.build_ret(m.view(masked))?;
 
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(DemandedBitsAnalysis);
@@ -528,10 +528,10 @@ fn operands_of_dead_integer_instruction_are_dead() -> Result<(), IrError> {
         fam.register_pass(DemandedBitsAnalysis);
         let demanded = fam.get_result::<DemandedBitsAnalysis, _>(f)?;
 
-        assert!(demanded.is_instruction_dead(dead.into_erased()));
-        assert!(demanded.is_use_dead(dead.into_erased(), 0)?);
+        assert!(demanded.is_instruction_dead(m.view(dead).into_erased()));
+        assert!(demanded.is_use_dead(m.view(dead).into_erased(), 0)?);
         assert_eq!(
-            bits(demanded.get_operand_demanded_bits(dead.into_erased(), 0)?),
+            bits(demanded.get_operand_demanded_bits(m.view(dead).into_erased(), 0)?),
             "00000000000000000000000000000000"
         );
         Ok(())
@@ -553,7 +553,7 @@ fn simplify_demanded_bits_replaces_known_demanded_low_bits() -> Result<(), IrErr
         let lhs = i32_ty.const_int(0xffff_0000_u32);
         let high =
             b.build_int_and::<i32, _, _, _>(lhs, i32_ty.const_int(0x0000_00ff_u32), "high")?;
-        let lo = b.build_trunc(high, i8_ty, "lo")?;
+        let lo = b.build_trunc(b.view(high), i8_ty, "lo")?;
         b.build_ret(lo)?;
 
         let mut fam = FunctionAnalysisManager::new();
@@ -561,7 +561,7 @@ fn simplify_demanded_bits_replaces_known_demanded_low_bits() -> Result<(), IrErr
         let demanded = fam.get_result::<DemandedBitsAnalysis, _>(f)?;
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        let simplified = simplify_demanded_bits(high.into_erased(), demanded, &query)?;
+        let simplified = simplify_demanded_bits(m.view(high).into_erased(), demanded, &query)?;
 
         assert!(simplified.demanded_bits_changed());
         assert_eq!(
@@ -591,7 +591,7 @@ fn simplify_demanded_bits_pass_folds_known_demanded_low_bits() -> Result<(), IrE
         let lhs = i32_ty.const_int(0xffff_0000_u32);
         let high =
             b.build_int_and::<i32, _, _, _>(lhs, i32_ty.const_int(0x0000_00ff_u32), "high")?;
-        let lo = b.build_trunc(high, i8_ty, "lo")?;
+        let lo = b.build_trunc(b.view(high), i8_ty, "lo")?;
         b.build_ret(lo)?;
 
         let verified = m.verify()?;
@@ -623,9 +623,9 @@ fn simplify_demanded_bits_pass_ports_and_zext_and() -> Result<(), IrError> {
         let op1_rhs = i3_ty.const_ap_int(&ApInt::from_words(3, &[3]))?;
         let op2_rhs = i5_ty.const_ap_int(&ApInt::from_words(5, &[14]))?;
         let op1 = b.build_int_and::<Width<3>, _, _, _>(a, op1_rhs, "op1")?;
-        let cast = b.build_zext_dyn(op1.as_dyn(), i5_ty.as_dyn(), "cast")?;
+        let cast = b.build_zext_dyn(b.view(op1).as_dyn(), i5_ty.as_dyn(), "cast")?;
         let op2 = b.build_int_and_dyn(cast.into_erased(), op2_rhs.into_erased(), "op2")?;
-        b.build_ret(op2)?;
+        b.build_ret(m.view(op2))?;
 
         let before = format!("{m}");
         assert!(before.contains("%op1 = and i3 %0, 3"), "{before}");
@@ -671,14 +671,14 @@ fn simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement()
         let proof_mask = i3_ty.const_ap_int(&ApInt::from_words(3, &[3]))?;
         let proof = b.build_int_and::<Width<3>, _, _, _>(a, proof_mask, "proof")?;
         let cast = b.build_zext_with_flags_dyn(
-            proof.as_dyn(),
+            b.view(proof).as_dyn(),
             i5_ty.as_dyn(),
             ZExtFlags::new().nneg(),
             "cast",
         )?;
         let low_mask = i5_ty.const_ap_int(&ApInt::from_words(5, &[3]))?;
         let low = b.build_int_and_dyn(cast.into_erased(), low_mask.into_erased(), "low")?;
-        b.build_ret(low)?;
+        b.build_ret(m.view(low))?;
 
         let mutate_fn_ty = m.fn_type(i5_ty, [i3_ty.as_type()], false);
         let mutate_f =
@@ -692,7 +692,7 @@ fn simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement()
         let proof_mut =
             mutate_b.build_int_xor::<Width<3>, _, _, _>(sign_mut, sign_bit, "proof.mut")?;
         let cast_mut = mutate_b.build_zext_with_flags_dyn(
-            proof_mut.as_dyn(),
+            mutate_b.view(proof_mut).as_dyn(),
             i5_ty.as_dyn(),
             ZExtFlags::new().nneg(),
             "cast.mut",
@@ -705,7 +705,7 @@ fn simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement()
         let zero_i3 = i3_ty.const_ap_int(&ApInt::zero(3))?;
         let _extra_mut =
             mutate_b.build_int_add::<Width<3>, _, _, _>(proof_mut, zero_i3, "extra.mut")?;
-        mutate_b.build_ret(low_mut)?;
+        mutate_b.build_ret(m.view(low_mut))?;
 
         let before = format!("{m}");
         assert!(before.contains("%proof = and i3 %0, 3"), "{before}");
@@ -791,14 +791,14 @@ fn variable_lshr_demands_source_bits_that_can_reach_low_result() -> Result<(), I
         let amount: IntValue<i32> = f.param(1)?.try_into()?;
         let masked = b.build_int_and::<i32, _, _, _>(a, i32_ty.const_int(256_u32), "masked")?;
         let shifted = b.build_int_lshr::<i32, _, _, _>(masked, amount, "shifted")?;
-        let lo = b.build_trunc(shifted, i1_ty, "lo")?;
+        let lo = b.build_trunc(b.view(shifted), i1_ty, "lo")?;
         b.build_ret(lo)?;
 
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(DemandedBitsAnalysis);
         let demanded = fam.get_result::<DemandedBitsAnalysis, _>(f)?;
         assert_eq!(
-            bits(demanded.get_demanded_bits(masked.into_erased())),
+            bits(demanded.get_demanded_bits(m.view(masked).into_erased())),
             "11111111111111111111111111111111"
         );
 
@@ -831,14 +831,14 @@ fn variable_lshr_with_known_amount_range_demands_reachable_source_bits() -> Resu
         let amount_range =
             b.build_int_and::<i32, _, _, _>(amount, i32_ty.const_int(3_u32), "amount.range")?;
         let shifted = b.build_int_lshr::<i32, _, _, _>(a, amount_range, "shifted")?;
-        let lo = b.build_trunc(shifted, i1_ty, "lo")?;
+        let lo = b.build_trunc(b.view(shifted), i1_ty, "lo")?;
         b.build_ret(lo)?;
 
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(DemandedBitsAnalysis);
         let demanded = fam.get_result::<DemandedBitsAnalysis, _>(f)?;
         assert_eq!(
-            bits(demanded.get_operand_demanded_bits(shifted.into_erased(), 0)?),
+            bits(demanded.get_operand_demanded_bits(m.view(shifted).into_erased(), 0)?),
             "00000000000000000000000000001111"
         );
         Ok(())

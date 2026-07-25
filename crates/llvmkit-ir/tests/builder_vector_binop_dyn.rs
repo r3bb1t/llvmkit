@@ -30,13 +30,13 @@ fn vector_binops_emit_elementwise_ir() {
         let c = f.param(1).expect("p1").into_erased();
 
         let x = b.build_int_xor_dyn(a, c, "x").expect("xor vec");
-        let s = b.build_int_add_dyn(x, a, "s").expect("add vec");
+        let s = b.build_int_add_dyn(b.view(x), a, "s").expect("add vec");
         let two = i64_ty.const_int(2i64);
         let shamt = vec_ty
             .const_vector::<llvmkit_ir::ConstantIntValue<'_, i64>, _>([two, two])
             .expect("shamt vec");
         let _sh = b
-            .build_int_shl_dyn(s, shamt.into_erased(), "sh")
+            .build_int_shl_dyn(b.view(s), shamt.into_erased(), "sh")
             .expect("shl vec");
 
         b.build_ret_void().expect("ret void");
@@ -79,7 +79,7 @@ fn scalar_binop_dyn_still_works() {
         let a = f.param(0).expect("p0").into_erased();
         let c = f.param(1).expect("p1").into_erased();
         let x = b.build_int_xor_dyn(a, c, "x").expect("xor scalar");
-        let r: llvmkit_ir::IntValue<'_, i64> = x.try_into().expect("i64 result");
+        let r: llvmkit_ir::IntValue<'_, i64> = b.view(x).try_into().expect("i64 result");
         b.build_ret(r).expect("ret");
 
         let txt = format!("{m}");

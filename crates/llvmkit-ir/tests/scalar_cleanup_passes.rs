@@ -20,7 +20,7 @@ fn instsimplify_pass_folds_constant_add() -> Result<(), IrError> {
             i32_ty.const_int(2_u32),
             "sum",
         )?;
-        b.build_ret(sum)?;
+        b.build_ret(m.view(sum))?;
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
@@ -66,7 +66,7 @@ fn instsimplify_user_cascade_folds_dependent_add_chain() -> Result<(), IrError> 
             b.build_int_add::<i32, _, _, _>(i32_ty.const_int(1_u32), i32_ty.const_int(2_u32), "a")?;
         // %b = add i32 %a, 10  (used only by the return) — depends on %a.
         let bb = b.build_int_add::<i32, _, _, _>(a, i32_ty.const_int(10_u32), "b")?;
-        b.build_ret(bb)?;
+        b.build_ret(m.view(bb))?;
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
@@ -154,7 +154,7 @@ fn instsimplify_and_dce_pipeline_folds_and_erases() -> Result<(), IrError> {
             "dead0",
         )?;
         let _dead1 = b.build_int_mul::<i32, _, _, _>(dead0, i32_ty.const_int(3_u32), "dead1")?;
-        b.build_ret(folded)?;
+        b.build_ret(m.view(folded))?;
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
@@ -193,7 +193,7 @@ fn instsimplify_pass_keeps_load_from_interposable_constant_global() -> Result<()
         let w = IntValue::try_from(b.build_load(i32_ty.as_type(), weak_ptr, "w")?)?;
         let s = IntValue::try_from(b.build_load(i32_ty.as_type(), strong_ptr, "s")?)?;
         let sum = b.build_int_add::<i32, _, _, _>(w, s, "sum")?;
-        b.build_ret(sum)?;
+        b.build_ret(m.view(sum))?;
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
@@ -542,7 +542,7 @@ fn uniform_phi_fold_cascades_to_users() -> Result<(), IrError> {
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(join);
         let p: IntValue<i32> = params[0].try_into()?;
         let q = b.build_int_add::<i32, _, _, _>(p, 4_i32, "q")?;
-        b.build_ret(q)?;
+        b.build_ret(m.view(q))?;
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();

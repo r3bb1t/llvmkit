@@ -126,7 +126,7 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
         let ip = b.save_insert_point();
         let a: IntValue<i32> = f.param(0)?.try_into()?;
         let x = b.build_int_add(a, 1_i32, "x")?;
-        b.build_br_with_args(merge_label, &[x.into_erased()])?;
+        b.build_br_with_args(merge_label, &[m.view(x).into_erased()])?;
 
         // merge: ret %p (the head-phi param carrying the branch argument).
         let b2 = IRBuilder::new(&m).position_at_end(merge);
@@ -268,9 +268,9 @@ fn build_diamond<'ctx>(
 
     Ok((
         f,
-        lv.into_erased(),
+        m.view(lv).into_erased(),
         left_label,
-        rv.into_erased(),
+        m.view(rv).into_erased(),
         right_label,
     ))
 }
@@ -563,7 +563,7 @@ fn build_switch_redirect<'ctx>(
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(dflt);
     let a: IntValue<i32> = f.param(0)?.try_into()?;
     let nd = b.build_int_add(a, 5_i32, "nd")?;
-    b.build_br_with_args(new_lbl, &[nd.into_erased()])?;
+    b.build_br_with_args(new_lbl, &[m.view(nd).into_erased()])?;
 
     // old: ret 0
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(old);
@@ -574,7 +574,7 @@ fn build_switch_redirect<'ctx>(
     let np: IntValue<i32> = new_params[0].try_into()?;
     b.build_ret(np)?;
 
-    Ok((f, old_dyn, new_dyn, ev.into_erased()))
+    Ok((f, old_dyn, new_dyn, m.view(ev).into_erased()))
 }
 
 /// `redirect_successor` retargets the `entry → old` switch case onto `new` AND
@@ -834,7 +834,7 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
         let pass = RedirectCondBrThen {
             from_name: "entry",
             new_to: new_dyn,
-            phi_values: vec![ev.into_erased()],
+            phi_values: vec![verified.view(ev).into_erased()],
         };
         let out = run_function_pass(pass, verified, f, &mut analyses)?;
         let reverified = out.verify().expect("redirect_then output must re-verify");
@@ -896,13 +896,13 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
         let a: IntValue<i32> = f.param(0)?.try_into()?;
         let ev = b.build_int_add(a, 3_i32, "ev")?;
         let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
-        b.build_cond_br_with_args(c, keep_lbl, &[], drop_lbl, &[ev.into_erased()])?;
+        b.build_cond_br_with_args(c, keep_lbl, &[], drop_lbl, &[m.view(ev).into_erased()])?;
 
         // keep: %kv = add %a, 7 ; br drop(%kv)
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(keep);
         let a: IntValue<i32> = f.param(0)?.try_into()?;
         let kv = b.build_int_add(a, 7_i32, "kv")?;
-        b.build_br_with_args(drop_lbl, &[kv.into_erased()])?;
+        b.build_br_with_args(drop_lbl, &[m.view(kv).into_erased()])?;
 
         // drop: ret %dp
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(drop_bb);
@@ -978,7 +978,7 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
         let pass = RedirectBr {
             from_name: "entry",
             new_to: new_dyn,
-            phi_values: vec![ev.into_erased()],
+            phi_values: vec![verified.view(ev).into_erased()],
         };
         let out = run_function_pass(pass, verified, f, &mut analyses)?;
         let reverified = out.verify().expect("redirect output must re-verify");
@@ -1190,16 +1190,16 @@ fn build_cond_br_both_arms_phi<'ctx>(
     b.build_cond_br_with_args(
         c1,
         shared_lbl,
-        &[sv.into_erased()],
+        &[m.view(sv).into_erased()],
         shared_lbl,
-        &[sv.into_erased()],
+        &[m.view(sv).into_erased()],
     )?;
 
     // keep: %kv = add %a, 7 ; br shared(%kv)
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(keep);
     let a: IntValue<i32> = f.param(0)?.try_into()?;
     let kv = b.build_int_add(a, 7_i32, "kv")?;
-    b.build_br_with_args(shared_lbl, &[kv.into_erased()])?;
+    b.build_br_with_args(shared_lbl, &[m.view(kv).into_erased()])?;
 
     // shared: ret %sp
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(shared);

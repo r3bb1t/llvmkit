@@ -44,7 +44,7 @@ fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
         let lhs: IntValue<i32> = f.param(0)?.try_into()?;
         let rhs: IntValue<i32> = f.param(1)?.try_into()?;
         let sum = b.build_int_add(lhs, rhs, "sum")?;
-        let (entry, _) = b.build_ret(sum)?;
+        let (entry, _) = b.build_ret(m.view(sum))?;
 
         // ---- Assertions ----
 
@@ -64,12 +64,12 @@ fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
             _ => panic!("not a Ret"),
         };
         let returned = ret_inst.return_value().expect("ret had a value");
-        assert_eq!(returned.ty(), sum.ty().as_type());
+        assert_eq!(returned.ty(), m.view(sum).ty().as_type());
 
         // The `add` instruction's operands are the function's two args.
         let arg0: Argument = f.param(0)?;
         let arg1: Argument = f.param(1)?;
-        let add_kind = sum.into_erased().name();
+        let add_kind = m.view(sum).into_erased().name();
         assert_eq!(add_kind.as_deref(), Some("sum"));
         let _ = arg0;
         let _ = arg1;

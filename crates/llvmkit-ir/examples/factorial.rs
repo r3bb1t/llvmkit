@@ -111,7 +111,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
         exit_label,
         &[],
         loop_label,
-        &[next_acc.into_erased(), next_i.into_erased()],
+        &[m.view(next_acc).into_erased(), m.view(next_i).into_erased()],
     )?;
 
     // exit: ret i32 %next_acc

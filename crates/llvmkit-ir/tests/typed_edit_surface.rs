@@ -575,7 +575,7 @@ fn build_switch_bogus_fn<'ctx>(
     let b = IRBuilder::new_for::<i32>(m).position_at_end(dflt);
     let a: IntValue<i32> = f.param(0)?.try_into()?;
     let nd = b.build_int_add(a, 5_i32, "nd")?;
-    b.build_br_with_args(new_lbl, &[nd.into_erased()])?;
+    b.build_br_with_args(new_lbl, &[m.view(nd).into_erased()])?;
 
     // case0: ret 0
     let b = IRBuilder::new_for::<i32>(m).position_at_end(case0);
@@ -590,7 +590,7 @@ fn build_switch_bogus_fn<'ctx>(
     let np: IntValue<i32> = new_params[0].try_into()?;
     b.build_ret(np)?;
 
-    Ok((f, bogus_dyn, new_dyn, ev.into_erased()))
+    Ok((f, bogus_dyn, new_dyn, m.view(ev).into_erased()))
 }
 
 /// `redirect_successor` rejects an `old_to` that is not a case successor of the

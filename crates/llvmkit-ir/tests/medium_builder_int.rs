@@ -30,7 +30,7 @@ fn build_int_add_accepts_int_value_and_rust_literal() -> Result<(), IrError> {
         let n: IntValue<i32> = f.param(0)?.try_into()?;
         // Rust literal as RHS.
         let next = b.build_int_add(n, 1_i32, "next")?;
-        b.build_ret(next)?;
+        b.build_ret(m.view(next))?;
 
         let text = format!("{m}");
         assert!(text.contains("%next = add i32 %0, 1\n"), "got:\n{text}");
@@ -56,12 +56,12 @@ fn build_int_ops_unique_duplicate_requested_names() -> Result<(), IrError> {
         let second_push = b.build_int_sub::<i64, _, _, _>(first_push, 8_i64, "push_sp")?;
         let first_af = b.build_int_xor::<i64, _, _, _>(first_push, second_push, "af_lhs_rhs")?;
         let second_af = b.build_int_xor::<i64, _, _, _>(second_push, first_af, "af_lhs_rhs")?;
-        b.build_ret(second_af)?;
+        b.build_ret(m.view(second_af))?;
 
-        assert_eq!(first_push.name().as_deref(), Some("push_sp"));
-        assert_eq!(second_push.name().as_deref(), Some("push_sp1"));
-        assert_eq!(first_af.name().as_deref(), Some("af_lhs_rhs"));
-        assert_eq!(second_af.name().as_deref(), Some("af_lhs_rhs2"));
+        assert_eq!(m.view(first_push).name().as_deref(), Some("push_sp"));
+        assert_eq!(m.view(second_push).name().as_deref(), Some("push_sp1"));
+        assert_eq!(m.view(first_af).name().as_deref(), Some("af_lhs_rhs"));
+        assert_eq!(m.view(second_af).name().as_deref(), Some("af_lhs_rhs2"));
 
         let expected = "; ModuleID = 'names'\n\
             define i64 @names(i64 %0) {\n\
@@ -92,7 +92,7 @@ fn build_int_sub_accepts_constant_and_argument() -> Result<(), IrError> {
         let c = i32_ty.const_int(10_i32);
         // ConstantIntValue as LHS, IntValue as RHS.
         let r = b.build_int_sub(c, n, "r")?;
-        b.build_ret(r)?;
+        b.build_ret(m.view(r))?;
 
         let text = format!("{m}");
         // Folder doesn't fire (one operand is non-constant); the
@@ -136,8 +136,9 @@ fn default_constant_folder_preserves_wide_apint_add() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let high = ty.const_ap_int(&ApInt::one_bit_set(257, 256))?;
         let result = b.build_int_add(high, ty.const_zero(), "sum")?;
-        let folded =
-            ConstantIntValue::<IntDyn>::try_from(Constant::try_from(result.into_erased())?)?;
+        let folded = ConstantIntValue::<IntDyn>::try_from(Constant::try_from(
+            b.view(result).into_erased(),
+        )?)?;
         assert_eq!(folded.ap_int(), ApInt::one_bit_set(257, 256));
         Ok(())
     })
@@ -156,8 +157,9 @@ fn default_constant_folder_folds_udiv_to_constant() -> Result<(), IrError> {
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let result = b.build_int_udiv(ty.const_int(9_i32), ty.const_int(3_i32), "q")?;
-        let folded =
-            ConstantIntValue::<IntDyn>::try_from(Constant::try_from(result.into_erased())?)?;
+        let folded = ConstantIntValue::<IntDyn>::try_from(Constant::try_from(
+            b.view(result).into_erased(),
+        )?)?;
         assert_eq!(folded.ap_int().try_zext_u64(), Some(3));
         Ok(())
     })
@@ -188,7 +190,7 @@ fn build_int_add_infers_width_from_literals_no_turbofish() -> Result<(), IrError
         // THE LOCK: two bare `i32` literals, no `::<i32>`, no annotation.
         let sum = b.build_int_add(2i32, 3i32, "sum")?;
         // Width-agnostic use: does not feed a width back into `sum`.
-        assert_eq!(sum.name().as_deref(), Some("sum"));
+        assert_eq!(b.view(sum).name().as_deref(), Some("sum"));
         // Terminate with an independent literal so `sum`'s `W` stays
         // inferred from `build_int_add`'s arguments only.
         b.build_ret(0_i32)?;

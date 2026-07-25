@@ -890,7 +890,7 @@ fn analysis_instruction_fold_uses_apint_binary_folder() -> Result<(), IrError> {
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let high = ty.const_ap_int(&ApInt::one_bit_set(257, 256))?;
         let value = b.build_int_add(high, ty.const_zero(), "sum")?;
-        let instruction = InstructionView::try_from(value.into_erased())?;
+        let instruction = InstructionView::try_from(b.view(value).into_erased())?;
         let folded = constant_fold_instruction(&instruction)?.expect("constant add folds");
         let int = ConstantIntValue::<IntDyn>::try_from(folded)?;
         assert_eq!(int.ap_int(), ApInt::one_bit_set(257, 256));
@@ -918,7 +918,7 @@ fn analysis_instruction_fold_exact_udiv_inexact_matches_plain_udiv() -> Result<(
             UDivFlags::new().exact(),
             "q",
         )?;
-        let instruction = InstructionView::try_from(value.into_erased())?;
+        let instruction = InstructionView::try_from(b.view(value).into_erased())?;
 
         let folded = constant_fold_instruction(&instruction)?.expect("exact udiv folds");
 
@@ -947,7 +947,7 @@ fn analysis_instruction_fold_exact_udiv_undef_identity() -> Result<(), IrError> 
             UDivFlags::new().exact(),
             "q",
         )?;
-        let instruction = InstructionView::try_from(value.into_erased())?;
+        let instruction = InstructionView::try_from(b.view(value).into_erased())?;
 
         let folded = constant_fold_instruction(&instruction)?.expect("exact udiv identity folds");
 

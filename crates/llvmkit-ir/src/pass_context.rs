@@ -3058,7 +3058,7 @@ mod tests {
             b.build_ret(x)?;
 
             let function = FunctionView::from(f);
-            let dead_view = InstructionView::try_from(dead.into_erased())?;
+            let dead_view = InstructionView::try_from(m.view(dead).into_erased())?;
 
             let mut fam = FunctionAnalysisManager::new();
             Reqs::prefetch(&mut fam, function)?;
@@ -3323,7 +3323,7 @@ mod tests {
             let reshape = cx.mutate();
             // Erase the dead instruction so the dirty flag is set; only then
             // does `done()` report the ReshapeCfg floor.
-            let dead_view = InstructionView::try_from(dead.into_erased())?;
+            let dead_view = InstructionView::try_from(m.view(dead).into_erased())?;
             reshape.erase(
                 &dead_view
                     .as_non_terminator()
@@ -3615,8 +3615,8 @@ mod tests {
             let fv1 = FunctionView::from(f1);
             let fv2 = FunctionView::from(f2);
             let decl_view = FunctionView::from(decl);
-            let dead1_view = InstructionView::try_from(dead1.into_erased())?;
-            let dead2_view = InstructionView::try_from(dead2.into_erased())?;
+            let dead1_view = InstructionView::try_from(m.view(dead1).into_erased())?;
+            let dead2_view = InstructionView::try_from(m.view(dead2).into_erased())?;
 
             // Each def starts with `dead` + `ret`.
             assert_eq!(fv1.entry_block().expect("def").instruction_count(), 2);
@@ -3727,8 +3727,8 @@ mod tests {
             let a = b.build_int_add(x, 1_i32, "a")?;
             let bb = b.build_int_add(a, 1_i32, "b")?;
             b.build_ret(x)?;
-            let a_id = a.slot();
-            let b_id = bb.slot();
+            let a_id = m.view(a).slot();
+            let b_id = m.view(bb).slot();
 
             let function = FunctionView::from(f);
             let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
@@ -3863,7 +3863,7 @@ mod tests {
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             let x: IntValue<i32> = f.param(0)?.try_into()?;
             let sum = b.build_int_add(x, 1_i32, "sum")?;
-            b.build_ret(sum)?;
+            b.build_ret(m.view(sum))?;
 
             let function = FunctionView::from(f);
             let block = function

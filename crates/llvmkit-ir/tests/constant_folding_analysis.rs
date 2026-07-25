@@ -587,7 +587,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
         let entry = f.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let add = b.build_int_add::<i32, _, _, _>(c2_i, c5_i, "sum")?;
-        let instruction = InstructionView::try_from(add.into_erased())?;
+        let instruction = InstructionView::try_from(b.view(add).into_erased())?;
         assert_eq!(
             constant_fold_inst_operands(
                 &instruction,

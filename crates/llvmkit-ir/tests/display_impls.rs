@@ -53,7 +53,7 @@ fn function_value_define_matches_module_output() -> Result<(), IrError> {
         let lhs: IntValue<i32> = f.param(0)?.try_into()?;
         let rhs: IntValue<i32> = f.param(1)?.try_into()?;
         let sum = b.build_int_add(lhs, rhs, "sum")?;
-        b.build_ret(sum)?;
+        b.build_ret(m.view(sum))?;
 
         let printed = format!("{f}");
         let expected = "define i32 @add(i32 %0, i32 %1) {\n\
@@ -119,14 +119,18 @@ fn typed_handles_agree_with_erased_value() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: IntValue<i32> = f.param(0)?.try_into()?;
         let doubled = b.build_int_add(x, x, "doubled")?;
-        b.build_ret(doubled)?;
+        b.build_ret(m.view(doubled))?;
 
         // Argument.
         let arg = f.param(0)?;
         assert_eq!(format!("{arg}"), format!("{}", arg.into_erased()));
 
         // IntValue<W> -- both an instruction result and a parameter.
-        assert_eq!(format!("{doubled}"), format!("{}", doubled.into_erased()));
+        let doubled_v = m.view(doubled);
+        assert_eq!(
+            format!("{doubled_v}"),
+            format!("{}", doubled_v.into_erased())
+        );
         assert_eq!(format!("{x}"), format!("{}", x.into_erased()));
 
         // ConstantIntValue<W>.

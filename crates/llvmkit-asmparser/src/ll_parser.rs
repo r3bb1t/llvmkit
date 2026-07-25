@@ -6221,7 +6221,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
                 b.build_int_add_with_flags::<IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("add", e))?
-                    .into_erased()
             }
             IntBinOp::Sub => {
                 let mut flags = SubFlags::new();
@@ -6233,7 +6232,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
                 b.build_int_sub_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("sub", e))?
-                    .into_erased()
             }
             IntBinOp::Mul => {
                 let mut flags = MulFlags::new();
@@ -6245,7 +6243,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
                 b.build_int_mul_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("mul", e))?
-                    .into_erased()
             }
             IntBinOp::Shl => {
                 let mut flags = ShlFlags::new();
@@ -6257,7 +6254,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
                 b.build_int_shl_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("shl", e))?
-                    .into_erased()
             }
             IntBinOp::UDiv => {
                 let mut flags = UDivFlags::new();
@@ -6266,7 +6262,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
                 b.build_int_udiv_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("udiv", e))?
-                    .into_erased()
             }
             IntBinOp::SDiv => {
                 let mut flags = SDivFlags::new();
@@ -6275,7 +6270,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
                 b.build_int_sdiv_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("sdiv", e))?
-                    .into_erased()
             }
             IntBinOp::LShr => {
                 let mut flags = LShrFlags::new();
@@ -6284,7 +6278,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
                 b.build_int_lshr_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("lshr", e))?
-                    .into_erased()
             }
             IntBinOp::AShr => {
                 let mut flags = AShrFlags::new();
@@ -6293,20 +6286,16 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
                 b.build_int_ashr_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("ashr", e))?
-                    .into_erased()
             }
             IntBinOp::URem => b
                 .build_int_urem::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
-                .map_err(|e| self.builder_err("urem", e))?
-                .into_erased(),
+                .map_err(|e| self.builder_err("urem", e))?,
             IntBinOp::SRem => b
                 .build_int_srem::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
-                .map_err(|e| self.builder_err("srem", e))?
-                .into_erased(),
+                .map_err(|e| self.builder_err("srem", e))?,
             IntBinOp::And => b
                 .build_int_and::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
-                .map_err(|e| self.builder_err("and", e))?
-                .into_erased(),
+                .map_err(|e| self.builder_err("and", e))?,
             IntBinOp::Or => {
                 let flags = if disjoint_or {
                     OrFlags::new().disjoint()
@@ -6315,14 +6304,12 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 };
                 b.build_int_or_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("or", e))?
-                    .into_erased()
             }
             IntBinOp::Xor => b
                 .build_int_xor::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
-                .map_err(|e| self.builder_err("xor", e))?
-                .into_erased(),
+                .map_err(|e| self.builder_err("xor", e))?,
         };
-        Ok(v)
+        Ok(b.view(v).into_erased())
     }
 
     /// `icmp [samesign] PRED TYPE LHS, RHS`. Mirrors `LLParser::parseCompare`.
