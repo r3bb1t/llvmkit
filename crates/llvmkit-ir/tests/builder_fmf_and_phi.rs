@@ -384,7 +384,7 @@ fn build_fp_phi_emits_phi_with_double_kind() -> Result<(), IrError> {
         let bwp = IRBuilder::new_for::<Dyn>(&m);
         let (join, params) =
             bwp.append_block_with_params(m.view(f), &[f64_ty.as_type()], "join")?;
-        let join_label = join.label();
+        let join_label = join.id();
         // entry: br join(%0) — the incoming f64 rides the edge into the head-phi.
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let p: FloatValue<f64> = m.view(f).param(0)?.try_into()?;
@@ -418,7 +418,7 @@ fn build_pointer_phi_emits_phi_with_ptr() -> Result<(), IrError> {
         let bwp = IRBuilder::new_for::<Dyn>(&m);
         let (join, params) =
             bwp.append_block_with_params(m.view(f), &[ptr_ty.as_type()], "join")?;
-        let join_label = join.label();
+        let join_label = join.id();
         // entry: br join(%0) — the incoming ptr rides the edge into the head-phi.
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let p: PointerValue = m.view(f).param(0)?.try_into()?;

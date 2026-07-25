@@ -36,8 +36,8 @@
 use std::collections::HashMap;
 
 use llvmkit_ir::{
-    BasicBlock, BasicBlockLabel, BlockTerminationState, Brand, Dyn, FunctionValue, InstructionView,
-    ModuleBrand, ReturnMarker, Value,
+    BasicBlock, BasicBlockLabel, BlockId, BlockTerminationState, Brand, Dyn, FunctionValue,
+    InstructionView, ModuleBrand, ReturnMarker, Value,
 };
 
 use super::file_loc::{FileLoc, FileLocRange};
@@ -199,23 +199,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
             .and_then(|v| FunctionValue::try_from(v).ok())
     }
 
-    /// Block label containing `loc`. Mirrors `getBlockAtLocation(const FileLoc &)`.
-    /// The reverse lookup returns a copyable [`BasicBlockLabel`] instead of a
+    /// Block containing `loc`. Mirrors `getBlockAtLocation(const FileLoc &)`.
+    /// The reverse lookup returns the storable [`BlockId`] instead of a
     /// fresh insertion-capability handle; callers that need source locations for
     /// a held block should use [`AsmParserContext::block_location`].
     #[inline]
-    pub fn block_at(&self, loc: FileLoc) -> Option<BasicBlockLabel<'ctx, Dyn, B>> {
+    pub fn block_at(&self, loc: FileLoc) -> Option<BlockId<Dyn, B>> {
         self.blocks
             .handle_at(loc)
             .and_then(|v| BasicBlockLabel::try_from(v).ok())
+            .map(|label| label.id())
     }
 
-    /// Block label whose recorded range matches `query`.
+    /// Block whose recorded range matches `query`.
     #[inline]
-    pub fn block_at_range(&self, query: FileLocRange) -> Option<BasicBlockLabel<'ctx, Dyn, B>> {
+    pub fn block_at_range(&self, query: FileLocRange) -> Option<BlockId<Dyn, B>> {
         self.blocks
             .handle_at_range(query)
             .and_then(|v| BasicBlockLabel::try_from(v).ok())
+            .map(|label| label.id())
     }
 
     /// Instruction (erased identity) containing `loc`. Mirrors

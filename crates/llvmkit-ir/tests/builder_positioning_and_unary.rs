@@ -120,6 +120,77 @@ fn restore_insert_point_rejects_terminated_block() -> Result<(), IrError> {
     })
 }
 
+/// llvmkit-specific (llvmkit 2.0 id currency). Closest upstream construct is
+/// `Builder.SetInsertPoint(BB)` in `IRBuilder.h`, which takes a raw
+/// `BasicBlock*` recovered from a walk. Our linear
+/// [`IRBuilder::position_at_end`] consumes an `Unterminated` block token, so a
+/// pass that only kept the block's [`llvmkit_ir::BlockId`] reaches the same
+/// insertion point through the checked `_dyn` form.
+#[test]
+fn position_at_end_dyn_reopens_an_unterminated_block_from_its_id() -> Result<(), IrError> {
+    Module::with_new("a", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let entry_id = entry.id();
+        // The linear token is consumed here; only the id survives.
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a = b.build_int_add(n, 1_i32, "a")?;
+        // Give the block's linear token back to the builder and let it go:
+        // from here only `entry_id` names the block.
+        let _consumed = b.into_insert_block();
+
+        let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end_dyn(entry_id)?;
+        b2.build_ret(a)?;
+        let text = format!("{m}");
+        assert!(
+            text.contains("%a = add i32 %0, 1\n  ret i32 %a\n"),
+            "got:\n{text}"
+        );
+        Ok(())
+    })
+}
+
+/// Rust-side T2 regression mirroring
+/// [`restore_insert_point_rejects_terminated_block`]: the `_dyn` reposition
+/// carries no termination marker, so it enforces LLVM's
+/// `Verifier::visitBasicBlock` terminator invariant at run time instead.
+#[test]
+fn position_at_end_dyn_rejects_a_terminated_block() -> Result<(), IrError> {
+    Module::with_new("a", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let entry_id = entry.id();
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a = b.build_int_add(n, 1_i32, "a")?;
+        let _ = b.build_ret(a)?;
+
+        let err = match IRBuilder::new_for::<Dyn>(&m).position_at_end_dyn(entry_id) {
+            Ok(_) => panic!("a terminated block must not be reopened from its id"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, IrError::InvalidOperation { .. }));
+        Ok(())
+    })
+}
+
+/// The other `position_at_end_dyn` rejection — a [`llvmkit_ir::BlockId`] minted
+/// in a different module, reported as `IrError::ForeignValueId` — is deferred
+/// for the same reason as `id_roundtrip.rs`'s
+/// `foreign_tag_rejection_is_deferred_to_cycle_c`: two `Module::with_new`
+/// closures carry distinct lifetime brands, so a cross-module id is rejected at
+/// *compile* time and never reaches the runtime tag comparison. A genuine
+/// runtime foreign-tag test needs two modules sharing a brand *type*.
+#[test]
+fn position_at_end_dyn_foreign_id_rejection_is_deferred_to_cycle_c() {
+    // Intentionally empty: see the doc comment.
+}
+
 // --- Unary integer helpers --------------------------------------------
 
 /// Mirrors `IRBuilder.h::IRBuilder::CreateNeg(V, Name)` -> `sub 0, V`.

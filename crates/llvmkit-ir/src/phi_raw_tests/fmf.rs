@@ -87,7 +87,7 @@ fn typed_add_incoming_rejects_differing_duplicate() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let a = m.view(f).append_basic_block(&m, "a");
-        let a_label = a.label();
+        let a_label = a.id();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let phi = b.build_int_phi::<i32, _>("p")?;
         let err = phi
@@ -114,7 +114,7 @@ fn fp_phi_add_incoming_rejects_differing_duplicate() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let a = m.view(f).append_basic_block(&m, "a");
-        let a_label = a.label();
+        let a_label = a.id();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let phi = b.build_fp_phi::<f64, _>("p")?;
         // `1.0_f64` and `2.0_f64` intern to distinct constants, so the two
@@ -145,7 +145,7 @@ fn pointer_phi_add_incoming_rejects_differing_duplicate() -> Result<(), IrError>
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let a = m.view(f).append_basic_block(&m, "a");
-        let a_label = a.label();
+        let a_label = a.id();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let phi = b.build_pointer_phi("p")?;
         let p1: PointerValue = m.view(f).param(0)?.try_into()?;
@@ -175,7 +175,7 @@ fn same_value_duplicate_incoming_is_legal() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let a = m.view(f).append_basic_block(&m, "a");
-        let a_label = a.label();
+        let a_label = a.id();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let phi = b.build_int_phi::<i32, _>("p")?;
         // `7_i32` interns to one constant id, so both edges carry the same

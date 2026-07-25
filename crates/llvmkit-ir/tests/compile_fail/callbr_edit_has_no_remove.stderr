@@ -9,7 +9,7 @@ help: there is a method `redirect_default` with a similar name, but with differe
    |
    | /     pub fn redirect_default(
    | |         &self,
-   | |         new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+   | |         new_to: BlockId<Dyn, B>,
    | |         phi_values: &[Value<'ctx, B>],
    | |     ) -> IrResult<()> {
    | |_____________________^

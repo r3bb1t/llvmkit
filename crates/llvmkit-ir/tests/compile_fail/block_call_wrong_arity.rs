@@ -4,7 +4,7 @@
 //! Closest upstream behaviour: LLVM's verifier rejects a branch whose block-
 //! argument count disagrees with the successor block's leading parameter phis
 //! *at runtime*. llvmkit's typed `BlockCall` pushes that invariant into the Rust
-//! type system: `BasicBlockLabel::call` carries a `CallArgs<'ctx, Params, B>`
+//! type system: `BasicBlock::call` carries a `CallArgs<'ctx, Params, B>`
 //! bound, and a 1-element tuple has no `CallArgs<'_, (i32, i32), _>` impl, so
 //! seeding a two-parameter typed block with a single argument is a compile
 //! error, not a build-time `IrError`.
@@ -30,6 +30,6 @@ fn main() {
         // a 1-element tuple, so `.call` does not type-check — the arity mismatch
         // is caught here, not at a distant `verify()`.
         let x = i32_ty.const_int(0_i32);
-        let _ = head.label().call((x,));
+        let _ = head.call((x,));
     });
 }

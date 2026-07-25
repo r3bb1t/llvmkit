@@ -122,10 +122,10 @@ pub fn build_dispatch<'ctx>(m: &Module<'ctx>) -> Result<(), IrError> {
     let do_sub = m.view(f).append_basic_block(m, "do_sub");
     let do_mul = m.view(f).append_basic_block(m, "do_mul");
     let default_bb = m.view(f).append_basic_block(m, "default");
-    let do_add_label = do_add.label();
-    let do_sub_label = do_sub.label();
-    let do_mul_label = do_mul.label();
-    let default_label = default_bb.label();
+    let do_add_label = do_add.id();
+    let do_sub_label = do_sub.id();
+    let do_mul_label = do_mul.id();
+    let default_label = default_bb.id();
 
     // `f.params()` returns the three arguments already typed as `IntValue<i32>`
     // in declaration order — no per-argument `f.param(n)?.try_into()?` narrowing.

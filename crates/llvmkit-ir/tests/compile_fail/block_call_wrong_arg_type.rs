@@ -4,7 +4,7 @@
 //! Closest upstream behaviour: LLVM's verifier rejects a branch whose block-
 //! argument type disagrees with the successor block's matching parameter phi
 //! *at runtime*. llvmkit's typed `BlockCall` pushes that invariant into the Rust
-//! type system: `BasicBlockLabel::call` carries a `CallArgs<'ctx, Params, B>`
+//! type system: `BasicBlock::call` carries a `CallArgs<'ctx, Params, B>`
 //! bound, so an argument that cannot fill its typed block-parameter slot is a
 //! compile error, not a build-time `IrError`.
 //!
@@ -30,6 +30,6 @@ fn main() {
 
         // `1.0_f64` does not implement `IntoIntValue<'_, i32, _>`, so it cannot
         // fill the `i32` block-parameter slot: `.call` does not type-check.
-        let _ = head.label().call((1.0_f64,));
+        let _ = head.call((1.0_f64,));
     });
 }

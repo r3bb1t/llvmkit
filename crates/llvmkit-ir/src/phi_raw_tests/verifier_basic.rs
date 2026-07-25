@@ -23,8 +23,8 @@ fn verify_phi_predecessors_through_switch_passes() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let join = m.view(f).append_basic_block(&m, "join");
-        let entry_label = entry.label();
-        let join_label = join.label();
+        let entry_label = entry.id();
+        let join_label = join.id();
 
         let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let (_sealed, switch) = IRBuilder::new_for::<Dyn>(&m)
@@ -56,8 +56,8 @@ fn verify_phi_predecessors_through_switch_rejects_missing_edge() -> Result<(), I
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let join = m.view(f).append_basic_block(&m, "join");
-        let entry_label = entry.label();
-        let join_label = join.label();
+        let entry_label = entry.id();
+        let join_label = join.id();
 
         let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let (_sealed, switch) = IRBuilder::new_for::<Dyn>(&m)
@@ -104,9 +104,9 @@ fn verify_phi_predecessors_through_invoke_passes() -> Result<(), IrError> {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let join = m.view(f).append_basic_block(&m, "join");
         let unwind = m.view(f).append_basic_block(&m, "unwind");
-        let entry_label = entry.label();
-        let join_label = join.label();
-        let unwind_label = unwind.label();
+        let entry_label = entry.id();
+        let join_label = join.id();
+        let unwind_label = unwind.id();
         let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
 
         IRBuilder::new_for::<Dyn>(&m)
@@ -148,9 +148,9 @@ fn verify_phi_predecessors_through_invoke_rejects_wrong_block() -> Result<(), Ir
         let join = m.view(f).append_basic_block(&m, "join");
         let unwind = m.view(f).append_basic_block(&m, "unwind");
         let other = m.view(f).append_basic_block(&m, "other");
-        let join_label = join.label();
-        let unwind_label = unwind.label();
-        let other_label = other.label();
+        let join_label = join.id();
+        let unwind_label = unwind.id();
+        let other_label = other.id();
         let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
 
         IRBuilder::new_for::<Dyn>(&m)
@@ -205,8 +205,8 @@ fn verify_phi_predecessors_through_callbr_passes() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let join = m.view(f).append_basic_block(&m, "join");
-        let entry_label = entry.label();
-        let join_label = join.label();
+        let entry_label = entry.id();
+        let join_label = join.id();
         let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
 
         IRBuilder::new_for::<Dyn>(&m)
@@ -244,8 +244,8 @@ fn verify_phi_predecessors_through_callbr_rejects_missing_edge() -> Result<(), I
         let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let join = m.view(f).append_basic_block(&m, "join");
-        let entry_label = entry.label();
-        let join_label = join.label();
+        let entry_label = entry.id();
+        let join_label = join.id();
         let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
 
         IRBuilder::new_for::<Dyn>(&m)
@@ -295,9 +295,9 @@ fn verify_phi_incoming_edge_dominance_fails() -> Result<(), IrError> {
         let then_bb = m.view(f).append_basic_block(&m, "then");
         let else_bb = m.view(f).append_basic_block(&m, "else");
         let join = m.view(f).append_basic_block(&m, "join");
-        let then_label = then_bb.label();
-        let else_label = else_bb.label();
-        let join_label = join.label();
+        let then_label = then_bb.id();
+        let else_label = else_bb.id();
+        let join_label = join.id();
         let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let cond: IntValue<bool> = m.view(f).param(1)?.try_into()?;
 

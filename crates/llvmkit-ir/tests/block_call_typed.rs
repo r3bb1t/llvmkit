@@ -13,7 +13,7 @@ use llvmkit_ir::{IRBuilder, IntPredicate, IntValue, IrError, Linkage, Module, Po
 /// `build_br_call(head.call((x,)))` seeds `head`'s leading head-phi with the
 /// edge argument: the emitted `br label %head` carries `%x` into the head-phi as
 /// `[ %x, %entry ]`, and the module verifies. Exercises the *label* constructor
-/// `head.label().call(..)`.
+/// `head.call(..)`.
 #[test]
 fn build_br_call_seeds_typed_head_phi_and_verifies() -> Result<(), IrError> {
     Module::with_new("block_call_br", |m| {
@@ -32,7 +32,7 @@ fn build_br_call_seeds_typed_head_phi_and_verifies() -> Result<(), IrError> {
         let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let x = b.build_int_add(a, 1_i32, "x")?;
         // `.call((x,))` is compile-checked against the block's `(i32,)` schema.
-        b.build_br_call(head.label().call((x,)))?;
+        b.build_br_call(head.call((x,)))?;
 
         // head: ret %p (the head-phi carrying the branch argument).
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(head);
@@ -192,7 +192,7 @@ fn erased_build_br_with_args_still_works() -> Result<(), IrError> {
 
         let bwp = IRBuilder::new_for::<i32>(&m);
         let (hdr, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "hdr")?;
-        let hdr_label = hdr.label();
+        let hdr_label = hdr.id();
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;

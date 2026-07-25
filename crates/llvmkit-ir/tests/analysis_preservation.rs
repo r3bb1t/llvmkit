@@ -9,9 +9,9 @@
 //! than thrown away. No author ever *claims* the preservation.
 
 use llvmkit_ir::{
-    Analyses, BasicBlockLabel, DominatorTree, DominatorTreeAnalysis, Dyn, FnCx, FnReport,
-    FunctionPass, FunctionView, IRBuilder, InsertPoint, IntPredicate, IntValue, IrError, IrResult,
-    Linkage, Module, ModuleBrand, ReshapeCfg, Type, Value, run_function_pass,
+    Analyses, BlockId, DominatorTree, DominatorTreeAnalysis, Dyn, FnCx, FnReport, FunctionPass,
+    FunctionView, IRBuilder, InsertPoint, IntPredicate, IntValue, IrError, IrResult, Linkage,
+    Module, ModuleBrand, ReshapeCfg, Type, Value, run_function_pass,
 };
 
 /// A `ReshapeCfg` pass that requires the dominator tree and splits the entry
@@ -52,11 +52,11 @@ fn reshape_pass_preserves_and_repairs_dominator_tree() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let next = m.view(f).append_basic_block(&m, "next");
-        let next_label = next.label();
+        let next_label = next.id();
 
         // entry: br next    next: ret 0
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        b.build_br(next.label())?;
+        b.build_br(next.id())?;
         let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(next);
         b2.build_ret(i32_ty.const_int(0_u32))?;
 
@@ -118,7 +118,7 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
         // parameter (head-phi), seeded by `entry` branching to `merge(%x)`.
         let (merge, merge_params) =
             IRBuilder::new(&m).append_block_with_params(m.view(f), &[i32_ty.as_type()], "merge")?;
-        let merge_label = merge.label();
+        let merge_label = merge.id();
 
         // entry: %x = add %a, 1 ; br %merge(%x)
         let b = IRBuilder::new(&m).position_at_end(entry);
@@ -162,7 +162,7 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
                     .take()
                     .expect("insert point stashed before the pass ran");
                 let b = reshape.builder_at(ip)?;
-                b.build_br(new_block.label())?;
+                b.build_br(new_block.id())?;
                 Ok(reshape.done())
             }
         }
@@ -195,7 +195,7 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
 struct InsertMergePhi<'ctx, B: ModuleBrand + 'ctx> {
     merge_name: &'static str,
     ty: Type<'ctx, B>,
-    incomings: Vec<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>,
+    incomings: Vec<(Value<'ctx, B>, BlockId<Dyn, B>)>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InsertMergePhi<'ctx, B> {
@@ -229,9 +229,9 @@ fn build_diamond<'ctx>(
 ) -> IrResult<(
     llvmkit_ir::FunctionValue<'ctx, Dyn>,
     Value<'ctx>,
-    BasicBlockLabel<'ctx, Dyn>,
+    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
     Value<'ctx>,
-    BasicBlockLabel<'ctx, Dyn>,
+    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
 )> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
@@ -243,8 +243,8 @@ fn build_diamond<'ctx>(
     // The arm labels are `Dyn` for the `insert_phi` incoming slice (whose pred
     // labels are `Dyn`); the diamond's return marker is `Dyn` too, so the
     // conversion is an identity re-tag rather than an erasure.
-    let left_label: BasicBlockLabel<Dyn> = left.label().to_erased().try_into()?;
-    let right_label: BasicBlockLabel<Dyn> = right.label().to_erased().try_into()?;
+    let left_label = left.id();
+    let right_label = right.id();
 
     // entry: br (%a == 0) ? left : right
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
@@ -256,13 +256,13 @@ fn build_diamond<'ctx>(
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(left);
     let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let lv = b.build_int_add(a, 10_i32, "lv")?;
-    b.build_br(merge.label())?;
+    b.build_br(merge.id())?;
 
     // right: %rv = add %a, 20 ; br merge
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(right);
     let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let rv = b.build_int_add(a, 20_i32, "rv")?;
-    b.build_br(merge.label())?;
+    b.build_br(merge.id())?;
 
     // merge: ret 0   (no phi yet — the pass inserts one)
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(merge);
@@ -320,7 +320,7 @@ fn insert_phi_into_merge_block_verifies() -> Result<(), IrError> {
 /// method hands back the marker it was fed. Mirrors `InsertMergePhi`.
 struct InsertMergePhiTyped<'ctx, B: ModuleBrand + 'ctx> {
     merge_name: &'static str,
-    incomings: Vec<(IntValue<'ctx, i32, B>, BasicBlockLabel<'ctx, Dyn, B>)>,
+    incomings: Vec<(IntValue<'ctx, i32, B>, BlockId<Dyn, B>)>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InsertMergePhiTyped<'ctx, B> {
@@ -488,8 +488,8 @@ fn insert_phi_rejects_incomplete_incomings() -> Result<(), IrError> {
 /// `new_to`'s leading phis with the stashed `phi_values`.
 struct RedirectSwitchCase<'ctx, B: ModuleBrand + 'ctx> {
     from_name: &'static str,
-    old_to: BasicBlockLabel<'ctx, Dyn, B>,
-    new_to: BasicBlockLabel<'ctx, Dyn, B>,
+    old_to: BlockId<Dyn, B>,
+    new_to: BlockId<Dyn, B>,
     phi_values: Vec<Value<'ctx, B>>,
 }
 
@@ -506,8 +506,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchCase<'
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
         reshape.edit_switch(&from)?.redirect_successor(
-            &self.old_to,
-            &self.new_to,
+            self.old_to,
+            self.new_to,
             &self.phi_values,
         )?;
         Ok(reshape.done())
@@ -533,8 +533,8 @@ fn build_switch_redirect<'ctx>(
     m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
 ) -> IrResult<(
     llvmkit_ir::FunctionValue<'ctx, Dyn>,
-    BasicBlockLabel<'ctx, Dyn>,
-    BasicBlockLabel<'ctx, Dyn>,
+    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
+    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
     Value<'ctx>,
 )> {
     let i32_ty = m.i32_type();
@@ -551,11 +551,11 @@ fn build_switch_redirect<'ctx>(
         "new",
     )?;
 
-    let dflt_lbl = dflt.label();
-    let old_lbl = old.label();
-    let new_lbl = new.label();
-    let old_dyn: BasicBlockLabel<Dyn> = old_lbl.to_erased().try_into()?;
-    let new_dyn: BasicBlockLabel<Dyn> = new_lbl.to_erased().try_into()?;
+    let dflt_lbl = dflt.id();
+    let old_lbl = old.id();
+    let new_lbl = new.id();
+    let old_dyn = old_lbl;
+    let new_dyn = new_lbl;
 
     // entry: %ev = add %a, 3 ; switch %a, default %dflt [ 0 -> old ]
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
@@ -699,7 +699,7 @@ fn redirect_edge_rejects_wrong_type() -> Result<(), IrError> {
 /// error, so a rejected op surfaces as the pass's error.
 struct RedirectCondBrThen<'ctx, B: ModuleBrand + 'ctx> {
     from_name: &'static str,
-    new_to: BasicBlockLabel<'ctx, Dyn, B>,
+    new_to: BlockId<Dyn, B>,
     phi_values: Vec<Value<'ctx, B>>,
 }
 
@@ -717,7 +717,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectCondBrThen<'
             .expect("`from` block is present");
         reshape
             .edit_cond_br(&from)?
-            .redirect_then(&self.new_to, &self.phi_values)?;
+            .redirect_then(self.new_to, &self.phi_values)?;
         Ok(reshape.done())
     }
 }
@@ -727,7 +727,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectCondBrThen<'
 /// leading phis with the stashed `phi_values`.
 struct RedirectBr<'ctx, B: ModuleBrand + 'ctx> {
     from_name: &'static str,
-    new_to: BasicBlockLabel<'ctx, Dyn, B>,
+    new_to: BlockId<Dyn, B>,
     phi_values: Vec<Value<'ctx, B>>,
 }
 
@@ -745,7 +745,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectBr<'ctx, B> 
             .expect("`from` block is present");
         reshape
             .edit_br(&from)?
-            .redirect(&self.new_to, &self.phi_values)?;
+            .redirect(self.new_to, &self.phi_values)?;
         Ok(reshape.done())
     }
 }
@@ -815,9 +815,9 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
             &[i32_ty.as_type()],
             "new",
         )?;
-        let old_lbl = old.label();
-        let other_lbl = other.label();
-        let new_dyn: BasicBlockLabel<Dyn> = new.label().to_erased().try_into()?;
+        let old_lbl = old.id();
+        let other_lbl = other.id();
+        let new_dyn = new.id();
 
         // entry: %ev = add %a, 3 ; cond_br (%a == 0) ? old : other
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -894,8 +894,8 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
             &[i32_ty.as_type()],
             "drop",
         )?;
-        let keep_lbl = keep.label();
-        let drop_lbl = drop_bb.label();
+        let keep_lbl = keep.id();
+        let drop_lbl = drop_bb.id();
 
         // entry: %ev = add %a, 3 ; br (%a == 0) ? keep() : drop(%ev)
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -966,8 +966,8 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
             &[i32_ty.as_type()],
             "new",
         )?;
-        let old_lbl = old.label();
-        let new_dyn: BasicBlockLabel<Dyn> = new.label().to_erased().try_into()?;
+        let old_lbl = old.id();
+        let new_dyn = new.id();
 
         // entry: %ev = add %a, 3 ; br old
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -1019,8 +1019,8 @@ fn build_cond_br_pair<'ctx>(
     then_is_new: bool,
 ) -> IrResult<(
     llvmkit_ir::FunctionValue<'ctx, Dyn>,
-    BasicBlockLabel<'ctx, Dyn>,
-    BasicBlockLabel<'ctx, Dyn>,
+    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
+    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
 )> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
@@ -1028,10 +1028,10 @@ fn build_cond_br_pair<'ctx>(
     let entry = m.view(f).append_basic_block(m, "entry");
     let old = m.view(f).append_basic_block(m, "old");
     let new = m.view(f).append_basic_block(m, "new");
-    let old_lbl = old.label();
-    let new_lbl = new.label();
-    let old_dyn: BasicBlockLabel<Dyn> = old_lbl.to_erased().try_into()?;
-    let new_dyn: BasicBlockLabel<Dyn> = new_lbl.to_erased().try_into()?;
+    let old_lbl = old.id();
+    let new_lbl = new.id();
+    let old_dyn = old_lbl;
+    let new_dyn = new_lbl;
 
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
@@ -1167,7 +1167,7 @@ fn build_cond_br_both_arms_phi<'ctx>(
     m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
 ) -> IrResult<(
     llvmkit_ir::FunctionValue<'ctx, Dyn>,
-    BasicBlockLabel<'ctx, Dyn>,
+    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
 )> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
@@ -1182,10 +1182,10 @@ fn build_cond_br_both_arms_phi<'ctx>(
         &[i32_ty.as_type()],
         "shared",
     )?;
-    let src_lbl = src.label();
-    let keep_lbl = keep.label();
-    let shared_lbl = shared.label();
-    let new_dyn: BasicBlockLabel<Dyn> = new.label().to_erased().try_into()?;
+    let src_lbl = src.id();
+    let keep_lbl = keep.id();
+    let shared_lbl = shared.id();
+    let new_dyn = new.id();
 
     // entry: cond_br (%a == 0) ? src : keep
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);

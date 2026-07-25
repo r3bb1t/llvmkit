@@ -10,20 +10,20 @@
 //! paths are rewritten to `crate::`).
 
 use crate::{
-    Analyses, BasicBlockLabel, Dyn, FnCx, FnReport, FunctionPass, IRBuilder, IntValue, IrError,
-    IrResult, Linkage, Module, ModuleBrand, ReshapeCfg, Value, run_function_pass,
+    Analyses, BlockId, Dyn, FnCx, FnReport, FunctionPass, IRBuilder, IntValue, IrError, IrResult,
+    Linkage, Module, ModuleBrand, ReshapeCfg, Value, run_function_pass,
 };
 
-/// A `ReshapeCfg` pass that calls `edit_switch(&from)?.remove_successor(&to)` on
+/// A `ReshapeCfg` pass that calls `edit_switch(&from)?.remove_successor(to)` on
 /// the block named `from_name`, dropping its edge to `to`. The `to` label is
 /// stashed at build time (arena ids are stable across `verify()`), mirroring how
 /// `InsertMergePhi` stashes its incomings.
-struct RemoveSwitchEdge<'ctx, B: ModuleBrand + 'ctx> {
+struct RemoveSwitchEdge<B: ModuleBrand> {
     from_name: &'static str,
-    to: BasicBlockLabel<'ctx, Dyn, B>,
+    to: BlockId<Dyn, B>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveSwitchEdge<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveSwitchEdge<B> {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "remove-switch-edge";
@@ -35,19 +35,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveSwitchEdge<'ct
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
-        reshape.edit_switch(&from)?.remove_successor(&self.to)?;
+        reshape.edit_switch(&from)?.remove_successor(self.to)?;
         Ok(reshape.done())
     }
 }
 
 /// A `ReshapeCfg` pass that calls
-/// `edit_switch(&from)?.redirect_successor(&old_to, &new_to, ..)`, retargeting
+/// `edit_switch(&from)?.redirect_successor(old_to, new_to, ..)`, retargeting
 /// the `from_name` block's case edge from `old_to` to `new_to` and seeding
 /// `new_to`'s leading phis with the stashed `phi_values`.
 struct RedirectSwitchEdge<'ctx, B: ModuleBrand + 'ctx> {
     from_name: &'static str,
-    old_to: BasicBlockLabel<'ctx, Dyn, B>,
-    new_to: BasicBlockLabel<'ctx, Dyn, B>,
+    old_to: BlockId<Dyn, B>,
+    new_to: BlockId<Dyn, B>,
     phi_values: Vec<Value<'ctx, B>>,
 }
 
@@ -64,8 +64,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchEdge<'
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
         reshape.edit_switch(&from)?.redirect_successor(
-            &self.old_to,
-            &self.new_to,
+            self.old_to,
+            self.new_to,
             &self.phi_values,
         )?;
         Ok(reshape.done())
@@ -92,9 +92,9 @@ fn build_switch_merge<'ctx>(
     m: &Module<'ctx, crate::Brand<'ctx>, crate::Unverified>,
 ) -> IrResult<(
     crate::FunctionValue<'ctx, Dyn>,
-    BasicBlockLabel<'ctx, Dyn>,
-    BasicBlockLabel<'ctx, Dyn>,
-    BasicBlockLabel<'ctx, Dyn>,
+    BlockId<Dyn, crate::Brand<'ctx>>,
+    BlockId<Dyn, crate::Brand<'ctx>>,
+    BlockId<Dyn, crate::Brand<'ctx>>,
 )> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
@@ -104,13 +104,10 @@ fn build_switch_merge<'ctx>(
     let other = m.view(f).append_basic_block(m, "other");
     let merge = m.view(f).append_basic_block(m, "merge");
 
-    let entry_lbl = entry.label();
-    let dflt_lbl = dflt.label();
-    let other_lbl = other.label();
-    let merge_lbl = merge.label();
-    let merge_dyn: BasicBlockLabel<Dyn> = merge_lbl.to_erased().try_into()?;
-    let dflt_dyn: BasicBlockLabel<Dyn> = dflt_lbl.to_erased().try_into()?;
-    let other_dyn: BasicBlockLabel<Dyn> = other_lbl.to_erased().try_into()?;
+    let entry_lbl = entry.id();
+    let dflt_lbl = dflt.id();
+    let other_lbl = other.id();
+    let merge_lbl = merge.id();
 
     // entry: %e = add %a, 7 ; switch %a, default %dflt [ 0 -> merge, 1 -> other ]
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
@@ -139,7 +136,7 @@ fn build_switch_merge<'ctx>(
         .add_incoming(d, dflt_lbl)?;
     b.build_ret(p.as_int_value())?;
 
-    Ok((m.view(f), dflt_dyn, other_dyn, merge_dyn))
+    Ok((m.view(f), dflt_lbl, other_lbl, merge_lbl))
 }
 
 /// `remove_successor` drops the `entry → merge` switch case AND mechanically
@@ -279,8 +276,8 @@ fn build_switch_default_parallel<'ctx>(
     m: &Module<'ctx, crate::Brand<'ctx>, crate::Unverified>,
 ) -> IrResult<(
     crate::FunctionValue<'ctx, Dyn>,
-    BasicBlockLabel<'ctx, Dyn>,
-    BasicBlockLabel<'ctx, Dyn>,
+    BlockId<Dyn, crate::Brand<'ctx>>,
+    BlockId<Dyn, crate::Brand<'ctx>>,
 )> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
@@ -290,11 +287,10 @@ fn build_switch_default_parallel<'ctx>(
     let shared = m.view(f).append_basic_block(m, "shared");
     let new = m.view(f).append_basic_block(m, "new");
 
-    let entry_lbl = entry.label();
-    let mid_lbl = mid.label();
-    let shared_lbl = shared.label();
-    let shared_dyn: BasicBlockLabel<Dyn> = shared_lbl.to_erased().try_into()?;
-    let new_dyn: BasicBlockLabel<Dyn> = new.label().to_erased().try_into()?;
+    let entry_lbl = entry.id();
+    let mid_lbl = mid.id();
+    let shared_lbl = shared.id();
+    let new_lbl = new.id();
 
     // entry: %e = add %a, 7 ; switch %a, default %shared [ 0 -> shared, 1 -> mid ]
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
@@ -324,7 +320,7 @@ fn build_switch_default_parallel<'ctx>(
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new);
     b.build_ret(i32_ty.const_int(1_u32))?;
 
-    Ok((m.view(f), shared_dyn, new_dyn))
+    Ok((m.view(f), shared_lbl, new_lbl))
 }
 
 /// SURVIVING-PARALLEL-EDGE (switch redirect): redirecting the case-0 edge of a

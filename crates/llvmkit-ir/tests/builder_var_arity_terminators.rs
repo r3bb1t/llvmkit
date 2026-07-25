@@ -24,10 +24,10 @@ fn switch_three_cases_print_form() -> Result<(), IrError> {
         let case0 = m.view(f).append_basic_block(&m, "defaultdest.0");
         let case1 = m.view(f).append_basic_block(&m, "defaultdest.1");
         let case2 = m.view(f).append_basic_block(&m, "defaultdest.2");
-        let default_label = default_bb.label();
-        let case0_label = case0.label();
-        let case1_label = case1.label();
-        let case2_label = case2.label();
+        let default_label = default_bb.id();
+        let case0_label = case0.id();
+        let case1_label = case1.id();
+        let case2_label = case2.id();
         // Seal the case targets with `unreachable` so the verifier accepts them.
         for bb in [default_bb, case0, case1, case2] {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
@@ -77,9 +77,9 @@ fn switch_cases_reader_round_trips() -> Result<(), IrError> {
         let default_bb = m.view(f).append_basic_block(&m, "default");
         let a = m.view(f).append_basic_block(&m, "a");
         let bb = m.view(f).append_basic_block(&m, "b");
-        let default_label = default_bb.label();
-        let a_label = a.label();
-        let b_label = bb.label();
+        let default_label = default_bb.id();
+        let a_label = a.id();
+        let b_label = bb.id();
         for block in [default_bb, a, bb] {
             IRBuilder::new_for::<Dyn>(&m)
                 .position_at_end(block)
@@ -106,8 +106,8 @@ fn switch_cases_reader_round_trips() -> Result<(), IrError> {
             i8_ty.const_int(20_i8).into_erased()
         );
         // Targets round-trip too.
-        assert_eq!(cases[0].1.to_erased(), a_label.to_erased());
-        assert_eq!(cases[1].1.to_erased(), b_label.to_erased());
+        assert_eq!(cases[0].1, a_label);
+        assert_eq!(cases[1].1, b_label);
         Ok(())
     })
 }
@@ -126,7 +126,7 @@ fn switch_no_cases_only_default() -> Result<(), IrError> {
         let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let dest = m.view(f).append_basic_block(&m, "dest");
-        let dest_label = dest.label();
+        let dest_label = dest.id();
         {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(dest);
             bb_b.build_ret_void()?;
@@ -161,9 +161,9 @@ fn switch_typed_i32_matching_cases() -> Result<(), IrError> {
         let default_bb = m.view(f).append_basic_block(&m, "default");
         let a = m.view(f).append_basic_block(&m, "a");
         let bb = m.view(f).append_basic_block(&m, "b");
-        let default_label = default_bb.label();
-        let a_label = a.label();
-        let b_label = bb.label();
+        let default_label = default_bb.id();
+        let a_label = a.id();
+        let b_label = bb.id();
         for block in [default_bb, a, bb] {
             IRBuilder::new_for::<Dyn>(&m)
                 .position_at_end(block)
@@ -210,8 +210,8 @@ fn switch_erased_dyn_wrong_width_case_is_runtime_type_mismatch() -> Result<(), I
         let entry = m.view(f).append_basic_block(&m, "entry");
         let default_bb = m.view(f).append_basic_block(&m, "default");
         let a = m.view(f).append_basic_block(&m, "a");
-        let default_label = default_bb.label();
-        let a_label = a.label();
+        let default_label = default_bb.id();
+        let a_label = a.id();
         for block in [default_bb, a] {
             IRBuilder::new_for::<Dyn>(&m)
                 .position_at_end(block)
@@ -254,7 +254,7 @@ fn indirectbr_single_destination() -> Result<(), IrError> {
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let dest = m.view(f).append_basic_block(&m, "dest");
-        let dest_label = dest.label();
+        let dest_label = dest.id();
         {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(dest);
             bb_b.build_ret_void()?;
@@ -286,8 +286,8 @@ fn indirectbr_multiple_destinations() -> Result<(), IrError> {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let bb1 = m.view(f).append_basic_block(&m, "bb1");
         let bb2 = m.view(f).append_basic_block(&m, "bb2");
-        let bb1_label = bb1.label();
-        let bb2_label = bb2.label();
+        let bb1_label = bb1.id();
+        let bb2_label = bb2.id();
         for bb in [bb1, bb2] {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
             bb_b.build_ret_void()?;
@@ -320,7 +320,7 @@ fn indirectbr_typed_pointer_address_builds_and_verifies() -> Result<(), IrError>
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let dest = m.view(f).append_basic_block(&m, "dest");
-        let dest_label = dest.label();
+        let dest_label = dest.id();
         {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(dest);
             bb_b.build_ret_void()?;
@@ -354,7 +354,7 @@ fn indirectbr_erased_value_pointer_address_builds_and_verifies() -> Result<(), I
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let dest = m.view(f).append_basic_block(&m, "dest");
-        let dest_label = dest.label();
+        let dest_label = dest.id();
         {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(dest);
             bb_b.build_ret_void()?;

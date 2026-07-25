@@ -52,8 +52,8 @@ fn phi_finishes_after_all_incomings() -> Result<(), IrError> {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let other = m.view(f).append_basic_block(&m, "other");
         let join = m.view(f).append_basic_block(&m, "join");
-        let entry_label = entry.label();
-        let other_label = other.label();
+        let entry_label = entry.id();
+        let other_label = other.id();
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_br(&join)?;
@@ -72,7 +72,7 @@ fn phi_finishes_after_all_incomings() -> Result<(), IrError> {
         assert_eq!(phi_closed.incoming_count(), 2);
         let (_, incoming0) = phi_closed.incoming(0)?;
         let (_, incoming1) = phi_closed.incoming(1)?;
-        assert_ne!(incoming0.to_erased(), incoming1.to_erased());
+        assert_ne!(incoming0, incoming1);
 
         // The phi result is still usable after finish().
         b.build_ret(phi_closed.as_int_value())?;
@@ -135,9 +135,9 @@ fn build_phi_inserts_at_phi_head_not_cursor() -> Result<(), IrError> {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let other = m.view(f).append_basic_block(&m, "other");
         let join = m.view(f).append_basic_block(&m, "join");
-        let entry_label = entry.label();
-        let other_label = other.label();
-        let join_label = join.label();
+        let entry_label = entry.id();
+        let other_label = other.id();
+        let join_label = join.id();
 
         // Two predecessors so the join phi has a full incoming set.
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -188,9 +188,9 @@ fn two_phis_built_after_nonphi_keep_relative_order() -> Result<(), IrError> {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let other = m.view(f).append_basic_block(&m, "other");
         let join = m.view(f).append_basic_block(&m, "join");
-        let entry_label = entry.label();
-        let other_label = other.label();
-        let join_label = join.label();
+        let entry_label = entry.id();
+        let other_label = other.id();
+        let join_label = join.id();
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_br(join_label)?;
@@ -247,7 +247,7 @@ fn phi_range_iterates_three_phis() -> Result<(), IrError> {
         let fn_ty = m.fn_type(i32_ty, Vec::<crate::Type>::new(), false);
         let f = m.add_function_dyn("p", fn_ty, Linkage::External)?;
         let bb = m.view(f).append_basic_block(&m, "bb");
-        let bb_label = bb.label();
+        let bb_label = bb.id();
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
         let p1 = b.build_int_phi::<i32, _>("phi.1")?;
@@ -290,8 +290,8 @@ fn phi_incomings_match_indexed_access() -> Result<(), IrError> {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let other = m.view(f).append_basic_block(&m, "other");
         let join = m.view(f).append_basic_block(&m, "join");
-        let entry_label = entry.label();
-        let other_label = other.label();
+        let entry_label = entry.id();
+        let other_label = other.id();
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_br(&join)?;

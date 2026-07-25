@@ -51,10 +51,10 @@ fn handles_round_trip_through_to_id_and_view() -> Result<(), IrError> {
         let g_id: GlobalId<_> = g.id();
         assert_eq!(m.view(g_id), g, "GlobalVariable did not survive id/view");
 
-        // Block label (via both the copyable label and the linear block).
+        // Block label (via both the storable id and the linear block).
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let label: BasicBlockLabel<Dyn, _> = entry.label();
-        let b_id: BlockId<Dyn, _> = label.id();
+        let b_id: BlockId<Dyn, _> = entry.id();
+        let label: BasicBlockLabel<Dyn, _> = m.view(b_id);
         assert_eq!(
             m.view(b_id),
             label,

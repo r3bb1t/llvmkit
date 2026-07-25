@@ -126,7 +126,7 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
         // each predecessor by a block-argument `br`.
         let bwp = IRBuilder::new_for::<Dyn>(&m);
         let (join, params) = bwp.append_block_with_params(m.view(f), &[i8_ty.as_type()], "join")?;
-        let join_label = join.label();
+        let join_label = join.id();
 
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let cond: IntValue<bool> = m.view(f).param(0)?.try_into()?;
@@ -399,9 +399,9 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
         let invoke_entry = m.view(caller).append_basic_block(&m, "invoke.entry");
         let invoke_normal = m.view(caller).append_basic_block(&m, "invoke.normal");
         let invoke_unwind = m.view(caller).append_basic_block(&m, "invoke.unwind");
-        let invoke_entry_label = invoke_entry.label();
-        let invoke_normal_label = invoke_normal.label();
-        let invoke_unwind_label = invoke_unwind.label();
+        let invoke_entry_label = invoke_entry.id();
+        let invoke_normal_label = invoke_normal.id();
+        let invoke_unwind_label = invoke_unwind.id();
 
         let call_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(call_entry);
         let call = call_b

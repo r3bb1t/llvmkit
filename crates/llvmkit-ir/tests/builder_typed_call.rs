@@ -169,8 +169,8 @@ fn typed_invoke_wires_multiple_argument_operands_in_order() -> Result<(), IrErro
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let normal = m.view(caller).append_basic_block(&m, "normal");
         let unwind = m.view(caller).append_basic_block(&m, "unwind");
-        let normal_label = normal.label();
-        let unwind_label = unwind.label();
+        let normal_label = normal.id();
+        let unwind_label = unwind.id();
         let (a, b_arg, p) = m.view(caller).params();
         {
             let bb_b = IRBuilder::new_for::<i32>(&m).position_at_end(unwind);

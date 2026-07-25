@@ -6,8 +6,8 @@
 //! producing the parameter-erased `Vec<Value>` form, unchanged.
 
 use llvmkit_ir::{
-    BasicBlock, BasicBlockLabel, BlockParamsDyn, IRBuilder, IntValue, IrError, Linkage, Module,
-    PointerValue, Ptr, Unterminated, Value,
+    BasicBlock, BasicBlockLabel, BlockId, BlockParamsDyn, IRBuilder, IntValue, IrError, Linkage,
+    Module, PointerValue, Ptr, Unterminated, Value,
 };
 
 /// `append_block_typed::<(i32, Ptr)>` returns a `BasicBlock<…, (i32, Ptr)>` and
@@ -39,9 +39,11 @@ fn append_block_typed_yields_typed_params_from_head_phis() -> Result<(), IrError
         assert_eq!(p0.into_erased().ty(), i32_ty.as_type());
         assert_eq!(p1.into_erased().ty(), ptr_ty.as_type());
 
-        // Compile-time assertion: the typed block's label threads `Params`, so a
-        // typed branch target keeps its `(i32, Ptr)` promise.
-        let label: BasicBlockLabel<'_, (), _, (i32, Ptr)> = head.label();
+        // Compile-time assertion: the typed block's id threads `Params`, so a
+        // typed branch target keeps its `(i32, Ptr)` promise, and viewing it
+        // hands back the equally typed label.
+        let id: BlockId<(), _, (i32, Ptr)> = head.id();
+        let label: BasicBlockLabel<'_, (), _, (i32, Ptr)> = m.view(id);
         assert_eq!(label.to_erased().name().as_deref(), Some("head"));
 
         // The parameters are the block's *leading head-phis*: they print as
@@ -80,7 +82,7 @@ fn append_block_with_params_stays_erased() -> Result<(), IrError> {
 
         assert_eq!(params.len(), 1);
         assert_eq!(params[0].ty(), i32_ty.as_type());
-        assert_eq!(erased.label().to_erased().name().as_deref(), Some("erased"));
+        assert_eq!(erased.to_erased().name().as_deref(), Some("erased"));
         Ok(())
     })
 }
@@ -102,7 +104,8 @@ fn append_block_typed_unit_params() -> Result<(), IrError> {
 
         // No head-phis were materialised.
         assert_eq!(head.instructions().count(), 0);
-        let label: BasicBlockLabel<'_, (), _, ()> = head.label();
+        let id: BlockId<(), _, ()> = head.id();
+        let label: BasicBlockLabel<'_, (), _, ()> = m.view(id);
         assert_eq!(label.to_erased().name().as_deref(), Some("head"));
         Ok(())
     })

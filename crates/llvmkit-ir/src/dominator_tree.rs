@@ -18,6 +18,7 @@ use super::module::ModuleBrand;
 use super::pass_context::BasicBlockView;
 use super::r#use::Use;
 use super::value::{IsValue, Value, ValueKindData, ValueSlot};
+use super::value_id::BlockId;
 
 /// Analysis marker for caching a [`DominatorTree`] in the new-pass-manager
 /// substrate. Its invalidation rule is wired in `analysis.rs`: preserved by
@@ -94,6 +95,42 @@ where
     R: ReturnMarker,
     B: ModuleBrand + 'ctx,
 {
+}
+
+impl<R, B> dominator_block_sealed::Sealed for BlockId<R, B>
+where
+    R: ReturnMarker,
+    B: ModuleBrand,
+{
+}
+
+impl<'ctx, R, B> DominatorTreeBlock<'ctx> for BlockId<R, B>
+where
+    R: ReturnMarker,
+    B: ModuleBrand,
+{
+    #[inline]
+    fn dominator_block_id(self) -> ValueSlot {
+        self.slot()
+    }
+}
+
+impl<R, B> dominator_block_sealed::Sealed for &BlockId<R, B>
+where
+    R: ReturnMarker,
+    B: ModuleBrand,
+{
+}
+
+impl<'ctx, R, B> DominatorTreeBlock<'ctx> for &BlockId<R, B>
+where
+    R: ReturnMarker,
+    B: ModuleBrand,
+{
+    #[inline]
+    fn dominator_block_id(self) -> ValueSlot {
+        (*self).slot()
+    }
 }
 
 impl<'ctx, R, B> DominatorTreeBlock<'ctx> for BasicBlockLabel<'ctx, R, B>
@@ -289,7 +326,7 @@ impl DominatorTree {
     }
 
     /// Whether edge `edge` dominates all uses in `block`.
-    pub fn dominates_edge<'ctx, EB, B>(&self, edge: BasicBlockEdge<'ctx, EB>, block: B) -> bool
+    pub fn dominates_edge<'ctx, EB, B>(&self, edge: BasicBlockEdge<EB>, block: B) -> bool
     where
         EB: ModuleBrand + 'ctx,
         B: DominatorTreeBlock<'ctx>,
@@ -304,7 +341,7 @@ impl DominatorTree {
     /// Whether edge `edge` dominates this specific use.
     pub fn dominates_edge_use<'ctx, EB: ModuleBrand + 'ctx, B: ModuleBrand + 'ctx>(
         &self,
-        edge: BasicBlockEdge<'ctx, EB>,
+        edge: BasicBlockEdge<EB>,
         use_edge: Use<'ctx, B>,
     ) -> bool {
         let Ok(user_inst) = InstructionView::try_from(use_edge.user()) else {
@@ -436,7 +473,7 @@ fn compute_reachable<'ctx, B: ModuleBrand + 'ctx>(
     cfg: &FunctionCfg<'ctx, B>,
 ) -> HashSet<ValueSlot> {
     let mut reachable = HashSet::new();
-    let Some(entry) = function.entry_block().map(|bb| bb.label()) else {
+    let Some(entry) = function.entry_block().map(|bb| bb.id()) else {
         return reachable;
     };
     let mut worklist = VecDeque::from([entry]);

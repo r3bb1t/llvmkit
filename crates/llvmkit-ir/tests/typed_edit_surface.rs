@@ -9,9 +9,9 @@
 //! ops that do exist.
 
 use llvmkit_ir::{
-    Analyses, BasicBlockLabel, Dyn, FnCx, FnReport, FunctionPass, FunctionValue, IRBuilder,
-    IntPredicate, IntValue, IrError, IrResult, Linkage, Module, ModuleBrand, ReshapeCfg, TermEdit,
-    Value, run_function_pass,
+    Analyses, BasicBlockLabel, BlockId, Dyn, FnCx, FnReport, FunctionPass, FunctionValue,
+    IRBuilder, IntPredicate, IntValue, IrError, IrResult, Linkage, Module, ModuleBrand, ReshapeCfg,
+    TermEdit, Value, run_function_pass,
 };
 
 // Fixture return-type aliases. These keep the `build_*` helper signatures under
@@ -20,14 +20,17 @@ use llvmkit_ir::{
 
 /// Return of `build_invoke_caller`/`build_callbr_caller`: the caller function
 /// and the `%new` `Dyn` label a redirect can aim at.
-type CallerFixture<'ctx> = (FunctionValue<'ctx, ()>, BasicBlockLabel<'ctx, Dyn>);
+type CallerFixture<'ctx> = (
+    FunctionValue<'ctx, ()>,
+    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
+);
 
 /// Return of `build_switch_fn`: the function plus the `case0` and `new` `Dyn`
 /// labels.
 type SwitchFixture<'ctx> = (
     FunctionValue<'ctx, i32>,
-    BasicBlockLabel<'ctx, Dyn>,
-    BasicBlockLabel<'ctx, Dyn>,
+    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
+    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
 );
 
 /// Return of `build_switch_bogus_fn`: the function, a non-case (`bogus`) `Dyn`
@@ -35,8 +38,8 @@ type SwitchFixture<'ctx> = (
 /// seed value for `new`.
 type SwitchBogusFixture<'ctx> = (
     FunctionValue<'ctx, i32>,
-    BasicBlockLabel<'ctx, Dyn>,
-    BasicBlockLabel<'ctx, Dyn>,
+    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
+    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
     Value<'ctx>,
 );
 
@@ -46,9 +49,9 @@ type SwitchBogusFixture<'ctx> = (
 
 /// A `ReshapeCfg` pass that narrows the entry block's `invoke` and redirects
 /// one of its two edges (chosen by `which`) onto `new_to`.
-struct RedirectInvokeEdge<'ctx, B: ModuleBrand + 'ctx> {
+struct RedirectInvokeEdge<B: ModuleBrand> {
     which: InvokeArm,
-    new_to: BasicBlockLabel<'ctx, Dyn, B>,
+    new_to: BlockId<Dyn, B>,
 }
 
 #[derive(Clone, Copy)]
@@ -57,7 +60,7 @@ enum InvokeArm {
     Unwind,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectInvokeEdge<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectInvokeEdge<B> {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "redirect-invoke-edge";
@@ -70,8 +73,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectInvokeEdge<'
             .expect("definition has entry");
         let invoke = reshape.edit_invoke(&entry)?;
         match self.which {
-            InvokeArm::Normal => invoke.redirect_normal(&self.new_to, &[])?,
-            InvokeArm::Unwind => invoke.redirect_unwind(&self.new_to, &[])?,
+            InvokeArm::Normal => invoke.redirect_normal(self.new_to, &[])?,
+            InvokeArm::Unwind => invoke.redirect_unwind(self.new_to, &[])?,
         }
         Ok(reshape.done())
     }
@@ -95,9 +98,10 @@ fn build_invoke_caller<'ctx>(
     let unwind = m.view(caller).append_basic_block(m, "unwind");
     let new = m.view(caller).append_basic_block(m, "new");
     // Capture the labels before `position_at_end` consumes the block handles.
-    let normal_lbl = normal.label();
-    let unwind_lbl = unwind.label();
-    let new_dyn: BasicBlockLabel<Dyn> = new.label().to_erased().try_into()?;
+    let normal_lbl = normal.id();
+    let unwind_lbl = unwind.id();
+    let new_dyn: BasicBlockLabel<Dyn> = new.to_erased().try_into()?;
+    let new_dyn = new_dyn.id();
 
     let bn = IRBuilder::new_for::<()>(m).position_at_end(normal);
     bn.build_ret_void();
@@ -168,12 +172,12 @@ fn invoke_redirect_unwind_retargets_unwind_edge() -> Result<(), IrError> {
 
 /// A `ReshapeCfg` pass that narrows the entry block's `callbr` and redirects
 /// either its default edge or its indirect edge 0 onto `new_to`.
-struct RedirectCallBrEdge<'ctx, B: ModuleBrand + 'ctx> {
+struct RedirectCallBrEdge<B: ModuleBrand> {
     default_edge: bool,
-    new_to: BasicBlockLabel<'ctx, Dyn, B>,
+    new_to: BlockId<Dyn, B>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectCallBrEdge<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectCallBrEdge<B> {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "redirect-callbr-edge";
@@ -186,9 +190,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectCallBrEdge<'
             .expect("definition has entry");
         let callbr = reshape.edit_callbr(&entry)?;
         if self.default_edge {
-            callbr.redirect_default(&self.new_to, &[])?;
+            callbr.redirect_default(self.new_to, &[])?;
         } else {
-            callbr.redirect_indirect(0, &self.new_to, &[])?;
+            callbr.redirect_indirect(0, self.new_to, &[])?;
         }
         Ok(reshape.done())
     }
@@ -211,9 +215,10 @@ fn build_callbr_caller<'ctx>(
     let ind = m.view(caller).append_basic_block(m, "ind");
     let new = m.view(caller).append_basic_block(m, "new");
     // Capture the labels before `position_at_end` consumes the block handles.
-    let cont_lbl = cont.label();
-    let ind_lbl = ind.label();
-    let new_dyn: BasicBlockLabel<Dyn> = new.label().to_erased().try_into()?;
+    let cont_lbl = cont.id();
+    let ind_lbl = ind.id();
+    let new_dyn: BasicBlockLabel<Dyn> = new.to_erased().try_into()?;
+    let new_dyn = new_dyn.id();
 
     let bc = IRBuilder::new_for::<()>(m).position_at_end(cont);
     bc.build_ret_void();
@@ -314,8 +319,8 @@ fn build_cond_br_fn<'ctx>(
     let then_bb = m.view(f).append_basic_block(m, "then");
     let else_bb = m.view(f).append_basic_block(m, "else");
     // Capture the labels before `position_at_end` consumes the block handles.
-    let then_lbl = then_bb.label();
-    let else_lbl = else_bb.label();
+    let then_lbl = then_bb.id();
+    let else_lbl = else_bb.id();
 
     let bt = IRBuilder::new_for::<i32>(m).position_at_end(then_bb);
     bt.build_ret(i32_ty.const_int(0_u32))?;
@@ -383,13 +388,13 @@ fn cond_br_remove_else_collapses_to_br() -> Result<(), IrError> {
 
 /// A `ReshapeCfg` pass that narrows the entry block's `switch` and either
 /// redirects case `case0` onto `new_to` or removes it.
-struct SwitchCaseOp<'ctx, B: ModuleBrand + 'ctx> {
+struct SwitchCaseOp<B: ModuleBrand> {
     remove: bool,
-    case0: BasicBlockLabel<'ctx, Dyn, B>,
-    new_to: BasicBlockLabel<'ctx, Dyn, B>,
+    case0: BlockId<Dyn, B>,
+    new_to: BlockId<Dyn, B>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for SwitchCaseOp<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for SwitchCaseOp<B> {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "switch-case-op";
@@ -402,9 +407,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for SwitchCaseOp<'ctx, B
             .expect("definition has entry");
         let switch = reshape.edit_switch(&entry)?;
         if self.remove {
-            switch.remove_successor(&self.case0)?;
+            switch.remove_successor(self.case0)?;
         } else {
-            switch.redirect_successor(&self.case0, &self.new_to, &[])?;
+            switch.redirect_successor(self.case0, self.new_to, &[])?;
         }
         Ok(reshape.done())
     }
@@ -426,11 +431,13 @@ fn build_switch_fn<'ctx>(
     let case1 = m.view(f).append_basic_block(m, "case1");
     let new = m.view(f).append_basic_block(m, "new");
     // Capture the labels before `position_at_end` consumes the block handles.
-    let dflt_lbl = dflt.label();
-    let case0_lbl = case0.label();
-    let case1_lbl = case1.label();
-    let case0_dyn: BasicBlockLabel<Dyn> = case0.label().to_erased().try_into()?;
-    let new_dyn: BasicBlockLabel<Dyn> = new.label().to_erased().try_into()?;
+    let dflt_lbl = dflt.id();
+    let case0_lbl = case0.id();
+    let case1_lbl = case1.id();
+    let case0_dyn: BasicBlockLabel<Dyn> = case0.to_erased().try_into()?;
+    let case0_dyn = case0_dyn.id();
+    let new_dyn: BasicBlockLabel<Dyn> = new.to_erased().try_into()?;
+    let new_dyn = new_dyn.id();
 
     for (bb, k) in [(dflt, 0_u32), (case0, 1), (case1, 2), (new, 3)] {
         let bb_b = IRBuilder::new_for::<i32>(m).position_at_end(bb);
@@ -515,8 +522,8 @@ fn switch_remove_successor_drops_case() -> Result<(), IrError> {
 /// phi-arity-valid redirect (making the pre-fix path sail past already-reaches
 /// + phi validation before it would corrupt `new_to`'s phi).
 struct RedirectSwitchSuccessor<'ctx, B: ModuleBrand + 'ctx> {
-    old_to: BasicBlockLabel<'ctx, Dyn, B>,
-    new_to: BasicBlockLabel<'ctx, Dyn, B>,
+    old_to: BlockId<Dyn, B>,
+    new_to: BlockId<Dyn, B>,
     phi_values: Vec<Value<'ctx, B>>,
 }
 
@@ -532,7 +539,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchSucces
             .entry_block()
             .expect("definition has entry");
         let switch = reshape.edit_switch(&entry)?;
-        switch.redirect_successor(&self.old_to, &self.new_to, &self.phi_values)?;
+        switch.redirect_successor(self.old_to, self.new_to, &self.phi_values)?;
         Ok(reshape.done())
     }
 }
@@ -567,11 +574,13 @@ fn build_switch_bogus_fn<'ctx>(
         "new",
     )?;
 
-    let dflt_lbl = dflt.label();
-    let case0_lbl = case0.label();
-    let new_lbl = new.label();
-    let bogus_dyn: BasicBlockLabel<Dyn> = bogus.label().to_erased().try_into()?;
-    let new_dyn: BasicBlockLabel<Dyn> = new_lbl.to_erased().try_into()?;
+    let dflt_lbl = dflt.id();
+    let case0_lbl = case0.id();
+    let new_lbl = new.id();
+    let bogus_dyn: BasicBlockLabel<Dyn> = bogus.to_erased().try_into()?;
+    let bogus_dyn = bogus_dyn.id();
+    let new_dyn: BasicBlockLabel<Dyn> = new.to_erased().try_into()?;
+    let new_dyn = new_dyn.id();
 
     // entry: %ev = add %a, 3 ; switch %a, default %dflt [ 0 -> case0 ]
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);

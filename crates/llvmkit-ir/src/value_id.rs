@@ -243,6 +243,28 @@ impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> BlockId<R, B, Params>
             _brand: PhantomData,
         }
     }
+
+    /// Crate-internal: the arena slot this id names, **without** the module-tag
+    /// check [`ViewIn::resolve_in`] performs. Reserved for the two places that
+    /// key raw slot maps and have no [`ModuleRef`] in hand — the dominator
+    /// tree's block ids and the Braun SSA engine's block-keyed maps — both of
+    /// which were already slot-keyed and unchecked before ids existed. Every
+    /// other consumer resolves through [`ViewIn`] so a foreign id is rejected
+    /// before the arena is touched.
+    #[inline]
+    pub(crate) fn slot(self) -> ValueSlot {
+        self.slot
+    }
+
+    /// Crate-internal: drop the typed parameter marker, yielding the
+    /// parameter-erased ([`BlockParamsDyn`]) id. The typed branch builders
+    /// lower a [`BlockCall`](crate::BlockCall) to this erased form before
+    /// reusing the erased phi-seeding path, mirroring
+    /// `BasicBlockLabel::erase_params`.
+    #[inline]
+    pub(crate) fn erase_params(self) -> BlockId<R, B> {
+        BlockId::from_raw(self.tag, self.slot)
+    }
 }
 
 impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> Clone for BlockId<R, B, Params> {

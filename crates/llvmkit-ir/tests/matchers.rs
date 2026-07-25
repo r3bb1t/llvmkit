@@ -235,7 +235,7 @@ fn m_phi_binds_phi_kind() -> Result<(), IrError> {
         let bwp = IRBuilder::new_for::<Dyn>(&m);
         let (join, params) =
             bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "join")?;
-        let join_label = join.label();
+        let join_label = join.id();
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
@@ -286,7 +286,7 @@ fn m_phi_composes_with_m_one_use() -> Result<(), IrError> {
         let bwp = IRBuilder::new_for::<Dyn>(&m);
         let (join, params) =
             bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "join")?;
-        let join_label = join.label();
+        let join_label = join.id();
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)

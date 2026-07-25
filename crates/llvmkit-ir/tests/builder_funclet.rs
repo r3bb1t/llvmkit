@@ -21,7 +21,7 @@ fn catchswitch_within_none_unwind_to_caller() -> Result<(), IrError> {
         let f = m.add_function_dyn("instructions.funclets", fn_ty, Linkage::External)?;
         let cs1_block = m.view(f).append_basic_block(&m, "catchswitch1");
         let cp1_block = m.view(f).append_basic_block(&m, "catchpad1");
-        let cp1_label = cp1_block.label();
+        let cp1_label = cp1_block.id();
         {
             // Stub a terminator on the handler so the block is well-formed.
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(cp1_block);
@@ -50,7 +50,7 @@ fn catchpad_within_catchswitch_empty_args() -> Result<(), IrError> {
         let cs_block = m.view(f).append_basic_block(&m, "cs");
         let cp_block = m.view(f).append_basic_block(&m, "cp");
         let exit = m.view(f).append_basic_block(&m, "exit");
-        let cp_label = cp_block.label();
+        let cp_label = cp_block.id();
         {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(exit);
             bb_b.build_ret_void()?;
@@ -134,8 +134,8 @@ fn catchret_to_label() -> Result<(), IrError> {
         let cs_block = m.view(f).append_basic_block(&m, "cs_block");
         let cp_block = m.view(f).append_basic_block(&m, "cp_block");
         let return_block = m.view(f).append_basic_block(&m, "return");
-        let cp_label = cp_block.label();
-        let return_label = return_block.label();
+        let cp_label = cp_block.id();
+        let return_label = return_block.id();
         {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(return_block);
             bb_b.build_ret_void()?;

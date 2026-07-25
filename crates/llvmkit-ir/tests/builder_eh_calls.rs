@@ -29,8 +29,8 @@ fn invoke_void_to_unwind() -> Result<(), IrError> {
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let normal = m.view(caller).append_basic_block(&m, "defaultdest");
         let unwind = m.view(caller).append_basic_block(&m, "exc");
-        let normal_label = normal.label();
-        let unwind_label = unwind.label();
+        let normal_label = normal.id();
+        let unwind_label = unwind.id();
         {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(normal);
             bb_b.build_ret_void()?;
@@ -73,8 +73,8 @@ fn typed_invoke_derives_return_marker_from_callee() -> Result<(), IrError> {
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let normal = m.view(caller).append_basic_block(&m, "normal");
         let unwind = m.view(caller).append_basic_block(&m, "unwind");
-        let normal_label = normal.label();
-        let unwind_label = unwind.label();
+        let normal_label = normal.id();
+        let unwind_label = unwind.id();
         let (x,) = m.view(caller).params();
         {
             let bb_b = IRBuilder::new_for::<i32>(&m).position_at_end(unwind);
@@ -117,8 +117,8 @@ fn callbr_void_with_one_indirect_dest() -> Result<(), IrError> {
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let kill = m.view(caller).append_basic_block(&m, "kill");
         let cont = m.view(caller).append_basic_block(&m, "cont");
-        let kill_label = kill.label();
-        let cont_label = cont.label();
+        let kill_label = kill.id();
+        let cont_label = cont.id();
         {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(kill);
             bb_b.build_unreachable();
@@ -171,8 +171,8 @@ fn callbr_two_indirect_dests_print_form() -> Result<(), IrError> {
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let bb1 = m.view(caller).append_basic_block(&m, "1");
         let bb2 = m.view(caller).append_basic_block(&m, "2");
-        let bb1_label = bb1.label();
-        let bb2_label = bb2.label();
+        let bb1_label = bb1.id();
+        let bb2_label = bb2.id();
         for bb in [bb1, bb2] {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
             bb_b.build_ret_void()?;

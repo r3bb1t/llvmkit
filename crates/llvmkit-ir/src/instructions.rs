@@ -28,8 +28,7 @@ use super::IrResult;
 use super::align::Align;
 use super::atomic_ordering::AtomicOrdering;
 use super::atomicrmw_binop::AtomicRMWBinOp;
-use super::basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
-use super::block_state::Unterminated;
+use super::basic_block::IntoBasicBlockLabel;
 use super::calling_conv::CallingConv;
 use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 use super::derived_types::FunctionType;
@@ -55,6 +54,7 @@ use super::value::{
     FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Value, ValueKindData, ValueSlot,
     ValueUse,
 };
+use super::value_id::BlockId;
 
 macro_rules! decl_binop_handle {
     (
@@ -1285,15 +1285,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> BranchInst<'ctx, B> {
     /// Successors as copyable block labels.
     pub fn successors(
         self,
-    ) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>>
-    + DoubleEndedIterator
-    + FusedIterator
-    + 'ctx {
-        let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        self.successor_ids().into_iter().map(move |id| {
-            BasicBlock::<Dyn, Unterminated, B>::from_parts(id, self.module, label_ty).label()
-        })
+    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
+        self.successor_ids()
+            .into_iter()
+            .map(move |id| BlockId::<Dyn, B>::from_raw(self.module.id(), id))
     }
 }
 
@@ -1404,10 +1400,7 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
     }
 
     /// Read the `(value, block label)` pair at `index`.
-    pub fn incoming(
-        &self,
-        index: u32,
-    ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
+    pub fn incoming(&self, index: u32) -> IrResult<(Value<'ctx, B>, BlockId<Dyn, B>)> {
         let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
         let module = self.module.module();
         let pair = self
@@ -1423,9 +1416,7 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
         let (vid, bid) = pair;
         let v_data = module.context().value_data(vid);
         let value = Value::from_parts(vid, self.module, v_data.ty);
-        let label_ty = module.label_type().as_type().id();
-        let block =
-            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, self.module, label_ty).label();
+        let block = BlockId::<Dyn, B>::from_raw(self.module.id(), bid);
         Ok((value, block))
     }
 
@@ -1436,12 +1427,11 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
     /// mutate the phi while iterating.
     pub fn incomings(
         &self,
-    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
         let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
         let module_ref = self.module;
         let entries: Vec<(ValueSlot, ValueSlot)> = self
             .payload()
@@ -1453,8 +1443,7 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
         entries.into_iter().map(move |(vid, bid)| {
             let v_data = module.context().value_data(vid);
             let value = Value::from_parts(vid, module_ref, v_data.ty);
-            let block =
-                BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label();
+            let block = BlockId::<Dyn, B>::from_raw(module_ref.id(), bid);
             (value, block)
         })
     }
@@ -1486,7 +1475,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, Open, B> {
         let value = value.into_int_value(self.module)?;
         if value.into_erased().ty == self.ty {
             let value_id = value.slot();
-            let block_id = block.into_basic_block_label().slot();
+            let block_id = block.into_basic_block_label(self.module)?.slot();
             if self
                 .payload()
                 .incoming
@@ -1632,10 +1621,7 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
     }
 
     /// Read the `(value, block label)` pair at `index`.
-    pub fn incoming(
-        &self,
-        index: u32,
-    ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
+    pub fn incoming(&self, index: u32) -> IrResult<(Value<'ctx, B>, BlockId<Dyn, B>)> {
         let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
         let module = self.module.module();
         let pair = self
@@ -1651,9 +1637,7 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
         let (vid, bid) = pair;
         let v_data = module.context().value_data(vid);
         let value = Value::from_parts(vid, self.module, v_data.ty);
-        let label_ty = module.label_type().as_type().id();
-        let block =
-            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, self.module, label_ty).label();
+        let block = BlockId::<Dyn, B>::from_raw(self.module.id(), bid);
         Ok((value, block))
     }
 
@@ -1664,12 +1648,11 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
     /// mutate the phi while iterating.
     pub fn incomings(
         &self,
-    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
         let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
         let module_ref = self.module;
         let entries: Vec<(ValueSlot, ValueSlot)> = self
             .payload()
@@ -1681,8 +1664,7 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
         entries.into_iter().map(move |(vid, bid)| {
             let v_data = module.context().value_data(vid);
             let value = Value::from_parts(vid, module_ref, v_data.ty);
-            let block =
-                BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label();
+            let block = BlockId::<Dyn, B>::from_raw(module_ref.id(), bid);
             (value, block)
         })
     }
@@ -1709,7 +1691,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
         let value = value.into_float_value(self.module)?;
         if value.into_erased().ty == self.ty {
             let value_id = value.slot();
-            let block_id = block.into_basic_block_label().slot();
+            let block_id = block.into_basic_block_label(self.module)?.slot();
             if self
                 .payload()
                 .incoming
@@ -1847,10 +1829,7 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
     }
 
     /// Read the `(value, block label)` pair at `index`.
-    pub fn incoming(
-        &self,
-        index: u32,
-    ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
+    pub fn incoming(&self, index: u32) -> IrResult<(Value<'ctx, B>, BlockId<Dyn, B>)> {
         let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
         let module = self.module.module();
         let pair = self
@@ -1866,9 +1845,7 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
         let (vid, bid) = pair;
         let v_data = module.context().value_data(vid);
         let value = Value::from_parts(vid, self.module, v_data.ty);
-        let label_ty = module.label_type().as_type().id();
-        let block =
-            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, self.module, label_ty).label();
+        let block = BlockId::<Dyn, B>::from_raw(self.module.id(), bid);
         Ok((value, block))
     }
 
@@ -1879,12 +1856,11 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
     /// mutate the phi while iterating.
     pub fn incomings(
         &self,
-    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
         let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
         let module_ref = self.module;
         let entries: Vec<(ValueSlot, ValueSlot)> = self
             .payload()
@@ -1896,8 +1872,7 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
         entries.into_iter().map(move |(vid, bid)| {
             let v_data = module.context().value_data(vid);
             let value = Value::from_parts(vid, module_ref, v_data.ty);
-            let block =
-                BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label();
+            let block = BlockId::<Dyn, B>::from_raw(module_ref.id(), bid);
             (value, block)
         })
     }
@@ -1919,7 +1894,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, Open, B> {
         let value = value.into_pointer_value(self.module)?;
         if value.into_erased().ty == self.ty {
             let value_id = value.slot();
-            let block_id = block.into_basic_block_label().slot();
+            let block_id = block.into_basic_block_label(self.module)?.slot();
             if self
                 .payload()
                 .incoming
@@ -2008,10 +1983,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
     }
 
     /// Read the `(value, block label)` pair at `index`.
-    pub fn incoming(
-        &self,
-        index: u32,
-    ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
+    pub fn incoming(&self, index: u32) -> IrResult<(Value<'ctx, B>, BlockId<Dyn, B>)> {
         let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
         let module = self.module.module();
         let pair = self
@@ -2027,9 +1999,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
         let (vid, bid) = pair;
         let v_data = module.context().value_data(vid);
         let value = Value::from_parts(vid, self.module, v_data.ty);
-        let label_ty = module.label_type().as_type().id();
-        let block =
-            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, self.module, label_ty).label();
+        let block = BlockId::<Dyn, B>::from_raw(self.module.id(), bid);
         Ok((value, block))
     }
 
@@ -2040,12 +2010,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
     /// mutate the phi while iterating.
     pub fn incomings(
         &self,
-    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
         let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
         let module_ref = self.module;
         let entries: Vec<(ValueSlot, ValueSlot)> = self
             .payload()
@@ -2057,8 +2026,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
         entries.into_iter().map(move |(vid, bid)| {
             let v_data = module.context().value_data(vid);
             let value = Value::from_parts(vid, module_ref, v_data.ty);
-            let block =
-                BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label();
+            let block = BlockId::<Dyn, B>::from_raw(module_ref.id(), bid);
             (value, block)
         })
     }
@@ -2673,15 +2641,8 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx
         let data = module.context().value_data(id);
         Value::from_parts(id, self.module, data.ty)
     }
-    pub fn default_destination(&self) -> BasicBlockLabel<'ctx, Dyn, B> {
-        let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        BasicBlock::<Dyn, Unterminated, B>::from_parts(
-            self.payload().default_bb.get(),
-            self.module,
-            label_ty,
-        )
-        .label()
+    pub fn default_destination(&self) -> BlockId<Dyn, B> {
+        BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().default_bb.get())
     }
     pub fn case_count(&self) -> u32 {
         let len = self.payload().cases.borrow().len();
@@ -2691,12 +2652,11 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx
     /// order. Mirrors walking `SwitchInst::cases()`.
     pub fn cases(
         &self,
-    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
         let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
         let module_ref = self.module;
         let entries: Vec<(ValueSlot, ValueSlot)> = self
             .payload()
@@ -2708,8 +2668,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx
         entries.into_iter().map(move |(vid, bid)| {
             let v_data = module.context().value_data(vid);
             let value = Value::from_parts(vid, module_ref, v_data.ty);
-            let block =
-                BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label();
+            let block = BlockId::<Dyn, B>::from_raw(module_ref.id(), bid);
             (value, block)
         })
     }
@@ -2748,7 +2707,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
             });
         }
         let v_id = v.id;
-        let bb_id = target.into_basic_block_label().slot();
+        let bb_id = target.into_basic_block_label(self.module)?.slot();
         self.payload()
             .cases
             .borrow_mut()
@@ -2891,16 +2850,12 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
     /// walking `IndirectBrInst::successors()`.
     pub fn destinations(
         &self,
-    ) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>>
-    + DoubleEndedIterator
-    + FusedIterator
-    + 'ctx {
-        let label_ty = self.module.module().label_type().as_type().id();
+    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let module_ref = self.module;
         let ids: Vec<ValueSlot> = self.payload().destinations.borrow().clone();
-        ids.into_iter().map(move |bid| {
-            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label()
-        })
+        ids.into_iter()
+            .map(move |bid| BlockId::<Dyn, B>::from_raw(module_ref.id(), bid))
     }
 }
 
@@ -2914,7 +2869,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
         self.payload()
             .destinations
             .borrow_mut()
-            .push(target.into_basic_block_label().slot());
+            .push(target.into_basic_block_label(self.module)?.slot());
         Ok(self)
     }
     /// Consume the open `indirectbr` and return its [`Closed`] view.
@@ -3037,25 +2992,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     pub fn calling_conv(self) -> CallingConv {
         self.payload().calling_conv
     }
-    pub fn normal_destination(self) -> BasicBlockLabel<'ctx, Dyn, B> {
-        let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        BasicBlock::<Dyn, Unterminated, B>::from_parts(
-            self.payload().normal_dest.get(),
-            self.module,
-            label_ty,
-        )
-        .label()
+    pub fn normal_destination(self) -> BlockId<Dyn, B> {
+        BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().normal_dest.get())
     }
-    pub fn unwind_destination(self) -> BasicBlockLabel<'ctx, Dyn, B> {
-        let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        BasicBlock::<Dyn, Unterminated, B>::from_parts(
-            self.payload().unwind_dest.get(),
-            self.module,
-            label_ty,
-        )
-        .label()
+    pub fn unwind_destination(self) -> BlockId<Dyn, B> {
+        BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().unwind_dest.get())
     }
 }
 
@@ -3105,33 +3046,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
     pub fn calling_conv(self) -> CallingConv {
         self.payload().calling_conv
     }
-    pub fn default_destination(self) -> BasicBlockLabel<'ctx, Dyn, B> {
-        let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        BasicBlock::<Dyn, Unterminated, B>::from_parts(
-            self.payload().default_dest.get(),
-            self.module,
-            label_ty,
-        )
-        .label()
+    pub fn default_destination(self) -> BlockId<Dyn, B> {
+        BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().default_dest.get())
     }
     pub fn indirect_destinations(
         self,
-    ) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>>
-    + DoubleEndedIterator
-    + FusedIterator
-    + 'ctx {
-        let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
+    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let ids: Vec<ValueSlot> = self
             .payload()
             .indirect_dests
             .iter()
             .map(|c| c.get())
             .collect();
-        ids.into_iter().map(move |id| {
-            BasicBlock::<Dyn, Unterminated, B>::from_parts(id, self.module, label_ty).label()
-        })
+        ids.into_iter()
+            .map(move |id| BlockId::<Dyn, B>::from_raw(self.module.id(), id))
     }
 }
 
@@ -3435,15 +3364,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchReturnInst<'ctx, B> {
         let data = module.context().value_data(id);
         Value::from_parts(id, self.module, data.ty)
     }
-    pub fn target(self) -> BasicBlockLabel<'ctx, Dyn, B> {
-        let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        BasicBlock::<Dyn, Unterminated, B>::from_parts(
-            self.payload().target_bb,
-            self.module,
-            label_ty,
-        )
-        .label()
+    pub fn target(self) -> BlockId<Dyn, B> {
+        BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().target_bb)
     }
 }
 
@@ -3475,11 +3397,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> CleanupReturnInst<'ctx, B> {
         Value::from_parts(id, self.module, data.ty)
     }
     /// `None` represents `unwind to caller`.
-    pub fn unwind_dest(self) -> Option<BasicBlockLabel<'ctx, Dyn, B>> {
+    pub fn unwind_dest(self) -> Option<BlockId<Dyn, B>> {
         let id = self.payload().unwind_dest?;
-        let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        Some(BasicBlock::<Dyn, Unterminated, B>::from_parts(id, self.module, label_ty).label())
+        Some(BlockId::<Dyn, B>::from_raw(self.module.id(), id))
     }
 }
 
@@ -3558,11 +3478,9 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
         Some(Value::from_parts(id, self.module, data.ty))
     }
     /// `None` = `unwind to caller`.
-    pub fn unwind_dest(&self) -> Option<BasicBlockLabel<'ctx, Dyn, B>> {
+    pub fn unwind_dest(&self) -> Option<BlockId<Dyn, B>> {
         let id = self.payload().unwind_dest.get()?;
-        let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        Some(BasicBlock::<Dyn, Unterminated, B>::from_parts(id, self.module, label_ty).label())
+        Some(BlockId::<Dyn, B>::from_raw(self.module.id(), id))
     }
     pub fn handler_count(&self) -> u32 {
         let len = self.payload().handlers.borrow().len();
@@ -3573,16 +3491,12 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
     /// `CatchSwitchInst::handlers()`.
     pub fn handlers(
         &self,
-    ) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>>
-    + DoubleEndedIterator
-    + FusedIterator
-    + 'ctx {
-        let label_ty = self.module.module().label_type().as_type().id();
+    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let module_ref = self.module;
         let ids: Vec<ValueSlot> = self.payload().handlers.borrow().clone();
-        ids.into_iter().map(move |bid| {
-            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label()
-        })
+        ids.into_iter()
+            .map(move |bid| BlockId::<Dyn, B>::from_raw(module_ref.id(), bid))
     }
 }
 
@@ -3595,7 +3509,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, TermOpen, B> {
         self.payload()
             .handlers
             .borrow_mut()
-            .push(handler.into_basic_block_label().slot());
+            .push(handler.into_basic_block_label(self.module)?.slot());
         Ok(self)
     }
     #[inline]

@@ -36,15 +36,15 @@ use std::collections::HashMap;
 
 use llvmkit_ir::{
     Align, AllocaFlags, AnyTypeEnum, ApFloat, ApFloatSemantics, ApInt, ApIntSignedness,
-    AtomicLoadConfig, AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, BasicBlockLabel, Brand,
-    CallingConv, Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode,
-    ConstantExprOptions, DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType,
-    FloatValue, GepNoWrapFlags, IRBuilder, IntDyn, IntType, IntValue, IntrinsicNameResolution,
-    IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue,
-    Positioned, RoundingMode, SelectionKind, StructType, SyncScope, ThreadLocalMode, Type,
-    TypeKind, UIToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord, UseListOrderRecord,
-    Visibility, constant_fold_select_instruction, derived_types::PointerType,
-    resolve_intrinsic_name, shufflevector_mask_from_constant,
+    AtomicLoadConfig, AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, Brand, CallingConv,
+    Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
+    DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType, FloatValue,
+    GepNoWrapFlags, IRBuilder, IntDyn, IntType, IntValue, IntrinsicNameResolution, IrError,
+    IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue, Positioned,
+    RoundingMode, SelectionKind, StructType, SyncScope, ThreadLocalMode, Type, TypeKind,
+    UIToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord, UseListOrderRecord, Visibility,
+    constant_fold_select_instruction, derived_types::PointerType, resolve_intrinsic_name,
+    shufflevector_mask_from_constant,
 };
 use llvmkit_support::{Span, Spanned};
 
@@ -8337,7 +8337,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let parent_pad = self.parse_optional_pad_token(state)?;
         // `[handler1, handler2, ...]`
         self.expect_punct(PunctKind::LSquare, "'[' in catchswitch handlers")?;
-        let mut handlers: Vec<BasicBlockLabel<'ctx, llvmkit_ir::Dyn, B>> = Vec::new();
+        let mut handlers: Vec<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> = Vec::new();
         loop {
             if matches!(self.peek(), Token::RSquare) {
                 self.bump()?;
@@ -8566,7 +8566,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         )?;
         let fallthrough = self.parse_block_ref(state)?;
         // Optional `[ label %ind1, ... ]`
-        let mut indirect: Vec<BasicBlockLabel<'ctx, llvmkit_ir::Dyn, B>> = Vec::new();
+        let mut indirect: Vec<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> = Vec::new();
         if matches!(self.peek(), Token::Comma) || matches!(self.peek(), Token::LSquare) {
             if matches!(self.peek(), Token::Comma) {
                 self.bump()?;
@@ -8693,7 +8693,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
     fn parse_block_ref(
         &mut self,
         state: &mut PerFunctionState<'ctx, B>,
-    ) -> ParseResult<BasicBlockLabel<'ctx, llvmkit_ir::Dyn, B>> {
+    ) -> ParseResult<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> {
         let loc = self.loc();
         match self.peek() {
             Token::LocalVar(_) => {
@@ -8948,13 +8948,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         module: &Module<'ctx, B, Unverified>,
         name: &str,
         loc: Span,
-    ) -> ParseResult<BasicBlockLabel<'ctx, llvmkit_ir::Dyn, B>> {
+    ) -> ParseResult<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> {
         if let Some(value) = self.blocks.get(name).copied() {
             return self.value_as_block_label(value, loc);
         }
         let bb = self.func.append_basic_block(module, name);
         self.blocks.insert(name.to_owned(), bb.to_erased());
-        Ok(bb.label())
+        Ok(bb.id())
     }
 
     /// Define a textual basic block label.
@@ -9072,8 +9072,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         &self,
         value: llvmkit_ir::Value<'ctx, B>,
         loc: Span,
-    ) -> ParseResult<BasicBlockLabel<'ctx, llvmkit_ir::Dyn, B>> {
-        Ok(self.value_as_block_view(value, loc)?.label())
+    ) -> ParseResult<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> {
+        Ok(self.value_as_block_view(value, loc)?.id())
     }
 
     fn get_or_create_numbered_block_label(
@@ -9081,7 +9081,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         module: &Module<'ctx, B, Unverified>,
         id: u32,
         loc: Span,
-    ) -> ParseResult<BasicBlockLabel<'ctx, llvmkit_ir::Dyn, B>> {
+    ) -> ParseResult<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> {
         if let Some(value) = self.local_numbered.get(&id).copied() {
             return self.value_as_block_label(value, loc);
         }
@@ -9093,7 +9093,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         } else {
             let bb = self.func.append_basic_block(module, "");
             self.numbered_blocks.insert(id, bb.to_erased());
-            bb.label()
+            bb.id()
         };
         self.numbered_block_refs.entry(id).or_insert(loc);
         Ok(label)
@@ -9118,7 +9118,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             BlockRef::Named(name) => self.ensure_block_label(module, name, loc)?,
             BlockRef::Numbered(id) => self.get_or_create_numbered_block_label(module, *id, loc)?,
         };
-        self.value_as_block_view(label.to_erased(), loc)
+        self.value_as_block_view(module.view(label).to_erased(), loc)
     }
 
     fn bind_local(

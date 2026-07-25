@@ -364,9 +364,9 @@ fn instsimplify_folds_uniform_phi() -> Result<(), IrError> {
         // m(%p: i32): the merge head-phi param carries the joined value.
         let bwp = IRBuilder::new_for::<Dyn>(&m);
         let (join, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "m")?;
-        let l_label = l.label();
-        let r_label = r.label();
-        let join_label = join.label();
+        let l_label = l.id();
+        let r_label = r.id();
+        let join_label = join.id();
 
         m.view(f).param(0)?.set_name(&m, "c");
         let c: IntValue<i32> = m.view(f).param(0)?.try_into()?;
@@ -425,8 +425,8 @@ fn instsimplify_folds_self_referential_uniform_phi() -> Result<(), IrError> {
         let (loop_bb, params) =
             bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "loop")?;
         let exit = m.view(f).append_basic_block(&m, "exit");
-        let loop_label = loop_bb.label();
-        let exit_label = exit.label();
+        let loop_label = loop_bb.id();
+        let exit_label = exit.id();
 
         m.view(f).param(0)?.set_name(&m, "v0");
         let v0: IntValue<i32> = m.view(f).param(0)?.try_into()?;
@@ -481,9 +481,9 @@ fn instsimplify_keeps_non_uniform_phi() -> Result<(), IrError> {
         // m(%p: i32): merge head-phi param.
         let bwp = IRBuilder::new_for::<Dyn>(&m);
         let (join, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "m")?;
-        let l_label = l.label();
-        let r_label = r.label();
-        let join_label = join.label();
+        let l_label = l.id();
+        let r_label = r.id();
+        let join_label = join.id();
 
         m.view(f).param(0)?.set_name(&m, "a");
         m.view(f).param(1)?.set_name(&m, "b");
@@ -538,9 +538,9 @@ fn uniform_phi_fold_cascades_to_users() -> Result<(), IrError> {
         // m(%p: i32): merge head-phi param; constant 3 down both edges -> uniform.
         let bwp = IRBuilder::new_for::<Dyn>(&m);
         let (join, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "m")?;
-        let l_label = l.label();
-        let r_label = r.label();
-        let join_label = join.label();
+        let l_label = l.id();
+        let r_label = r.id();
+        let join_label = join.id();
 
         let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
 

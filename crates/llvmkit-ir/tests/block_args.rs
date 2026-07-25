@@ -27,7 +27,7 @@ fn append_block_with_params_creates_head_phi() -> Result<(), IrError> {
         assert_eq!(params[0].ty(), i32_ty.as_type());
 
         // The returned block handle is the freshly-appended `hdr`.
-        assert_eq!(hdr.label().to_erased().name().as_deref(), Some("hdr"));
+        assert_eq!(hdr.to_erased().name().as_deref(), Some("hdr"));
 
         // (b) the new block prints with a `phi i32` head-phi. `hdr` is the
         // only block carrying a phi, so its presence in the module text
@@ -88,7 +88,7 @@ fn block_args_br_round_trips_and_verifies() -> Result<(), IrError> {
         // hdr(%p: i32): a block with one i32 parameter (a head-phi).
         let bwp = IRBuilder::new_for::<Dyn>(&m);
         let (hdr, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "hdr")?;
-        let hdr_label = hdr.label();
+        let hdr_label = hdr.id();
 
         // entry: %x = add i32 %a, 1 ; br %hdr(%x)
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -135,7 +135,7 @@ fn block_args_cond_br_diamond_verifies() -> Result<(), IrError> {
         let bwp = IRBuilder::new_for::<Dyn>(&m);
         let (merge, params) =
             bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "merge")?;
-        let merge_label = merge.label();
+        let merge_label = merge.id();
 
         // entry: br (%a == 0) ? then : else
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -194,8 +194,8 @@ fn block_args_cond_br_with_args_carries_both_edges() -> Result<(), IrError> {
             bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "then")?;
         let (else_bb, else_params) =
             bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "else")?;
-        let then_label = then_bb.label();
-        let else_label = else_bb.label();
+        let then_label = then_bb.id();
+        let else_label = else_bb.id();
 
         // entry: %x = add %a, 1 ; %y = add %a, 2 ;
         //        br (%a == 0) ? then(%x) : else(%y)
@@ -251,7 +251,7 @@ fn block_args_br_arity_mismatch_errors() -> Result<(), IrError> {
         // hdr has one param; branch with zero args → arity mismatch.
         let bwp = IRBuilder::new_for::<Dyn>(&m);
         let (hdr, _params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "hdr")?;
-        let hdr_label = hdr.label();
+        let hdr_label = hdr.id();
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let res = b.build_br_with_args(hdr_label, &[]);
@@ -283,7 +283,7 @@ fn block_args_br_type_mismatch_errors() -> Result<(), IrError> {
         // hdr has one i32 param; branch carrying the f64 arg → type mismatch.
         let bwp = IRBuilder::new_for::<Dyn>(&m);
         let (hdr, _params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "hdr")?;
-        let hdr_label = hdr.label();
+        let hdr_label = hdr.id();
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let arg_f64 = m.view(f).param(1)?; // f64 argument
@@ -316,7 +316,7 @@ fn append_block_with_named_params_names_head_phis() -> Result<(), IrError> {
             &[(i32_ty.as_type(), "acc"), (i32_ty.as_type(), "i")],
             "hdr",
         )?;
-        let hdr_label = hdr.label();
+        let hdr_label = hdr.id();
 
         // entry: br hdr(1, 2) — seed both named head-phis.
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);

@@ -62,7 +62,7 @@ use super::analysis::{
     FunctionAnalysisManager, ModuleAnalysis, ModuleAnalysisList, ModuleAnalysisManager,
     ModuleAnalysisSelector, PreservedAnalyses, RepairOutcome,
 };
-use super::basic_block::BasicBlockLabel;
+use super::basic_block::IntoBasicBlockLabel;
 use super::block_state::{Terminated, Unterminated};
 use super::cfg_update::CfgUpdate;
 use super::dominator_tree::DominatorTreeAnalysis;
@@ -79,6 +79,7 @@ use super::pass_access::{
 use super::phi_check::{check_phi_incoming, render_phi_violation};
 use super::r#type::{Type, TypeSlot};
 use super::value::{IsValue, Typed, Value, ValueSlot};
+use super::value_id::BlockId;
 use super::worklist::Worklist;
 
 /// Read-only view of a basic block under its owning module brand.
@@ -1154,6 +1155,8 @@ where
         // its own terminator, so that edge is not this method's to record).
         let source = block.as_basic_block();
         let source_id = source.slot();
+        let module_ref = source.module_ref();
+        let label_ty = module_ref.module().label_type().as_type().id();
         let successors = crate::cfg::block_successors(&source);
 
         let new_block = source.split_at(self.patch.module_mut(), before, name)?;
@@ -1167,9 +1170,9 @@ where
         // BasicBlock::replacePhiUsesWith does for upstream splitters).
         for succ in &successors {
             let succ_block: BasicBlock<'ctx, Dyn, Terminated, B> =
-                BasicBlock::from_parts(succ.id, succ.module, succ.ty);
+                BasicBlock::from_parts(succ.slot(), module_ref, label_ty);
             for inst_id in succ_block.instruction_ids() {
-                let data = succ.module.value_data(inst_id);
+                let data = module_ref.value_data(inst_id);
                 let crate::value::ValueKindData::Instruction(inst) = &data.kind else {
                     continue;
                 };
@@ -1460,11 +1463,15 @@ where
         from: &BasicBlockView<'ctx, B>,
         term_id: ValueSlot,
         slot: EditSlot,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        new_to: BlockId<Dyn, B>,
         phi_values: &[Value<'ctx, B>],
     ) -> IrResult<()> {
         let from_block = from.as_basic_block();
         let from_id = from_block.slot();
+        // Resolve the target id against this function's module *first*: a
+        // foreign `BlockId` is rejected here, before any successor scan or phi
+        // read touches the arena.
+        let new_to = new_to.into_basic_block_label(from_block.module_ref())?;
         let new_id = new_to.slot();
         let ctx = self.patch.module_mut().core_ref().context();
 
@@ -1903,7 +1910,7 @@ where
     pub fn insert_phi<V, I>(
         &mut self,
         block: &BasicBlockView<'ctx, B>,
-        incomings: &[(V, BasicBlockLabel<'ctx, Dyn, B>)],
+        incomings: &[(V, BlockId<Dyn, B>)],
     ) -> IrResult<V>
     where
         V: IsValue<'ctx, B> + Typed<'ctx, B> + TryFrom<Value<'ctx, B>, Error = IrError>,
@@ -1914,7 +1921,7 @@ where
                       result type; use insert_phi_dyn for the zero-incoming case",
         })?;
         let ty = first.ty();
-        let erased: Vec<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> = incomings
+        let erased: Vec<(Value<'ctx, B>, BlockId<Dyn, B>)> = incomings
             .iter()
             .map(|(value, pred)| (value.into_erased(), *pred))
             .collect();
@@ -1975,12 +1982,23 @@ where
         &mut self,
         block: &BasicBlockView<'ctx, B>,
         ty: Type<'ctx, B>,
-        incomings: &[(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)],
+        incomings: &[(Value<'ctx, B>, BlockId<Dyn, B>)],
     ) -> IrResult<Value<'ctx, B>>
     where
         R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
     {
-        let target_id = block.as_basic_block().slot();
+        let target_block = block.as_basic_block();
+        let target_id = target_block.slot();
+        // Resolve every predecessor id against this function's module up front:
+        // a foreign `BlockId` is rejected before any coherence, dominance, or
+        // arena work runs. The resolved labels are the ephemeral views the rest
+        // of this method reads through.
+        let module_ref = target_block.module_ref();
+        let incomings: Vec<_> = incomings
+            .iter()
+            .map(|(value, pred)| pred.into_basic_block_label(module_ref).map(|l| (*value, l)))
+            .collect::<IrResult<_>>()?;
+        let incomings = &incomings[..];
 
         // (1) Predecessor multiset of `block`: invert `block_successors` over
         // the function's blocks (the pattern `check_function_phi_coherence`
@@ -2047,7 +2065,7 @@ where
         let phi_val = builder.make_phi_in_block(target_id, ty_id, "");
         for (value, pred) in incomings {
             let pred_block =
-                BasicBlock::<Dyn, Terminated, B>::from_parts(pred.id, pred.module, pred.ty);
+                BasicBlock::<Dyn, Terminated, B>::from_parts(pred.slot(), module_ref, pred.ty);
             builder.phi_add_incoming_from_value(phi_val, *value, pred_block)?;
         }
 
@@ -2137,11 +2155,7 @@ where
     /// path; see [`SwitchEdit::redirect_successor`] for the phi-values contract
     /// and errors.
     #[inline]
-    pub fn redirect(
-        &self,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
-        phi_values: &[Value<'ctx, B>],
-    ) -> IrResult<()> {
+    pub fn redirect(&self, new_to: BlockId<Dyn, B>, phi_values: &[Value<'ctx, B>]) -> IrResult<()> {
         self.reshape.redirect_slot(
             &self.from,
             self.term_id,
@@ -2181,7 +2195,7 @@ where
     #[inline]
     pub fn redirect_then(
         &self,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        new_to: BlockId<Dyn, B>,
         phi_values: &[Value<'ctx, B>],
     ) -> IrResult<()> {
         self.reshape.redirect_slot(
@@ -2199,7 +2213,7 @@ where
     #[inline]
     pub fn redirect_else(
         &self,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        new_to: BlockId<Dyn, B>,
         phi_values: &[Value<'ctx, B>],
     ) -> IrResult<()> {
         self.reshape.redirect_slot(
@@ -2285,11 +2299,13 @@ where
     #[inline]
     pub fn redirect_successor(
         &self,
-        old_to: &BasicBlockLabel<'ctx, Dyn, B>,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        old_to: BlockId<Dyn, B>,
+        new_to: BlockId<Dyn, B>,
         phi_values: &[Value<'ctx, B>],
     ) -> IrResult<()> {
-        let old_id = old_to.slot();
+        let old_id = old_to
+            .into_basic_block_label(self.from.as_basic_block().module_ref())?
+            .slot();
         // `old_to` is target-based, so witness it names a live case before
         // delegating: a bogus `old_to` retargets zero cases yet the shared tail
         // would still seed `new_to`'s phis / log a spurious `CfgUpdate`. This
@@ -2315,7 +2331,7 @@ where
     #[inline]
     pub fn redirect_default(
         &self,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        new_to: BlockId<Dyn, B>,
         phi_values: &[Value<'ctx, B>],
     ) -> IrResult<()> {
         self.reshape.redirect_slot(
@@ -2346,8 +2362,10 @@ where
     /// Errors: [`IrError::InvalidOperation`] if `old_to` is the switch's default
     /// edge (a `switch` must keep its default) or is not a case successor.
     #[inline]
-    pub fn remove_successor(&self, old_to: &BasicBlockLabel<'ctx, Dyn, B>) -> IrResult<()> {
-        let old_id = old_to.slot();
+    pub fn remove_successor(&self, old_to: BlockId<Dyn, B>) -> IrResult<()> {
+        let old_id = old_to
+            .into_basic_block_label(self.from.as_basic_block().module_ref())?
+            .slot();
         if self.reshape.switch_default_dest(self.term_id) == old_id {
             return Err(IrError::InvalidOperation {
                 message: "remove_successor: cannot remove a `switch`'s default edge",
@@ -2394,7 +2412,7 @@ where
     #[inline]
     pub fn redirect_normal(
         &self,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        new_to: BlockId<Dyn, B>,
         phi_values: &[Value<'ctx, B>],
     ) -> IrResult<()> {
         self.reshape.redirect_slot(
@@ -2412,7 +2430,7 @@ where
     #[inline]
     pub fn redirect_unwind(
         &self,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        new_to: BlockId<Dyn, B>,
         phi_values: &[Value<'ctx, B>],
     ) -> IrResult<()> {
         self.reshape.redirect_slot(
@@ -2453,7 +2471,7 @@ where
     #[inline]
     pub fn redirect_default(
         &self,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        new_to: BlockId<Dyn, B>,
         phi_values: &[Value<'ctx, B>],
     ) -> IrResult<()> {
         self.reshape.redirect_slot(
@@ -2473,7 +2491,7 @@ where
     pub fn redirect_indirect(
         &self,
         index: usize,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
+        new_to: BlockId<Dyn, B>,
         phi_values: &[Value<'ctx, B>],
     ) -> IrResult<()> {
         self.reshape.redirect_slot(
@@ -3397,7 +3415,7 @@ mod tests {
                 i32_ty.const_int(2_u32),
                 "x",
             )?;
-            b.build_br(next.label())?;
+            b.build_br(next.id())?;
             // next: ret 0
             let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(next);
             b2.build_ret(i32_ty.const_int(0_u32))?;
@@ -3452,7 +3470,7 @@ mod tests {
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = m.view(f).append_basic_block(&m, "entry");
             let next = m.view(f).append_basic_block(&m, "next");
-            let next_label = next.label();
+            let next_label = next.id();
 
             // entry: %x = add 1, 2 ; br label %next    next: ret 0
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -3461,7 +3479,7 @@ mod tests {
                 i32_ty.const_int(2_u32),
                 "x",
             )?;
-            b.build_br(next.label())?;
+            b.build_br(next.id())?;
             let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(next);
             b2.build_ret(i32_ty.const_int(0_u32))?;
 

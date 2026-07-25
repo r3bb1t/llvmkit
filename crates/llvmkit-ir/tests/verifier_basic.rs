@@ -398,9 +398,9 @@ fn verify_memory_gep_select_control() -> Result<(), IrError> {
         let bwp = IRBuilder::new_for::<Dyn>(&m);
         let (join, params) =
             bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "join")?;
-        let then_label = then_bb.label();
-        let else_label = else_bb.label();
-        let join_label = join.label();
+        let then_label = then_bb.id();
+        let else_label = else_bb.id();
+        let join_label = join.id();
 
         let p: PointerValue = m.view(f).param(0)?.try_into()?;
         let v: IntValue<i32> = m.view(f).param(1)?.try_into()?;
@@ -487,8 +487,8 @@ fn verify_void_return_and_unreachable() -> Result<(), IrError> {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let then_bb = m.view(f).append_basic_block(&m, "then");
         let else_bb = m.view(f).append_basic_block(&m, "else");
-        let then_label = then_bb.label();
-        let else_label = else_bb.label();
+        let then_label = then_bb.id();
+        let else_label = else_bb.id();
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let cond: IntValue<bool> = m.view(f).param(0)?.try_into()?;
@@ -590,7 +590,7 @@ fn verify_cross_block_dominated_use_passes() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let next = m.view(f).append_basic_block(&m, "next");
-        let next_label = next.label();
+        let next_label = next.id();
         let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -618,9 +618,9 @@ fn verify_cross_block_branch_value_used_after_join_fails() -> Result<(), IrError
         let then_bb = m.view(f).append_basic_block(&m, "then");
         let else_bb = m.view(f).append_basic_block(&m, "else");
         let join = m.view(f).append_basic_block(&m, "join");
-        let then_label = then_bb.label();
-        let else_label = else_bb.label();
-        let join_label = join.label();
+        let then_label = then_bb.id();
+        let else_label = else_bb.id();
+        let join_label = join.id();
         let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let cond: IntValue<bool> = m.view(f).param(1)?.try_into()?;
 
@@ -670,9 +670,9 @@ fn verify_phi_incoming_edge_dominance_passes() -> Result<(), IrError> {
         let bwp = IRBuilder::new_for::<Dyn>(&m);
         let (join, params) =
             bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "join")?;
-        let then_label = then_bb.label();
-        let else_label = else_bb.label();
-        let join_label = join.label();
+        let then_label = then_bb.id();
+        let else_label = else_bb.id();
+        let join_label = join.id();
         let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let cond: IntValue<bool> = m.view(f).param(1)?.try_into()?;
 
@@ -708,8 +708,8 @@ fn verify_invoke_result_used_on_unwind_edge_fails() -> Result<(), IrError> {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let normal = m.view(f).append_basic_block(&m, "normal");
         let unwind = m.view(f).append_basic_block(&m, "unwind");
-        let normal_label = normal.label();
-        let unwind_label = unwind.label();
+        let normal_label = normal.id();
+        let unwind_label = unwind.id();
         let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
 
         let (_sealed, invoke) = IRBuilder::new_for::<Dyn>(&m)

@@ -21,7 +21,7 @@
 use core::iter::FusedIterator;
 
 use super::asm_writer::{SlotTracker, fmt_instruction};
-use super::basic_block::{BasicBlock, BasicBlockLabel};
+use super::basic_block::BasicBlock;
 use super::block_state::Unterminated;
 use super::float_kind::FloatDyn;
 use super::function::FunctionValue;
@@ -54,6 +54,7 @@ use super::value::{
     HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData, ValueSlot, ValueUse,
     sealed,
 };
+use super::value_id::BlockId;
 use super::{DebugLoc, IrError, IrResult, Type, TypeKind};
 
 // --------------------------------------------------------------------------
@@ -574,10 +575,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     }
 
     /// Containing basic block label.
-    pub fn parent(&self) -> BasicBlockLabel<'ctx, Dyn, B> {
+    pub fn parent(&self) -> BlockId<Dyn, B> {
         let parent = self.data().parent.get();
-        let label_ty = self.module.module().label_type().as_type().id();
-        BasicBlock::<Dyn, Unterminated, B>::from_parts(parent, self.module, label_ty).label()
+        BlockId::<Dyn, B>::from_raw(self.module.id(), parent)
     }
 
     /// Read-only opcode discriminator for non-terminator opcodes.
@@ -868,7 +868,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     }
 
     /// Containing basic block label.
-    pub fn parent(&self) -> BasicBlockLabel<'ctx, Dyn, B> {
+    pub fn parent(&self) -> BlockId<Dyn, B> {
         self.as_view().parent()
     }
 
@@ -1700,10 +1700,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PhiKind<'ctx, B> {
     /// variant. The value comes back type-erased (`Value`), which is all a
     /// value-only consumer needs; the per-variant handles keep the narrowed
     /// accessors.
-    pub fn incoming(
-        &self,
-        index: u32,
-    ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
+    pub fn incoming(&self, index: u32) -> IrResult<(Value<'ctx, B>, BlockId<Dyn, B>)> {
         match self {
             Self::Int(p) => p.incoming(index),
             Self::Fp(p) => p.incoming(index),
@@ -1721,11 +1718,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> PhiKind<'ctx, B> {
     /// narrowed accessors.
     pub fn incomings(
         &self,
-    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
-        let entries: Vec<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> = match self {
+        let entries: Vec<(Value<'ctx, B>, BlockId<Dyn, B>)> = match self {
             Self::Int(p) => p.incomings().collect(),
             Self::Fp(p) => p.incomings().collect(),
             Self::Ptr(p) => p.incomings().collect(),

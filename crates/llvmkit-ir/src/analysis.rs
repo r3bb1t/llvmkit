@@ -1594,11 +1594,11 @@ mod tests {
             let next = m.view(f).append_basic_block(&m, "next");
             let entry_id = entry.slot();
             let next_id = next.slot();
-            let next_label = next.label();
+            let next_label = next.id();
 
             // entry: br next    next: ret 0
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-            b.build_br(next.label())?;
+            b.build_br(next.id())?;
             let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(next);
             b2.build_ret(i32_ty.const_int(0_u32))?;
 

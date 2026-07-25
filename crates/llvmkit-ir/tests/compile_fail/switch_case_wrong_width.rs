@@ -24,7 +24,7 @@ fn main() {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
         let entry = m.view(f).append_basic_block(&m, "entry");
         let dest = m.view(f).append_basic_block(&m, "dest");
-        let dest_label = dest.label();
+        let dest_label = dest.id();
 
         // `W` is inferred as `i32` from the typed condition.
         let cond: IntValue<i32> = m.view(f).param(0).unwrap().try_into().unwrap();

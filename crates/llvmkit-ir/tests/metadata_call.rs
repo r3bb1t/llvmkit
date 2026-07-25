@@ -326,8 +326,8 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
         let entry = m.view(invoke_host).append_basic_block(&m, "entry");
         let normal = m.view(invoke_host).append_basic_block(&m, "normal");
         let unwind = m.view(invoke_host).append_basic_block(&m, "unwind");
-        let normal_label = normal.label();
-        let unwind_label = unwind.label();
+        let normal_label = normal.id();
+        let unwind_label = unwind.id();
         let p: llvmkit_ir::PointerValue = m.view(invoke_host).param(0)?.try_into()?;
         let (_entry, invoke) = IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)

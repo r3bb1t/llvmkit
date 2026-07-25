@@ -75,9 +75,9 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
         "loop",
     )?;
     let exit = m.view(f).append_basic_block(m, "exit");
-    let base_label = base.label();
-    let loop_label = loop_bb.label();
-    let exit_label = exit.label();
+    let base_label = base.id();
+    let loop_label = loop_bb.id();
+    let exit_label = exit.id();
 
     let (n,) = m.view(f).params();
 

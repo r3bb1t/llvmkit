@@ -40,7 +40,7 @@ use core::marker::PhantomData;
 use super::align::{Align, MaybeAlign};
 use super::array_len::ArrayLen;
 use super::atomic_ordering::AtomicOrdering;
-use super::basic_block::{BasicBlock, BasicBlockLabel, BlockCall, IntoBasicBlockLabel};
+use super::basic_block::{BasicBlock, BlockCall, IntoBasicBlockLabel};
 use super::block_params::{BlockParams, BlockParamsDyn};
 use super::block_state::{Terminated, Unterminated};
 use super::calling_conv::CallingConv;
@@ -93,8 +93,8 @@ use super::value::{
     Value, ValueKindData, ValueSlot, ValueUse, VectorValue,
 };
 use super::value_id::{
-    AtomicCmpXchgInstId, AtomicRMWInstId, CallInstId, FloatValueId, FreezeInstId, IntValueId,
-    IntrinsicInstId, PointerValueId, TypedCallInstId, VAArgInstId, ValueId, ViewIn,
+    AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FloatValueId, FreezeInstId,
+    IntValueId, IntrinsicInstId, PointerValueId, TypedCallInstId, VAArgInstId, ValueId, ViewIn,
 };
 use super::vec_len::{LenDyn, StaticVecLen, VecLen};
 
@@ -515,6 +515,60 @@ where
         I: ViewIn<'ctx, B>,
     {
         id.resolve_in(ModuleRef::new(self.module))
+    }
+
+    /// Position the builder at the end of the block named by a storable
+    /// [`BlockId`] — the **checked** escape hatch for dynamic or recovered
+    /// control-flow graphs, where the linear
+    /// [`BasicBlock`] token was consumed long ago (a pass walking
+    /// `function.basic_blocks()`, a parser resuming a forward-referenced label,
+    /// an analysis re-entering a block it recorded).
+    ///
+    /// [`position_at_end`](Self::position_at_end) stays the strict form: it
+    /// *consumes* an [`Unterminated`] block token, so appending into an already
+    /// terminated block is not even representable. An id carries no termination
+    /// marker, so this form checks at run time instead and reports:
+    ///
+    /// - [`IrError::ForeignValueId`] if `block` was minted in another module
+    ///   (the tag is compared before the arena is touched) or its slot no longer
+    ///   holds a basic block;
+    /// - [`IrError::InvalidOperation`] if the block already has a terminator —
+    ///   the same rule [`restore_insert_point`](Self::restore_insert_point)
+    ///   enforces, so a `_dyn` reposition can never reopen a closed block.
+    ///
+    /// The `Params` marker is erased at the insertion point, exactly as in
+    /// [`position_at_end`](Self::position_at_end): block parameters constrain
+    /// branch edges, not insertion.
+    pub fn position_at_end_dyn<Params>(
+        self,
+        block: BlockId<R, B, Params>,
+    ) -> IrResult<IRBuilder<'m, 'ctx, B, F, Positioned, R>>
+    where
+        Params: BlockParams,
+    {
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let label = block
+            .resolve_in(module_ref)
+            .ok_or(IrError::ForeignValueId)?;
+        let insert_block =
+            BasicBlock::<R, Unterminated, B>::from_parts(label.slot(), module_ref, label.ty);
+        if insert_block
+            .terminator()
+            .is_some_and(|inst| inst.is_terminator())
+        {
+            return Err(IrError::InvalidOperation {
+                message: "cannot position at end of a terminated block",
+            });
+        }
+        Ok(IRBuilder {
+            module: self.module,
+            _module: PhantomData,
+            insert_block: Some(insert_block),
+            insert_before: None,
+            folder: self.folder,
+            fmf: self.fmf,
+            _state: PhantomData,
+        })
     }
 
     /// Re-anchor the builder *before* the given attached instruction.
@@ -6546,7 +6600,7 @@ where
     where
         T: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let target = target.into_basic_block_label();
+        let target = target.into_basic_block_label(ModuleRef::new(self.module))?;
         let payload = crate::instr_types::BranchInstData {
             kind: core::cell::RefCell::new(crate::instr_types::BranchKind::Unconditional(
                 target.slot(),
@@ -6573,8 +6627,8 @@ where
         Then: IntoBasicBlockLabel<'ctx, R, B>,
         Else: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let then_bb = then_bb.into_basic_block_label();
-        let else_bb = else_bb.into_basic_block_label();
+        let then_bb = then_bb.into_basic_block_label(ModuleRef::new(self.module))?;
+        let else_bb = else_bb.into_basic_block_label(ModuleRef::new(self.module))?;
         let cond = cond.into_int_value(ModuleRef::new(self.module))?;
         let payload = crate::instr_types::BranchInstData {
             kind: core::cell::RefCell::new(crate::instr_types::BranchKind::Conditional {
@@ -6616,10 +6670,12 @@ where
     where
         T: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let target = target.into_basic_block_label();
-        // Capture the predecessor label before the terminator builder consumes
+        let target = target
+            .into_basic_block_label(ModuleRef::new(self.module))?
+            .id();
+        // Capture the predecessor id before the terminator builder consumes
         // `self` — the incoming edges name *this* block as their predecessor.
-        let pred = self.insert_block().label();
+        let pred = self.insert_block().id();
         self.add_block_args(target, pred, args)?;
         self.build_br(target)
     }
@@ -6658,9 +6714,13 @@ where
         Then: IntoBasicBlockLabel<'ctx, R, B>,
         Else: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let then_bb = then_bb.into_basic_block_label();
-        let else_bb = else_bb.into_basic_block_label();
-        let pred = self.insert_block().label();
+        let then_bb = then_bb
+            .into_basic_block_label(ModuleRef::new(self.module))?
+            .id();
+        let else_bb = else_bb
+            .into_basic_block_label(ModuleRef::new(self.module))?
+            .id();
+        let pred = self.insert_block().id();
         self.add_block_args(then_bb, pred, then_args)?;
         self.add_block_args(else_bb, pred, else_args)?;
         self.build_cond_br(cond, then_bb, else_bb)
@@ -6687,12 +6747,13 @@ where
     /// branch cleanly.
     fn add_block_args(
         &self,
-        target: BasicBlockLabel<'ctx, R, B>,
-        pred: BasicBlockLabel<'ctx, R, B>,
+        target: BlockId<R, B>,
+        pred: BlockId<R, B>,
         args: &[Value<'ctx, B>],
     ) -> IrResult<()> {
         let module_ref = ModuleRef::<B>::new(self.module);
         let label_ty = self.module.label_type().as_type().id();
+        let target = target.into_basic_block_label(module_ref)?;
 
         // The target block's parameters are its leading head-phis, in order.
         // Scan from the block top and stop at the first non-phi (phis are
@@ -6790,19 +6851,19 @@ where
     /// block).
     pub fn build_br_call<Params>(
         self,
-        target: BlockCall<'ctx, R, B, Params>,
+        target: BlockCall<R, B, Params>,
     ) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
     where
         Params: BlockParams + FunctionParamList,
     {
-        let (label, lowered) = target.into_parts();
+        let (target, lowered) = target.into_parts();
         let arg_ids = lowered?;
         let args = self.block_call_arg_values(&arg_ids);
         // Capture the predecessor label before the terminator builder consumes
         // `self` — the incoming edges name *this* block as their predecessor.
-        let pred = self.insert_block().label();
-        self.add_block_args(label, pred, &args)?;
-        self.build_br(label)
+        let pred = self.insert_block().id();
+        self.add_block_args(target, pred, &args)?;
+        self.build_br(target)
     }
 
     /// Produce `br i1 <cond>, label %then, label %else` for two **typed**
@@ -6823,24 +6884,24 @@ where
     pub fn build_cond_br_call<C, ThenP, ElseP>(
         self,
         cond: C,
-        then_call: BlockCall<'ctx, R, B, ThenP>,
-        else_call: BlockCall<'ctx, R, B, ElseP>,
+        then_call: BlockCall<R, B, ThenP>,
+        else_call: BlockCall<R, B, ElseP>,
     ) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
     where
         C: IntoIntValue<'ctx, bool, B>,
         ThenP: BlockParams + FunctionParamList,
         ElseP: BlockParams + FunctionParamList,
     {
-        let (then_label, then_lowered) = then_call.into_parts();
-        let (else_label, else_lowered) = else_call.into_parts();
+        let (then_target, then_lowered) = then_call.into_parts();
+        let (else_target, else_lowered) = else_call.into_parts();
         let then_ids = then_lowered?;
         let else_ids = else_lowered?;
         let then_args = self.block_call_arg_values(&then_ids);
         let else_args = self.block_call_arg_values(&else_ids);
-        let pred = self.insert_block().label();
-        self.add_block_args(then_label, pred, &then_args)?;
-        self.add_block_args(else_label, pred, &else_args)?;
-        self.build_cond_br(cond, then_label, else_label)
+        let pred = self.insert_block().id();
+        self.add_block_args(then_target, pred, &then_args)?;
+        self.add_block_args(else_target, pred, &else_args)?;
+        self.build_cond_br(cond, then_target, else_target)
     }
 
     /// Produce a TYPED `switch <cond>, label <default> [...]` whose
@@ -6877,7 +6938,7 @@ where
     {
         let module_ref = ModuleRef::<B>::new(self.module);
         let cond_id = cond.into_int_value(module_ref)?.slot();
-        let default_target = default_target.into_basic_block_label();
+        let default_target = default_target.into_basic_block_label(ModuleRef::new(self.module))?;
         let void_ty = self.module.void_type().as_type().id();
         let payload = crate::instr_types::SwitchInstData::new(cond_id, default_target.slot());
         let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
@@ -6915,7 +6976,7 @@ where
         C: IntoErasedValue<'ctx, B>,
         DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let default_target = default_target.into_basic_block_label();
+        let default_target = default_target.into_basic_block_label(ModuleRef::new(self.module))?;
         let cond_v = cond.into_erased_value(ModuleRef::new(self.module))?;
         let void_ty = self.module.void_type().as_type().id();
         let payload = crate::instr_types::SwitchInstData::new(cond_v.id, default_target.slot());
@@ -7010,8 +7071,8 @@ where
         Normal: IntoBasicBlockLabel<'ctx, R, B>,
         Unwind: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let normal_dest = normal_dest.into_basic_block_label();
-        let unwind_dest = unwind_dest.into_basic_block_label();
+        let normal_dest = normal_dest.into_basic_block_label(ModuleRef::new(self.module))?;
+        let unwind_dest = unwind_dest.into_basic_block_label(ModuleRef::new(self.module))?;
         let f = callee.as_function();
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let (name, calling_conv, attrs) = config.into_parts();
@@ -7096,8 +7157,8 @@ where
         Normal: IntoBasicBlockLabel<'ctx, R, B>,
         Unwind: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let normal_dest = normal_dest.into_basic_block_label();
-        let unwind_dest = unwind_dest.into_basic_block_label();
+        let normal_dest = normal_dest.into_basic_block_label(ModuleRef::new(self.module))?;
+        let unwind_dest = unwind_dest.into_basic_block_label(ModuleRef::new(self.module))?;
         let callee_v = callee.into_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
         let (name, calling_conv, attrs) = config.into_parts();
@@ -7150,8 +7211,8 @@ where
         Callee: IntoPointerValue<'ctx, B>,
     {
         let callee = callee.into_pointer_value(ModuleRef::new(self.module))?;
-        let normal_dest = normal_dest.into_basic_block_label();
-        let unwind_dest = unwind_dest.into_basic_block_label();
+        let normal_dest = normal_dest.into_basic_block_label(ModuleRef::new(self.module))?;
+        let unwind_dest = unwind_dest.into_basic_block_label(ModuleRef::new(self.module))?;
         let callee_v = IsValue::into_erased(callee);
         let ret_ty = fn_ty.return_type().id();
         let (name, calling_conv, attrs) = config.into_parts();
@@ -7223,8 +7284,8 @@ where
         Normal: IntoBasicBlockLabel<'ctx, R, B>,
         Unwind: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let normal_dest = normal_dest.into_basic_block_label();
-        let unwind_dest = unwind_dest.into_basic_block_label();
+        let normal_dest = normal_dest.into_basic_block_label(ModuleRef::new(self.module))?;
+        let unwind_dest = unwind_dest.into_basic_block_label(ModuleRef::new(self.module))?;
         let asm_v = asm.into_erased();
         let fn_ty = asm.function_type();
         let ret_ty = fn_ty.return_type().id();
@@ -7306,7 +7367,7 @@ where
         Indirects: IntoIterator<Item = Indirect>,
         Indirect: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let default_dest = default_dest.into_basic_block_label();
+        let default_dest = default_dest.into_basic_block_label(ModuleRef::new(self.module))?;
         let callee_v = callee.into_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
         let (name, calling_conv, attrs) = config.into_parts();
@@ -7320,8 +7381,11 @@ where
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let indirect_ids: Vec<ValueSlot> = indirect_dests
             .into_iter()
-            .map(|d| d.into_basic_block_label().slot())
-            .collect();
+            .map(|d| {
+                d.into_basic_block_label(ModuleRef::new(self.module))
+                    .map(|l| l.slot())
+            })
+            .collect::<IrResult<_>>()?;
         let payload = crate::instr_types::CallBrInstData::new_with_attrs(
             callee_v.id,
             fn_ty.as_type().id(),
@@ -7384,7 +7448,7 @@ where
         Indirects: IntoIterator<Item = Indirect>,
         Indirect: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let default_dest = default_dest.into_basic_block_label();
+        let default_dest = default_dest.into_basic_block_label(ModuleRef::new(self.module))?;
         let asm_v = asm.into_erased();
         let fn_ty = asm.function_type();
         let ret_ty = fn_ty.return_type().id();
@@ -7404,8 +7468,11 @@ where
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let indirect_ids: Vec<ValueSlot> = indirect_dests
             .into_iter()
-            .map(|d| d.into_basic_block_label().slot())
-            .collect();
+            .map(|d| {
+                d.into_basic_block_label(ModuleRef::new(self.module))
+                    .map(|l| l.slot())
+            })
+            .collect::<IrResult<_>>()?;
         let (name, calling_conv, attrs) = config.into_parts();
         let payload = crate::instr_types::CallBrInstData::new_with_attrs(
             asm_v.id,
@@ -7578,7 +7645,7 @@ where
         Pad: IntoErasedValue<'ctx, B>,
     {
         let catch_pad = catch_pad.into_erased_value(ModuleRef::new(self.module))?;
-        let target = target.into_basic_block_label();
+        let target = target.into_basic_block_label(ModuleRef::new(self.module))?;
         let void_ty = self.module.void_type().as_type().id();
         let payload = crate::instr_types::CatchReturnInstData::new(catch_pad.id, target.slot());
         let inst =
@@ -7601,7 +7668,7 @@ where
         Pad: IntoErasedValue<'ctx, B>,
     {
         let cleanup_pad = cleanup_pad.into_erased_value(ModuleRef::new(self.module))?;
-        let unwind_dest = unwind_dest.into_basic_block_label();
+        let unwind_dest = unwind_dest.into_basic_block_label(ModuleRef::new(self.module))?;
         self.build_cleanup_ret_raw(cleanup_pad.id, Some(unwind_dest.slot()), name)
     }
 
@@ -7651,7 +7718,7 @@ where
         Pad: IntoErasedValue<'ctx, B>,
     {
         let parent_pad = parent_pad.into_erased_value(ModuleRef::new(self.module))?;
-        let unwind_dest = unwind_dest.into_basic_block_label();
+        let unwind_dest = unwind_dest.into_basic_block_label(ModuleRef::new(self.module))?;
         self.build_catch_switch_raw(Some(parent_pad.id), Some(unwind_dest.slot()), name)
     }
 
@@ -7681,7 +7748,7 @@ where
         Unwind: IntoBasicBlockLabel<'ctx, R, B>,
         Name: AsRef<str>,
     {
-        let unwind_dest = unwind_dest.into_basic_block_label();
+        let unwind_dest = unwind_dest.into_basic_block_label(ModuleRef::new(self.module))?;
         self.build_catch_switch_raw(None, Some(unwind_dest.slot()), name)
     }
 

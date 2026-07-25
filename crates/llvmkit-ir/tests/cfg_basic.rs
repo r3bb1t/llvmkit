@@ -3,37 +3,29 @@
 //! Every test cites its upstream source per Doctrine D11.
 
 use llvmkit_ir::{
-    BasicBlockLabel, Dyn, FunctionCfg, IRBuilder, IntValue, IrError, Linkage, Module, PointerValue,
-    ReturnMarker, Value,
+    BlockId, Brand, Dyn, FunctionCfg, IRBuilder, IntValue, IrError, Linkage, Module, PointerValue,
+    ReturnMarker,
 };
 
 fn assert_successors<'ctx, R>(
     cfg: &FunctionCfg<'ctx>,
-    from: BasicBlockLabel<'ctx, R>,
-    expected: &[Value<'ctx>],
+    from: BlockId<R, Brand<'ctx>>,
+    expected: &[BlockId<Dyn, Brand<'ctx>>],
 ) where
     R: ReturnMarker,
 {
-    let got: Vec<_> = cfg
-        .successors(from)
-        .into_iter()
-        .map(|bb| bb.to_erased())
-        .collect();
+    let got: Vec<_> = cfg.successors(from);
     assert_eq!(got, expected);
 }
 
 fn assert_predecessors<'ctx, R>(
     cfg: &FunctionCfg<'ctx>,
-    block: BasicBlockLabel<'ctx, R>,
-    expected: &[Value<'ctx>],
+    block: BlockId<R, Brand<'ctx>>,
+    expected: &[BlockId<Dyn, Brand<'ctx>>],
 ) where
     R: ReturnMarker,
 {
-    let got: Vec<_> = cfg
-        .predecessors(block)
-        .into_iter()
-        .map(|bb| bb.to_erased())
-        .collect();
+    let got: Vec<_> = cfg.predecessors(block);
     assert_eq!(got, expected);
 }
 
@@ -47,10 +39,8 @@ fn unconditional_branch_cfg_edges() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let exit = m.view(f).append_basic_block(&m, "exit");
-        let entry_label = entry.label();
-        let entry_value = entry.to_erased();
-        let exit_label = exit.label();
-        let exit_value = exit.to_erased();
+        let entry_label = entry.id();
+        let exit_label = exit.id();
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(exit)
@@ -60,8 +50,8 @@ fn unconditional_branch_cfg_edges() -> Result<(), IrError> {
             .build_br(exit_label)?;
 
         let cfg = FunctionCfg::new(m.view(f).as_dyn());
-        assert_successors(&cfg, entry_label, &[exit_value]);
-        assert_predecessors(&cfg, exit_label, &[entry_value]);
+        assert_successors(&cfg, entry_label, &[exit_label]);
+        assert_predecessors(&cfg, exit_label, &[entry_label]);
         assert_eq!(cfg.edges().collect::<Vec<_>>().len(), 1);
         Ok(())
     })
@@ -78,10 +68,8 @@ fn conditional_branch_preserves_duplicate_edges() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let target = m.view(f).append_basic_block(&m, "target");
-        let entry_label = entry.label();
-        let entry_value = entry.to_erased();
-        let target_label = target.label();
-        let target_value = target.to_erased();
+        let entry_label = entry.id();
+        let target_label = target.id();
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(target)
@@ -92,8 +80,8 @@ fn conditional_branch_preserves_duplicate_edges() -> Result<(), IrError> {
             .build_cond_br(cond, target_label, target_label)?;
 
         let cfg = FunctionCfg::new(m.view(f).as_dyn());
-        assert_successors(&cfg, entry_label, &[target_value, target_value]);
-        assert_predecessors(&cfg, target_label, &[entry_value, entry_value]);
+        assert_successors(&cfg, entry_label, &[target_label, target_label]);
+        assert_predecessors(&cfg, target_label, &[entry_label, entry_label]);
         Ok(())
     })
 }
@@ -111,14 +99,10 @@ fn switch_cfg_edges_include_default_then_cases() -> Result<(), IrError> {
         let default_bb = m.view(f).append_basic_block(&m, "default");
         let case0 = m.view(f).append_basic_block(&m, "case0");
         let case1 = m.view(f).append_basic_block(&m, "case1");
-        let entry_label = entry.label();
-        let entry_value = entry.to_erased();
-        let default_label = default_bb.label();
-        let default_value = default_bb.to_erased();
-        let case0_label = case0.label();
-        let case0_value = case0.to_erased();
-        let case1_label = case1.label();
-        let case1_value = case1.to_erased();
+        let entry_label = entry.id();
+        let default_label = default_bb.id();
+        let case0_label = case0.id();
+        let case1_label = case1.id();
         for bb in [default_bb, case0, case1] {
             IRBuilder::new_for::<Dyn>(&m)
                 .position_at_end(bb)
@@ -138,11 +122,11 @@ fn switch_cfg_edges_include_default_then_cases() -> Result<(), IrError> {
         assert_successors(
             &cfg,
             entry_label,
-            &[default_value, case0_value, case1_value],
+            &[default_label, case0_label, case1_label],
         );
-        assert_predecessors(&cfg, default_label, &[entry_value]);
-        assert_predecessors(&cfg, case0_label, &[entry_value]);
-        assert_predecessors(&cfg, case1_label, &[entry_value]);
+        assert_predecessors(&cfg, default_label, &[entry_label]);
+        assert_predecessors(&cfg, case0_label, &[entry_label]);
+        assert_predecessors(&cfg, case1_label, &[entry_label]);
         Ok(())
     })
 }
@@ -159,12 +143,9 @@ fn indirectbr_cfg_edges_are_listed_destinations() -> Result<(), IrError> {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let bb1 = m.view(f).append_basic_block(&m, "bb1");
         let bb2 = m.view(f).append_basic_block(&m, "bb2");
-        let entry_label = entry.label();
-        let entry_value = entry.to_erased();
-        let bb1_label = bb1.label();
-        let bb1_value = bb1.to_erased();
-        let bb2_label = bb2.label();
-        let bb2_value = bb2.to_erased();
+        let entry_label = entry.id();
+        let bb1_label = bb1.id();
+        let bb2_label = bb2.id();
         for bb in [bb1, bb2] {
             IRBuilder::new_for::<Dyn>(&m)
                 .position_at_end(bb)
@@ -181,9 +162,9 @@ fn indirectbr_cfg_edges_are_listed_destinations() -> Result<(), IrError> {
             .finish();
 
         let cfg = FunctionCfg::new(m.view(f).as_dyn());
-        assert_successors(&cfg, entry_label, &[bb1_value, bb2_value]);
-        assert_predecessors(&cfg, bb1_label, &[entry_value]);
-        assert_predecessors(&cfg, bb2_label, &[entry_value]);
+        assert_successors(&cfg, entry_label, &[bb1_label, bb2_label]);
+        assert_predecessors(&cfg, bb1_label, &[entry_label]);
+        assert_predecessors(&cfg, bb2_label, &[entry_label]);
         Ok(())
     })
 }
@@ -201,12 +182,9 @@ fn invoke_cfg_edges_are_normal_then_unwind() -> Result<(), IrError> {
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let normal = m.view(caller).append_basic_block(&m, "normal");
         let unwind = m.view(caller).append_basic_block(&m, "unwind");
-        let entry_label = entry.label();
-        let entry_value = entry.to_erased();
-        let normal_label = normal.label();
-        let normal_value = normal.to_erased();
-        let unwind_label = unwind.label();
-        let unwind_value = unwind.to_erased();
+        let entry_label = entry.id();
+        let normal_label = normal.id();
+        let unwind_label = unwind.id();
         for bb in [normal, unwind] {
             IRBuilder::new_for::<Dyn>(&m)
                 .position_at_end(bb)
@@ -224,9 +202,9 @@ fn invoke_cfg_edges_are_normal_then_unwind() -> Result<(), IrError> {
             )?;
 
         let cfg = FunctionCfg::new(m.view(caller).as_dyn());
-        assert_successors(&cfg, entry_label, &[normal_value, unwind_value]);
-        assert_predecessors(&cfg, normal_label, &[entry_value]);
-        assert_predecessors(&cfg, unwind_label, &[entry_value]);
+        assert_successors(&cfg, entry_label, &[normal_label, unwind_label]);
+        assert_predecessors(&cfg, normal_label, &[entry_label]);
+        assert_predecessors(&cfg, unwind_label, &[entry_label]);
         Ok(())
     })
 }
@@ -244,12 +222,9 @@ fn callbr_cfg_edges_are_default_then_indirect_dests() -> Result<(), IrError> {
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let dflt = m.view(caller).append_basic_block(&m, "default");
         let indirect = m.view(caller).append_basic_block(&m, "indirect");
-        let entry_label = entry.label();
-        let entry_value = entry.to_erased();
-        let dflt_label = dflt.label();
-        let dflt_value = dflt.to_erased();
-        let indirect_label = indirect.label();
-        let indirect_value = indirect.to_erased();
+        let entry_label = entry.id();
+        let dflt_label = dflt.id();
+        let indirect_label = indirect.id();
         for bb in [dflt, indirect] {
             IRBuilder::new_for::<Dyn>(&m)
                 .position_at_end(bb)
@@ -267,9 +242,9 @@ fn callbr_cfg_edges_are_default_then_indirect_dests() -> Result<(), IrError> {
             )?;
 
         let cfg = FunctionCfg::new(m.view(caller).as_dyn());
-        assert_successors(&cfg, entry_label, &[dflt_value, indirect_value]);
-        assert_predecessors(&cfg, dflt_label, &[entry_value]);
-        assert_predecessors(&cfg, indirect_label, &[entry_value]);
+        assert_successors(&cfg, entry_label, &[dflt_label, indirect_label]);
+        assert_predecessors(&cfg, dflt_label, &[entry_label]);
+        assert_predecessors(&cfg, indirect_label, &[entry_label]);
         Ok(())
     })
 }
@@ -285,11 +260,9 @@ fn catchret_cfg_edge_is_target_block() -> Result<(), IrError> {
         let cs_block = m.view(f).append_basic_block(&m, "cs");
         let cp_block = m.view(f).append_basic_block(&m, "cp");
         let ret_block = m.view(f).append_basic_block(&m, "ret");
-        let cs_label = cs_block.label();
-        let cp_label = cp_block.label();
-        let cp_value = cp_block.to_erased();
-        let ret_label = ret_block.label();
-        let ret_value = ret_block.to_erased();
+        let cs_label = cs_block.id();
+        let cp_label = cp_block.id();
+        let ret_label = ret_block.id();
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(ret_block)
             .build_ret_void()?;
@@ -304,9 +277,9 @@ fn catchret_cfg_edge_is_target_block() -> Result<(), IrError> {
         b_cp.build_catch_ret(cp.to_erased(), ret_label, "")?;
 
         let cfg = FunctionCfg::new(m.view(f).as_dyn());
-        assert_successors(&cfg, cs_label, &[cp_value]);
-        assert_successors(&cfg, cp_label, &[ret_value]);
-        assert_predecessors(&cfg, ret_label, &[cp_value]);
+        assert_successors(&cfg, cs_label, &[cp_label]);
+        assert_successors(&cfg, cp_label, &[ret_label]);
+        assert_predecessors(&cfg, ret_label, &[cp_label]);
         Ok(())
     })
 }
@@ -321,10 +294,8 @@ fn cleanupret_cfg_edge_is_optional_unwind_dest() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let unwind = m.view(f).append_basic_block(&m, "unwind");
-        let entry_label = entry.label();
-        let entry_value = entry.to_erased();
-        let unwind_label = unwind.label();
-        let unwind_value = unwind.to_erased();
+        let entry_label = entry.id();
+        let unwind_label = unwind.id();
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(unwind)
             .build_ret_void()?;
@@ -334,8 +305,8 @@ fn cleanupret_cfg_edge_is_optional_unwind_dest() -> Result<(), IrError> {
         b.build_cleanup_ret(cp.to_erased(), unwind_label, "")?;
 
         let cfg = FunctionCfg::new(m.view(f).as_dyn());
-        assert_successors(&cfg, entry_label, &[unwind_value]);
-        assert_predecessors(&cfg, unwind_label, &[entry_value]);
+        assert_successors(&cfg, entry_label, &[unwind_label]);
+        assert_predecessors(&cfg, unwind_label, &[entry_label]);
         Ok(())
     })
 }
@@ -352,14 +323,10 @@ fn catchswitch_cfg_edges_are_handlers_then_unwind_dest() -> Result<(), IrError> 
         let handler0 = m.view(f).append_basic_block(&m, "handler0");
         let handler1 = m.view(f).append_basic_block(&m, "handler1");
         let unwind = m.view(f).append_basic_block(&m, "unwind");
-        let entry_label = entry.label();
-        let entry_value = entry.to_erased();
-        let handler0_label = handler0.label();
-        let handler0_value = handler0.to_erased();
-        let handler1_label = handler1.label();
-        let handler1_value = handler1.to_erased();
-        let unwind_label = unwind.label();
-        let unwind_value = unwind.to_erased();
+        let entry_label = entry.id();
+        let handler0_label = handler0.id();
+        let handler1_label = handler1.id();
+        let unwind_label = unwind.id();
         for bb in [handler0, handler1, unwind] {
             IRBuilder::new_for::<Dyn>(&m)
                 .position_at_end(bb)
@@ -378,11 +345,11 @@ fn catchswitch_cfg_edges_are_handlers_then_unwind_dest() -> Result<(), IrError> 
         assert_successors(
             &cfg,
             entry_label,
-            &[handler0_value, handler1_value, unwind_value],
+            &[handler0_label, handler1_label, unwind_label],
         );
-        assert_predecessors(&cfg, handler0_label, &[entry_value]);
-        assert_predecessors(&cfg, handler1_label, &[entry_value]);
-        assert_predecessors(&cfg, unwind_label, &[entry_value]);
+        assert_predecessors(&cfg, handler0_label, &[entry_label]);
+        assert_predecessors(&cfg, handler1_label, &[entry_label]);
+        assert_predecessors(&cfg, unwind_label, &[entry_label]);
         Ok(())
     })
 }

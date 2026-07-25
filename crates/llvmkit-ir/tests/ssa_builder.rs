@@ -78,10 +78,16 @@ fn create_block_appends_named_block_to_function() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
-        assert_eq!(entry.label().to_erased().name().as_deref(), Some("entry"));
+        assert_eq!(
+            m.view(entry.id()).to_erased().name().as_deref(),
+            Some("entry")
+        );
 
         let second = b.create_block("second");
-        assert_eq!(second.label().to_erased().name().as_deref(), Some("second"));
+        assert_eq!(
+            m.view(second.id()).to_erased().name().as_deref(),
+            Some("second")
+        );
 
         let entry_fn = m
             .view(f)
@@ -190,10 +196,10 @@ fn declare_var_family_covers_every_category_and_variant() -> Result<(), IrError>
     })
 }
 
-/// llvmkit-specific: `SsaBlock::label()` is the escape hatch back to a
-/// plain [`llvmkit_ir::BasicBlockLabel`] -- e.g. for feeding a branch
+/// llvmkit-specific: `SsaBlock::id()` is the escape hatch back to a
+/// plain [`llvmkit_ir::BlockId`] -- e.g. for feeding a branch
 /// target built through the ordinary `IRBuilder` surface once the
-/// public def/use/terminator API lands. Locks that the label survives
+/// public def/use/terminator API lands. Locks that the id survives
 /// the round trip and names the same underlying block.
 #[test]
 fn ssa_block_label_round_trips_to_basic_block_label() -> Result<(), IrError> {
@@ -202,9 +208,9 @@ fn ssa_block_label_round_trips_to_basic_block_label() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
-        let label = entry.label();
-        assert_eq!(label.to_erased().name().as_deref(), Some("entry"));
-        assert_eq!(label.to_erased().slot(), entry.label().to_erased().slot());
+        let id = entry.id();
+        assert_eq!(m.view(id).to_erased().name().as_deref(), Some("entry"));
+        assert_eq!(id, entry.id());
         Ok(())
     })
 }

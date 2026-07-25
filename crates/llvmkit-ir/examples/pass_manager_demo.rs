@@ -92,9 +92,9 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let bwp = IRBuilder::new_for::<i32>(m);
     let (merge, params) =
         bwp.append_block_with_params(m.view(f).as_function(), &[i32_ty.as_type()], "merge")?;
-    let then_label = then_bb.label();
-    let else_label = else_bb.label();
-    let merge_label = merge.label();
+    let then_label = then_bb.id();
+    let else_label = else_bb.id();
+    let merge_label = merge.id();
 
     let (cond, x, y) = m.view(f).params();
 

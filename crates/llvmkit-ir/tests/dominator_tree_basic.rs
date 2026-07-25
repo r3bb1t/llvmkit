@@ -24,11 +24,11 @@ fn reachable_and_unreachable_block_dominance() -> Result<(), IrError> {
         let else_bb = m.view(f).append_basic_block(&m, "else");
         let join = m.view(f).append_basic_block(&m, "join");
         let dead = m.view(f).append_basic_block(&m, "dead");
-        let entry_label = entry.label();
-        let then_label = then_bb.label();
-        let else_label = else_bb.label();
-        let join_label = join.label();
-        let dead_label = dead.label();
+        let entry_label = entry.id();
+        let then_label = then_bb.id();
+        let else_label = else_bb.id();
+        let join_label = join.id();
+        let dead_label = dead.id();
         let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -124,8 +124,8 @@ fn phi_operands_are_dominated_on_incoming_edges() -> Result<(), IrError> {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let then_bb = m.view(f).append_basic_block(&m, "then");
         let else_bb = m.view(f).append_basic_block(&m, "else");
-        let then_label = then_bb.label();
-        let else_label = else_bb.label();
+        let then_label = then_bb.id();
+        let else_label = else_bb.id();
         let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let cond: IntValue<bool> = m.view(f).param(1)?.try_into()?;
 
@@ -136,7 +136,7 @@ fn phi_operands_are_dominated_on_incoming_edges() -> Result<(), IrError> {
         let bwp = IRBuilder::new_for::<Dyn>(&m);
         let (join, params) =
             bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "join")?;
-        let join_label = join.label();
+        let join_label = join.id();
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
@@ -181,8 +181,8 @@ fn invoke_result_dominates_normal_destination_but_not_unwind() -> Result<(), IrE
         let entry = m.view(f).append_basic_block(&m, "entry");
         let normal = m.view(f).append_basic_block(&m, "normal");
         let unwind = m.view(f).append_basic_block(&m, "unwind");
-        let normal_label = normal.label();
-        let unwind_label = unwind.label();
+        let normal_label = normal.id();
+        let unwind_label = unwind.id();
         let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
 
         let (_sealed, invoke) = IRBuilder::new_for::<Dyn>(&m)
@@ -235,7 +235,7 @@ fn duplicate_edges_do_not_dominate_successor() -> Result<(), IrError> {
         let bwp = IRBuilder::new_for::<Dyn>(&m);
         let (join, params) =
             bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "join")?;
-        let join_label = join.label();
+        let join_label = join.id();
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
@@ -252,7 +252,7 @@ fn duplicate_edges_do_not_dominate_successor() -> Result<(), IrError> {
             .build_ret(p)?;
 
         let cfg = FunctionCfg::new(m.view(f).as_dyn());
-        let edge: BasicBlockEdge<'_> = cfg.edges().next().expect("conditional branch has an edge");
+        let edge: BasicBlockEdge<_> = cfg.edges().next().expect("conditional branch has an edge");
         let dt = DominatorTree::new(m.view(f).as_dyn());
 
         assert!(!dt.dominates_edge(edge, join_label));

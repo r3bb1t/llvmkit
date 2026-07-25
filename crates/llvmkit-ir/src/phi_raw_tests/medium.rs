@@ -23,9 +23,9 @@ fn build_int_phi_two_predecessors_emits_phi() -> Result<(), IrError> {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let other = m.view(f).append_basic_block(&m, "other");
         let join = m.view(f).append_basic_block(&m, "join");
-        let entry_label = entry.label();
-        let other_label = other.label();
-        let join_label = join.label();
+        let entry_label = entry.id();
+        let other_label = other.id();
+        let join_label = join.id();
 
         // entry: br label %join
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -67,9 +67,9 @@ fn phi_with_post_creation_add_incoming() -> Result<(), IrError> {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let other = m.view(f).append_basic_block(&m, "other");
         let join = m.view(f).append_basic_block(&m, "join");
-        let entry_label = entry.label();
-        let other_label = other.label();
-        let join_label = join.label();
+        let entry_label = entry.id();
+        let other_label = other.id();
+        let join_label = join.id();
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_br(join_label)?;

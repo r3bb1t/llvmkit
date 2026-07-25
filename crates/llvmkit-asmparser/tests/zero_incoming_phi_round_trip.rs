@@ -65,8 +65,8 @@ fn build_and_empty_phi() -> IrResult<String> {
             &[i32_ty.as_type()],
             "to",
         )?;
-        let to_lbl = to_bb.label();
-        let other_lbl = other.label();
+        let to_lbl = to_bb.id();
+        let other_lbl = other.id();
 
         // entry: %c = icmp eq %a, 0 ; br %c ? to(%a) : other()
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);

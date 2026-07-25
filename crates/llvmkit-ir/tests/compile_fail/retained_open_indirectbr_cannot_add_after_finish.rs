@@ -13,7 +13,7 @@ fn main() {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
         let entry = m.view(f).append_basic_block(&m, "entry");
         let dest = m.view(f).append_basic_block(&m, "dest");
-        let dest_label = dest.label();
+        let dest_label = dest.id();
         // Narrow explicitly: after the strict cut an erased `Argument` no
         // longer lifts into a typed pointer position, and this fixture's
         // subject is the retained-`Open`-handle lifecycle below, not the
