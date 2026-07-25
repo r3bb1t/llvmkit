@@ -146,8 +146,12 @@ fn indirect_call_callee_is_indirect() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let fp: PointerValue = caller.param(0)?.try_into()?;
         let callee_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let call =
-            b.build_indirect_call_dyn::<i32, _, Value, _>(callee_ty, fp, Vec::<Value>::new(), "r")?;
+        let call = b.build_indirect_call_dyn::<i32, _, Value, _, _>(
+            callee_ty,
+            fp,
+            Vec::<Value>::new(),
+            "r",
+        )?;
 
         match call.classify_callee() {
             Callee::Indirect(pointer) => assert_eq!(pointer.into_erased(), fp.into_erased()),

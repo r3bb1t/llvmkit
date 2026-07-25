@@ -304,7 +304,7 @@ fn typed_build_indirect_call_derives_function_type_from_schema() -> Result<(), I
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let callee_ptr = llvmkit_ir::PointerValue::try_from(host.param(0).expect("callee ptr"))?;
         let x = m.i32_type().const_int(7_i32);
-        let call = b.build_indirect_call::<fn(i32) -> i32, _, _>(callee_ptr, (x,), "r")?;
+        let call = b.build_indirect_call::<fn(i32) -> i32, _, _, _>(callee_ptr, (x,), "r")?;
         let r = call.result();
         let text_ty = format!("{}", r.into_erased().ty());
         assert_eq!(text_ty, "i32", "typed indirect call result must be i32");
@@ -439,7 +439,7 @@ fn indirect_call_rejects_too_many_arguments() -> Result<(), IrError> {
         let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let extra_arg = i32_ty.const_int(1_i32);
         let err = b
-            .build_indirect_call_dyn::<(), _, _, _>(callee_ty, callee_ptr, [extra_arg], "bad")
+            .build_indirect_call_dyn::<(), _, _, _, _>(callee_ty, callee_ptr, [extra_arg], "bad")
             .expect_err("zero-parameter function type rejects a supplied argument");
         assert_eq!(
             err,

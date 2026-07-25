@@ -649,16 +649,20 @@ where
     /// phi-authoring surface, so this is not part of the supported API and may
     /// change without notice.
     #[doc(hidden)]
-    pub fn phi_add_incoming_from_value<RBb, SBb>(
+    pub fn phi_add_incoming_from_value<RBb, SBb, Phi, Val>(
         &self,
-        phi_val: Value<'ctx, B>,
-        val: Value<'ctx, B>,
+        phi_val: Phi,
+        val: Val,
         block: BasicBlock<'ctx, RBb, SBb, B>,
     ) -> IrResult<()>
     where
         RBb: crate::marker::ReturnMarker,
         SBb: crate::block_state::BlockTerminationState,
+        Phi: IntoErasedValue<'ctx, B>,
+        Val: IntoErasedValue<'ctx, B>,
     {
+        let phi_val = phi_val.into_erased_value(ModuleRef::new(self.module))?;
+        let val = val.into_erased_value(ModuleRef::new(self.module))?;
         // Access the phi payload via the module's instruction data.
         let inst_data = self.module.context().value_data(phi_val.id);
         let inst_kind_data = match &inst_data.kind {
@@ -1680,120 +1684,152 @@ where
 
     /// `add lhs, rhs` on erased operands (scalar or integer vector).
     /// Uses the shared erased integer-binop validation path.
-    pub fn build_int_add_dyn<Name>(
+    pub fn build_int_add_dyn<Lhs, Rhs, Name>(
         &self,
-        lhs: Value<'ctx, B>,
-        rhs: Value<'ctx, B>,
+        lhs: Lhs,
+        rhs: Rhs,
         name: Name,
     ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
+        Lhs: IntoErasedValue<'ctx, B>,
+        Rhs: IntoErasedValue<'ctx, B>,
     {
+        let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
+        let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
         self.build_int_binop_dyn(BinaryOpcode::Add, lhs, rhs, name, InstructionKindData::Add)
             .map(|v| v.id())
     }
 
     /// `sub lhs, rhs` on erased operands (scalar or integer vector).
     /// Uses the shared erased integer-binop validation path.
-    pub fn build_int_sub_dyn<Name>(
+    pub fn build_int_sub_dyn<Lhs, Rhs, Name>(
         &self,
-        lhs: Value<'ctx, B>,
-        rhs: Value<'ctx, B>,
+        lhs: Lhs,
+        rhs: Rhs,
         name: Name,
     ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
+        Lhs: IntoErasedValue<'ctx, B>,
+        Rhs: IntoErasedValue<'ctx, B>,
     {
+        let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
+        let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
         self.build_int_binop_dyn(BinaryOpcode::Sub, lhs, rhs, name, InstructionKindData::Sub)
             .map(|v| v.id())
     }
 
     /// `mul lhs, rhs` on erased operands (scalar or integer vector).
     /// Uses the shared erased integer-binop validation path.
-    pub fn build_int_mul_dyn<Name>(
+    pub fn build_int_mul_dyn<Lhs, Rhs, Name>(
         &self,
-        lhs: Value<'ctx, B>,
-        rhs: Value<'ctx, B>,
+        lhs: Lhs,
+        rhs: Rhs,
         name: Name,
     ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
+        Lhs: IntoErasedValue<'ctx, B>,
+        Rhs: IntoErasedValue<'ctx, B>,
     {
+        let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
+        let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
         self.build_int_binop_dyn(BinaryOpcode::Mul, lhs, rhs, name, InstructionKindData::Mul)
             .map(|v| v.id())
     }
 
     /// `xor lhs, rhs` on erased operands (scalar or integer vector).
     /// Uses the shared erased integer-binop validation path.
-    pub fn build_int_xor_dyn<Name>(
+    pub fn build_int_xor_dyn<Lhs, Rhs, Name>(
         &self,
-        lhs: Value<'ctx, B>,
-        rhs: Value<'ctx, B>,
+        lhs: Lhs,
+        rhs: Rhs,
         name: Name,
     ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
+        Lhs: IntoErasedValue<'ctx, B>,
+        Rhs: IntoErasedValue<'ctx, B>,
     {
+        let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
+        let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
         self.build_int_binop_dyn(BinaryOpcode::Xor, lhs, rhs, name, InstructionKindData::Xor)
             .map(|v| v.id())
     }
 
     /// `and lhs, rhs` on erased operands (scalar or integer vector).
     /// Uses the shared erased integer-binop validation path.
-    pub fn build_int_and_dyn<Name>(
+    pub fn build_int_and_dyn<Lhs, Rhs, Name>(
         &self,
-        lhs: Value<'ctx, B>,
-        rhs: Value<'ctx, B>,
+        lhs: Lhs,
+        rhs: Rhs,
         name: Name,
     ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
+        Lhs: IntoErasedValue<'ctx, B>,
+        Rhs: IntoErasedValue<'ctx, B>,
     {
+        let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
+        let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
         self.build_int_binop_dyn(BinaryOpcode::And, lhs, rhs, name, InstructionKindData::And)
             .map(|v| v.id())
     }
 
     /// `or lhs, rhs` on erased operands (scalar or integer vector).
     /// Uses the shared erased integer-binop validation path.
-    pub fn build_int_or_dyn<Name>(
+    pub fn build_int_or_dyn<Lhs, Rhs, Name>(
         &self,
-        lhs: Value<'ctx, B>,
-        rhs: Value<'ctx, B>,
+        lhs: Lhs,
+        rhs: Rhs,
         name: Name,
     ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
+        Lhs: IntoErasedValue<'ctx, B>,
+        Rhs: IntoErasedValue<'ctx, B>,
     {
+        let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
+        let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
         self.build_int_binop_dyn(BinaryOpcode::Or, lhs, rhs, name, InstructionKindData::Or)
             .map(|v| v.id())
     }
 
     /// `shl lhs, rhs` on erased operands (scalar or integer vector).
     /// Uses the shared erased integer-binop validation path.
-    pub fn build_int_shl_dyn<Name>(
+    pub fn build_int_shl_dyn<Lhs, Rhs, Name>(
         &self,
-        lhs: Value<'ctx, B>,
-        rhs: Value<'ctx, B>,
+        lhs: Lhs,
+        rhs: Rhs,
         name: Name,
     ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
+        Lhs: IntoErasedValue<'ctx, B>,
+        Rhs: IntoErasedValue<'ctx, B>,
     {
+        let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
+        let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
         self.build_int_binop_dyn(BinaryOpcode::Shl, lhs, rhs, name, InstructionKindData::Shl)
             .map(|v| v.id())
     }
 
     /// `lshr lhs, rhs` on erased operands (scalar or integer vector).
     /// Uses the shared erased integer-binop validation path.
-    pub fn build_int_lshr_dyn<Name>(
+    pub fn build_int_lshr_dyn<Lhs, Rhs, Name>(
         &self,
-        lhs: Value<'ctx, B>,
-        rhs: Value<'ctx, B>,
+        lhs: Lhs,
+        rhs: Rhs,
         name: Name,
     ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
+        Lhs: IntoErasedValue<'ctx, B>,
+        Rhs: IntoErasedValue<'ctx, B>,
     {
+        let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
+        let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
         self.build_int_binop_dyn(
             BinaryOpcode::LShr,
             lhs,
@@ -1806,15 +1842,19 @@ where
 
     /// `ashr lhs, rhs` on erased operands (scalar or integer vector).
     /// Uses the shared erased integer-binop validation path.
-    pub fn build_int_ashr_dyn<Name>(
+    pub fn build_int_ashr_dyn<Lhs, Rhs, Name>(
         &self,
-        lhs: Value<'ctx, B>,
-        rhs: Value<'ctx, B>,
+        lhs: Lhs,
+        rhs: Rhs,
         name: Name,
     ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
+        Lhs: IntoErasedValue<'ctx, B>,
+        Rhs: IntoErasedValue<'ctx, B>,
     {
+        let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
+        let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
         self.build_int_binop_dyn(
             BinaryOpcode::AShr,
             lhs,
@@ -2561,15 +2601,17 @@ where
     /// Produce `va_arg <list>, <ty>`. Mirrors `IRBuilder::CreateVAArg`.
     /// The destination type can be any first-class type; the source
     /// must be a `va_list` pointer.
-    pub fn build_va_arg<Name>(
+    pub fn build_va_arg<P, Name>(
         &self,
-        list_ptr: PointerValue<'ctx, B>,
+        list_ptr: P,
         result_ty: Type<'ctx, B>,
         name: Name,
     ) -> IrResult<VAArgInst<'ctx, B>>
     where
         Name: AsRef<str>,
+        P: IntoPointerValue<'ctx, B>,
     {
+        let list_ptr = list_ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let v = IsValue::into_erased(list_ptr);
         let payload = crate::instr_types::VAArgInstData::new(v.id);
         let inst = self.append_instruction(result_ty.id, InstructionKindData::VAArg(payload), name);
@@ -3306,9 +3348,9 @@ where
     // borrowing handle: `IntValueId<W, B>` / `FloatValueId<K, B>` /
     // `PointerValueId<B>` per the result kind, and `ValueId<B>` for the two
     // fully-erased forms (`build_bitcast_dyn`, `build_ptr_to_addr_dyn`) whose
-    // result may be a vector. Note the cast builders take their source operand
-    // as a *concrete handle*, not an `Into*Value` bound, so chaining one cast
-    // into the next is spelled `b.build_sext(b.view(t), i64_ty, "e")`.
+    // result may be a vector. The source operand is taken by an `Into*Value`
+    // bound, so a returned id feeds straight into the next cast without being
+    // rehydrated: `b.build_sext(t, i64_ty, "e")`.
 
     /// Produce `trunc <value> to <dst_ty>`. Mirrors
     /// `IRBuilder::CreateTrunc`.
@@ -3320,9 +3362,9 @@ where
     /// [`IrError::OperandWidthMismatch`]. Use
     /// [`Self::build_trunc_dyn`] when both widths are erased.
     ///
-    pub fn build_trunc<Src, Dst, Name>(
+    pub fn build_trunc<Src, Dst, V, Name>(
         &self,
-        value: IntValue<'ctx, Src, B>,
+        value: V,
         dst_ty: IntType<'ctx, Dst, B>,
         name: Name,
     ) -> IrResult<IntValueId<Dst, B>>
@@ -3330,7 +3372,9 @@ where
         Name: AsRef<str>,
         Src: crate::int_width::WiderThan<Dst>,
         Dst: IntWidth,
+        V: IntoIntValue<'ctx, Src, B>,
     {
+        let value = value.into_int_value(ModuleRef::new(self.module))?;
         if let Some(folded) = self.folder.fold_cast_to_int(
             crate::instr_types::CastOpcode::Trunc,
             value.into_erased(),
@@ -3356,9 +3400,9 @@ where
     /// unspellable through this method: the flag-dropping branch cannot
     /// arise here (D10 -- no silent bad-codegen). Use
     /// [`Self::build_trunc_with_flags_dyn`] when both widths are erased.
-    pub fn build_trunc_with_flags<Src, Dst, Name>(
+    pub fn build_trunc_with_flags<Src, Dst, V, Name>(
         &self,
-        value: IntValue<'ctx, Src, B>,
+        value: V,
         dst_ty: IntType<'ctx, Dst, B>,
         flags: crate::instr_types::TruncFlags,
         name: Name,
@@ -3367,7 +3411,9 @@ where
         Name: AsRef<str>,
         Src: crate::int_width::WiderThan<Dst>,
         Dst: IntWidth,
+        V: IntoIntValue<'ctx, Src, B>,
     {
+        let value = value.into_int_value(ModuleRef::new(self.module))?;
         if let Some(folded) = self.folder.fold_cast_to_int(
             crate::instr_types::CastOpcode::Trunc,
             value.into_erased(),
@@ -3389,9 +3435,9 @@ where
     /// The `Dst: WiderThan<Src>` bound enforces at compile time that
     /// the destination is strictly wider than the source. Use
     /// [`Self::build_zext_dyn`] when both widths are erased.
-    pub fn build_zext<Src, Dst, Name>(
+    pub fn build_zext<Src, Dst, V, Name>(
         &self,
-        value: IntValue<'ctx, Src, B>,
+        value: V,
         dst_ty: IntType<'ctx, Dst, B>,
         name: Name,
     ) -> IrResult<IntValueId<Dst, B>>
@@ -3399,7 +3445,9 @@ where
         Name: AsRef<str>,
         Src: IntWidth,
         Dst: crate::int_width::WiderThan<Src>,
+        V: IntoIntValue<'ctx, Src, B>,
     {
+        let value = value.into_int_value(ModuleRef::new(self.module))?;
         if let Some(folded) = self.folder.fold_cast_to_int(
             crate::instr_types::CastOpcode::ZExt,
             value.into_erased(),
@@ -3419,9 +3467,9 @@ where
     /// The `Dst: WiderThan<Src>` bound is the same one [`Self::build_zext`]
     /// uses, enforced at compile time. Use [`Self::build_zext_with_flags_dyn`]
     /// when both widths are erased.
-    pub fn build_zext_with_flags<Src, Dst, Name>(
+    pub fn build_zext_with_flags<Src, Dst, V, Name>(
         &self,
-        value: IntValue<'ctx, Src, B>,
+        value: V,
         dst_ty: IntType<'ctx, Dst, B>,
         flags: crate::instr_types::ZExtFlags,
         name: Name,
@@ -3430,7 +3478,9 @@ where
         Name: AsRef<str>,
         Src: IntWidth,
         Dst: crate::int_width::WiderThan<Src>,
+        V: IntoIntValue<'ctx, Src, B>,
     {
+        let value = value.into_int_value(ModuleRef::new(self.module))?;
         if let Some(folded) = self.folder.fold_cast_to_int(
             crate::instr_types::CastOpcode::ZExt,
             value.into_erased(),
@@ -3451,9 +3501,9 @@ where
     /// The `Dst: WiderThan<Src>` bound enforces at compile time that
     /// the destination is strictly wider than the source. Use
     /// [`Self::build_sext_dyn`] when both widths are erased.
-    pub fn build_sext<Src, Dst, Name>(
+    pub fn build_sext<Src, Dst, V, Name>(
         &self,
-        value: IntValue<'ctx, Src, B>,
+        value: V,
         dst_ty: IntType<'ctx, Dst, B>,
         name: Name,
     ) -> IrResult<IntValueId<Dst, B>>
@@ -3461,7 +3511,9 @@ where
         Name: AsRef<str>,
         Src: IntWidth,
         Dst: crate::int_width::WiderThan<Src>,
+        V: IntoIntValue<'ctx, Src, B>,
     {
+        let value = value.into_int_value(ModuleRef::new(self.module))?;
         if let Some(folded) = self.folder.fold_cast_to_int(
             crate::instr_types::CastOpcode::SExt,
             value.into_erased(),
@@ -3480,15 +3532,17 @@ where
     /// Runtime-checked `trunc` for `IntValue<Dyn>` operands.
     /// Errors with [`IrError::OperandWidthMismatch`] if `dst_ty` is
     /// not strictly narrower than `value`'s runtime width.
-    pub fn build_trunc_dyn<Name>(
+    pub fn build_trunc_dyn<V, Name>(
         &self,
-        value: IntValue<'ctx, IntDyn, B>,
+        value: V,
         dst_ty: IntType<'ctx, IntDyn, B>,
         name: Name,
     ) -> IrResult<IntValueId<IntDyn, B>>
     where
         Name: AsRef<str>,
+        V: IntoIntValue<'ctx, IntDyn, B>,
     {
+        let value = value.into_int_value(ModuleRef::new(self.module))?;
         let src_w = value.ty().bit_width();
         let dst_w = dst_ty.bit_width();
         if dst_w >= src_w {
@@ -3514,16 +3568,18 @@ where
     /// `trunc nuw/nsw` with explicit [`crate::TruncFlags`]. Runtime-checked
     /// like [`Self::build_trunc_dyn`]; additionally sets `nuw`/`nsw` on the
     /// cast payload.
-    pub fn build_trunc_with_flags_dyn<Name>(
+    pub fn build_trunc_with_flags_dyn<V, Name>(
         &self,
-        value: IntValue<'ctx, IntDyn, B>,
+        value: V,
         dst_ty: IntType<'ctx, IntDyn, B>,
         flags: crate::instr_types::TruncFlags,
         name: Name,
     ) -> IrResult<IntValueId<IntDyn, B>>
     where
         Name: AsRef<str>,
+        V: IntoIntValue<'ctx, IntDyn, B>,
     {
+        let value = value.into_int_value(ModuleRef::new(self.module))?;
         let src_w = value.ty().bit_width();
         let dst_w = dst_ty.bit_width();
         if dst_w >= src_w {
@@ -3551,15 +3607,17 @@ where
     /// Runtime-checked `zext` for `IntValue<Dyn>` operands.
     /// Errors with [`IrError::OperandWidthMismatch`] if `dst_ty` is
     /// not strictly wider than `value`'s runtime width.
-    pub fn build_zext_dyn<Name>(
+    pub fn build_zext_dyn<V, Name>(
         &self,
-        value: IntValue<'ctx, IntDyn, B>,
+        value: V,
         dst_ty: IntType<'ctx, IntDyn, B>,
         name: Name,
     ) -> IrResult<IntValueId<IntDyn, B>>
     where
         Name: AsRef<str>,
+        V: IntoIntValue<'ctx, IntDyn, B>,
     {
+        let value = value.into_int_value(ModuleRef::new(self.module))?;
         self.build_int_extend_dyn(value, dst_ty, name, crate::instr_types::CastOpcode::ZExt)
             .map(|v| v.id())
     }
@@ -3567,16 +3625,18 @@ where
     /// `zext nneg` with explicit [`crate::ZExtFlags`]. Runtime-checked
     /// like [`Self::build_zext_dyn`]; additionally sets `nneg` on the cast
     /// payload.
-    pub fn build_zext_with_flags_dyn<Name>(
+    pub fn build_zext_with_flags_dyn<V, Name>(
         &self,
-        src: IntValue<'ctx, IntDyn, B>,
+        src: V,
         dst: IntType<'ctx, IntDyn, B>,
         flags: crate::instr_types::ZExtFlags,
         name: Name,
     ) -> IrResult<IntValueId<IntDyn, B>>
     where
         Name: AsRef<str>,
+        V: IntoIntValue<'ctx, IntDyn, B>,
     {
+        let src = src.into_int_value(ModuleRef::new(self.module))?;
         let src_w = src.ty().bit_width();
         let dst_w = dst.bit_width();
         if dst_w <= src_w {
@@ -3603,15 +3663,17 @@ where
     /// Runtime-checked `sext` for `IntValue<Dyn>` operands.
     /// Errors with [`IrError::OperandWidthMismatch`] if `dst_ty` is
     /// not strictly wider than `value`'s runtime width.
-    pub fn build_sext_dyn<Name>(
+    pub fn build_sext_dyn<V, Name>(
         &self,
-        value: IntValue<'ctx, IntDyn, B>,
+        value: V,
         dst_ty: IntType<'ctx, IntDyn, B>,
         name: Name,
     ) -> IrResult<IntValueId<IntDyn, B>>
     where
         Name: AsRef<str>,
+        V: IntoIntValue<'ctx, IntDyn, B>,
     {
+        let value = value.into_int_value(ModuleRef::new(self.module))?;
         self.build_int_extend_dyn(value, dst_ty, name, crate::instr_types::CastOpcode::SExt)
             .map(|v| v.id())
     }
@@ -4707,7 +4769,7 @@ where
     /// type is supplied separately — with the pointee type derived
     /// instead of caller-asserted.
     ///
-    /// Spell as: `b.build_indirect_call::<fn(i32) -> i32, _, _>(fp, (x,), "r")?`.
+    /// Spell as: `b.build_indirect_call::<fn(i32) -> i32, _, _, _>(fp, (x,), "r")?`.
     ///
     /// No runtime argument-count/type check is needed: `fn_ty` is
     /// constructed from `Sig::Params` in this same call, and
@@ -4716,9 +4778,9 @@ where
     /// *actual* pointee type is an indirect-call trust boundary LLVM
     /// itself does not statically check either (mirrors
     /// `IRBuilder::CreateCall`'s own opaque-pointer contract).
-    pub fn build_indirect_call<Sig, A, Name>(
+    pub fn build_indirect_call<Sig, A, Callee, Name>(
         &self,
-        callee: PointerValue<'ctx, B>,
+        callee: Callee,
         args: A,
         name: Name,
     ) -> IrResult<TypedCallInst<'ctx, Sig::Ret, B>>
@@ -4726,7 +4788,9 @@ where
         Sig: FunctionSignature,
         A: CallArgs<'ctx, Sig::Params, B>,
         Name: AsRef<str>,
+        Callee: IntoPointerValue<'ctx, B>,
     {
+        let callee = callee.into_pointer_value(ModuleRef::new(self.module))?;
         let module: Module<'ctx, B, Unverified> = Module::from_core(self.module);
         let ret = <Sig::Ret as FunctionReturn>::ir_type(&module)?;
         let params = <Sig::Params as FunctionParamList>::ir_types(&module)?;
@@ -4761,10 +4825,10 @@ where
     ///
     /// `fn_ty` is the callee's signature; `callee` is the function pointer; the
     /// caller picks the return marker `R2` to match `fn_ty`'s return type.
-    pub fn build_indirect_call_dyn<R2, I, V, Name>(
+    pub fn build_indirect_call_dyn<R2, I, V, Callee, Name>(
         &self,
         fn_ty: FunctionType<'ctx, B>,
-        callee: PointerValue<'ctx, B>,
+        callee: Callee,
         args: I,
         name: Name,
     ) -> IrResult<CallInst<'ctx, R2, B>>
@@ -4773,7 +4837,9 @@ where
         R2: crate::marker::ReturnMarker,
         I: IntoIterator<Item = V>,
         V: IntoErasedValue<'ctx, B>,
+        Callee: IntoPointerValue<'ctx, B>,
     {
+        let callee = callee.into_pointer_value(ModuleRef::new(self.module))?;
         let callee_v = IsValue::into_erased(callee);
         let ret_data = self.module.context().type_data(fn_ty.return_type().id());
         if !crate::function::signature_matches_marker::<R2>(ret_data) {
@@ -5108,9 +5174,9 @@ where
 
     /// Produce `fpext <value> to <dst>`. Compile-time check:
     /// `Dst: FloatWiderThan<Src>`. Mirrors `IRBuilder::CreateFPExt`.
-    pub fn build_fp_ext<Src, Dst, Name>(
+    pub fn build_fp_ext<Src, Dst, V, Name>(
         &self,
-        value: FloatValue<'ctx, Src, B>,
+        value: V,
         dst_ty: FloatType<'ctx, Dst, B>,
         name: Name,
     ) -> IrResult<FloatValueId<Dst, B>>
@@ -5118,16 +5184,18 @@ where
         Name: AsRef<str>,
         Src: FloatKind,
         Dst: FloatKind + FloatWiderThan<Src>,
+        V: IntoFloatValue<'ctx, Src, B>,
     {
+        let value = value.into_float_value(ModuleRef::new(self.module))?;
         self.build_fp_cast(value, dst_ty, name, crate::instr_types::CastOpcode::FpExt)
             .map(|v| v.id())
     }
 
     /// Produce `fptrunc <value> to <dst>`. Compile-time check:
     /// `Src: FloatWiderThan<Dst>`. Mirrors `IRBuilder::CreateFPTrunc`.
-    pub fn build_fp_trunc<Src, Dst, Name>(
+    pub fn build_fp_trunc<Src, Dst, V, Name>(
         &self,
-        value: FloatValue<'ctx, Src, B>,
+        value: V,
         dst_ty: FloatType<'ctx, Dst, B>,
         name: Name,
     ) -> IrResult<FloatValueId<Dst, B>>
@@ -5135,7 +5203,9 @@ where
         Name: AsRef<str>,
         Src: FloatKind + FloatWiderThan<Dst>,
         Dst: FloatKind,
+        V: IntoFloatValue<'ctx, Src, B>,
     {
+        let value = value.into_float_value(ModuleRef::new(self.module))?;
         self.build_fp_cast(value, dst_ty, name, crate::instr_types::CastOpcode::FpTrunc)
             .map(|v| v.id())
     }
@@ -5147,15 +5217,17 @@ where
     /// No compile-time width ordering check is performed; the LLVM
     /// verifier will reject `fptrunc` where `src` is not strictly wider
     /// than `dst`.
-    pub fn build_fp_trunc_dyn<Name>(
+    pub fn build_fp_trunc_dyn<V, Name>(
         &self,
-        value: FloatValue<'ctx, FloatDyn, B>,
+        value: V,
         dst_ty: FloatType<'ctx, FloatDyn, B>,
         name: Name,
     ) -> IrResult<FloatValueId<FloatDyn, B>>
     where
         Name: AsRef<str>,
+        V: IntoFloatValue<'ctx, FloatDyn, B>,
     {
+        let value = value.into_float_value(ModuleRef::new(self.module))?;
         let v = IsValue::into_erased(value);
         if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::FpTrunc,
@@ -5178,15 +5250,17 @@ where
     /// No compile-time width ordering check is performed; the LLVM
     /// verifier will reject `fpext` where `dst` is not strictly wider
     /// than `src`.
-    pub fn build_fp_ext_dyn<Name>(
+    pub fn build_fp_ext_dyn<V, Name>(
         &self,
-        value: FloatValue<'ctx, FloatDyn, B>,
+        value: V,
         dst_ty: FloatType<'ctx, FloatDyn, B>,
         name: Name,
     ) -> IrResult<FloatValueId<FloatDyn, B>>
     where
         Name: AsRef<str>,
+        V: IntoFloatValue<'ctx, FloatDyn, B>,
     {
+        let value = value.into_float_value(ModuleRef::new(self.module))?;
         let v = IsValue::into_erased(value);
         if let Some(folded) =
             self.folder
@@ -5223,9 +5297,9 @@ where
 
     /// Produce `fptoui <value> to <dst>`. Mirrors
     /// `IRBuilder::CreateFPToUI`.
-    pub fn build_fp_to_ui<K, W, Name>(
+    pub fn build_fp_to_ui<K, W, V, Name>(
         &self,
-        value: FloatValue<'ctx, K, B>,
+        value: V,
         dst_ty: IntType<'ctx, W, B>,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
@@ -5233,16 +5307,18 @@ where
         Name: AsRef<str>,
         K: FloatKind,
         W: IntWidth,
+        V: IntoFloatValue<'ctx, K, B>,
     {
+        let value = value.into_float_value(ModuleRef::new(self.module))?;
         self.build_fp_to_int(value, dst_ty, name, crate::instr_types::CastOpcode::FpToUI)
             .map(|v| v.id())
     }
 
     /// Produce `fptosi <value> to <dst>`. Mirrors
     /// `IRBuilder::CreateFPToSI`.
-    pub fn build_fp_to_si<K, W, Name>(
+    pub fn build_fp_to_si<K, W, V, Name>(
         &self,
-        value: FloatValue<'ctx, K, B>,
+        value: V,
         dst_ty: IntType<'ctx, W, B>,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
@@ -5250,7 +5326,9 @@ where
         Name: AsRef<str>,
         K: FloatKind,
         W: IntWidth,
+        V: IntoFloatValue<'ctx, K, B>,
     {
+        let value = value.into_float_value(ModuleRef::new(self.module))?;
         self.build_fp_to_int(value, dst_ty, name, crate::instr_types::CastOpcode::FpToSI)
             .map(|v| v.id())
     }
@@ -5276,9 +5354,9 @@ where
 
     /// Produce `uitofp <value> to <dst>`. Mirrors
     /// `IRBuilder::CreateUIToFP`.
-    pub fn build_ui_to_fp<W, K, Name>(
+    pub fn build_ui_to_fp<W, K, V, Name>(
         &self,
-        value: IntValue<'ctx, W, B>,
+        value: V,
         dst_ty: FloatType<'ctx, K, B>,
         name: Name,
     ) -> IrResult<FloatValueId<K, B>>
@@ -5286,7 +5364,9 @@ where
         Name: AsRef<str>,
         W: IntWidth,
         K: FloatKind,
+        V: IntoIntValue<'ctx, W, B>,
     {
+        let value = value.into_int_value(ModuleRef::new(self.module))?;
         self.build_int_to_fp(value, dst_ty, name, crate::instr_types::CastOpcode::UIToFp)
             .map(|v| v.id())
     }
@@ -5294,9 +5374,9 @@ where
     /// `uitofp nneg` with explicit [`crate::UIToFpFlags`]. Mirrors
     /// `IRBuilder::CreateUIToFP` plus `Instruction::setNonNeg`. The `nneg`
     /// flag asserts the source value is non-negative.
-    pub fn build_ui_to_fp_with_flags<W, K, Name>(
+    pub fn build_ui_to_fp_with_flags<W, K, V, Name>(
         &self,
-        value: IntValue<'ctx, W, B>,
+        value: V,
         dst_ty: FloatType<'ctx, K, B>,
         flags: crate::instr_types::UIToFpFlags,
         name: Name,
@@ -5305,7 +5385,9 @@ where
         Name: AsRef<str>,
         W: IntWidth,
         K: FloatKind,
+        V: IntoIntValue<'ctx, W, B>,
     {
+        let value = value.into_int_value(ModuleRef::new(self.module))?;
         let v = value.into_erased();
         if let Some(folded) =
             self.folder
@@ -5322,9 +5404,9 @@ where
 
     /// Produce `sitofp <value> to <dst>`. Mirrors
     /// `IRBuilder::CreateSIToFP`.
-    pub fn build_si_to_fp<W, K, Name>(
+    pub fn build_si_to_fp<W, K, V, Name>(
         &self,
-        value: IntValue<'ctx, W, B>,
+        value: V,
         dst_ty: FloatType<'ctx, K, B>,
         name: Name,
     ) -> IrResult<FloatValueId<K, B>>
@@ -5332,7 +5414,9 @@ where
         Name: AsRef<str>,
         W: IntWidth,
         K: FloatKind,
+        V: IntoIntValue<'ctx, W, B>,
     {
+        let value = value.into_int_value(ModuleRef::new(self.module))?;
         self.build_int_to_fp(value, dst_ty, name, crate::instr_types::CastOpcode::SIToFp)
             .map(|v| v.id())
     }
@@ -5340,16 +5424,18 @@ where
     /// `uitofp nneg` with explicit [`crate::UIToFpFlags`]. The `nneg` flag
     /// asserts the source value is non-negative. Both source and destination
     /// types are erased (dyn variants).
-    pub fn build_ui_to_fp_with_flags_dyn<Name>(
+    pub fn build_ui_to_fp_with_flags_dyn<V, Name>(
         &self,
-        src: IntValue<'ctx, IntDyn, B>,
+        src: V,
         dst: FloatType<'ctx, FloatDyn, B>,
         flags: crate::instr_types::UIToFpFlags,
         name: Name,
     ) -> IrResult<FloatValueId<FloatDyn, B>>
     where
         Name: AsRef<str>,
+        V: IntoIntValue<'ctx, IntDyn, B>,
     {
+        let src = src.into_int_value(ModuleRef::new(self.module))?;
         if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::UIToFp,
             src.into_erased(),
@@ -5390,15 +5476,17 @@ where
     /// `IRBuilder::CreatePtrToAddr`, using the module
     /// [`DataLayout`](crate::DataLayout) address type for the pointer
     /// operand's address space.
-    pub fn build_ptr_to_addr<Name>(
+    pub fn build_ptr_to_addr<P, Name>(
         &self,
-        value: PointerValue<'ctx, B>,
+        value: P,
         name: Name,
     ) -> IrResult<IntValueId<IntDyn, B>>
     where
         Name: AsRef<str>,
+        P: IntoPointerValue<'ctx, B>,
     {
-        let value = value.into_erased();
+        let ptr = value.into_pointer_value(ModuleRef::new(self.module))?;
+        let value = ptr.into_erased();
         let dst_ty = self.ptr_to_addr_result_type(value.ty())?;
         let result = self.build_ptr_to_addr_dyn(value, dst_ty, name)?;
         Ok(IntValue::<IntDyn, B>::from_value_unchecked(self.view(result)).id())
@@ -5408,15 +5496,17 @@ where
     /// pointer vector and requires `dst_ty` to be the DataLayout address type
     /// for the source address space (index width, preserving vector shape).
     /// Mirrors `DataLayout::getAddressType(V->getType())`.
-    pub fn build_ptr_to_addr_dyn<Name>(
+    pub fn build_ptr_to_addr_dyn<V, Name>(
         &self,
-        value: Value<'ctx, B>,
+        value: V,
         dst_ty: Type<'ctx, B>,
         name: Name,
     ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
+        V: IntoErasedValue<'ctx, B>,
     {
+        let value = value.into_erased_value(ModuleRef::new(self.module))?;
         let expected_ty = self.ptr_to_addr_result_type(value.ty())?;
         if expected_ty.id() != dst_ty.id() {
             return Err(IrError::InvalidOperation {
@@ -5438,16 +5528,18 @@ where
 
     /// Produce `ptrtoint <value> to <dst>`. Mirrors
     /// `IRBuilder::CreatePtrToInt`.
-    pub fn build_ptr_to_int<W, Name>(
+    pub fn build_ptr_to_int<W, P, Name>(
         &self,
-        value: PointerValue<'ctx, B>,
+        value: P,
         dst_ty: IntType<'ctx, W, B>,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
+        P: IntoPointerValue<'ctx, B>,
     {
+        let value = value.into_pointer_value(ModuleRef::new(self.module))?;
         let v = IsValue::into_erased(value);
         if let Some(folded) =
             self.folder
@@ -5463,16 +5555,18 @@ where
 
     /// Produce `inttoptr <value> to <dst>`. Mirrors
     /// `IRBuilder::CreateIntToPtr`.
-    pub fn build_int_to_ptr<W, Name>(
+    pub fn build_int_to_ptr<W, V, Name>(
         &self,
-        value: IntValue<'ctx, W, B>,
+        value: V,
         dst_ty: PointerType<'ctx, B>,
         name: Name,
     ) -> IrResult<PointerValueId<B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
+        V: IntoIntValue<'ctx, W, B>,
     {
+        let value = value.into_int_value(ModuleRef::new(self.module))?;
         let v = value.into_erased();
         if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::IntToPtr,
@@ -5496,9 +5590,9 @@ where
     /// [`super::float_kind::StaticFloatKind::STATIC_BITS`]
     /// `const { assert!(...) }` blocks at monomorphisation; under-spec'd
     /// instantiations are *compile* errors.
-    pub fn build_bitcast_int_to_int<Src, Dst, Name>(
+    pub fn build_bitcast_int_to_int<Src, Dst, V, Name>(
         &self,
-        value: IntValue<'ctx, Src, B>,
+        value: V,
         dst_ty: IntType<'ctx, Dst, B>,
         name: Name,
     ) -> IrResult<IntValueId<Dst, B>>
@@ -5506,7 +5600,9 @@ where
         Name: AsRef<str>,
         Src: super::int_width::StaticIntWidth,
         Dst: super::int_width::StaticIntWidth,
+        V: IntoIntValue<'ctx, Src, B>,
     {
+        let value = value.into_int_value(ModuleRef::new(self.module))?;
         const {
             assert!(
                 <Src as super::int_width::StaticIntWidth>::STATIC_BITS
@@ -5532,9 +5628,9 @@ where
     /// `Instruction::BitCast` arm of `CastInst::Create` in
     /// `lib/IR/Instructions.cpp` for the `int -> fp` shape. Width
     /// equality is enforced statically.
-    pub fn build_bitcast_int_to_fp<W, K, Name>(
+    pub fn build_bitcast_int_to_fp<W, K, V, Name>(
         &self,
-        value: IntValue<'ctx, W, B>,
+        value: V,
         dst_ty: FloatType<'ctx, K, B>,
         name: Name,
     ) -> IrResult<FloatValueId<K, B>>
@@ -5542,7 +5638,9 @@ where
         Name: AsRef<str>,
         W: super::int_width::StaticIntWidth,
         K: super::float_kind::StaticFloatKind,
+        V: IntoIntValue<'ctx, W, B>,
     {
+        let value = value.into_int_value(ModuleRef::new(self.module))?;
         const {
             assert!(
                 <W as super::int_width::StaticIntWidth>::STATIC_BITS
@@ -5567,9 +5665,9 @@ where
     /// `Instruction::BitCast` arm of `CastInst::Create` in
     /// `lib/IR/Instructions.cpp` for the `fp -> int` shape. Width
     /// equality is enforced statically.
-    pub fn build_bitcast_fp_to_int<K, W, Name>(
+    pub fn build_bitcast_fp_to_int<K, W, V, Name>(
         &self,
-        value: FloatValue<'ctx, K, B>,
+        value: V,
         dst_ty: IntType<'ctx, W, B>,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
@@ -5577,7 +5675,9 @@ where
         Name: AsRef<str>,
         K: super::float_kind::StaticFloatKind,
         W: super::int_width::StaticIntWidth,
+        V: IntoFloatValue<'ctx, K, B>,
     {
+        let value = value.into_float_value(ModuleRef::new(self.module))?;
         const {
             assert!(
                 <K as super::float_kind::StaticFloatKind>::STATIC_BITS
@@ -5603,9 +5703,9 @@ where
     /// `bfloat <-> half` (both 16 bits) and `fp128 <-> ppc_fp128` (both
     /// 128 bits). Mirrors `Instruction::BitCast` in
     /// `lib/IR/Instructions.cpp`.
-    pub fn build_bitcast_fp_to_fp<Src, Dst, Name>(
+    pub fn build_bitcast_fp_to_fp<Src, Dst, V, Name>(
         &self,
-        value: FloatValue<'ctx, Src, B>,
+        value: V,
         dst_ty: FloatType<'ctx, Dst, B>,
         name: Name,
     ) -> IrResult<FloatValueId<Dst, B>>
@@ -5613,7 +5713,9 @@ where
         Name: AsRef<str>,
         Src: super::float_kind::StaticFloatKind,
         Dst: super::float_kind::StaticFloatKind,
+        V: IntoFloatValue<'ctx, Src, B>,
     {
+        let value = value.into_float_value(ModuleRef::new(self.module))?;
         const {
             assert!(
                 <Src as super::float_kind::StaticFloatKind>::STATIC_BITS
@@ -5640,15 +5742,17 @@ where
     /// will reject ill-formed bitcasts.
     ///
     /// Used by the parser where compile-time static markers are unavailable.
-    pub fn build_bitcast_dyn<Name>(
+    pub fn build_bitcast_dyn<V, Name>(
         &self,
-        value: Value<'ctx, B>,
+        value: V,
         dst_ty: Type<'ctx, B>,
         name: Name,
     ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
+        V: IntoErasedValue<'ctx, B>,
     {
+        let value = value.into_erased_value(ModuleRef::new(self.module))?;
         if let Some(folded) =
             self.folder
                 .fold_cast_dyn(super::instr_types::CastOpcode::BitCast, value, dst_ty)?
@@ -5664,15 +5768,17 @@ where
 
     /// Produce `addrspacecast <value> to <dst>`. Mirrors
     /// `IRBuilder::CreateAddrSpaceCast`.
-    pub fn build_addrspace_cast<Name>(
+    pub fn build_addrspace_cast<P, Name>(
         &self,
-        value: PointerValue<'ctx, B>,
+        value: P,
         dst_ty: PointerType<'ctx, B>,
         name: Name,
     ) -> IrResult<PointerValueId<B>>
     where
         Name: AsRef<str>,
+        P: IntoPointerValue<'ctx, B>,
     {
+        let value = value.into_pointer_value(ModuleRef::new(self.module))?;
         let v = IsValue::into_erased(value);
         if let Some(folded) = self.folder.fold_cast_dyn(
             crate::instr_types::CastOpcode::AddrSpaceCast,
@@ -5693,15 +5799,17 @@ where
     /// instruction) and `addrspacecast` when address spaces differ.
     /// Mirrors `IRBuilder::CreatePointerBitCastOrAddrSpaceCast`
     /// (`IRBuilder.h`), which dispatches the same way.
-    pub fn build_pointer_cast<Name>(
+    pub fn build_pointer_cast<P, Name>(
         &self,
-        value: PointerValue<'ctx, B>,
+        value: P,
         dst_ty: PointerType<'ctx, B>,
         name: Name,
     ) -> IrResult<PointerValueId<B>>
     where
         Name: AsRef<str>,
+        P: IntoPointerValue<'ctx, B>,
     {
+        let value = value.into_pointer_value(ModuleRef::new(self.module))?;
         let v = IsValue::into_erased(value);
         let opcode = if value.ty().address_space() == dst_ty.address_space() {
             super::instr_types::CastOpcode::BitCast
@@ -5729,14 +5837,12 @@ where
     /// `icmp eq <ptr>, null` -- pointer-null test. Mirrors
     /// `IRBuilder::CreateIsNull(Arg)` ->
     /// `CreateICmpEQ(Arg, Constant::getNullValue(Arg->getType()))`.
-    pub fn build_is_null<Name>(
-        &self,
-        ptr: PointerValue<'ctx, B>,
-        name: Name,
-    ) -> IrResult<IntValueId<bool, B>>
+    pub fn build_is_null<P, Name>(&self, ptr: P, name: Name) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
+        P: IntoPointerValue<'ctx, B>,
     {
+        let ptr = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         self.build_pointer_cmp(
             super::cmp_predicate::IntPredicate::Eq,
             ptr,
@@ -5748,14 +5854,12 @@ where
     /// `icmp ne <ptr>, null` -- pointer-non-null test. Mirrors
     /// `IRBuilder::CreateIsNotNull(Arg)` ->
     /// `CreateICmpNE(Arg, Constant::getNullValue(Arg->getType()))`.
-    pub fn build_is_not_null<Name>(
-        &self,
-        ptr: PointerValue<'ctx, B>,
-        name: Name,
-    ) -> IrResult<IntValueId<bool, B>>
+    pub fn build_is_not_null<P, Name>(&self, ptr: P, name: Name) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
+        P: IntoPointerValue<'ctx, B>,
     {
+        let ptr = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         self.build_pointer_cmp(
             super::cmp_predicate::IntPredicate::Ne,
             ptr,
@@ -5977,17 +6081,21 @@ where
     /// `icmp samesign` with explicit [`crate::ICmpFlags`]. Both operands
     /// must be dynamically-typed (`IntDyn`). The `samesign` flag asserts
     /// both operands carry the same sign (LLVM 20+).
-    pub fn build_int_cmp_with_flags_dyn<Name>(
+    pub fn build_int_cmp_with_flags_dyn<Lhs, Rhs, Name>(
         &self,
         pred: crate::cmp_predicate::IntPredicate,
-        lhs: IntValue<'ctx, IntDyn, B>,
-        rhs: IntValue<'ctx, IntDyn, B>,
+        lhs: Lhs,
+        rhs: Rhs,
         flags: crate::instr_types::ICmpFlags,
         name: Name,
     ) -> IrResult<IntValueId<bool, B>>
     where
         Name: AsRef<str>,
+        Lhs: IntoIntValue<'ctx, IntDyn, B>,
+        Rhs: IntoIntValue<'ctx, IntDyn, B>,
     {
+        let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
+        let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
         let i1 = ModuleView::<B>::new(self.module).bool_type();
         if let Some(folded) = self.folder.fold_int_cmp(pred, lhs, rhs)? {
             return Ok(folded.id());
@@ -7048,9 +7156,9 @@ where
     /// is supplied explicitly, mirroring `IRBuilder::CreateInvoke(FunctionType*,
     /// Value* Callee, ...)`. Used by the parser for `invoke ... %fp(...)`.
     /// Arguments are validated against the spelled `fn_ty`.
-    pub fn build_indirect_invoke_dyn_with_config<R2, I, V, Normal, Unwind>(
+    pub fn build_indirect_invoke_dyn_with_config<R2, I, V, Normal, Unwind, Callee>(
         self,
-        callee: PointerValue<'ctx, B>,
+        callee: Callee,
         fn_ty: FunctionType<'ctx, B>,
         args: I,
         normal_dest: Normal,
@@ -7063,7 +7171,9 @@ where
         V: IntoErasedValue<'ctx, B>,
         Normal: IntoBasicBlockLabel<'ctx, R, B>,
         Unwind: IntoBasicBlockLabel<'ctx, R, B>,
+        Callee: IntoPointerValue<'ctx, B>,
     {
+        let callee = callee.into_pointer_value(ModuleRef::new(self.module))?;
         let normal_dest = normal_dest.into_basic_block_label();
         let unwind_dest = unwind_dest.into_basic_block_label();
         let callee_v = IsValue::into_erased(callee);
@@ -7386,9 +7496,9 @@ where
 
     /// Produce `cleanuppad within <parent> [<args>]`. Mirrors
     /// `IRBuilder::CreateCleanupPad`.
-    pub fn build_cleanup_pad<I, V, Name>(
+    pub fn build_cleanup_pad<I, V, Pad, Name>(
         &self,
-        parent_pad: Value<'ctx, B>,
+        parent_pad: Pad,
         args: I,
         name: Name,
     ) -> IrResult<CleanupPadInst<'ctx, B>>
@@ -7396,7 +7506,9 @@ where
         I: IntoIterator<Item = V>,
         V: IntoErasedValue<'ctx, B>,
         Name: AsRef<str>,
+        Pad: IntoErasedValue<'ctx, B>,
     {
+        let parent_pad = parent_pad.into_erased_value(ModuleRef::new(self.module))?;
         self.build_cleanup_pad_raw(Some(parent_pad.id), args, name)
     }
 
@@ -7446,9 +7558,9 @@ where
 
     /// Produce `catchpad within <catchswitch> [<args>]`. Mirrors
     /// `IRBuilder::CreateCatchPad`.
-    pub fn build_catch_pad<I, V, Name>(
+    pub fn build_catch_pad<I, V, Switch, Name>(
         &self,
-        catch_switch: Value<'ctx, B>,
+        catch_switch: Switch,
         args: I,
         name: Name,
     ) -> IrResult<CatchPadInst<'ctx, B>>
@@ -7456,7 +7568,9 @@ where
         Name: AsRef<str>,
         I: IntoIterator<Item = V>,
         V: IntoErasedValue<'ctx, B>,
+        Switch: IntoErasedValue<'ctx, B>,
     {
+        let catch_switch = catch_switch.into_erased_value(ModuleRef::new(self.module))?;
         let arg_ids: Vec<ValueSlot> = args
             .into_iter()
             .map(|a| {
@@ -7476,16 +7590,18 @@ where
 
     /// Produce `catchret from <catchpad> to label <bb>`. Mirrors
     /// `IRBuilder::CreateCatchRet`.
-    pub fn build_catch_ret<Target, Name>(
+    pub fn build_catch_ret<Target, Pad, Name>(
         self,
-        catch_pad: Value<'ctx, B>,
+        catch_pad: Pad,
         target: Target,
         name: Name,
     ) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
     where
         Name: AsRef<str>,
         Target: IntoBasicBlockLabel<'ctx, R, B>,
+        Pad: IntoErasedValue<'ctx, B>,
     {
+        let catch_pad = catch_pad.into_erased_value(ModuleRef::new(self.module))?;
         let target = target.into_basic_block_label();
         let void_ty = self.module.void_type().as_type().id();
         let payload = crate::instr_types::CatchReturnInstData::new(catch_pad.id, target.slot());
@@ -7497,30 +7613,34 @@ where
 
     /// Produce `cleanupret from <cleanuppad> unwind label <bb>`.
     /// Mirrors `IRBuilder::CreateCleanupRet`.
-    pub fn build_cleanup_ret<Unwind, Name>(
+    pub fn build_cleanup_ret<Unwind, Pad, Name>(
         self,
-        cleanup_pad: Value<'ctx, B>,
+        cleanup_pad: Pad,
         unwind_dest: Unwind,
         name: Name,
     ) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
     where
         Unwind: IntoBasicBlockLabel<'ctx, R, B>,
         Name: AsRef<str>,
+        Pad: IntoErasedValue<'ctx, B>,
     {
+        let cleanup_pad = cleanup_pad.into_erased_value(ModuleRef::new(self.module))?;
         let unwind_dest = unwind_dest.into_basic_block_label();
         self.build_cleanup_ret_raw(cleanup_pad.id, Some(unwind_dest.slot()), name)
     }
 
     /// Produce `cleanupret from <cleanuppad> unwind to caller`.
     /// Mirrors `IRBuilder::CreateCleanupRet`.
-    pub fn build_cleanup_ret_to_caller<Name>(
+    pub fn build_cleanup_ret_to_caller<Pad, Name>(
         self,
-        cleanup_pad: Value<'ctx, B>,
+        cleanup_pad: Pad,
         name: Name,
     ) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
     where
         Name: AsRef<str>,
+        Pad: IntoErasedValue<'ctx, B>,
     {
+        let cleanup_pad = cleanup_pad.into_erased_value(ModuleRef::new(self.module))?;
         self.build_cleanup_ret_raw(cleanup_pad.id, None, name)
     }
 
@@ -7543,30 +7663,34 @@ where
 
     /// Produce `catchswitch within <parent> [...] unwind label <bb>`.
     /// Mirrors `IRBuilder::CreateCatchSwitch`.
-    pub fn build_catch_switch<Unwind, Name>(
+    pub fn build_catch_switch<Unwind, Pad, Name>(
         self,
-        parent_pad: Value<'ctx, B>,
+        parent_pad: Pad,
         unwind_dest: Unwind,
         name: Name,
     ) -> IrResult<TerminatedBlockCatchSwitch<'ctx, R, B>>
     where
         Unwind: IntoBasicBlockLabel<'ctx, R, B>,
         Name: AsRef<str>,
+        Pad: IntoErasedValue<'ctx, B>,
     {
+        let parent_pad = parent_pad.into_erased_value(ModuleRef::new(self.module))?;
         let unwind_dest = unwind_dest.into_basic_block_label();
         self.build_catch_switch_raw(Some(parent_pad.id), Some(unwind_dest.slot()), name)
     }
 
     /// Produce `catchswitch within <parent> [...] unwind to caller`.
     /// Mirrors `IRBuilder::CreateCatchSwitch`.
-    pub fn build_catch_switch_to_caller<Name>(
+    pub fn build_catch_switch_to_caller<Pad, Name>(
         self,
-        parent_pad: Value<'ctx, B>,
+        parent_pad: Pad,
         name: Name,
     ) -> IrResult<TerminatedBlockCatchSwitch<'ctx, R, B>>
     where
         Name: AsRef<str>,
+        Pad: IntoErasedValue<'ctx, B>,
     {
+        let parent_pad = parent_pad.into_erased_value(ModuleRef::new(self.module))?;
         self.build_catch_switch_raw(Some(parent_pad.id), None, name)
     }
 
@@ -9011,7 +9135,7 @@ mod tests {
 
             let src: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_int(1_i64).into_erased())?;
             let err = b
-                .build_trunc::<i64, i32, _>(src, i32_ty, "narrowed")
+                .build_trunc::<i64, i32, _, _>(src, i32_ty, "narrowed")
                 .expect_err("wrong-width cast fold result must be rejected at a static width");
 
             assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
@@ -9089,7 +9213,7 @@ mod tests {
 
             let src: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(1.0).into_erased())?;
             let err = b
-                .build_fp_trunc::<f64, f32, _>(src, f32_ty, "narrowed")
+                .build_fp_trunc::<f64, f32, _, _>(src, f32_ty, "narrowed")
                 .expect_err("wrong-kind cast fold result must be rejected at a static kind");
 
             assert_eq!(

@@ -7626,7 +7626,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     .to_erased()
             }
             ParsedCallee::Indirect(callee) => b
-                .build_indirect_call_dyn::<llvmkit_ir::Dyn, _, _, _>(
+                .build_indirect_call_dyn::<llvmkit_ir::Dyn, _, _, _, _>(
                     parsed_fn_ty,
                     callee,
                     args,
@@ -8463,7 +8463,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 .map_err(|e| self.builder_err("invoke", e))?
             }
             ParsedCallee::Indirect(callee_ptr) => b
-                .build_indirect_invoke_dyn_with_config::<llvmkit_ir::Dyn, _, _, _, _>(
+                .build_indirect_invoke_dyn_with_config::<llvmkit_ir::Dyn, _, _, _, _, _>(
                     callee_ptr,
                     parsed_fn_ty,
                     args,

@@ -322,7 +322,7 @@ fn typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_pr
         let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
         let callee_ptr = PointerValue::try_from(host.param(0)?)?;
         let x = i32_ty.const_int(7_i32);
-        let call = b.build_indirect_call::<fn(i32) -> i32, _, _>(callee_ptr, (x,), "r")?;
+        let call = b.build_indirect_call::<fn(i32) -> i32, _, _, _>(callee_ptr, (x,), "r")?;
         b.build_ret(call.result())?;
         Ok(())
     }
@@ -336,8 +336,12 @@ fn typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_pr
         let callee_ptr = PointerValue::try_from(host.param(0)?)?;
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let x = i32_ty.const_int(7_i32);
-        let inst =
-            b.build_indirect_call_dyn::<i32, _, _, _>(fn_ty, callee_ptr, [x.into_erased()], "r")?;
+        let inst = b.build_indirect_call_dyn::<i32, _, _, _, _>(
+            fn_ty,
+            callee_ptr,
+            [x.into_erased()],
+            "r",
+        )?;
         b.build_ret(inst.return_int_value())?;
         Ok(())
     }
@@ -465,7 +469,7 @@ fn build_indirect_call_dyn_int_marker_against_void_fn_type_reports_asymmetric_mi
         // i32` asserts an integer result -- a mismatch.
         let void_fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let err = b
-            .build_indirect_call_dyn::<i32, _, _, _>(
+            .build_indirect_call_dyn::<i32, _, _, _, _>(
                 void_fn_ty,
                 callee_ptr,
                 Vec::<llvmkit_ir::Value>::new(),

@@ -349,16 +349,16 @@ fn verify_casts_full() -> Result<(), IrError> {
         let p: PointerValue = f.param(2)?.try_into()?;
         let s: IntValue<i8> = f.param(3)?.try_into()?;
         let t: IntValueId<i32, _> = b.build_trunc(x, i32_ty, "t")?;
-        let e: IntValueId<i64, _> = b.build_sext(b.view(t), i64_ty, "e")?;
+        let e: IntValueId<i64, _> = b.build_sext(t, i64_ty, "e")?;
         let z: IntValueId<i64, _> = b.build_zext(s, i64_ty, "z")?;
         let xf: FloatValueId<f64, _> = b.build_fp_ext(y, f64_ty, "xf")?;
-        let _xt: FloatValueId<f32, _> = b.build_fp_trunc(b.view(xf), f32_ty, "xt")?;
+        let _xt: FloatValueId<f32, _> = b.build_fp_trunc(xf, f32_ty, "xt")?;
         let fi: IntValueId<i64, _> = b.build_fp_to_si(y, i64_ty, "fi")?;
         let _fu: IntValueId<i64, _> = b.build_fp_to_ui(y, i64_ty, "fu")?;
         let _is: FloatValueId<f32, _> = b.build_si_to_fp(x, f32_ty, "is")?;
         let _iu: FloatValueId<f32, _> = b.build_ui_to_fp(x, f32_ty, "iu")?;
         let pi: IntValueId<i64, _> = b.build_ptr_to_int(p, i64_ty, "pi")?;
-        let _ip: PointerValueId<_> = b.build_int_to_ptr(b.view(pi), ptr_ty, "ip")?;
+        let _ip: PointerValueId<_> = b.build_int_to_ptr(pi, ptr_ty, "ip")?;
         // `addrspacecast` (identity here -- both ptrs in addr space 0 --
         // is a no-op, but exercises the builder + verifier path).
         let _ac: PointerValueId<_> = b.build_addrspace_cast(p, ptr_ty, "ac")?;

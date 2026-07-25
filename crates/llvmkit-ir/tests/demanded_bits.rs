@@ -24,9 +24,9 @@ fn demanded_bits_basic_trunc_zext_chain() -> Result<(), IrError> {
 
         let add = b.build_int_add::<i32, _, _, _>(a, i32_ty.const_int(5_u32), "add")?;
         let mul = b.build_int_mul::<i32, _, _, _>(add, b_arg, "mul")?;
-        let trunc_i8 = b.build_trunc(b.view(mul), i8_ty, "lo8")?;
-        let trunc_i1 = b.build_trunc(b.view(mul), i1_ty, "lo1")?;
-        let zext = b.build_zext(b.view(trunc_i1), i8_ty, "wide")?;
+        let trunc_i8 = b.build_trunc(mul, i8_ty, "lo8")?;
+        let trunc_i1 = b.build_trunc(mul, i1_ty, "lo1")?;
+        let zext = b.build_zext(trunc_i1, i8_ty, "wide")?;
         let sum = b.build_int_add::<i8, _, _, _>(trunc_i8, zext, "sum")?;
         b.build_ret(sum)?;
 
@@ -553,7 +553,7 @@ fn simplify_demanded_bits_replaces_known_demanded_low_bits() -> Result<(), IrErr
         let lhs = i32_ty.const_int(0xffff_0000_u32);
         let high =
             b.build_int_and::<i32, _, _, _>(lhs, i32_ty.const_int(0x0000_00ff_u32), "high")?;
-        let lo = b.build_trunc(b.view(high), i8_ty, "lo")?;
+        let lo = b.build_trunc(high, i8_ty, "lo")?;
         b.build_ret(lo)?;
 
         let mut fam = FunctionAnalysisManager::new();
@@ -591,7 +591,7 @@ fn simplify_demanded_bits_pass_folds_known_demanded_low_bits() -> Result<(), IrE
         let lhs = i32_ty.const_int(0xffff_0000_u32);
         let high =
             b.build_int_and::<i32, _, _, _>(lhs, i32_ty.const_int(0x0000_00ff_u32), "high")?;
-        let lo = b.build_trunc(b.view(high), i8_ty, "lo")?;
+        let lo = b.build_trunc(high, i8_ty, "lo")?;
         b.build_ret(lo)?;
 
         let verified = m.verify()?;
@@ -791,7 +791,7 @@ fn variable_lshr_demands_source_bits_that_can_reach_low_result() -> Result<(), I
         let amount: IntValue<i32> = f.param(1)?.try_into()?;
         let masked = b.build_int_and::<i32, _, _, _>(a, i32_ty.const_int(256_u32), "masked")?;
         let shifted = b.build_int_lshr::<i32, _, _, _>(masked, amount, "shifted")?;
-        let lo = b.build_trunc(b.view(shifted), i1_ty, "lo")?;
+        let lo = b.build_trunc(shifted, i1_ty, "lo")?;
         b.build_ret(lo)?;
 
         let mut fam = FunctionAnalysisManager::new();
@@ -831,7 +831,7 @@ fn variable_lshr_with_known_amount_range_demands_reachable_source_bits() -> Resu
         let amount_range =
             b.build_int_and::<i32, _, _, _>(amount, i32_ty.const_int(3_u32), "amount.range")?;
         let shifted = b.build_int_lshr::<i32, _, _, _>(a, amount_range, "shifted")?;
-        let lo = b.build_trunc(b.view(shifted), i1_ty, "lo")?;
+        let lo = b.build_trunc(shifted, i1_ty, "lo")?;
         b.build_ret(lo)?;
 
         let mut fam = FunctionAnalysisManager::new();

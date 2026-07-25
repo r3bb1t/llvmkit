@@ -146,9 +146,9 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
         let zext_src: IntValue<i8> = c_aa.as_constant().try_into()?;
         let sext_src: IntValue<i8> = c_aa.as_constant().try_into()?;
         let bitcast_src: IntValue<i8> = i8_ty.const_int(0x5a_u8).as_constant().try_into()?;
-        let trunc = b.build_trunc::<i16, i8, _>(trunc_src, i8_ty, "tr")?;
-        let zext = b.build_zext::<i8, i16, _>(zext_src, i16_ty, "zext")?;
-        let sext = b.build_sext::<i8, i16, _>(sext_src, i16_ty, "sext")?;
+        let trunc = b.build_trunc::<i16, i8, _, _>(trunc_src, i8_ty, "tr")?;
+        let zext = b.build_zext::<i8, i16, _, _>(zext_src, i16_ty, "zext")?;
+        let sext = b.build_sext::<i8, i16, _, _>(sext_src, i16_ty, "sext")?;
         let bitcast = b.build_bitcast_int_to_int(bitcast_src, m.int_type_n::<8>(), "bc")?;
         let freeze = b.build_freeze(c_aa, "fr")?;
         let cmp = b.build_icmp_eq::<i8, _, _, _>(c_aa, c_aa, "cmp")?;
