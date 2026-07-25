@@ -9,7 +9,6 @@ use super::analysis::{
     FunctionAnalysisResult, PrefetchableAnalysis, PreservedAnalyses,
 };
 use super::constant::ConstantData;
-use super::constants::ConstantIntValue;
 use super::data_layout::DataLayout;
 use super::instr_types::{BinaryOpData, CallInstData, CastOpData, CastOpcode, InvokeInstData};
 use super::instruction::{Instruction, InstructionData, InstructionKindData, state};
@@ -20,7 +19,8 @@ use super::pass_access::PatchBody;
 use super::pass_context::{FnCx, FnPatch, FnReport, FunctionView};
 use super::pass_manager::FunctionPass;
 use super::r#type::{Type, TypeKind};
-use super::value::{Value, ValueKindData, ValueSlot, ValueUse};
+use super::value::{IntValue, Value, ValueKindData, ValueSlot, ValueUse};
+use super::value_id::IntValueId;
 use super::value_tracking::{ValueTrackingQuery, compute_known_bits};
 use super::{ApInt, IrError, IrResult, KnownBits};
 use core::ops::Not;
@@ -36,14 +36,18 @@ pub struct DemandedBitsAnalysis;
 pub struct SimplifyDemandedBitsPass;
 
 /// Result of one demanded-bits simplification query.
-pub struct SimplifyDemandedBitsResult<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+///
+/// Lifetime-free: the replacement it carries is a storable
+/// [`IntValueId`], not a borrowing constant handle, so a
+/// pass can hold the whole result across the mutation that consumes it.
+pub struct SimplifyDemandedBitsResult<B: ModuleBrand> {
     known: KnownBits,
     demanded: ApInt,
-    replacement: Option<ConstantIntValue<'ctx, IntDyn, B>>,
+    replacement: Option<IntValueId<IntDyn, B>>,
     demanded_bits_changed: bool,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> SimplifyDemandedBitsResult<'ctx, B> {
+impl<B: ModuleBrand> SimplifyDemandedBitsResult<B> {
     /// Known bits computed for the queried value.
     #[inline]
     pub fn known_bits(&self) -> &KnownBits {
@@ -56,9 +60,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> SimplifyDemandedBitsResult<'ctx, B> {
         &self.demanded
     }
 
-    /// Replacement constant when every demanded bit is known.
+    /// Id of the replacement constant when every demanded bit is known. View it
+    /// with [`Module::view`](crate::Module::view), or feed it straight to a
+    /// builder / [`FnPatch::replace_all_uses`] — ids are accepted at operand
+    /// positions.
     #[inline]
-    pub fn replacement(&self) -> Option<ConstantIntValue<'ctx, IntDyn, B>> {
+    pub fn replacement(&self) -> Option<IntValueId<IntDyn, B>> {
         self.replacement
     }
 
@@ -75,7 +82,7 @@ pub fn simplify_demanded_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     demanded_bits: &DemandedBits,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
-) -> IrResult<SimplifyDemandedBitsResult<'ctx, B>> {
+) -> IrResult<SimplifyDemandedBitsResult<B>> {
     let Some(width) = int_scalar_bit_width(value.ty()) else {
         return Ok(SimplifyDemandedBitsResult {
             known: KnownBits::unknown(value_scalar_size_in_bits(value, query.data_layout())),
@@ -91,7 +98,15 @@ pub fn simplify_demanded_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let unknown_demanded = demanded.bitand(&known_mask.not());
     let replacement = if unknown_demanded.is_zero() {
         let int_ty = crate::derived_types::IntType::<IntDyn, B>::try_from(value.ty())?;
-        Some(int_ty.const_ap_int(known.one_mask())?)
+        // Mint the *typed* id: an int constant is an int value, so the
+        // narrowing is total here (the type came from `value.ty()`), and a
+        // typed id keeps the no-silent-erasure law's guarantee that a caller
+        // never has to re-narrow an erased id to use it as an int operand.
+        let konst: IntValue<'ctx, IntDyn, B> = int_ty
+            .const_ap_int(known.one_mask())?
+            .into_erased()
+            .try_into()?;
+        Some(konst.id())
     } else {
         None
     };
@@ -954,7 +969,9 @@ fn simplify_demanded_bits_iteration<'ctx>(
             if let Some(replacement) = simplified.replacement() {
                 let id = value.slot();
                 drop_zext_nneg_for_replaced_uses(value);
-                inst.replace_all_uses_with(module_token, replacement)?;
+                // The result carries a storable id; view it for the RAUW, which
+                // takes an ephemeral handle.
+                inst.replace_all_uses_with(module_token, module_token.view(replacement))?;
                 let erased =
                     Instruction::<state::Attached>::from_parts(id, module_token.module_ref());
                 erased.erase_from_parent(module_token);

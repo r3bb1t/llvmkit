@@ -558,6 +558,44 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         self.core.id()
     }
 
+    /// Resolve a storable id back into its borrowing handle — the same
+    /// module-tag choke point as [`Module::view`], reachable from a read-only
+    /// [`ModuleView`].
+    ///
+    /// This is what lets a *pass* speak ids: the capability-graded pass surface
+    /// hands out a `ModuleView` (never `&Module`, whose declaration surface no
+    /// mutating rung's preservation floor accounts for), so without this the
+    /// ids a pass stores would have no resolution path inside `run`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the id belongs to a different module (foreign tag) or its slot
+    /// is absent, exactly as [`Module::view`] does. Use
+    /// [`try_view`](Self::try_view) for the fallible form.
+    #[inline]
+    pub fn view<I>(self, id: I) -> I::View
+    where
+        I: ViewIn<'ctx, B>,
+    {
+        id.resolve_in(self.into()).unwrap_or_else(|| {
+            panic!(
+                "ModuleView::view: id does not resolve in this module \
+                 (foreign module tag or absent/tombstoned slot)"
+            )
+        })
+    }
+
+    /// Fallible [`view`](Self::view): `None` when the id belongs to a different
+    /// module (foreign tag) or its slot is absent. The `ModuleView` twin of
+    /// [`Module::try_view`].
+    #[inline]
+    pub fn try_view<I>(self, id: I) -> Option<I::View>
+    where
+        I: ViewIn<'ctx, B>,
+    {
+        id.resolve_in(self.into())
+    }
+
     /// Module identifier.
     #[inline]
     pub fn name(self) -> &'ctx str {

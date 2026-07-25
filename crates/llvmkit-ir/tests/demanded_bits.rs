@@ -1,7 +1,8 @@
 use llvmkit_ir::{
-    Analyses, ApInt, DemandedBitsAnalysis, FunctionAnalysisManager, IRBuilder, IntValue, IrError,
-    KnownBits, Linkage, Module, NoFolder, SimplifyDemandedBitsPass, ValueTrackingQuery, Width,
-    ZExtFlags, run_function_pass, simplify_demanded_bits,
+    Analyses, ApInt, Constant, ConstantIntValue, DemandedBitsAnalysis, FunctionAnalysisManager,
+    IRBuilder, IntDyn, IntValue, IrError, KnownBits, Linkage, Module, NoFolder,
+    SimplifyDemandedBitsPass, ValueTrackingQuery, Width, ZExtFlags, run_function_pass,
+    simplify_demanded_bits,
 };
 
 fn bits(value: ApInt) -> String {
@@ -592,7 +593,18 @@ fn simplify_demanded_bits_replaces_known_demanded_low_bits() -> Result<(), IrErr
             bits(simplified.demanded_bits().clone()),
             "00000000000000000000000011111111"
         );
+        // The result hands back a storable id; view it to read the constant.
         let replacement = simplified.replacement().expect("replacement");
+        // The result hands back a storable id; view + narrow it to read the
+        // constant's bits.
+        let replacement: Constant<'_> = m
+            .view(replacement)
+            .into_erased()
+            .try_into()
+            .expect("the replacement is a constant");
+        let replacement: ConstantIntValue<'_, IntDyn> = replacement
+            .try_into()
+            .expect("the replacement is an integer constant");
         assert_eq!(
             bits(replacement.ap_int()),
             "00000000000000000000000000000000"

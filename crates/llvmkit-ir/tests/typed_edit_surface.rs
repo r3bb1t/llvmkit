@@ -11,7 +11,7 @@
 use llvmkit_ir::{
     Analyses, BasicBlockLabel, BlockId, Dyn, FnCx, FnReport, FunctionPass, FunctionValue,
     IRBuilder, IntPredicate, IntValue, IrError, IrResult, Linkage, Module, ModuleBrand, ReshapeCfg,
-    TermEdit, Value, run_function_pass,
+    TermEdit, Value, ValueId, run_function_pass,
 };
 
 // Fixture return-type aliases. These keep the `build_*` helper signatures under
@@ -35,12 +35,12 @@ type SwitchFixture<'ctx> = (
 
 /// Return of `build_switch_bogus_fn`: the function, a non-case (`bogus`) `Dyn`
 /// label, the `new` `Dyn` label (which carries a head-phi), and a valid phi
-/// seed value for `new`.
+/// seed value id for `new`.
 type SwitchBogusFixture<'ctx> = (
     FunctionValue<'ctx, i32>,
     BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
     BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
-    Value<'ctx>,
+    ValueId<llvmkit_ir::Brand<'ctx>>,
 );
 
 // ---------------------------------------------------------------------------
@@ -71,7 +71,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectInvokeEdge<B
             .function()
             .entry_block()
             .expect("definition has entry");
-        let invoke = reshape.edit_invoke(&entry)?;
+        let invoke = reshape.edit_invoke(entry.id())?;
         match self.which {
             InvokeArm::Normal => invoke.redirect_normal(self.new_to, &[])?,
             InvokeArm::Unwind => invoke.redirect_unwind(self.new_to, &[])?,
@@ -188,7 +188,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectCallBrEdge<B
             .function()
             .entry_block()
             .expect("definition has entry");
-        let callbr = reshape.edit_callbr(&entry)?;
+        let callbr = reshape.edit_callbr(entry.id())?;
         if self.default_edge {
             callbr.redirect_default(self.new_to, &[])?;
         } else {
@@ -297,7 +297,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveCondBrArm {
             .function()
             .entry_block()
             .expect("definition has entry");
-        let cond_br = reshape.edit_cond_br(&entry)?;
+        let cond_br = reshape.edit_cond_br(entry.id())?;
         if self.remove_then {
             cond_br.remove_then()?;
         } else {
@@ -405,7 +405,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for SwitchCaseOp<B> {
             .function()
             .entry_block()
             .expect("definition has entry");
-        let switch = reshape.edit_switch(&entry)?;
+        let switch = reshape.edit_switch(entry.id())?;
         if self.remove {
             switch.remove_successor(self.case0)?;
         } else {
@@ -521,13 +521,13 @@ fn switch_remove_successor_drops_case() -> Result<(), IrError> {
 /// carries an explicit `phi_values` so the bogus-target test can seed a
 /// phi-arity-valid redirect (making the pre-fix path sail past already-reaches
 /// + phi validation before it would corrupt `new_to`'s phi).
-struct RedirectSwitchSuccessor<'ctx, B: ModuleBrand + 'ctx> {
+struct RedirectSwitchSuccessor<B: ModuleBrand> {
     old_to: BlockId<Dyn, B>,
     new_to: BlockId<Dyn, B>,
-    phi_values: Vec<Value<'ctx, B>>,
+    phi_values: Vec<ValueId<B>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchSuccessor<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchSuccessor<B> {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "redirect-switch-successor";
@@ -538,7 +538,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchSucces
             .function()
             .entry_block()
             .expect("definition has entry");
-        let switch = reshape.edit_switch(&entry)?;
+        let switch = reshape.edit_switch(entry.id())?;
         switch.redirect_successor(self.old_to, self.new_to, &self.phi_values)?;
         Ok(reshape.done())
     }
@@ -608,7 +608,7 @@ fn build_switch_bogus_fn<'ctx>(
     let np: IntValue<i32> = new_params[0].try_into()?;
     b.build_ret(np)?;
 
-    Ok((m.view(f), bogus_dyn, new_dyn, m.view(ev).into_erased()))
+    Ok((m.view(f), bogus_dyn, new_dyn, m.view(ev).into_erased().id()))
 }
 
 /// `redirect_successor` rejects an `old_to` that is not a case successor of the
@@ -683,7 +683,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for AssertUneditable {
             .function()
             .entry_block()
             .expect("definition has entry");
-        let edit = reshape.edit_terminator(&entry)?;
+        let edit = reshape.edit_terminator(entry.id())?;
         assert!(
             matches!(edit, TermEdit::Uneditable(_)),
             "a `ret` terminator must narrow to TermEdit::Uneditable"

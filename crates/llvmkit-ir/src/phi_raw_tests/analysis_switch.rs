@@ -11,10 +11,10 @@
 
 use crate::{
     Analyses, BlockId, Dyn, FnCx, FnReport, FunctionPass, IRBuilder, IntValue, IrError, IrResult,
-    Linkage, Module, ModuleBrand, ReshapeCfg, Value, run_function_pass,
+    Linkage, Module, ModuleBrand, ReshapeCfg, ValueId, run_function_pass,
 };
 
-/// A `ReshapeCfg` pass that calls `edit_switch(&from)?.remove_successor(to)` on
+/// A `ReshapeCfg` pass that calls `edit_switch(from.id())?.remove_successor(to)` on
 /// the block named `from_name`, dropping its edge to `to`. The `to` label is
 /// stashed at build time (arena ids are stable across `verify()`), mirroring how
 /// `InsertMergePhi` stashes its incomings.
@@ -35,23 +35,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveSwitchEdge<B> 
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
-        reshape.edit_switch(&from)?.remove_successor(self.to)?;
+        reshape.edit_switch(from.id())?.remove_successor(self.to)?;
         Ok(reshape.done())
     }
 }
 
 /// A `ReshapeCfg` pass that calls
-/// `edit_switch(&from)?.redirect_successor(old_to, new_to, ..)`, retargeting
+/// `edit_switch(from.id())?.redirect_successor(old_to, new_to, ..)`, retargeting
 /// the `from_name` block's case edge from `old_to` to `new_to` and seeding
 /// `new_to`'s leading phis with the stashed `phi_values`.
-struct RedirectSwitchEdge<'ctx, B: ModuleBrand + 'ctx> {
+struct RedirectSwitchEdge<B: ModuleBrand> {
     from_name: &'static str,
     old_to: BlockId<Dyn, B>,
     new_to: BlockId<Dyn, B>,
-    phi_values: Vec<Value<'ctx, B>>,
+    phi_values: Vec<ValueId<B>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchEdge<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchEdge<B> {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "redirect-switch-edge";
@@ -63,7 +63,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchEdge<'
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
-        reshape.edit_switch(&from)?.redirect_successor(
+        reshape.edit_switch(from.id())?.redirect_successor(
             self.old_to,
             self.new_to,
             &self.phi_values,

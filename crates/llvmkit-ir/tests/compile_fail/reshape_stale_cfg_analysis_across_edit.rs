@@ -33,7 +33,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for StaleRead {
         let dt = reshape.analysis_repaired::<DominatorTreeAnalysis, _>();
         // ...then reshape the CFG while still holding it: `reshape` is already
         // mutably borrowed by `dt`, so this cannot compile.
-        let _ = reshape.split_block(&entry, &before, "split");
+        let _ = reshape.split_block(entry.id(), &before, "split");
         // The stale use that keeps `dt` live across the edit.
         let _ = dt.is_reachable_from_entry(entry);
 

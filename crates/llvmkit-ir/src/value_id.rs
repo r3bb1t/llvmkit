@@ -448,11 +448,31 @@ pub trait ViewIn<'ctx, B: ModuleBrand>: Copy + sealed::Sealed {
     /// [`Module::try_view`](crate::Module::try_view).
     #[doc(hidden)]
     fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View>;
+
+    /// Mint the id from an already-resolved `(tag, slot)` pair — the minting
+    /// leg that pairs with [`resolve_in`](Self::resolve_in), so `ViewIn` names
+    /// *both* directions of the id/handle correspondence rather than only
+    /// id → handle.
+    ///
+    /// Crate-internal (`#[doc(hidden)]` on a sealed trait): it performs no
+    /// category check, so the caller must already know the slot holds a value
+    /// of `Self::View`'s shape. It exists for the *generic* minting sites —
+    /// [`FnReshape::insert_phi`](crate::FnReshape::insert_phi) is the only one
+    /// today — that are parameterised over the id and therefore cannot name a
+    /// concrete `from_raw`; every monomorphic site calls its id's inherent
+    /// `from_raw` directly.
+    #[doc(hidden)]
+    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self;
 }
 
 impl<B: ModuleBrand> sealed::Sealed for ValueId<B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for ValueId<B> {
     type View = Value<'ctx, B>;
+
+    #[inline]
+    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
+        Self::from_raw(tag, slot)
+    }
 
     #[inline]
     fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
@@ -467,6 +487,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for ValueId<B> {
 impl<W: IntWidth, B: ModuleBrand> sealed::Sealed for IntValueId<W, B> {}
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for IntValueId<W, B> {
     type View = IntValue<'ctx, W, B>;
+
+    #[inline]
+    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
+        Self::from_raw(tag, slot)
+    }
 
     #[inline]
     fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
@@ -490,6 +515,11 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for IntValueId<W,
 impl<K: FloatKind, B: ModuleBrand> sealed::Sealed for FloatValueId<K, B> {}
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FloatValueId<K, B> {
     type View = FloatValue<'ctx, K, B>;
+
+    #[inline]
+    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
+        Self::from_raw(tag, slot)
+    }
 
     #[inline]
     fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
@@ -521,6 +551,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerValueId<B> {
     type View = PointerValue<'ctx, B>;
 
     #[inline]
+    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
+        Self::from_raw(tag, slot)
+    }
+
+    #[inline]
     fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
         if self.tag != module.id() {
             return None;
@@ -539,6 +574,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerValueId<B> {
 impl<R: ReturnMarker, B: ModuleBrand> sealed::Sealed for FunctionId<R, B> {}
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FunctionId<R, B> {
     type View = FunctionValue<'ctx, R, B>;
+
+    #[inline]
+    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
+        Self::from_raw(tag, slot)
+    }
 
     #[inline]
     fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
@@ -580,6 +620,11 @@ macro_rules! impl_view_in_for_typed_function_id {
             B: ModuleBrand + 'ctx,
         {
             type View = $facade<'ctx, Ret, Params, B>;
+
+            #[inline]
+            fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
+                Self::from_raw(tag, slot)
+            }
 
             #[inline]
             fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
@@ -624,6 +669,11 @@ macro_rules! impl_view_in_for_global_id {
             type View = $handle<'ctx, B>;
 
             #[inline]
+            fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
+                Self::from_raw(tag, slot)
+            }
+
+            #[inline]
             fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
                 if self.tag != module.id() {
                     return None;
@@ -652,6 +702,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams> ViewIn<'
     for BlockId<R, B, Params>
 {
     type View = BasicBlockLabel<'ctx, R, B, Params>;
+
+    #[inline]
+    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
+        Self::from_raw(tag, slot)
+    }
 
     #[inline]
     fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
@@ -703,6 +758,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for CallInstI
     type View = CallInst<'ctx, R, B>;
 
     #[inline]
+    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
+        Self::from_raw(tag, slot)
+    }
+
+    #[inline]
     fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
         let ty = call_result_type_in(self.tag, self.slot, module)?;
         debug_assert!(
@@ -716,6 +776,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for CallInstI
 impl<Ret: FunctionReturn, B: ModuleBrand> sealed::Sealed for TypedCallInstId<Ret, B> {}
 impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for TypedCallInstId<Ret, B> {
     type View = TypedCallInst<'ctx, Ret, B>;
+
+    #[inline]
+    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
+        Self::from_raw(tag, slot)
+    }
 
     #[inline]
     fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
@@ -733,6 +798,11 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for Typed
 impl<R: ReturnMarker, B: ModuleBrand> sealed::Sealed for IntrinsicInstId<R, B> {}
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for IntrinsicInstId<R, B> {
     type View = IntrinsicInst<'ctx, R, B>;
+
+    #[inline]
+    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
+        Self::from_raw(tag, slot)
+    }
 
     #[inline]
     fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
@@ -756,6 +826,11 @@ macro_rules! impl_view_in_for_instruction_id {
         impl<B: ModuleBrand> sealed::Sealed for $name<B> {}
         impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for $name<B> {
             type View = $handle<'ctx, B>;
+
+            #[inline]
+            fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
+                Self::from_raw(tag, slot)
+            }
 
             #[inline]
             fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
@@ -811,6 +886,11 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PhiInstId<W, 
     type View = PhiInst<'ctx, W, B>;
 
     #[inline]
+    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
+        Self::from_raw(tag, slot)
+    }
+
+    #[inline]
     fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
         let ty = phi_result_type_in(self.tag, self.slot, module)?;
         debug_assert!(
@@ -827,6 +907,11 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PhiInstId<W, 
 impl<K: FloatKind, B: ModuleBrand> sealed::Sealed for FpPhiInstId<K, B> {}
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FpPhiInstId<K, B> {
     type View = FpPhiInst<'ctx, K, B>;
+
+    #[inline]
+    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
+        Self::from_raw(tag, slot)
+    }
 
     #[inline]
     fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
@@ -851,6 +936,11 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FpPhiInstId<
 impl<B: ModuleBrand> sealed::Sealed for PointerPhiInstId<B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerPhiInstId<B> {
     type View = PointerPhiInst<'ctx, B>;
+
+    #[inline]
+    fn id_from_raw(tag: ModuleId, slot: ValueSlot) -> Self {
+        Self::from_raw(tag, slot)
+    }
 
     #[inline]
     fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {

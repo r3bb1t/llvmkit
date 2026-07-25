@@ -18,7 +18,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for CallBrNoRemove {
         let reshape = cx.mutate();
         let bb = reshape.function().entry_block().expect("entry");
         // `CallBrEdit` has no `remove_*`: a callbr edge is not removable.
-        reshape.edit_callbr(&bb)?.remove_default();
+        reshape.edit_callbr(bb.id())?.remove_default();
         Ok(reshape.done())
     }
 }

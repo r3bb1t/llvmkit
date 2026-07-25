@@ -20,7 +20,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for BrNoRemove {
         let bb = reshape.function().entry_block().expect("entry");
         // `BrEdit` has no `remove`: an unconditional br's sole edge is not
         // removable.
-        reshape.edit_br(&bb)?.remove();
+        reshape.edit_br(bb.id())?.remove();
         Ok(reshape.done())
     }
 }

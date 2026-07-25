@@ -4,7 +4,7 @@ error[E0502]: cannot borrow `reshape` as immutable because it is also borrowed a
 33 |         let dt = reshape.analysis_repaired::<DominatorTreeAnalysis, _>();
    |                  ------- mutable borrow occurs here
 ...
-36 |         let _ = reshape.split_block(&entry, &before, "split");
+36 |         let _ = reshape.split_block(entry.id(), &before, "split");
    |                 ^^^^^^^ immutable borrow occurs here
 37 |         // The stale use that keeps `dt` live across the edit.
 38 |         let _ = dt.is_reachable_from_entry(entry);

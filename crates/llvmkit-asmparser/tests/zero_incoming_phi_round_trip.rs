@@ -37,7 +37,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveEdge {
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
-        reshape.edit_cond_br(&from)?.remove_then()?;
+        reshape.edit_cond_br(from.id())?.remove_then()?;
         Ok(reshape.done())
     }
 }

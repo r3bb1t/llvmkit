@@ -1,8 +1,8 @@
 error[E0599]: no method named `remove_default` found for struct `SwitchEdit<'e, 'm, 'r, 'ctx, B, R>` in the current scope
-  --> tests/compile_fail/switch_edit_has_no_remove_default.rs:22:35
+  --> tests/compile_fail/switch_edit_has_no_remove_default.rs:22:39
    |
-22 |         reshape.edit_switch(&bb)?.remove_default();
-   |                                   ^^^^^^^^^^^^^^
+22 |         reshape.edit_switch(bb.id())?.remove_default();
+   |                                       ^^^^^^^^^^^^^^
    |
 help: there is a method `redirect_default` with a similar name, but with different arguments
   --> src/pass_context.rs
@@ -10,6 +10,6 @@ help: there is a method `redirect_default` with a similar name, but with differe
    | /     pub fn redirect_default(
    | |         &self,
    | |         new_to: BlockId<Dyn, B>,
-   | |         phi_values: &[Value<'ctx, B>],
+   | |         phi_values: &[ValueId<B>],
    | |     ) -> IrResult<()> {
    | |_____________________^

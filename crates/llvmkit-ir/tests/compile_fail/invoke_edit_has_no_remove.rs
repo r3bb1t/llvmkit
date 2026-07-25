@@ -20,7 +20,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InvokeNoRemove {
         let reshape = cx.mutate();
         let bb = reshape.function().entry_block().expect("entry");
         // `InvokeEdit` has no `remove_*`: an invoke edge is not removable.
-        reshape.edit_invoke(&bb)?.remove_normal();
+        reshape.edit_invoke(bb.id())?.remove_normal();
         Ok(reshape.done())
     }
 }

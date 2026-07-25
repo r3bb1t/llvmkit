@@ -12,7 +12,7 @@ use super::instruction::{InstructionKindData, InstructionView};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Brand, ModuleBrand, ModuleRef};
 use super::value::{ValueKindData, ValueSlot};
-use super::value_id::BlockId;
+use super::value_id::{BlockId, FunctionId};
 
 /// A directed edge in a function CFG. Mirrors LLVM's `BasicBlockEdge`
 /// without pointer identity: endpoints are storable [`BlockId`]s, not
@@ -88,10 +88,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
         }
     }
 
-    /// Function this CFG was computed from.
+    /// Id of the function this CFG was computed from.
+    ///
+    /// A storable [`FunctionId`], not the borrowing handle: like the
+    /// [`BlockId`]s [`Self::successors`] / [`Self::predecessors`] hand back,
+    /// what leaves a CFG snapshot is id currency. View it with
+    /// [`Module::view`](crate::Module::view) to read the function.
     #[inline]
-    pub fn function(&self) -> FunctionValue<'ctx, Dyn, B> {
-        self.function
+    pub fn function(&self) -> FunctionId<Dyn, B> {
+        self.function.id()
     }
 
     /// Successors of `block`, preserving duplicate edges.

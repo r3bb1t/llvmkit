@@ -1,7 +1,7 @@
 error[E0382]: use of moved value: `e`
   --> tests/compile_fail/cond_br_edit_remove_consumes.rs:25:9
    |
-22 |         let e = reshape.edit_cond_br(&bb)?;
+22 |         let e = reshape.edit_cond_br(bb.id())?;
    |             - move occurs because `e` has type `CondBrEdit<'_, '_, '_, '_, B, ()>`, which does not implement the `Copy` trait
 23 |         // `remove_then` consumes `e`; the second removal is a use-after-move.
 24 |         e.remove_then()?;

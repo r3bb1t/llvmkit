@@ -10,8 +10,8 @@
 
 use llvmkit_ir::{
     Analyses, BlockId, DominatorTree, DominatorTreeAnalysis, Dyn, FnCx, FnReport, FunctionPass,
-    FunctionView, IRBuilder, InsertPoint, IntPredicate, IntValue, IrError, IrResult, Linkage,
-    Module, ModuleBrand, ReshapeCfg, Type, Value, run_function_pass,
+    FunctionView, IRBuilder, InsertPoint, IntPredicate, IntValue, IntValueId, IrError, IrResult,
+    Linkage, Module, ModuleBrand, ReshapeCfg, Type, ValueId, run_function_pass,
 };
 
 /// A `ReshapeCfg` pass that requires the dominator tree and splits the entry
@@ -35,7 +35,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for SplitEntryPass {
         // Split before the terminator: `br next` (and the only edge into `next`)
         // moves into a fresh block nothing reaches, so `next` becomes unreachable.
         let terminator = entry.instructions().last().expect("entry has a terminator");
-        reshape.split_block(&entry, &terminator, "entry.split")?;
+        reshape.split_block(entry.id(), &terminator, "entry.split")?;
         Ok(reshape.done())
     }
 }
@@ -156,7 +156,7 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
                     .instructions()
                     .last()
                     .expect("entry is terminated by the br");
-                let new_block = reshape.split_block(&entry, &terminator, "entry.split")?;
+                let new_block = reshape.split_block(entry.id(), &terminator, "entry.split")?;
                 let ip = self
                     .ip
                     .take()
@@ -195,7 +195,7 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
 struct InsertMergePhi<'ctx, B: ModuleBrand + 'ctx> {
     merge_name: &'static str,
     ty: Type<'ctx, B>,
-    incomings: Vec<(Value<'ctx, B>, BlockId<Dyn, B>)>,
+    incomings: Vec<(ValueId<B>, BlockId<Dyn, B>)>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InsertMergePhi<'ctx, B> {
@@ -213,7 +213,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InsertMergePhi<'ctx,
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.merge_name))
             .expect("merge block is present");
-        reshape.insert_phi_dyn(&merge, self.ty, &self.incomings)?;
+        reshape.insert_phi_dyn(merge.id(), self.ty, &self.incomings)?;
         Ok(reshape.done())
     }
 }
@@ -228,9 +228,9 @@ fn build_diamond<'ctx>(
     m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
 ) -> IrResult<(
     llvmkit_ir::FunctionValue<'ctx, Dyn>,
-    Value<'ctx>,
+    ValueId<llvmkit_ir::Brand<'ctx>>,
     BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
-    Value<'ctx>,
+    ValueId<llvmkit_ir::Brand<'ctx>>,
     BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
 )> {
     let i32_ty = m.i32_type();
@@ -270,9 +270,9 @@ fn build_diamond<'ctx>(
 
     Ok((
         m.view(f),
-        m.view(lv).into_erased(),
+        m.view(lv).into_erased().id(),
         left_label,
-        m.view(rv).into_erased(),
+        m.view(rv).into_erased().id(),
         right_label,
     ))
 }
@@ -318,12 +318,12 @@ fn insert_phi_into_merge_block_verifies() -> Result<(), IrError> {
 /// is inferred as `IntValue<i32>` (not an erased `Value`) — the whole point of
 /// the twin. Using the result as an `IntValue<i32>` compiles only because the
 /// method hands back the marker it was fed. Mirrors `InsertMergePhi`.
-struct InsertMergePhiTyped<'ctx, B: ModuleBrand + 'ctx> {
+struct InsertMergePhiTyped<B: ModuleBrand> {
     merge_name: &'static str,
-    incomings: Vec<(IntValue<'ctx, i32, B>, BlockId<Dyn, B>)>,
+    incomings: Vec<(IntValueId<i32, B>, BlockId<Dyn, B>)>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InsertMergePhiTyped<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InsertMergePhiTyped<B> {
     type Access = ReshapeCfg;
     type Requires = (DominatorTreeAnalysis,);
     const NAME: &'static str = "insert-merge-phi-typed";
@@ -338,9 +338,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InsertMergePhiTyped<
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.merge_name))
             .expect("merge block is present");
-        let phi: IntValue<'ctx, i32, B> = reshape.insert_phi(&merge, &self.incomings)?;
-        // The handle is typed: reading its width-marked type needs no narrowing.
-        let _typed_ty: llvmkit_ir::IntType<'ctx, i32, B> = phi.ty();
+        let phi: IntValueId<i32, B> = reshape.insert_phi(merge.id(), &self.incomings)?;
+        // The id is typed: viewing it yields the width-marked handle directly,
+        // so reading its type needs no narrowing.
+        let _typed_ty: llvmkit_ir::IntType<'ctx, i32, B> = reshape.module().view(phi).ty();
         Ok(reshape.done())
     }
 }
@@ -353,9 +354,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InsertMergePhiTyped<
 fn insert_phi_typed_into_merge_block_verifies() -> Result<(), IrError> {
     Module::with_new("insert-phi-typed-merge", |m| {
         let (f, lv, left_label, rv, right_label) = build_diamond(&m)?;
-        // Narrow the arm values to the typed handle the twin takes.
-        let lv: IntValue<i32> = lv.try_into()?;
-        let rv: IntValue<i32> = rv.try_into()?;
+        // Narrow the arm value ids to the typed ids the twin takes. Erased ->
+        // typed stays a *spelled* narrowing (the no-silent-erasure law), here
+        // through `try_view` + `.id()`.
+        let lv: IntValue<i32> = m.view(lv).try_into()?;
+        let rv: IntValue<i32> = m.view(rv).try_into()?;
+        let (lv, rv) = (lv.id(), rv.id());
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
@@ -483,17 +487,17 @@ fn insert_phi_rejects_incomplete_incomings() -> Result<(), IrError> {
 // ---------------------------------------------------------------------------
 
 /// A `ReshapeCfg` pass that calls
-/// `edit_switch(&from)?.redirect_successor(&old_to, &new_to, ..)`, retargeting
+/// `edit_switch(from.id())?.redirect_successor(old_to, new_to, ..)`, retargeting
 /// the `from_name` block's case edge from `old_to` to `new_to` and seeding
 /// `new_to`'s leading phis with the stashed `phi_values`.
-struct RedirectSwitchCase<'ctx, B: ModuleBrand + 'ctx> {
+struct RedirectSwitchCase<B: ModuleBrand> {
     from_name: &'static str,
     old_to: BlockId<Dyn, B>,
     new_to: BlockId<Dyn, B>,
-    phi_values: Vec<Value<'ctx, B>>,
+    phi_values: Vec<ValueId<B>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchCase<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchCase<B> {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "redirect-switch-case";
@@ -505,7 +509,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchCase<'
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
-        reshape.edit_switch(&from)?.redirect_successor(
+        reshape.edit_switch(from.id())?.redirect_successor(
             self.old_to,
             self.new_to,
             &self.phi_values,
@@ -535,7 +539,7 @@ fn build_switch_redirect<'ctx>(
     llvmkit_ir::FunctionValue<'ctx, Dyn>,
     BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
     BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
-    Value<'ctx>,
+    ValueId<llvmkit_ir::Brand<'ctx>>,
 )> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
@@ -579,7 +583,7 @@ fn build_switch_redirect<'ctx>(
     let np: IntValue<i32> = new_params[0].try_into()?;
     b.build_ret(np)?;
 
-    Ok((m.view(f), old_dyn, new_dyn, m.view(ev).into_erased()))
+    Ok((m.view(f), old_dyn, new_dyn, m.view(ev).into_erased().id()))
 }
 
 /// `redirect_successor` retargets the `entry → old` switch case onto `new` AND
@@ -664,7 +668,7 @@ fn redirect_edge_rejects_wrong_type() -> Result<(), IrError> {
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
         // `new`'s phi is i32; an i64 constant is the wrong type for it.
-        let wrong: Value = i64_ty.const_int(0_u32).into_erased();
+        let wrong: ValueId<_> = i64_ty.const_int(0_u32).into_erased().id();
         let pass = RedirectSwitchCase {
             from_name: "entry",
             old_to: old_dyn,
@@ -694,16 +698,16 @@ fn redirect_edge_rejects_wrong_type() -> Result<(), IrError> {
 // ---------------------------------------------------------------------------
 
 /// A `ReshapeCfg` pass that retargets `from_name`'s `cond_br` then-arm onto
-/// `new_to` via `edit_cond_br(&from)?.redirect_then(&new_to, ..)`, seeding
+/// `new_to` via `edit_cond_br(from.id())?.redirect_then(&new_to, ..)`, seeding
 /// `new_to`'s leading phis with the stashed `phi_values`. Propagates the op's
 /// error, so a rejected op surfaces as the pass's error.
-struct RedirectCondBrThen<'ctx, B: ModuleBrand + 'ctx> {
+struct RedirectCondBrThen<B: ModuleBrand> {
     from_name: &'static str,
     new_to: BlockId<Dyn, B>,
-    phi_values: Vec<Value<'ctx, B>>,
+    phi_values: Vec<ValueId<B>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectCondBrThen<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectCondBrThen<B> {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "redirect-condbr-then";
@@ -716,22 +720,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectCondBrThen<'
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
         reshape
-            .edit_cond_br(&from)?
+            .edit_cond_br(from.id())?
             .redirect_then(self.new_to, &self.phi_values)?;
         Ok(reshape.done())
     }
 }
 
 /// A `ReshapeCfg` pass that retargets `from_name`'s unconditional `br` onto
-/// `new_to` via `edit_br(&from)?.redirect(&new_to, ..)`, seeding `new_to`'s
+/// `new_to` via `edit_br(from.id())?.redirect(&new_to, ..)`, seeding `new_to`'s
 /// leading phis with the stashed `phi_values`.
-struct RedirectBr<'ctx, B: ModuleBrand + 'ctx> {
+struct RedirectBr<B: ModuleBrand> {
     from_name: &'static str,
     new_to: BlockId<Dyn, B>,
-    phi_values: Vec<Value<'ctx, B>>,
+    phi_values: Vec<ValueId<B>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectBr<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectBr<B> {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "redirect-br";
@@ -744,14 +748,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectBr<'ctx, B> 
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
         reshape
-            .edit_br(&from)?
+            .edit_br(from.id())?
             .redirect(self.new_to, &self.phi_values)?;
         Ok(reshape.done())
     }
 }
 
 /// A `ReshapeCfg` pass that removes `from_name`'s `cond_br` else-edge via
-/// `edit_cond_br(&from)?.remove_else()`, collapsing the `cond_br` to a `br` to
+/// `edit_cond_br(from.id())?.remove_else()`, collapsing the `cond_br` to a `br` to
 /// the surviving then-arm.
 struct RemoveCondBrElse {
     from_name: &'static str,
@@ -769,13 +773,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveCondBrElse {
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
-        reshape.edit_cond_br(&from)?.remove_else()?;
+        reshape.edit_cond_br(from.id())?.remove_else()?;
         Ok(reshape.done())
     }
 }
 
 /// A `ReshapeCfg` pass that removes `from_name`'s `cond_br` then-edge via
-/// `edit_cond_br(&from)?.remove_then()`, collapsing the `cond_br` to a `br` to
+/// `edit_cond_br(from.id())?.remove_then()`, collapsing the `cond_br` to a `br` to
 /// the surviving else-arm.
 struct RemoveCondBrThen {
     from_name: &'static str,
@@ -793,7 +797,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveCondBrThen {
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
-        reshape.edit_cond_br(&from)?.remove_then()?;
+        reshape.edit_cond_br(from.id())?.remove_then()?;
         Ok(reshape.done())
     }
 }
@@ -839,7 +843,7 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
         let pass = RedirectCondBrThen {
             from_name: "entry",
             new_to: new_dyn,
-            phi_values: vec![verified.view(ev).into_erased()],
+            phi_values: vec![verified.view(ev).into_erased().id()],
         };
         let f_view = verified.view(f);
         let out = run_function_pass(pass, verified, f_view, &mut analyses)?;
@@ -985,7 +989,7 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
         let pass = RedirectBr {
             from_name: "entry",
             new_to: new_dyn,
-            phi_values: vec![verified.view(ev).into_erased()],
+            phi_values: vec![verified.view(ev).into_erased().id()],
         };
         let f_view = verified.view(f);
         let out = run_function_pass(pass, verified, f_view, &mut analyses)?;
