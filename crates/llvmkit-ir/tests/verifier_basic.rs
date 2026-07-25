@@ -447,7 +447,8 @@ fn verify_call() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
         let arg: IntValue<i32> = caller.param(0)?.try_into()?;
         let inst = b.build_call_dyn(callee, [arg.into_erased()], "c1")?;
-        let one: IntValue<i32> = inst
+        let one: IntValue<i32> = b
+            .view(inst)
             .return_value()
             .expect("non-void call returns a value")
             .try_into()?;

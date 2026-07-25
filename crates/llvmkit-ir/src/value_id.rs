@@ -13,10 +13,17 @@
 //! Cycle A was purely **additive**: every handle gained a
 //! [`id`](crate::Value::id)-style accessor that mints its id, while the
 //! builders kept returning borrowing handles. Cycle B rewires the builders to
-//! return ids, one family at a time — the integer-arithmetic family
-//! (`build_int_add` & co.) has flipped, the rest still hand back handles.
+//! return ids, one family at a time — arithmetic, casts, comparisons, memory,
+//! aggregates, vectors and calls have flipped; declarations, blocks/branches
+//! and phi still hand back handles.
 //! [`IRBuilder::view`](crate::IRBuilder::view) is the builder-side twin of
 //! [`Module::view`](crate::Module::view) for reading at a build site.
+//!
+//! Two shapes of id live here: the **value ids** ([`ValueId`], [`IntValueId`],
+//! ...), which name a value and nothing more, and the **instruction ids**
+//! ([`CallInstId`], [`AtomicRMWInstId`], ...), whose [`ViewIn::View`] is an
+//! opcode handle so that a builder returning one keeps the opcode's typed API
+//! reachable through a single view.
 //!
 //! # Representation
 //!
@@ -42,11 +49,17 @@ use crate::block_params::{BlockParams, BlockParamsDyn};
 use crate::error::{IrError, IrResult};
 use crate::float_kind::{FloatKind, IntoFloatValue, into_float_value_sealed};
 use crate::function::{FunctionValue, signature_matches_marker};
+use crate::function_signature::FunctionReturn;
 use crate::global_variable::GlobalVariable;
+use crate::instruction::InstructionKindData;
+use crate::instructions::{
+    AtomicCmpXchgInst, AtomicRMWInst, CallInst, FreezeInst, TypedCallInst, VAArgInst,
+};
 use crate::int_width::{IntWidth, IntoIntValue, into_int_value_sealed};
+use crate::intrinsic_inst::IntrinsicInst;
 use crate::marker::ReturnMarker;
 use crate::module::{Invariant, ModuleBrand, ModuleId, ModuleRef};
-use crate::r#type::TypeData;
+use crate::r#type::{Type, TypeData, TypeSlot};
 use crate::value::{
     FloatValue, IntValue, IntoErasedValue, IntoPointerValue, IsValue, PointerValue, Value,
     ValueKindData, ValueSlot, into_erased_value_sealed, into_pointer_value_sealed,
@@ -228,6 +241,86 @@ impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> core::fmt::Debug
             .field("slot", &self.slot)
             .finish()
     }
+}
+
+// --------------------------------------------------------------------------
+// The instruction-id family
+// --------------------------------------------------------------------------
+//
+// Most builders hand back a *value*, and the ids above say everything there is
+// to say about one. A few builders instead hand back an **opcode handle** that
+// carries its own typed API — [`CallInst::classify_callee`] /
+// `return_int_value`, [`TypedCallInst::result`], [`AtomicRMWInst::operation`],
+// ... Collapsing those to the erased [`ValueId`] would throw that API away *at
+// the return position*, and recovering it would cost a view plus an
+// [`InstructionView`](crate::InstructionView) narrowing plus a `kind()` match.
+//
+// So each such opcode handle gets its own id, exactly the move
+// [`FunctionId`] (`View = FunctionValue`) and [`BlockId`]
+// (`View = BasicBlockLabel`) already make: a read becomes
+// `b.view(call).return_int_value()` — one view, which a read needed anyway —
+// and the typed opcode API survives intact.
+//
+// Each resolver checks the arena's *instruction kind* before minting, the same
+// way [`GlobalId`] / [`BlockId`] check their value category: the opcode handles
+// reach their payload through an `unreachable!` on a wrong kind, so the kind
+// check is what keeps a foreign or repurposed slot from turning into a panic.
+// The result type is recovered from the arena rather than cached on the id,
+// mirroring [`FunctionId`]'s signature recovery.
+
+decl_value_id! {
+    /// Storable, module-tagged id for a `call` instruction, resolved into a
+    /// [`CallInst<R>`](crate::CallInst). The return-shape marker `R` is
+    /// preserved on the id, so viewing it recovers the marker-gated
+    /// `return_int_value` / `return_float_value` / `return_pointer_value`
+    /// accessors; the call's result type is recovered from the arena.
+    ///
+    /// Deliberately **not** an [`IntoErasedValue`] operand: a call may be
+    /// void, so its result is reached through
+    /// [`CallInst::return_value`](crate::CallInst::return_value) or a
+    /// marker-gated typed accessor — never by widening the instruction itself.
+    CallInstId [R: ReturnMarker => _r]
+}
+
+decl_value_id! {
+    /// Storable, module-tagged id for a schema-typed `call` instruction,
+    /// resolved into a [`TypedCallInst<Ret>`](crate::TypedCallInst). The full
+    /// return schema `Ret` — not just its marker — rides on the id, so viewing
+    /// it recovers the infallible [`TypedCallInst::result`] whose type is
+    /// `Ret::CallResult`.
+    TypedCallInstId [Ret: FunctionReturn => _ret]
+}
+
+decl_value_id! {
+    /// Storable, module-tagged id for a call to a generated intrinsic
+    /// declaration, resolved into an [`IntrinsicInst<R>`](crate::IntrinsicInst).
+    /// The intrinsic identity is re-derived from the callee on view, the way
+    /// [`IntrinsicInst::from_call`] derives it, so the id stays a tagged index.
+    IntrinsicInstId [R: ReturnMarker => _r]
+}
+
+decl_value_id! {
+    /// Storable, module-tagged id for a `freeze` instruction, resolved into a
+    /// [`FreezeInst`].
+    FreezeInstId
+}
+
+decl_value_id! {
+    /// Storable, module-tagged id for a `va_arg` instruction, resolved into a
+    /// [`VAArgInst`].
+    VAArgInstId
+}
+
+decl_value_id! {
+    /// Storable, module-tagged id for an `atomicrmw` instruction, resolved into
+    /// an [`AtomicRMWInst`].
+    AtomicRMWInstId
+}
+
+decl_value_id! {
+    /// Storable, module-tagged id for a `cmpxchg` instruction, resolved into an
+    /// [`AtomicCmpXchgInst`].
+    AtomicCmpXchgInstId
 }
 
 // --------------------------------------------------------------------------
@@ -423,6 +516,112 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams> ViewIn<'
     }
 }
 
+/// Tag-check `tag`/`slot` against `module`, confirm the slot really holds a
+/// `call` instruction, and yield the call's result type from the arena.
+/// Shared by the three call-shaped instruction ids, which differ only in the
+/// handle they wrap around the same `(slot, module, result-type)` triple.
+fn call_result_type_in<B: ModuleBrand>(
+    tag: ModuleId,
+    slot: ValueSlot,
+    module: ModuleRef<'_, B>,
+) -> Option<TypeSlot> {
+    if tag != module.id() {
+        return None;
+    }
+    let data = module.value_data(slot);
+    let ValueKindData::Instruction(inst) = &data.kind else {
+        return None;
+    };
+    if !matches!(inst.kind, InstructionKindData::Call(_)) {
+        return None;
+    }
+    Some(data.ty)
+}
+
+impl<R: ReturnMarker, B: ModuleBrand> sealed::Sealed for CallInstId<R, B> {}
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for CallInstId<R, B> {
+    type View = CallInst<'ctx, R, B>;
+
+    #[inline]
+    fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
+        let ty = call_result_type_in(self.tag, self.slot, module)?;
+        debug_assert!(
+            signature_matches_marker::<R>(module.type_data(ty)),
+            "CallInstId return marker does not match the arena result type at its slot",
+        );
+        Some(CallInst::from_raw(self.slot, module, ty))
+    }
+}
+
+impl<Ret: FunctionReturn, B: ModuleBrand> sealed::Sealed for TypedCallInstId<Ret, B> {}
+impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for TypedCallInstId<Ret, B> {
+    type View = TypedCallInst<'ctx, Ret, B>;
+
+    #[inline]
+    fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
+        let ty = call_result_type_in(self.tag, self.slot, module)?;
+        debug_assert!(
+            Ret::matches_ir_type(Type::new(ty, module)),
+            "TypedCallInstId return schema does not match the arena result type at its slot",
+        );
+        Some(TypedCallInst::from_call(CallInst::from_raw(
+            self.slot, module, ty,
+        )))
+    }
+}
+
+impl<R: ReturnMarker, B: ModuleBrand> sealed::Sealed for IntrinsicInstId<R, B> {}
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for IntrinsicInstId<R, B> {
+    type View = IntrinsicInst<'ctx, R, B>;
+
+    #[inline]
+    fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
+        let ty = call_result_type_in(self.tag, self.slot, module)?;
+        debug_assert!(
+            signature_matches_marker::<R>(module.type_data(ty)),
+            "IntrinsicInstId return marker does not match the arena result type at its slot",
+        );
+        // `None` when the callee is not a generated intrinsic declaration —
+        // the same rejection [`IntrinsicInst::from_call`] performs.
+        IntrinsicInst::from_call(CallInst::from_raw(self.slot, module, ty))
+    }
+}
+
+/// Implement [`ViewIn`] for a marker-free instruction id whose handle is the
+/// `{ id, module, ty }` opcode scaffold: tag-check, confirm the arena slot
+/// really holds that opcode, then rebuild the handle through its crate-private
+/// constructor with the result type recovered from the arena.
+macro_rules! impl_view_in_for_instruction_id {
+    ($( $name:ident => $handle:ident [$kind:ident] ),+ $(,)?) => { $(
+        impl<B: ModuleBrand> sealed::Sealed for $name<B> {}
+        impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for $name<B> {
+            type View = $handle<'ctx, B>;
+
+            #[inline]
+            fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
+                if self.tag != module.id() {
+                    return None;
+                }
+                let data = module.value_data(self.slot);
+                let ValueKindData::Instruction(inst) = &data.kind else {
+                    return None;
+                };
+                if !matches!(inst.kind, InstructionKindData::$kind(_)) {
+                    return None;
+                }
+                Some($handle::from_raw(self.slot, module, data.ty))
+            }
+        }
+    )+ };
+}
+
+impl_view_in_for_instruction_id!(
+    FreezeInstId => FreezeInst [Freeze],
+    VAArgInstId => VAArgInst [VAArg],
+    AtomicRMWInstId => AtomicRMWInst [AtomicRMW],
+    AtomicCmpXchgInstId => AtomicCmpXchgInst [AtomicCmpXchg],
+);
+
 // --------------------------------------------------------------------------
 // Into*-id: typed ids as builder operands
 // --------------------------------------------------------------------------
@@ -524,4 +723,37 @@ impl_into_erased_value_for_id!(
     PointerValueId,
     FunctionId[R: ReturnMarker],
     GlobalId,
+);
+
+/// Implement [`IntoErasedValue`] for an instruction id whose opcode handle is
+/// not an [`IsValue`] — the opcode scaffold widens through its inherent
+/// `to_erased` instead.
+///
+/// Only for opcodes that *always* define a value. The call-shaped ids are
+/// deliberately absent: a `call` may be void, which is exactly why
+/// [`CallInst`] is not an [`IsValue`] either, and the compile-fail fixtures
+/// `typed_call_void_result_use` / `call_void_no_return_accessor` keep that
+/// rejection locked.
+macro_rules! impl_into_erased_value_for_instruction_id {
+    ($($name:ident),+ $(,)?) => { $(
+        impl<B: ModuleBrand> into_erased_value_sealed::Sealed for $name<B> {}
+        impl<'ctx, B: ModuleBrand + 'ctx> IntoErasedValue<'ctx, B> for $name<B> {
+            #[inline]
+            fn into_erased_value(
+                self,
+                module: ModuleRef<'ctx, B>,
+            ) -> IrResult<Value<'ctx, B>> {
+                self.resolve_in(module)
+                    .map(|inst| inst.to_erased())
+                    .ok_or(IrError::ForeignValueId)
+            }
+        }
+    )+ };
+}
+
+impl_into_erased_value_for_instruction_id!(
+    FreezeInstId,
+    VAArgInstId,
+    AtomicRMWInstId,
+    AtomicCmpXchgInstId,
 );

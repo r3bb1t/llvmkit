@@ -68,7 +68,8 @@ fn call_with_metadata_argument() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let rsp = b.build_call_dyn(read, [md], "rsp")?;
-        let rsp_val: llvmkit_ir::IntValue<i64> = rsp
+        let rsp_val: llvmkit_ir::IntValue<i64> = b
+            .view(rsp)
             .return_value()
             .expect("read_register returns value")
             .try_into()?;
@@ -313,10 +314,11 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
         let call_entry = call_host.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(call_entry);
         let p: llvmkit_ir::PointerValue = call_host.param(0)?.try_into()?;
-        let call = b.build_call_dyn(callee, [p.into_erased()], "v")?;
+        let call = b.view(b.build_call_dyn(callee, [p.into_erased()], "v")?);
         call.as_view()
             .set_metadata(MetadataAttachmentKind::Range, range);
-        b.build_ret(call.return_int_value())?;
+        let ret = call.return_int_value();
+        b.build_ret(ret)?;
 
         let invoke_host_ty = m.fn_type(i8_ty, [ptr_ty.as_type()], false);
         let invoke_host = m.add_function_dyn("invoke_host", invoke_host_ty, Linkage::External)?;

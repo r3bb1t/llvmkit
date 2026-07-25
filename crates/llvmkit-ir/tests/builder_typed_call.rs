@@ -48,8 +48,9 @@ fn typed_call_result_feeds_int_add_and_ret_with_no_try_into() -> Result<(), IrEr
         let (x,) = caller.params();
         let one = m.i32_type().const_int(1_i32);
         let call = b.build_call(callee, (x, one), "r")?;
-        // `call.result()` is already `IntValue<i32>` -- no `try_into`.
-        let doubled = b.build_int_add::<i32, _, _, _>(call.result(), call.result(), "doubled")?;
+        // `b.view(call).result()` is already `IntValue<i32>` -- no `try_into`.
+        let r = b.view(call).result();
+        let doubled = b.build_int_add::<i32, _, _, _>(r, r, "doubled")?;
         b.build_ret(doubled)?;
         let text = format!("{m}");
         assert!(
@@ -83,7 +84,7 @@ fn typed_call_void_result_is_unit() -> Result<(), IrError> {
         let call = b.build_call(callee, (), "")?;
         // Runtime-cover the void arm: `result()` really produces `()`,
         // executed (not just type-checked away) via the `let ()` binding.
-        let () = call.result();
+        let () = b.view(call).result();
         b.build_ret_void();
         let text = format!("{m}");
         assert!(text.contains("call void @sink()"), "got:\n{text}");
@@ -106,7 +107,7 @@ fn typed_call_pointer_result_feeds_ret() -> Result<(), IrError> {
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Ptr>(&m).position_at_end(entry);
         let call = b.build_call(callee, (), "p")?;
-        let p: PointerValue = call.result();
+        let p: PointerValue = b.view(call).result();
         b.build_ret(p)?;
         let text = format!("{m}");
         assert!(text.contains("%p = call ptr @alloc_ptr()"), "got:\n{text}");
@@ -130,7 +131,8 @@ fn typed_call_float_result_feeds_fadd_and_ret() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<f64>(&m).position_at_end(entry);
         let (x,) = caller.params();
         let call = b.build_call(callee, (x,), "r")?;
-        let sum = b.build_fp_add(call.result(), call.result(), "sum")?;
+        let r = b.view(call).result();
+        let sum = b.build_fp_add(r, r, "sum")?;
         b.build_ret(sum)?;
         let text = format!("{m}");
         assert!(
@@ -226,7 +228,8 @@ fn build_varargs_call_printf_shape_two_fixed_args_and_int_tail() -> Result<(), I
         let (fmt, level) = caller.params();
         let extra = i32_ty.const_int(7_i32);
         let call = b.build_varargs_call(callee, (fmt, level), [extra.into_erased()], "r")?;
-        b.build_ret(call.result())?;
+        let ret_val = b.view(call).result();
+        b.build_ret(ret_val)?;
         let text = format!("{m}");
         assert!(
             text.contains("%r = call i32 (i32, i32, ...) @logf(i32 %0, i32 %1, i32 7)"),
@@ -260,7 +263,8 @@ fn typed_call_full_module_print_equals_dyn_call_full_module_print() -> Result<()
         let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
         let (x, y) = caller.params();
         let call = b.build_call(callee, (x, y), "r")?;
-        b.build_ret(call.result())?;
+        let ret_val = b.view(call).result();
+        b.build_ret(ret_val)?;
         Ok(())
     }
     fn build_dyn<'ctx>(m: &Module<'ctx, Brand<'ctx>, Unverified>) -> Result<(), IrError> {
@@ -280,7 +284,8 @@ fn typed_call_full_module_print_equals_dyn_call_full_module_print() -> Result<()
             [x.into_erased(), y.into_erased()],
             "r",
         )?;
-        b.build_ret(inst.return_int_value())?;
+        let ret_val = b.view(inst).return_int_value();
+        b.build_ret(ret_val)?;
         Ok(())
     }
     let m_typed = Module::with_new("c", |m| -> Result<String, IrError> {
@@ -323,7 +328,8 @@ fn typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_pr
         let callee_ptr = PointerValue::try_from(host.param(0)?)?;
         let x = i32_ty.const_int(7_i32);
         let call = b.build_indirect_call::<fn(i32) -> i32, _, _, _>(callee_ptr, (x,), "r")?;
-        b.build_ret(call.result())?;
+        let ret_val = b.view(call).result();
+        b.build_ret(ret_val)?;
         Ok(())
     }
     fn build_dyn<'ctx>(m: &Module<'ctx, Brand<'ctx>, Unverified>) -> Result<(), IrError> {
@@ -342,7 +348,8 @@ fn typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_pr
             [x.into_erased()],
             "r",
         )?;
-        b.build_ret(inst.return_int_value())?;
+        let ret_val = b.view(inst).return_int_value();
+        b.build_ret(ret_val)?;
         Ok(())
     }
     let m_typed = Module::with_new("c", |m| -> Result<String, IrError> {
@@ -509,7 +516,7 @@ fn typed_call_with_config_void_result_is_unit() -> Result<(), IrError> {
             (),
             CallSiteConfig::new("").calling_conv(llvmkit_ir::CallingConv::FAST),
         )?;
-        let () = call.result();
+        let () = b.view(call).result();
         b.build_ret_void();
         let text = format!("{m}");
         assert!(text.contains("call fastcc void @g()"), "got:\n{text}");

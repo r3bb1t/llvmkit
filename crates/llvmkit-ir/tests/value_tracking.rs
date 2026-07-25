@@ -177,7 +177,10 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
             known(b.view(bitcast).into_erased(), &query)?.to_string(),
             "01011010"
         );
-        assert_eq!(known(b.view(freeze), &query)?.to_string(), "10101010");
+        assert_eq!(
+            known(b.view(freeze).to_erased(), &query)?.to_string(),
+            "10101010"
+        );
         assert_eq!(known(b.view(cmp).into_erased(), &query)?.to_string(), "1");
         Ok(())
     })
@@ -353,7 +356,7 @@ fn call_return_range_attribute_contributes_known_bits() -> Result<(), IrError> {
             .call_attributes(attrs)
             .name("val")
             .build()?;
-        let call_value = call.return_int_value();
+        let call_value = b.view(call).return_int_value();
         let masked =
             b.build_int_and::<i8, _, _, _>(call_value, i8_ty.const_int(0x80_u8), "masked")?;
         let cmp = b.build_icmp_eq::<i8, _, _, _>(masked, i8_ty.const_int(0_u8), "is.zero")?;
@@ -406,8 +409,8 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
             .arg(i8_ty.const_int(0xa5_u8))
             .call_attributes(attrs.clone())
             .name("call")
-            .build()?
-            .return_int_value();
+            .build()?;
+        let call = call_b.view(call).return_int_value();
         let (_, _) = call_b.build_br(invoke_entry_label)?;
 
         let (_, invoke) = IRBuilder::with_folder(&m, NoFolder)
@@ -455,87 +458,103 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
         let abs_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.abs.i8")?;
-        let abs: IntValue<i8> = b
+        let abs_call = b
             .call_builder(abs_fn)
             .arg(i8_ty.const_int(-5_i8))
             .arg(i1_ty.const_int(true))
             .name("abs")
-            .build()?
+            .build()?;
+        let abs: IntValue<i8> = b
+            .view(abs_call)
             .return_value()
             .expect("abs returns value")
             .try_into()?;
 
         let bitreverse_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.bitreverse.i8")?;
-        let bitreverse: IntValue<i8> = b
+        let bitreverse_call = b
             .call_builder(bitreverse_fn)
             .arg(i8_ty.const_int(0x10_u8))
             .name("rev")
-            .build()?
+            .build()?;
+        let bitreverse: IntValue<i8> = b
+            .view(bitreverse_call)
             .return_value()
             .expect("bitreverse returns value")
             .try_into()?;
 
         let ctlz_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.ctlz.i8")?;
-        let ctlz: IntValue<i8> = b
+        let ctlz_call = b
             .call_builder(ctlz_fn)
             .arg(i8_ty.const_int(0x10_u8))
             .arg(i1_ty.const_int(true))
             .name("ctlz")
-            .build()?
+            .build()?;
+        let ctlz: IntValue<i8> = b
+            .view(ctlz_call)
             .return_value()
             .expect("ctlz returns value")
             .try_into()?;
 
         let ctpop_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.ctpop.i8")?;
-        let ctpop: IntValue<i8> = b
+        let ctpop_call = b
             .call_builder(ctpop_fn)
             .arg(i8_ty.const_int(0x0f_u8))
             .name("pop")
-            .build()?
+            .build()?;
+        let ctpop: IntValue<i8> = b
+            .view(ctpop_call)
             .return_value()
             .expect("ctpop returns value")
             .try_into()?;
 
         let uadd_sat_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.uadd.sat.i8")?;
-        let uadd_sat: IntValue<i8> = b
+        let uadd_sat_call = b
             .call_builder(uadd_sat_fn)
             .arg(i8_ty.const_int(250_u8))
             .arg(i8_ty.const_int(10_u8))
             .name("usat")
-            .build()?
+            .build()?;
+        let uadd_sat: IntValue<i8> = b
+            .view(uadd_sat_call)
             .return_value()
             .expect("uadd.sat returns value")
             .try_into()?;
 
         let smax_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.smax.i8")?;
-        let smax: IntValue<i8> = b
+        let smax_call = b
             .call_builder(smax_fn)
             .arg(i8_ty.const_int(-5_i8))
             .arg(i8_ty.const_int(7_i8))
             .name("smax")
-            .build()?
+            .build()?;
+        let smax: IntValue<i8> = b
+            .view(smax_call)
             .return_value()
             .expect("smax returns value")
             .try_into()?;
 
         let bswap_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.bswap.i16")?;
-        let bswap: IntValue<i16> = b
+        let bswap_call = b
             .call_builder(bswap_fn)
             .arg(i16_ty.const_int(0x1234_u16))
             .name("swap")
-            .build()?
+            .build()?;
+        let bswap: IntValue<i16> = b
+            .view(bswap_call)
             .return_value()
             .expect("bswap returns value")
             .try_into()?;
 
         let fshl_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.fshl.i8")?;
-        let fshl: IntValue<i8> = b
+        let fshl_call = b
             .call_builder(fshl_fn)
             .arg(i8_ty.const_int(0x12_u8))
             .arg(i8_ty.const_int(0x34_u8))
             .arg(i8_ty.const_int(4_u8))
             .name("fshl")
-            .build()?
+            .build()?;
+        let fshl: IntValue<i8> = b
+            .view(fshl_call)
             .return_value()
             .expect("fshl returns value")
             .try_into()?;
@@ -579,12 +598,14 @@ fn intrinsic_known_bits_ignore_mismatched_declarations() -> Result<(), IrError> 
 
         let malformed_ty = m.fn_type(i16_ty, [i16_ty.as_type(), i1_ty.as_type()], false);
         let malformed = m.add_function_dyn("not.llvm.abs.i8", malformed_ty, Linkage::External)?;
-        let call: IntValue<i16> = b
+        let call_call = b
             .call_builder(malformed)
             .arg(i16_ty.const_int(-5_i16))
             .arg(i1_ty.const_int(true))
             .name("abs")
-            .build()?
+            .build()?;
+        let call: IntValue<i16> = b
+            .view(call_call)
             .return_value()
             .expect("lookalike returns value")
             .try_into()?;
@@ -724,7 +745,7 @@ fn shift_with_possible_invalid_amount_is_unknown_after_freeze() -> Result<(), Ir
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert!(known(b.view(frozen), &query)?.is_unknown());
+        assert!(known(b.view(frozen).to_erased(), &query)?.is_unknown());
         Ok(())
     })
 }
@@ -771,10 +792,10 @@ fn freeze_of_exact_shift_that_can_poison_is_unknown() -> Result<(), IrError> {
 
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        assert!(known(b.view(frozen), &query)?.is_unknown());
+        assert!(known(b.view(frozen).to_erased(), &query)?.is_unknown());
         let query_without_instr_info = ValueTrackingQuery::new(&dl).without_instruction_info();
         assert_eq!(
-            known(b.view(frozen), &query_without_instr_info)?.to_string(),
+            known(b.view(frozen).to_erased(), &query_without_instr_info)?.to_string(),
             "0000"
         );
         Ok(())

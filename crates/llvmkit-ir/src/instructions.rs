@@ -3637,7 +3637,7 @@ mod tests {
             let b = crate::IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
             let call: CallInst<'_, i32, _> =
-                b.build_call_dyn(callee, Vec::<Value<'_, _>>::new(), "call")?;
+                b.view(b.build_call_dyn(callee, Vec::<Value<'_, _>>::new(), "call")?);
             let call_id = call.to_erased().slot();
 
             let typed = TypedCallInst::<i32, _> {

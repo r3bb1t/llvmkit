@@ -7,8 +7,7 @@
 //! fixture would start compiling and trybuild would flag the regression.
 
 use llvmkit_ir::{
-    AtomicOrdering, AtomicRMWConfig, IRBuilder, InstructionKind, InstructionView, IrResult, Linkage,
-    Module, PointerValue, SyncScope,
+    AtomicOrdering, AtomicRMWConfig, IRBuilder, IrResult, Linkage, Module, PointerValue, SyncScope,
 };
 use llvmkit_ir::atomicrmw_binop::AtomicRMWBinOp;
 
@@ -30,14 +29,10 @@ fn main() -> IrResult<()> {
             AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
             "armw",
         )?;
-        // `build_atomicrmw` hands back the storable erased id, so recover the
-        // opcode handle here — this fixture must keep testing the capability
-        // token, not id-versus-handle typing.
-        let Some(InstructionKind::AtomicRMW(armw)) =
-            InstructionView::try_from(b.view(armw))?.kind()
-        else {
-            panic!("expected an atomicrmw instruction");
-        };
+        // `build_atomicrmw` hands back the storable `AtomicRMWInstId`, so one
+        // view recovers the opcode handle — this fixture must keep testing the
+        // capability token, not id-versus-handle typing.
+        let armw = b.view(armw);
 
         let replacement = i32_ty.const_int(99_i32);
         // Missing the `&Module<Unverified>` capability token.

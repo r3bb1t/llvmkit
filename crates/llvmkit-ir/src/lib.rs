@@ -343,7 +343,9 @@ pub use value::{
     VectorValue,
 };
 pub use value_id::{
-    BlockId, FloatValueId, FunctionId, GlobalId, IntValueId, PointerValueId, ValueId, ViewIn,
+    AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FloatValueId, FreezeInstId,
+    FunctionId, GlobalId, IntValueId, IntrinsicInstId, PointerValueId, TypedCallInstId,
+    VAArgInstId, ValueId, ViewIn,
 };
 pub use worklist::Worklist;
 

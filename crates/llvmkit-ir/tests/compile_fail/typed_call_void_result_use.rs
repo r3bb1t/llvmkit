@@ -23,7 +23,7 @@ fn main() {
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let (n,) = caller.params();
         let void_call = b.build_call(void_callee, (), "").unwrap();
-        // `void_call.result()` is `()`, not an `IntoIntValue<'_, i32, _>`.
-        let _ = b.build_int_add::<i32, _, _, _>(void_call.result(), n, "x");
+        // `b.view(void_call).result()` is `()`, not an `IntoIntValue<'_, i32, _>`.
+        let _ = b.build_int_add::<i32, _, _, _>(b.view(void_call).result(), n, "x");
     });
 }

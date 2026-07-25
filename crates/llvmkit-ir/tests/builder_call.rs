@@ -34,7 +34,7 @@ fn call_int_returning_function() -> Result<(), IrError> {
         // through `build_call_dyn` into `CallInst<'ctx, i32>`, which directly
         // exposes `return_int_value(): IntValue<i32>` -- no runtime
         // `try_into` is needed.
-        let ret_val = inst.return_int_value();
+        let ret_val = b.view(inst).return_int_value();
         b.build_ret(ret_val)?;
         let text = format!("{m}");
         assert!(
@@ -62,7 +62,7 @@ fn call_void_returning_function() -> Result<(), IrError> {
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let inst = b.build_call_dyn(callee, Vec::<llvmkit_ir::Value>::new(), "")?;
-        assert!(inst.return_value().is_none());
+        assert!(b.view(inst).return_value().is_none());
         b.build_ret_void()?;
         let text = format!("{m}");
         assert!(text.contains("call void @sink()"), "got:\n{text}");
@@ -123,7 +123,7 @@ fn call_tail() -> Result<(), IrError> {
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let inst = b.call_builder(callee).tail().name("r").build()?;
-        let r = inst.return_int_value();
+        let r = b.view(inst).return_int_value();
         b.build_ret(r)?;
         let text = format!("{m}");
         assert!(text.contains("%r = tail call i32 @g()"), "got:\n{text}");
@@ -148,7 +148,8 @@ fn intrinsic_call_inserts_declaration_and_emits_direct_call() -> Result<(), IrEr
             [f32_ty.as_type()],
         )?;
         let call = b.build_intrinsic_call(&descriptor, &[x.into_erased()], "r")?;
-        let r: FloatValue<f32> = call
+        let r: FloatValue<f32> = b
+            .view(call)
             .return_value()
             .ok_or(IrError::InvalidOperation {
                 message: "non-void intrinsic result",
@@ -210,7 +211,7 @@ fn call_to_pointer_returning_function() -> Result<(), IrError> {
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let inst = b.build_call_dyn(callee, Vec::<llvmkit_ir::Value>::new(), "p")?;
-        let p = inst.return_pointer_value();
+        let p = b.view(inst).return_pointer_value();
         b.build_ret(p)?;
         let text = format!("{m}");
         assert!(text.contains("%p = call ptr @alloc_ptr()"), "got:\n{text}");
@@ -237,7 +238,7 @@ fn typed_build_call_prints_like_dyn_form() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let (x, y) = caller.params();
         let call = b.build_call(callee, (x, y), "r")?;
-        let ret_val = call.result();
+        let ret_val = b.view(call).result();
         b.build_ret(ret_val)?;
         let text = format!("{m}");
         assert!(
@@ -264,7 +265,8 @@ fn typed_build_call_with_config_threads_calling_convention() -> Result<(), IrErr
             (),
             llvmkit_ir::CallSiteConfig::new("r").calling_conv(CallingConv::FAST),
         )?;
-        b.build_ret(call.result())?;
+        let ret_val = b.view(call).result();
+        b.build_ret(ret_val)?;
         let text = format!("{m}");
         assert!(text.contains("%r = call fastcc i32 @g()"), "got:\n{text}");
         Ok(())
@@ -281,7 +283,8 @@ fn typed_call_builder_chains_tail() -> Result<(), IrError> {
         let entry = caller.append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let call = b.typed_call_builder(callee, ()).tail().name("r").build()?;
-        b.build_ret(call.result())?;
+        let ret_val = b.view(call).result();
+        b.build_ret(ret_val)?;
         let text = format!("{m}");
         assert!(text.contains("%r = tail call i32 @g()"), "got:\n{text}");
         Ok(())
@@ -305,7 +308,7 @@ fn typed_build_indirect_call_derives_function_type_from_schema() -> Result<(), I
         let callee_ptr = llvmkit_ir::PointerValue::try_from(host.param(0).expect("callee ptr"))?;
         let x = m.i32_type().const_int(7_i32);
         let call = b.build_indirect_call::<fn(i32) -> i32, _, _, _>(callee_ptr, (x,), "r")?;
-        let r = call.result();
+        let r = b.view(call).result();
         let text_ty = format!("{}", r.into_erased().ty());
         assert_eq!(text_ty, "i32", "typed indirect call result must be i32");
         let text = format!("{m}");
@@ -411,7 +414,8 @@ fn call_builder_accepts_extra_arguments_for_vararg_callee() -> Result<(), IrErro
         let x: IntValue<i32> = caller.param(0)?.try_into()?;
         let y: IntValue<i32> = caller.param(1)?.try_into()?;
         let inst = b.call_builder(callee).arg(x).arg(y).name("r").build()?;
-        b.build_ret(inst.return_int_value())?;
+        let ret_val = b.view(inst).return_int_value();
+        b.build_ret(ret_val)?;
         let text = format!("{m}");
         assert!(
             text.contains("%r = call i32 (i32, ...) @callee(i32 %0, i32 %1)"),
@@ -513,7 +517,8 @@ fn build_varargs_call_lowers_fixed_prefix_and_appends_erased_tail() -> Result<()
             [extra_a.into_erased(), extra_b.into_erased()],
             "r",
         )?;
-        b.build_ret(call.result())?;
+        let ret_val = b.view(call).result();
+        b.build_ret(ret_val)?;
         let text = format!("{m}");
         assert!(
             text.contains(

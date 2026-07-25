@@ -273,6 +273,7 @@ fn descriptor_call_builder_returns_intrinsic_view() -> Result<(), IrError> {
             .arg(i1_ty.const_int(false))
             .name("abs")
             .build()?;
+        let view = b.view(view);
         assert_eq!(view.id(), IntrinsicId::ABS);
         assert_eq!(view.descriptor()?, descriptor);
         let ret: IntValue<i32> = view.return_value().expect("abs returns value").try_into()?;
@@ -316,6 +317,7 @@ fn mem_intrinsic_wrapper_narrows_generated_memory_call() -> Result<(), IrError> 
             "",
         )?;
 
+        let view = b.view(view);
         let mem = MemIntrinsic::try_from_intrinsic(view)?;
         assert_eq!(mem.inner().intrinsic_id(), IntrinsicId::MEMCPY);
         assert!(LifetimeIntrinsic::try_from_intrinsic(view).is_err());
@@ -362,7 +364,7 @@ fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), I
             ],
             "",
         )?;
-        assert!(MemIntrinsic::try_from_intrinsic(memcpy).is_ok());
+        assert!(MemIntrinsic::try_from_intrinsic(b.view(memcpy)).is_ok());
 
         let memset_inline =
             IntrinsicId::lookup("llvm.memset.inline.p0.i64").expect("memset.inline intrinsic");
@@ -378,7 +380,7 @@ fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), I
             ],
             "",
         )?;
-        assert!(MemIntrinsic::try_from_intrinsic(memset).is_ok());
+        assert!(MemIntrinsic::try_from_intrinsic(b.view(memset)).is_ok());
 
         b.build_ret_void()?;
         m.verify_borrowed()?;
@@ -400,6 +402,7 @@ fn lifetime_intrinsic_wrapper_narrows_generated_lifetime_call() -> Result<(), Ir
         let ptr: PointerValue = caller.param(0)?.try_into()?;
         let view = b.build_intrinsic_call(&descriptor, &[ptr.into_erased()], "")?;
 
+        let view = b.view(view);
         let lifetime = LifetimeIntrinsic::try_from_intrinsic(view)?;
         assert_eq!(lifetime.inner().intrinsic_id(), IntrinsicId::LIFETIME_START);
         assert!(MemIntrinsic::try_from_intrinsic(view).is_err());

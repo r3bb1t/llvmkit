@@ -49,7 +49,7 @@ fn direct_call_callee_is_direct() -> Result<(), IrError> {
         let x: IntValue<i32> = caller.param(0)?.try_into()?;
         let call = b.build_call_dyn(callee, [x.into_erased()], "r")?;
 
-        match call.classify_callee() {
+        match b.view(call).classify_callee() {
             Callee::Direct(function) => assert_eq!(function.into_erased(), callee.into_erased()),
             Callee::Indirect(_) => panic!("expected a direct call to classify as Direct"),
         }
@@ -153,7 +153,7 @@ fn indirect_call_callee_is_indirect() -> Result<(), IrError> {
             "r",
         )?;
 
-        match call.classify_callee() {
+        match b.view(call).classify_callee() {
             Callee::Indirect(pointer) => assert_eq!(pointer.into_erased(), fp.into_erased()),
             Callee::Direct(_) => panic!("expected an indirect call to classify as Indirect"),
         }

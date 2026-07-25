@@ -73,7 +73,6 @@ use super::instruction::{
 use super::instructions::{
     CallBrInst, CallInst, CatchPadInst, CatchSwitchInst, CleanupPadInst, FpPhiInst, IndirectBrInst,
     InvokeInst, LandingPadInst, OtherPhiInst, PhiInst, PointerPhiInst, StoreInst, SwitchInst,
-    TypedCallInst,
 };
 use super::int_width::{IntDyn, IntWidth, IntoIntValue, StaticIntWidth};
 use super::intrinsic_inst::IntrinsicInst;
@@ -93,7 +92,10 @@ use super::value::{
     ArrayValue, FloatValue, IntValue, IntoErasedValue, IntoPointerValue, IsValue, PointerValue,
     Value, ValueKindData, ValueSlot, ValueUse, VectorValue,
 };
-use super::value_id::{FloatValueId, IntValueId, PointerValueId, ValueId, ViewIn};
+use super::value_id::{
+    AtomicCmpXchgInstId, AtomicRMWInstId, CallInstId, FloatValueId, FreezeInstId, IntValueId,
+    IntrinsicInstId, PointerValueId, TypedCallInstId, VAArgInstId, ValueId, ViewIn,
+};
 use super::vec_len::{LenDyn, StaticVecLen, VecLen};
 
 /// Pair returned by terminator builders: the terminated insertion block and
@@ -2582,8 +2584,9 @@ where
 
     /// Produce `freeze <value>`. Mirrors `IRBuilder::CreateFreeze`.
     /// Accepts any [`IntoErasedValue`] operand — every value handle plus the
-    /// storable ids; the result type matches the operand type.
-    pub fn build_freeze<V, Name>(&self, value: V, name: Name) -> IrResult<ValueId<B>>
+    /// storable ids; the result type matches the operand type. Named by the
+    /// storable [`FreezeInstId<B>`](crate::FreezeInstId).
+    pub fn build_freeze<V, Name>(&self, value: V, name: Name) -> IrResult<FreezeInstId<B>>
     where
         Name: AsRef<str>,
         V: IntoErasedValue<'ctx, B>,
@@ -2591,18 +2594,19 @@ where
         let v = value.into_erased_value(ModuleRef::new(self.module))?;
         let payload = crate::instr_types::FreezeInstData::new(v.id);
         let inst = self.append_instruction(v.ty, InstructionKindData::Freeze(payload), name);
-        Ok(inst.to_erased().id())
+        Ok(FreezeInstId::from_raw(self.module.id(), inst.id()))
     }
 
     /// Produce `va_arg <list>, <ty>`. Mirrors `IRBuilder::CreateVAArg`.
     /// The destination type can be any first-class type; the source
-    /// must be a `va_list` pointer.
+    /// must be a `va_list` pointer. Named by the storable
+    /// [`VAArgInstId<B>`](crate::VAArgInstId).
     pub fn build_va_arg<P, Name>(
         &self,
         list_ptr: P,
         result_ty: Type<'ctx, B>,
         name: Name,
-    ) -> IrResult<ValueId<B>>
+    ) -> IrResult<VAArgInstId<B>>
     where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
@@ -2611,7 +2615,7 @@ where
         let v = IsValue::into_erased(list_ptr);
         let payload = crate::instr_types::VAArgInstData::new(v.id);
         let inst = self.append_instruction(result_ty.id, InstructionKindData::VAArg(payload), name);
-        Ok(inst.to_erased().id())
+        Ok(VAArgInstId::from_raw(self.module.id(), inst.id()))
     }
 
     // ---- Aggregate ops: extractvalue / insertvalue ----
@@ -3269,7 +3273,8 @@ where
     /// <new-ty> <new> [syncscope("...")] <success> <failure>, align N`.
     /// Mirrors `IRBuilder::CreateAtomicCmpXchg`.
     ///
-    /// Result type is the literal struct `{ <pointee>, i1 }`.
+    /// Result type is the literal struct `{ <pointee>, i1 }`. Named by the
+    /// storable [`AtomicCmpXchgInstId<B>`](crate::AtomicCmpXchgInstId).
     pub fn build_atomic_cmpxchg<P, C, N, Name>(
         &self,
         ptr: P,
@@ -3277,7 +3282,7 @@ where
         new_val: N,
         config: crate::instr_types::AtomicCmpXchgConfig,
         name: Name,
-    ) -> IrResult<ValueId<B>>
+    ) -> IrResult<AtomicCmpXchgInstId<B>>
     where
         Name: AsRef<str>,
         P: IntoErasedValue<'ctx, B>,
@@ -3299,14 +3304,15 @@ where
         let result_id = result_ty.as_type().id();
         let inst =
             self.append_instruction(result_id, InstructionKindData::AtomicCmpXchg(payload), name);
-        Ok(inst.to_erased().id())
+        Ok(AtomicCmpXchgInstId::from_raw(self.module.id(), inst.id()))
     }
 
     /// Produce `atomicrmw [volatile] <op> <ptr-ty> <ptr>, <val-ty> <val>
     /// [syncscope("...")] <ordering>, align N`. Mirrors
     /// `IRBuilder::CreateAtomicRMW`.
     ///
-    /// Result type matches the value-operand type (the "old" value).
+    /// Result type matches the value-operand type (the "old" value). Named by
+    /// the storable [`AtomicRMWInstId<B>`](crate::AtomicRMWInstId).
     pub fn build_atomicrmw<P, V, Name>(
         &self,
         op: crate::atomicrmw_binop::AtomicRMWBinOp,
@@ -3314,7 +3320,7 @@ where
         value: V,
         config: crate::instr_types::AtomicRMWConfig,
         name: Name,
-    ) -> IrResult<ValueId<B>>
+    ) -> IrResult<AtomicRMWInstId<B>>
     where
         Name: AsRef<str>,
         P: IntoErasedValue<'ctx, B>,
@@ -3324,7 +3330,7 @@ where
         let v = value.into_erased_value(ModuleRef::new(self.module))?;
         let payload = crate::instr_types::AtomicRMWInstData::new(op, p.id, v.id, config);
         let inst = self.append_instruction(v.ty, InstructionKindData::AtomicRMW(payload), name);
-        Ok(inst.to_erased().id())
+        Ok(AtomicRMWInstId::from_raw(self.module.id(), inst.id()))
     }
 
     // ---- Casts: trunc / zext / sext ----
@@ -4466,12 +4472,15 @@ where
     /// already proves `args` lowers to the same schema — the two facts
     /// compose transitively, so the argument list is correct by
     /// construction.
+    ///
+    /// Returns the storable [`TypedCallInstId<Ret, B>`](crate::TypedCallInstId);
+    /// view it to reach [`TypedCallInst::result`](crate::TypedCallInst::result).
     pub fn build_call<Ret, Params, A, Name>(
         &self,
         callee: TypedFunctionValue<'ctx, Ret, Params, B>,
         args: A,
         name: Name,
-    ) -> IrResult<TypedCallInst<'ctx, Ret, B>>
+    ) -> IrResult<TypedCallInstId<Ret, B>>
     where
         Ret: FunctionReturn,
         Params: FunctionParamList,
@@ -4492,11 +4501,7 @@ where
             InstructionKindData::Call(payload),
             name,
         );
-        Ok(TypedCallInst::from_call(CallInst::from_raw(
-            inst.id(),
-            ModuleRef::<B>::new(self.module),
-            inst.ty().id(),
-        )))
+        Ok(TypedCallInstId::from_raw(self.module.id(), inst.id()))
     }
 
     /// Typed flat call with explicit call-site configuration
@@ -4507,7 +4512,7 @@ where
         callee: TypedFunctionValue<'ctx, Ret, Params, B>,
         args: A,
         config: CallSiteConfig,
-    ) -> IrResult<TypedCallInst<'ctx, Ret, B>>
+    ) -> IrResult<TypedCallInstId<Ret, B>>
     where
         Ret: FunctionReturn,
         Params: FunctionParamList,
@@ -4529,11 +4534,7 @@ where
             InstructionKindData::Call(payload),
             name,
         );
-        Ok(TypedCallInst::from_call(CallInst::from_raw(
-            inst.id(),
-            ModuleRef::<B>::new(self.module),
-            inst.ty().id(),
-        )))
+        Ok(TypedCallInstId::from_raw(self.module.id(), inst.id()))
     }
 
     /// Typed chainable call builder: same schema guarantees as
@@ -4573,7 +4574,7 @@ where
         fixed_args: A,
         varargs: I,
         name: Name,
-    ) -> IrResult<TypedCallInst<'ctx, Ret, B>>
+    ) -> IrResult<TypedCallInstId<Ret, B>>
     where
         Ret: FunctionReturn,
         Params: FunctionParamList,
@@ -4599,23 +4600,23 @@ where
             InstructionKindData::Call(payload),
             name,
         );
-        Ok(TypedCallInst::from_call(CallInst::from_raw(
-            inst.id(),
-            ModuleRef::<B>::new(self.module),
-            inst.ty().id(),
-        )))
+        Ok(TypedCallInstId::from_raw(self.module.id(), inst.id()))
     }
 
     /// Flat call form: pass a [`FunctionValue`] callee, an iterable of
     /// pre-widened arguments (each one already a [`Value<'ctx, B>`]), and
     /// a name. Mirrors the simple shape of `IRBuilder::CreateCall`.
     /// Use [`Self::call_builder`] for mixed-arg-type construction.
+    ///
+    /// Returns the storable [`CallInstId<R2, B>`](crate::CallInstId); view it
+    /// to reach the marker-gated `return_int_value` / `return_float_value` /
+    /// `return_pointer_value` accessors.
     pub fn build_call_dyn<R2, I, V, Name>(
         &self,
         callee: FunctionValue<'ctx, R2, B>,
         args: I,
         name: Name,
-    ) -> IrResult<CallInst<'ctx, R2, B>>
+    ) -> IrResult<CallInstId<R2, B>>
     where
         Name: AsRef<str>,
         R2: crate::marker::ReturnMarker,
@@ -4635,7 +4636,7 @@ where
         descriptor: &IntrinsicDescriptor<'ctx, B>,
         args: &[Value<'ctx, B>],
         name: Name,
-    ) -> IrResult<IntrinsicInst<'ctx, Dyn, B>>
+    ) -> IrResult<IntrinsicInstId<Dyn, B>>
     where
         Name: AsRef<str>,
     {
@@ -4666,7 +4667,7 @@ where
         intrinsic_name: IntrinsicName,
         args: I,
         result_name: ResultName,
-    ) -> IrResult<IntrinsicInst<'ctx, Dyn, B>>
+    ) -> IrResult<IntrinsicInstId<Dyn, B>>
     where
         IntrinsicName: AsRef<str>,
         ResultName: AsRef<str>,
@@ -4768,7 +4769,7 @@ where
         callee: Callee,
         args: A,
         name: Name,
-    ) -> IrResult<TypedCallInst<'ctx, Sig::Ret, B>>
+    ) -> IrResult<TypedCallInstId<Sig::Ret, B>>
     where
         Sig: FunctionSignature,
         A: CallArgs<'ctx, Sig::Params, B>,
@@ -4794,11 +4795,7 @@ where
             InstructionKindData::Call(payload),
             name,
         );
-        Ok(TypedCallInst::from_call(CallInst::from_raw(
-            inst.id(),
-            ModuleRef::<B>::new(self.module),
-            inst.ty().id(),
-        )))
+        Ok(TypedCallInstId::from_raw(self.module.id(), inst.id()))
     }
 
     /// Produce an indirect `call` through a function-pointer **value** (not a
@@ -4816,7 +4813,7 @@ where
         callee: Callee,
         args: I,
         name: Name,
-    ) -> IrResult<CallInst<'ctx, R2, B>>
+    ) -> IrResult<CallInstId<R2, B>>
     where
         Name: AsRef<str>,
         R2: crate::marker::ReturnMarker,
@@ -4852,11 +4849,7 @@ where
             InstructionKindData::Call(payload),
             name,
         );
-        Ok(CallInst::<R2, B>::from_raw(
-            inst.id(),
-            ModuleRef::<B>::new(self.module),
-            inst.ty().id(),
-        ))
+        Ok(CallInstId::from_raw(self.module.id(), inst.id()))
     }
 
     /// Produce a `call` whose callee is an inline-assembly value. Mirrors
@@ -4876,7 +4869,7 @@ where
         asm: InlineAsm<'ctx, B>,
         args: I,
         name: Name,
-    ) -> IrResult<CallInst<'ctx, R2, B>>
+    ) -> IrResult<CallInstId<R2, B>>
     where
         Name: AsRef<str>,
         R2: crate::marker::ReturnMarker,
@@ -4915,11 +4908,7 @@ where
             InstructionKindData::Call(payload),
             name,
         );
-        Ok(CallInst::<R2, B>::from_raw(
-            inst.id(),
-            ModuleRef::<B>::new(self.module),
-            inst.ty().id(),
-        ))
+        Ok(CallInstId::from_raw(self.module.id(), inst.id()))
     }
 
     // ---- GEP ----
@@ -8432,8 +8421,19 @@ where
         Ok(())
     }
 
-    /// Emit the call instruction.
-    pub fn build(mut self) -> IrResult<CallInst<'ctx, RC, B>> {
+    /// Emit the call instruction, named by the storable
+    /// [`CallInstId<RC, B>`](crate::CallInstId).
+    pub fn build(self) -> IrResult<CallInstId<RC, B>> {
+        let module_id = self.parent.module.id();
+        let inst = self.emit()?;
+        Ok(CallInstId::from_raw(module_id, inst.id()))
+    }
+
+    /// Validate and append the call, handing back the freshly attached
+    /// instruction. Shared by [`build`](Self::build) and the intrinsic
+    /// wrapper, which needs the instruction itself to confirm the callee is a
+    /// generated intrinsic declaration before minting its own id.
+    fn emit(mut self) -> IrResult<Instruction<'ctx, Attached, B>> {
         if let Some(e) = self.arg_error.take() {
             return Err(e);
         }
@@ -8449,15 +8449,10 @@ where
             self.tail_kind,
             self.attrs,
         );
-        let inst = self.parent.append_instruction(
+        Ok(self.parent.append_instruction(
             self.return_ty,
             InstructionKindData::Call(payload),
             self.name,
-        );
-        Ok(CallInst::<RC, B>::from_raw(
-            inst.id(),
-            ModuleRef::<B>::new(self.parent.module),
-            inst.ty().id(),
         ))
     }
 }
@@ -8555,8 +8550,9 @@ where
         self
     }
 
-    /// Emit the call instruction.
-    pub fn build(self) -> IrResult<TypedCallInst<'ctx, Ret, B>> {
+    /// Emit the call instruction, named by the storable
+    /// [`TypedCallInstId<Ret, B>`](crate::TypedCallInstId).
+    pub fn build(self) -> IrResult<TypedCallInstId<Ret, B>> {
         let f = self.callee.as_function();
         let arg_ids = self.args.lower(ModuleRef::new(self.parent.module))?;
         let calling_conv = self.calling_conv.unwrap_or_else(|| f.calling_conv());
@@ -8573,11 +8569,10 @@ where
             InstructionKindData::Call(payload),
             self.name,
         );
-        Ok(TypedCallInst::from_call(CallInst::from_raw(
+        Ok(TypedCallInstId::from_raw(
+            self.parent.module.id(),
             inst.id(),
-            ModuleRef::<B>::new(self.parent.module),
-            inst.ty().id(),
-        )))
+        ))
     }
 }
 
@@ -8639,16 +8634,25 @@ where
         self
     }
 
-    /// Emit the intrinsic call instruction.
-    pub fn build(self) -> IrResult<IntrinsicInst<'ctx, Dyn, B>> {
+    /// Emit the intrinsic call instruction, named by the storable
+    /// [`IntrinsicInstId<Dyn, B>`](crate::IntrinsicInstId).
+    pub fn build(self) -> IrResult<IntrinsicInstId<Dyn, B>> {
         let descriptor = self.inner.intrinsic_descriptor.clone();
-        let call = self.inner.build()?;
-        IntrinsicInst::from_call(call).ok_or_else(|| IrError::IntrinsicSignatureMismatch {
-            name: descriptor
-                .as_ref()
-                .map(intrinsic_descriptor_error_name)
-                .unwrap_or_else(|| "intrinsic call".to_owned()),
-        })
+        let module = ModuleRef::<B>::new(self.inner.parent.module);
+        let inst = self.inner.emit()?;
+        let call = CallInst::<Dyn, B>::from_raw(inst.id(), module, inst.ty().id());
+        // Reject an ordinary call, exactly as `IntrinsicInst::from_call` does
+        // — the id is only minted once the callee is a generated intrinsic
+        // declaration, so viewing it can never fail that check afterwards.
+        if IntrinsicInst::from_call(call).is_none() {
+            return Err(IrError::IntrinsicSignatureMismatch {
+                name: descriptor
+                    .as_ref()
+                    .map(intrinsic_descriptor_error_name)
+                    .unwrap_or_else(|| "intrinsic call".to_owned()),
+            });
+        }
+        Ok(IntrinsicInstId::from_raw(module.id(), inst.id()))
     }
 }
 

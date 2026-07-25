@@ -7617,29 +7617,32 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 for arg in args {
                     builder = builder.arg(arg);
                 }
-                builder
+                let call = builder
                     .name(name)
                     .build()
-                    .map_err(|e| self.builder_err("call", e))?
-                    .to_erased()
+                    .map_err(|e| self.builder_err("call", e))?;
+                b.view(call).to_erased()
             }
             ParsedCallee::InlineAsm(asm) => {
                 if asm.label_constraint_count() != 0 {
                     return Err(self.expected("inline asm call without label constraints"));
                 }
-                b.build_inline_asm_call::<llvmkit_ir::Dyn, _, _, _>(asm, args, name)
-                    .map_err(|e| self.builder_err("call", e))?
-                    .to_erased()
+                let call = b
+                    .build_inline_asm_call::<llvmkit_ir::Dyn, _, _, _>(asm, args, name)
+                    .map_err(|e| self.builder_err("call", e))?;
+                b.view(call).to_erased()
             }
-            ParsedCallee::Indirect(callee) => b
-                .build_indirect_call_dyn::<llvmkit_ir::Dyn, _, _, _, _>(
-                    parsed_fn_ty,
-                    callee,
-                    args,
-                    name,
-                )
-                .map_err(|e| self.builder_err("indirect call", e))?
-                .to_erased(),
+            ParsedCallee::Indirect(callee) => {
+                let call = b
+                    .build_indirect_call_dyn::<llvmkit_ir::Dyn, _, _, _, _>(
+                        parsed_fn_ty,
+                        callee,
+                        args,
+                        name,
+                    )
+                    .map_err(|e| self.builder_err("indirect call", e))?;
+                b.view(call).to_erased()
+            }
         };
         Ok(v)
     }
@@ -7902,7 +7905,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_va_arg(list_ptr, result_ty, result_name.as_str())
             .map_err(|e| self.builder_err("va_arg", e))?;
-        Ok(b.view(v))
+        Ok(b.view(v).to_erased())
     }
 
     /// `freeze <ty> <val>`. Mirrors `LLParser::parseFreeze`.
@@ -7919,7 +7922,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let r = b
             .build_freeze(v, result_name.as_str())
             .map_err(|e| self.builder_err("freeze", e))?;
-        Ok(b.view(r))
+        Ok(b.view(r).to_erased())
     }
 
     /// `switch <ty> <val>, label %default [ <ty> N, label %case ... ]`.
@@ -8069,7 +8072,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_atomic_cmpxchg(ptr, cmp_v, new_v, config, result_name.as_str())
             .map_err(|e| self.builder_err("cmpxchg", e))?;
-        Ok(b.view(v))
+        Ok(b.view(v).to_erased())
     }
 
     /// `atomicrmw [volatile] <op> ptr <ptr>, <ty> <val>
@@ -8113,12 +8116,12 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             state
                 .deferred_atomicrmw_values
                 .push(DeferredAtomicRmwValue {
-                    inst: atomicrmw_opcode_handle(v),
+                    inst: v,
                     val_ref,
                     loc,
                 });
         }
-        Ok(v)
+        Ok(v.to_erased())
     }
 
     /// Parse an `atomicrmw` operation keyword.
@@ -8839,25 +8842,6 @@ struct DeferredPhiEdge<'ctx, B: ModuleBrand = Brand<'ctx>> {
 enum DeferredLocalValueRef {
     Named(String),
     Numbered(u32),
-}
-
-/// Recover the `atomicrmw` opcode handle from a viewed builder result.
-///
-/// `IRBuilder::build_atomicrmw` hands back the storable erased
-/// `ValueId` rather than the opcode handle, but the deferred forward-value
-/// fixup in [`PerFunctionState::finish`] needs the handle to reach
-/// `AtomicRMWInst::set_value_operand`. The narrowing cannot fail: `v` is the
-/// `atomicrmw` the builder just appended.
-fn atomicrmw_opcode_handle<'ctx, B: ModuleBrand + 'ctx>(
-    v: llvmkit_ir::Value<'ctx, B>,
-) -> llvmkit_ir::AtomicRMWInst<'ctx, B> {
-    match llvmkit_ir::InstructionView::try_from(v)
-        .ok()
-        .and_then(|inst| inst.kind())
-    {
-        Some(llvmkit_ir::InstructionKind::AtomicRMW(inst)) => inst,
-        _ => unreachable!("build_atomicrmw appends an `atomicrmw` instruction"),
-    }
 }
 
 struct DeferredAtomicRmwValue<'ctx, B: ModuleBrand = Brand<'ctx>> {

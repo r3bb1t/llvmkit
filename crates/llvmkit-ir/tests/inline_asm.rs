@@ -33,7 +33,8 @@ fn inline_asm_call_with_side_effects() -> Result<(), IrError> {
         );
 
         let r = b.build_inline_asm_call::<i64, _, _, _>(asm, [a, bb], "r")?;
-        b.build_ret(r.return_int_value())?;
+        let ret = b.view(r).return_int_value();
+        b.build_ret(ret)?;
 
         let text = format!("{m}");
 
@@ -85,7 +86,8 @@ fn inline_asm_call_without_side_effects() -> Result<(), IrError> {
         );
 
         let r = b.build_inline_asm_call::<i32, _, _, _>(asm, [x], "r")?;
-        b.build_ret(r.return_int_value())?;
+        let ret = b.view(r).return_int_value();
+        b.build_ret(ret)?;
 
         let text = format!("{m}");
 
@@ -225,7 +227,8 @@ fn inline_asm_intel_dialect_keyword() -> Result<(), IrError> {
         );
 
         let r = b.build_inline_asm_call::<i64, _, _, _>(asm, [x], "r")?;
-        b.build_ret(r.return_int_value())?;
+        let ret = b.view(r).return_int_value();
+        b.build_ret(ret)?;
 
         let text = format!("{m}");
         assert!(

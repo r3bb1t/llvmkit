@@ -637,9 +637,9 @@ fn freeze_folds_only_non_undef_non_poison_constants() -> Result<(), IrError> {
         let undef = b.build_freeze(i32_ty.as_type().get_undef(), "undef")?;
         let poison = b.build_freeze(i32_ty.as_type().get_poison(), "poison")?;
 
-        let concrete_inst = InstructionView::try_from(b.view(concrete))?;
-        let undef_inst = InstructionView::try_from(b.view(undef))?;
-        let poison_inst = InstructionView::try_from(b.view(poison))?;
+        let concrete_inst = b.view(concrete).as_view();
+        let undef_inst = b.view(undef).as_view();
+        let poison_inst = b.view(poison).as_view();
 
         assert_eq!(
             constant_fold_instruction(&concrete_inst, &dl, None)?,

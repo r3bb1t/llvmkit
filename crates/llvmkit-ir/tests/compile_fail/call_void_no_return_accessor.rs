@@ -24,6 +24,6 @@ fn main() {
             .build_call_dyn(callee, Vec::<llvmkit_ir::Value>::new(), "")
             .unwrap();
         // `return_int_value` is not in scope for `CallInst<'_, ()>`.
-        let _ = inst.return_int_value();
+        let _ = b.view(inst).return_int_value();
     });
 }

@@ -160,11 +160,9 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let rev_entry = rev_host.append_basic_block(&m, "entry");
         let rev_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(rev_entry);
         let rev_x: IntValue<i8> = rev_host.param(0)?.try_into()?;
+        let rev_call = rev_b.call_builder(rev_fn).arg(rev_x).name("rev").build()?;
         let rev: IntValue<i8> = rev_b
-            .call_builder(rev_fn)
-            .arg(rev_x)
-            .name("rev")
-            .build()?
+            .view(rev_call)
             .return_value()
             .expect("bitreverse returns value")
             .try_into()?;
@@ -177,11 +175,13 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let swap_entry = swap_host.append_basic_block(&m, "entry");
         let swap_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(swap_entry);
         let swap_x: IntValue<i16> = swap_host.param(0)?.try_into()?;
-        let swap: IntValue<i16> = swap_b
+        let swap_call = swap_b
             .call_builder(swap_fn)
             .arg(swap_x)
             .name("swap")
-            .build()?
+            .build()?;
+        let swap: IntValue<i16> = swap_b
+            .view(swap_call)
             .return_value()
             .expect("bswap returns value")
             .try_into()?;
@@ -196,13 +196,15 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let fshl_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(fshl_entry);
         let fshl_x: IntValue<i8> = fshl_host.param(0)?.try_into()?;
         let fshl_y: IntValue<i8> = fshl_host.param(1)?.try_into()?;
-        let fshl: IntValue<i8> = fshl_b
+        let fshl_call = fshl_b
             .call_builder(fshl_fn)
             .arg(fshl_x)
             .arg(fshl_y)
             .arg(i8_ty.const_int(4_u8))
             .name("fshl")
-            .build()?
+            .build()?;
+        let fshl: IntValue<i8> = fshl_b
+            .view(fshl_call)
             .return_value()
             .expect("fshl returns value")
             .try_into()?;
@@ -217,13 +219,15 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let fshr_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(fshr_entry);
         let fshr_x: IntValue<i8> = fshr_host.param(0)?.try_into()?;
         let fshr_y: IntValue<i8> = fshr_host.param(1)?.try_into()?;
-        let fshr: IntValue<i8> = fshr_b
+        let fshr_call = fshr_b
             .call_builder(fshr_fn)
             .arg(fshr_x)
             .arg(fshr_y)
             .arg(i8_ty.const_int(2_u8))
             .name("fshr")
-            .build()?
+            .build()?;
+        let fshr: IntValue<i8> = fshr_b
+            .view(fshr_call)
             .return_value()
             .expect("fshr returns value")
             .try_into()?;
@@ -238,13 +242,15 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let fshr_zero_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(fshr_zero_entry);
         let fshr_zero_x: IntValue<i8> = fshr_zero_host.param(0)?.try_into()?;
         let fshr_zero_y: IntValue<i8> = fshr_zero_host.param(1)?.try_into()?;
-        let fshr_zero: IntValue<i8> = fshr_zero_b
+        let fshr_zero_call = fshr_zero_b
             .call_builder(fshr_fn)
             .arg(fshr_zero_x)
             .arg(fshr_zero_y)
             .arg(i8_ty.const_int(8_u8))
             .name("fshr.zero")
-            .build()?
+            .build()?;
+        let fshr_zero: IntValue<i8> = fshr_zero_b
+            .view(fshr_zero_call)
             .return_value()
             .expect("fshr returns value")
             .try_into()?;
@@ -264,13 +270,15 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let wide_fshl_x: IntValue<i128> = wide_fshl_host.param(0)?.try_into()?;
         let wide_fshl_y: IntValue<i128> = wide_fshl_host.param(1)?.try_into()?;
         let wide_fshl_amount = i128_ty.const_ap_int(&ApInt::from_words(128, &[1, 1]))?;
-        let wide_fshl: IntValue<i128> = wide_fshl_b
+        let wide_fshl_call = wide_fshl_b
             .call_builder(wide_fshl_fn)
             .arg(wide_fshl_x)
             .arg(wide_fshl_y)
             .arg(wide_fshl_amount)
             .name("wide.fshl")
-            .build()?
+            .build()?;
+        let wide_fshl: IntValue<i128> = wide_fshl_b
+            .view(wide_fshl_call)
             .return_value()
             .expect("fshl returns value")
             .try_into()?;
@@ -286,12 +294,14 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let umax_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(umax_entry);
         let umax_x: IntValue<i8> = umax_host.param(0)?.try_into()?;
         let umax_y: IntValue<i8> = umax_host.param(1)?.try_into()?;
-        let umax: IntValue<i8> = umax_b
+        let umax_call = umax_b
             .call_builder(umax_fn)
             .arg(umax_x)
             .arg(umax_y)
             .name("umax")
-            .build()?
+            .build()?;
+        let umax: IntValue<i8> = umax_b
+            .view(umax_call)
             .return_value()
             .expect("umax returns value")
             .try_into()?;
@@ -306,12 +316,14 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let umin_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(umin_entry);
         let umin_x: IntValue<i8> = umin_host.param(0)?.try_into()?;
         let umin_y: IntValue<i8> = umin_host.param(1)?.try_into()?;
-        let umin: IntValue<i8> = umin_b
+        let umin_call = umin_b
             .call_builder(umin_fn)
             .arg(umin_x)
             .arg(umin_y)
             .name("umin")
-            .build()?
+            .build()?;
+        let umin: IntValue<i8> = umin_b
+            .view(umin_call)
             .return_value()
             .expect("umin returns value")
             .try_into()?;
@@ -326,12 +338,14 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let smax_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(smax_entry);
         let smax_x: IntValue<i8> = smax_host.param(0)?.try_into()?;
         let smax_y: IntValue<i8> = smax_host.param(1)?.try_into()?;
-        let smax: IntValue<i8> = smax_b
+        let smax_call = smax_b
             .call_builder(smax_fn)
             .arg(smax_x)
             .arg(smax_y)
             .name("smax")
-            .build()?
+            .build()?;
+        let smax: IntValue<i8> = smax_b
+            .view(smax_call)
             .return_value()
             .expect("smax returns value")
             .try_into()?;
@@ -346,12 +360,14 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let smin_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(smin_entry);
         let smin_x: IntValue<i8> = smin_host.param(0)?.try_into()?;
         let smin_y: IntValue<i8> = smin_host.param(1)?.try_into()?;
-        let smin: IntValue<i8> = smin_b
+        let smin_call = smin_b
             .call_builder(smin_fn)
             .arg(smin_x)
             .arg(smin_y)
             .name("smin")
-            .build()?
+            .build()?;
+        let smin: IntValue<i8> = smin_b
+            .view(smin_call)
             .return_value()
             .expect("smin returns value")
             .try_into()?;
@@ -488,11 +504,9 @@ fn demanded_bits_ignore_mismatched_intrinsic_declarations() -> Result<(), IrErro
         let entry = host.append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<i16> = host.param(0)?.try_into()?;
+        let call_call = b.call_builder(malformed).arg(x).name("rev").build()?;
         let call: IntValue<i16> = b
-            .call_builder(malformed)
-            .arg(x)
-            .name("rev")
-            .build()?
+            .view(call_call)
             .return_value()
             .expect("lookalike returns value")
             .try_into()?;
