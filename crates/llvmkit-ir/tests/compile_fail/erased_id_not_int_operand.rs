@@ -36,7 +36,7 @@ fn main() {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
 
         // Mint an *erased* id from a typed handle.
-        let a: IntValue<i32> = f.param(0).unwrap().try_into().unwrap();
+        let a: IntValue<i32> = m.view(f).param(0).unwrap().try_into().unwrap();
         let erased: ValueId<_> = a.into_erased().id();
 
         // `ValueId<B>` has no `IntoIntValue` impl: erased -> typed must be

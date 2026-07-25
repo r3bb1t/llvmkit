@@ -344,8 +344,9 @@ pub use value::{
 };
 pub use value_id::{
     AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FloatValueId, FreezeInstId,
-    FunctionId, GlobalId, IntValueId, IntrinsicInstId, PointerValueId, TypedCallInstId,
-    VAArgInstId, ValueId, ViewIn,
+    FunctionId, GlobalAliasId, GlobalIFuncId, GlobalId, IntValueId, IntrinsicInstId,
+    PointerValueId, TypedCallInstId, TypedFunctionId, TypedVarArgsFunctionId, VAArgInstId, ValueId,
+    ViewIn,
 };
 pub use worklist::Worklist;
 

@@ -19,7 +19,7 @@ fn main() {
             .add_typed_function::<(), (), _>("f", Linkage::External)
             .unwrap()
             .as_function();
-        let mut b = llvmkit_ir::SsaBuilder::for_function(&m, f).unwrap();
+        let mut b = llvmkit_ir::SsaBuilder::for_function(&m, m.view(f)).unwrap();
         let _entry = b.create_block("entry");
         let x = b.declare_int_var::<i32, _>("x");
 

@@ -23,11 +23,11 @@ fn vector_binops_emit_elementwise_ir() {
         let f = m
             .add_function_dyn("g", fn_ty, Linkage::External)
             .expect("g");
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let a = f.param(0).expect("p0").into_erased();
-        let c = f.param(1).expect("p1").into_erased();
+        let a = m.view(f).param(0).expect("p0").into_erased();
+        let c = m.view(f).param(1).expect("p1").into_erased();
 
         let x = b.build_int_xor_dyn(a, c, "x").expect("xor vec");
         let s = b.build_int_add_dyn(x, a, "s").expect("add vec");
@@ -73,11 +73,11 @@ fn scalar_binop_dyn_still_works() {
         let f = m
             .add_function_dyn("h", fn_ty, Linkage::External)
             .expect("h");
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let a = f.param(0).expect("p0").into_erased();
-        let c = f.param(1).expect("p1").into_erased();
+        let a = m.view(f).param(0).expect("p0").into_erased();
+        let c = m.view(f).param(1).expect("p1").into_erased();
         let x = b.build_int_xor_dyn(a, c, "x").expect("xor scalar");
         let r: llvmkit_ir::IntValue<'_, i64> = b.view(x).try_into().expect("i64 result");
         b.build_ret(r).expect("ret");

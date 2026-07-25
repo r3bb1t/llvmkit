@@ -3182,6 +3182,9 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             expected: format!("valid global definition: {e}"),
             loc: DiagLoc::span(decl_loc),
         })?;
+        // The parser threads borrowing handles through its deferred-fixup and
+        // slot-numbering tables, so resolve the freshly minted id once here.
+        let g = self.module.view(g);
         for (kind, id) in metadata {
             g.set_metadata(self.module, kind, id);
         }
@@ -3301,6 +3304,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 loc: DiagLoc::span(decl_loc),
             })?;
             if let NameOrId::Id(id) = name_id {
+                let a = self.module.view(a);
                 self.numbered_globals
                     .add(id, GlobalRef::Alias(a))
                     .map_err(|source| ParseError::InvalidSlotId {
@@ -3322,6 +3326,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 loc: DiagLoc::span(decl_loc),
             })?;
             if let NameOrId::Id(id) = name_id {
+                let i = self.module.view(i);
                 self.numbered_globals
                     .add(id, GlobalRef::IFunc(i))
                     .map_err(|source| ParseError::InvalidSlotId {
@@ -5294,6 +5299,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     .module
                     .get_or_insert_intrinsic_declaration(&descriptor)
                     .map_err(|e| self.intrinsic_parse_error(decl_loc, e))?;
+                let f = self.module.view(f);
                 for (slot, name) in param_names.into_iter().enumerate() {
                     if let Some(name) = name {
                         let slot = u32::try_from(slot).map_err(|_| ParseError::Expected {
@@ -5347,6 +5353,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     expected: format!("valid function declaration: {e}"),
                     loc: DiagLoc::span(decl_loc),
                 })?;
+            let f = self.module.view(f);
             f.set_visibility(self.module, visibility);
             f.set_dll_storage_class(self.module, dll_storage_class);
             f.set_dso_locality(self.module, dso_locality);
@@ -5558,6 +5565,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     expected: format!("valid function definition: {e}"),
                     loc: DiagLoc::span(decl_loc),
                 })?;
+            let f = self.module.view(f);
             f.set_visibility(self.module, visibility);
             f.set_dll_storage_class(self.module, dll_storage_class);
             f.set_dso_locality(self.module, dso_locality);
@@ -7814,7 +7822,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                             .module
                             .get_or_insert_intrinsic_declaration(&descriptor)
                             .map_err(|e| self.intrinsic_parse_error(loc, e))?;
-                        Ok(ParsedCallee::Function(f))
+                        Ok(ParsedCallee::Function(self.module.view(f)))
                     }
                     IntrinsicNameResolution::UnknownIntrinsic => Err(ParseError::Expected {
                         expected: "unknown intrinsic".into(),
@@ -7829,7 +7837,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                                 loc: DiagLoc::span(loc),
                             })?;
                         self.forward_function_decls.entry(name).or_insert(loc);
-                        Ok(ParsedCallee::Function(f))
+                        Ok(ParsedCallee::Function(self.module.view(f)))
                     }
                 }
             }

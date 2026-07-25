@@ -99,10 +99,10 @@ fn build_switch_merge<'ctx>(
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block(m, "entry");
-    let dflt = f.append_basic_block(m, "dflt");
-    let other = f.append_basic_block(m, "other");
-    let merge = f.append_basic_block(m, "merge");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let dflt = m.view(f).append_basic_block(m, "dflt");
+    let other = m.view(f).append_basic_block(m, "other");
+    let merge = m.view(f).append_basic_block(m, "merge");
 
     let entry_lbl = entry.label();
     let dflt_lbl = dflt.label();
@@ -114,7 +114,7 @@ fn build_switch_merge<'ctx>(
 
     // entry: %e = add %a, 7 ; switch %a, default %dflt [ 0 -> merge, 1 -> other ]
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let e = b.build_int_add(a, 7_i32, "e")?;
     let (_sealed, sw) = b.build_switch_dyn(a, dflt_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), merge_lbl)?
@@ -123,7 +123,7 @@ fn build_switch_merge<'ctx>(
 
     // dflt: %d = add %a, 9 ; br merge
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(dflt);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let d = b.build_int_add(a, 9_i32, "d")?;
     b.build_br(merge_lbl)?;
 
@@ -139,7 +139,7 @@ fn build_switch_merge<'ctx>(
         .add_incoming(d, dflt_lbl)?;
     b.build_ret(p.as_int_value())?;
 
-    Ok((f, dflt_dyn, other_dyn, merge_dyn))
+    Ok((m.view(f), dflt_dyn, other_dyn, merge_dyn))
 }
 
 /// `remove_successor` drops the `entry → merge` switch case AND mechanically
@@ -285,10 +285,10 @@ fn build_switch_default_parallel<'ctx>(
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block(m, "entry");
-    let mid = f.append_basic_block(m, "mid");
-    let shared = f.append_basic_block(m, "shared");
-    let new = f.append_basic_block(m, "new");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let mid = m.view(f).append_basic_block(m, "mid");
+    let shared = m.view(f).append_basic_block(m, "shared");
+    let new = m.view(f).append_basic_block(m, "new");
 
     let entry_lbl = entry.label();
     let mid_lbl = mid.label();
@@ -298,7 +298,7 @@ fn build_switch_default_parallel<'ctx>(
 
     // entry: %e = add %a, 7 ; switch %a, default %shared [ 0 -> shared, 1 -> mid ]
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let e = b.build_int_add(a, 7_i32, "e")?;
     let (_sealed, sw) = b.build_switch_dyn(a, shared_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), shared_lbl)?
@@ -307,7 +307,7 @@ fn build_switch_default_parallel<'ctx>(
 
     // mid: %mv = add %a, 3 ; br shared
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(mid);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let mv = b.build_int_add(a, 3_i32, "mv")?;
     b.build_br(shared_lbl)?;
 
@@ -324,7 +324,7 @@ fn build_switch_default_parallel<'ctx>(
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new);
     b.build_ret(i32_ty.const_int(1_u32))?;
 
-    Ok((f, shared_dyn, new_dyn))
+    Ok((m.view(f), shared_dyn, new_dyn))
 }
 
 /// SURVIVING-PARALLEL-EDGE (switch redirect): redirecting the case-0 edge of a

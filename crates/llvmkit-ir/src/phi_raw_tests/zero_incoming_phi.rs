@@ -89,9 +89,9 @@ fn build_single_pred_phi<'ctx>(
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block(m, "entry");
-    let to = f.append_basic_block(m, "to");
-    let other = f.append_basic_block(m, "other");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let to = m.view(f).append_basic_block(m, "to");
+    let other = m.view(f).append_basic_block(m, "other");
 
     let entry_lbl = entry.label();
     let to_lbl = to.label();
@@ -100,7 +100,7 @@ fn build_single_pred_phi<'ctx>(
 
     // entry: %x = add %a, 7 ; %c = icmp slt %a, 5 ; cond_br %c, to, other
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let x = b.build_int_add(a, 7_i32, "x")?;
     let c = b.build_icmp_slt(a, 5_i32, "c")?;
     b.build_cond_br(c, to_lbl, other_lbl)?;
@@ -115,7 +115,7 @@ fn build_single_pred_phi<'ctx>(
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(other);
     b.build_ret(i32_ty.const_int(0_u32))?;
 
-    Ok((f, to_dyn))
+    Ok((m.view(f), to_dyn))
 }
 
 /// Removing `entry → to` — `entry` being `to`'s only predecessor — empties
@@ -182,10 +182,10 @@ fn build_redirect_single_pred_phi<'ctx>(
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block(m, "entry");
-    let old_to = f.append_basic_block(m, "old_to");
-    let other = f.append_basic_block(m, "other");
-    let new_to = f.append_basic_block(m, "new_to");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let old_to = m.view(f).append_basic_block(m, "old_to");
+    let other = m.view(f).append_basic_block(m, "other");
+    let new_to = m.view(f).append_basic_block(m, "new_to");
 
     let entry_lbl = entry.label();
     let old_to_lbl = old_to.label();
@@ -196,7 +196,7 @@ fn build_redirect_single_pred_phi<'ctx>(
 
     // entry: %x = add %a, 7 ; %c = icmp slt %a, 5 ; cond_br %c, old_to, other
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let x = b.build_int_add(a, 7_i32, "x")?;
     let c = b.build_icmp_slt(a, 5_i32, "c")?;
     b.build_cond_br(c, old_to_lbl, other_lbl)?;
@@ -215,7 +215,7 @@ fn build_redirect_single_pred_phi<'ctx>(
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new_to);
     b.build_ret(i32_ty.const_int(1_u32))?;
 
-    Ok((f, old_to_dyn, new_to_dyn))
+    Ok((m.view(f), old_to_dyn, new_to_dyn))
 }
 
 /// Redirecting `entry → old_to` onto `new_to` — `entry` being `old_to`'s only
@@ -288,8 +288,8 @@ fn zero_incoming_phi_in_reachable_block_is_rejected() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = f.append_basic_block(&m, "b");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let b = m.view(f).append_basic_block(&m, "b");
         let b_label = b.label();
 
         // entry: br b   (so `b` is reachable from entry)
@@ -330,9 +330,9 @@ fn zero_incoming_phi_in_unreachable_block_is_accepted() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         // `u` has no edge into it — unreachable from entry.
-        let u = f.append_basic_block(&m, "u");
+        let u = m.view(f).append_basic_block(&m, "u");
 
         // entry: ret 0
         let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);

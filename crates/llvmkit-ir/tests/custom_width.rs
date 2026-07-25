@@ -39,7 +39,10 @@ fn int_type_n_constructor_matches_upstream_int3() {
 fn width_marker_works_as_return_marker() -> Result<(), llvmkit_ir::IrError> {
     Module::with_new("c", |m| {
         let _f: FunctionValue<'_, Width<17>> = m
-            .add_typed_function::<Width<17>, (Width<17>,), _>("identity17", Linkage::External)?
+            .view(m.add_typed_function::<Width<17>, (Width<17>,), _>(
+                "identity17",
+                Linkage::External,
+            )?)
             .as_function();
         Ok(())
     })

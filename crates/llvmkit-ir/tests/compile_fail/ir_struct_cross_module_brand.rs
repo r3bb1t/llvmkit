@@ -14,13 +14,13 @@ struct Point {
 fn main() -> Result<(), IrError> {
     Module::with_new("left", |left| {
         let left_fn = left.add_typed_function::<(), (Point,), _>("left", Linkage::External)?;
-        let (left_point,) = left_fn.params();
+        let (left_point,) = left.view(left_fn).params();
 
         Module::with_new("right", |right| {
             let right_fn = right
                 .add_typed_function::<(), (), _>("right", Linkage::External)?
                 .as_function();
-            let entry = right_fn.append_basic_block(&right, "entry");
+            let entry = right.view(right_fn).append_basic_block(&right, "entry");
             let builder = IRBuilder::new_for::<()>(&right).position_at_end(entry);
             let _ = builder.build_insert_field::<Point, i32, _, _, _>(
                 left_point,

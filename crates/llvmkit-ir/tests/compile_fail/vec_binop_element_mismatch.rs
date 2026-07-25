@@ -21,13 +21,13 @@ fn main() {
             false,
         );
         let f = m.add_function_dyn("g", fn_ty, Linkage::External).unwrap();
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let a: VectorValue<'_, i32, Len<4>> =
-            f.param(0).unwrap().into_erased().try_into().unwrap();
+            m.view(f).param(0).unwrap().into_erased().try_into().unwrap();
         let c: VectorValue<'_, i64, Len<4>> =
-            f.param(1).unwrap().into_erased().try_into().unwrap();
+            m.view(f).param(1).unwrap().into_erased().try_into().unwrap();
 
         // `i32` and `i64` cannot unify the single `E` the binop demands.
         let _bad = b.build_vec_int_add(a, c, "x").unwrap(); //~ ERROR mismatched types

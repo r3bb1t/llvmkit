@@ -42,9 +42,9 @@ fn main() -> Result<(), IrError> {
             "normalize_window_placement",
             Linkage::External,
         )?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let (placement,) = f.params();
+        let (placement,) = m.view(f).params();
 
         let normal_position = placement.normal_position(&b)?;
         let min = normal_position.min(&b)?;

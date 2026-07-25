@@ -21,10 +21,10 @@ fn build_f32_fn(op: &str) -> Result<String, IrError> {
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type(), f32_ty.as_type()], false);
         let f = m.add_function_dyn(op, fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: FloatValue<f32> = f.param(0)?.try_into()?;
-        let y: FloatValue<f32> = f.param(1)?.try_into()?;
+        let x: FloatValue<f32> = m.view(f).param(0)?.try_into()?;
+        let y: FloatValue<f32> = m.view(f).param(1)?.try_into()?;
         let r = match op {
             "fadd" => b.build_fp_add(x, y, "z")?,
             "fsub" => b.build_fp_sub(x, y, "z")?,
@@ -92,10 +92,10 @@ fn fadd_f64() -> Result<(), IrError> {
         let f64_ty = m.f64_type();
         let fn_ty = m.fn_type(f64_ty, [f64_ty.as_type(), f64_ty.as_type()], false);
         let f = m.add_function_dyn("fadd", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: FloatValue<f64> = f.param(0)?.try_into()?;
-        let rhs: FloatValue<f64> = f.param(1)?.try_into()?;
+        let lhs: FloatValue<f64> = m.view(f).param(0)?.try_into()?;
+        let rhs: FloatValue<f64> = m.view(f).param(1)?.try_into()?;
         let r = b.build_fp_add(lhs, rhs, "z")?;
         b.build_ret(r)?;
         let text = format!("{m}");
@@ -113,7 +113,7 @@ fn default_constant_folder_folds_fadd_to_constant() -> Result<(), IrError> {
         let ty = m.f64_type();
         let fn_ty = m.fn_type(ty, Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("sum", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let result =
             b.build_fp_add::<f64, _, _, _>(ty.const_double(1.5), ty.const_double(2.25), "sum")?;

@@ -20,9 +20,9 @@ fn gep_result_preserves_base_pointer_address_space() -> Result<(), IrError> {
         let ptr_as33 = m.ptr_type(33);
         let fn_ty = m.fn_type(m.void_type().as_type(), [ptr_as33.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let p: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
+        let p: llvmkit_ir::PointerValue = m.view(f).param(0)?.try_into()?;
         let one = i32_ty.const_int(1_i32).as_dyn();
         let gep = b.build_inbounds_gep(i32_ty, p, [one], "q")?;
         let (_entry, _ret) = b.build_ret_void()?;

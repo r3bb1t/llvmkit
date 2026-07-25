@@ -9030,7 +9030,7 @@ mod tests {
             let i64_dyn_ty = m.custom_width_int_type(64)?;
             let fn_ty = m.fn_type_no_params(m.i32_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
 
             let stored: IntValue<'_, i64, _> =
                 IntValue::from_value_unchecked(i64_dyn_ty.const_zero().into_erased());
@@ -9074,7 +9074,7 @@ mod tests {
             let i64_ty = m.i64_type();
             let fn_ty = m.fn_type_no_params(m.i32_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
 
             // `stored`'s REAL IR type is i64; the folder hands it back as
             // `IntValue<W>` for whatever `W` the builder asks for -- here i32.
@@ -9122,7 +9122,7 @@ mod tests {
             let i64_ty = m.i64_type();
             let fn_ty = m.fn_type_no_params(m.i32_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
 
             let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().into_erased())?;
             let folder = HostileTypedFolder { stored };
@@ -9156,7 +9156,7 @@ mod tests {
             let f64_ty = m.f64_type();
             let fn_ty = m.fn_type_no_params(m.i32_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
 
             let stored: FloatValue<'_, f64, _> =
                 f64::narrow(f64_ty.const_double(0.0).into_erased())?;
@@ -9199,7 +9199,7 @@ mod tests {
             let f64_ty = m.f64_type();
             let fn_ty = m.fn_type_no_params(m.i32_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
 
             let stored: FloatValue<'_, f64, _> =
                 f64::narrow(f64_ty.const_double(0.0).into_erased())?;

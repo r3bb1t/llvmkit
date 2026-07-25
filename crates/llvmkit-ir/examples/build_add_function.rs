@@ -22,10 +22,10 @@ use llvmkit_ir::{IRBuilder, IrError, Linkage, Module};
 fn build() -> Result<(), IrError> {
     Module::with_new("demo", |m| {
         let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
 
         let b = IRBuilder::at_end(entry);
-        let (lhs, rhs) = f.params();
+        let (lhs, rhs) = m.view(f).params();
         let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
         b.build_ret(sum)?;
 

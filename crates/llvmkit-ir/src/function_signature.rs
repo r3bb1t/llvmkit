@@ -23,6 +23,7 @@ use crate::marker::{Ptr, ReturnMarker};
 use crate::module::{Brand, Module, ModuleBrand, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeKind};
 use crate::value::{FloatValue, IntValue, IntoPointerValue, PointerValue, Value, ValueSlot};
+use crate::value_id::{TypedFunctionId, TypedVarArgsFunctionId};
 
 #[doc(hidden)]
 pub mod token {
@@ -311,6 +312,17 @@ where
         })
     }
 
+    /// Storable, module-tagged [`TypedFunctionId<Ret, Params>`] for this
+    /// function (llvmkit 2.0), resolvable via
+    /// [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view). The full schema rides on
+    /// the id, so the view re-mints this facade rather than a raw
+    /// [`FunctionValue`].
+    #[inline]
+    pub fn id(self) -> TypedFunctionId<Ret, Params, B> {
+        TypedFunctionId::from_raw(self.function.module.id(), self.function.id)
+    }
+
     /// Return the underlying return-typed function handle.
     #[inline]
     pub fn as_function(self) -> FunctionValue<'ctx, Ret::Marker, B> {
@@ -463,6 +475,15 @@ where
             _ret: PhantomData,
             _params: PhantomData,
         })
+    }
+
+    /// Storable, module-tagged [`TypedVarArgsFunctionId<Ret, Params>`] for
+    /// this function (llvmkit 2.0), resolvable via
+    /// [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view).
+    #[inline]
+    pub fn id(self) -> TypedVarArgsFunctionId<Ret, Params, B> {
+        TypedVarArgsFunctionId::from_raw(self.function.module.id(), self.function.id)
     }
 
     /// Return the underlying return-typed function handle.

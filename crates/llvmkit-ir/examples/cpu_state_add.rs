@@ -61,15 +61,15 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
         .param_name(3, "rdx")
         .build()?;
 
-    let entry = add_fn.append_basic_block(m, "entry");
+    let entry = m.view(add_fn).append_basic_block(m, "entry");
     let b = IRBuilder::at_end(entry);
 
-    let rax: IntValue<i64> = add_fn.param(0)?.try_into()?;
-    let rbx: IntValue<i64> = add_fn.param(1)?.try_into()?;
-    let rcx: IntValue<i64> = add_fn.param(2)?.try_into()?;
+    let rax: IntValue<i64> = m.view(add_fn).param(0)?.try_into()?;
+    let rbx: IntValue<i64> = m.view(add_fn).param(1)?.try_into()?;
+    let rcx: IntValue<i64> = m.view(add_fn).param(2)?.try_into()?;
     // `rdx` is part of the signature but unused in the priorities-section
     // body; touch the slot so the lifetime brand keeps it live.
-    let _rdx: IntValue<i64> = add_fn.param(3)?.try_into()?;
+    let _rdx: IntValue<i64> = m.view(add_fn).param(3)?.try_into()?;
 
     let t0 = b.build_trunc(rax, i32_ty, "")?;
     let t1 = b.build_trunc(rbx, i32_ty, "")?;
@@ -86,7 +86,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
         .unnamed_addr(UnnamedAddr::Local)
         .return_attribute(AttrKind::NoUndef)
         .build()?;
-    let entry = main_fn.append_basic_block(m, "entry");
+    let entry = m.view(main_fn).append_basic_block(m, "entry");
     let b = IRBuilder::at_end(entry);
     let one = i32_ty.const_int(1_i32);
     let one_v = IntValue::<i32>::try_from(one.into_erased())?;

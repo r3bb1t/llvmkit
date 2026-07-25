@@ -117,9 +117,9 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             let a = b.build_int_add(x, 1_i32, "a")?;
             let c = b.build_int_add(x, 2_i32, "c")?;
             b.build_ret(x)?;
@@ -153,9 +153,9 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             let a = b.build_int_add(x, 1_i32, "a")?;
             let c = b.build_int_add(x, 2_i32, "c")?;
             b.build_ret(x)?;
@@ -183,9 +183,9 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             let a = b.build_int_add(x, 1_i32, "a")?;
             b.build_ret(x)?;
 
@@ -229,16 +229,16 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             let a = b.build_int_add(x, 1_i32, "a")?;
             b.build_ret(x)?;
 
             let a_id = m.view(a).slot();
             // The `ret` terminator is the block's last instruction; reach it the
             // same way `pass_context`'s tests do, then take its ValueSlot.
-            let ret_id = FunctionView::from(f)
+            let ret_id = FunctionView::from(m.view(f))
                 .entry_block()
                 .expect("definition has an entry block")
                 .as_basic_block()

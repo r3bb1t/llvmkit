@@ -738,10 +738,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
         self
     }
 
-    /// Materialise the global. Mirrors the second
-    /// `GlobalVariable::GlobalVariable(Module &M, ...)` ctor.
-    pub fn build(self) -> IrResult<GlobalVariable<'ctx, B>> {
-        self.module.module().install_global_variable::<B>(self)
+    /// Materialise the global, returning its storable [`GlobalId`]. Mirrors
+    /// the second `GlobalVariable::GlobalVariable(Module &M, ...)` ctor.
+    /// Resolve the id back into a borrowing [`GlobalVariable`] with
+    /// [`Module::view`](crate::Module::view).
+    pub fn build(self) -> IrResult<GlobalId<B>> {
+        self.module
+            .module()
+            .install_global_variable::<B>(self)
+            .map(|g| g.id())
     }
 
     pub(super) fn into_data(

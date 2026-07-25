@@ -2518,7 +2518,7 @@ mod tests {
             let ptr_as_int = m.constant_expr(
                 i64_ty.as_type(),
                 ConstantExprOpcode::PtrToInt,
-                [global.as_global_constant_ptr().into_erased()],
+                [m.view(global).as_global_constant_ptr().into_erased()],
                 [],
                 [],
                 ConstantExprFlags::none(),

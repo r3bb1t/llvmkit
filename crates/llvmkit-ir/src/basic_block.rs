@@ -991,7 +991,7 @@ mod tests {
             let void_ty = m.void_type().as_type();
             let fn_ty = m.fn_type_no_params(void_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
-            let bb = f.append_basic_block(&m, "entry");
+            let bb = m.view(f).append_basic_block(&m, "entry");
 
             // A label recovered from an untyped `Value` carries no static
             // parameter promise, so it must land in the `BlockParamsDyn`
@@ -1011,7 +1011,7 @@ mod tests {
             let void_ty = m.void_type().as_type();
             let fn_ty = m.fn_type_no_params(void_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
-            let bb = f.append_basic_block(&m, "entry");
+            let bb = m.view(f).append_basic_block(&m, "entry");
             let label = bb.label();
 
             let round: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = label

@@ -17,7 +17,7 @@ fn phi_same_constant_folds() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let entry_label = entry.label();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let phi = b
@@ -46,8 +46,8 @@ fn phi_poison_and_undef_incomings_fold_to_undef() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let other = f.append_basic_block(&m, "other");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let other = m.view(f).append_basic_block(&m, "other");
         let entry_label = entry.label();
         let other_label = other.label();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -79,8 +79,8 @@ fn phi_poison_beside_constant_folds_to_the_constant() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let other = f.append_basic_block(&m, "other");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let other = m.view(f).append_basic_block(&m, "other");
         let entry_label = entry.label();
         let other_label = other.label();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);

@@ -52,9 +52,9 @@ fn main() {
         let caller = m
             .add_typed_function::<i32, (i32,), _>("caller", Linkage::External)
             .unwrap();
-        let entry = caller.append_basic_block(&m, "entry");
+        let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let (x,) = caller.params();
+        let (x,) = m.view(caller).params();
         // `String` implements neither `IntoIntValue`/`IntoFloatValue`/
         // `IntoPointerValue` nor is one of the struct-schema blanket's
         // concrete source types (`Value`/`Argument`/`Constant`/
@@ -63,6 +63,6 @@ fn main() {
         // `IntoCallArg` itself as unsatisfied and its on_unimplemented
         // message fires.
         let bogus = String::from("not a value");
-        let _ = b.build_call(callee, (bogus, x), "bad");
+        let _ = b.build_call(m.view(callee), (bogus, x), "bad");
     });
 }

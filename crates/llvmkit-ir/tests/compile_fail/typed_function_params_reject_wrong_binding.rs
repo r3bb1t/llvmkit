@@ -9,7 +9,7 @@ fn main() {
         let f = m
             .add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)
             .unwrap();
-        let (_lhs, _rhs): (FloatValue<f32>, _) = f.params();
+        let (_lhs, _rhs): (FloatValue<f32>, _) = m.view(f).params();
         Ok::<(), llvmkit_ir::IrError>(())
     })
     .unwrap();

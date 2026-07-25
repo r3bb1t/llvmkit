@@ -1,8 +1,8 @@
 error[E0277]: `std::string::String` cannot fill a call-argument slot of schema `Point`
-  --> tests/compile_fail/typed_call_wrong_arg_type.rs:66:39
+  --> tests/compile_fail/typed_call_wrong_arg_type.rs:66:47
    |
-66 |         let _ = b.build_call(callee, (bogus, x), "bad");
-   |                   ----------          ^^^^^ wrong argument type for this parameter position
+66 |         let _ = b.build_call(m.view(callee), (bogus, x), "bad");
+   |                   ----------                  ^^^^^ wrong argument type for this parameter position
    |                   |
    |                   required by a bound introduced by this call
    |

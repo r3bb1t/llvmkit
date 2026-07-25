@@ -162,12 +162,12 @@ mod tests {
             let mut mapping: SlotMapping<'_> = SlotMapping::new();
             mapping
                 .global_values
-                .add(0, GlobalRef::Variable(g))
+                .add(0, GlobalRef::Variable(m.view(g)))
                 .expect("first slot");
 
             assert_eq!(mapping.global_values.get_next(), 1);
             match mapping.global_values.get(0) {
-                Some(GlobalRef::Variable(stored)) => assert_eq!(*stored, g),
+                Some(GlobalRef::Variable(stored)) => assert_eq!(*stored, m.view(g)),
                 other => panic!("unexpected entry: {other:?}"),
             }
         });

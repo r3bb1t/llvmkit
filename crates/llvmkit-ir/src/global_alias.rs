@@ -12,6 +12,7 @@ use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverifie
 use super::r#type::{Type, TypeKind, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
+use super::value_id::GlobalAliasId;
 
 #[derive(Debug)]
 pub(super) struct GlobalAliasData {
@@ -55,6 +56,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
             module: self.module,
             ty: self.ty,
         }
+    }
+
+    /// Storable, module-tagged [`GlobalAliasId`] for this alias (llvmkit 2.0),
+    /// resolvable via [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view).
+    #[inline]
+    pub fn id(self) -> GlobalAliasId<B> {
+        GlobalAliasId::from_raw(self.module.id(), self.id)
     }
 
     #[inline]
@@ -368,7 +377,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
         self
     }
 
-    pub fn build(self) -> IrResult<GlobalAlias<'ctx, B>> {
+    /// Materialise the alias, returning its storable [`GlobalAliasId`].
+    /// Resolve the id back into a borrowing [`GlobalAlias`] with
+    /// [`Module::view`](crate::Module::view).
+    pub fn build(self) -> IrResult<GlobalAliasId<B>> {
         if !is_valid_alias_linkage(self.linkage) {
             return Err(IrError::InvalidOperation {
                 message: "invalid linkage type for alias",
@@ -388,7 +400,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
                 got: Type::new(self.aliasee_type, self.module).kind_label(),
             });
         }
-        self.module.module().install_global_alias::<B>(self)
+        self.module
+            .module()
+            .install_global_alias::<B>(self)
+            .map(|a| a.id())
     }
 
     pub(super) fn into_data(self) -> (String, GlobalAliasData, u32) {

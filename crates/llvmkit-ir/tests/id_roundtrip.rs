@@ -10,10 +10,11 @@
 //! exercised until cycle C.
 
 use llvmkit_ir::{
-    BasicBlockLabel, BlockId, Dyn, FloatValue, FloatValueId, FunctionId, GlobalId, GlobalVariable,
-    IRBuilder, IntValue, IntValueId, IntoCallArg, IntoErasedValue, IntoFloatValue, IntoIntValue,
-    IntoPointerValue, IrError, Linkage, Module, ModuleBrand, ModuleRef, PointerValue,
-    PointerValueId, Unverified, Value, ValueId,
+    BasicBlockLabel, BlockId, Dyn, FloatValue, FloatValueId, FunctionId, GlobalAliasId,
+    GlobalIFuncId, GlobalId, GlobalVariable, IRBuilder, IntValue, IntValueId, IntoCallArg,
+    IntoErasedValue, IntoFloatValue, IntoIntValue, IntoPointerValue, IrError, Linkage, Module,
+    ModuleBrand, ModuleRef, PointerValue, PointerValueId, TypedFunctionId, TypedVarArgsFunctionId,
+    Unverified, Value, ValueId,
 };
 
 /// Round-trip: every typed handle mints an id whose `view` reproduces the
@@ -28,26 +29,30 @@ fn handles_round_trip_through_to_id_and_view() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 
         // Int value (a function argument narrowed to its static width).
-        let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let a_id: IntValueId<i32, _> = a.id();
         assert_eq!(m.view(a_id), a, "IntValue did not survive id/view");
 
         // Pointer value (the second argument).
-        let p: PointerValue = f.param(1)?.try_into()?;
+        let p: PointerValue = m.view(f).param(1)?.try_into()?;
         let p_id: PointerValueId<_> = p.id();
         assert_eq!(m.view(p_id), p, "PointerValue did not survive id/view");
 
         // Function value.
-        let f_id: FunctionId<Dyn, _> = f.id();
-        assert_eq!(m.view(f_id), f, "FunctionValue did not survive id/view");
+        let f_id: FunctionId<Dyn, _> = m.view(f).id();
+        assert_eq!(
+            m.view(f_id),
+            m.view(f),
+            "FunctionValue did not survive id/view"
+        );
 
         // Global variable.
-        let g: GlobalVariable = m.add_global("g", i32_ty.const_int(0_u32))?;
+        let g: GlobalVariable = m.view(m.add_global("g", i32_ty.const_int(0_u32))?);
         let g_id: GlobalId<_> = g.id();
         assert_eq!(m.view(g_id), g, "GlobalVariable did not survive id/view");
 
         // Block label (via both the copyable label and the linear block).
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let label: BasicBlockLabel<Dyn, _> = entry.label();
         let b_id: BlockId<Dyn, _> = label.id();
         assert_eq!(
@@ -79,10 +84,10 @@ fn try_view_returns_some_for_owned_ids() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
 
         assert_eq!(m.try_view(a.id()), Some(a));
-        assert_eq!(m.try_view(f.id()), Some(f));
+        assert_eq!(m.try_view(m.view(f).id()), Some(m.view(f)));
 
         // `view` and `try_view` agree on the resolvable case.
         assert_eq!(m.view(a.id()), m.try_view(a.id()).expect("owned id"));
@@ -98,15 +103,19 @@ fn view_works_on_verified_module() -> Result<(), IrError> {
     Module::with_new("id-verified-view", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let g: GlobalVariable = m.add_global("g", i32_ty.const_int(7_u32))?;
+        let g: GlobalVariable = m.view(m.add_global("g", i32_ty.const_int(7_u32))?);
         let g_id = g.id();
 
         let f = m.function_builder::<i32, _>("f", fn_ty).build()?;
-        let f_id: FunctionId<i32, _> = f.id();
+        let f_id: FunctionId<i32, _> = m.view(f).id();
 
         let verified = m.verify()?;
         assert_eq!(verified.view(g_id), g);
-        assert_eq!(verified.view(f_id), f, "typed FunctionId<i32> round-trip");
+        assert_eq!(
+            verified.view(f_id),
+            verified.view(f),
+            "typed FunctionId<i32> round-trip"
+        );
         Ok(())
     })
 }
@@ -139,7 +148,7 @@ fn id_debug_prints_tag_and_slot() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let rendered = format!("{:?}", a.id());
         assert!(rendered.contains("IntValueId"), "{rendered}");
         assert!(rendered.contains("tag"), "{rendered}");
@@ -178,8 +187,8 @@ fn builder_view_agrees_with_module_view() -> Result<(), IrError> {
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), ptr_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 
-        let a: IntValue<i32> = f.param(0)?.try_into()?;
-        let p: PointerValue = f.param(1)?.try_into()?;
+        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let p: PointerValue = m.view(f).param(1)?.try_into()?;
         let v: Value = a.into_erased();
 
         let b = IRBuilder::new(&m);
@@ -191,7 +200,11 @@ fn builder_view_agrees_with_module_view() -> Result<(), IrError> {
         );
         assert_eq!(b.view(p.id()), p, "PointerValueId did not survive b.view");
         assert_eq!(b.view(v.id()), v, "erased ValueId did not survive b.view");
-        assert_eq!(b.view(f.id()), f, "FunctionId did not survive b.view");
+        assert_eq!(
+            b.view(b.view(f).id()),
+            b.view(f),
+            "FunctionId did not survive b.view"
+        );
 
         assert_eq!(
             b.try_view(a.id()),
@@ -221,9 +234,9 @@ fn typed_ids_lift_at_operand_positions() -> Result<(), IrError> {
         );
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 
-        let a: IntValue<i32> = f.param(0)?.try_into()?;
-        let x: FloatValue<f32> = f.param(1)?.try_into()?;
-        let p: PointerValue = f.param(2)?.try_into()?;
+        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let x: FloatValue<f32> = m.view(f).param(1)?.try_into()?;
+        let p: PointerValue = m.view(f).param(2)?.try_into()?;
 
         let mref = ModuleRef::from(m.as_view());
 
@@ -283,9 +296,9 @@ fn typed_ids_are_call_args() -> Result<(), IrError> {
             false,
         );
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let a: IntValue<i32> = f.param(0)?.try_into()?;
-        let x: FloatValue<f32> = f.param(1)?.try_into()?;
-        let p: PointerValue = f.param(2)?.try_into()?;
+        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let x: FloatValue<f32> = m.view(f).param(1)?.try_into()?;
+        let p: PointerValue = m.view(f).param(2)?.try_into()?;
         assert_int_call_arg(&a.id());
         assert_float_call_arg(&x.id());
         assert_ptr_call_arg(&p.id());
@@ -339,18 +352,31 @@ fn every_id_is_an_erased_operand() {
             false,
         );
         let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
-        let g: GlobalVariable = m.add_global("g", i32_ty.const_int(0_u32)).unwrap();
+        let g: GlobalVariable = m.view(m.add_global("g", i32_ty.const_int(0_u32)).unwrap());
 
-        let a: IntValue<i32> = f.param(0).unwrap().try_into().unwrap();
-        let x: FloatValue<f32> = f.param(1).unwrap().try_into().unwrap();
-        let p: PointerValue = f.param(2).unwrap().try_into().unwrap();
+        let a: IntValue<i32> = m.view(f).param(0).unwrap().try_into().unwrap();
+        let x: FloatValue<f32> = m.view(f).param(1).unwrap().try_into().unwrap();
+        let p: PointerValue = m.view(f).param(2).unwrap().try_into().unwrap();
 
         assert_erased_operand(&a.into_erased().id());
         assert_erased_operand(&a.id());
         assert_erased_operand(&x.id());
         assert_erased_operand(&p.id());
-        assert_erased_operand(&f.id());
+        assert_erased_operand(&m.view(f).id());
         assert_erased_operand(&g.id());
+
+        // B1e: the alias / ifunc ids join the family — both handles are
+        // `IsValue`s, so both widen at an erased-by-design operand slot.
+        let alias = m
+            .alias_builder("alias", i32_ty.as_type(), g)
+            .build()
+            .unwrap();
+        let ifunc = m
+            .ifunc_builder("ifunc", i32_ty.as_type(), g)
+            .build()
+            .unwrap();
+        assert_erased_operand(&alias);
+        assert_erased_operand(&ifunc);
     });
 }
 
@@ -365,9 +391,9 @@ fn ids_drive_erased_operand_slots_without_a_view() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(m.void_type().as_type(), [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("inc", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let p: PointerValue = f.param(0)?.try_into()?;
+        let p: PointerValue = m.view(f).param(0)?.try_into()?;
 
         let v = b.build_int_load::<i32, _, _>(p, "v")?;
         // `build_int_add` already hands back a storable id (cycle B1a).
@@ -389,6 +415,77 @@ fn ids_drive_erased_operand_slots_without_a_view() -> Result<(), IrError> {
             text.contains("%fr = freeze i32 %n\n"),
             "erased id did not reach the freeze operand; got:\n{text}"
         );
+        Ok(())
+    })
+}
+
+/// B1e: the module-level *declaration* family hands back its id directly, so
+/// the round-trip witnessed here is the mirror of
+/// [`handles_round_trip_through_to_id_and_view`] — `id -> view -> id` — across
+/// the four ids this slice introduced plus the two it reuses. Also locks
+/// [`TypedFunctionId::as_function`]'s pure retag against the facade's own
+/// `as_function`: both must name the same function.
+#[test]
+fn declaration_ids_round_trip_through_view_and_id() -> Result<(), IrError> {
+    Module::with_new("id-declarations", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
+
+        // Erased function declaration, and the chainable builder's tail.
+        let raw: FunctionId<Dyn, _> = m.add_function_dyn("raw", fn_ty, Linkage::External)?;
+        assert_eq!(m.view(raw).id(), raw, "FunctionId did not survive view/id");
+        let built: FunctionId<i32, _> = m.function_builder::<i32, _>("built", fn_ty).build()?;
+        assert_eq!(
+            m.view(built).id(),
+            built,
+            "FunctionBuilder::build's id did not survive view/id"
+        );
+
+        // Typed facade: the full `(Ret, Params)` schema rides on the id.
+        let add: TypedFunctionId<i32, (i32, i32), _> =
+            m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
+        assert_eq!(
+            m.view(add).id(),
+            add,
+            "TypedFunctionId did not survive view/id"
+        );
+        assert_eq!(
+            m.view(add.as_function()),
+            m.view(add).as_function(),
+            "TypedFunctionId::as_function disagreed with the facade's as_function"
+        );
+
+        // Variadic twin.
+        let va: TypedVarArgsFunctionId<i32, (i32,), _> =
+            m.add_typed_varargs_function::<i32, (i32,), _>("va", Linkage::External)?;
+        assert_eq!(
+            m.view(va).id(),
+            va,
+            "TypedVarArgsFunctionId did not survive view/id"
+        );
+
+        // Global variable, alias and ifunc.
+        let g: GlobalId<_> = m.add_global("g", i32_ty.const_int(0_u32))?;
+        assert_eq!(m.view(g).id(), g, "GlobalId did not survive view/id");
+
+        let alias: GlobalAliasId<_> = m
+            .alias_builder("alias", i32_ty.as_type(), m.view(g))
+            .build()?;
+        assert_eq!(
+            m.view(alias).id(),
+            alias,
+            "GlobalAliasId did not survive view/id"
+        );
+
+        let ifunc: GlobalIFuncId<_> = m
+            .ifunc_builder("ifunc", i32_ty.as_type(), m.view(g))
+            .build()?;
+        assert_eq!(
+            m.view(ifunc).id(),
+            ifunc,
+            "GlobalIFuncId did not survive view/id"
+        );
+
         Ok(())
     })
 }

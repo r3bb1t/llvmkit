@@ -16,10 +16,10 @@ fn module_with(op: &str) -> Result<String, IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
         let f = m.add_function_dyn(op, fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<i32> = f.param(0)?.try_into()?;
-        let y: IntValue<i32> = f.param(1)?.try_into()?;
+        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let y: IntValue<i32> = m.view(f).param(1)?.try_into()?;
         let r = match op {
             "and" => b.build_int_and(x, y, "z")?,
             "or" => b.build_int_or(x, y, "z")?,

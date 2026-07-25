@@ -45,8 +45,8 @@ fn unconditional_branch_cfg_edges() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let exit = f.append_basic_block(&m, "exit");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let exit = m.view(f).append_basic_block(&m, "exit");
         let entry_label = entry.label();
         let entry_value = entry.to_erased();
         let exit_label = exit.label();
@@ -59,7 +59,7 @@ fn unconditional_branch_cfg_edges() -> Result<(), IrError> {
             .position_at_end(entry)
             .build_br(exit_label)?;
 
-        let cfg = FunctionCfg::new(f.as_dyn());
+        let cfg = FunctionCfg::new(m.view(f).as_dyn());
         assert_successors(&cfg, entry_label, &[exit_value]);
         assert_predecessors(&cfg, exit_label, &[entry_value]);
         assert_eq!(cfg.edges().collect::<Vec<_>>().len(), 1);
@@ -76,8 +76,8 @@ fn conditional_branch_preserves_duplicate_edges() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [bool_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let target = f.append_basic_block(&m, "target");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let target = m.view(f).append_basic_block(&m, "target");
         let entry_label = entry.label();
         let entry_value = entry.to_erased();
         let target_label = target.label();
@@ -86,12 +86,12 @@ fn conditional_branch_preserves_duplicate_edges() -> Result<(), IrError> {
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(target)
             .build_ret_void()?;
-        let cond: IntValue<bool> = f.param(0)?.try_into()?;
+        let cond: IntValue<bool> = m.view(f).param(0)?.try_into()?;
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .build_cond_br(cond, target_label, target_label)?;
 
-        let cfg = FunctionCfg::new(f.as_dyn());
+        let cfg = FunctionCfg::new(m.view(f).as_dyn());
         assert_successors(&cfg, entry_label, &[target_value, target_value]);
         assert_predecessors(&cfg, target_label, &[entry_value, entry_value]);
         Ok(())
@@ -107,10 +107,10 @@ fn switch_cfg_edges_include_default_then_cases() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [i8_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let default_bb = f.append_basic_block(&m, "default");
-        let case0 = f.append_basic_block(&m, "case0");
-        let case1 = f.append_basic_block(&m, "case1");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let default_bb = m.view(f).append_basic_block(&m, "default");
+        let case0 = m.view(f).append_basic_block(&m, "case0");
+        let case1 = m.view(f).append_basic_block(&m, "case1");
         let entry_label = entry.label();
         let entry_value = entry.to_erased();
         let default_label = default_bb.label();
@@ -125,7 +125,7 @@ fn switch_cfg_edges_include_default_then_cases() -> Result<(), IrError> {
                 .build_ret_void()?;
         }
 
-        let val: IntValue<i8> = f.param(0)?.try_into()?;
+        let val: IntValue<i8> = m.view(f).param(0)?.try_into()?;
         let (_sealed, switch) = IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .build_switch_dyn(val, default_label, "")?;
@@ -134,7 +134,7 @@ fn switch_cfg_edges_include_default_then_cases() -> Result<(), IrError> {
             .add_case(i8_ty.const_int(1_i8), case1_label)?
             .finish();
 
-        let cfg = FunctionCfg::new(f.as_dyn());
+        let cfg = FunctionCfg::new(m.view(f).as_dyn());
         assert_successors(
             &cfg,
             entry_label,
@@ -156,9 +156,9 @@ fn indirectbr_cfg_edges_are_listed_destinations() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let bb1 = f.append_basic_block(&m, "bb1");
-        let bb2 = f.append_basic_block(&m, "bb2");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let bb1 = m.view(f).append_basic_block(&m, "bb1");
+        let bb2 = m.view(f).append_basic_block(&m, "bb2");
         let entry_label = entry.label();
         let entry_value = entry.to_erased();
         let bb1_label = bb1.label();
@@ -171,7 +171,7 @@ fn indirectbr_cfg_edges_are_listed_destinations() -> Result<(), IrError> {
                 .build_ret_void()?;
         }
 
-        let addr: PointerValue = f.param(0)?.try_into()?;
+        let addr: PointerValue = m.view(f).param(0)?.try_into()?;
         let (_sealed, ibr) = IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .build_indirectbr(addr, "")?;
@@ -180,7 +180,7 @@ fn indirectbr_cfg_edges_are_listed_destinations() -> Result<(), IrError> {
             .add_destination(bb2_label)?
             .finish();
 
-        let cfg = FunctionCfg::new(f.as_dyn());
+        let cfg = FunctionCfg::new(m.view(f).as_dyn());
         assert_successors(&cfg, entry_label, &[bb1_value, bb2_value]);
         assert_predecessors(&cfg, bb1_label, &[entry_value]);
         assert_predecessors(&cfg, bb2_label, &[entry_value]);
@@ -198,9 +198,9 @@ fn invoke_cfg_edges_are_normal_then_unwind() -> Result<(), IrError> {
         let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
         let caller_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-        let entry = caller.append_basic_block(&m, "entry");
-        let normal = caller.append_basic_block(&m, "normal");
-        let unwind = caller.append_basic_block(&m, "unwind");
+        let entry = m.view(caller).append_basic_block(&m, "entry");
+        let normal = m.view(caller).append_basic_block(&m, "normal");
+        let unwind = m.view(caller).append_basic_block(&m, "unwind");
         let entry_label = entry.label();
         let entry_value = entry.to_erased();
         let normal_label = normal.label();
@@ -216,14 +216,14 @@ fn invoke_cfg_edges_are_normal_then_unwind() -> Result<(), IrError> {
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .build_invoke_dyn(
-                callee,
+                m.view(callee),
                 Vec::<llvmkit_ir::Value>::new(),
                 normal_label,
                 unwind_label,
                 "",
             )?;
 
-        let cfg = FunctionCfg::new(caller.as_dyn());
+        let cfg = FunctionCfg::new(m.view(caller).as_dyn());
         assert_successors(&cfg, entry_label, &[normal_value, unwind_value]);
         assert_predecessors(&cfg, normal_label, &[entry_value]);
         assert_predecessors(&cfg, unwind_label, &[entry_value]);
@@ -241,9 +241,9 @@ fn callbr_cfg_edges_are_default_then_indirect_dests() -> Result<(), IrError> {
         let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
         let caller_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-        let entry = caller.append_basic_block(&m, "entry");
-        let dflt = caller.append_basic_block(&m, "default");
-        let indirect = caller.append_basic_block(&m, "indirect");
+        let entry = m.view(caller).append_basic_block(&m, "entry");
+        let dflt = m.view(caller).append_basic_block(&m, "default");
+        let indirect = m.view(caller).append_basic_block(&m, "indirect");
         let entry_label = entry.label();
         let entry_value = entry.to_erased();
         let dflt_label = dflt.label();
@@ -259,14 +259,14 @@ fn callbr_cfg_edges_are_default_then_indirect_dests() -> Result<(), IrError> {
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .build_callbr(
-                callee,
+                m.view(callee),
                 Vec::<llvmkit_ir::Value>::new(),
                 dflt_label,
                 [indirect_label],
                 "",
             )?;
 
-        let cfg = FunctionCfg::new(caller.as_dyn());
+        let cfg = FunctionCfg::new(m.view(caller).as_dyn());
         assert_successors(&cfg, entry_label, &[dflt_value, indirect_value]);
         assert_predecessors(&cfg, dflt_label, &[entry_value]);
         assert_predecessors(&cfg, indirect_label, &[entry_value]);
@@ -282,9 +282,9 @@ fn catchret_cfg_edge_is_target_block() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let cs_block = f.append_basic_block(&m, "cs");
-        let cp_block = f.append_basic_block(&m, "cp");
-        let ret_block = f.append_basic_block(&m, "ret");
+        let cs_block = m.view(f).append_basic_block(&m, "cs");
+        let cp_block = m.view(f).append_basic_block(&m, "cp");
+        let ret_block = m.view(f).append_basic_block(&m, "ret");
         let cs_label = cs_block.label();
         let cp_label = cp_block.label();
         let cp_value = cp_block.to_erased();
@@ -303,7 +303,7 @@ fn catchret_cfg_edge_is_target_block() -> Result<(), IrError> {
             b_cp.build_catch_pad(cs_closed.to_erased(), Vec::<llvmkit_ir::Value>::new(), "cp")?;
         b_cp.build_catch_ret(cp.to_erased(), ret_label, "")?;
 
-        let cfg = FunctionCfg::new(f.as_dyn());
+        let cfg = FunctionCfg::new(m.view(f).as_dyn());
         assert_successors(&cfg, cs_label, &[cp_value]);
         assert_successors(&cfg, cp_label, &[ret_value]);
         assert_predecessors(&cfg, ret_label, &[cp_value]);
@@ -319,8 +319,8 @@ fn cleanupret_cfg_edge_is_optional_unwind_dest() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let unwind = f.append_basic_block(&m, "unwind");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let unwind = m.view(f).append_basic_block(&m, "unwind");
         let entry_label = entry.label();
         let entry_value = entry.to_erased();
         let unwind_label = unwind.label();
@@ -333,7 +333,7 @@ fn cleanupret_cfg_edge_is_optional_unwind_dest() -> Result<(), IrError> {
         let cp = b.build_cleanup_pad_within_none(Vec::<llvmkit_ir::Value>::new(), "cp")?;
         b.build_cleanup_ret(cp.to_erased(), unwind_label, "")?;
 
-        let cfg = FunctionCfg::new(f.as_dyn());
+        let cfg = FunctionCfg::new(m.view(f).as_dyn());
         assert_successors(&cfg, entry_label, &[unwind_value]);
         assert_predecessors(&cfg, unwind_label, &[entry_value]);
         Ok(())
@@ -348,10 +348,10 @@ fn catchswitch_cfg_edges_are_handlers_then_unwind_dest() -> Result<(), IrError> 
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let handler0 = f.append_basic_block(&m, "handler0");
-        let handler1 = f.append_basic_block(&m, "handler1");
-        let unwind = f.append_basic_block(&m, "unwind");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let handler0 = m.view(f).append_basic_block(&m, "handler0");
+        let handler1 = m.view(f).append_basic_block(&m, "handler1");
+        let unwind = m.view(f).append_basic_block(&m, "unwind");
         let entry_label = entry.label();
         let entry_value = entry.to_erased();
         let handler0_label = handler0.label();
@@ -374,7 +374,7 @@ fn catchswitch_cfg_edges_are_handlers_then_unwind_dest() -> Result<(), IrError> 
             .add_handler(handler1_label)?
             .finish();
 
-        let cfg = FunctionCfg::new(f.as_dyn());
+        let cfg = FunctionCfg::new(m.view(f).as_dyn());
         assert_successors(
             &cfg,
             entry_label,

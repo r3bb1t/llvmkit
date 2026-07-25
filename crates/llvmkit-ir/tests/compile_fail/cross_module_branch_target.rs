@@ -14,14 +14,14 @@ fn main() {
             .add_typed_function::<(), (), _>("left_f", Linkage::External)
             .unwrap()
             .as_function();
-        let left_target = f.append_basic_block(&left, "target");
+        let left_target = left.view(f).append_basic_block(&left, "target");
 
         Module::with_new::<_, _, _>("right", |right| {
             let f = right
                 .add_typed_function::<(), (), _>("right_f", Linkage::External)
                 .unwrap()
                 .as_function();
-            let entry = f.append_basic_block(&right, "entry");
+            let entry = right.view(f).append_basic_block(&right, "entry");
             let builder = IRBuilder::new_for::<()>(&right).position_at_end(entry);
             let _ = builder.build_br(left_target);
         });

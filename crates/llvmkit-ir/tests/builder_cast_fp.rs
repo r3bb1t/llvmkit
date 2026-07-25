@@ -21,9 +21,9 @@ fn fpext_f32_to_f64() -> Result<(), IrError> {
         let f64_ty = m.f64_type();
         let fn_ty = m.fn_type(f64_ty, [f32_ty.as_type()], false);
         let f = m.add_function_dyn("ext", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let arg: llvmkit_ir::FloatValue<f32> = f.param(0)?.try_into()?;
+        let arg: llvmkit_ir::FloatValue<f32> = m.view(f).param(0)?.try_into()?;
         let r = b.build_fp_ext(arg, f64_ty, "y")?;
         b.build_ret(r)?;
         let text = format!("{m}");
@@ -44,9 +44,9 @@ fn fptrunc_f64_to_f32() -> Result<(), IrError> {
         let f64_ty = m.f64_type();
         let fn_ty = m.fn_type(f32_ty, [f64_ty.as_type()], false);
         let f = m.add_function_dyn("tr", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let arg: llvmkit_ir::FloatValue<f64> = f.param(0)?.try_into()?;
+        let arg: llvmkit_ir::FloatValue<f64> = m.view(f).param(0)?.try_into()?;
         let r = b.build_fp_trunc(arg, f32_ty, "y")?;
         b.build_ret(r)?;
         let text = format!("{m}");
@@ -81,9 +81,9 @@ fn fpext_f64_to_x86_fp80() -> Result<(), IrError> {
         let x86_ty = m.x86_fp80_type();
         let fn_ty = m.fn_type(x86_ty, [f64_ty.as_type()], false);
         let f = m.add_function_dyn("ext", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let arg: llvmkit_ir::FloatValue<f64> = f.param(0)?.try_into()?;
+        let arg: llvmkit_ir::FloatValue<f64> = m.view(f).param(0)?.try_into()?;
         let r = b.build_fp_ext(arg, x86_ty, "y")?;
         b.build_ret(r)?;
         let text = format!("{m}");
@@ -104,9 +104,9 @@ fn fptosi_f32_to_i32() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [f32_ty.as_type()], false);
         let f = m.add_function_dyn("toi", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let arg: llvmkit_ir::FloatValue<f32> = f.param(0)?.try_into()?;
+        let arg: llvmkit_ir::FloatValue<f32> = m.view(f).param(0)?.try_into()?;
         let r = b.build_fp_to_si(arg, i32_ty, "y")?;
         b.build_ret(r)?;
         let text = format!("{m}");
@@ -124,9 +124,9 @@ fn fptoui_f32_to_i32() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [f32_ty.as_type()], false);
         let f = m.add_function_dyn("tou", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let arg: llvmkit_ir::FloatValue<f32> = f.param(0)?.try_into()?;
+        let arg: llvmkit_ir::FloatValue<f32> = m.view(f).param(0)?.try_into()?;
         let r = b.build_fp_to_ui(arg, i32_ty, "y")?;
         b.build_ret(r)?;
         let text = format!("{m}");
@@ -144,9 +144,9 @@ fn sitofp_i32_to_f32() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(f32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("sif", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let arg: llvmkit_ir::IntValue<i32> = f.param(0)?.try_into()?;
+        let arg: llvmkit_ir::IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let r = b.build_si_to_fp(arg, f32_ty, "y")?;
         b.build_ret(r)?;
         let text = format!("{m}");
@@ -164,9 +164,9 @@ fn uitofp_i32_to_f32() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(f32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("uif", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let arg: llvmkit_ir::IntValue<i32> = f.param(0)?.try_into()?;
+        let arg: llvmkit_ir::IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let r = b.build_ui_to_fp(arg, f32_ty, "y")?;
         b.build_ret(r)?;
         let text = format!("{m}");
@@ -185,7 +185,7 @@ fn default_constant_folder_folds_fptosi_to_constant() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("toi", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let value: llvmkit_ir::FloatValue<f32> =
             f32_ty.const_float(42.0).into_erased().try_into()?;

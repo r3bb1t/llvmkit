@@ -20,9 +20,9 @@ fn build_int_phi_two_predecessors_emits_phi() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("phi2", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let other = f.append_basic_block(&m, "other");
-        let join = f.append_basic_block(&m, "join");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let other = m.view(f).append_basic_block(&m, "other");
+        let join = m.view(f).append_basic_block(&m, "join");
         let entry_label = entry.label();
         let other_label = other.label();
         let join_label = join.label();
@@ -64,9 +64,9 @@ fn phi_with_post_creation_add_incoming() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("late", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let other = f.append_basic_block(&m, "other");
-        let join = f.append_basic_block(&m, "join");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let other = m.view(f).append_basic_block(&m, "other");
+        let join = m.view(f).append_basic_block(&m, "join");
         let entry_label = entry.label();
         let other_label = other.label();
         let join_label = join.label();

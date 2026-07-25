@@ -18,8 +18,8 @@ fn landingpad_cleanup_only() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("f.no_personality", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let exception = f.append_basic_block(&m, "exception");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let exception = m.view(f).append_basic_block(&m, "exception");
         {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             bb_b.build_ret_void()?;
@@ -51,8 +51,8 @@ fn landingpad_cleanup_plus_catch() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("instructions.landingpad", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let catch3 = f.append_basic_block(&m, "catch3");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let catch3 = m.view(f).append_basic_block(&m, "catch3");
         {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             bb_b.build_ret_void()?;
@@ -86,7 +86,7 @@ fn resume_i32_undef() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let exc = f.append_basic_block(&m, "exc");
+        let exc = m.view(f).append_basic_block(&m, "exc");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(exc);
         let undef = i32_ty.as_type().get_undef();
         let _ = b.build_resume(undef, "")?;
@@ -107,7 +107,7 @@ fn landingpad_followed_by_resume() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let exc = f.append_basic_block(&m, "exc");
+        let exc = m.view(f).append_basic_block(&m, "exc");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(exc);
         let lp = b.build_landingpad(i32_ty.as_type(), true, "cleanup")?;
         let _closed = lp.finish();

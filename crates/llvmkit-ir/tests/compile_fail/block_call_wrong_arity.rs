@@ -24,7 +24,7 @@ fn main() {
 
         let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m);
         // `head` carries a TWO-i32 typed parameter schema (arity 2).
-        let (head, _params) = b.append_block_typed::<(i32, i32), _>(f, "head").unwrap();
+        let (head, _params) = b.append_block_typed::<(i32, i32), _>(m.view(f), "head").unwrap();
 
         // `(x,)` is a 1-tuple; there is no `CallArgs<'_, (i32, i32), _>` impl for
         // a 1-element tuple, so `.call` does not type-check — the arity mismatch

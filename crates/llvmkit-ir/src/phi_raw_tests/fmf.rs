@@ -20,13 +20,13 @@ fn phi_add_incoming_from_value_rejects_type_mismatch() -> Result<(), IrError> {
         let f64_ty = m.f64_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let phi = b.build_int_phi::<i32, _>("p")?;
         let phi_val = phi.as_int_value().into_erased();
         // f64 incoming value against an i32 phi -> result-type mismatch.
         let f64_val = f64_ty.const_double(1.0).into_erased();
-        let block = f.basic_blocks().next().expect("entry block handle");
+        let block = m.view(f).basic_blocks().next().expect("entry block handle");
         let raw = IRBuilder::new(&m);
         let err = raw
             .phi_add_incoming_from_value(phi_val, f64_val, block)
@@ -48,8 +48,8 @@ fn phi_add_incoming_from_value_rejects_differing_duplicate() -> Result<(), IrErr
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let _a = f.append_basic_block(&m, "a");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let _a = m.view(f).append_basic_block(&m, "a");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let phi = b.build_int_phi::<i32, _>("p")?;
         let phi_val = phi.as_int_value().into_erased();
@@ -57,11 +57,15 @@ fn phi_add_incoming_from_value_rejects_differing_duplicate() -> Result<(), IrErr
         let c2 = i32_ty.const_int(2_i32).into_erased();
         let raw = IRBuilder::new(&m);
         // First edge from block `a` (index 1) is accepted.
-        let block_a = f.basic_blocks().nth(1).expect("block a handle");
+        let block_a = m.view(f).basic_blocks().nth(1).expect("block a handle");
         raw.phi_add_incoming_from_value(phi_val, c1, block_a)?;
         // A second edge from the SAME block with a DIFFERENT value is
         // rejected at the call site, not deferred to verify().
-        let block_a2 = f.basic_blocks().nth(1).expect("block a handle again");
+        let block_a2 = m
+            .view(f)
+            .basic_blocks()
+            .nth(1)
+            .expect("block a handle again");
         let err = raw
             .phi_add_incoming_from_value(phi_val, c2, block_a2)
             .unwrap_err();
@@ -81,8 +85,8 @@ fn typed_add_incoming_rejects_differing_duplicate() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let a = f.append_basic_block(&m, "a");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let a = m.view(f).append_basic_block(&m, "a");
         let a_label = a.label();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let phi = b.build_int_phi::<i32, _>("p")?;
@@ -108,8 +112,8 @@ fn fp_phi_add_incoming_rejects_differing_duplicate() -> Result<(), IrError> {
         let f64_ty = m.f64_type();
         let fn_ty = m.fn_type(f64_ty, [f64_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let a = f.append_basic_block(&m, "a");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let a = m.view(f).append_basic_block(&m, "a");
         let a_label = a.label();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let phi = b.build_fp_phi::<f64, _>("p")?;
@@ -139,13 +143,13 @@ fn pointer_phi_add_incoming_rejects_differing_duplicate() -> Result<(), IrError>
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(ptr_ty, [ptr_ty.as_type(), ptr_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let a = f.append_basic_block(&m, "a");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let a = m.view(f).append_basic_block(&m, "a");
         let a_label = a.label();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let phi = b.build_pointer_phi("p")?;
-        let p1: PointerValue = f.param(0)?.try_into()?;
-        let p2: PointerValue = f.param(1)?.try_into()?;
+        let p1: PointerValue = m.view(f).param(0)?.try_into()?;
+        let p2: PointerValue = m.view(f).param(1)?.try_into()?;
         // Two distinct params are two distinct SSA values, so the two edges
         // from block `a` differ: the guard fires.
         let err = phi
@@ -169,8 +173,8 @@ fn same_value_duplicate_incoming_is_legal() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let a = f.append_basic_block(&m, "a");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let a = m.view(f).append_basic_block(&m, "a");
         let a_label = a.label();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let phi = b.build_int_phi::<i32, _>("p")?;

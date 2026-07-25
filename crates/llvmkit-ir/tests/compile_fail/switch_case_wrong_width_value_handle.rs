@@ -28,12 +28,12 @@ fn main() {
             false,
         );
         let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
-        let entry = f.append_basic_block(&m, "entry");
-        let dest = f.append_basic_block(&m, "dest");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let dest = m.view(f).append_basic_block(&m, "dest");
         let dest_label = dest.label();
 
         // `W` is inferred as `i32` from the typed condition.
-        let cond: IntValue<i32> = f.param(0).unwrap().try_into().unwrap();
+        let cond: IntValue<i32> = m.view(f).param(0).unwrap().try_into().unwrap();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let (_sealed, switch) = b.build_switch(cond, dest_label, "").unwrap();
 
@@ -41,7 +41,7 @@ fn main() {
         // narrowed to `IntValue<i64>`. It IS `IsValue`, but does not implement
         // `IntoIntValue<'_, i32, _>`, so it cannot be a case value on an
         // `i32`-width switch: `.add_case` does not type-check.
-        let case: IntValue<i64> = f.param(1).unwrap().try_into().unwrap();
+        let case: IntValue<i64> = m.view(f).param(1).unwrap().try_into().unwrap();
         let _ = switch.add_case(case, dest_label);
     });
 }

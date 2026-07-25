@@ -10,7 +10,7 @@ fn main() {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let add = b
             .build_int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "sum")

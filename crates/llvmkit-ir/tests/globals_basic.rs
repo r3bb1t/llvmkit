@@ -691,7 +691,7 @@ fn function_pointer_global_initializer_verifies() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-        let init = callee.as_global_constant_ptr();
+        let init = m.view(callee).as_global_constant_ptr();
         m.add_global_constant("slot", init)?;
         m.verify_borrowed()?;
         let text = format!("{m}");
@@ -714,7 +714,7 @@ fn function_pointer_aggregate_initializer_prints_ptr_base() -> Result<(), IrErro
         let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
         let arr_ty = m.array_type(ptr_ty.as_type(), 1);
-        let elem = callee.as_aggregate_ptr(0);
+        let elem = m.view(callee).as_aggregate_ptr(0);
         let init = arr_ty.const_array([elem])?;
         m.add_global_constant("table", init)?;
         let text = format!("{m}");
@@ -736,7 +736,7 @@ fn global_pointer_global_initializer_verifies() -> Result<(), IrError> {
         let i8_ty = m.i8_type();
         let zero = i8_ty.const_int(0i8);
         let target = m.add_global_constant("target", zero)?;
-        let init = target.as_global_constant_ptr();
+        let init = m.view(target).as_global_constant_ptr();
         m.add_global_constant("slot", init)?;
         m.verify_borrowed()?;
         let text = format!("{m}");
@@ -761,7 +761,7 @@ fn ptr_offset_preserves_global_address_space() -> Result<(), IrError> {
             .address_space(1)
             .initializer(zero)
             .build()?;
-        let init = target.ptr_offset(4);
+        let init = m.view(target).ptr_offset(4);
         m.add_global_constant("slot", init)?;
         m.verify_borrowed()?;
         let text = format!("{m}");
@@ -791,7 +791,7 @@ fn symbol_delta_constexpr_initializer() {
         let real = m.add_global_constant("real", zero8).expect("real");
         let anchor = m.add_global_constant("anchor", zero8).expect("anchor");
         // @delta = constant i64 sub(ptrtoint(@real), ptrtoint(@anchor)).
-        let delta = real.try_delta_from(anchor).expect("delta");
+        let delta = m.view(real).try_delta_from(m.view(anchor)).expect("delta");
         m.add_global_constant("delta", delta).expect("delta");
         let text = module_text(&m);
         assert!(
@@ -815,7 +815,10 @@ fn symbol_delta_plus_constexpr_initializer() {
         let real = m.add_global_constant("real", zero8).expect("real");
         let anchor = m.add_global_constant("anchor", zero8).expect("anchor");
         // @enc = constant i64 (sub(ptrtoint(@real), ptrtoint(@anchor)) + 12345).
-        let enc = real.try_delta_from_plus(anchor, 12345).expect("delta plus");
+        let enc = m
+            .view(real)
+            .try_delta_from_plus(m.view(anchor), 12345)
+            .expect("delta plus");
         m.add_global_constant("enc", enc).expect("enc");
         let text = module_text(&m);
         assert!(
@@ -827,7 +830,10 @@ fn symbol_delta_plus_constexpr_initializer() {
         );
 
         // A negative addend prints with a leading minus.
-        let enc2 = real.try_delta_from_plus(anchor, -7).expect("delta plus");
+        let enc2 = m
+            .view(real)
+            .try_delta_from_plus(m.view(anchor), -7)
+            .expect("delta plus");
         m.add_global_constant("enc2", enc2).expect("enc2");
         let text2 = module_text(&m);
         assert!(text2.contains(", i64 -7)\n"), "got:\n{text2}");
@@ -857,7 +863,8 @@ fn set_initializer_type_mismatch_rejected() {
             .expect("declare i32 global");
         // ...rejects an `i64` replacement initializer.
         let zero64 = i64_ty.const_int(0i64);
-        let err = g
+        let err = m
+            .view(g)
             .set_initializer(&m, zero64)
             .expect_err("expected mismatch");
         assert!(matches!(err, IrError::TypeMismatch { .. }), "got: {err:?}");
@@ -957,7 +964,7 @@ fn module_named_global_lookup_round_trip() {
         let zero = i32_ty.const_int(0i32);
         let g = m.add_global("foo", zero).expect("add");
         let looked_up = m.get_global("foo").expect("found");
-        assert_eq!(g, looked_up);
+        assert_eq!(m.view(g), looked_up);
         assert!(m.get_global("missing").is_none());
     })
 }
@@ -1004,22 +1011,22 @@ fn alias_ifunc_partition_clear_apis() {
         let zero = i32_ty.const_int(0i32);
         let target = m.add_global("target", zero).expect("target");
         let alias = m
-            .alias_builder("alias", i32_ty.as_type(), target)
+            .alias_builder("alias", i32_ty.as_type(), m.view(target))
             .partition("part")
             .build()
             .expect("alias");
-        assert_eq!(alias.partition().as_deref(), Some("part"));
-        alias.clear_partition(&m);
-        assert!(alias.partition().is_none());
+        assert_eq!(m.view(alias).partition().as_deref(), Some("part"));
+        m.view(alias).clear_partition(&m);
+        assert!(m.view(alias).partition().is_none());
 
         let resolver = m.add_global("resolver", zero).expect("resolver");
         let ifunc = m
-            .ifunc_builder("ifunc", i32_ty.as_type(), resolver)
+            .ifunc_builder("ifunc", i32_ty.as_type(), m.view(resolver))
             .partition("part")
             .build()
             .expect("ifunc");
-        assert_eq!(ifunc.partition().as_deref(), Some("part"));
-        ifunc.clear_partition(&m);
-        assert!(ifunc.partition().is_none());
+        assert_eq!(m.view(ifunc).partition().as_deref(), Some("part"));
+        m.view(ifunc).clear_partition(&m);
+        assert!(m.view(ifunc).partition().is_none());
     })
 }

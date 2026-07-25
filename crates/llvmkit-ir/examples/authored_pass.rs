@@ -63,7 +63,7 @@ fn main() -> Result<(), IrError> {
         // `i32`, no parameters) — no separately built `FunctionType`.
         let i32_ty = m.i32_type();
         let f = m.add_typed_function::<i32, (), _>("f", Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::at_end(entry);
         b.build_ret(i32_ty.const_int(1_u32))?;
 
@@ -73,10 +73,11 @@ fn main() -> Result<(), IrError> {
         // The `Inspect` function pass keeps the module verified (compile-time
         // half of the guarantee is the explicit `Verified` binding).
         let flag = Rc::new(Cell::new(false));
+        let f_view = verified.view(f).as_function();
         let verified: Module<'_, _, Verified> = run_function_pass(
             EntryReachable { flag: flag.clone() },
             verified,
-            f.as_function(),
+            f_view,
             &mut analyses,
         )?;
         println!("entry-reachable = {}", flag.get());

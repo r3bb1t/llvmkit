@@ -50,8 +50,8 @@ fn reshape_pass_preserves_and_repairs_dominator_tree() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let next = f.append_basic_block(&m, "next");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let next = m.view(f).append_basic_block(&m, "next");
         let next_label = next.label();
 
         // entry: br next    next: ret 0
@@ -66,13 +66,14 @@ fn reshape_pass_preserves_and_repairs_dominator_tree() -> Result<(), IrError> {
         // Run the reshape pass. It prefetches the dominator tree (while `next` is
         // reachable), splits the entry, and reports the ReshapeCfg floor + its
         // edit log.
-        let _unverified = run_function_pass(SplitEntryPass, verified, f, &mut analyses)?;
+        let f_view = verified.view(f);
+        let _unverified = run_function_pass(SplitEntryPass, verified, f_view, &mut analyses)?;
 
         // The dominator tree survived the reshape — witnessed-preserved, not
         // evicted by the `none()` floor.
         let cached: Option<&DominatorTree> = analyses
             .function_manager()
-            .get_cached_result::<DominatorTreeAnalysis, _>(FunctionView::from(f));
+            .get_cached_result::<DominatorTreeAnalysis, _>(FunctionView::from(f_view));
         let dt = cached.expect("dominator tree was witnessed-preserved across the reshape");
 
         // And the kept tree is the REPAIRED one: it reflects the edited CFG, in
@@ -112,11 +113,11 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
         // hands back (always `Dyn`) matches the builder's return marker without
         // a widening conversion (there isn't one — see `IntoBasicBlockLabel`).
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         // merge(%p: i32): the phi `[ %x, %entry ]` is authored as a block
         // parameter (head-phi), seeded by `entry` branching to `merge(%x)`.
         let (merge, merge_params) =
-            IRBuilder::new(&m).append_block_with_params(f, &[i32_ty.as_type()], "merge")?;
+            IRBuilder::new(&m).append_block_with_params(m.view(f), &[i32_ty.as_type()], "merge")?;
         let merge_label = merge.label();
 
         // entry: %x = add %a, 1 ; br %merge(%x)
@@ -124,7 +125,7 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
         // Saved while `entry` is genuinely open (before-of-none == end of
         // block) so the pass can reopen `entry` after the split empties it.
         let ip = b.save_insert_point();
-        let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let x = b.build_int_add(a, 1_i32, "x")?;
         b.build_br_with_args(merge_label, &[m.view(x).into_erased()])?;
 
@@ -169,7 +170,8 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
         let pass = SplitAtAdd { ip: Some(ip) };
-        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+        let f_view = verified.view(f);
+        let out = run_function_pass(pass, verified, f_view, &mut analyses)?;
 
         // THE assertion: the output must re-verify. Without the phi fix the
         // verifier fails: "phi incoming block %entry is not a predecessor".
@@ -234,10 +236,10 @@ fn build_diamond<'ctx>(
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block(m, "entry");
-    let left = f.append_basic_block(m, "left");
-    let right = f.append_basic_block(m, "right");
-    let merge = f.append_basic_block(m, "merge");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let left = m.view(f).append_basic_block(m, "left");
+    let right = m.view(f).append_basic_block(m, "right");
+    let merge = m.view(f).append_basic_block(m, "merge");
     // The arm labels are `Dyn` for the `insert_phi` incoming slice (whose pred
     // labels are `Dyn`); the diamond's return marker is `Dyn` too, so the
     // conversion is an identity re-tag rather than an erasure.
@@ -246,19 +248,19 @@ fn build_diamond<'ctx>(
 
     // entry: br (%a == 0) ? left : right
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
     b.build_cond_br(cond, &left, &right)?;
 
     // left: %lv = add %a, 10 ; br merge
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(left);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let lv = b.build_int_add(a, 10_i32, "lv")?;
     b.build_br(merge.label())?;
 
     // right: %rv = add %a, 20 ; br merge
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(right);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let rv = b.build_int_add(a, 20_i32, "rv")?;
     b.build_br(merge.label())?;
 
@@ -267,7 +269,7 @@ fn build_diamond<'ctx>(
     b.build_ret(i32_ty.const_int(0_u32))?;
 
     Ok((
-        f,
+        m.view(f),
         m.view(lv).into_erased(),
         left_label,
         m.view(rv).into_erased(),
@@ -538,13 +540,16 @@ fn build_switch_redirect<'ctx>(
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block(m, "entry");
-    let dflt = f.append_basic_block(m, "dflt");
-    let old = f.append_basic_block(m, "old");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let dflt = m.view(f).append_basic_block(m, "dflt");
+    let old = m.view(f).append_basic_block(m, "old");
     // new(%np: i32): the phi `[ %nd, %dflt ]` is authored as a block parameter
     // (head-phi), seeded by `dflt` branching to `new(%nd)`.
-    let (new, new_params) =
-        IRBuilder::new_for::<Dyn>(m).append_block_with_params(f, &[i32_ty.as_type()], "new")?;
+    let (new, new_params) = IRBuilder::new_for::<Dyn>(m).append_block_with_params(
+        m.view(f),
+        &[i32_ty.as_type()],
+        "new",
+    )?;
 
     let dflt_lbl = dflt.label();
     let old_lbl = old.label();
@@ -554,14 +559,14 @@ fn build_switch_redirect<'ctx>(
 
     // entry: %ev = add %a, 3 ; switch %a, default %dflt [ 0 -> old ]
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let ev = b.build_int_add(a, 3_i32, "ev")?;
     let (_sealed, sw) = b.build_switch_dyn(a, dflt_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), old_lbl)?.finish();
 
     // dflt: %nd = add %a, 5 ; br new(%nd)
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(dflt);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let nd = b.build_int_add(a, 5_i32, "nd")?;
     b.build_br_with_args(new_lbl, &[m.view(nd).into_erased()])?;
 
@@ -574,7 +579,7 @@ fn build_switch_redirect<'ctx>(
     let np: IntValue<i32> = new_params[0].try_into()?;
     b.build_ret(np)?;
 
-    Ok((f, old_dyn, new_dyn, m.view(ev).into_erased()))
+    Ok((m.view(f), old_dyn, new_dyn, m.view(ev).into_erased()))
 }
 
 /// `redirect_successor` retargets the `entry → old` switch case onto `new` AND
@@ -801,12 +806,12 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let old = f.append_basic_block(&m, "old");
-        let other = f.append_basic_block(&m, "other");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let old = m.view(f).append_basic_block(&m, "old");
+        let other = m.view(f).append_basic_block(&m, "other");
         // new(%np: i32): a head-phi block param seeded by the redirect.
         let (new, new_params) = IRBuilder::new_for::<Dyn>(&m).append_block_with_params(
-            f,
+            m.view(f),
             &[i32_ty.as_type()],
             "new",
         )?;
@@ -816,7 +821,7 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
 
         // entry: %ev = add %a, 3 ; cond_br (%a == 0) ? old : other
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let ev = b.build_int_add(a, 3_i32, "ev")?;
         let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
         b.build_cond_br(c, old_lbl, other_lbl)?;
@@ -836,7 +841,8 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
             new_to: new_dyn,
             phi_values: vec![verified.view(ev).into_erased()],
         };
-        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+        let f_view = verified.view(f);
+        let out = run_function_pass(pass, verified, f_view, &mut analyses)?;
         let reverified = out.verify().expect("redirect_then output must re-verify");
         let printed = format!("{reverified}");
         assert!(
@@ -880,11 +886,11 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let keep = f.append_basic_block(&m, "keep");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let keep = m.view(f).append_basic_block(&m, "keep");
         // drop(%dp: i32): reached from BOTH entry and keep.
         let (drop_bb, drop_params) = IRBuilder::new_for::<Dyn>(&m).append_block_with_params(
-            f,
+            m.view(f),
             &[i32_ty.as_type()],
             "drop",
         )?;
@@ -893,14 +899,14 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
 
         // entry: %ev = add %a, 3 ; br (%a == 0) ? keep() : drop(%ev)
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let ev = b.build_int_add(a, 3_i32, "ev")?;
         let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
         b.build_cond_br_with_args(c, keep_lbl, &[], drop_lbl, &[m.view(ev).into_erased()])?;
 
         // keep: %kv = add %a, 7 ; br drop(%kv)
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(keep);
-        let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let kv = b.build_int_add(a, 7_i32, "kv")?;
         b.build_br_with_args(drop_lbl, &[m.view(kv).into_erased()])?;
 
@@ -912,7 +918,8 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
         let pass = RemoveCondBrElse { from_name: "entry" };
-        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+        let f_view = verified.view(f);
+        let out = run_function_pass(pass, verified, f_view, &mut analyses)?;
 
         // The condition is no longer an operand of the (now unconditional)
         // branch — the collapse deregistered it. Nothing in `verify()` checks
@@ -952,10 +959,10 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let old = f.append_basic_block(&m, "old");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let old = m.view(f).append_basic_block(&m, "old");
         let (new, new_params) = IRBuilder::new_for::<Dyn>(&m).append_block_with_params(
-            f,
+            m.view(f),
             &[i32_ty.as_type()],
             "new",
         )?;
@@ -964,7 +971,7 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
 
         // entry: %ev = add %a, 3 ; br old
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let ev = b.build_int_add(a, 3_i32, "ev")?;
         b.build_br(old_lbl)?;
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(old);
@@ -980,7 +987,8 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
             new_to: new_dyn,
             phi_values: vec![verified.view(ev).into_erased()],
         };
-        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+        let f_view = verified.view(f);
+        let out = run_function_pass(pass, verified, f_view, &mut analyses)?;
         let reverified = out.verify().expect("redirect output must re-verify");
         let printed = format!("{reverified}");
         assert!(
@@ -1017,16 +1025,16 @@ fn build_cond_br_pair<'ctx>(
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block(m, "entry");
-    let old = f.append_basic_block(m, "old");
-    let new = f.append_basic_block(m, "new");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let old = m.view(f).append_basic_block(m, "old");
+    let new = m.view(f).append_basic_block(m, "new");
     let old_lbl = old.label();
     let new_lbl = new.label();
     let old_dyn: BasicBlockLabel<Dyn> = old_lbl.to_erased().try_into()?;
     let new_dyn: BasicBlockLabel<Dyn> = new_lbl.to_erased().try_into()?;
 
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
     if then_is_new {
         // entry: br %c ? old : new  — the else-arm ALREADY reaches `new`.
@@ -1040,7 +1048,7 @@ fn build_cond_br_pair<'ctx>(
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new);
     b.build_ret(i32_ty.const_int(1_u32))?;
 
-    Ok((f, old_dyn, new_dyn))
+    Ok((m.view(f), old_dyn, new_dyn))
 }
 
 /// SEMANTIC CHANGE (former error, now valid): removing the then-arm of a
@@ -1164,13 +1172,16 @@ fn build_cond_br_both_arms_phi<'ctx>(
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block(m, "entry");
-    let src = f.append_basic_block(m, "src");
-    let keep = f.append_basic_block(m, "keep");
-    let new = f.append_basic_block(m, "new");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let src = m.view(f).append_basic_block(m, "src");
+    let keep = m.view(f).append_basic_block(m, "keep");
+    let new = m.view(f).append_basic_block(m, "new");
     // shared(%sp: i32): reached from `src` via BOTH cond_br arms and from `keep`.
-    let (shared, shared_params) =
-        IRBuilder::new_for::<Dyn>(m).append_block_with_params(f, &[i32_ty.as_type()], "shared")?;
+    let (shared, shared_params) = IRBuilder::new_for::<Dyn>(m).append_block_with_params(
+        m.view(f),
+        &[i32_ty.as_type()],
+        "shared",
+    )?;
     let src_lbl = src.label();
     let keep_lbl = keep.label();
     let shared_lbl = shared.label();
@@ -1178,13 +1189,13 @@ fn build_cond_br_both_arms_phi<'ctx>(
 
     // entry: cond_br (%a == 0) ? src : keep
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let c0 = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c0")?;
     b.build_cond_br(c0, src_lbl, keep_lbl)?;
 
     // src: %sv = add %a, 3 ; cond_br (%a == 1) ? shared(%sv) : shared(%sv)
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(src);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let sv = b.build_int_add(a, 3_i32, "sv")?;
     let c1 = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 1_i32, "c1")?;
     b.build_cond_br_with_args(
@@ -1197,7 +1208,7 @@ fn build_cond_br_both_arms_phi<'ctx>(
 
     // keep: %kv = add %a, 7 ; br shared(%kv)
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(keep);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let kv = b.build_int_add(a, 7_i32, "kv")?;
     b.build_br_with_args(shared_lbl, &[m.view(kv).into_erased()])?;
 
@@ -1210,7 +1221,7 @@ fn build_cond_br_both_arms_phi<'ctx>(
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new);
     b.build_ret(i32_ty.const_int(1_u32))?;
 
-    Ok((f, new_dyn))
+    Ok((m.view(f), new_dyn))
 }
 
 /// SURVIVING-PARALLEL-EDGE (remove): `remove_then` on a `cond_br %c, shared,

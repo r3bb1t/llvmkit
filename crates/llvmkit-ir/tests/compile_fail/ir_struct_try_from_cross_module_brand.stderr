@@ -1,7 +1,7 @@
 error[E0521]: borrowed data escapes outside of closure
   --> tests/compile_fail/ir_struct_try_from_cross_module_brand.rs:27:21
    |
-19 |           let left_point = PointValue::try_from(left_fn.param(0)?)?;
+19 |           let left_point = PointValue::try_from(left.view(left_fn).param(0)?)?;
    |               ---------- `left_point` declared here, outside of the closure body
 20 |
 21 |           Module::with_new("right", |right| {

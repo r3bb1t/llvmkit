@@ -21,7 +21,7 @@ fn main() {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
-        let mut b = llvmkit_ir::SsaBuilder::for_function(&m, f).unwrap();
+        let mut b = llvmkit_ir::SsaBuilder::for_function(&m, m.view(f)).unwrap();
         let entry = b.create_block("entry");
 
         let x64 = b.declare_int_var::<i64, _>("x64");

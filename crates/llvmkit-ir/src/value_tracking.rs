@@ -1949,7 +1949,7 @@ mod tests {
             let ptr_vec_ty = m.vector_type(ptr1_ty.as_type(), 2, false);
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, crate::Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
 
             let base = ptr_vec_ty.const_vector([ptr1_ty.const_null(); 2])?;
             let minus_one = i32_ty.const_int(-1_i32);

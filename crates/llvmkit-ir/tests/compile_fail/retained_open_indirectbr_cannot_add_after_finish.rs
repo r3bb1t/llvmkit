@@ -11,14 +11,14 @@ fn main() {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty, [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
-        let entry = f.append_basic_block(&m, "entry");
-        let dest = f.append_basic_block(&m, "dest");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let dest = m.view(f).append_basic_block(&m, "dest");
         let dest_label = dest.label();
         // Narrow explicitly: after the strict cut an erased `Argument` no
         // longer lifts into a typed pointer position, and this fixture's
         // subject is the retained-`Open`-handle lifecycle below, not the
         // operand typing.
-        let addr: PointerValue = f.param(0).unwrap().try_into().unwrap();
+        let addr: PointerValue = m.view(f).param(0).unwrap().try_into().unwrap();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let (_sealed, ibr) = b.build_indirectbr(addr, "").unwrap();
 

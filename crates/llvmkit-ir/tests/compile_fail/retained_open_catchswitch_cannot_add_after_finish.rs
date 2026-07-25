@@ -10,8 +10,8 @@ fn main() {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
-        let entry = f.append_basic_block(&m, "entry");
-        let handler = f.append_basic_block(&m, "handler");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let handler = m.view(f).append_basic_block(&m, "handler");
         let handler_label = handler.label();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let (_sealed, cs) = b.build_catch_switch_within_none_to_caller("cs").unwrap();

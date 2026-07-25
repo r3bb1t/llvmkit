@@ -13,8 +13,8 @@ fn exercise_tables<'ctx>(module: Module<'ctx>) -> IrResult<()> {
     let i64_ty = module.i64_type();
     let fn_ty = module.fn_type(i64_ty.as_type(), [i64_ty.as_type()], false);
     let function = module.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = function.append_basic_block(&module, "entry");
-    let parameter: IntValue<'ctx, i64> = function.param(0)?.try_into()?;
+    let entry = module.view(function).append_basic_block(&module, "entry");
+    let parameter: IntValue<'ctx, i64> = module.view(function).param(0)?.try_into()?;
 
     let mut values = HashMap::<&str, Value<'ctx>>::new();
     values.insert("parameter", parameter.into_erased());
@@ -54,11 +54,11 @@ fn generic_function_display_preserves_brand() -> IrResult<()> {
         let function = module
             .add_typed_function::<(), (), _>("f", Linkage::External)?
             .as_function();
-        let entry = function.append_basic_block(&module, "entry");
+        let entry = module.view(function).append_basic_block(&module, "entry");
         IRBuilder::new_for::<()>(&module)
             .position_at_end(entry)
             .build_ret_void();
-        assert!(format_generic_function(function).contains("define void @f()"));
+        assert!(format_generic_function(module.view(function)).contains("define void @f()"));
         Ok(())
     })
 }

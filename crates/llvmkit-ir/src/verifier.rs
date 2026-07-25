@@ -3245,11 +3245,11 @@ mod tests {
     ) -> (ValueSlot, ValueSlot) {
         let fn_ty = m.fn_type(ret_ty, params.iter().copied(), false);
         let f = m.add_function_dyn(name, fn_ty, Linkage::External).unwrap();
-        let bb = f.append_basic_block(m, "entry");
+        let bb = m.view(f).append_basic_block(m, "entry");
         // Reach the value-id pair without leaking the return marker.
         let f_id = {
             // FunctionValue<Dyn> has a private id field; widen via as_dyn.
-            f.as_dyn().slot()
+            m.view(f).as_dyn().slot()
         };
         let bb_id = bb.as_dyn().slot();
         (f_id, bb_id)
@@ -3281,7 +3281,7 @@ mod tests {
             let f = m
                 .get_or_insert_intrinsic_declaration_by_name("llvm.abs.i32")
                 .expect("intrinsic declaration");
-            *f.data().attributes.borrow_mut() = crate::attributes::AttributeStorage::new();
+            *m.view(f).data().attributes.borrow_mut() = crate::attributes::AttributeStorage::new();
             m.verify_borrowed()
                 .expect_err("missing generated attrs rejected")
         });
@@ -3302,7 +3302,7 @@ mod tests {
             let f = m
                 .get_or_insert_intrinsic_declaration_by_name("llvm.bswap.i32")
                 .expect("intrinsic declaration");
-            f.data().function_attr_groups.borrow_mut().push(0);
+            m.view(f).data().function_attr_groups.borrow_mut().push(0);
             m.verify_borrowed().expect_err("extra attr group rejected")
         });
 
@@ -3647,7 +3647,7 @@ mod tests {
             let callee = m
                 .add_function_dyn("callee", callee_fn_ty, Linkage::External)
                 .unwrap();
-            let cb = callee.append_basic_block(&m, "entry");
+            let cb = m.view(callee).append_basic_block(&m, "entry");
             let zero = fab_const_int_id(&m, i32_ty.id(), 0);
             fabricate_instruction(
                 &m,
@@ -3660,14 +3660,14 @@ mod tests {
             let caller = m
                 .add_function_dyn("caller", caller_fn_ty, Linkage::External)
                 .unwrap();
-            let entry = caller.append_basic_block(&m, "entry");
-            let arg_id = IsValue::slot(caller.param(0).unwrap());
+            let entry = m.view(caller).append_basic_block(&m, "entry");
+            let arg_id = IsValue::slot(m.view(caller).param(0).unwrap());
             fabricate_instruction(
                 &m,
                 entry.slot(),
                 i32_ty.id(),
                 InstructionKindData::Call(crate::instr_types::CallInstData::new(
-                    callee.slot(),
+                    m.view(callee).slot(),
                     callee_fn_ty.as_type().id(),
                     [arg_id],
                     crate::CallingConv::default(),

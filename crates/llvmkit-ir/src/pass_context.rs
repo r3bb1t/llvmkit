@@ -3012,11 +3012,11 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             b.build_ret(i32_ty.const_int(1_u32))?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let mut fam = FunctionAnalysisManager::new();
             Reqs::prefetch(&mut fam, function)?;
             let results = Reqs::collect(&fam, function)?;
@@ -3050,14 +3050,14 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             // `%dead` has no uses — a non-terminator we can erase.
             let dead = b.build_int_add(x, 1_i32, "dead")?;
             b.build_ret(x)?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let dead_view = InstructionView::try_from(m.view(dead).into_erased())?;
 
             let mut fam = FunctionAnalysisManager::new();
@@ -3115,11 +3115,11 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             b.build_ret(i32_ty.const_int(0_u32))?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let mut fam = FunctionAnalysisManager::new();
             Reqs::prefetch(&mut fam, function)?;
             let results = Reqs::collect(&fam, function)?;
@@ -3158,12 +3158,12 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             // A second, deliberately-open block so an end-of-block insert point
             // restores successfully (the terminated-block guard rejects only an
             // end-of-block ip whose block has since grown a terminator).
-            let scratch = f.append_basic_block(&m, "scratch");
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let scratch = m.view(f).append_basic_block(&m, "scratch");
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             IRBuilder::new_for::<Dyn>(&m)
                 .position_at_end(entry)
                 .build_ret(x)?;
@@ -3171,7 +3171,7 @@ mod tests {
                 .position_at_end(scratch)
                 .save_insert_point();
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let mut fam = FunctionAnalysisManager::new();
             Reqs::prefetch(&mut fam, function)?;
             let results = Reqs::collect(&fam, function)?;
@@ -3202,12 +3202,12 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             b.build_ret(x)?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let terminator = function
                 .entry_block()
                 .expect("definition has an entry block")
@@ -3230,12 +3230,12 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             b.build_ret(x)?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let mut fam = FunctionAnalysisManager::new();
             Reqs::prefetch(&mut fam, function)?;
             let results = Reqs::collect(&fam, function)?;
@@ -3263,14 +3263,14 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             let _d1 = b.build_int_add(x, 1_i32, "d1")?;
             let _d2 = b.build_int_add(x, 2_i32, "d2")?;
             b.build_ret(x)?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
             let patch = cx.mutate();
 
@@ -3305,7 +3305,7 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
             let dead = b.build_int_add::<i32, _, _, _>(
                 i32_ty.const_int(1_u32),
@@ -3314,7 +3314,7 @@ mod tests {
             )?;
             b.build_ret(i32_ty.const_int(0_u32))?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let mut fam = FunctionAnalysisManager::new();
             Reqs::prefetch(&mut fam, function)?;
             let results = Reqs::collect(&fam, function)?;
@@ -3347,11 +3347,11 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             b.build_ret(i32_ty.const_int(0_u32))?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let mut fam = FunctionAnalysisManager::new();
             Reqs::prefetch(&mut fam, function)?;
             let results = Reqs::collect(&fam, function)?;
@@ -3383,8 +3383,8 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
-            let next = f.append_basic_block(&m, "next");
+            let entry = m.view(f).append_basic_block(&m, "entry");
+            let next = m.view(f).append_basic_block(&m, "next");
             // Ids captured up front — the block handles are consumed by the
             // builders below.
             let entry_id = entry.slot();
@@ -3402,7 +3402,7 @@ mod tests {
             let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(next);
             b2.build_ret(i32_ty.const_int(0_u32))?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let mut fam = FunctionAnalysisManager::new();
             Reqs::prefetch(&mut fam, function)?;
             let results = Reqs::collect(&fam, function)?;
@@ -3450,8 +3450,8 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
-            let next = f.append_basic_block(&m, "next");
+            let entry = m.view(f).append_basic_block(&m, "entry");
+            let next = m.view(f).append_basic_block(&m, "next");
             let next_label = next.label();
 
             // entry: %x = add 1, 2 ; br label %next    next: ret 0
@@ -3465,7 +3465,7 @@ mod tests {
             let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(next);
             b2.build_ret(i32_ty.const_int(0_u32))?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let mut fam = FunctionAnalysisManager::new();
             Reqs::prefetch(&mut fam, function)?;
 
@@ -3509,12 +3509,12 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             b.build_ret(i32_ty.const_int(1_u32))?;
 
             let module = m.as_view();
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
 
             let mam = ModuleAnalysisManager::new();
             let mut fam = FunctionAnalysisManager::new();
@@ -3551,7 +3551,7 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             b.build_ret(i32_ty.const_int(0_u32))?;
 
@@ -3595,26 +3595,26 @@ mod tests {
 
             // Definition `f1` with a dead `add` we can erase.
             let f1 = m.add_function_dyn("f1", fn_ty, Linkage::External)?;
-            let e1 = f1.append_basic_block(&m, "entry");
+            let e1 = m.view(f1).append_basic_block(&m, "entry");
             let b1 = IRBuilder::new_for::<Dyn>(&m).position_at_end(e1);
-            let x1: IntValue<i32> = f1.param(0)?.try_into()?;
+            let x1: IntValue<i32> = m.view(f1).param(0)?.try_into()?;
             let dead1 = b1.build_int_add(x1, 1_i32, "dead")?;
             b1.build_ret(x1)?;
 
             // Definition `f2`, likewise.
             let f2 = m.add_function_dyn("f2", fn_ty, Linkage::External)?;
-            let e2 = f2.append_basic_block(&m, "entry");
+            let e2 = m.view(f2).append_basic_block(&m, "entry");
             let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(e2);
-            let x2: IntValue<i32> = f2.param(0)?.try_into()?;
+            let x2: IntValue<i32> = m.view(f2).param(0)?.try_into()?;
             let dead2 = b2.build_int_add(x2, 1_i32, "dead")?;
             b2.build_ret(x2)?;
 
             // A declaration (no body) — must be skipped.
             let decl = m.add_function_dyn("ext", fn_ty, Linkage::External)?;
 
-            let fv1 = FunctionView::from(f1);
-            let fv2 = FunctionView::from(f2);
-            let decl_view = FunctionView::from(decl);
+            let fv1 = FunctionView::from(m.view(f1));
+            let fv2 = FunctionView::from(m.view(f2));
+            let decl_view = FunctionView::from(m.view(decl));
             let dead1_view = InstructionView::try_from(m.view(dead1).into_erased())?;
             let dead2_view = InstructionView::try_from(m.view(dead2).into_erased())?;
 
@@ -3677,16 +3677,16 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             // a = x+1 (used by b), b = a+1 (used by c), c = b+1 (unused/dead).
             let a = b.build_int_add(x, 1_i32, "a")?;
             let bb = b.build_int_add(a, 1_i32, "b")?;
             let _c = b.build_int_add(bb, 1_i32, "c")?;
             b.build_ret(x)?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
             let patch = cx.mutate();
 
@@ -3720,9 +3720,9 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             // a = x+1 ; b = a+1 (so b's operand `a` IS an instruction) ; ret x.
             let a = b.build_int_add(x, 1_i32, "a")?;
             let bb = b.build_int_add(a, 1_i32, "b")?;
@@ -3730,7 +3730,7 @@ mod tests {
             let a_id = m.view(a).slot();
             let b_id = m.view(bb).slot();
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
             let patch = cx.mutate();
 
@@ -3776,13 +3776,13 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             let _a = b.build_int_add(x, 1_i32, "a")?;
             b.build_ret(x)?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
             let patch = cx.mutate();
 
@@ -3826,14 +3826,14 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
-            let exit = f.append_basic_block(&m, "exit");
+            let entry = m.view(f).append_basic_block(&m, "entry");
+            let exit = m.view(f).append_basic_block(&m, "exit");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             b.build_br(&exit)?;
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(exit);
             b.build_ret(i32_ty.const_int(0_u32))?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let named: Vec<Option<String>> = function.basic_blocks().map(|bb| bb.name()).collect();
             let mut walked = Vec::new();
             for bb in function {
@@ -3859,13 +3859,13 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             let sum = b.build_int_add(x, 1_i32, "sum")?;
             b.build_ret(sum)?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let block = function
                 .entry_block()
                 .expect("definition has an entry block");

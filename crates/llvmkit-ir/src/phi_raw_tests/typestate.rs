@@ -24,7 +24,7 @@ fn fp_and_pointer_phi_finish_to_closed() -> Result<(), IrError> {
         let f64_ty = m.f64_type();
         let fn_ty = m.fn_type_no_params(f64_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let bb = f.append_basic_block(&m, "bb");
+        let bb = m.view(f).append_basic_block(&m, "bb");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
 
         // `finish()` consumes the Open handle for the fp and pointer families
@@ -49,9 +49,9 @@ fn phi_finishes_after_all_incomings() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let other = f.append_basic_block(&m, "other");
-        let join = f.append_basic_block(&m, "join");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let other = m.view(f).append_basic_block(&m, "other");
+        let join = m.view(f).append_basic_block(&m, "join");
         let entry_label = entry.label();
         let other_label = other.label();
 
@@ -95,7 +95,7 @@ fn rediscovered_phi_narrows_to_result_type() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let bb = f.append_basic_block(&m, "bb");
+        let bb = m.view(f).append_basic_block(&m, "bb");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
 
         let int_phi = b.build_int_phi::<i32, _>("ip")?;
@@ -132,9 +132,9 @@ fn build_phi_inserts_at_phi_head_not_cursor() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let other = f.append_basic_block(&m, "other");
-        let join = f.append_basic_block(&m, "join");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let other = m.view(f).append_basic_block(&m, "other");
+        let join = m.view(f).append_basic_block(&m, "join");
         let entry_label = entry.label();
         let other_label = other.label();
         let join_label = join.label();
@@ -149,7 +149,7 @@ fn build_phi_inserts_at_phi_head_not_cursor() -> Result<(), IrError> {
         // while the cursor sits at the end of the block. The phi must still
         // land at the block's phi head, ahead of the add.
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
-        let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let _x = b.build_int_add(a, 1_i32, "x")?;
         let i32_dyn = m.custom_width_int_type(32)?;
         let _phi = b
@@ -185,9 +185,9 @@ fn two_phis_built_after_nonphi_keep_relative_order() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let other = f.append_basic_block(&m, "other");
-        let join = f.append_basic_block(&m, "join");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let other = m.view(f).append_basic_block(&m, "other");
+        let join = m.view(f).append_basic_block(&m, "join");
         let entry_label = entry.label();
         let other_label = other.label();
         let join_label = join.label();
@@ -198,7 +198,7 @@ fn two_phis_built_after_nonphi_keep_relative_order() -> Result<(), IrError> {
         b.build_br(join_label)?;
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
-        let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let _x = b.build_int_add(a, 1_i32, "x")?;
         // p1 then p2, both after the add. Head placement must not reverse
         // them: p1 stays ahead of p2.
@@ -246,7 +246,7 @@ fn phi_range_iterates_three_phis() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, Vec::<crate::Type>::new(), false);
         let f = m.add_function_dyn("p", fn_ty, Linkage::External)?;
-        let bb = f.append_basic_block(&m, "bb");
+        let bb = m.view(f).append_basic_block(&m, "bb");
         let bb_label = bb.label();
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
@@ -287,9 +287,9 @@ fn phi_incomings_match_indexed_access() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let other = f.append_basic_block(&m, "other");
-        let join = f.append_basic_block(&m, "join");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let other = m.view(f).append_basic_block(&m, "other");
+        let join = m.view(f).append_basic_block(&m, "join");
         let entry_label = entry.label();
         let other_label = other.label();
 

@@ -20,7 +20,7 @@ fn fence_system_scope_orderings() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("instructions.atomics", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let _ = b.build_fence(AtomicOrdering::Acquire, SyncScope::System, "")?;
         let _ = b.build_fence(AtomicOrdering::Release, SyncScope::System, "")?;
@@ -43,7 +43,7 @@ fn fence_singlethread_seq_cst() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let _ = b.build_fence(
             AtomicOrdering::SequentiallyConsistent,
@@ -74,9 +74,9 @@ fn cmpxchg_no_align_monotonic_monotonic() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let word: PointerValue = f.param(0)?.try_into()?;
+        let word: PointerValue = m.view(f).param(0)?.try_into()?;
         let zero = i32_ty.const_int(0_i32);
         let four = i32_ty.const_int(4_i32);
         let _ = b.build_atomic_cmpxchg(
@@ -113,9 +113,9 @@ fn cmpxchg_weak_volatile_singlethread() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let word: PointerValue = f.param(0)?.try_into()?;
+        let word: PointerValue = m.view(f).param(0)?.try_into()?;
         let zero = i32_ty.const_int(0_i32);
         let eleven = i32_ty.const_int(11_i32);
         let _ = b.build_atomic_cmpxchg(
@@ -157,9 +157,9 @@ fn atomicrmw_xchg_monotonic() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let word: PointerValue = f.param(0)?.try_into()?;
+        let word: PointerValue = m.view(f).param(0)?.try_into()?;
         let twelve = i32_ty.const_int(12_i32);
         let _ = b.build_atomicrmw(
             AtomicRMWBinOp::Xchg,
@@ -188,9 +188,9 @@ fn atomicrmw_volatile_min_monotonic() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let word: PointerValue = f.param(0)?.try_into()?;
+        let word: PointerValue = m.view(f).param(0)?.try_into()?;
         let twenty = i32_ty.const_int(20_i32);
         let _ = b.build_atomicrmw(
             AtomicRMWBinOp::Min,
@@ -220,9 +220,9 @@ fn atomicrmw_umax_singlethread() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let word: PointerValue = f.param(0)?.try_into()?;
+        let word: PointerValue = m.view(f).param(0)?.try_into()?;
         let twenty_one = i32_ty.const_int(21_i32);
         let _ = b.build_atomicrmw(
             AtomicRMWBinOp::UMax,
@@ -256,9 +256,9 @@ fn atomicrmw_fmaximum_monotonic() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let word: PointerValue = f.param(0)?.try_into()?;
+        let word: PointerValue = m.view(f).param(0)?.try_into()?;
         let one = f32_ty.const_float(1.0_f32);
         let _ = b.build_atomicrmw(
             AtomicRMWBinOp::FMaximum,
@@ -291,9 +291,9 @@ fn atomicrmw_fminimum_monotonic() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let word: PointerValue = f.param(0)?.try_into()?;
+        let word: PointerValue = m.view(f).param(0)?.try_into()?;
         let one = f32_ty.const_float(1.0_f32);
         let _ = b.build_atomicrmw(
             AtomicRMWBinOp::FMinimum,

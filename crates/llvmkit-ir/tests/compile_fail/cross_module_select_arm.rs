@@ -15,7 +15,7 @@ fn main() {
             .add_typed_function::<i32, (), _>("left_f", Linkage::External)
             .unwrap()
             .as_function();
-        let entry = f.append_basic_block(&left, "entry");
+        let entry = left.view(f).append_basic_block(&left, "entry");
         let left_builder = IRBuilder::new_for::<i32>(&left).position_at_end(entry);
         let left_arm = left_builder.view(
             left_builder
@@ -30,7 +30,7 @@ fn main() {
                 .add_typed_function::<i32, (), _>("f", Linkage::External)
                 .unwrap()
                 .as_function();
-            let entry = f.append_basic_block(&right, "entry");
+            let entry = right.view(f).append_basic_block(&right, "entry");
             let builder = IRBuilder::new_for::<i32>(&right).position_at_end(entry);
             let right_arm = builder
                 .build_int_add(i32_ty.const_int(3_i32), i32_ty.const_int(4_i32), "right")

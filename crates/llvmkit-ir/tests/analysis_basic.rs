@@ -139,14 +139,14 @@ where
             .add_typed_function::<(), (), _>("h", Linkage::External)?
             .as_function();
 
-        let entry = f.append_basic_block(&module, "entry");
+        let entry = module.view(f).append_basic_block(&module, "entry");
         let b = IRBuilder::new_for::<()>(&module).position_at_end(entry);
-        b.build_call_dyn(g, Vec::<Value>::new(), "")?;
-        b.build_call_dyn(h, Vec::<Value>::new(), "")?;
+        b.build_call_dyn(module.view(g), Vec::<Value>::new(), "")?;
+        b.build_call_dyn(module.view(h), Vec::<Value>::new(), "")?;
         b.build_ret_void();
 
         for function in [g, h] {
-            let entry = function.append_basic_block(&module, "entry");
+            let entry = module.view(function).append_basic_block(&module, "entry");
             IRBuilder::new_for::<()>(&module)
                 .position_at_end(entry)
                 .build_ret_void();

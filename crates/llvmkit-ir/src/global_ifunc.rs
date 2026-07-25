@@ -11,6 +11,7 @@ use super::metadata::MetadataAttachmentSet;
 use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{Type, TypeKind, TypeSlot};
 use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
+use super::value_id::GlobalIFuncId;
 
 #[derive(Debug)]
 pub(super) struct GlobalIFuncData {
@@ -51,6 +52,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
             module: self.module,
             ty: self.ty,
         }
+    }
+
+    /// Storable, module-tagged [`GlobalIFuncId`] for this `ifunc` (llvmkit
+    /// 2.0), resolvable via [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view).
+    #[inline]
+    pub fn id(self) -> GlobalIFuncId<B> {
+        GlobalIFuncId::from_raw(self.module.id(), self.id)
     }
 
     #[inline]
@@ -305,7 +314,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
         self
     }
 
-    pub fn build(self) -> IrResult<GlobalIFunc<'ctx, B>> {
+    /// Materialise the `ifunc`, returning its storable [`GlobalIFuncId`].
+    /// Resolve the id back into a borrowing [`GlobalIFunc`] with
+    /// [`Module::view`](crate::Module::view).
+    pub fn build(self) -> IrResult<GlobalIFuncId<B>> {
         if !is_valid_ifunc_linkage(self.linkage) {
             return Err(IrError::InvalidOperation {
                 message: "invalid linkage type for ifunc",
@@ -325,7 +337,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
                 got: Type::new(self.resolver_type, self.module).kind_label(),
             });
         }
-        self.module.module().install_global_ifunc::<B>(self)
+        self.module
+            .module()
+            .install_global_ifunc::<B>(self)
+            .map(|f| f.id())
     }
 
     pub(super) fn into_data(self) -> (String, GlobalIFuncData, u32) {

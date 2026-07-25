@@ -65,7 +65,7 @@ use super::unnamed_addr::UnnamedAddr;
 use super::value::{
     HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData, ValueSlot, sealed,
 };
-use super::value_id::FunctionId;
+use super::value_id::{FunctionId, TypedFunctionId};
 use super::value_symbol_table::ValueSymbolTable;
 
 // --------------------------------------------------------------------------
@@ -317,26 +317,27 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         self.signature().return_type()
     }
 
-    /// Wrap this function with a typed parameter tuple schema.
+    /// Wrap this function with a typed parameter tuple schema, returning the
+    /// storable [`TypedFunctionId`]. Resolve it back into the borrowing
+    /// [`TypedFunctionValue`] facade with [`Module::view`](crate::Module::view).
     #[inline]
-    pub fn with_typed_params<Params>(self) -> IrResult<TypedFunctionValue<'ctx, R, Params, B>>
+    pub fn with_typed_params<Params>(self) -> IrResult<TypedFunctionId<R, Params, B>>
     where
         R: FunctionReturn<Marker = R>,
         Params: FunctionParamList,
     {
-        TypedFunctionValue::<R, Params, B>::try_from_function(self)
+        TypedFunctionValue::<R, Params, B>::try_from_function(self).map(|f| f.id())
     }
 
-    /// Wrap this function with a Rust function-pointer signature schema.
+    /// Wrap this function with a Rust function-pointer signature schema,
+    /// returning the storable [`TypedFunctionId`].
     #[inline]
-    pub fn with_typed_signature<Sig>(
-        self,
-    ) -> IrResult<TypedFunctionValue<'ctx, Sig::Ret, Sig::Params, B>>
+    pub fn with_typed_signature<Sig>(self) -> IrResult<TypedFunctionId<Sig::Ret, Sig::Params, B>>
     where
         Sig: FunctionSignature,
         Sig::Ret: FunctionReturn<Marker = R>,
     {
-        TypedFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(self)
+        TypedFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(self).map(|f| f.id())
     }
 
     /// Linkage of this function.
@@ -1377,11 +1378,17 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         self
     }
 
-    /// Materialize the function. Mirrors `Function::Create`.
+    /// Materialize the function, returning its storable [`FunctionId`].
+    /// Mirrors `Function::Create`. Resolve the id back into a borrowing
+    /// [`FunctionValue`] with [`Module::view`](crate::Module::view).
+    ///
+    /// The chain up to here stays handle-free: every setter takes and returns
+    /// the builder itself, and the borrowing handle exists only inside this
+    /// method, where the collected settings are applied.
     ///
     /// Returns [`IrError::ReturnTypeMismatch`] if the signature's
     /// return type does not match the chosen [`ReturnMarker`].
-    pub fn build(self) -> IrResult<FunctionValue<'ctx, R, B>> {
+    pub fn build(self) -> IrResult<FunctionId<R, B>> {
         let f = self.module.module().add_function_checked::<B, R, _>(
             &self.name,
             self.signature,
@@ -1427,7 +1434,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
             let arg = f.param(slot)?;
             f.set_local_value_name(IsValue::slot(arg), Some(&name));
         }
-        Ok(f)
+        Ok(f.id())
     }
 }
 

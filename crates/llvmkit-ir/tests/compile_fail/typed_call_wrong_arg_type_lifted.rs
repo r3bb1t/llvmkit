@@ -27,14 +27,14 @@ fn main() {
         let caller = m
             .add_typed_function::<i32, (f64,), _>("caller", Linkage::External)
             .unwrap();
-        let entry = caller.append_basic_block(&m, "entry");
+        let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let (x,) = caller.params();
+        let (x,) = m.view(caller).params();
         // `x` is `FloatValue<f64>`; `callee`'s single parameter schema is
         // `i32`. `FloatValue<f64>` does not implement
         // `IntoCallArg<'_, i32, _>` -- but rustc reports the *root*
         // unsatisfied bound, `IntoIntValue<'_, i32, _>`, not
         // `IntoCallArg` itself.
-        let _ = b.build_call(callee, (x,), "bad");
+        let _ = b.build_call(m.view(callee), (x,), "bad");
     });
 }

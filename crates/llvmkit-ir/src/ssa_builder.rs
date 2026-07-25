@@ -1824,7 +1824,7 @@ mod tests {
         Module::with_new("ssa-entry-seal", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let entry = b.create_block("entry");
             let entry_id = label_value_id(&entry.label);
             assert!(b.state.sealed.contains(&entry_id));
@@ -1845,7 +1845,7 @@ mod tests {
         Module::with_new("ssa-double-seal", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let _entry = b.create_block("entry");
             let second = b.create_block("second"); // not entry -- unsealed
             b.seal_block(second)?;
@@ -1866,8 +1866,8 @@ mod tests {
         Module::with_new("ssa-nonempty-fn", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let _entry = f.append_basic_block(&m, "entry");
-            match SsaBuilder::for_function(&m, f) {
+            let _entry = m.view(f).append_basic_block(&m, "entry");
+            match SsaBuilder::for_function(&m, m.view(f)) {
                 Err(IrError::SsaFunctionHasBlocks) => {}
                 Ok(_) => panic!("expected SsaFunctionHasBlocks, got Ok"),
                 Err(other) => panic!("expected SsaFunctionHasBlocks, got {other:?}"),
@@ -1884,11 +1884,11 @@ mod tests {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f1 = m.add_function_dyn("f1", fn_ty, Linkage::External)?;
             let f2 = m.add_function_dyn("f2", fn_ty, Linkage::External)?;
-            let mut b1 = SsaBuilder::for_function(&m, f1)?;
+            let mut b1 = SsaBuilder::for_function(&m, m.view(f1))?;
             let _entry1 = b1.create_block("entry");
             let other1 = b1.create_block("other");
 
-            let mut b2 = SsaBuilder::for_function(&m, f2)?;
+            let mut b2 = SsaBuilder::for_function(&m, m.view(f2))?;
             let _entry2 = b2.create_block("entry");
 
             match b2.seal_block(other1) {
@@ -1906,7 +1906,7 @@ mod tests {
         Module::with_new("ssa-declare", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let int_var = b.declare_int_var::<i32, _>("x");
             let float_var = b.declare_float_var::<f64, _>("y");
             let ptr_var = b.declare_pointer_var("z");
@@ -1933,7 +1933,7 @@ mod tests {
         Module::with_new("ssa-straight-line", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let entry = b.create_block("entry");
             let entry_id = label_value_id(&entry.label);
 
@@ -1961,7 +1961,7 @@ mod tests {
         Module::with_new("ssa-incomplete-phi", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let _entry = b.create_block("entry");
             let entry_id = label_value_id(&_entry.label);
             let loop_bb = b.create_block("loop");
@@ -2019,7 +2019,7 @@ mod tests {
         Module::with_new("ssa-trivial-join", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let _entry = b.create_block("entry");
             let entry_id = label_value_id(&_entry.label);
             let left = b.create_block("left");
@@ -2072,7 +2072,7 @@ mod tests {
         Module::with_new("ssa-undefined-strict", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let entry = b.create_block("entry");
             let entry_id = label_value_id(&entry.label);
 
@@ -2097,7 +2097,7 @@ mod tests {
         Module::with_new("ssa-undefined-poison", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let entry = b.create_block("entry");
             let entry_id = label_value_id(&entry.label);
 
@@ -2130,7 +2130,7 @@ mod tests {
         Module::with_new("ssa-chase-memoization", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let entry = b.create_block("entry");
             let entry_id = label_value_id(&entry.label);
             let b1 = b.create_block("b1");
@@ -2211,7 +2211,7 @@ mod tests {
         Module::with_new("ssa-forged-static-width", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let entry = b.create_block("entry");
             let x = b.declare_int_var::<i32, _>("x");
 
@@ -2249,7 +2249,7 @@ mod tests {
         Module::with_new("ssa-forged-static-kind", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let entry = b.create_block("entry");
             let x = b.declare_float_var::<f32, _>("x");
 
@@ -2294,7 +2294,7 @@ mod tests {
         Module::with_new("ssa-forged-pointer", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let entry = b.create_block("entry");
             let p = b.declare_pointer_var("p");
 

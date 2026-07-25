@@ -26,7 +26,7 @@ fn main() {
 
         let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m);
         // `head`'s single parameter schema is `i32`.
-        let (head, _params) = b.append_block_typed::<(i32,), _>(f, "head").unwrap();
+        let (head, _params) = b.append_block_typed::<(i32,), _>(m.view(f), "head").unwrap();
 
         // `1.0_f64` does not implement `IntoIntValue<'_, i32, _>`, so it cannot
         // fill the `i32` block-parameter slot: `.call` does not type-check.

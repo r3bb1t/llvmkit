@@ -11,10 +11,10 @@ use llvmkit_ir::{
 fn typed_function_facade_builds_signature_and_params() -> Result<(), IrError> {
     Module::with_new("demo", |m| {
         let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let (lhs, rhs) = f.params();
+        let (lhs, rhs) = m.view(f).params();
         let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
         b.build_ret(sum)?;
 
@@ -55,8 +55,8 @@ fn typed_function_facade_supports_pointer_and_float_params() -> Result<(), IrErr
     Module::with_new("mixed", |m| {
         let f =
             m.add_typed_function::<i32, (Ptr, f32, Width<17>), _>("mixed", Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let (p, x, bits) = f.params();
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let (p, x, bits) = m.view(f).params();
         let p = expect_pointer(p);
         let x = expect_float(x);
         let bits = expect_int17(bits);
@@ -81,7 +81,7 @@ fn typed_function_facade_rejects_wrong_arity_when_wrapping_raw_function() -> Res
             .add_typed_function::<i32, (i32,), _>("one", Linkage::External)?
             .as_function();
 
-        let err = TypedFunctionValue::<i32, (i32, i32), _>::try_from_function(raw)
+        let err = TypedFunctionValue::<i32, (i32, i32), _>::try_from_function(m.view(raw))
             .expect_err("wrong arity must be rejected");
         assert_eq!(
             err,
@@ -105,7 +105,7 @@ fn typed_function_facade_rejects_wrong_raw_param_type() -> Result<(), IrError> {
             .add_typed_function::<i32, (f64,), _>("double_param", Linkage::External)?
             .as_function();
 
-        let err = TypedFunctionValue::<i32, (i32,), _>::try_from_function(raw)
+        let err = TypedFunctionValue::<i32, (i32,), _>::try_from_function(m.view(raw))
             .expect_err("wrong parameter kind must be rejected");
         assert_eq!(
             err,
@@ -129,11 +129,11 @@ fn function_pointer_alias_builds_typed_function_and_params() -> Result<(), IrErr
         let fn_ty = m.typed_function_type_of::<AddSig>()?;
         assert_eq!(format!("{fn_ty}"), "i32 (i32, i32)");
         let f = m.add_typed_function_of::<AddSig, _>("add", Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let (lhs, rhs) = f.params();
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let (lhs, rhs) = m.view(f).params();
         let _: IntValue<'_, i32, _> = lhs;
         let _: IntValue<'_, i32, _> = rhs;
-        let b = f.builder(&m).position_at_end(entry);
+        let b = m.view(f).builder(&m).position_at_end(entry);
         let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
         b.build_ret(sum)?;
         let text = format!("{m}");
@@ -153,12 +153,12 @@ fn function_pointer_alias_builds_typed_function_and_params() -> Result<(), IrErr
 fn extern_system_signature_alias_builds_pointer_return_function() -> Result<(), IrError> {
     Module::with_new("winapi", |m| {
         let f = m.add_typed_function_of::<WinApiSig, _>("call_window_proc", Linkage::External)?;
-        let (hwnd, code, scale) = f.params();
+        let (hwnd, code, scale) = m.view(f).params();
         let _: PointerValue<'_, _> = hwnd;
         let _: IntValue<'_, i32, _> = code;
         let _: FloatValue<'_, f32, _> = scale;
         assert_eq!(
-            format!("{}", f.as_function().signature()),
+            format!("{}", m.view(f).as_function().signature()),
             "ptr (ptr, i32, float)"
         );
         Ok(())
@@ -174,8 +174,8 @@ fn raw_function_can_be_wrapped_with_function_pointer_signature() -> Result<(), I
         let raw = m
             .add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?
             .as_function();
-        let typed = raw.with_typed_signature::<AddSig>()?;
-        let (lhs, rhs) = typed.params();
+        let typed = m.view(raw).with_typed_signature::<AddSig>()?;
+        let (lhs, rhs) = m.view(typed).params();
         let _: IntValue<'_, i32, _> = lhs;
         let _: IntValue<'_, i32, _> = rhs;
         Ok(())
@@ -188,7 +188,7 @@ fn raw_function_can_be_wrapped_with_function_pointer_signature() -> Result<(), I
 fn builder_can_be_created_from_function_pointer_return_schema() -> Result<(), IrError> {
     Module::with_new("builder", |m| {
         let f = m.add_typed_function_of::<AddSig, _>("zero", Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for_return::<AddSig>(&m).position_at_end(entry);
         b.build_ret(0_i32)?;
         let text = format!("{m}");
@@ -205,9 +205,9 @@ fn builder_can_be_created_from_function_pointer_return_schema() -> Result<(), Ir
 fn call_args_lowers_tuple_to_value_ids() -> Result<(), IrError> {
     Module::with_new("call_args", |m| {
         let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let (x, _rhs) = f.params();
+        let (x, _rhs) = m.view(f).params();
 
         let ids = <(_, _) as CallArgs<'_, (i32, i32), _>>::lower((5_i32, x), (&m).into())?;
 

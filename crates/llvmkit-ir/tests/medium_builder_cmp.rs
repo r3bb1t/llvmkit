@@ -19,9 +19,9 @@ fn build_eq_module() -> Result<String, IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("is_zero", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let n: IntValue<i32> = f.param(0)?.try_into()?;
+        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let r = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "r")?;
         b.build_ret(r)?;
         Ok(format!("{m}"))
@@ -46,10 +46,10 @@ fn build_int_cmp_slt_emits_icmp_slt() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
         let f = m.add_function_dyn("lt", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let a: IntValue<i32> = f.param(0)?.try_into()?;
-        let bv: IntValue<i32> = f.param(1)?.try_into()?;
+        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let bv: IntValue<i32> = m.view(f).param(1)?.try_into()?;
         let r = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Slt, a, bv, "r")?;
         b.build_ret(r)?;
         let text = format!("{m}");
@@ -72,9 +72,9 @@ fn build_int_cmp_returns_i1_for_chaining() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("ne", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let n: IntValue<i32> = f.param(0)?.try_into()?;
+        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let r: IntValueId<bool, _> =
             b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ne, n, 1_i32, "r")?;
         b.build_ret(r)?;
@@ -91,10 +91,10 @@ fn build_int_cmp_ule_emits_icmp_ule() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
         let f = m.add_function_dyn("ule", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let a: IntValue<i32> = f.param(0)?.try_into()?;
-        let bv: IntValue<i32> = f.param(1)?.try_into()?;
+        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let bv: IntValue<i32> = m.view(f).param(1)?.try_into()?;
         let r = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ule, a, bv, "r")?;
         b.build_ret(r)?;
         let text = format!("{m}");
@@ -112,7 +112,7 @@ fn default_constant_folder_folds_integer_compare() -> Result<(), IrError> {
         let bool_ty = m.bool_type();
         let fn_ty = m.fn_type_no_params(bool_ty, false);
         let f = m.add_function_dyn("cmp", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let result = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ugt, 9_i32, 3_i32, "is_gt")?;
         let folded =
@@ -138,10 +138,10 @@ fn typed_icmp_samesign_prints_flag() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
         let f = m.add_function_dyn("test_icmp_samesign", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let a: IntValue<i32> = f.param(0)?.try_into()?;
-        let bv: IntValue<i32> = f.param(1)?.try_into()?;
+        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let bv: IntValue<i32> = m.view(f).param(1)?.try_into()?;
         let r = b.build_int_cmp_with_flags::<i32, _, _, _>(
             IntPredicate::Ult,
             a,

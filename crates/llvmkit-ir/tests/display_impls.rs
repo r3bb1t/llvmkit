@@ -34,7 +34,7 @@ fn function_value_prints_declare_line() -> Result<(), IrError> {
         let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("ext", fn_ty, Linkage::External)?;
 
-        assert_eq!(format!("{f}"), "declare void @ext()\n");
+        assert_eq!(format!("{}", m.view(f)), "declare void @ext()\n");
         Ok(())
     })
 }
@@ -47,15 +47,15 @@ fn function_value_define_matches_module_output() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
         let f = m.add_function_dyn("add", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: IntValue<i32> = f.param(0)?.try_into()?;
-        let rhs: IntValue<i32> = f.param(1)?.try_into()?;
+        let lhs: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let rhs: IntValue<i32> = m.view(f).param(1)?.try_into()?;
         let sum = b.build_int_add(lhs, rhs, "sum")?;
         b.build_ret(sum)?;
 
-        let printed = format!("{f}");
+        let printed = format!("{}", m.view(f));
         let expected = "define i32 @add(i32 %0, i32 %1) {\n\
             entry:\n\
             \x20\x20%sum = add i32 %0, %1\n\
@@ -84,17 +84,17 @@ fn global_variable_prints_definition_line() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let g = m.add_global("g1", i32_ty.const_zero())?;
 
-        assert_eq!(format!("{g}"), "@g1 = global i32 0");
+        assert_eq!(format!("{}", m.view(g)), "@g1 = global i32 0");
 
         let module_text = format!("{m}");
         assert!(
-            module_text.contains(&format!("{g}\n")),
+            module_text.contains(&format!("{}\n", m.view(g))),
             "got:\n{module_text}"
         );
 
         // The operand form stays available through the erased handle and is
         // deliberately different from the definition form.
-        assert_eq!(format!("{}", g.into_erased()), "ptr @g1");
+        assert_eq!(format!("{}", m.view(g).into_erased()), "ptr @g1");
         Ok(())
     })
 }
@@ -115,14 +115,14 @@ fn typed_handles_agree_with_erased_value() -> Result<(), IrError> {
 
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<i32> = f.param(0)?.try_into()?;
+        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let doubled = b.build_int_add(x, x, "doubled")?;
         b.build_ret(doubled)?;
 
         // Argument.
-        let arg = f.param(0)?;
+        let arg = m.view(f).param(0)?;
         assert_eq!(format!("{arg}"), format!("{}", arg.into_erased()));
 
         // IntValue<W> -- both an instruction result and a parameter.

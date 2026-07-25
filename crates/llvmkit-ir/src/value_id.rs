@@ -14,8 +14,8 @@
 //! [`id`](crate::Value::id)-style accessor that mints its id, while the
 //! builders kept returning borrowing handles. Cycle B rewires the builders to
 //! return ids, one family at a time — arithmetic, casts, comparisons, memory,
-//! aggregates, vectors and calls have flipped; declarations, blocks/branches
-//! and phi still hand back handles.
+//! aggregates, vectors, calls and the module-level declarations have flipped;
+//! blocks/branches and phi still hand back handles.
 //! [`IRBuilder::view`](crate::IRBuilder::view) is the builder-side twin of
 //! [`Module::view`](crate::Module::view) for reading at a build site.
 //!
@@ -49,7 +49,11 @@ use crate::block_params::{BlockParams, BlockParamsDyn};
 use crate::error::{IrError, IrResult};
 use crate::float_kind::{FloatKind, IntoFloatValue, into_float_value_sealed};
 use crate::function::{FunctionValue, signature_matches_marker};
-use crate::function_signature::FunctionReturn;
+use crate::function_signature::{
+    FunctionParamList, FunctionReturn, TypedFunctionValue, TypedVarArgsFunctionValue,
+};
+use crate::global_alias::GlobalAlias;
+use crate::global_ifunc::GlobalIFunc;
 use crate::global_variable::GlobalVariable;
 use crate::instruction::InstructionKindData;
 use crate::instructions::{
@@ -69,8 +73,8 @@ use crate::value::{
 // The id family
 // --------------------------------------------------------------------------
 
-/// Declare a minimal, `Copy` value id with an optional single leading type
-/// marker (before the always-present brand `B`). Generates the struct plus
+/// Declare a minimal, `Copy` value id with an optional list of leading type
+/// markers (before the always-present brand `B`). Generates the struct plus
 /// manual `Copy`/`Clone`/`Eq`/`PartialEq`/`Hash`/`Debug` impls — manual
 /// because a `derive` would propagate a `Marker: Trait` bound onto the impl
 /// that callers should never have to spell (the `FunctionValue` precedent),
@@ -78,17 +82,17 @@ use crate::value::{
 macro_rules! decl_value_id {
     (
         $(#[$attr:meta])*
-        $name:ident $([$mk:ident : $mkb:path => $mf:ident])?
+        $name:ident $([$($mk:ident : $mkb:path => $mf:ident),+ $(,)?])?
     ) => {
         $(#[$attr])*
-        pub struct $name<$($mk: $mkb,)? B: ModuleBrand> {
+        pub struct $name<$($($mk: $mkb,)+)? B: ModuleBrand> {
             tag: ModuleId,
             slot: ValueSlot,
-            $($mf: PhantomData<$mk>,)?
+            $($($mf: PhantomData<$mk>,)+)?
             _brand: Invariant<B>,
         }
 
-        impl<$($mk: $mkb,)? B: ModuleBrand> $name<$($mk,)? B> {
+        impl<$($($mk: $mkb,)+)? B: ModuleBrand> $name<$($($mk,)+)? B> {
             /// Crate-internal: mint an id from an already-resolved tag + slot.
             /// The only callers are the value handles' `id` accessors, which
             /// pass their owning [`ModuleId`] and arena slot.
@@ -97,34 +101,34 @@ macro_rules! decl_value_id {
                 Self {
                     tag,
                     slot,
-                    $($mf: PhantomData,)?
+                    $($($mf: PhantomData,)+)?
                     _brand: PhantomData,
                 }
             }
         }
 
-        impl<$($mk: $mkb,)? B: ModuleBrand> Clone for $name<$($mk,)? B> {
+        impl<$($($mk: $mkb,)+)? B: ModuleBrand> Clone for $name<$($($mk,)+)? B> {
             #[inline]
             fn clone(&self) -> Self {
                 *self
             }
         }
-        impl<$($mk: $mkb,)? B: ModuleBrand> Copy for $name<$($mk,)? B> {}
-        impl<$($mk: $mkb,)? B: ModuleBrand> PartialEq for $name<$($mk,)? B> {
+        impl<$($($mk: $mkb,)+)? B: ModuleBrand> Copy for $name<$($($mk,)+)? B> {}
+        impl<$($($mk: $mkb,)+)? B: ModuleBrand> PartialEq for $name<$($($mk,)+)? B> {
             #[inline]
             fn eq(&self, other: &Self) -> bool {
                 self.tag == other.tag && self.slot == other.slot
             }
         }
-        impl<$($mk: $mkb,)? B: ModuleBrand> Eq for $name<$($mk,)? B> {}
-        impl<$($mk: $mkb,)? B: ModuleBrand> core::hash::Hash for $name<$($mk,)? B> {
+        impl<$($($mk: $mkb,)+)? B: ModuleBrand> Eq for $name<$($($mk,)+)? B> {}
+        impl<$($($mk: $mkb,)+)? B: ModuleBrand> core::hash::Hash for $name<$($($mk,)+)? B> {
             #[inline]
             fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
                 self.tag.hash(state);
                 self.slot.hash(state);
             }
         }
-        impl<$($mk: $mkb,)? B: ModuleBrand> core::fmt::Debug for $name<$($mk,)? B> {
+        impl<$($($mk: $mkb,)+)? B: ModuleBrand> core::fmt::Debug for $name<$($($mk,)+)? B> {
             fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                 f.debug_struct(stringify!($name))
                     .field("tag", &self.tag)
@@ -174,9 +178,41 @@ decl_value_id! {
 }
 
 decl_value_id! {
+    /// Storable, module-tagged id for a function whose return *and* parameter
+    /// schema are known statically, resolved into a
+    /// [`TypedFunctionValue<Ret, Params>`](crate::TypedFunctionValue).
+    ///
+    /// The full schema — not just the return marker — rides on the id, the way
+    /// [`TypedCallInstId`] carries its `Ret`, so viewing it recovers the
+    /// infallible typed surface ([`TypedFunctionValue::params`],
+    /// [`TypedFunctionValue::as_function`]) without a re-narrowing step.
+    TypedFunctionId [Ret: FunctionReturn => _ret, Params: FunctionParamList => _params]
+}
+
+decl_value_id! {
+    /// Storable, module-tagged id for a variadic function whose fixed-prefix
+    /// schema is known statically, resolved into a
+    /// [`TypedVarArgsFunctionValue<Ret, Params>`](crate::TypedVarArgsFunctionValue).
+    /// The variadic twin of [`TypedFunctionId`].
+    TypedVarArgsFunctionId [Ret: FunctionReturn => _ret, Params: FunctionParamList => _params]
+}
+
+decl_value_id! {
     /// Storable, module-tagged id for a module-level global variable, resolved
     /// into a [`GlobalVariable`].
     GlobalId
+}
+
+decl_value_id! {
+    /// Storable, module-tagged id for a module-level global alias, resolved
+    /// into a [`GlobalAlias`].
+    GlobalAliasId
+}
+
+decl_value_id! {
+    /// Storable, module-tagged id for a module-level `ifunc`, resolved into a
+    /// [`GlobalIFunc`].
+    GlobalIFuncId
 }
 
 /// Storable, module-tagged id for a basic block, resolved into a copyable
@@ -465,24 +501,89 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FunctionI
     }
 }
 
-impl<B: ModuleBrand> sealed::Sealed for GlobalId<B> {}
-impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for GlobalId<B> {
-    type View = GlobalVariable<'ctx, B>;
+/// Resolve a *typed function facade* id: reuse [`FunctionId`]'s resolver for
+/// the tag check, the `Function` value-category check and the signature
+/// recovery, then re-validate the full schema through the facade's own
+/// `try_from_function`. Shared by [`TypedFunctionId`] and
+/// [`TypedVarArgsFunctionId`], which differ only in that facade — and it is
+/// the facade check that separates them (fixed-arity vs `...`), so it cannot
+/// be skipped.
+macro_rules! impl_view_in_for_typed_function_id {
+    ($( $name:ident => $facade:ident ),+ $(,)?) => { $(
+        impl<Ret: FunctionReturn, Params: FunctionParamList, B: ModuleBrand> sealed::Sealed
+            for $name<Ret, Params, B>
+        {
+        }
+        impl<'ctx, Ret, Params, B> ViewIn<'ctx, B> for $name<Ret, Params, B>
+        where
+            Ret: FunctionReturn,
+            Params: FunctionParamList,
+            B: ModuleBrand + 'ctx,
+        {
+            type View = $facade<'ctx, Ret, Params, B>;
 
-    #[inline]
-    fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
-        if self.tag != module.id() {
-            return None;
+            #[inline]
+            fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
+                let function =
+                    FunctionId::<Ret::Marker, B>::from_raw(self.tag, self.slot).resolve_in(module)?;
+                $facade::try_from_function(function).ok()
+            }
         }
-        let data = module.value_data(self.slot);
-        if !matches!(data.kind, ValueKindData::GlobalVariable(_)) {
-            return None;
+
+        impl<Ret: FunctionReturn, Params: FunctionParamList, B: ModuleBrand>
+            $name<Ret, Params, B>
+        {
+            /// Drop the parameter schema, yielding the underlying
+            #[doc = concat!("[`FunctionId<Ret::Marker>`](FunctionId) — the id-side mirror of\n\
+                             [`", stringify!($facade), "::as_function`](crate::", stringify!($facade), "::as_function).")]
+            ///
+            /// A pure retag of the same `(tag, slot)`: no view, no arena
+            /// access, and no schema re-validation — the id could only have
+            /// been minted from an already-validated facade.
+            #[inline]
+            pub fn as_function(self) -> FunctionId<Ret::Marker, B> {
+                FunctionId::from_raw(self.tag, self.slot)
+            }
         }
-        Some(GlobalVariable::from_parts_unchecked(
-            self.slot, module, data.ty,
-        ))
-    }
+    )+ };
 }
+
+impl_view_in_for_typed_function_id!(
+    TypedFunctionId => TypedFunctionValue,
+    TypedVarArgsFunctionId => TypedVarArgsFunctionValue,
+);
+
+/// Implement [`ViewIn`] for a module-level global-value id whose handle is the
+/// `{ id, module, ty }` scaffold: tag-check, confirm the arena slot really
+/// holds that global category, then rebuild the handle with the pointer type
+/// recovered from the arena. The category check is what keeps a foreign or
+/// repurposed slot from reaching the handle's `unreachable!` payload accessor.
+macro_rules! impl_view_in_for_global_id {
+    ($( $name:ident => $handle:ident [$kind:ident] ),+ $(,)?) => { $(
+        impl<B: ModuleBrand> sealed::Sealed for $name<B> {}
+        impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for $name<B> {
+            type View = $handle<'ctx, B>;
+
+            #[inline]
+            fn resolve_in(self, module: ModuleRef<'ctx, B>) -> Option<Self::View> {
+                if self.tag != module.id() {
+                    return None;
+                }
+                let data = module.value_data(self.slot);
+                if !matches!(data.kind, ValueKindData::$kind(_)) {
+                    return None;
+                }
+                Some($handle::from_parts_unchecked(self.slot, module, data.ty))
+            }
+        }
+    )+ };
+}
+
+impl_view_in_for_global_id!(
+    GlobalId => GlobalVariable [GlobalVariable],
+    GlobalAliasId => GlobalAlias [GlobalAlias],
+    GlobalIFuncId => GlobalIFunc [GlobalIFunc],
+);
 
 impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> sealed::Sealed
     for BlockId<R, B, Params>
@@ -682,14 +783,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for PointerValueId<B
 // Each body reuses the same [`ViewIn::resolve_in`] resolver (one tag-check +
 // arena-recovery path, debug-assert marker checks included) and maps its
 // `None` to [`IrError::ForeignValueId`]. For the four value-shaped ids `None`
-// is reached only on a foreign module tag; [`FunctionId`] and [`GlobalId`]
-// additionally return `None` on a value-category mismatch, which their
-// minting accessors make unreachable — a foreign tag is likewise the only
-// error a caller can actually provoke.
+// is reached only on a foreign module tag; [`FunctionId`] and the three
+// module-level global ids additionally return `None` on a value-category
+// mismatch, which their minting accessors make unreachable — a foreign tag is
+// likewise the only error a caller can actually provoke.
 //
 // [`BlockId`] is absent: its handle [`BasicBlockLabel`] is not an [`IsValue`]
 // and a block is never an operand at these slots — it reaches a terminator
 // through `IntoBasicBlockLabel`, not through the erased value path.
+// [`TypedFunctionId`] / [`TypedVarArgsFunctionId`] are absent for the mirror
+// reason: their handles are schema *facades*, not [`IsValue`]s, so an erased
+// operand is reached through the underlying function
+// ([`TypedFunctionId::as_function`]), never by widening the facade.
 
 /// Implement [`IntoErasedValue`] for an id whose [`ViewIn`] handle is an
 /// [`IsValue`], by resolving then widening. Optional square-bracketed marker
@@ -723,6 +828,8 @@ impl_into_erased_value_for_id!(
     PointerValueId,
     FunctionId[R: ReturnMarker],
     GlobalId,
+    GlobalAliasId,
+    GlobalIFuncId,
 );
 
 /// Implement [`IntoErasedValue`] for an instruction id whose opcode handle is

@@ -23,7 +23,7 @@ fn constants_and_integer_operators_compute_known_bits() -> Result<(), IrError> {
         let i8_ty = m.i8_type();
         let fn_ty = m.fn_type_no_params(i8_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
         let c_aa = i8_ty.const_int(0xaa_u8);
@@ -88,7 +88,7 @@ fn signed_division_and_remainder_compute_known_bits() -> Result<(), IrError> {
         let i8_ty = m.i8_type();
         let fn_ty = m.fn_type_no_params(i8_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
         let sdiv =
@@ -120,16 +120,16 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
         let i16_ty = m.i16_type();
         let fn_ty = m.fn_type(i8_ty, [i1_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let other = f.append_basic_block(&m, "other");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let other = m.view(f).append_basic_block(&m, "other");
         // join(%p: i8): the phi is the block's head-phi parameter, seeded from
         // each predecessor by a block-argument `br`.
         let bwp = IRBuilder::new_for::<Dyn>(&m);
-        let (join, params) = bwp.append_block_with_params(f, &[i8_ty.as_type()], "join")?;
+        let (join, params) = bwp.append_block_with_params(m.view(f), &[i8_ty.as_type()], "join")?;
         let join_label = join.label();
 
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let cond: IntValue<bool> = f.param(0)?.try_into()?;
+        let cond: IntValue<bool> = m.view(f).param(0)?.try_into()?;
         let c_aa = i8_ty.const_int(0xaa_u8);
         let c_ae = i8_ty.const_int(0xae_u8);
         let c_aa_val: IntValue<i8> = c_aa.as_constant().try_into()?;
@@ -194,9 +194,9 @@ fn bitwise_with_self_plus_odd_refines_low_bit() -> Result<(), IrError> {
         let i8_ty = m.i8_type();
         let fn_ty = m.fn_type(i8_ty, [i8_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let x: IntValue<i8> = f.param(0)?.try_into()?;
+        let x: IntValue<i8> = m.view(f).param(0)?.try_into()?;
         let x_plus_one = b.build_int_add::<i8, _, _, _>(x, i8_ty.const_int(1_u8), "x1")?;
         let and_v = b.build_int_and::<i8, _, _, _>(x, x_plus_one, "and")?;
         let or_v = b.build_int_or::<i8, _, _, _>(x, x_plus_one, "or")?;
@@ -219,9 +219,9 @@ fn mul_nsw_self_product_is_non_negative() -> Result<(), IrError> {
         let i8_ty = m.i8_type();
         let fn_ty = m.fn_type(i8_ty, [i8_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let x: IntValue<i8> = f.param(0)?.try_into()?;
+        let x: IntValue<i8> = m.view(f).param(0)?.try_into()?;
         let square = b.build_int_mul_with_flags(x, x, MulFlags::new().nsw(), "square")?;
 
         let dl = m.data_layout();
@@ -240,7 +240,7 @@ fn pointer_null_and_alloca_alignment_compute_low_zero_bits() -> Result<(), IrErr
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(ptr_ty.as_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let alloca = b.build_alloca_with_align(i32_ty, Align::new(16)?, "slot")?;
 
@@ -273,9 +273,9 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         let fn_ty = m.fn_type(i1_ty, [ptr_ty.as_type()], false);
 
         let f0 = m.add_function_dyn("test0", fn_ty, Linkage::External)?;
-        let entry0 = f0.append_basic_block(&m, "entry");
+        let entry0 = m.view(f0).append_basic_block(&m, "entry");
         let b0 = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry0);
-        let p0: PointerValue = f0.param(0)?.try_into()?;
+        let p0: PointerValue = m.view(f0).param(0)?.try_into()?;
         let val0 = b0.build_int_load::<i8, _, _>(p0, "val")?;
         let lo0 = m.metadata_constant(i8_ty.const_int(-50_i8));
         let hi0 = m.metadata_constant(i8_ty.const_int(0_i8));
@@ -288,9 +288,9 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         b0.build_ret(cmp0)?;
 
         let f1 = m.add_function_dyn("test1", fn_ty, Linkage::External)?;
-        let entry1 = f1.append_basic_block(&m, "entry");
+        let entry1 = m.view(f1).append_basic_block(&m, "entry");
         let b1 = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry1);
-        let p1: PointerValue = f1.param(0)?.try_into()?;
+        let p1: PointerValue = m.view(f1).param(0)?.try_into()?;
         let val1 = b1.build_int_load::<i8, _, _>(p1, "val")?;
         let lo1 = m.metadata_constant(i8_ty.const_int(64_i8));
         let hi1 = m.metadata_constant(i8_ty.const_ap_int(&ApInt::from_words(8, &[128]))?);
@@ -303,9 +303,9 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         b1.build_ret(cmp1)?;
 
         let f2 = m.add_function_dyn("test2", fn_ty, Linkage::External)?;
-        let entry2 = f2.append_basic_block(&m, "entry");
+        let entry2 = m.view(f2).append_basic_block(&m, "entry");
         let b2 = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry2);
-        let p2: PointerValue = f2.param(0)?.try_into()?;
+        let p2: PointerValue = m.view(f2).param(0)?.try_into()?;
         let val2 = b2.build_int_load::<i8, _, _>(p2, "val")?;
         let lo2 = m.metadata_constant(i8_ty.const_int(64_i8));
         let hi2 = m.metadata_constant(i8_ty.const_ap_int(&ApInt::from_words(8, &[129]))?);
@@ -341,7 +341,7 @@ fn call_return_range_attribute_contributes_known_bits() -> Result<(), IrError> {
             .as_function();
         let caller_ty = m.fn_type_no_params(i1_ty, false);
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-        let entry = caller.append_basic_block(&m, "entry");
+        let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
         let mut return_attrs = AttributeStorage::new();
@@ -352,7 +352,7 @@ fn call_return_range_attribute_contributes_known_bits() -> Result<(), IrError> {
         );
         let attrs = CallAttributeData::new(return_attrs, Box::new([]), AttributeStorage::new());
         let call = b
-            .call_builder(callee)
+            .call_builder(m.view(callee))
             .call_attributes(attrs)
             .name("val")
             .build()?;
@@ -395,17 +395,17 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
 
         let caller_ty = m.fn_type_no_params(void_ty, false);
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-        let call_entry = caller.append_basic_block(&m, "call.entry");
-        let invoke_entry = caller.append_basic_block(&m, "invoke.entry");
-        let invoke_normal = caller.append_basic_block(&m, "invoke.normal");
-        let invoke_unwind = caller.append_basic_block(&m, "invoke.unwind");
+        let call_entry = m.view(caller).append_basic_block(&m, "call.entry");
+        let invoke_entry = m.view(caller).append_basic_block(&m, "invoke.entry");
+        let invoke_normal = m.view(caller).append_basic_block(&m, "invoke.normal");
+        let invoke_unwind = m.view(caller).append_basic_block(&m, "invoke.unwind");
         let invoke_entry_label = invoke_entry.label();
         let invoke_normal_label = invoke_normal.label();
         let invoke_unwind_label = invoke_unwind.label();
 
         let call_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(call_entry);
         let call = call_b
-            .call_builder(callee)
+            .call_builder(m.view(callee))
             .arg(i8_ty.const_int(0xa5_u8))
             .call_attributes(attrs.clone())
             .name("call")
@@ -416,7 +416,7 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
         let (_, invoke) = IRBuilder::with_folder(&m, NoFolder)
             .position_at_end(invoke_entry)
             .build_invoke_dyn_with_config(
-                callee,
+                m.view(callee),
                 [i8_ty.const_int(0x3c_u8)],
                 invoke_normal_label,
                 invoke_unwind_label,
@@ -454,12 +454,12 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
 
         let caller_ty = m.fn_type_no_params(void_ty, false);
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-        let entry = caller.append_basic_block(&m, "entry");
+        let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
         let abs_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.abs.i8")?;
         let abs_call = b
-            .call_builder(abs_fn)
+            .call_builder(m.view(abs_fn))
             .arg(i8_ty.const_int(-5_i8))
             .arg(i1_ty.const_int(true))
             .name("abs")
@@ -472,7 +472,7 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
 
         let bitreverse_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.bitreverse.i8")?;
         let bitreverse_call = b
-            .call_builder(bitreverse_fn)
+            .call_builder(m.view(bitreverse_fn))
             .arg(i8_ty.const_int(0x10_u8))
             .name("rev")
             .build()?;
@@ -484,7 +484,7 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
 
         let ctlz_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.ctlz.i8")?;
         let ctlz_call = b
-            .call_builder(ctlz_fn)
+            .call_builder(m.view(ctlz_fn))
             .arg(i8_ty.const_int(0x10_u8))
             .arg(i1_ty.const_int(true))
             .name("ctlz")
@@ -497,7 +497,7 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
 
         let ctpop_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.ctpop.i8")?;
         let ctpop_call = b
-            .call_builder(ctpop_fn)
+            .call_builder(m.view(ctpop_fn))
             .arg(i8_ty.const_int(0x0f_u8))
             .name("pop")
             .build()?;
@@ -509,7 +509,7 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
 
         let uadd_sat_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.uadd.sat.i8")?;
         let uadd_sat_call = b
-            .call_builder(uadd_sat_fn)
+            .call_builder(m.view(uadd_sat_fn))
             .arg(i8_ty.const_int(250_u8))
             .arg(i8_ty.const_int(10_u8))
             .name("usat")
@@ -522,7 +522,7 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
 
         let smax_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.smax.i8")?;
         let smax_call = b
-            .call_builder(smax_fn)
+            .call_builder(m.view(smax_fn))
             .arg(i8_ty.const_int(-5_i8))
             .arg(i8_ty.const_int(7_i8))
             .name("smax")
@@ -535,7 +535,7 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
 
         let bswap_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.bswap.i16")?;
         let bswap_call = b
-            .call_builder(bswap_fn)
+            .call_builder(m.view(bswap_fn))
             .arg(i16_ty.const_int(0x1234_u16))
             .name("swap")
             .build()?;
@@ -547,7 +547,7 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
 
         let fshl_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.fshl.i8")?;
         let fshl_call = b
-            .call_builder(fshl_fn)
+            .call_builder(m.view(fshl_fn))
             .arg(i8_ty.const_int(0x12_u8))
             .arg(i8_ty.const_int(0x34_u8))
             .arg(i8_ty.const_int(4_u8))
@@ -593,13 +593,13 @@ fn intrinsic_known_bits_ignore_mismatched_declarations() -> Result<(), IrError> 
         let void_ty = m.void_type();
         let caller_ty = m.fn_type_no_params(void_ty, false);
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-        let entry = caller.append_basic_block(&m, "entry");
+        let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
         let malformed_ty = m.fn_type(i16_ty, [i16_ty.as_type(), i1_ty.as_type()], false);
         let malformed = m.add_function_dyn("not.llvm.abs.i8", malformed_ty, Linkage::External)?;
         let call_call = b
-            .call_builder(malformed)
+            .call_builder(m.view(malformed))
             .arg(i16_ty.const_int(-5_i16))
             .arg(i1_ty.const_int(true))
             .name("abs")
@@ -630,9 +630,9 @@ fn query_carries_context_demanded_elements_and_instr_info_policy() -> Result<(),
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i8_ty, [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let p: PointerValue = f.param(0)?.try_into()?;
+        let p: PointerValue = m.view(f).param(0)?.try_into()?;
         let load = b.build_int_load::<i8, _, _>(p, "load")?;
         let load_inst = InstructionView::try_from(b.view(load).into_erased())?;
         let demanded = ApInt::from_words(1, &[1]);
@@ -658,7 +658,7 @@ fn function_analysis_caches_known_bits_queries() -> Result<(), IrError> {
         let i8_ty = m.i8_type();
         let fn_ty = m.fn_type_no_params(i8_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
         let value = b.build_int_and::<i8, _, _, _>(
@@ -670,7 +670,7 @@ fn function_analysis_caches_known_bits_queries() -> Result<(), IrError> {
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(KnownBitsAnalysis);
 
-        let result = fam.get_result::<KnownBitsAnalysis, _>(f)?;
+        let result = fam.get_result::<KnownBitsAnalysis, _>(m.view(f))?;
         assert_eq!(
             result
                 .compute_known_bits(b.view(value).into_erased())?
@@ -678,7 +678,10 @@ fn function_analysis_caches_known_bits_queries() -> Result<(), IrError> {
             "10100000"
         );
         assert!(result.is_known_non_zero(b.view(value).into_erased())?);
-        assert!(fam.get_cached_result::<KnownBitsAnalysis, _>(f).is_some());
+        assert!(
+            fam.get_cached_result::<KnownBitsAnalysis, _>(m.view(f))
+                .is_some()
+        );
         Ok(())
     })
 }
@@ -692,7 +695,7 @@ fn known_bits_analysis_invalidates_with_dominator_tree_dependency() -> Result<()
         let i8_ty = m.i8_type();
         let fn_ty = m.fn_type_no_params(i8_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let value = b.build_int_and::<i8, _, _, _>(
             i8_ty.const_int(0b1111_0000_u8),
@@ -705,9 +708,9 @@ fn known_bits_analysis_invalidates_with_dominator_tree_dependency() -> Result<()
         fam.register_pass(DominatorTreeAnalysis);
         fam.register_pass(KnownBitsAnalysis);
 
-        let _ = fam.get_result::<DominatorTreeAnalysis, _>(f)?;
+        let _ = fam.get_result::<DominatorTreeAnalysis, _>(m.view(f))?;
         {
-            let result = fam.get_result::<KnownBitsAnalysis, _>(f)?;
+            let result = fam.get_result::<KnownBitsAnalysis, _>(m.view(f))?;
             let query: ValueTrackingQuery<'_, '_, Brand<'_>> = result.query();
             assert!(query.dominator_tree().is_some());
         }
@@ -715,13 +718,19 @@ fn known_bits_analysis_invalidates_with_dominator_tree_dependency() -> Result<()
         let mut preserves_known_bits_and_cfg = PreservedAnalyses::none();
         preserves_known_bits_and_cfg.preserve::<KnownBitsAnalysis>();
         preserves_known_bits_and_cfg.preserve_set::<CFGAnalyses>();
-        fam.invalidate(f, &preserves_known_bits_and_cfg)?;
-        assert!(fam.get_cached_result::<KnownBitsAnalysis, _>(f).is_some());
+        fam.invalidate(m.view(f), &preserves_known_bits_and_cfg)?;
+        assert!(
+            fam.get_cached_result::<KnownBitsAnalysis, _>(m.view(f))
+                .is_some()
+        );
 
         let mut preserves_known_bits_only = PreservedAnalyses::none();
         preserves_known_bits_only.preserve::<KnownBitsAnalysis>();
-        fam.invalidate(f, &preserves_known_bits_only)?;
-        assert!(fam.get_cached_result::<KnownBitsAnalysis, _>(f).is_none());
+        fam.invalidate(m.view(f), &preserves_known_bits_only)?;
+        assert!(
+            fam.get_cached_result::<KnownBitsAnalysis, _>(m.view(f))
+                .is_none()
+        );
         Ok(())
     })
 }
@@ -734,9 +743,9 @@ fn shift_with_possible_invalid_amount_is_unknown_after_freeze() -> Result<(), Ir
         let i4_ty = m.int_type_n::<4>();
         let fn_ty = m.fn_type(i4_ty, [i4_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let x: IntValue<Width<4>> = f.param(0)?.try_into()?;
+        let x: IntValue<Width<4>> = m.view(f).param(0)?.try_into()?;
         let one = i4_ty.const_ap_int(&ApInt::from_words(4, &[1]))?;
         let eight = i4_ty.const_ap_int(&ApInt::from_words(4, &[8]))?;
         let shift = b.build_int_and::<Width<4>, _, _, _>(x, eight, "shift")?;
@@ -759,7 +768,7 @@ fn addrspacecast_drops_source_pointer_known_bits() -> Result<(), IrError> {
         let ptr1_ty = m.ptr_type(1);
         let fn_ty = m.fn_type_no_params(ptr1_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let slot = b.build_alloca_with_align(i32_ty, Align::new(16)?, "slot")?;
         let cast = b.build_addrspace_cast(slot, ptr1_ty, "cast")?;
@@ -779,7 +788,7 @@ fn freeze_of_exact_shift_that_can_poison_is_unknown() -> Result<(), IrError> {
         let i4_ty = m.int_type_n::<4>();
         let fn_ty = m.fn_type_no_params(i4_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let one = i4_ty.const_ap_int(&ApInt::from_words(4, &[1]))?;
         let lshr = b.build_int_lshr_with_flags::<Width<4>, _, _, _>(
@@ -814,7 +823,7 @@ fn gep_and_vector_lane_operations_compute_known_bits() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type_no_params(void_ty.as_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
         let slot = b.build_alloca_with_align(i32_ty, Align::new(16)?, "slot")?;

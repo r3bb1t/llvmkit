@@ -90,10 +90,10 @@ fn build_invoke_caller<'ctx>(
         .add_typed_function::<(), (), _>("caller", Linkage::External)?
         .as_function();
 
-    let entry = caller.append_basic_block(m, "entry");
-    let normal = caller.append_basic_block(m, "normal");
-    let unwind = caller.append_basic_block(m, "unwind");
-    let new = caller.append_basic_block(m, "new");
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let normal = m.view(caller).append_basic_block(m, "normal");
+    let unwind = m.view(caller).append_basic_block(m, "unwind");
+    let new = m.view(caller).append_basic_block(m, "new");
     // Capture the labels before `position_at_end` consumes the block handles.
     let normal_lbl = normal.label();
     let unwind_lbl = unwind.label();
@@ -107,8 +107,14 @@ fn build_invoke_caller<'ctx>(
     bnew.build_ret_void();
 
     let b = IRBuilder::new_for::<()>(m).position_at_end(entry);
-    let _ = b.build_invoke_dyn(callee, Vec::<Value>::new(), normal_lbl, unwind_lbl, "")?;
-    Ok((caller, new_dyn))
+    let _ = b.build_invoke_dyn(
+        m.view(callee),
+        Vec::<Value>::new(),
+        normal_lbl,
+        unwind_lbl,
+        "",
+    )?;
+    Ok((m.view(caller), new_dyn))
 }
 
 /// `edit_invoke(..).redirect_normal(new, [])` retargets ONLY the normal edge;
@@ -200,10 +206,10 @@ fn build_callbr_caller<'ctx>(
         .add_typed_function::<(), (), _>("caller", Linkage::External)?
         .as_function();
 
-    let entry = caller.append_basic_block(m, "entry");
-    let cont = caller.append_basic_block(m, "cont");
-    let ind = caller.append_basic_block(m, "ind");
-    let new = caller.append_basic_block(m, "new");
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let cont = m.view(caller).append_basic_block(m, "cont");
+    let ind = m.view(caller).append_basic_block(m, "ind");
+    let new = m.view(caller).append_basic_block(m, "new");
     // Capture the labels before `position_at_end` consumes the block handles.
     let cont_lbl = cont.label();
     let ind_lbl = ind.label();
@@ -217,8 +223,8 @@ fn build_callbr_caller<'ctx>(
     bnew.build_ret_void();
 
     let b = IRBuilder::new_for::<()>(m).position_at_end(entry);
-    let _ = b.build_callbr(callee, Vec::<Value>::new(), cont_lbl, [ind_lbl], "")?;
-    Ok((caller, new_dyn))
+    let _ = b.build_callbr(m.view(callee), Vec::<Value>::new(), cont_lbl, [ind_lbl], "")?;
+    Ok((m.view(caller), new_dyn))
 }
 
 /// `edit_callbr(..).redirect_default(new, [])` retargets the fallthrough edge.
@@ -304,9 +310,9 @@ fn build_cond_br_fn<'ctx>(
     let f = m
         .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
         .as_function();
-    let entry = f.append_basic_block(m, "entry");
-    let then_bb = f.append_basic_block(m, "then");
-    let else_bb = f.append_basic_block(m, "else");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let then_bb = m.view(f).append_basic_block(m, "then");
+    let else_bb = m.view(f).append_basic_block(m, "else");
     // Capture the labels before `position_at_end` consumes the block handles.
     let then_lbl = then_bb.label();
     let else_lbl = else_bb.label();
@@ -317,10 +323,10 @@ fn build_cond_br_fn<'ctx>(
     be.build_ret(i32_ty.const_int(1_u32))?;
 
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
     b.build_cond_br(c, then_lbl, else_lbl)?;
-    Ok(f)
+    Ok(m.view(f))
 }
 
 /// `edit_cond_br(..).remove_then()` collapses the `cond_br` to `br label
@@ -414,11 +420,11 @@ fn build_switch_fn<'ctx>(
     let f = m
         .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
         .as_function();
-    let entry = f.append_basic_block(m, "entry");
-    let dflt = f.append_basic_block(m, "dflt");
-    let case0 = f.append_basic_block(m, "case0");
-    let case1 = f.append_basic_block(m, "case1");
-    let new = f.append_basic_block(m, "new");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let dflt = m.view(f).append_basic_block(m, "dflt");
+    let case0 = m.view(f).append_basic_block(m, "case0");
+    let case1 = m.view(f).append_basic_block(m, "case1");
+    let new = m.view(f).append_basic_block(m, "new");
     // Capture the labels before `position_at_end` consumes the block handles.
     let dflt_lbl = dflt.label();
     let case0_lbl = case0.label();
@@ -432,11 +438,11 @@ fn build_switch_fn<'ctx>(
     }
 
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let (_sealed, sw) = b.build_switch_dyn(a, dflt_lbl, "")?;
     let sw = sw.add_case(i32_ty.const_int(0_u32), case0_lbl)?;
     sw.add_case(i32_ty.const_int(1_u32), case1_lbl)?.finish();
-    Ok((f, case0_dyn, new_dyn))
+    Ok((m.view(f), case0_dyn, new_dyn))
 }
 
 /// `edit_switch(..).redirect_successor(case0, new, [])` retargets the case-0
@@ -550,13 +556,16 @@ fn build_switch_bogus_fn<'ctx>(
     let f = m
         .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
         .as_function();
-    let entry = f.append_basic_block(m, "entry");
-    let dflt = f.append_basic_block(m, "dflt");
-    let case0 = f.append_basic_block(m, "case0");
-    let bogus = f.append_basic_block(m, "bogus");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let dflt = m.view(f).append_basic_block(m, "dflt");
+    let case0 = m.view(f).append_basic_block(m, "case0");
+    let bogus = m.view(f).append_basic_block(m, "bogus");
     // new(%np: i32): a head-phi authored as a block parameter, seeded by `dflt`.
-    let (new, new_params) =
-        IRBuilder::new_for::<i32>(m).append_block_with_params(f, &[i32_ty.as_type()], "new")?;
+    let (new, new_params) = IRBuilder::new_for::<i32>(m).append_block_with_params(
+        m.view(f),
+        &[i32_ty.as_type()],
+        "new",
+    )?;
 
     let dflt_lbl = dflt.label();
     let case0_lbl = case0.label();
@@ -566,14 +575,14 @@ fn build_switch_bogus_fn<'ctx>(
 
     // entry: %ev = add %a, 3 ; switch %a, default %dflt [ 0 -> case0 ]
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let ev = b.build_int_add(a, 3_i32, "ev")?;
     let (_sealed, sw) = b.build_switch_dyn(a, dflt_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), case0_lbl)?.finish();
 
     // dflt: %nd = add %a, 5 ; br new(%nd)
     let b = IRBuilder::new_for::<i32>(m).position_at_end(dflt);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let nd = b.build_int_add(a, 5_i32, "nd")?;
     b.build_br_with_args(new_lbl, &[m.view(nd).into_erased()])?;
 
@@ -590,7 +599,7 @@ fn build_switch_bogus_fn<'ctx>(
     let np: IntValue<i32> = new_params[0].try_into()?;
     b.build_ret(np)?;
 
-    Ok((f, bogus_dyn, new_dyn, m.view(ev).into_erased()))
+    Ok((m.view(f), bogus_dyn, new_dyn, m.view(ev).into_erased()))
 }
 
 /// `redirect_successor` rejects an `old_to` that is not a case successor of the
@@ -682,14 +691,15 @@ fn edit_terminator_ret_is_uneditable() -> Result<(), IrError> {
         let f = m
             .add_typed_function::<i32, (), _>("f", Linkage::External)?
             .as_function();
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         b.build_ret(i32_ty.const_int(0_u32))?;
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
         // The pass's internal assertion is the test; a clean run means it held.
-        let _ = run_function_pass(AssertUneditable, verified, f, &mut analyses)?;
+        let f_view = verified.view(f);
+        let _ = run_function_pass(AssertUneditable, verified, f_view, &mut analyses)?;
         Ok(())
     })
 }
