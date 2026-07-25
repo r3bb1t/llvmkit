@@ -474,8 +474,8 @@ where
         self,
         anchor: &InstructionView<'ctx, B>,
     ) -> IRBuilder<'m, 'ctx, B, F, Positioned, R> {
-        let anchor_id = anchor.id();
-        let parent_block_id = anchor.parent().id();
+        let anchor_id = anchor.slot();
+        let parent_block_id = anchor.parent().slot();
         let label_ty = self.module.label_type().as_type().id();
         let bb = BasicBlock::<R, Unterminated, B>::from_parts(
             parent_block_id,
@@ -511,7 +511,7 @@ where
             match inst.kind() {
                 Some(InstructionKind::Alloca(_)) => continue,
                 _ => {
-                    anchor = Some(inst.id());
+                    anchor = Some(inst.slot());
                     break;
                 }
             }
@@ -531,7 +531,7 @@ where
     /// `IRBuilder::saveIP` (returns `InsertPoint(BB, InsertPt)`).
     pub fn save_insert_point(&self) -> InsertPoint<'ctx, R, B> {
         InsertPoint {
-            block_id: self.insert_block.as_ref().map(|bb| bb.id()),
+            block_id: self.insert_block.as_ref().map(|bb| bb.slot()),
             before: self.insert_before,
             _marker: PhantomData,
         }
@@ -643,7 +643,7 @@ where
         // block with a different value is meaningless in any CFG (the
         // InstCombine #196954 bug class). A same-block same-value duplicate
         // stays legal (multi-edges from `switch`).
-        let block_id = block.id();
+        let block_id = block.slot();
         if phi_payload
             .incoming
             .borrow()
@@ -754,7 +754,7 @@ where
     {
         let module = Module::<'ctx, B, Unverified>::from_core(self.module);
         let bb = function.append_basic_block(&module, name);
-        let bb_id = bb.id();
+        let bb_id = bb.slot();
         let mut params = Vec::with_capacity(param_types.len());
         for ty in param_types {
             params.push(self.make_phi_in_block(bb_id, ty.id(), ""));
@@ -787,7 +787,7 @@ where
     {
         let module = Module::<'ctx, B, Unverified>::from_core(self.module);
         let bb = function.append_basic_block(&module, name);
-        let bb_id = bb.id();
+        let bb_id = bb.slot();
         let mut out = Vec::with_capacity(params.len());
         for (ty, param_name) in params {
             out.push(self.make_phi_in_block(bb_id, ty.id(), param_name));
@@ -838,7 +838,7 @@ where
         // cannot fail at this step).
         let param_types = Params::ir_types(&module)?;
         let bb = function.append_basic_block(&module, name);
-        let bb_id = bb.id();
+        let bb_id = bb.slot();
         let mut phi_values = Vec::with_capacity(param_types.len());
         for ty in &param_types {
             phi_values.push(self.make_phi_in_block(bb_id, ty.id(), ""));
@@ -963,7 +963,7 @@ where
         if let Some(folded) = self.folder.fold_int_bin_op(BinaryOpcode::Add, lhs, rhs)? {
             return self.accept_folded_int(folded, lhs);
         }
-        let payload = BinaryOpData::new(lhs.id(), rhs.id());
+        let payload = BinaryOpData::new(lhs.slot(), rhs.slot());
         Ok(self.append_int_like(lhs, InstructionKindData::Add(payload), name))
     }
 
@@ -985,7 +985,7 @@ where
         if let Some(folded) = self.folder.fold_int_bin_op(BinaryOpcode::Sub, lhs, rhs)? {
             return self.accept_folded_int(folded, lhs);
         }
-        let payload = BinaryOpData::new(lhs.id(), rhs.id());
+        let payload = BinaryOpData::new(lhs.slot(), rhs.slot());
         Ok(self.append_int_like(lhs, InstructionKindData::Sub(payload), name))
     }
 
@@ -1501,7 +1501,7 @@ where
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
-        let mut payload = BinaryOpData::new(lhs.id(), rhs.id());
+        let mut payload = BinaryOpData::new(lhs.slot(), rhs.slot());
         flags.apply(&mut payload);
         let folded = if payload.is_exact {
             self.folder.fold_int_bin_op_exact(opcode, lhs, rhs)?
@@ -1544,7 +1544,7 @@ where
         if let Some(folded) = self.folder.fold_int_bin_op(opcode, lhs, rhs)? {
             return self.accept_folded_int(folded, lhs);
         }
-        let payload = BinaryOpData::new(lhs.id(), rhs.id());
+        let payload = BinaryOpData::new(lhs.slot(), rhs.slot());
         Ok(self.append_int_like(lhs, kind_ctor(payload), name))
     }
 
@@ -1855,7 +1855,7 @@ where
         if let Some(folded) = self.folder.fold_fp_bin_op(opcode, lhs, rhs, self.fmf)? {
             return self.accept_folded_fp(folded, lhs);
         }
-        let mut payload = BinaryOpData::new(lhs.id(), rhs.id());
+        let mut payload = BinaryOpData::new(lhs.slot(), rhs.slot());
         // Apply the builder-context FMF (parallel to upstream
         // `IRBuilderBase::setFPAttrs` in `IRBuilder.h`, which calls
         // `I->setFastMathFlags(FMF)` on every FP-math instruction).
@@ -1886,7 +1886,7 @@ where
         if let Some(folded) = self.folder.fold_fp_bin_op(opcode, lhs, rhs, fmf)? {
             return self.accept_folded_fp(folded, lhs);
         }
-        let mut payload = BinaryOpData::new(lhs.id(), rhs.id());
+        let mut payload = BinaryOpData::new(lhs.slot(), rhs.slot());
         payload.fmf = fmf;
         Ok(self.append_fp_like(lhs, kind_ctor(payload), name))
     }
@@ -2034,7 +2034,7 @@ where
         if let Some(folded) = self.folder.fold_fp_cmp(pred, lhs, rhs)? {
             return Ok(folded);
         }
-        let mut payload = crate::instr_types::FCmpInstData::new(pred, lhs.id(), rhs.id());
+        let mut payload = crate::instr_types::FCmpInstData::new(pred, lhs.slot(), rhs.slot());
         payload.fmf = fmf;
         Ok(self.append_int_at(i1, InstructionKindData::FCmp(payload), name))
     }
@@ -2060,7 +2060,7 @@ where
         if let Some(folded) = self.folder.fold_fp_cmp(pred, lhs, rhs)? {
             return Ok(folded);
         }
-        let mut payload = crate::instr_types::FCmpInstData::new(pred, lhs.id(), rhs.id());
+        let mut payload = crate::instr_types::FCmpInstData::new(pred, lhs.slot(), rhs.slot());
         // Apply builder-context FMF (`fcmp` is an `FPMathOperator` upstream).
         payload.fmf = self.fmf;
         Ok(self.append_int_at(i1, InstructionKindData::FCmp(payload), name))
@@ -2402,7 +2402,7 @@ where
         if let Some(folded) = self.folder.fold_fp_un_op(UnaryOpcode::FNeg, v, fmf)? {
             return self.accept_folded_fp(folded, v);
         }
-        let payload = FNegInstData::new(v.id(), fmf);
+        let payload = FNegInstData::new(v.slot(), fmf);
         Ok(self.append_fp_like(v, InstructionKindData::FNeg(payload), name))
     }
 
@@ -3195,7 +3195,7 @@ where
         )? {
             return self.accept_folded_cast_int(folded, dst_ty);
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.id());
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.slot());
         Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
@@ -3230,7 +3230,7 @@ where
         )? {
             return self.accept_folded_cast_int(folded, dst_ty);
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.id());
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.slot());
         payload.nuw.set(flags.nuw);
         payload.nsw.set(flags.nsw);
         Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
@@ -3260,7 +3260,7 @@ where
         )? {
             return self.accept_folded_cast_int(folded, dst_ty);
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, value.id());
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, value.slot());
         Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
@@ -3289,7 +3289,7 @@ where
         )? {
             return self.accept_folded_cast_int(folded, dst_ty);
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, value.id());
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, value.slot());
         payload.nneg.set(flags.nneg);
         Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
@@ -3318,7 +3318,7 @@ where
         )? {
             return self.accept_folded_cast_int(folded, dst_ty);
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::SExt, value.id());
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::SExt, value.slot());
         Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
@@ -3352,7 +3352,7 @@ where
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.id());
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.slot());
         Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
@@ -3385,7 +3385,7 @@ where
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.id());
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.slot());
         payload.nuw.set(flags.nuw);
         payload.nsw.set(flags.nsw);
         Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
@@ -3435,7 +3435,7 @@ where
             let folded = self.checked_folded_value(folded, dst.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, src.id());
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, src.slot());
         payload.nneg.set(flags.nneg);
         Ok(self.append_int_at(dst, InstructionKindData::Cast(payload), name))
     }
@@ -3478,7 +3478,7 @@ where
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
         }
-        let payload = CastOpData::new(opcode, value.id());
+        let payload = CastOpData::new(opcode, value.slot());
         Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
@@ -3540,7 +3540,7 @@ where
         let n = num_elements.into_int_value(ModuleRef::new(self.module))?;
         self.build_alloca_inner(
             ty.as_type().id(),
-            Some(n.id()),
+            Some(n.slot()),
             MaybeAlign::NONE,
             self.alloca_addr_space(),
             crate::instr_types::AllocaFlags::none(),
@@ -3565,7 +3565,7 @@ where
         let n = num_elements.into_int_value(ModuleRef::new(self.module))?;
         self.build_alloca_inner(
             ty.as_type().id(),
-            Some(n.id()),
+            Some(n.slot()),
             MaybeAlign::new(align),
             self.alloca_addr_space(),
             crate::instr_types::AllocaFlags::none(),
@@ -3641,7 +3641,7 @@ where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
     {
-        let size = num_elements.map(|n| n.id());
+        let size = num_elements.map(|n| n.slot());
         let addr_space = addr_space.unwrap_or_else(|| self.alloca_addr_space());
         self.build_alloca_inner(ty.as_type().id(), size, align, addr_space, flags, name)
     }
@@ -3675,7 +3675,7 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty_id,
-            p.id(),
+            p.slot(),
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
@@ -3703,7 +3703,7 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty_id,
-            p.id(),
+            p.slot(),
             MaybeAlign::new(align),
             false,
             AtomicOrdering::NotAtomic,
@@ -3726,7 +3726,7 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            p.id(),
+            p.slot(),
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
@@ -3750,7 +3750,7 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            p.id(),
+            p.slot(),
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
@@ -3770,7 +3770,7 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            p.id(),
+            p.slot(),
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
@@ -3794,7 +3794,7 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            p.id(),
+            p.slot(),
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
@@ -3816,7 +3816,7 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            p.id(),
+            p.slot(),
             MaybeAlign::NONE,
             false,
             AtomicOrdering::NotAtomic,
@@ -3841,7 +3841,7 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            p.id(),
+            p.slot(),
             MaybeAlign::new(align),
             false,
             AtomicOrdering::NotAtomic,
@@ -3915,7 +3915,7 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty_id,
-            p.id(),
+            p.slot(),
             MaybeAlign::NONE,
             true,
             AtomicOrdering::NotAtomic,
@@ -3943,7 +3943,7 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty_id,
-            p.id(),
+            p.slot(),
             MaybeAlign::new(align),
             true,
             AtomicOrdering::NotAtomic,
@@ -4104,7 +4104,7 @@ where
         };
         Ok(StoreInstData::new(
             v.id,
-            p.id(),
+            p.slot(),
             align,
             volatile,
             ordering,
@@ -4137,7 +4137,7 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty.as_type().id(),
-            p.id(),
+            p.slot(),
             MaybeAlign::new(config.align_value()),
             config.is_volatile(),
             config.ordering_value(),
@@ -4165,7 +4165,7 @@ where
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let payload = LoadInstData::new(
             ty_id,
-            p.id(),
+            p.slot(),
             MaybeAlign::new(config.align_value()),
             config.is_volatile(),
             config.ordering_value(),
@@ -4273,7 +4273,7 @@ where
         let f = callee.as_function();
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let payload = crate::instr_types::CallInstData::new(
-            f.id(),
+            f.slot(),
             f.signature().as_type().id(),
             arg_ids,
             f.calling_conv(),
@@ -4309,7 +4309,7 @@ where
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let (name, calling_conv, attrs) = config.into_parts();
         let payload = crate::instr_types::CallInstData::new_with_attrs(
-            f.id(),
+            f.slot(),
             f.signature().as_type().id(),
             arg_ids,
             calling_conv,
@@ -4376,9 +4376,9 @@ where
     {
         let f = callee.as_function();
         let mut arg_ids: Vec<ValueSlot> = fixed_args.lower(ModuleRef::new(self.module))?.into_vec();
-        arg_ids.extend(varargs.into_iter().map(|v| v.id()));
+        arg_ids.extend(varargs.into_iter().map(|v| v.slot()));
         let payload = crate::instr_types::CallInstData::new(
-            f.id(),
+            f.slot(),
             f.signature().as_type().id(),
             arg_ids,
             f.calling_conv(),
@@ -4521,7 +4521,7 @@ where
     ) -> CallBuilder<'_, 'm, 'ctx, B, F, R, R2> {
         CallBuilder {
             parent: self,
-            callee_id: callee.id(),
+            callee_id: callee.slot(),
             fn_ty: callee.signature().as_type().id(),
             return_ty: callee.return_type().id(),
             args: Vec::new(),
@@ -4910,7 +4910,7 @@ where
         for index in indices {
             let iv = index.into_int_value(ModuleRef::new(self.module))?;
             idx_values.push(iv.into_erased());
-            idx_ids.push(iv.id());
+            idx_ids.push(iv.slot());
         }
         // Reject index sequences that do not index into the source element
         // type (`GetElementPtrInst::getIndexedType`) — the parser's
@@ -5182,7 +5182,7 @@ where
             let folded = self.checked_folded_value(folded, dst.as_type().id())?;
             return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded));
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::UIToFp, src.id());
+        let payload = CastOpData::new(crate::instr_types::CastOpcode::UIToFp, src.slot());
         payload.nneg.set(flags.nneg);
         Ok(self.append_fp_at(dst, InstructionKindData::Cast(payload), name))
     }
@@ -5593,7 +5593,7 @@ where
         if let Some(folded) = folder::narrow_folded_bool(folded)? {
             return Ok(folded);
         }
-        let payload = super::instr_types::CmpInstData::new(pred, lhs.id(), rhs.id());
+        let payload = super::instr_types::CmpInstData::new(pred, lhs.slot(), rhs.slot());
         let i1 = ModuleView::<B>::new(self.module).bool_type();
         Ok(self.append_int_at(i1, InstructionKindData::ICmp(payload), name))
     }
@@ -5719,7 +5719,7 @@ where
         if let Some(folded) = self.folder.fold_int_cmp(pred, lhs, rhs)? {
             return Ok(folded);
         }
-        let payload = crate::instr_types::CmpInstData::new(pred, lhs.id(), rhs.id());
+        let payload = crate::instr_types::CmpInstData::new(pred, lhs.slot(), rhs.slot());
         Ok(self.append_int_at(i1, InstructionKindData::ICmp(payload), name))
     }
 
@@ -5752,7 +5752,7 @@ where
         if let Some(folded) = self.folder.fold_int_cmp(predicate, lhs, rhs)? {
             return Ok(folded);
         }
-        let mut payload = crate::instr_types::CmpInstData::new(predicate, lhs.id(), rhs.id());
+        let mut payload = crate::instr_types::CmpInstData::new(predicate, lhs.slot(), rhs.slot());
         payload.samesign = flags.samesign;
         Ok(self.append_int_at(i1, InstructionKindData::ICmp(payload), name))
     }
@@ -5775,7 +5775,7 @@ where
         if let Some(folded) = self.folder.fold_int_cmp(pred, lhs, rhs)? {
             return Ok(folded);
         }
-        let mut payload = crate::instr_types::CmpInstData::new(pred, lhs.id(), rhs.id());
+        let mut payload = crate::instr_types::CmpInstData::new(pred, lhs.slot(), rhs.slot());
         payload.samesign = flags.samesign;
         Ok(self.append_int_at(i1, InstructionKindData::ICmp(payload), name))
     }
@@ -6246,7 +6246,7 @@ where
         let target = target.into_basic_block_label();
         let payload = crate::instr_types::BranchInstData {
             kind: core::cell::RefCell::new(crate::instr_types::BranchKind::Unconditional(
-                target.id(),
+                target.slot(),
             )),
         };
         let void_ty = self.module.void_type().as_type().id();
@@ -6275,9 +6275,9 @@ where
         let cond = cond.into_int_value(ModuleRef::new(self.module))?;
         let payload = crate::instr_types::BranchInstData {
             kind: core::cell::RefCell::new(crate::instr_types::BranchKind::Conditional {
-                cond: core::cell::Cell::new(cond.id()),
-                then_bb: then_bb.id(),
-                else_bb: else_bb.id(),
+                cond: core::cell::Cell::new(cond.slot()),
+                then_bb: then_bb.slot(),
+                else_bb: else_bb.slot(),
             }),
         };
         let void_ty = self.module.void_type().as_type().id();
@@ -6395,7 +6395,7 @@ where
         // Scan from the block top and stop at the first non-phi (phis are
         // grouped at the head) — the pattern the CFG splitter uses.
         let target_block =
-            BasicBlock::<Dyn, Terminated, B>::from_parts(target.id(), module_ref, label_ty);
+            BasicBlock::<Dyn, Terminated, B>::from_parts(target.slot(), module_ref, label_ty);
         let mut param_phis: Vec<ValueSlot> = Vec::new();
         for inst_id in target_block.instruction_ids() {
             let data = self.module.context().value_data(inst_id);
@@ -6439,7 +6439,7 @@ where
         // matching parameter-phi (types already validated above; the erased
         // path re-checks and registers the phi in each value's use-list).
         let pred_block =
-            BasicBlock::<Dyn, Terminated, B>::from_parts(pred.id(), module_ref, label_ty);
+            BasicBlock::<Dyn, Terminated, B>::from_parts(pred.slot(), module_ref, label_ty);
         for (phi_id, arg) in param_phis.iter().zip(args.iter()) {
             let phi_ty = self.module.context().value_data(*phi_id).ty;
             let phi_val = Value::from_parts(*phi_id, module_ref, phi_ty);
@@ -6573,10 +6573,10 @@ where
         DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let module_ref = ModuleRef::<B>::new(self.module);
-        let cond_id = cond.into_int_value(module_ref)?.id();
+        let cond_id = cond.into_int_value(module_ref)?.slot();
         let default_target = default_target.into_basic_block_label();
         let void_ty = self.module.void_type().as_type().id();
-        let payload = crate::instr_types::SwitchInstData::new(cond_id, default_target.id());
+        let payload = crate::instr_types::SwitchInstData::new(cond_id, default_target.slot());
         let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
         let bb = self.into_insert_block();
         Ok((
@@ -6615,7 +6615,7 @@ where
         let default_target = default_target.into_basic_block_label();
         let cond_v = cond.into_erased();
         let void_ty = self.module.void_type().as_type().id();
-        let payload = crate::instr_types::SwitchInstData::new(cond_v.id, default_target.id());
+        let payload = crate::instr_types::SwitchInstData::new(cond_v.id, default_target.slot());
         let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
         let module_ref = ModuleRef::<B>::new(self.module);
         let bb = self.into_insert_block();
@@ -6713,12 +6713,12 @@ where
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let (name, calling_conv, attrs) = config.into_parts();
         let payload = crate::instr_types::InvokeInstData::new_with_attrs(
-            f.id(),
+            f.slot(),
             f.signature().as_type().id(),
             arg_ids,
             calling_conv,
-            normal_dest.id(),
-            unwind_dest.id(),
+            normal_dest.slot(),
+            unwind_dest.slot(),
             attrs,
         );
         let ret_ty = f.return_type().id();
@@ -6798,15 +6798,15 @@ where
         let callee_v = callee.into_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
         let (name, calling_conv, attrs) = config.into_parts();
-        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.id()).collect();
+        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.slot()).collect();
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let payload = crate::instr_types::InvokeInstData::new_with_attrs(
             callee_v.id,
             fn_ty.as_type().id(),
             arg_ids,
             calling_conv,
-            normal_dest.id(),
-            unwind_dest.id(),
+            normal_dest.slot(),
+            unwind_dest.slot(),
             attrs,
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
@@ -6844,15 +6844,15 @@ where
         let callee_v = IsValue::into_erased(callee);
         let ret_ty = fn_ty.return_type().id();
         let (name, calling_conv, attrs) = config.into_parts();
-        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.id()).collect();
+        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.slot()).collect();
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let payload = crate::instr_types::InvokeInstData::new_with_attrs(
             callee_v.id,
             fn_ty.as_type().id(),
             arg_ids,
             calling_conv,
-            normal_dest.id(),
-            unwind_dest.id(),
+            normal_dest.slot(),
+            unwind_dest.slot(),
             attrs,
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
@@ -6931,8 +6931,8 @@ where
             fn_ty.as_type().id(),
             arg_ids,
             calling_conv,
-            normal_dest.id(),
-            unwind_dest.id(),
+            normal_dest.slot(),
+            unwind_dest.slot(),
             attrs,
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
@@ -6993,18 +6993,18 @@ where
         let callee_v = callee.into_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
         let (name, calling_conv, attrs) = config.into_parts();
-        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.id()).collect();
+        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.slot()).collect();
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let indirect_ids: Vec<ValueSlot> = indirect_dests
             .into_iter()
-            .map(|d| d.into_basic_block_label().id())
+            .map(|d| d.into_basic_block_label().slot())
             .collect();
         let payload = crate::instr_types::CallBrInstData::new_with_attrs(
             callee_v.id,
             fn_ty.as_type().id(),
             arg_ids,
             calling_conv,
-            default_dest.id(),
+            default_dest.slot(),
             indirect_ids,
             attrs,
         );
@@ -7081,7 +7081,7 @@ where
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let indirect_ids: Vec<ValueSlot> = indirect_dests
             .into_iter()
-            .map(|d| d.into_basic_block_label().id())
+            .map(|d| d.into_basic_block_label().slot())
             .collect();
         let (name, calling_conv, attrs) = config.into_parts();
         let payload = crate::instr_types::CallBrInstData::new_with_attrs(
@@ -7089,7 +7089,7 @@ where
             fn_ty.as_type().id(),
             arg_ids,
             calling_conv,
-            default_dest.id(),
+            default_dest.slot(),
             indirect_ids,
             attrs,
         );
@@ -7189,7 +7189,7 @@ where
         V: IsValue<'ctx, B>,
         Name: AsRef<str>,
     {
-        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.id()).collect();
+        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.slot()).collect();
         let payload = crate::instr_types::CleanupPadInstData::new(parent_id, arg_ids);
         let token_ty = self.module.token_type().as_type().id();
         let inst =
@@ -7214,7 +7214,7 @@ where
         I: IntoIterator<Item = V>,
         V: IsValue<'ctx, B>,
     {
-        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.id()).collect();
+        let arg_ids: Vec<ValueSlot> = args.into_iter().map(|a| a.slot()).collect();
         let payload = crate::instr_types::CatchPadInstData::new(Some(catch_switch.id), arg_ids);
         let token_ty = self.module.token_type().as_type().id();
         let inst = self.append_instruction(token_ty, InstructionKindData::CatchPad(payload), name);
@@ -7239,7 +7239,7 @@ where
     {
         let target = target.into_basic_block_label();
         let void_ty = self.module.void_type().as_type().id();
-        let payload = crate::instr_types::CatchReturnInstData::new(catch_pad.id, target.id());
+        let payload = crate::instr_types::CatchReturnInstData::new(catch_pad.id, target.slot());
         let inst =
             self.append_instruction(void_ty, InstructionKindData::CatchReturn(payload), name);
         let bb = self.into_insert_block();
@@ -7259,7 +7259,7 @@ where
         Name: AsRef<str>,
     {
         let unwind_dest = unwind_dest.into_basic_block_label();
-        self.build_cleanup_ret_raw(cleanup_pad.id, Some(unwind_dest.id()), name)
+        self.build_cleanup_ret_raw(cleanup_pad.id, Some(unwind_dest.slot()), name)
     }
 
     /// Produce `cleanupret from <cleanuppad> unwind to caller`.
@@ -7305,7 +7305,7 @@ where
         Name: AsRef<str>,
     {
         let unwind_dest = unwind_dest.into_basic_block_label();
-        self.build_catch_switch_raw(Some(parent_pad.id), Some(unwind_dest.id()), name)
+        self.build_catch_switch_raw(Some(parent_pad.id), Some(unwind_dest.slot()), name)
     }
 
     /// Produce `catchswitch within <parent> [...] unwind to caller`.
@@ -7333,7 +7333,7 @@ where
         Name: AsRef<str>,
     {
         let unwind_dest = unwind_dest.into_basic_block_label();
-        self.build_catch_switch_raw(None, Some(unwind_dest.id()), name)
+        self.build_catch_switch_raw(None, Some(unwind_dest.slot()), name)
     }
 
     /// Produce `catchswitch within none [...] unwind to caller`.
@@ -7395,7 +7395,7 @@ where
     ) -> Instruction<'ctx, Attached, B> {
         let name = name.as_ref();
         let bb = self.insert_block();
-        let bb_id = bb.id();
+        let bb_id = bb.slot();
         let value = build_instruction_value(ty, bb_id, kind, None);
         // Snapshot operand ids before the value is moved into the arena;
         // we need them to register the new instruction in each operand's
@@ -7582,7 +7582,7 @@ where
     ) -> Instruction<'ctx, Attached, B> {
         let name = name.as_ref();
         let bb = self.insert_block();
-        let bb_id = bb.id();
+        let bb_id = bb.slot();
         let value = build_instruction_value(ty, bb_id, kind, None);
         // Snapshot operand ids before the value is moved into the arena so
         // we can register the new instruction in each operand's reverse
@@ -8182,7 +8182,7 @@ where
         let arg_ids = self.args.lower(ModuleRef::new(self.parent.module))?;
         let calling_conv = self.calling_conv.unwrap_or_else(|| f.calling_conv());
         let payload = crate::instr_types::CallInstData::new_with_attrs(
-            f.id(),
+            f.slot(),
             f.signature().as_type().id(),
             arg_ids,
             calling_conv,
@@ -8414,7 +8414,7 @@ where
             let folded = self.checked_folded_value(folded, true_ty)?;
             return Ok(A::from_select_value(folded, &SelectNarrow::new()));
         }
-        let payload = crate::instr_types::SelectInstData::new(c.id(), true_v.id, false_v.id);
+        let payload = crate::instr_types::SelectInstData::new(c.slot(), true_v.id, false_v.id);
         let inst = self.append_instruction(true_ty, InstructionKindData::Select(payload), name);
         Ok(A::from_select_value(inst.to_erased(), &SelectNarrow::new()))
     }

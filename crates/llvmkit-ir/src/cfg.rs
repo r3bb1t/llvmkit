@@ -67,7 +67,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
         for block in function.basic_blocks() {
             let block = block.as_dyn();
             let succ_ids = successor_ids(&block);
-            let block_id = block.id();
+            let block_id = block.slot();
             for succ_id in &succ_ids {
                 predecessors.entry(*succ_id).or_default().push(block_id);
                 edges.push(BasicBlockEdge::new(
@@ -100,7 +100,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
         Block: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let block = block.into_basic_block_label();
-        ids_to_labels(block.to_erased().module, self.successors.get(&block.id()))
+        ids_to_labels(block.to_erased().module, self.successors.get(&block.slot()))
     }
 
     /// Predecessors of `block`, preserving duplicate incoming edges.
@@ -110,7 +110,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
         Block: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let block = block.into_basic_block_label();
-        ids_to_labels(block.to_erased().module, self.predecessors.get(&block.id()))
+        ids_to_labels(
+            block.to_erased().module,
+            self.predecessors.get(&block.slot()),
+        )
     }
 
     /// Directed edges in function block order and terminator successor order.

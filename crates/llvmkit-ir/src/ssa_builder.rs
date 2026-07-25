@@ -328,7 +328,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> SsaBlock<'ctx, R, B> {
 fn label_value_id<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx>(
     label: &BasicBlockLabel<'ctx, R, B>,
 ) -> ValueSlot {
-    label.id()
+    label.slot()
 }
 
 /// Diagnostic name for a block id: falls back to a slot-style
@@ -835,7 +835,7 @@ where
     /// -- the Braun engine's block key.
     #[inline]
     fn current_block_id(&self) -> ValueSlot {
-        self.ins().insert_block().id()
+        self.ins().insert_block().slot()
     }
 
     /// Braun `writeVariable`: pure bookkeeping, no IR emitted.
@@ -879,7 +879,7 @@ where
         let v = value.into_int_value(self.module_ref())?;
         super::r#type::Type::new(var.ty, self.module_ref()).require_match(v.into_erased().ty())?;
         let block = self.current_block_id();
-        self.write_variable(var.index, block, v.id());
+        self.write_variable(var.index, block, v.slot());
         Ok(())
     }
 
@@ -919,7 +919,7 @@ where
         let v = value.into_float_value(self.module_ref())?;
         super::r#type::Type::new(var.ty, self.module_ref()).require_match(Typed::ty(v))?;
         let block = self.current_block_id();
-        self.write_variable(var.index, block, v.id());
+        self.write_variable(var.index, block, v.slot());
         Ok(())
     }
 
@@ -961,7 +961,7 @@ where
         let v = value.into_pointer_value(self.module_ref())?;
         super::r#type::Type::new(var.ty, self.module_ref()).require_match(Typed::ty(v))?;
         let block = self.current_block_id();
-        self.write_variable(var.index, block, v.id());
+        self.write_variable(var.index, block, v.slot());
         Ok(())
     }
 
@@ -1627,7 +1627,7 @@ where
         } else if let Some(current) = self
             .inner
             .as_ref()
-            .filter(|b| b.insert_block().id() == block)
+            .filter(|b| b.insert_block().slot() == block)
         {
             // Empty and currently positioned: the phi builders take
             // `&self`, so appending through the live builder directly
@@ -1706,7 +1706,7 @@ where
     fn phi_user_ids(&self, phi: ValueSlot) -> Vec<ValueSlot> {
         let module = self.module_ref();
         let value = Value::from_parts(phi, module, module.value_data(phi).ty);
-        value.users().map(|u| u.id()).collect()
+        value.users().map(|u| u.slot()).collect()
     }
 
     /// A strict variable's read reached function entry with no write on
@@ -1721,7 +1721,7 @@ where
             let module = self.module_ref();
             let ty = super::r#type::Type::new(data.ty, module);
             let poison = ty.get_poison();
-            return Ok(poison.id());
+            return Ok(poison.slot());
         }
         Err(IrError::SsaUseOfUndefinedVariable {
             variable: data.name.clone(),
@@ -1740,7 +1740,7 @@ where
             .state
             .created_phis
             .get(&phi)
-            .map(|h| h.parent().id())
+            .map(|h| h.parent().slot())
             .unwrap_or_else(|| {
                 unreachable!(
                     "SsaBuilder invariant: try_remove_trivial_phi only calls this helper on a \
@@ -1791,7 +1791,7 @@ where
                     )
                 });
             Instruction::<Attached, B>::from_parts(phi, module).erase_from_parent(self.module);
-            let resolved = poison.id();
+            let resolved = poison.slot();
             self.state.resolved.borrow_mut().insert(phi, resolved);
             for user in users {
                 if self.state.created_phis.contains_key(&user) {
@@ -1938,7 +1938,7 @@ mod tests {
             let entry_id = label_value_id(&entry.label);
 
             let var: IntVariable<i32, _> = b.declare_int_var("x");
-            let one = m.i32_type().const_int(1_i32).id();
+            let one = m.i32_type().const_int(1_i32).slot();
             b.write_variable(var.index, entry_id, one);
             let read = b.read_variable_in(var.index, entry_id)?;
             assert_eq!(read, one);
@@ -1972,7 +1972,7 @@ mod tests {
             b.state.preds.entry(loop_id).or_default().push(loop_id);
 
             let var: IntVariable<i32, _> = b.declare_int_var("i");
-            let zero = m.i32_type().const_int(0_i32).id();
+            let zero = m.i32_type().const_int(0_i32).slot();
             b.write_variable(var.index, entry_id, zero);
 
             // Read inside the not-yet-sealed loop block: creates an
@@ -1985,7 +1985,7 @@ mod tests {
             // Record the loop body's own write (e.g. `i + 1`, modeled
             // here as reusing a fresh constant is fine -- the engine
             // does not care what the value IS, only that a def exists).
-            let one = m.i32_type().const_int(1_i32).id();
+            let one = m.i32_type().const_int(1_i32).slot();
             b.write_variable(var.index, loop_id, one);
 
             // Sealing completes the incomplete phi: two distinct incoming
@@ -2037,7 +2037,7 @@ mod tests {
             b.seal_block(right)?;
 
             let var: IntVariable<i32, _> = b.declare_int_var("x");
-            let same_value = m.i32_type().const_int(7_i32).id();
+            let same_value = m.i32_type().const_int(7_i32).slot();
             // Both predecessors write the SAME value.
             b.write_variable(var.index, left_id, same_value);
             b.write_variable(var.index, right_id, same_value);
@@ -2104,7 +2104,7 @@ mod tests {
             let var: IntVariable<i32, _> = b.declare_int_var_poison("x");
             let read = b.read_variable_in(var.index, entry_id)?;
             let i32_ty = m.i32_type();
-            let poison_id = i32_ty.as_type().get_poison().id();
+            let poison_id = i32_ty.as_type().get_poison().slot();
             assert_eq!(read, poison_id);
             Ok(())
         })
@@ -2151,7 +2151,7 @@ mod tests {
             b.seal_block(b3)?;
 
             let var: IntVariable<i32, _> = b.declare_int_var("x");
-            let one = m.i32_type().const_int(1_i32).id();
+            let one = m.i32_type().const_int(1_i32).slot();
             b.write_variable(var.index, entry_id, one);
 
             // Before the read: only entry has a current_def entry.

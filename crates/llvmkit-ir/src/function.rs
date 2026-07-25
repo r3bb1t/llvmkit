@@ -240,7 +240,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// return-shape marker `R`; the signature is recovered from the arena on
     /// view.
     #[inline]
-    pub fn to_id(self) -> FunctionId<R, B> {
+    pub fn id(self) -> FunctionId<R, B> {
         FunctionId::from_raw(self.module.id(), self.id)
     }
 
@@ -559,7 +559,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         C: IsConstant<'ctx, B>,
     {
         let constant = data.as_constant();
-        Ok(constant.id())
+        Ok(constant.slot())
     }
 
     pub fn comdat(self) -> Option<ComdatRef<'ctx, B>> {
@@ -833,7 +833,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             });
         }
         let mut blocks = self.data().basic_blocks.borrow_mut();
-        let Some(pos) = blocks.iter().position(|id| *id == block.id()) else {
+        let Some(pos) = blocks.iter().position(|id| *id == block.slot()) else {
             return Err(IrError::InvalidOperation {
                 message: "block does not belong to function",
             });
@@ -1403,13 +1403,13 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
             *f.data().gc.borrow_mut() = Some(gc);
         }
         if let Some(prefix_data) = self.prefix_data {
-            f.data().prefix_data.set(Some(prefix_data.id()));
+            f.data().prefix_data.set(Some(prefix_data.slot()));
         }
         if let Some(prologue_data) = self.prologue_data {
-            f.data().prologue_data.set(Some(prologue_data.id()));
+            f.data().prologue_data.set(Some(prologue_data.slot()));
         }
         if let Some(personality_fn) = self.personality_fn {
-            f.data().personality_fn.set(Some(personality_fn.id()));
+            f.data().personality_fn.set(Some(personality_fn.slot()));
         }
         if let Some(comdat) = self.comdat {
             *f.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
@@ -1424,7 +1424,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         // Apply parameter names.
         for (slot, name) in self.param_names {
             let arg = f.param(slot)?;
-            f.set_local_value_name(arg.id(), Some(&name));
+            f.set_local_value_name(IsValue::slot(arg), Some(&name));
         }
         Ok(f)
     }

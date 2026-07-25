@@ -1485,8 +1485,8 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, Open, B> {
         let module = self.module.module();
         let value = value.into_int_value(self.module)?;
         if value.into_erased().ty == self.ty {
-            let value_id = value.id();
-            let block_id = block.into_basic_block_label().id();
+            let value_id = value.slot();
+            let block_id = block.into_basic_block_label().slot();
             if self
                 .payload()
                 .incoming
@@ -1708,8 +1708,8 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
         let module = self.module.module();
         let value = value.into_float_value(self.module)?;
         if value.into_erased().ty == self.ty {
-            let value_id = value.id();
-            let block_id = block.into_basic_block_label().id();
+            let value_id = value.slot();
+            let block_id = block.into_basic_block_label().slot();
             if self
                 .payload()
                 .incoming
@@ -1918,8 +1918,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, Open, B> {
         let module = self.module.module();
         let value = value.into_pointer_value(self.module)?;
         if value.into_erased().ty == self.ty {
-            let value_id = value.id();
-            let block_id = block.into_basic_block_label().id();
+            let value_id = value.slot();
+            let block_id = block.into_basic_block_label().slot();
             if self
                 .payload()
                 .incoming
@@ -2748,7 +2748,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
             });
         }
         let v_id = v.id;
-        let bb_id = target.into_basic_block_label().id();
+        let bb_id = target.into_basic_block_label().slot();
         self.payload()
             .cases
             .borrow_mut()
@@ -2914,7 +2914,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
         self.payload()
             .destinations
             .borrow_mut()
-            .push(target.into_basic_block_label().id());
+            .push(target.into_basic_block_label().slot());
         Ok(self)
     }
     /// Consume the open `indirectbr` and return its [`Closed`] view.
@@ -3595,7 +3595,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, TermOpen, B> {
         self.payload()
             .handlers
             .borrow_mut()
-            .push(handler.into_basic_block_label().id());
+            .push(handler.into_basic_block_label().slot());
         Ok(self)
     }
     #[inline]
@@ -3638,7 +3638,7 @@ mod tests {
 
             let call: CallInst<'_, i32, _> =
                 b.build_call_dyn(callee, Vec::<Value<'_, _>>::new(), "call")?;
-            let call_id = call.to_erased().id();
+            let call_id = call.to_erased().slot();
 
             let typed = TypedCallInst::<i32, _> {
                 inner: call,
@@ -3646,7 +3646,7 @@ mod tests {
             };
             let result = typed.result();
 
-            assert_eq!(result.id(), call_id);
+            assert_eq!(result.slot(), call_id);
             Ok(())
         })
     }

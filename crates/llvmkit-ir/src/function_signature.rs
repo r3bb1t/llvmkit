@@ -1276,7 +1276,7 @@ macro_rules! impl_call_args_tuple {
         {
             fn lower(self, module: ModuleRef<'ctx, B>) -> IrResult<Box<[ValueSlot]>> {
                 let ($($x,)+) = self;
-                Ok(Box::new([$( $x.into_call_arg(module)?.id(), )+]))
+                Ok(Box::new([$( $x.into_call_arg(module)?.slot(), )+]))
             }
         }
     };

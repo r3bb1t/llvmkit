@@ -1,5 +1,5 @@
 //! Public-surface coverage for the llvmkit 2.0 value-id family (cycle A):
-//! `handle.to_id()` mints a storable, module-tagged id, and
+//! `handle.id()` mints a storable, module-tagged id, and
 //! [`Module::view`] / [`Module::try_view`] resolve it back into a borrowing
 //! handle.
 //!
@@ -29,42 +29,42 @@ fn handles_round_trip_through_to_id_and_view() -> Result<(), IrError> {
 
         // Int value (a function argument narrowed to its static width).
         let a: IntValue<i32> = f.param(0)?.try_into()?;
-        let a_id: IntValueId<i32, _> = a.to_id();
-        assert_eq!(m.view(a_id), a, "IntValue did not survive to_id/view");
+        let a_id: IntValueId<i32, _> = a.id();
+        assert_eq!(m.view(a_id), a, "IntValue did not survive id/view");
 
         // Pointer value (the second argument).
         let p: PointerValue = f.param(1)?.try_into()?;
-        let p_id: PointerValueId<_> = p.to_id();
-        assert_eq!(m.view(p_id), p, "PointerValue did not survive to_id/view");
+        let p_id: PointerValueId<_> = p.id();
+        assert_eq!(m.view(p_id), p, "PointerValue did not survive id/view");
 
         // Function value.
-        let f_id: FunctionId<Dyn, _> = f.to_id();
-        assert_eq!(m.view(f_id), f, "FunctionValue did not survive to_id/view");
+        let f_id: FunctionId<Dyn, _> = f.id();
+        assert_eq!(m.view(f_id), f, "FunctionValue did not survive id/view");
 
         // Global variable.
         let g: GlobalVariable = m.add_global("g", i32_ty.const_int(0_u32))?;
-        let g_id: GlobalId<_> = g.to_id();
-        assert_eq!(m.view(g_id), g, "GlobalVariable did not survive to_id/view");
+        let g_id: GlobalId<_> = g.id();
+        assert_eq!(m.view(g_id), g, "GlobalVariable did not survive id/view");
 
         // Block label (via both the copyable label and the linear block).
         let entry = f.append_basic_block(&m, "entry");
         let label: BasicBlockLabel<Dyn, _> = entry.label();
-        let b_id: BlockId<Dyn, _> = label.to_id();
+        let b_id: BlockId<Dyn, _> = label.id();
         assert_eq!(
             m.view(b_id),
             label,
-            "BasicBlockLabel did not survive to_id/view"
+            "BasicBlockLabel did not survive id/view"
         );
         assert_eq!(
-            entry.to_id(),
+            entry.id(),
             b_id,
-            "linear BasicBlock::to_id disagreed with its label's id",
+            "linear BasicBlock::id disagreed with its label's id",
         );
 
         // Erased value id.
         let v: Value = a.into_erased();
-        let v_id: ValueId<_> = v.to_id();
-        assert_eq!(m.view(v_id), v, "erased Value did not survive to_id/view");
+        let v_id: ValueId<_> = v.id();
+        assert_eq!(m.view(v_id), v, "erased Value did not survive id/view");
 
         Ok(())
     })
@@ -81,11 +81,11 @@ fn try_view_returns_some_for_owned_ids() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let a: IntValue<i32> = f.param(0)?.try_into()?;
 
-        assert_eq!(m.try_view(a.to_id()), Some(a));
-        assert_eq!(m.try_view(f.to_id()), Some(f));
+        assert_eq!(m.try_view(a.id()), Some(a));
+        assert_eq!(m.try_view(f.id()), Some(f));
 
         // `view` and `try_view` agree on the resolvable case.
-        assert_eq!(m.view(a.to_id()), m.try_view(a.to_id()).expect("owned id"));
+        assert_eq!(m.view(a.id()), m.try_view(a.id()).expect("owned id"));
         Ok(())
     })
 }
@@ -99,10 +99,10 @@ fn view_works_on_verified_module() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let g: GlobalVariable = m.add_global("g", i32_ty.const_int(7_u32))?;
-        let g_id = g.to_id();
+        let g_id = g.id();
 
         let f = m.function_builder::<i32, _>("f", fn_ty).build()?;
-        let f_id: FunctionId<i32, _> = f.to_id();
+        let f_id: FunctionId<i32, _> = f.id();
 
         let verified = m.verify()?;
         assert_eq!(verified.view(g_id), g);
@@ -140,7 +140,7 @@ fn id_debug_prints_tag_and_slot() -> Result<(), IrError> {
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let a: IntValue<i32> = f.param(0)?.try_into()?;
-        let rendered = format!("{:?}", a.to_id());
+        let rendered = format!("{:?}", a.id());
         assert!(rendered.contains("IntValueId"), "{rendered}");
         assert!(rendered.contains("tag"), "{rendered}");
         assert!(rendered.contains("slot"), "{rendered}");
@@ -166,7 +166,7 @@ fn foreign_tag_rejection_is_deferred_to_cycle_c() {
 
 /// A4: each *typed-value* id lifts back into its handle at a builder operand
 /// position via the fallible `Into*Value` conversions, reproducing the handle
-/// its `to_id` was minted from. This is the id analogue of the identity
+/// its `id` was minted from. This is the id analogue of the identity
 /// operand lifts (`IntValue: IntoIntValue`), exercised directly here because
 /// the builders do not accept ids until cycle B.
 #[test]
@@ -190,17 +190,17 @@ fn typed_ids_lift_at_operand_positions() -> Result<(), IrError> {
 
         // Owned id + owning module -> Ok(original handle).
         assert_eq!(
-            a.to_id().into_int_value(mref)?,
+            a.id().into_int_value(mref)?,
             a,
             "IntValueId did not lift back to its IntValue operand",
         );
         assert_eq!(
-            x.to_id().into_float_value(mref)?,
+            x.id().into_float_value(mref)?,
             x,
             "FloatValueId did not lift back to its FloatValue operand",
         );
         assert_eq!(
-            p.to_id().into_pointer_value(mref)?,
+            p.id().into_pointer_value(mref)?,
             p,
             "PointerValueId did not lift back to its PointerValue operand",
         );
@@ -247,9 +247,9 @@ fn typed_ids_are_call_args() -> Result<(), IrError> {
         let a: IntValue<i32> = f.param(0)?.try_into()?;
         let x: FloatValue<f32> = f.param(1)?.try_into()?;
         let p: PointerValue = f.param(2)?.try_into()?;
-        assert_int_call_arg(&a.to_id());
-        assert_float_call_arg(&x.to_id());
-        assert_ptr_call_arg(&p.to_id());
+        assert_int_call_arg(&a.id());
+        assert_float_call_arg(&x.id());
+        assert_ptr_call_arg(&p.id());
         Ok(())
     })
 }

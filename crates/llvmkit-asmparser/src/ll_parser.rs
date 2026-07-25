@@ -1731,7 +1731,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let value = self.convert_val_id_to_value(ty, val_id, pfs)?;
         self.expect_punct(PunctKind::Comma, "',' before uselistorder indexes")?;
         let indexes = self.parse_use_list_order_indexes()?;
-        UseListOrderRecord::new(value.id(), ty.id(), indexes).map_err(|e| match e {
+        UseListOrderRecord::new(value.slot(), ty.id(), indexes).map_err(|e| match e {
             IrError::InvalidOperation { message } => ParseError::Expected {
                 expected: message.into(),
                 loc: DiagLoc::span(loc),
@@ -1846,15 +1846,18 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         };
         self.expect_punct(PunctKind::Comma, "',' before uselistorder_bb indexes")?;
         let indexes = self.parse_use_list_order_indexes()?;
-        let record =
-            UseListOrderBBRecord::new(function.into_erased().id(), block.to_erased().id(), indexes)
-                .map_err(|e| match e {
-                    IrError::InvalidOperation { message } => ParseError::Expected {
-                        expected: message.into(),
-                        loc: DiagLoc::span(loc),
-                    },
-                    other => self.builder_err("uselistorder_bb", other),
-                })?;
+        let record = UseListOrderBBRecord::new(
+            function.into_erased().slot(),
+            block.to_erased().slot(),
+            indexes,
+        )
+        .map_err(|e| match e {
+            IrError::InvalidOperation { message } => ParseError::Expected {
+                expected: message.into(),
+                loc: DiagLoc::span(loc),
+            },
+            other => self.builder_err("uselistorder_bb", other),
+        })?;
         self.module
             .append_use_list_order_bb(record)
             .map_err(|e| match e {
@@ -2302,7 +2305,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let ty = self.parse_type(false)?;
         let value = self.parse_value(state, ty)?;
         Ok(llvmkit_ir::metadata::DebugMetadataOperand::Value(
-            value.id(),
+            value.slot(),
         ))
     }
 
@@ -5139,7 +5142,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     loop {
                         let ty = self.parse_type(false)?;
                         let value = self.parse_value(state, ty)?;
-                        inputs.push(value.id());
+                        inputs.push(value.slot());
                         if !self.eat_punct(PunctKind::Comma)? {
                             break;
                         }
@@ -7377,7 +7380,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         // Record the phi's source location, keyed by its arena id, so the
         // end-of-function coherence check can anchor a diagnostic here — a
         // numbered/anonymous phi has no matchable textual name.
-        state.phi_locs.push((phi_val.id(), self.loc()));
+        state.phi_locs.push((phi_val.slot(), self.loc()));
         // Parse incoming pairs: `[ val, label ], ...`
         // First pair has no leading comma; subsequent pairs have one.
         let mut first = true;

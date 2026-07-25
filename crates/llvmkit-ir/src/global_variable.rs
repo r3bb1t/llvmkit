@@ -110,7 +110,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// resolvable via [`Module::view`](crate::Module::view) /
     /// [`Module::try_view`](crate::Module::try_view).
     #[inline]
-    pub fn to_id(self) -> GlobalId<B> {
+    pub fn id(self) -> GlobalId<B> {
         GlobalId::from_raw(self.module.id(), self.id)
     }
 

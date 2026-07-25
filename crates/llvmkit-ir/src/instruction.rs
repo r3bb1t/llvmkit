@@ -1117,7 +1117,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
         block: &BasicBlock<'ctx, R, Unterminated, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
         let module = module_token.core_ref();
-        let parent_id = block.id();
+        let parent_id = block.slot();
         let parent_fn_id = block.to_erased().local_parent_function_id();
         block.as_dyn().append_instruction(self.id);
         update_instruction_parent(module, self.id, parent_id);
@@ -1915,7 +1915,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> NonTerminator<'ctx, B> {
     /// [`to_erased`](Self::to_erased)).
     #[inline]
     pub fn id(&self) -> ValueSlot {
-        self.view.id()
+        self.view.slot()
     }
 
     /// Crate-internal: wrap a view already known to be a non-terminator.

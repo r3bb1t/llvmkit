@@ -127,7 +127,7 @@ impl DemandedBits {
 
     /// Return the bits demanded from an instruction value.
     pub fn get_demanded_bits<'ctx, B: ModuleBrand + 'ctx>(&self, value: Value<'ctx, B>) -> ApInt {
-        if let Some(bits) = self.alive_bits.get(&value.id()) {
+        if let Some(bits) = self.alive_bits.get(&value.slot()) {
             return bits.clone();
         }
         ApInt::low_bits_set(
@@ -148,7 +148,7 @@ impl DemandedBits {
                 message: "operand index out of range",
             });
         };
-        if let Some(bits) = self.operand_bits.get(&(user.id(), operand_index)) {
+        if let Some(bits) = self.operand_bits.get(&(user.slot(), operand_index)) {
             return Ok(bits.clone());
         }
         let operand = value_from_id(user, operand_id);
@@ -167,9 +167,9 @@ impl DemandedBits {
 
     /// Return true if `value` was unreachable from any live root during analysis.
     pub fn is_instruction_dead<'ctx, B: ModuleBrand + 'ctx>(&self, value: Value<'ctx, B>) -> bool {
-        !self.visited_non_integer.contains(&value.id())
-            && !self.alive_bits.contains_key(&value.id())
-            && !self.always_live.contains(&value.id())
+        !self.visited_non_integer.contains(&value.slot())
+            && !self.alive_bits.contains_key(&value.slot())
+            && !self.always_live.contains(&value.slot())
     }
 
     /// Return true if operand `operand_index` of instruction `user` has no demanded bits.
@@ -188,16 +188,19 @@ impl DemandedBits {
         if int_scalar_bit_width(operand.ty()).is_none() {
             return Ok(false);
         }
-        if self.always_live.contains(&user.id()) {
+        if self.always_live.contains(&user.slot()) {
             return Ok(false);
         }
         if self.is_instruction_dead(user) {
             return Ok(true);
         }
-        if self.dead_uses.contains(&(user.id(), operand_index)) {
+        if self.dead_uses.contains(&(user.slot(), operand_index)) {
             return Ok(true);
         }
-        Ok(self.alive_bits.get(&user.id()).is_some_and(ApInt::is_zero))
+        Ok(self
+            .alive_bits
+            .get(&user.slot())
+            .is_some_and(ApInt::is_zero))
     }
 
     /// Compute alive bits of one addition operand from alive output and known operands.
@@ -239,12 +242,12 @@ impl DemandedBits {
                 if !is_always_live(data) {
                     continue;
                 }
-                self.always_live.insert(value.id());
+                self.always_live.insert(value.slot());
                 if let Some(width) = int_scalar_bit_width(value.ty()) {
                     self.alive_bits
-                        .entry(value.id())
+                        .entry(value.slot())
                         .or_insert_with(|| ApInt::zero(width));
-                    enqueue(value.id(), &mut worklist, &mut queued);
+                    enqueue(value.slot(), &mut worklist, &mut queued);
                     continue;
                 }
                 for operand_id in data.kind.operand_ids() {
@@ -944,12 +947,12 @@ fn simplify_demanded_bits_iteration<'ctx>(
                 continue;
             }
             if demanded.is_instruction_dead(value) {
-                dead_to_erase.push(value.id());
+                dead_to_erase.push(value.slot());
                 continue;
             }
             let simplified = simplify_demanded_bits(value, &demanded, &query)?;
             if let Some(replacement) = simplified.replacement() {
-                let id = value.id();
+                let id = value.slot();
                 drop_zext_nneg_for_replaced_uses(value);
                 inst.replace_all_uses_with(module_token, replacement)?;
                 let erased =
@@ -958,7 +961,7 @@ fn simplify_demanded_bits_iteration<'ctx>(
                 return Ok(true);
             }
             if let Some(replacement) = demanded_value_replacement(value, &demanded, &query)? {
-                let id = value.id();
+                let id = value.slot();
                 drop_zext_nneg_for_replaced_uses(value);
                 inst.replace_all_uses_with(module_token, replacement)?;
                 let erased =
@@ -1098,12 +1101,12 @@ fn drop_zext_nneg_for_replaced_uses_recursive<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     visited: &mut HashSet<ValueSlot>,
 ) {
-    if !visited.insert(value.id()) {
+    if !visited.insert(value.slot()) {
         return;
     }
     for user in value.users() {
         let user = user.to_erased();
-        drop_zext_nneg_for_replaced_operand(user, value.id());
+        drop_zext_nneg_for_replaced_operand(user, value.slot());
         drop_zext_nneg_for_replaced_uses_recursive(user, visited);
     }
 }
@@ -1210,7 +1213,7 @@ fn replace_instruction_operand<'ctx, B: ModuleBrand + 'ctx>(
     replacement: Value<'ctx, B>,
 ) -> IrResult<bool> {
     let old_id = operand.get();
-    let new_id = replacement.id();
+    let new_id = replacement.slot();
     if old_id == new_id {
         return Ok(false);
     }
@@ -1225,7 +1228,7 @@ fn replace_instruction_operand<'ctx, B: ModuleBrand + 'ctx>(
     drop_zext_nneg_for_replaced_uses(user);
     operand.set(new_id);
     let module = user.module().core_ref();
-    let edge = ValueUse::Instruction(user.id());
+    let edge = ValueUse::Instruction(user.slot());
     let mut old_uses = module.context().value_data(old_id).use_list.borrow_mut();
     if let Some(pos) = old_uses.iter().position(|candidate| *candidate == edge) {
         old_uses.remove(pos);

@@ -664,7 +664,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
     ) {
         let handle = function.as_function();
         let module_id = handle.module().id();
-        let function_id = handle.id();
+        let function_id = handle.slot();
         for (key, cached) in &mut self.results {
             if key.0 != module_id || key.2 != function_id {
                 continue;
@@ -745,7 +745,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
         let function = function.into();
         let function_handle = function.as_function();
         let module_id = function_handle.module().id();
-        let function_id = function_handle.id();
+        let function_id = function_handle.slot();
         let snapshot = FunctionAnalysisSnapshot {
             cached: self.results.keys().copied().collect(),
         };
@@ -1067,7 +1067,7 @@ where
     B: ModuleBrand + 'ctx,
 {
     let function = function.as_function();
-    (function.module().id(), TypeId::of::<A>(), function.id())
+    (function.module().id(), TypeId::of::<A>(), function.slot())
 }
 
 fn module_key<'ctx, A, B>(module: ModuleView<'ctx, B>) -> (TypeId, ModuleId)
@@ -1592,8 +1592,8 @@ mod tests {
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = f.append_basic_block(&m, "entry");
             let next = f.append_basic_block(&m, "next");
-            let entry_id = entry.id();
-            let next_id = next.id();
+            let entry_id = entry.slot();
+            let next_id = next.slot();
             let next_label = next.label();
 
             // entry: br next    next: ret 0
@@ -1616,7 +1616,7 @@ mod tests {
             let new_bb = entry_bb.split_at(&m, &terminator, "entry.split")?;
             let updates = [
                 CfgUpdate::delete(entry_id, next_id),
-                CfgUpdate::insert(new_bb.id(), next_id),
+                CfgUpdate::insert(new_bb.slot(), next_id),
             ];
 
             // Repairing the stale cached tree returns Repaired and yields the

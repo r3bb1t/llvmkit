@@ -178,16 +178,16 @@ pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
     // multiplicity matches the verifier's map).
     let mut predecessors: HashMap<ValueSlot, Vec<ValueSlot>> = HashMap::new();
     for block in function.basic_blocks() {
-        let block_id = block.id();
+        let block_id = block.slot();
         for succ in crate::cfg::block_successors(&block) {
-            predecessors.entry(succ.id()).or_default().push(block_id);
+            predecessors.entry(succ.slot()).or_default().push(block_id);
         }
     }
 
     let value_ty_of = |id: ValueSlot| ctx.value_data(id).ty;
 
     for block in function.basic_blocks() {
-        let block_id = block.id();
+        let block_id = block.slot();
         let preds: &[ValueSlot] = predecessors
             .get(&block_id)
             .map(|v| v.as_slice())
@@ -211,7 +211,7 @@ pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
                 .collect();
             if let Err(violation) = check_phi_incoming(result_ty, &incoming, preds, &value_ty_of) {
                 return Err(PhiCoherenceError {
-                    phi_id: inst.id(),
+                    phi_id: inst.slot(),
                     message: render_phi_violation(&violation, result_ty, module),
                 });
             }

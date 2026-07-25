@@ -203,7 +203,7 @@ fn ssa_block_label_round_trips_to_basic_block_label() -> Result<(), IrError> {
         let entry = b.create_block("entry");
         let label = entry.label();
         assert_eq!(label.to_erased().name().as_deref(), Some("entry"));
-        assert_eq!(label.to_erased().id(), entry.label().to_erased().id());
+        assert_eq!(label.to_erased().slot(), entry.label().to_erased().slot());
         Ok(())
     })
 }

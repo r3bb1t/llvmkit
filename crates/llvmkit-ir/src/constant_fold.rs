@@ -1251,7 +1251,7 @@ fn constant_relation_complexity<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<
 }
 
 fn global_value_ref<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> Option<ValueSlot> {
-    global_value_ref_from_id(constant.into_erased().module(), constant.id())
+    global_value_ref_from_id(constant.into_erased().module(), constant.slot())
 }
 
 fn global_value_ref_from_id<B: ModuleBrand>(

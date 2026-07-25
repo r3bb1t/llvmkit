@@ -211,7 +211,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     /// Opaque arena id of the underlying value (same id as
     /// [`to_erased`](Self::to_erased)).
     #[inline]
-    pub fn id(&self) -> ValueSlot {
+    pub fn slot(&self) -> ValueSlot {
         self.to_erased().id
     }
 
@@ -220,7 +220,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     /// [`Module::try_view`](crate::Module::try_view) back into a copyable
     /// [`BasicBlockLabel`]. Preserves the return-shape and parameter markers.
     #[inline]
-    pub fn to_id(&self) -> BlockId<R, B, Params> {
+    pub fn id(&self) -> BlockId<R, B, Params> {
         BlockId::from_raw(self.module.id(), self.id)
     }
 
@@ -520,7 +520,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// Opaque arena id of the underlying value (same id as
     /// [`to_erased`](Self::to_erased)).
     #[inline]
-    pub fn id(&self) -> ValueSlot {
+    pub fn slot(&self) -> ValueSlot {
         self.to_erased().id
     }
 
@@ -531,7 +531,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// borrows `self` and leaves it usable — minting a `Copy` id from a
     /// non-`Copy` block.
     #[inline]
-    pub fn to_id(&self) -> BlockId<R, B, Params> {
+    pub fn id(&self) -> BlockId<R, B, Params> {
         BlockId::from_raw(self.module.id(), self.id)
     }
 
@@ -794,7 +794,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         let source_fn_id = self.parent_id();
         let dest_fn_id = dest.parent_id();
         let rehome_names = source_fn_id != dest_fn_id;
-        let dest_id = dest.id();
+        let dest_id = dest.slot();
         let drained: Vec<ValueSlot> = {
             let mut src = self.data().instructions.borrow_mut();
             core::mem::take(&mut *src)
@@ -854,7 +854,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         let parent_fn =
             FunctionValue::<'ctx, R, B>::from_parts_unchecked(parent_fn_id, self.module);
         let new_block = parent_fn.append_basic_block(module_token, name);
-        let split_id = before.id();
+        let split_id = before.slot();
         let suffix: Vec<ValueSlot> = {
             let mut src = self.data().instructions.borrow_mut();
             let pos =
@@ -865,7 +865,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
                     })?;
             src.split_off(pos)
         };
-        let new_id = new_block.id();
+        let new_id = new_block.slot();
         {
             let mut dst = new_block.data().instructions.borrow_mut();
             dst.extend(suffix.iter().copied());
@@ -1000,7 +1000,7 @@ mod tests {
             let recovered: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = v
                 .try_into()
                 .expect("a basic-block value narrows to a label");
-            assert_eq!(recovered.id(), bb.id());
+            assert_eq!(recovered.slot(), bb.slot());
             assert_dyn_params(recovered);
         });
     }
@@ -1018,7 +1018,7 @@ mod tests {
                 .to_erased()
                 .try_into()
                 .expect("a label's value round-trips to a label");
-            assert_eq!(round.id(), label.id());
+            assert_eq!(round.slot(), label.slot());
             assert_dyn_params(round);
         });
     }

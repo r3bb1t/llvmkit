@@ -385,7 +385,7 @@ fn debug_record_value_operand_counts_as_structural_use_and_erases() -> Result<()
         let md = m.metadata_tuple(Vec::<MetadataRef>::new());
         inst.push_debug_record(DebugRecord::Variable(DebugVariableRecord::new(
             DebugVariableRecordKind::Value,
-            DebugMetadataOperand::Value(x.into_erased().id()),
+            DebugMetadataOperand::Value(x.into_erased().slot()),
             md,
             md,
             md,
@@ -430,7 +430,7 @@ fn debug_record_value_operand_is_rewritten_by_rauw() -> Result<(), IrError> {
         let md = m.metadata_tuple(Vec::<MetadataRef>::new());
         anchor_inst.push_debug_record(DebugRecord::Variable(DebugVariableRecord::new(
             DebugVariableRecordKind::Value,
-            DebugMetadataOperand::Value(source.into_erased().id()),
+            DebugMetadataOperand::Value(source.into_erased().slot()),
             md,
             md,
             md,
@@ -450,7 +450,7 @@ fn debug_record_value_operand_is_rewritten_by_rauw() -> Result<(), IrError> {
         };
         assert_eq!(
             record.location(),
-            DebugMetadataOperand::Value(replacement.into_erased().id())
+            DebugMetadataOperand::Value(replacement.into_erased().slot())
         );
         let block = cursor.into_block();
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(block);

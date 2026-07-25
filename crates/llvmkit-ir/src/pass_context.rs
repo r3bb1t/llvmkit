@@ -780,14 +780,14 @@ where
     where
         V: IsValue<'ctx, B>,
     {
-        let id = view.id();
+        let id = view.slot();
         // Capture the former users only when a worklist is active — the
         // inactive path must stay allocation-free (the field's zero-overhead
         // promise). The `borrow()` is a let-RHS temporary, released before the
         // later `borrow_mut()`. Users must be captured *before* the RAUW rewires
         // them.
         let users: Vec<ValueSlot> = if self.worklist.borrow().is_some() {
-            view.into_erased().users().map(|u| u.id()).collect()
+            view.into_erased().users().map(|u| u.slot()).collect()
         } else {
             Vec::new()
         };
@@ -1153,11 +1153,11 @@ where
         // (the caller wires the fresh `block → new_block` edge later, through
         // its own terminator, so that edge is not this method's to record).
         let source = block.as_basic_block();
-        let source_id = source.id();
+        let source_id = source.slot();
         let successors = crate::cfg::block_successors(&source);
 
         let new_block = source.split_at(self.patch.module_mut(), before, name)?;
-        let new_id = new_block.id();
+        let new_id = new_block.slot();
 
         // The terminator moved to `new_block`, so every edge that used to
         // leave `block` now leaves `new_block`. Phis in the successors
@@ -1189,7 +1189,7 @@ where
         if !successors.is_empty() {
             let mut log = self.cfg_updates.borrow_mut();
             for succ in &successors {
-                let succ_id = succ.id();
+                let succ_id = succ.slot();
                 log.push(CfgUpdate::delete(source_id, succ_id));
                 log.push(CfgUpdate::insert(new_id, succ_id));
             }
@@ -1322,12 +1322,12 @@ where
         slot: EditSlot,
     ) -> IrResult<()> {
         let from_block = from.as_basic_block();
-        let from_id = from_block.id();
+        let from_id = from_block.slot();
         let ctx = self.patch.module_mut().core_ref().context();
 
         // Mutate the terminator and learn the removed target block.
         let target_id = match slot {
-            EditSlot::SwitchCase(to_id) => {
+            EditSlot::SwitchCase(id) => {
                 let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
                 else {
                     unreachable!("remove_slot: terminator is not an instruction");
@@ -1340,7 +1340,7 @@ where
                 // operand of the switch).
                 let mut dropped_case_values: Vec<ValueSlot> = Vec::new();
                 switch.cases.borrow_mut().retain(|(case_val, dest)| {
-                    if *dest == to_id {
+                    if *dest == id {
                         dropped_case_values.push(case_val.get());
                         false
                     } else {
@@ -1356,7 +1356,7 @@ where
                         uses.remove(pos);
                     }
                 }
-                to_id
+                id
             }
             EditSlot::BrThen | EditSlot::BrElse => {
                 let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
@@ -1421,7 +1421,7 @@ where
         );
         let surviving = crate::cfg::block_successors(&from_block)
             .iter()
-            .filter(|succ| succ.id() == target_id)
+            .filter(|succ| succ.slot() == target_id)
             .count();
         self.drop_incoming_from_pred(&target_block, from_id, surviving)?;
 
@@ -1464,8 +1464,8 @@ where
         phi_values: &[Value<'ctx, B>],
     ) -> IrResult<()> {
         let from_block = from.as_basic_block();
-        let from_id = from_block.id();
-        let new_id = new_to.id();
+        let from_id = from_block.slot();
+        let new_id = new_to.slot();
         let ctx = self.patch.module_mut().core_ref().context();
 
         // Centralized edge precondition: `from` must not already reach
@@ -1478,7 +1478,7 @@ where
         // priority.
         if crate::cfg::block_successors(&from_block)
             .iter()
-            .any(|succ| succ.id() == new_id)
+            .any(|succ| succ.slot() == new_id)
         {
             return Err(IrError::InvalidOperation {
                 message: "redirect: `from` already reaches `new_to`",
@@ -1652,7 +1652,7 @@ where
             BasicBlock::<Dyn, Terminated, B>::from_parts(old_id, from_block.module, from_block.ty);
         let surviving = crate::cfg::block_successors(&from_block)
             .iter()
-            .filter(|succ| succ.id() == old_id)
+            .filter(|succ| succ.slot() == old_id)
             .count();
         self.drop_incoming_from_pred(&old_block, from_id, surviving)?;
 
@@ -1739,7 +1739,7 @@ where
         let term = from_block.terminator().ok_or(IrError::InvalidOperation {
             message: "edit_terminator: `from` has no terminator",
         })?;
-        let term_id = term.id();
+        let term_id = term.slot();
         let from_view = *from;
         let kind = term.terminator_kind().ok_or(IrError::InvalidOperation {
             message: "edit_terminator: `from`'s last instruction is not a terminator",
@@ -1980,7 +1980,7 @@ where
     where
         R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
     {
-        let target_id = block.as_basic_block().id();
+        let target_id = block.as_basic_block().slot();
 
         // (1) Predecessor multiset of `block`: invert `block_successors` over
         // the function's blocks (the pattern `check_function_phi_coherence`
@@ -1989,9 +1989,9 @@ where
         let mut preds: Vec<ValueSlot> = Vec::new();
         for bb in self.function().basic_blocks() {
             let handle = bb.as_basic_block();
-            let pred_id = handle.id();
+            let pred_id = handle.slot();
             for succ in crate::cfg::block_successors(&handle) {
-                if succ.id() == target_id {
+                if succ.slot() == target_id {
                     preds.push(pred_id);
                 }
             }
@@ -2002,7 +2002,7 @@ where
         let ty_id = ty.id();
         let incoming_ids: Vec<(ValueSlot, ValueSlot)> = incomings
             .iter()
-            .map(|(value, pred)| (value.id, pred.id()))
+            .map(|(value, pred)| (value.id, pred.slot()))
             .collect();
         let ctx = self.patch.module_mut().core_ref().context();
         let value_ty_of = |id: ValueSlot| ctx.value_data(id).ty;
@@ -2026,7 +2026,7 @@ where
                 if let Ok(inst) = InstructionView::try_from(*value) {
                     let def_block = inst.parent();
                     if !dt.dominates_block(def_block, *pred) {
-                        dom_failure = Some((def_block.id(), pred.id()));
+                        dom_failure = Some((def_block.slot(), pred.slot()));
                         break;
                     }
                 }
@@ -2289,7 +2289,7 @@ where
         new_to: &BasicBlockLabel<'ctx, Dyn, B>,
         phi_values: &[Value<'ctx, B>],
     ) -> IrResult<()> {
-        let old_id = old_to.id();
+        let old_id = old_to.slot();
         // `old_to` is target-based, so witness it names a live case before
         // delegating: a bogus `old_to` retargets zero cases yet the shared tail
         // would still seed `new_to`'s phis / log a spurious `CfgUpdate`. This
@@ -2347,7 +2347,7 @@ where
     /// edge (a `switch` must keep its default) or is not a case successor.
     #[inline]
     pub fn remove_successor(&self, old_to: &BasicBlockLabel<'ctx, Dyn, B>) -> IrResult<()> {
-        let old_id = old_to.id();
+        let old_id = old_to.slot();
         if self.reshape.switch_default_dest(self.term_id) == old_id {
             return Err(IrError::InvalidOperation {
                 message: "remove_successor: cannot remove a `switch`'s default edge",
@@ -3387,8 +3387,8 @@ mod tests {
             let next = f.append_basic_block(&m, "next");
             // Ids captured up front — the block handles are consumed by the
             // builders below.
-            let entry_id = entry.id();
-            let next_id = next.id();
+            let entry_id = entry.slot();
+            let next_id = next.slot();
 
             // entry: %x = add 1, 2 ; br label %next
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -3423,7 +3423,7 @@ mod tests {
                 .terminator()
                 .expect("entry is terminated by the br");
             let new_block = reshape.split_block(&entry_view, &terminator, "entry.split")?;
-            let new_id = new_block.id();
+            let new_id = new_block.slot();
 
             // Exactly the rewiring: entry loses `→ next`, the new block gains it.
             assert_eq!(
@@ -3727,8 +3727,8 @@ mod tests {
             let a = b.build_int_add(x, 1_i32, "a")?;
             let bb = b.build_int_add(a, 1_i32, "b")?;
             b.build_ret(x)?;
-            let a_id = a.id();
-            let b_id = bb.id();
+            let a_id = a.slot();
+            let b_id = bb.slot();
 
             let function = FunctionView::from(f);
             let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
@@ -3869,10 +3869,10 @@ mod tests {
             let block = function
                 .entry_block()
                 .expect("definition has an entry block");
-            let ids: Vec<_> = block.instructions().map(|inst| inst.id()).collect();
+            let ids: Vec<_> = block.instructions().map(|inst| inst.slot()).collect();
             let mut walked = Vec::new();
             for inst in block {
-                walked.push(inst.id());
+                walked.push(inst.slot());
             }
             assert_eq!(walked, ids);
             assert_eq!(block.instruction_count(), 2, "add + ret");

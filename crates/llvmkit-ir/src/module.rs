@@ -2252,7 +2252,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
         crate::verifier::Verifier::new(self.as_view()).run()
     }
 
-    /// Resolve a storable value id (from [`Value::to_id`](crate::Value::to_id)
+    /// Resolve a storable value id (from [`Value::id`](crate::Value::id)
     /// and its per-kind siblings) back into its borrowing handle — the
     /// resolution boundary for the llvmkit 2.0 id family.
     ///

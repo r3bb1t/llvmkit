@@ -11,7 +11,7 @@
 //! borrowing handle.
 //!
 //! This slice is purely **additive**: builders still return the borrowing
-//! handles; each handle merely gains a [`to_id`](crate::Value::to_id)-style
+//! handles; each handle merely gains a [`id`](crate::Value::id)-style
 //! accessor that mints its id. Cycle B rewires the builders to return ids.
 //!
 //! # Representation
@@ -73,7 +73,7 @@ macro_rules! decl_value_id {
 
         impl<$($mk: $mkb,)? B: ModuleBrand> $name<$($mk,)? B> {
             /// Crate-internal: mint an id from an already-resolved tag + slot.
-            /// The only callers are the value handles' `to_id` accessors, which
+            /// The only callers are the value handles' `id` accessors, which
             /// pass their owning [`ModuleId`] and arena slot.
             #[inline]
             pub(crate) fn from_raw(tag: ModuleId, slot: ValueSlot) -> Self {

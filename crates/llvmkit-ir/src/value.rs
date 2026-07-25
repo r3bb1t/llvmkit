@@ -247,19 +247,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     /// Opaque arena id for structured side tables such as use-list order
     /// records.
     #[inline]
-    pub fn id(self) -> ValueSlot {
+    pub fn slot(self) -> ValueSlot {
         self.id
     }
 
     /// Storable, module-tagged [`ValueId`] for this value (llvmkit 2.0).
     ///
-    /// Unlike [`id`](Self::id) — which returns the bare, untagged arena
+    /// Unlike [`slot`](Self::slot) — which returns the bare, untagged arena
     /// [`ValueSlot`] — the returned [`ValueId`] carries the owning
     /// [`ModuleId`](crate::ModuleId) and can be resolved back into a handle
     /// with [`Module::view`](crate::Module::view) /
     /// [`Module::try_view`](crate::Module::try_view).
     #[inline]
-    pub fn to_id(self) -> ValueId<B> {
+    pub fn id(self) -> ValueId<B> {
         ValueId::from_raw(self.module.id(), self.id)
     }
 
@@ -527,10 +527,10 @@ pub trait IsValue<'ctx, B: ModuleBrand = Brand<'ctx>>:
     fn into_erased(self) -> Value<'ctx, B>;
 
     /// Opaque arena id of the underlying value. Every handle shares the
-    /// id of its erased [`Value`], so `x.id()` replaces the
+    /// id of its erased [`Value`], so `x.slot()` replaces the
     /// `x.into_erased().id` widen-then-project chain.
     #[inline]
-    fn id(self) -> ValueSlot {
+    fn slot(self) -> ValueSlot {
         self.into_erased().id
     }
 }
@@ -629,7 +629,7 @@ macro_rules! decl_value_handle {
             /// resolvable via [`Module::view`](crate::Module::view) /
             /// [`Module::try_view`](crate::Module::try_view).
             #[inline]
-            pub fn to_id(self) -> $id<B> {
+            pub fn id(self) -> $id<B> {
                 $id::from_raw(self.module.id(), self.id)
             }
 
@@ -1599,7 +1599,7 @@ decl_value_handle!(
     /// elsewhere; this handle only refines the type, not the category.
     ///
     /// Has no dedicated id family (it refines only the *type*, not the value
-    /// category), so [`to_id`](FunctionTypedValue::to_id) mints the erased
+    /// category), so [`id`](FunctionTypedValue::id) mints the erased
     /// [`ValueId`].
     FunctionTypedValue, ValueId, Function, FunctionType,
     type_predicate |d| matches!(d, TypeData::Function { .. })
@@ -1724,7 +1724,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
     /// [`Module::try_view`](crate::Module::try_view). Preserves the width
     /// marker `W`.
     #[inline]
-    pub fn to_id(self) -> IntValueId<W, B> {
+    pub fn id(self) -> IntValueId<W, B> {
         IntValueId::from_raw(self.module.id(), self.id)
     }
     /// Owning module reference.
@@ -2094,7 +2094,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
     /// [`Module::try_view`](crate::Module::try_view). Preserves the
     /// float-kind marker `K`.
     #[inline]
-    pub fn to_id(self) -> FloatValueId<K, B> {
+    pub fn id(self) -> FloatValueId<K, B> {
         FloatValueId::from_raw(self.module.id(), self.id)
     }
     #[inline]
