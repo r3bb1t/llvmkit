@@ -1766,40 +1766,37 @@ impl_module_analysis_list!(8; A0: Idx0 . 0, A1: Idx1 . 1, A2: Idx2 . 2, A3: Idx3
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Dyn, IRBuilder, Linkage, Module};
+    use crate::{Dyn, IRBuilder, Linkage};
 
     /// llvmkit-specific type-machinery lock (no upstream analog): the analysis-list
     /// tuple schema prefetches, collects, and selects by type. Runtime behavior it
     /// wraps (getResult caching) ports `unittests/IR/PassManagerTest.cpp`.
     #[test]
     fn analysis_list_prefetch_collect_select() -> IrResult<()> {
-        Module::with_new("analysis-list", |m| {
-            let i32_ty = m.i32_type();
-            let fn_ty = m.fn_type_no_params(i32_ty, false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = m.view(f).append_basic_block(&m, "entry");
-            let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-            b.build_ret(i32_ty.const_int(0_u32))?;
-            m.verify_borrowed()?;
+        let m = crate::module_new!("analysis-list")?;
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        b.build_ret(i32_ty.const_int(0_u32))?;
+        m.verify_borrowed()?;
 
-            let function: FunctionView<'_, _> = m.view(f).into();
-            let mut fam = FunctionAnalysisManager::new();
-            type Reqs = (DominatorTreeAnalysis,);
-            <Reqs as FunctionAnalysisList<'_, _>>::prefetch(&mut fam, function)?;
-            let refs = <Reqs as FunctionAnalysisList<'_, _>>::collect(&fam, function)?;
-            // `B` is pinned explicitly here: unlike `prefetch`/`collect`, `select`'s
-            // only argument is `Self::ResultRefs<'r>`, whose concrete type
-            // (`&DominatorTree`) doesn't mention `B`, so `_` has nothing to infer from.
-            let dt: &DominatorTree =
-                <Reqs as AnalysisSelector<'_, Brand<'_>, DominatorTreeAnalysis, Idx0>>::select(
-                    &refs,
-                );
-            let entry_view = function
-                .entry_block()
-                .map(|bb| dt.is_reachable_from_entry(bb));
-            assert_eq!(entry_view, Some(true));
-            Ok(())
-        })
+        let function: FunctionView<'_, _> = m.view(f).into();
+        let mut fam = FunctionAnalysisManager::new();
+        type Reqs = (DominatorTreeAnalysis,);
+        <Reqs as FunctionAnalysisList<'_, _>>::prefetch(&mut fam, function)?;
+        let refs = <Reqs as FunctionAnalysisList<'_, _>>::collect(&fam, function)?;
+        // `B` is pinned explicitly here: unlike `prefetch`/`collect`, `select`'s
+        // only argument is `Self::ResultRefs<'r>`, whose concrete type
+        // (`&DominatorTree`) doesn't mention `B`, so `_` has nothing to infer from.
+        let dt: &DominatorTree =
+            <Reqs as AnalysisSelector<'_, Brand<'_>, DominatorTreeAnalysis, Idx0>>::select(&refs);
+        let entry_view = function
+            .entry_block()
+            .map(|bb| dt.is_reachable_from_entry(bb));
+        assert_eq!(entry_view, Some(true));
+        Ok(())
     }
 
     /// The dominator tree's [`CfgIncremental`] hook repairs the tree after a
@@ -1812,53 +1809,52 @@ mod tests {
     #[test]
     fn dominator_tree_repairs_to_match_recompute() -> IrResult<()> {
         use crate::CfgUpdate;
-        Module::with_new("domtree-repair", |m| {
-            let i32_ty = m.i32_type();
-            let fn_ty = m.fn_type_no_params(i32_ty, false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = m.view(f).append_basic_block(&m, "entry");
-            let next = m.view(f).append_basic_block(&m, "next");
-            let entry_id = entry.slot();
-            let next_id = next.slot();
-            let next_label = next.id();
+        let m = crate::module_new!("domtree-repair")?;
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let next = m.view(f).append_basic_block(&m, "next");
+        let entry_id = entry.slot();
+        let next_id = next.slot();
+        let next_label = next.id();
 
-            // entry: br next    next: ret 0
-            let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-            b.build_br(next.id())?;
-            let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(next);
-            b2.build_ret(i32_ty.const_int(0_u32))?;
+        // entry: br next    next: ret 0
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        b.build_br(next.id())?;
+        let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(next);
+        b2.build_ret(i32_ty.const_int(0_u32))?;
 
-            let function: FunctionView<'_, _> = m.view(f).into();
+        let function: FunctionView<'_, _> = m.view(f).into();
 
-            // Cache a dom tree while `next` is still reachable.
-            let mut dt = DominatorTree::new(function.as_function());
-            assert!(dt.is_reachable_from_entry(next_label));
+        // Cache a dom tree while `next` is still reachable.
+        let mut dt = DominatorTree::new(function.as_function());
+        assert!(dt.is_reachable_from_entry(next_label));
 
-            // Edit the CFG: split the entry before its terminator, moving the
-            // `br next` (and the only edge into `next`) into a fresh block that
-            // nothing reaches — so `next` is now unreachable.
-            let entry_bb = function.entry_block().expect("definition").as_basic_block();
-            let terminator = entry_bb.terminator().expect("terminated");
-            let new_bb = entry_bb.split_at(&m, &terminator, "entry.split")?;
-            let updates = [
-                CfgUpdate::delete(entry_id, next_id),
-                CfgUpdate::insert(new_bb.slot(), next_id),
-            ];
+        // Edit the CFG: split the entry before its terminator, moving the
+        // `br next` (and the only edge into `next`) into a fresh block that
+        // nothing reaches — so `next` is now unreachable.
+        let entry_bb = function.entry_block().expect("definition").as_basic_block();
+        let terminator = entry_bb.terminator().expect("terminated");
+        let new_bb = entry_bb.split_at(&m, &terminator, "entry.split")?;
+        let updates = [
+            CfgUpdate::delete(entry_id, next_id),
+            CfgUpdate::insert(new_bb.slot(), next_id),
+        ];
 
-            // Repairing the stale cached tree returns Repaired and yields the
-            // same answer as a fresh recompute: `next` unreachable.
-            assert_eq!(
-                dt.apply_updates(&updates, function),
-                RepairOutcome::Repaired
-            );
-            let fresh = DominatorTree::new(function.as_function());
-            assert_eq!(
-                dt.is_reachable_from_entry(next_label),
-                fresh.is_reachable_from_entry(next_label)
-            );
-            assert!(!dt.is_reachable_from_entry(next_label));
-            Ok(())
-        })
+        // Repairing the stale cached tree returns Repaired and yields the
+        // same answer as a fresh recompute: `next` unreachable.
+        assert_eq!(
+            dt.apply_updates(&updates, function),
+            RepairOutcome::Repaired
+        );
+        let fresh = DominatorTree::new(function.as_function());
+        assert_eq!(
+            dt.is_reachable_from_entry(next_label),
+            fresh.is_reachable_from_entry(next_label)
+        );
+        assert!(!dt.is_reachable_from_entry(next_label));
+        Ok(())
     }
 
     /// A deliberately NON-`Default` function analysis: it carries configuration,
@@ -1902,35 +1898,34 @@ mod tests {
     /// llvmkit-specific type-machinery lock (no upstream analog).
     #[test]
     fn requires_without_default_uses_registered_instance() -> IrResult<()> {
-        Module::with_new("requires-no-default", |m| {
-            let i32_ty = m.i32_type();
-            let fn_ty = m.fn_type_no_params(i32_ty, false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = m.view(f).append_basic_block(&m, "entry");
-            let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-            b.build_ret(i32_ty.const_int(0_u32))?;
+        let m = crate::module_new!("requires-no-default")?;
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type_no_params(i32_ty, false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        b.build_ret(i32_ty.const_int(0_u32))?;
 
-            let function: FunctionView<'_, _> = m.view(f).into();
-            type Reqs = (ThresholdAnalysis,);
+        let function: FunctionView<'_, _> = m.view(f).into();
+        type Reqs = (ThresholdAnalysis,);
 
-            // Without pre-registration, prefetch fails: the no-op
-            // `ensure_registered` does not auto-construct a non-`Default` analysis.
-            let mut empty = FunctionAnalysisManager::new();
-            assert!(matches!(
-                <Reqs as FunctionAnalysisList<'_, _>>::prefetch(&mut empty, function),
-                Err(IrError::AnalysisNotRegistered { .. })
-            ));
+        // Without pre-registration, prefetch fails: the no-op
+        // `ensure_registered` does not auto-construct a non-`Default` analysis.
+        let mut empty = FunctionAnalysisManager::new();
+        assert!(matches!(
+            <Reqs as FunctionAnalysisList<'_, _>>::prefetch(&mut empty, function),
+            Err(IrError::AnalysisNotRegistered { .. })
+        ));
 
-            // With a configured instance pre-registered, the Requires list
-            // prefetches/collects/selects it and the result carries the config.
-            let mut fam = FunctionAnalysisManager::new();
-            fam.register_pass(ThresholdAnalysis { threshold: 42 });
-            <Reqs as FunctionAnalysisList<'_, _>>::prefetch(&mut fam, function)?;
-            let refs = <Reqs as FunctionAnalysisList<'_, _>>::collect(&fam, function)?;
-            let result: &ThresholdResult =
-                <Reqs as AnalysisSelector<'_, Brand<'_>, ThresholdAnalysis, Idx0>>::select(&refs);
-            assert_eq!(result.threshold, 42);
-            Ok(())
-        })
+        // With a configured instance pre-registered, the Requires list
+        // prefetches/collects/selects it and the result carries the config.
+        let mut fam = FunctionAnalysisManager::new();
+        fam.register_pass(ThresholdAnalysis { threshold: 42 });
+        <Reqs as FunctionAnalysisList<'_, _>>::prefetch(&mut fam, function)?;
+        let refs = <Reqs as FunctionAnalysisList<'_, _>>::collect(&fam, function)?;
+        let result: &ThresholdResult =
+            <Reqs as AnalysisSelector<'_, Brand<'_>, ThresholdAnalysis, Idx0>>::select(&refs);
+        assert_eq!(result.threshold, 42);
+        Ok(())
     }
 }

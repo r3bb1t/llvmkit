@@ -1046,51 +1046,48 @@ mod tests {
 
     #[test]
     fn erased_block_value_narrows_to_dyn_params_label() {
-        Module::with_new("bp-slice1-narrow", |m| {
-            let void_ty = m.void_type().as_type();
-            let fn_ty = m.fn_type_no_params(void_ty, false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
-            let bb = m.view(f).append_basic_block(&m, "entry");
+        let m = crate::module_new!("bp-slice1-narrow").expect("fresh module");
+        let void_ty = m.void_type().as_type();
+        let fn_ty = m.fn_type_no_params(void_ty, false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
+        let bb = m.view(f).append_basic_block(&m, "entry");
 
-            // A label recovered from an untyped `Value` carries no static
-            // parameter promise, so it must land in the `BlockParamsDyn`
-            // form (proved at compile time by `assert_dyn_params`).
-            let v: Value<'_, _> = bb.to_erased();
-            let recovered: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = v
-                .try_into()
-                .expect("a basic-block value narrows to a label");
-            assert_eq!(recovered.slot(), bb.slot());
-            assert_dyn_params(recovered);
-        });
+        // A label recovered from an untyped `Value` carries no static
+        // parameter promise, so it must land in the `BlockParamsDyn`
+        // form (proved at compile time by `assert_dyn_params`).
+        let v: Value<'_, _> = bb.to_erased();
+        let recovered: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = v
+            .try_into()
+            .expect("a basic-block value narrows to a label");
+        assert_eq!(recovered.slot(), bb.slot());
+        assert_dyn_params(recovered);
     }
 
     #[test]
     fn label_to_erased_round_trips_to_dyn_params() {
-        Module::with_new("bp-slice1-roundtrip", |m| {
-            let void_ty = m.void_type().as_type();
-            let fn_ty = m.fn_type_no_params(void_ty, false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
-            let bb = m.view(f).append_basic_block(&m, "entry");
-            let label = bb.label();
+        let m = crate::module_new!("bp-slice1-roundtrip").expect("fresh module");
+        let void_ty = m.void_type().as_type();
+        let fn_ty = m.fn_type_no_params(void_ty, false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
+        let bb = m.view(f).append_basic_block(&m, "entry");
+        let label = bb.label();
 
-            let round: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = label
-                .to_erased()
-                .try_into()
-                .expect("a label's value round-trips to a label");
-            assert_eq!(round.slot(), label.slot());
-            assert_dyn_params(round);
-        });
+        let round: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = label
+            .to_erased()
+            .try_into()
+            .expect("a label's value round-trips to a label");
+        assert_eq!(round.slot(), label.slot());
+        assert_dyn_params(round);
     }
 
     #[test]
     fn non_block_value_is_rejected() {
-        Module::with_new("bp-slice1-reject", |m| {
-            let v = m.i32_type().const_zero().into_erased();
-            let narrowed: IrResult<BasicBlockLabel<'_, Dyn, _, BlockParamsDyn>> = v.try_into();
-            assert!(
-                narrowed.is_err(),
-                "a non-block value must not narrow to a label"
-            );
-        });
+        let m = crate::module_new!("bp-slice1-reject").expect("fresh module");
+        let v = m.i32_type().const_zero().into_erased();
+        let narrowed: IrResult<BasicBlockLabel<'_, Dyn, _, BlockParamsDyn>> = v.try_into();
+        assert!(
+            narrowed.is_err(),
+            "a non-block value must not narrow to a label"
+        );
     }
 }

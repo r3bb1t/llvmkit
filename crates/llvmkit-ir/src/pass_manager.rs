@@ -28,7 +28,7 @@
 //! use llvmkit_ir::{
 //!     Analyses, DcePass, DynReadOnlyFunctionPipeline, FnCx, FnReport, FunctionPass, IRBuilder,
 //!     Inspect, InstSimplifyPass, IrError, IrResult, Linkage, Module, ModuleBrand, Unverified,
-//!     Verified, function_pipeline, run_function_pass,
+//!     Verified, function_pipeline, module_new, run_function_pass,
 //! };
 //!
 //! // A read-only (`Inspect`) function pass — the raw trait impl the
@@ -54,43 +54,42 @@
 //! }
 //!
 //! fn main() -> Result<(), IrError> {
-//!     Module::with_new("pass-doc", |m| {
-//!         // Build `i32 @f()` returning a constant.
-//!         let i32_ty = m.i32_type();
-//!         let fn_ty = m.fn_type_no_params(i32_ty, false);
-//!         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-//!         let entry = m.view(f).append_basic_block(&m, "entry");
-//!         let b = IRBuilder::at_end(entry);
-//!         b.build_ret(i32_ty.const_int(1_u32))?;
+//!     let m = module_new!("pass-doc")?;
+//!     // Build `i32 @f()` returning a constant.
+//!     let i32_ty = m.i32_type();
+//!     let fn_ty = m.fn_type_no_params(i32_ty, false);
+//!     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+//!     let entry = m.view(f).append_basic_block(&m, "entry");
+//!     let b = IRBuilder::at_end(entry);
+//!     b.build_ret(i32_ty.const_int(1_u32))?;
 //!
-//!         let verified = m.verify()?;
-//!         let mut analyses = Analyses::new();
-//!         // The drivers name the function by **id**: each one consumes the
-//!         // module token, and a view would borrow the very token being moved.
-//!         // `f` is the lifetime-free id `add_function_dyn` handed back, so it
-//!         // threads through every run below unchanged.
+//!     let verified = m.verify()?;
+//!     let mut analyses = Analyses::new();
+//!     // The drivers name the function by **id**: each one consumes the
+//!     // module token, and a view would borrow the very token being moved.
+//!     // `f` is the lifetime-free id `add_function_dyn` handed back, so it
+//!     // threads through every run below unchanged.
 //!
-//!         // 1. Single-pass driver. `CountBlocks` is `Inspect`, so the module is
-//!         //    still `Verified` on the way out (the explicit binding proves it).
-//!         let verified: Module<'_, _, Verified> =
-//!             run_function_pass(CountBlocks, verified, f, &mut analyses)?;
+//!     // 1. Single-pass driver. `CountBlocks` is `Inspect`, so the module is
+//!     //    still `Verified` on the way out (the explicit binding proves it).
+//!     let verified: Module<'_, _, Verified> =
+//!         run_function_pass(CountBlocks, verified, f, &mut analyses)?;
 //!
-//!         // 2. A compile-time tuple pipeline of two `PatchBody` passes, run in
-//!         //    written order. The output typestate folds the members' rungs: any
-//!         //    mutator ⇒ `Module<Unverified>`, so re-verifying is enforced by the
-//!         //    type system, not by convention.
-//!         let cleaned: Module<'_, _, Unverified> =
-//!             function_pipeline((InstSimplifyPass, DcePass)).run(verified, f, &mut analyses)?;
-//!         let reverified = cleaned.verify()?;
+//!     // 2. A compile-time tuple pipeline of two `PatchBody` passes, run in
+//!     //    written order. The output typestate folds the members' rungs: any
+//!     //    mutator ⇒ `Module<Unverified>`, so re-verifying is enforced by the
+//!     //    type system, not by convention.
+//!     let cleaned: Module<'_, _, Unverified> =
+//!         function_pipeline((InstSimplifyPass, DcePass)).run(verified, f, &mut analyses)?;
+//!     let reverified = cleaned.verify()?;
 //!
-//!         // 3. A runtime-assembled read-only pipeline (opt-style CLIs). `push` is
-//!         //    bounded to `Inspect`, so a mutating pass cannot be added and the
-//!         //    module threads through `Verified`.
-//!         let mut read_only = DynReadOnlyFunctionPipeline::new();
-//!         read_only.push(CountBlocks);
-//!         let _final: Module<'_, _, Verified> = read_only.run(reverified, f, &mut analyses)?;
-//!         Ok(())
-//!     })
+//!     // 3. A runtime-assembled read-only pipeline (opt-style CLIs). `push` is
+//!     //    bounded to `Inspect`, so a mutating pass cannot be added and the
+//!     //    module threads through `Verified`.
+//!     let mut read_only = DynReadOnlyFunctionPipeline::new();
+//!     read_only.push(CountBlocks);
+//!     let _final: Module<'_, _, Verified> = read_only.run(reverified, f, &mut analyses)?;
+//!     Ok(())
 //! }
 //! ```
 

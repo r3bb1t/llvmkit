@@ -9211,32 +9211,31 @@ mod tests {
     #[test]
     fn hostile_native_typed_override_wrong_width_rejected_by_accept_folded_int()
     -> Result<(), IrError> {
-        Module::with_new("hostile-typed-folder", |m| {
-            let i32_dyn_ty = m.custom_width_int_type(32)?;
-            let i64_dyn_ty = m.custom_width_int_type(64)?;
-            let fn_ty = m.fn_type_no_params(m.i32_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = m.view(f).append_basic_block(&m, "entry");
+        let m = crate::module_new!("hostile-typed-folder")?;
+        let i32_dyn_ty = m.custom_width_int_type(32)?;
+        let i64_dyn_ty = m.custom_width_int_type(64)?;
+        let fn_ty = m.fn_type_no_params(m.i32_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
 
-            let stored: IntValue<'_, i64, _> =
-                IntValue::from_value_unchecked(i64_dyn_ty.const_zero().into_erased());
-            let folder = HostileTypedFolder { stored };
-            let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+        let stored: IntValue<'_, i64, _> =
+            IntValue::from_value_unchecked(i64_dyn_ty.const_zero().into_erased());
+        let folder = HostileTypedFolder { stored };
+        let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
 
-            let lhs = i32_dyn_ty.const_int_checked(1_i32)?;
-            let rhs = i32_dyn_ty.const_int_checked(2_i32)?;
+        let lhs = i32_dyn_ty.const_int_checked(1_i32)?;
+        let rhs = i32_dyn_ty.const_int_checked(2_i32)?;
 
-            let err = b
-                .build_int_add::<IntDyn, _, _, _>(lhs, rhs, "sum")
-                .expect_err("wrong-width native-override fold result is rejected");
+        let err = b
+            .build_int_add::<IntDyn, _, _, _>(lhs, rhs, "sum")
+            .expect_err("wrong-width native-override fold result is rejected");
 
-            // Both sides are integers, so the acceptor reports the widths
-            // rather than a `TypeMismatch { expected: Integer, got: Integer }`
-            // that could not say which width was wrong.
-            assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
-            assert_eq!(b.insert_block().instructions().len(), 0);
-            Ok(())
-        })
+        // Both sides are integers, so the acceptor reports the widths
+        // rather than a `TypeMismatch { expected: Integer, got: Integer }`
+        // that could not say which width was wrong.
+        assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
+        assert_eq!(b.insert_block().instructions().len(), 0);
+        Ok(())
     }
 
     /// Sibling of the `IntDyn` case above, at a *static* width. This is the
@@ -9255,35 +9254,34 @@ mod tests {
     /// what this test locks.
     #[test]
     fn hostile_native_typed_override_wrong_width_rejected_at_static_width() -> Result<(), IrError> {
-        Module::with_new("hostile-typed-folder-static", |m| {
-            let i32_ty = m.i32_type();
-            let i64_ty = m.i64_type();
-            let fn_ty = m.fn_type_no_params(m.i32_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = m.view(f).append_basic_block(&m, "entry");
+        let m = crate::module_new!("hostile-typed-folder-static")?;
+        let i32_ty = m.i32_type();
+        let i64_ty = m.i64_type();
+        let fn_ty = m.fn_type_no_params(m.i32_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
 
-            // `stored`'s REAL IR type is i64; the folder hands it back as
-            // `IntValue<W>` for whatever `W` the builder asks for -- here i32.
-            // The handle itself is built through the *checked* path: this is
-            // the honest half of the setup (`const_zero()` on an `i64_ty`
-            // genuinely is an i64), and in a test whose whole subject is
-            // `from_value_unchecked` lying, the lie belongs only where it is
-            // under test -- inside the folder's override.
-            let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().into_erased())?;
-            let folder = HostileTypedFolder { stored };
-            let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+        // `stored`'s REAL IR type is i64; the folder hands it back as
+        // `IntValue<W>` for whatever `W` the builder asks for -- here i32.
+        // The handle itself is built through the *checked* path: this is
+        // the honest half of the setup (`const_zero()` on an `i64_ty`
+        // genuinely is an i64), and in a test whose whole subject is
+        // `from_value_unchecked` lying, the lie belongs only where it is
+        // under test -- inside the folder's override.
+        let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().into_erased())?;
+        let folder = HostileTypedFolder { stored };
+        let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
 
-            let lhs = i32_ty.const_int(1_i32);
-            let rhs = i32_ty.const_int(2_i32);
+        let lhs = i32_ty.const_int(1_i32);
+        let rhs = i32_ty.const_int(2_i32);
 
-            let err = b
-                .build_int_add::<i32, _, _, _>(lhs, rhs, "sum")
-                .expect_err("wrong-width fold result must be rejected at a static width too");
+        let err = b
+            .build_int_add::<i32, _, _, _>(lhs, rhs, "sum")
+            .expect_err("wrong-width fold result must be rejected at a static width too");
 
-            assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
-            assert_eq!(b.insert_block().instructions().len(), 0);
-            Ok(())
-        })
+        assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
+        assert_eq!(b.insert_block().instructions().len(), 0);
+        Ok(())
     }
 
     /// Locks `accept_folded_cast_int` at a *static* destination width --
@@ -9303,26 +9301,25 @@ mod tests {
     #[test]
     fn hostile_native_typed_override_wrong_width_rejected_by_accept_folded_cast_int()
     -> Result<(), IrError> {
-        Module::with_new("hostile-typed-folder-cast-int", |m| {
-            let i32_ty = m.i32_type();
-            let i64_ty = m.i64_type();
-            let fn_ty = m.fn_type_no_params(m.i32_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = m.view(f).append_basic_block(&m, "entry");
+        let m = crate::module_new!("hostile-typed-folder-cast-int")?;
+        let i32_ty = m.i32_type();
+        let i64_ty = m.i64_type();
+        let fn_ty = m.fn_type_no_params(m.i32_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
 
-            let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().into_erased())?;
-            let folder = HostileTypedFolder { stored };
-            let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+        let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().into_erased())?;
+        let folder = HostileTypedFolder { stored };
+        let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
 
-            let src: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_int(1_i64).into_erased())?;
-            let err = b
-                .build_trunc::<i64, i32, _, _>(src, i32_ty, "narrowed")
-                .expect_err("wrong-width cast fold result must be rejected at a static width");
+        let src: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_int(1_i64).into_erased())?;
+        let err = b
+            .build_trunc::<i64, i32, _, _>(src, i32_ty, "narrowed")
+            .expect_err("wrong-width cast fold result must be rejected at a static width");
 
-            assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
-            assert_eq!(b.insert_block().instructions().len(), 0);
-            Ok(())
-        })
+        assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
+        assert_eq!(b.insert_block().instructions().len(), 0);
+        Ok(())
     }
 
     /// Float twin of `..._rejected_at_static_width`, locking
@@ -9337,35 +9334,33 @@ mod tests {
     #[test]
     fn hostile_native_typed_override_wrong_kind_rejected_by_accept_folded_fp() -> Result<(), IrError>
     {
-        Module::with_new("hostile-typed-fp-folder", |m| {
-            let f32_ty = m.f32_type();
-            let f64_ty = m.f64_type();
-            let fn_ty = m.fn_type_no_params(m.i32_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = m.view(f).append_basic_block(&m, "entry");
+        let m = crate::module_new!("hostile-typed-fp-folder")?;
+        let f32_ty = m.f32_type();
+        let f64_ty = m.f64_type();
+        let fn_ty = m.fn_type_no_params(m.i32_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
 
-            let stored: FloatValue<'_, f64, _> =
-                f64::narrow(f64_ty.const_double(0.0).into_erased())?;
-            let folder = HostileTypedFpFolder { stored };
-            let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+        let stored: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(0.0).into_erased())?;
+        let folder = HostileTypedFpFolder { stored };
+        let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
 
-            let lhs = f32_ty.const_float(1.0_f32);
-            let rhs = f32_ty.const_float(2.0_f32);
+        let lhs = f32_ty.const_float(1.0_f32);
+        let rhs = f32_ty.const_float(2.0_f32);
 
-            let err = b
-                .build_fp_add::<f32, _, _, _>(lhs, rhs, "sum")
-                .expect_err("wrong-kind fold result must be rejected at a static kind");
+        let err = b
+            .build_fp_add::<f32, _, _, _>(lhs, rhs, "sum")
+            .expect_err("wrong-kind fold result must be rejected at a static kind");
 
-            assert_eq!(
-                err,
-                IrError::TypeMismatch {
-                    expected: crate::error::TypeKindLabel::Float,
-                    got: crate::error::TypeKindLabel::Double,
-                }
-            );
-            assert_eq!(b.insert_block().instructions().len(), 0);
-            Ok(())
-        })
+        assert_eq!(
+            err,
+            IrError::TypeMismatch {
+                expected: crate::error::TypeKindLabel::Float,
+                got: crate::error::TypeKindLabel::Double,
+            }
+        );
+        assert_eq!(b.insert_block().instructions().len(), 0);
+        Ok(())
     }
 
     /// Locks `accept_folded_cast_fp` at a *static* destination kind -- the
@@ -9380,32 +9375,30 @@ mod tests {
     #[test]
     fn hostile_native_typed_override_wrong_kind_rejected_by_accept_folded_cast_fp()
     -> Result<(), IrError> {
-        Module::with_new("hostile-typed-fp-folder-cast", |m| {
-            let f32_ty = m.f32_type();
-            let f64_ty = m.f64_type();
-            let fn_ty = m.fn_type_no_params(m.i32_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = m.view(f).append_basic_block(&m, "entry");
+        let m = crate::module_new!("hostile-typed-fp-folder-cast")?;
+        let f32_ty = m.f32_type();
+        let f64_ty = m.f64_type();
+        let fn_ty = m.fn_type_no_params(m.i32_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
 
-            let stored: FloatValue<'_, f64, _> =
-                f64::narrow(f64_ty.const_double(0.0).into_erased())?;
-            let folder = HostileTypedFpFolder { stored };
-            let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+        let stored: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(0.0).into_erased())?;
+        let folder = HostileTypedFpFolder { stored };
+        let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
 
-            let src: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(1.0).into_erased())?;
-            let err = b
-                .build_fp_trunc::<f64, f32, _, _>(src, f32_ty, "narrowed")
-                .expect_err("wrong-kind cast fold result must be rejected at a static kind");
+        let src: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(1.0).into_erased())?;
+        let err = b
+            .build_fp_trunc::<f64, f32, _, _>(src, f32_ty, "narrowed")
+            .expect_err("wrong-kind cast fold result must be rejected at a static kind");
 
-            assert_eq!(
-                err,
-                IrError::TypeMismatch {
-                    expected: crate::error::TypeKindLabel::Float,
-                    got: crate::error::TypeKindLabel::Double,
-                }
-            );
-            assert_eq!(b.insert_block().instructions().len(), 0);
-            Ok(())
-        })
+        assert_eq!(
+            err,
+            IrError::TypeMismatch {
+                expected: crate::error::TypeKindLabel::Float,
+                got: crate::error::TypeKindLabel::Double,
+            }
+        );
+        assert_eq!(b.insert_block().instructions().len(), 0);
+        Ok(())
     }
 }

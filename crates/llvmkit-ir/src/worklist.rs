@@ -140,71 +140,69 @@ impl<B: ModuleBrand> Worklist<B> {
 #[cfg(test)]
 mod tests {
     use super::Worklist;
-    use crate::{FunctionView, IRBuilder, IntValue, IrError, Linkage, Module, NoFolder};
+    use crate::{FunctionView, IRBuilder, IntValue, IrError, Linkage, NoFolder};
 
     // Build `f(i32 %x)` with three dead adds; return their ids + the module ref.
     // Helper closes over `m` so tests can pop against a live module.
     #[test]
     fn push_dedups_and_pop_is_lifo() -> Result<(), IrError> {
-        Module::with_new("wl-basic", |m| {
-            let i32_ty = m.i32_type();
-            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = m.view(f).append_basic_block(&m, "entry");
-            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-            let a = b.build_int_add(x, 1_i32, "a")?;
-            let c = b.build_int_add(x, 2_i32, "c")?;
-            b.build_ret(x)?;
+        let m = crate::module_new!("wl-basic")?;
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let a = b.build_int_add(x, 1_i32, "a")?;
+        let c = b.build_int_add(x, 2_i32, "c")?;
+        b.build_ret(x)?;
 
-            let (a_id, c_id) = (m.view(a).into_erased().id(), m.view(c).into_erased().id());
-            let module = m.module_ref();
+        let (a_id, c_id) = (m.view(a).into_erased().id(), m.view(c).into_erased().id());
+        let module = m.module_ref();
 
-            let mut wl = Worklist::new();
-            assert!(wl.is_empty());
-            wl.push(a_id);
-            wl.push(c_id);
-            wl.push(a_id); // dedup: no-op
-            assert!(wl.contains(a_id));
-            assert!(!wl.is_empty());
+        let mut wl = Worklist::new();
+        assert!(wl.is_empty());
+        wl.push(a_id);
+        wl.push(c_id);
+        wl.push(a_id); // dedup: no-op
+        assert!(wl.contains(a_id));
+        assert!(!wl.is_empty());
 
-            // LIFO: c popped before a.
-            assert_eq!(wl.pop(module).unwrap().to_erased().id(), c_id);
-            assert_eq!(wl.pop(module).unwrap().to_erased().id(), a_id);
-            assert!(wl.pop(module).is_none());
-            assert!(wl.is_empty());
-            // Re-queue after pop is allowed (cascade requirement).
-            wl.push(a_id);
-            assert_eq!(wl.pop(module).unwrap().to_erased().id(), a_id);
-            Ok(())
-        })
+        // LIFO: c popped before a.
+        assert_eq!(wl.pop(module).unwrap().to_erased().id(), c_id);
+        assert_eq!(wl.pop(module).unwrap().to_erased().id(), a_id);
+        assert!(wl.pop(module).is_none());
+        assert!(wl.is_empty());
+        // Re-queue after pop is allowed (cascade requirement).
+        wl.push(a_id);
+        assert_eq!(wl.pop(module).unwrap().to_erased().id(), a_id);
+        Ok(())
     }
 
     #[test]
     fn remove_pulls_from_stack_and_set() -> Result<(), IrError> {
-        Module::with_new("wl-remove", |m| {
-            let i32_ty = m.i32_type();
-            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = m.view(f).append_basic_block(&m, "entry");
-            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-            let a = b.build_int_add(x, 1_i32, "a")?;
-            let c = b.build_int_add(x, 2_i32, "c")?;
-            b.build_ret(x)?;
-            let (a_id, c_id) = (m.view(a).into_erased().id(), m.view(c).into_erased().id());
-            let module = m.module_ref();
+        let m = crate::module_new!("wl-remove")?;
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let a = b.build_int_add(x, 1_i32, "a")?;
+        let c = b.build_int_add(x, 2_i32, "c")?;
+        b.build_ret(x)?;
+        let (a_id, c_id) = (m.view(a).into_erased().id(), m.view(c).into_erased().id());
+        let module = m.module_ref();
 
-            let mut wl = Worklist::new();
-            wl.push(a_id);
-            wl.push(c_id);
-            wl.remove(a_id);
-            assert!(!wl.contains(a_id));
-            // Only c remains.
-            assert_eq!(wl.pop(module).unwrap().to_erased().id(), c_id);
-            assert!(wl.pop(module).is_none());
-            Ok(())
-        })
+        let mut wl = Worklist::new();
+        wl.push(a_id);
+        wl.push(c_id);
+        wl.remove(a_id);
+        assert!(!wl.contains(a_id));
+        // Only c remains.
+        assert_eq!(wl.pop(module).unwrap().to_erased().id(), c_id);
+        assert!(wl.pop(module).is_none());
+        Ok(())
     }
 
     // The erase cascade (slice 3) pushes an erased instruction's *operand* ids,
@@ -212,43 +210,42 @@ mod tests {
     // must skip such an id, not panic on the instruction-payload kind check.
     #[test]
     fn pop_skips_non_instruction_id_without_panicking() -> Result<(), IrError> {
-        Module::with_new("wl-non-inst", |m| {
-            let i32_ty = m.i32_type();
-            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = m.view(f).append_basic_block(&m, "entry");
-            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-            let a = b.build_int_add(x, 1_i32, "a")?;
-            b.build_ret(x)?;
+        let m = crate::module_new!("wl-non-inst")?;
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let a = b.build_int_add(x, 1_i32, "a")?;
+        b.build_ret(x)?;
 
-            // A constant operand id — the kind of id the erase cascade pushes.
-            let const_id = i32_ty.const_int(1_i32).into_erased().id();
-            // A parameter id — likewise not an instruction (`x` is param 0).
-            let param_id = x.into_erased().id();
-            let a_id = m.view(a).into_erased().id();
-            let module = m.module_ref();
+        // A constant operand id — the kind of id the erase cascade pushes.
+        let const_id = i32_ty.const_int(1_i32).into_erased().id();
+        // A parameter id — likewise not an instruction (`x` is param 0).
+        let param_id = x.into_erased().id();
+        let a_id = m.view(a).into_erased().id();
+        let module = m.module_ref();
 
-            let mut wl = Worklist::new();
-            wl.push(const_id);
-            wl.push(param_id);
-            // The only instruction id, pushed first so it pops last.
-            wl.push(a_id);
-            wl.remove(a_id);
-            // Nothing instruction-like remains: pop drains the two non-inst ids
-            // without panicking and yields None.
-            assert!(wl.pop(module).is_none());
-            assert!(wl.is_empty());
+        let mut wl = Worklist::new();
+        wl.push(const_id);
+        wl.push(param_id);
+        // The only instruction id, pushed first so it pops last.
+        wl.push(a_id);
+        wl.remove(a_id);
+        // Nothing instruction-like remains: pop drains the two non-inst ids
+        // without panicking and yields None.
+        assert!(wl.pop(module).is_none());
+        assert!(wl.is_empty());
 
-            // And with a real instruction underneath, the non-inst ids are
-            // skipped over to reach it.
-            wl.push(const_id);
-            wl.push(a_id);
-            wl.push(param_id);
-            assert_eq!(wl.pop(module).unwrap().to_erased().id(), a_id);
-            assert!(wl.pop(module).is_none());
-            Ok(())
-        })
+        // And with a real instruction underneath, the non-inst ids are
+        // skipped over to reach it.
+        wl.push(const_id);
+        wl.push(a_id);
+        wl.push(param_id);
+        assert_eq!(wl.pop(module).unwrap().to_erased().id(), a_id);
+        assert!(wl.pop(module).is_none());
+        Ok(())
     }
 
     // A terminator *is* an instruction, so it passes the `TryFrom<Value>` check
@@ -258,40 +255,39 @@ mod tests {
     // the non-instruction case above.
     #[test]
     fn pop_skips_terminator_id() -> Result<(), IrError> {
-        Module::with_new("wl-term", |m| {
-            let i32_ty = m.i32_type();
-            let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = m.view(f).append_basic_block(&m, "entry");
-            let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-            let a = b.build_int_add(x, 1_i32, "a")?;
-            b.build_ret(x)?;
+        let m = crate::module_new!("wl-term")?;
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let a = b.build_int_add(x, 1_i32, "a")?;
+        b.build_ret(x)?;
 
-            let a_id = m.view(a).into_erased().id();
-            // The `ret` terminator is the block's last instruction; reach it the
-            // same way `pass_context`'s tests do, then take its storable id.
-            let ret_id = FunctionView::from(m.view(f))
-                .entry_block()
-                .expect("definition has an entry block")
-                .as_basic_block()
-                .terminator()
-                .expect("block is terminated by the ret")
-                .to_erased()
-                .id();
-            let module = m.module_ref();
+        let a_id = m.view(a).into_erased().id();
+        // The `ret` terminator is the block's last instruction; reach it the
+        // same way `pass_context`'s tests do, then take its storable id.
+        let ret_id = FunctionView::from(m.view(f))
+            .entry_block()
+            .expect("definition has an entry block")
+            .as_basic_block()
+            .terminator()
+            .expect("block is terminated by the ret")
+            .to_erased()
+            .id();
+        let module = m.module_ref();
 
-            let mut wl = Worklist::new();
-            // Push the instruction first, terminator last: LIFO pops the
-            // terminator first (it must be skipped), then yields the add. If
-            // `pop` ever returned terminators, this `assert_eq!` would see
-            // `ret_id` instead of `a_id` and fail.
-            wl.push(a_id);
-            wl.push(ret_id);
-            assert_eq!(wl.pop(module).unwrap().to_erased().id(), a_id);
-            assert!(wl.pop(module).is_none());
-            assert!(wl.is_empty());
-            Ok(())
-        })
+        let mut wl = Worklist::new();
+        // Push the instruction first, terminator last: LIFO pops the
+        // terminator first (it must be skipped), then yields the add. If
+        // `pop` ever returned terminators, this `assert_eq!` would see
+        // `ret_id` instead of `a_id` and fail.
+        wl.push(a_id);
+        wl.push(ret_id);
+        assert_eq!(wl.pop(module).unwrap().to_erased().id(), a_id);
+        assert!(wl.pop(module).is_none());
+        assert!(wl.is_empty());
+        Ok(())
     }
 }

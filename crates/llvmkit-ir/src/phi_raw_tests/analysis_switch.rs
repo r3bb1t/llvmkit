@@ -153,31 +153,30 @@ fn build_switch_merge<'ctx, B: crate::ModuleBrand + 'ctx>(
 /// longer a predecessor) and `verify()` would fail with `PhiPredecessorMismatch`.
 #[test]
 fn remove_edge_drops_successor_phi_incoming() -> Result<(), IrError> {
-    Module::with_new("remove-edge", |m| {
-        let (f, _dflt_dyn, _other_dyn, merge_dyn) = build_switch_merge(&m)?;
+    let m = crate::module_new!("remove-edge")?;
+    let (f, _dflt_dyn, _other_dyn, merge_dyn) = build_switch_merge(&m)?;
 
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let pass = RemoveSwitchEdge {
-            from_name: "entry",
-            to: merge_dyn,
-        };
-        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let pass = RemoveSwitchEdge {
+        from_name: "entry",
+        to: merge_dyn,
+    };
+    let out = run_function_pass(pass, verified, f, &mut analyses)?;
 
-        let reverified = out
-            .verify()
-            .expect("remove_successor output must re-verify");
-        let printed = format!("{reverified}");
-        assert!(
-            printed.contains("[ %d, %dflt ]"),
-            "merge's phi must keep the dflt incoming, got:\n{printed}"
-        );
-        assert!(
-            !printed.contains(", %entry ]"),
-            "merge's phi must have dropped the entry incoming, got:\n{printed}"
-        );
-        Ok(())
-    })
+    let reverified = out
+        .verify()
+        .expect("remove_successor output must re-verify");
+    let printed = format!("{reverified}");
+    assert!(
+        printed.contains("[ %d, %dflt ]"),
+        "merge's phi must keep the dflt incoming, got:\n{printed}"
+    );
+    assert!(
+        !printed.contains(", %entry ]"),
+        "merge's phi must have dropped the entry incoming, got:\n{printed}"
+    );
+    Ok(())
 }
 
 /// `edit_switch` rejects a `from` whose terminator is not a `switch` (here the
@@ -186,51 +185,49 @@ fn remove_edge_drops_successor_phi_incoming() -> Result<(), IrError> {
 /// the narrow itself errs.
 #[test]
 fn edit_switch_rejects_non_switch_from() -> Result<(), IrError> {
-    Module::with_new("remove-edge-non-switch", |m| {
-        let (f, _dflt_dyn, _other_dyn, merge_dyn) = build_switch_merge(&m)?;
+    let m = crate::module_new!("remove-edge-non-switch")?;
+    let (f, _dflt_dyn, _other_dyn, merge_dyn) = build_switch_merge(&m)?;
 
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        // `dflt` ends in `br %merge`, not a switch — the guard trips before the
-        // successor check, so `merge` as `to` is fine.
-        let pass = RemoveSwitchEdge {
-            from_name: "dflt",
-            to: merge_dyn,
-        };
-        let err = run_function_pass(pass, verified, f, &mut analyses)
-            .err()
-            .expect("edit_switch must reject a non-switch `from`");
-        assert!(
-            matches!(err, IrError::InvalidOperation { .. }),
-            "expected InvalidOperation for a non-switch `from`, got: {err:?}"
-        );
-        Ok(())
-    })
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    // `dflt` ends in `br %merge`, not a switch — the guard trips before the
+    // successor check, so `merge` as `to` is fine.
+    let pass = RemoveSwitchEdge {
+        from_name: "dflt",
+        to: merge_dyn,
+    };
+    let err = run_function_pass(pass, verified, f, &mut analyses)
+        .err()
+        .expect("edit_switch must reject a non-switch `from`");
+    assert!(
+        matches!(err, IrError::InvalidOperation { .. }),
+        "expected InvalidOperation for a non-switch `from`, got: {err:?}"
+    );
+    Ok(())
 }
 
 /// `remove_successor` rejects dropping a `switch`'s default edge — a `switch`
 /// must keep a default, so the `entry → dflt` default edge cannot be collapsed.
 #[test]
 fn remove_edge_rejects_default_edge() -> Result<(), IrError> {
-    Module::with_new("remove-edge-default", |m| {
-        let (f, dflt_dyn, _other_dyn, _merge_dyn) = build_switch_merge(&m)?;
+    let m = crate::module_new!("remove-edge-default")?;
+    let (f, dflt_dyn, _other_dyn, _merge_dyn) = build_switch_merge(&m)?;
 
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        // `dflt` is `entry`'s switch default; removing that edge is rejected.
-        let pass = RemoveSwitchEdge {
-            from_name: "entry",
-            to: dflt_dyn,
-        };
-        let err = run_function_pass(pass, verified, f, &mut analyses)
-            .err()
-            .expect("remove_successor must reject dropping the switch default edge");
-        assert!(
-            matches!(err, IrError::InvalidOperation { .. }),
-            "expected InvalidOperation for the switch default edge, got: {err:?}"
-        );
-        Ok(())
-    })
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    // `dflt` is `entry`'s switch default; removing that edge is rejected.
+    let pass = RemoveSwitchEdge {
+        from_name: "entry",
+        to: dflt_dyn,
+    };
+    let err = run_function_pass(pass, verified, f, &mut analyses)
+        .err()
+        .expect("remove_successor must reject dropping the switch default edge");
+    assert!(
+        matches!(err, IrError::InvalidOperation { .. }),
+        "expected InvalidOperation for the switch default edge, got: {err:?}"
+    );
+    Ok(())
 }
 
 /// `redirect_successor` rejects a redirect whose `new_to` is already a successor
@@ -239,29 +236,28 @@ fn remove_edge_rejects_default_edge() -> Result<(), IrError> {
 /// same predecessor.
 #[test]
 fn redirect_edge_rejects_already_reaches_new() -> Result<(), IrError> {
-    Module::with_new("redirect-edge-already-reaches", |m| {
-        let (f, _dflt_dyn, other_dyn, merge_dyn) = build_switch_merge(&m)?;
+    let m = crate::module_new!("redirect-edge-already-reaches")?;
+    let (f, _dflt_dyn, other_dyn, merge_dyn) = build_switch_merge(&m)?;
 
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        // `entry` already reaches `merge` (case 0); redirecting the `entry →
-        // other` case-1 edge onto `merge` would double the edge. The guard
-        // trips before any `phi_values` validation, so an empty slice is fine.
-        let pass = RedirectSwitchEdge {
-            from_name: "entry",
-            old_to: other_dyn,
-            new_to: merge_dyn,
-            phi_values: vec![],
-        };
-        let err = run_function_pass(pass, verified, f, &mut analyses)
-            .err()
-            .expect("redirect_successor must reject a `new_to` already reached by `from`");
-        assert!(
-            matches!(err, IrError::InvalidOperation { .. }),
-            "expected InvalidOperation when `from` already reaches `new_to`, got: {err:?}"
-        );
-        Ok(())
-    })
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    // `entry` already reaches `merge` (case 0); redirecting the `entry →
+    // other` case-1 edge onto `merge` would double the edge. The guard
+    // trips before any `phi_values` validation, so an empty slice is fine.
+    let pass = RedirectSwitchEdge {
+        from_name: "entry",
+        old_to: other_dyn,
+        new_to: merge_dyn,
+        phi_values: vec![],
+    };
+    let err = run_function_pass(pass, verified, f, &mut analyses)
+        .err()
+        .expect("redirect_successor must reject a `new_to` already reached by `from`");
+    assert!(
+        matches!(err, IrError::InvalidOperation { .. }),
+        "expected InvalidOperation when `from` already reaches `new_to`, got: {err:?}"
+    );
+    Ok(())
 }
 
 /// Build a `switch` whose DEFAULT and case-0 both target `shared`, so `entry`
@@ -339,32 +335,31 @@ fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
 /// default.)
 #[test]
 fn redirect_successor_keeps_surviving_default_parallel_phi_incoming() -> Result<(), IrError> {
-    Module::with_new("switch-default-parallel", |m| {
-        let (f, shared_dyn, new_dyn) = build_switch_default_parallel(&m)?;
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let pass = RedirectSwitchEdge {
-            from_name: "entry",
-            old_to: shared_dyn,
-            new_to: new_dyn,
-            phi_values: vec![],
-        };
-        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+    let m = crate::module_new!("switch-default-parallel")?;
+    let (f, shared_dyn, new_dyn) = build_switch_default_parallel(&m)?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let pass = RedirectSwitchEdge {
+        from_name: "entry",
+        old_to: shared_dyn,
+        new_to: new_dyn,
+        phi_values: vec![],
+    };
+    let out = run_function_pass(pass, verified, f, &mut analyses)?;
 
-        let reverified = out.verify().expect(
-            "redirect must re-verify: shared keeps one entry incoming for the surviving default",
-        );
-        let printed = format!("{reverified}");
-        // shared retains one `entry` incoming (surviving default) plus its `mid`
-        // incoming: two entries for two predecessors.
-        assert!(
-            printed.contains("[ %e, %entry ]"),
-            "shared's phi must keep one entry incoming for the surviving default, got:\n{printed}"
-        );
-        assert!(
-            printed.contains("[ %mv, %mid ]"),
-            "shared's phi must keep its mid incoming, got:\n{printed}"
-        );
-        Ok(())
-    })
+    let reverified = out.verify().expect(
+        "redirect must re-verify: shared keeps one entry incoming for the surviving default",
+    );
+    let printed = format!("{reverified}");
+    // shared retains one `entry` incoming (surviving default) plus its `mid`
+    // incoming: two entries for two predecessors.
+    assert!(
+        printed.contains("[ %e, %entry ]"),
+        "shared's phi must keep one entry incoming for the surviving default, got:\n{printed}"
+    );
+    assert!(
+        printed.contains("[ %mv, %mid ]"),
+        "shared's phi must keep its mid incoming, got:\n{printed}"
+    );
+    Ok(())
 }

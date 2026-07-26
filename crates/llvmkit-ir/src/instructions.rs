@@ -3702,7 +3702,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, TermOpen, B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{IrError, Linkage, Module};
+    use crate::{IrError, Linkage};
 
     /// Locks `TypedCallInst::result` as the `CallResult` GAT's narrowing
     /// path: wrapping a raw `CallInst<'ctx, i32, B>` and reading
@@ -3722,27 +3722,26 @@ mod tests {
     /// code at all).
     #[test]
     fn typed_call_inst_result_narrows_to_callresult() -> Result<(), IrError> {
-        Module::with_new("typed-call-inst-result", |m| {
-            let callee = m
-                .add_typed_function::<i32, (), _>("callee", Linkage::External)?
-                .as_function();
-            let caller_ty = m.fn_type_no_params(m.i32_type(), false);
-            let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-            let entry = m.view(caller).append_basic_block(&m, "entry");
-            let b = crate::IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let m = crate::module_new!("typed-call-inst-result")?;
+        let callee = m
+            .add_typed_function::<i32, (), _>("callee", Linkage::External)?
+            .as_function();
+        let caller_ty = m.fn_type_no_params(m.i32_type(), false);
+        let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
+        let entry = m.view(caller).append_basic_block(&m, "entry");
+        let b = crate::IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-            let call: CallInst<'_, i32, _> =
-                b.view(b.build_call_dyn(callee, Vec::<Value<'_, _>>::new(), "call")?);
-            let call_id = call.to_erased().slot();
+        let call: CallInst<'_, i32, _> =
+            b.view(b.build_call_dyn(callee, Vec::<Value<'_, _>>::new(), "call")?);
+        let call_id = call.to_erased().slot();
 
-            let typed = TypedCallInst::<i32, _> {
-                inner: call,
-                _ret: core::marker::PhantomData,
-            };
-            let result = typed.result();
+        let typed = TypedCallInst::<i32, _> {
+            inner: call,
+            _ret: core::marker::PhantomData,
+        };
+        let result = typed.result();
 
-            assert_eq!(result.slot(), call_id);
-            Ok(())
-        })
+        assert_eq!(result.slot(), call_id);
+        Ok(())
     }
 }

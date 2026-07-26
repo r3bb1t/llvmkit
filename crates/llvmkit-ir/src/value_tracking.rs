@@ -1951,39 +1951,38 @@ mod tests {
     /// selects the index width.
     #[test]
     fn vector_gep_uses_element_pointer_address_space_for_index_width() -> crate::IrResult<()> {
-        Module::with_new("vt-vector-gep-as", |m| {
-            m.set_data_layout("p1:64:64:64:32")?;
-            let i8_ty = m.i8_type();
-            let i32_ty = m.i32_type();
-            let ptr1_ty = m.ptr_type(1);
-            let ptr_vec_ty = m.vector_type(ptr1_ty.as_type(), 2, false);
-            let fn_ty = m.fn_type_no_params(m.void_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, crate::Linkage::External)?;
-            let entry = m.view(f).append_basic_block(&m, "entry");
+        let m = crate::module_new!("vt-vector-gep-as")?;
+        m.set_data_layout("p1:64:64:64:32")?;
+        let i8_ty = m.i8_type();
+        let i32_ty = m.i32_type();
+        let ptr1_ty = m.ptr_type(1);
+        let ptr_vec_ty = m.vector_type(ptr1_ty.as_type(), 2, false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, crate::Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
 
-            let base = ptr_vec_ty.const_vector([ptr1_ty.const_null(); 2])?;
-            let minus_one = i32_ty.const_int(-1_i32);
-            let gep_ty = ptr_vec_ty.as_type();
-            let gep_id = fabricate_instruction(
-                &m,
-                entry.slot(),
-                gep_ty.id(),
-                InstructionKindData::Gep(GepInstData::new(
-                    i8_ty.as_type().id(),
-                    base.slot(),
-                    [minus_one.slot()],
-                    crate::GepNoWrapFlags::empty(),
-                )),
-            );
-            let gep = fabricated_value(&m, gep_id, gep_ty.id());
-            let dl = m.data_layout();
-            let query = ValueTrackingQuery::new(&dl);
+        let base = ptr_vec_ty.const_vector([ptr1_ty.const_null(); 2])?;
+        let minus_one = i32_ty.const_int(-1_i32);
+        let gep_ty = ptr_vec_ty.as_type();
+        let gep_id = fabricate_instruction(
+            &m,
+            entry.slot(),
+            gep_ty.id(),
+            InstructionKindData::Gep(GepInstData::new(
+                i8_ty.as_type().id(),
+                base.slot(),
+                [minus_one.slot()],
+                crate::GepNoWrapFlags::empty(),
+            )),
+        );
+        let gep = fabricated_value(&m, gep_id, gep_ty.id());
+        let dl = m.data_layout();
+        let query = ValueTrackingQuery::new(&dl);
 
-            assert_eq!(
-                compute_known_bits(gep, &query)?.to_string(),
-                "0000000000000000000000000000000011111111111111111111111111111111"
-            );
-            Ok(())
-        })
+        assert_eq!(
+            compute_known_bits(gep, &query)?.to_string(),
+            "0000000000000000000000000000000011111111111111111111111111111111"
+        );
+        Ok(())
     }
 }

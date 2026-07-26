@@ -146,33 +146,32 @@ fn build_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
 /// so the `!contains("phi")` assertion below fails.
 #[test]
 fn remove_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
-    Module::with_new("remove-edge-empty-phi", |m| {
-        let (f, _to_dyn) = build_single_pred_phi(&m)?;
+    let m = crate::module_new!("remove-edge-empty-phi")?;
+    let (f, _to_dyn) = build_single_pred_phi(&m)?;
 
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let pass = RemoveEdge { from_name: "entry" };
-        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let pass = RemoveEdge { from_name: "entry" };
+    let out = run_function_pass(pass, verified, f, &mut analyses)?;
 
-        let reverified = out
-            .verify()
-            .expect("remove_then output must re-verify after emptying a phi");
-        let printed = format!("{reverified}");
-        // The emptied phi is erased entirely — never left as a bracket-less
-        // `phi i32`, the shape LLVM's LL parser rejects. (Match the instruction
-        // form, not the bare word: the module name also contains "phi".)
-        assert!(
-            !printed.contains("= phi"),
-            "the emptied phi must have been erased, got:\n{printed}"
-        );
-        // Its sole user (`%u = add %p, 1`) was RAUW'd onto poison of the phi's
-        // own type before the phi was detached.
-        assert!(
-            printed.contains("add i32 poison"),
-            "the phi's user must now reference poison, got:\n{printed}"
-        );
-        Ok(())
-    })
+    let reverified = out
+        .verify()
+        .expect("remove_then output must re-verify after emptying a phi");
+    let printed = format!("{reverified}");
+    // The emptied phi is erased entirely — never left as a bracket-less
+    // `phi i32`, the shape LLVM's LL parser rejects. (Match the instruction
+    // form, not the bare word: the module name also contains "phi".)
+    assert!(
+        !printed.contains("= phi"),
+        "the emptied phi must have been erased, got:\n{printed}"
+    );
+    // Its sole user (`%u = add %p, 1`) was RAUW'd onto poison of the phi's
+    // own type before the phi was detached.
+    assert!(
+        printed.contains("add i32 poison"),
+        "the phi's user must now reference poison, got:\n{printed}"
+    );
+    Ok(())
 }
 
 /// Build a `cond_br`-fed layout whose then-arm target (`old_to`) has `entry` as
@@ -251,36 +250,35 @@ fn build_redirect_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
 /// assertions below fail — red-without-the-fix by construction.
 #[test]
 fn redirect_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
-    Module::with_new("redirect-edge-empty-phi", |m| {
-        let (f, _old_to_dyn, new_to_dyn) = build_redirect_single_pred_phi(&m)?;
+    let m = crate::module_new!("redirect-edge-empty-phi")?;
+    let (f, _old_to_dyn, new_to_dyn) = build_redirect_single_pred_phi(&m)?;
 
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let pass = RedirectEmptyEdge {
-            from_name: "entry",
-            new_to: new_to_dyn,
-        };
-        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let pass = RedirectEmptyEdge {
+        from_name: "entry",
+        new_to: new_to_dyn,
+    };
+    let out = run_function_pass(pass, verified, f, &mut analyses)?;
 
-        let reverified = out
-            .verify()
-            .expect("redirect_then output must re-verify after emptying a phi");
-        let printed = format!("{reverified}");
-        // The emptied phi is erased entirely — never left as a bracket-less
-        // `phi i32`, the shape LLVM's LL parser rejects. (Match the instruction
-        // form, not the bare word: the module name also contains "phi".)
-        assert!(
-            !printed.contains("= phi"),
-            "the emptied phi must have been erased, got:\n{printed}"
-        );
-        // Its sole user (`%u = add %p, 1`) was RAUW'd onto poison of the phi's
-        // own type before the phi was detached.
-        assert!(
-            printed.contains("add i32 poison"),
-            "the phi's user must now reference poison, got:\n{printed}"
-        );
-        Ok(())
-    })
+    let reverified = out
+        .verify()
+        .expect("redirect_then output must re-verify after emptying a phi");
+    let printed = format!("{reverified}");
+    // The emptied phi is erased entirely — never left as a bracket-less
+    // `phi i32`, the shape LLVM's LL parser rejects. (Match the instruction
+    // form, not the bare word: the module name also contains "phi".)
+    assert!(
+        !printed.contains("= phi"),
+        "the emptied phi must have been erased, got:\n{printed}"
+    );
+    // Its sole user (`%u = add %p, 1`) was RAUW'd onto poison of the phi's
+    // own type before the phi was detached.
+    assert!(
+        printed.contains("add i32 poison"),
+        "the phi's user must now reference poison, got:\n{printed}"
+    );
+    Ok(())
 }
 
 /// Defensive verifier backstop: a phi with **zero** incomings sitting in a
@@ -298,38 +296,37 @@ fn redirect_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
 /// test red-for-the-right-reason before the check exists.
 #[test]
 fn zero_incoming_phi_in_reachable_block_is_rejected() -> Result<(), IrError> {
-    Module::with_new("zero_incoming_reachable", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = m.view(f).append_basic_block(&m, "b");
-        let b_label = b.id();
+    let m = crate::module_new!("zero_incoming_reachable")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = m.view(f).append_basic_block(&m, "b");
+    let b_label = b.id();
 
-        // entry: br b   (so `b` is reachable from entry)
-        let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        bld.build_br(b_label)?;
+    // entry: br b   (so `b` is reachable from entry)
+    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    bld.build_br(b_label)?;
 
-        // b: %p = phi i32   (no add_incoming) ; ret 0
-        let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(b);
-        let _p = bld.view(bld.build_int_phi::<i32, _>("p")?);
-        bld.build_ret(i32_ty.const_int(0_u32))?;
+    // b: %p = phi i32   (no add_incoming) ; ret 0
+    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(b);
+    let _p = bld.view(bld.build_int_phi::<i32, _>("p")?);
+    bld.build_ret(i32_ty.const_int(0_u32))?;
 
-        let err = m
-            .verify_borrowed()
-            .expect_err("a zero-incoming phi in a reachable block must be rejected");
-        assert!(
-            matches!(
-                err,
-                IrError::VerifierFailure {
-                    rule: VerifierRule::PhiEmptyInReachableBlock,
-                    ..
-                }
-            ),
-            "expected PhiEmptyInReachableBlock, got {err:?}"
-        );
-        Ok(())
-    })
+    let err = m
+        .verify_borrowed()
+        .expect_err("a zero-incoming phi in a reachable block must be rejected");
+    assert!(
+        matches!(
+            err,
+            IrError::VerifierFailure {
+                rule: VerifierRule::PhiEmptyInReachableBlock,
+                ..
+            }
+        ),
+        "expected PhiEmptyInReachableBlock, got {err:?}"
+    );
+    Ok(())
 }
 
 /// Contrast that proves the reachability gate: the *same* zero-incoming phi in
@@ -340,25 +337,24 @@ fn zero_incoming_phi_in_reachable_block_is_rejected() -> Result<(), IrError> {
 /// accepts the module.
 #[test]
 fn zero_incoming_phi_in_unreachable_block_is_accepted() -> Result<(), IrError> {
-    Module::with_new("zero_incoming_unreachable", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        // `u` has no edge into it — unreachable from entry.
-        let u = m.view(f).append_basic_block(&m, "u");
+    let m = crate::module_new!("zero_incoming_unreachable")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    // `u` has no edge into it — unreachable from entry.
+    let u = m.view(f).append_basic_block(&m, "u");
 
-        // entry: ret 0
-        let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        bld.build_ret(i32_ty.const_int(0_u32))?;
+    // entry: ret 0
+    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    bld.build_ret(i32_ty.const_int(0_u32))?;
 
-        // u: %q = phi i32   (no add_incoming) ; ret 0
-        let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(u);
-        let _q = bld.view(bld.build_int_phi::<i32, _>("q")?);
-        bld.build_ret(i32_ty.const_int(0_u32))?;
+    // u: %q = phi i32   (no add_incoming) ; ret 0
+    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(u);
+    let _q = bld.view(bld.build_int_phi::<i32, _>("q")?);
+    bld.build_ret(i32_ty.const_int(0_u32))?;
 
-        m.verify_borrowed()
-            .expect("a zero-incoming phi in an unreachable block is not this rule's concern");
-        Ok(())
-    })
+    m.verify_borrowed()
+        .expect("a zero-incoming phi in an unreachable block is not this rule's concern");
+    Ok(())
 }

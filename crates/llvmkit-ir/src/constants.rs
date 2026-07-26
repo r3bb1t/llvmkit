@@ -2511,39 +2511,38 @@ mod tests {
     /// path, so foldable expressions reduce before interning.
     #[test]
     fn rewritten_constant_expr_folds_before_reinterning() -> IrResult<()> {
-        Module::with_new("constexpr-rewrite-fold", |m| {
-            let i32_ty = m.i32_type();
-            let i64_ty = m.i64_type();
-            let global = m.add_global("g", i32_ty.const_zero())?;
-            let ptr_as_int = m.constant_expr(
-                i64_ty.as_type(),
-                ConstantExprOpcode::PtrToInt,
-                [m.view(global).as_global_constant_ptr().into_erased()],
-                [],
-                [],
-                ConstantExprFlags::none(),
-            )?;
-            let expr = m.constant_expr(
-                i64_ty.as_type(),
-                ConstantExprOpcode::Add,
-                [
-                    ptr_as_int.into_erased(),
-                    i64_ty.const_int(1_i64).into_erased(),
-                ],
-                [],
-                [],
-                ConstantExprFlags::none(),
-            )?;
-            let replacement = i64_ty.const_zero().as_constant();
-            let rewritten = constant_with_replaced_operand(
-                m.core_ref(),
-                expr.slot(),
-                ptr_as_int.slot(),
-                replacement.slot(),
-            )?;
+        let m = crate::module_new!("constexpr-rewrite-fold")?;
+        let i32_ty = m.i32_type();
+        let i64_ty = m.i64_type();
+        let global = m.add_global("g", i32_ty.const_zero())?;
+        let ptr_as_int = m.constant_expr(
+            i64_ty.as_type(),
+            ConstantExprOpcode::PtrToInt,
+            [m.view(global).as_global_constant_ptr().into_erased()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+        let expr = m.constant_expr(
+            i64_ty.as_type(),
+            ConstantExprOpcode::Add,
+            [
+                ptr_as_int.into_erased(),
+                i64_ty.const_int(1_i64).into_erased(),
+            ],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+        let replacement = i64_ty.const_zero().as_constant();
+        let rewritten = constant_with_replaced_operand(
+            m.core_ref(),
+            expr.slot(),
+            ptr_as_int.slot(),
+            replacement.slot(),
+        )?;
 
-            assert_eq!(rewritten, Some(i64_ty.const_int(1_i64).slot()));
-            Ok(())
-        })
+        assert_eq!(rewritten, Some(i64_ty.const_int(1_i64).slot()));
+        Ok(())
     }
 }

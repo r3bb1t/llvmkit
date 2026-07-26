@@ -3281,14 +3281,15 @@ mod tests {
     /// silently missing `immarg` / memory attributes.
     #[test]
     fn intrinsic_declaration_missing_generated_attrs_is_rejected() {
-        let err = Module::with_new("intrinsic-missing-attrs", |m| {
+        let err = {
+            let m = crate::module_new!("intrinsic-missing-attrs").expect("fresh module");
             let f = m
                 .get_or_insert_intrinsic_declaration_by_name("llvm.abs.i32")
                 .expect("intrinsic declaration");
             *m.view(f).data().attributes.borrow_mut() = crate::attributes::AttributeStorage::new();
             m.verify_borrowed()
                 .expect_err("missing generated attrs rejected")
-        });
+        };
 
         match err {
             IrError::InvalidOperation { message } => {
@@ -3302,13 +3303,14 @@ mod tests {
     /// groups must resolve before generated attributes can be checked.
     #[test]
     fn intrinsic_declaration_extra_attr_group_is_rejected() {
-        let err = Module::with_new("intrinsic-extra-group", |m| {
+        let err = {
+            let m = crate::module_new!("intrinsic-extra-group").expect("fresh module");
             let f = m
                 .get_or_insert_intrinsic_declaration_by_name("llvm.bswap.i32")
                 .expect("intrinsic declaration");
             m.view(f).data().function_attr_groups.borrow_mut().push(0);
             m.verify_borrowed().expect_err("extra attr group rejected")
-        });
+        };
 
         match err {
             IrError::InvalidOperation { message } => {
@@ -3322,165 +3324,158 @@ mod tests {
     /// (ptr) does not match function return type (i32).
     #[test]
     fn ret_type_mismatch_ptr_in_i32_function() {
-        Module::with_new("t", |m| {
-            let i32_ty = m.i32_type().as_type();
-            let ptr_ty = m.ptr_type(0).as_type();
-            let (_, bb_id) = skeleton(&m, i32_ty, &[], "f");
-            let null_id = fab_null_ptr_id(&m, ptr_ty.id());
-            fabricate_instruction(
-                &m,
-                bb_id,
-                m.void_type().as_type().id(),
-                InstructionKindData::Ret(ReturnOpData::new(Some(null_id))),
-            );
-            let err = m.verify_borrowed().unwrap_err();
-            assert_rule(&err, VerifierRule::ReturnTypeMismatch);
-        });
+        let m = crate::module_new!("t").expect("fresh module");
+        let i32_ty = m.i32_type().as_type();
+        let ptr_ty = m.ptr_type(0).as_type();
+        let (_, bb_id) = skeleton(&m, i32_ty, &[], "f");
+        let null_id = fab_null_ptr_id(&m, ptr_ty.id());
+        fabricate_instruction(
+            &m,
+            bb_id,
+            m.void_type().as_type().id(),
+            InstructionKindData::Ret(ReturnOpData::new(Some(null_id))),
+        );
+        let err = m.verify_borrowed().unwrap_err();
+        assert_rule(&err, VerifierRule::ReturnTypeMismatch);
     }
 
     /// `test/Verifier/2008-11-15-RetVoid.ll` -- void function with a
     /// returned operand.
     #[test]
     fn ret_value_in_void_function() {
-        Module::with_new("t", |m| {
-            let void_ty = m.void_type().as_type();
-            let i32_ty = m.i32_type().as_type();
-            let (_, bb_id) = skeleton(&m, void_ty, &[], "f");
-            let zero_id = fab_const_int_id(&m, i32_ty.id(), 0);
-            fabricate_instruction(
-                &m,
-                bb_id,
-                void_ty.id(),
-                InstructionKindData::Ret(ReturnOpData::new(Some(zero_id))),
-            );
-            let err = m.verify_borrowed().unwrap_err();
-            assert_rule(&err, VerifierRule::ReturnTypeMismatch);
-        });
+        let m = crate::module_new!("t").expect("fresh module");
+        let void_ty = m.void_type().as_type();
+        let i32_ty = m.i32_type().as_type();
+        let (_, bb_id) = skeleton(&m, void_ty, &[], "f");
+        let zero_id = fab_const_int_id(&m, i32_ty.id(), 0);
+        fabricate_instruction(
+            &m,
+            bb_id,
+            void_ty.id(),
+            InstructionKindData::Ret(ReturnOpData::new(Some(zero_id))),
+        );
+        let err = m.verify_borrowed().unwrap_err();
+        assert_rule(&err, VerifierRule::ReturnTypeMismatch);
     }
 
     /// Binary operands have differing types: `add i32 %a, i64 %b`.
     /// Mirrors `Verifier::visitBinaryOperator` operand-equality rule.
     #[test]
     fn binary_operand_type_mismatch() {
-        Module::with_new("t", |m| {
-            let i32_ty = m.i32_type().as_type();
-            let i64_ty = m.i64_type().as_type();
-            let void_ty = m.void_type().as_type();
-            let (f_id, bb_id) = skeleton(&m, void_ty, &[i32_ty, i64_ty], "f");
-            let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
-            let p0 = f.param(0).unwrap();
-            let p1 = f.param(1).unwrap();
-            fabricate_instruction(
-                &m,
-                bb_id,
-                i32_ty.id(),
-                InstructionKindData::Add(BinaryOpData::new(IsValue::slot(p0), IsValue::slot(p1))),
-            );
-            append_ret_void(&m, bb_id);
-            let err = m.verify_borrowed().unwrap_err();
-            assert_rule(&err, VerifierRule::BinaryOperandsTypeMismatch);
-        });
+        let m = crate::module_new!("t").expect("fresh module");
+        let i32_ty = m.i32_type().as_type();
+        let i64_ty = m.i64_type().as_type();
+        let void_ty = m.void_type().as_type();
+        let (f_id, bb_id) = skeleton(&m, void_ty, &[i32_ty, i64_ty], "f");
+        let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
+        let p0 = f.param(0).unwrap();
+        let p1 = f.param(1).unwrap();
+        fabricate_instruction(
+            &m,
+            bb_id,
+            i32_ty.id(),
+            InstructionKindData::Add(BinaryOpData::new(IsValue::slot(p0), IsValue::slot(p1))),
+        );
+        append_ret_void(&m, bb_id);
+        let err = m.verify_borrowed().unwrap_err();
+        assert_rule(&err, VerifierRule::BinaryOperandsTypeMismatch);
     }
 
     /// Conditional branch with non-i1 condition.
     /// Mirrors `Verifier::visitBranchInst`.
     #[test]
     fn br_condition_not_i1() {
-        Module::with_new("t", |m| {
-            let void_ty = m.void_type().as_type();
-            let i32_ty = m.i32_type().as_type();
-            let (f_id, entry_id) = skeleton(&m, void_ty, &[i32_ty], "f");
-            let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
-            let then_bb = f.append_basic_block(&m, "then");
-            let else_bb = f.append_basic_block(&m, "else");
-            append_ret_void(&m, then_bb.slot());
-            append_ret_void(&m, else_bb.slot());
-            let p0 = f.param(0).unwrap();
-            fabricate_instruction(
-                &m,
-                entry_id,
-                void_ty.id(),
-                InstructionKindData::Br(BranchInstData {
-                    kind: core::cell::RefCell::new(BranchKind::Conditional {
-                        cond: core::cell::Cell::new(IsValue::slot(p0)),
-                        then_bb: then_bb.slot(),
-                        else_bb: else_bb.slot(),
-                    }),
+        let m = crate::module_new!("t").expect("fresh module");
+        let void_ty = m.void_type().as_type();
+        let i32_ty = m.i32_type().as_type();
+        let (f_id, entry_id) = skeleton(&m, void_ty, &[i32_ty], "f");
+        let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
+        let then_bb = f.append_basic_block(&m, "then");
+        let else_bb = f.append_basic_block(&m, "else");
+        append_ret_void(&m, then_bb.slot());
+        append_ret_void(&m, else_bb.slot());
+        let p0 = f.param(0).unwrap();
+        fabricate_instruction(
+            &m,
+            entry_id,
+            void_ty.id(),
+            InstructionKindData::Br(BranchInstData {
+                kind: core::cell::RefCell::new(BranchKind::Conditional {
+                    cond: core::cell::Cell::new(IsValue::slot(p0)),
+                    then_bb: then_bb.slot(),
+                    else_bb: else_bb.slot(),
                 }),
-            );
-            let err = m.verify_borrowed().unwrap_err();
-            assert_rule(&err, VerifierRule::BranchConditionNotI1);
-        });
+            }),
+        );
+        let err = m.verify_borrowed().unwrap_err();
+        assert_rule(&err, VerifierRule::BranchConditionNotI1);
     }
 
     /// Two terminators in a row -- second one is misplaced.
     /// Mirrors `Verifier::visitInstruction` terminator-position rule.
     #[test]
     fn misplaced_terminator() {
-        Module::with_new("t", |m| {
-            let void_ty = m.void_type().as_type();
-            let (_, bb_id) = skeleton(&m, void_ty, &[], "f");
-            for _ in 0..2 {
-                append_ret_void(&m, bb_id);
-            }
-            let err = m.verify_borrowed().unwrap_err();
-            assert_rule(&err, VerifierRule::MisplacedTerminator);
-        });
+        let m = crate::module_new!("t").expect("fresh module");
+        let void_ty = m.void_type().as_type();
+        let (_, bb_id) = skeleton(&m, void_ty, &[], "f");
+        for _ in 0..2 {
+            append_ret_void(&m, bb_id);
+        }
+        let err = m.verify_borrowed().unwrap_err();
+        assert_rule(&err, VerifierRule::MisplacedTerminator);
     }
 
     /// `test/Verifier/PhiGrouping.ll` -- phi appears after a non-phi.
     #[test]
     fn phi_not_at_top() {
-        Module::with_new("t", |m| {
-            let i32_ty = m.i32_type().as_type();
-            let void_ty = m.void_type().as_type();
-            let (f_id, entry_id) = skeleton(&m, void_ty, &[i32_ty, i32_ty], "f");
-            let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
-            let p0 = f.param(0).unwrap();
-            let p1 = f.param(1).unwrap();
-            fabricate_instruction(
-                &m,
-                entry_id,
-                i32_ty.id(),
-                InstructionKindData::Add(BinaryOpData::new(IsValue::slot(p0), IsValue::slot(p1))),
-            );
-            fabricate_instruction(
-                &m,
-                entry_id,
-                i32_ty.id(),
-                InstructionKindData::Phi(PhiData::new()),
-            );
-            append_ret_void(&m, entry_id);
-            let err = m.verify_borrowed().unwrap_err();
-            assert_rule(&err, VerifierRule::PhiNotAtTop);
-        });
+        let m = crate::module_new!("t").expect("fresh module");
+        let i32_ty = m.i32_type().as_type();
+        let void_ty = m.void_type().as_type();
+        let (f_id, entry_id) = skeleton(&m, void_ty, &[i32_ty, i32_ty], "f");
+        let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
+        let p0 = f.param(0).unwrap();
+        let p1 = f.param(1).unwrap();
+        fabricate_instruction(
+            &m,
+            entry_id,
+            i32_ty.id(),
+            InstructionKindData::Add(BinaryOpData::new(IsValue::slot(p0), IsValue::slot(p1))),
+        );
+        fabricate_instruction(
+            &m,
+            entry_id,
+            i32_ty.id(),
+            InstructionKindData::Phi(PhiData::new()),
+        );
+        append_ret_void(&m, entry_id);
+        let err = m.verify_borrowed().unwrap_err();
+        assert_rule(&err, VerifierRule::PhiNotAtTop);
     }
 
     /// `test/Verifier/SelfReferential.ll` -- non-phi instruction whose
     /// operand is itself.
     #[test]
     fn self_reference_in_non_phi() {
-        Module::with_new("t", |m| {
-            let i32_ty = m.i32_type().as_type();
-            let void_ty = m.void_type().as_type();
-            let (_, bb_id) = skeleton(&m, void_ty, &[], "f");
-            // Predict the next value-id by pushing a probe and reading
-            // its arena index.
-            let probe = fab_const_int_id(&m, i32_ty.id(), 0);
-            let next_index = probe.arena_index() + 1;
-            let next_id = ValueSlot::from_index(next_index);
-            // Push an `add i32 next_id, probe` -- next_id IS this add's id.
-            let pushed = fabricate_instruction(
-                &m,
-                bb_id,
-                i32_ty.id(),
-                InstructionKindData::Add(BinaryOpData::new(next_id, probe)),
-            );
-            assert_eq!(pushed, next_id, "id prediction must match arena order");
-            append_ret_void(&m, bb_id);
-            let err = m.verify_borrowed().unwrap_err();
-            assert_rule(&err, VerifierRule::SelfReference);
-        });
+        let m = crate::module_new!("t").expect("fresh module");
+        let i32_ty = m.i32_type().as_type();
+        let void_ty = m.void_type().as_type();
+        let (_, bb_id) = skeleton(&m, void_ty, &[], "f");
+        // Predict the next value-id by pushing a probe and reading
+        // its arena index.
+        let probe = fab_const_int_id(&m, i32_ty.id(), 0);
+        let next_index = probe.arena_index() + 1;
+        let next_id = ValueSlot::from_index(next_index);
+        // Push an `add i32 next_id, probe` -- next_id IS this add's id.
+        let pushed = fabricate_instruction(
+            &m,
+            bb_id,
+            i32_ty.id(),
+            InstructionKindData::Add(BinaryOpData::new(next_id, probe)),
+        );
+        assert_eq!(pushed, next_id, "id prediction must match arena order");
+        append_ret_void(&m, bb_id);
+        let err = m.verify_borrowed().unwrap_err();
+        assert_rule(&err, VerifierRule::SelfReference);
     }
 
     /// `Verifier::visitPHINode` -- "PHI nodes cannot have token type", plus the
@@ -3493,7 +3488,8 @@ mod tests {
     #[test]
     fn phi_with_invalid_result_type_rejected() {
         // `token`: LLVM's explicit "PHI nodes cannot have token type".
-        Module::with_new("t", |m| {
+        {
+            let m = crate::module_new!("t").expect("fresh module");
             let void_ty = m.void_type().as_type();
             let token_ty = m.token_type().as_type();
             let (_f_id, entry_id) = skeleton(&m, void_ty, &[], "f");
@@ -3506,21 +3502,20 @@ mod tests {
             append_ret_void(&m, entry_id);
             let err = m.verify_borrowed().unwrap_err();
             assert_rule(&err, VerifierRule::PhiInvalidResultType);
-        });
+        }
         // `void`: not a first-class type, so also not a valid phi result.
-        Module::with_new("t", |m| {
-            let void_ty = m.void_type().as_type();
-            let (_f_id, entry_id) = skeleton(&m, void_ty, &[], "f");
-            fabricate_instruction(
-                &m,
-                entry_id,
-                void_ty.id(),
-                InstructionKindData::Phi(PhiData::new()),
-            );
-            append_ret_void(&m, entry_id);
-            let err = m.verify_borrowed().unwrap_err();
-            assert_rule(&err, VerifierRule::PhiInvalidResultType);
-        });
+        let m = crate::module_new!("t").expect("fresh module");
+        let void_ty = m.void_type().as_type();
+        let (_f_id, entry_id) = skeleton(&m, void_ty, &[], "f");
+        fabricate_instruction(
+            &m,
+            entry_id,
+            void_ty.id(),
+            InstructionKindData::Phi(PhiData::new()),
+        );
+        append_ret_void(&m, entry_id);
+        let err = m.verify_borrowed().unwrap_err();
+        assert_rule(&err, VerifierRule::PhiInvalidResultType);
     }
 
     /// The result-type rule must NOT reject a *typed* pointer (`i32*`, the legacy
@@ -3536,179 +3531,174 @@ mod tests {
     /// block reachable from entry.
     #[test]
     fn phi_with_typed_pointer_result_type_verifies() {
-        Module::with_new("t", |m| {
-            let i32_ty = m.i32_type().as_type();
-            let void_ty = m.void_type().as_type();
-            let tptr_ty = m.typed_pointer_type(i32_ty, 0).as_type();
-            let (f_id, entry_id) = skeleton(&m, void_ty, &[], "f");
-            let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
-            let dead = f.append_basic_block(&m, "dead");
-            let dead_id = dead.slot();
-            fabricate_instruction(
-                &m,
-                dead_id,
-                tptr_ty.id(),
-                InstructionKindData::Phi(PhiData::new()),
-            );
-            append_ret_void(&m, dead_id);
-            append_ret_void(&m, entry_id);
-            m.verify_borrowed()
-                .expect("a typed-pointer phi result must remain valid");
-        });
+        let m = crate::module_new!("t").expect("fresh module");
+        let i32_ty = m.i32_type().as_type();
+        let void_ty = m.void_type().as_type();
+        let tptr_ty = m.typed_pointer_type(i32_ty, 0).as_type();
+        let (f_id, entry_id) = skeleton(&m, void_ty, &[], "f");
+        let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
+        let dead = f.append_basic_block(&m, "dead");
+        let dead_id = dead.slot();
+        fabricate_instruction(
+            &m,
+            dead_id,
+            tptr_ty.id(),
+            InstructionKindData::Phi(PhiData::new()),
+        );
+        append_ret_void(&m, dead_id);
+        append_ret_void(&m, entry_id);
+        m.verify_borrowed()
+            .expect("a typed-pointer phi result must remain valid");
     }
 
     /// `test/Verifier/AmbiguousPhi.ll` -- duplicate predecessor with
     /// differing values.
     #[test]
     fn ambiguous_phi_duplicate_predecessor() {
-        Module::with_new("t", |m| {
-            let i1_ty = m.bool_type().as_type();
-            let i32_ty = m.i32_type().as_type();
-            let void_ty = m.void_type().as_type();
-            let (f_id, entry_id) = skeleton(&m, void_ty, &[i1_ty], "f");
-            let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
-            let target = f.append_basic_block(&m, "target");
-            let cond_id = IsValue::slot(f.param(0).unwrap());
-            fabricate_instruction(
-                &m,
-                entry_id,
-                void_ty.id(),
-                InstructionKindData::Br(BranchInstData {
-                    kind: core::cell::RefCell::new(BranchKind::Conditional {
-                        cond: core::cell::Cell::new(cond_id),
-                        then_bb: target.slot(),
-                        else_bb: target.slot(),
-                    }),
+        let m = crate::module_new!("t").expect("fresh module");
+        let i1_ty = m.bool_type().as_type();
+        let i32_ty = m.i32_type().as_type();
+        let void_ty = m.void_type().as_type();
+        let (f_id, entry_id) = skeleton(&m, void_ty, &[i1_ty], "f");
+        let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
+        let target = f.append_basic_block(&m, "target");
+        let cond_id = IsValue::slot(f.param(0).unwrap());
+        fabricate_instruction(
+            &m,
+            entry_id,
+            void_ty.id(),
+            InstructionKindData::Br(BranchInstData {
+                kind: core::cell::RefCell::new(BranchKind::Conditional {
+                    cond: core::cell::Cell::new(cond_id),
+                    then_bb: target.slot(),
+                    else_bb: target.slot(),
                 }),
-            );
-            let one = fab_const_int_id(&m, i32_ty.id(), 1);
-            let two = fab_const_int_id(&m, i32_ty.id(), 2);
-            let phi = PhiData::new();
-            phi.incoming
-                .borrow_mut()
-                .push((core::cell::Cell::new(one), entry_id));
-            phi.incoming
-                .borrow_mut()
-                .push((core::cell::Cell::new(two), entry_id));
-            fabricate_instruction(
-                &m,
-                target.slot(),
-                i32_ty.id(),
-                InstructionKindData::Phi(phi),
-            );
-            append_ret_void(&m, target.slot());
-            let err = m.verify_borrowed().unwrap_err();
-            assert_rule(&err, VerifierRule::AmbiguousPhi);
-        });
+            }),
+        );
+        let one = fab_const_int_id(&m, i32_ty.id(), 1);
+        let two = fab_const_int_id(&m, i32_ty.id(), 2);
+        let phi = PhiData::new();
+        phi.incoming
+            .borrow_mut()
+            .push((core::cell::Cell::new(one), entry_id));
+        phi.incoming
+            .borrow_mut()
+            .push((core::cell::Cell::new(two), entry_id));
+        fabricate_instruction(
+            &m,
+            target.slot(),
+            i32_ty.id(),
+            InstructionKindData::Phi(phi),
+        );
+        append_ret_void(&m, target.slot());
+        let err = m.verify_borrowed().unwrap_err();
+        assert_rule(&err, VerifierRule::AmbiguousPhi);
     }
 
     /// Phi references a block that is not a CFG predecessor.
     #[test]
     fn phi_predecessor_mismatch() {
-        Module::with_new("t", |m| {
-            let i32_ty = m.i32_type().as_type();
-            let void_ty = m.void_type().as_type();
-            let (f_id, entry_id) = skeleton(&m, void_ty, &[], "f");
-            let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
-            let target = f.append_basic_block(&m, "target");
-            let unrelated = f.append_basic_block(&m, "unrelated");
-            fabricate_instruction(
-                &m,
-                entry_id,
-                void_ty.id(),
-                InstructionKindData::Br(BranchInstData {
-                    kind: core::cell::RefCell::new(BranchKind::Unconditional(target.slot())),
-                }),
-            );
-            append_ret_void(&m, unrelated.slot());
-            let bogus = fab_const_int_id(&m, i32_ty.id(), 7);
-            let phi = PhiData::new();
-            phi.incoming
-                .borrow_mut()
-                .push((core::cell::Cell::new(bogus), unrelated.slot()));
-            fabricate_instruction(
-                &m,
-                target.slot(),
-                i32_ty.id(),
-                InstructionKindData::Phi(phi),
-            );
-            append_ret_void(&m, target.slot());
-            let err = m.verify_borrowed().unwrap_err();
-            assert_rule(&err, VerifierRule::PhiPredecessorMismatch);
-        });
+        let m = crate::module_new!("t").expect("fresh module");
+        let i32_ty = m.i32_type().as_type();
+        let void_ty = m.void_type().as_type();
+        let (f_id, entry_id) = skeleton(&m, void_ty, &[], "f");
+        let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
+        let target = f.append_basic_block(&m, "target");
+        let unrelated = f.append_basic_block(&m, "unrelated");
+        fabricate_instruction(
+            &m,
+            entry_id,
+            void_ty.id(),
+            InstructionKindData::Br(BranchInstData {
+                kind: core::cell::RefCell::new(BranchKind::Unconditional(target.slot())),
+            }),
+        );
+        append_ret_void(&m, unrelated.slot());
+        let bogus = fab_const_int_id(&m, i32_ty.id(), 7);
+        let phi = PhiData::new();
+        phi.incoming
+            .borrow_mut()
+            .push((core::cell::Cell::new(bogus), unrelated.slot()));
+        fabricate_instruction(
+            &m,
+            target.slot(),
+            i32_ty.id(),
+            InstructionKindData::Phi(phi),
+        );
+        append_ret_void(&m, target.slot());
+        let err = m.verify_borrowed().unwrap_err();
+        assert_rule(&err, VerifierRule::PhiPredecessorMismatch);
     }
 
     /// Call argument count mismatch -- non-vararg callee with wrong
     /// argc. Mirrors `Verifier::visitCallBase`.
     #[test]
     fn call_arg_count_mismatch() {
-        Module::with_new("t", |m| {
-            let i32_ty = m.i32_type().as_type();
-            let void_ty = m.void_type().as_type();
-            // Callee: `define i32 @callee(i32, i32)` -- empty body, terminator
-            // fabricated to make it valid.
-            let callee_fn_ty = m.fn_type(i32_ty, [i32_ty, i32_ty], false);
-            let callee = m
-                .add_function_dyn("callee", callee_fn_ty, Linkage::External)
-                .unwrap();
-            let cb = m.view(callee).append_basic_block(&m, "entry");
-            let zero = fab_const_int_id(&m, i32_ty.id(), 0);
-            fabricate_instruction(
-                &m,
-                cb.slot(),
-                void_ty.id(),
-                InstructionKindData::Ret(ReturnOpData::new(Some(zero))),
-            );
-            // Caller: passes only ONE arg.
-            let caller_fn_ty = m.fn_type(void_ty, [i32_ty], false);
-            let caller = m
-                .add_function_dyn("caller", caller_fn_ty, Linkage::External)
-                .unwrap();
-            let entry = m.view(caller).append_basic_block(&m, "entry");
-            let arg_id = IsValue::slot(m.view(caller).param(0).unwrap());
-            fabricate_instruction(
-                &m,
-                entry.slot(),
-                i32_ty.id(),
-                InstructionKindData::Call(crate::instr_types::CallInstData::new(
-                    m.view(callee).slot(),
-                    callee_fn_ty.as_type().id(),
-                    [arg_id],
-                    crate::CallingConv::default(),
-                    crate::instr_types::TailCallKind::None,
-                )),
-            );
-            append_ret_void(&m, entry.slot());
-            let err = m.verify_borrowed().unwrap_err();
-            assert_rule(&err, VerifierRule::CallArgCountMismatch);
-        });
+        let m = crate::module_new!("t").expect("fresh module");
+        let i32_ty = m.i32_type().as_type();
+        let void_ty = m.void_type().as_type();
+        // Callee: `define i32 @callee(i32, i32)` -- empty body, terminator
+        // fabricated to make it valid.
+        let callee_fn_ty = m.fn_type(i32_ty, [i32_ty, i32_ty], false);
+        let callee = m
+            .add_function_dyn("callee", callee_fn_ty, Linkage::External)
+            .unwrap();
+        let cb = m.view(callee).append_basic_block(&m, "entry");
+        let zero = fab_const_int_id(&m, i32_ty.id(), 0);
+        fabricate_instruction(
+            &m,
+            cb.slot(),
+            void_ty.id(),
+            InstructionKindData::Ret(ReturnOpData::new(Some(zero))),
+        );
+        // Caller: passes only ONE arg.
+        let caller_fn_ty = m.fn_type(void_ty, [i32_ty], false);
+        let caller = m
+            .add_function_dyn("caller", caller_fn_ty, Linkage::External)
+            .unwrap();
+        let entry = m.view(caller).append_basic_block(&m, "entry");
+        let arg_id = IsValue::slot(m.view(caller).param(0).unwrap());
+        fabricate_instruction(
+            &m,
+            entry.slot(),
+            i32_ty.id(),
+            InstructionKindData::Call(crate::instr_types::CallInstData::new(
+                m.view(callee).slot(),
+                callee_fn_ty.as_type().id(),
+                [arg_id],
+                crate::CallingConv::default(),
+                crate::instr_types::TailCallKind::None,
+            )),
+        );
+        append_ret_void(&m, entry.slot());
+        let err = m.verify_borrowed().unwrap_err();
+        assert_rule(&err, VerifierRule::CallArgCountMismatch);
     }
     /// Mirrors `Verifier::visitPtrToAddrInst`: result integer width must match
     /// the `DataLayout` index width for the source pointer address space.
     #[test]
     fn ptrtoaddr_result_uses_index_width() {
-        Module::with_new("t", |m| {
-            m.set_data_layout("p1:64:64:64:32").unwrap();
-            let void_ty = m.void_type().as_type();
-            let i64_ty = m.i64_type().as_type();
-            let ptr1_ty = m.ptr_type(1).as_type();
-            let (_f_id, bb_id) = skeleton(&m, void_ty, &[], "f");
-            let ptr = fab_null_ptr_id(&m, ptr1_ty.id());
-            fabricate_instruction(
-                &m,
-                bb_id,
-                i64_ty.id(),
-                InstructionKindData::Cast(CastOpData::new(CastOpcode::PtrToAddr, ptr)),
-            );
-            append_ret_void(&m, bb_id);
-            let err = m.verify_borrowed().unwrap_err();
-            assert_rule(&err, VerifierRule::CastTypeMismatch);
-            match err {
-                IrError::VerifierFailure { message, .. } => {
-                    assert!(message.contains("ptrtoaddr result must be address width"));
-                }
-                _ => panic!("expected verifier failure"),
+        let m = crate::module_new!("t").expect("fresh module");
+        m.set_data_layout("p1:64:64:64:32").unwrap();
+        let void_ty = m.void_type().as_type();
+        let i64_ty = m.i64_type().as_type();
+        let ptr1_ty = m.ptr_type(1).as_type();
+        let (_f_id, bb_id) = skeleton(&m, void_ty, &[], "f");
+        let ptr = fab_null_ptr_id(&m, ptr1_ty.id());
+        fabricate_instruction(
+            &m,
+            bb_id,
+            i64_ty.id(),
+            InstructionKindData::Cast(CastOpData::new(CastOpcode::PtrToAddr, ptr)),
+        );
+        append_ret_void(&m, bb_id);
+        let err = m.verify_borrowed().unwrap_err();
+        assert_rule(&err, VerifierRule::CastTypeMismatch);
+        match err {
+            IrError::VerifierFailure { message, .. } => {
+                assert!(message.contains("ptrtoaddr result must be address width"));
             }
-        });
+            _ => panic!("expected verifier failure"),
+        }
     }
 }
