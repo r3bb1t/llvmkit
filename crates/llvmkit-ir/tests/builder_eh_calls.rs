@@ -129,13 +129,7 @@ fn callbr_void_with_one_indirect_dest() -> Result<(), IrError> {
         }
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let c: llvmkit_ir::IntValue<bool> = m.view(caller).param(0)?.try_into()?;
-        let _ = b.build_callbr(
-            m.view(callee),
-            [c.into_erased()],
-            cont_label,
-            [kill_label],
-            "",
-        )?;
+        let _ = b.build_callbr(callee, [c.into_erased()], cont_label, [kill_label], "")?;
         let text = format!("{m}");
         assert!(
             text.contains(

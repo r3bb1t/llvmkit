@@ -67,13 +67,13 @@ fn call_with_metadata_argument() -> Result<(), IrError> {
         let entry = m.view(host).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let rsp = b.build_call_dyn(m.view(read), [md], "rsp")?;
+        let rsp = b.build_call_dyn(read, [md], "rsp")?;
         let rsp_val: llvmkit_ir::IntValue<i64> = b
             .view(rsp)
             .return_value()
             .expect("read_register returns value")
             .try_into()?;
-        b.build_call_dyn(m.view(write), [md, rsp_val.into_erased()], "")?;
+        b.build_call_dyn(write, [md, rsp_val.into_erased()], "")?;
         b.build_ret(rsp_val)?;
 
         let text = format!("{m}");
@@ -189,7 +189,7 @@ fn metadata_string_as_value_prints_inline() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let s = m.metadata_string("rsp");
         let md = m.metadata_as_value(s);
-        b.build_call_dyn(m.view(g), [md], "")?;
+        b.build_call_dyn(g, [md], "")?;
         b.build_ret_void()?;
 
         let text = format!("{m}");
@@ -315,7 +315,7 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
         let call_entry = m.view(call_host).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(call_entry);
         let p: llvmkit_ir::PointerValue = m.view(call_host).param(0)?.try_into()?;
-        let call = b.view(b.build_call_dyn(b.view(callee), [p.into_erased()], "v")?);
+        let call = b.view(b.build_call_dyn(callee, [p.into_erased()], "v")?);
         call.as_view()
             .set_metadata(MetadataAttachmentKind::Range, range);
         let ret = call.return_int_value();

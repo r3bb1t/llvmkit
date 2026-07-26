@@ -524,6 +524,127 @@ where
     }
 }
 
+// --------------------------------------------------------------------------
+// Typed callee operands
+// --------------------------------------------------------------------------
+//
+// The schema-typed twins of [`IntoCallee`](crate::IntoCallee): one trait per
+// callee facade, because the facade *is* the target handle and the builders'
+// `Ret` / `Params` inference reads it straight off the impl. Same shape as
+// every other operand trait here — module-taking, fallible, sealed, with
+// explicit per-type impls rather than a blanket over `Sized` or a facade
+// trait, which would collide with the concrete impls (Rust has no negative
+// reasoning).
+
+mod typed_callee_sealed {
+    pub trait Sealed {}
+}
+
+/// Values accepted where a builder names a **schema-typed** direct callee —
+/// the callee operand of [`build_call`](crate::IRBuilder::build_call),
+/// [`build_invoke`](crate::IRBuilder::build_invoke) and their `_with_config` /
+/// chainable twins.
+///
+/// The storable currency at these positions is [`TypedFunctionId`], which is
+/// what [`Module::add_typed_function`](crate::Module::add_typed_function) and
+/// [`FunctionValue::with_typed_signature`](crate::FunctionValue::with_typed_signature)
+/// hand back; the borrowing [`TypedFunctionValue`] is accepted directly too.
+/// Resolution is module-checked and fallible — a [`TypedFunctionId`] minted in
+/// another module yields [`IrError::ForeignValueId`] — and re-validates the
+/// full schema through the facade's own `try_from_function`, exactly as
+/// [`Module::view`](crate::Module::view) does, so an id can never name a slot
+/// whose signature has since stopped matching `Ret` / `Params`.
+pub trait IntoTypedCallee<'ctx, Ret, Params, B>: typed_callee_sealed::Sealed
+where
+    Ret: FunctionReturn,
+    Params: FunctionParamList,
+    B: ModuleBrand,
+{
+    #[doc(hidden)]
+    fn into_typed_callee(
+        self,
+        module: ModuleRef<'ctx, B>,
+    ) -> IrResult<TypedFunctionValue<'ctx, Ret, Params, B>>;
+}
+
+/// The variadic twin of [`IntoTypedCallee`], accepted at
+/// [`build_varargs_call`](crate::IRBuilder::build_varargs_call)'s callee
+/// position. Separate from [`IntoTypedCallee`] because the two facades are
+/// exactly what separates a fixed-arity declaration from a `...` one — a
+/// single trait would let a non-variadic callee reach the varargs builder.
+pub trait IntoVarArgsCallee<'ctx, Ret, Params, B>: typed_callee_sealed::Sealed
+where
+    Ret: FunctionReturn,
+    Params: FunctionParamList,
+    B: ModuleBrand,
+{
+    #[doc(hidden)]
+    fn into_varargs_callee(
+        self,
+        module: ModuleRef<'ctx, B>,
+    ) -> IrResult<TypedVarArgsFunctionValue<'ctx, Ret, Params, B>>;
+}
+
+/// Implement one typed-callee trait for its facade handle (infallible) and its
+/// id (module-checked through [`ViewIn`](crate::value_id::ViewIn), the same
+/// resolver [`Module::view`](crate::Module::view) uses).
+macro_rules! impl_into_typed_callee {
+    ($trait:ident :: $method:ident => $facade:ident, $id:ident) => {
+        impl<'ctx, Ret, Params, B> typed_callee_sealed::Sealed for $facade<'ctx, Ret, Params, B>
+        where
+            Ret: FunctionReturn,
+            Params: FunctionParamList,
+            B: ModuleBrand,
+        {
+        }
+
+        impl<'ctx, Ret, Params, B> $trait<'ctx, Ret, Params, B> for $facade<'ctx, Ret, Params, B>
+        where
+            Ret: FunctionReturn,
+            Params: FunctionParamList,
+            B: ModuleBrand + 'ctx,
+        {
+            #[inline]
+            fn $method(
+                self,
+                _module: ModuleRef<'ctx, B>,
+            ) -> IrResult<$facade<'ctx, Ret, Params, B>> {
+                Ok(self)
+            }
+        }
+
+        impl<Ret, Params, B> typed_callee_sealed::Sealed for $id<Ret, Params, B>
+        where
+            Ret: FunctionReturn,
+            Params: FunctionParamList,
+            B: ModuleBrand,
+        {
+        }
+
+        impl<'ctx, Ret, Params, B> $trait<'ctx, Ret, Params, B> for $id<Ret, Params, B>
+        where
+            Ret: FunctionReturn,
+            Params: FunctionParamList,
+            B: ModuleBrand + 'ctx,
+        {
+            #[inline]
+            fn $method(
+                self,
+                module: ModuleRef<'ctx, B>,
+            ) -> IrResult<$facade<'ctx, Ret, Params, B>> {
+                crate::value_id::ViewIn::resolve_in(self, module).ok_or(IrError::ForeignValueId)
+            }
+        }
+    };
+}
+
+impl_into_typed_callee!(
+    IntoTypedCallee::into_typed_callee => TypedFunctionValue, TypedFunctionId
+);
+impl_into_typed_callee!(
+    IntoVarArgsCallee::into_varargs_callee => TypedVarArgsFunctionValue, TypedVarArgsFunctionId
+);
+
 impl FunctionReturn for () {
     type Marker = ();
 

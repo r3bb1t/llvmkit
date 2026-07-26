@@ -51,7 +51,7 @@ use core::marker::PhantomData;
 use crate::basic_block::BasicBlockLabel;
 use crate::block_params::{BlockParams, BlockParamsDyn};
 use crate::error::{IrError, IrResult};
-use crate::float_kind::{FloatKind, IntoFloatValue, into_float_value_sealed};
+use crate::float_kind::{FloatDyn, FloatKind, IntoFloatValue, into_float_value_sealed};
 use crate::function::{FunctionValue, signature_matches_marker};
 use crate::function_signature::{
     FunctionParamList, FunctionReturn, TypedFunctionValue, TypedVarArgsFunctionValue,
@@ -64,9 +64,9 @@ use crate::instructions::{
     AtomicCmpXchgInst, AtomicRMWInst, CallInst, FpPhiInst, FreezeInst, OtherPhiInst, PhiInst,
     PointerPhiInst, TypedCallInst, VAArgInst,
 };
-use crate::int_width::{IntWidth, IntoIntValue, into_int_value_sealed};
+use crate::int_width::{IntDyn, IntWidth, IntoIntValue, into_int_value_sealed};
 use crate::intrinsic_inst::IntrinsicInst;
-use crate::marker::ReturnMarker;
+use crate::marker::{Dyn, ReturnMarker};
 use crate::module::{Invariant, ModuleBrand, ModuleId, ModuleRef};
 use crate::r#type::{Type, TypeData, TypeSlot};
 use crate::value::{
@@ -416,6 +416,89 @@ decl_value_id! {
     /// [`OtherPhiInst`] — the erased phi handle
     /// [`PhiKind::Other`](crate::PhiKind) also surfaces.
     OtherPhiInstId
+}
+
+// --------------------------------------------------------------------------
+// Marker erasure: `as_dyn` on the ids
+// --------------------------------------------------------------------------
+//
+// Every marker-carrying *handle* that can drop its marker does so through a
+// spelled, infallible `as_dyn` ([`IntValue::as_dyn`], [`FloatValue::as_dyn`],
+// [`FunctionValue::as_dyn`], [`CallInst::as_dyn`], ...). The ids mirror that
+// method one-for-one, so erasing a marker never costs a round trip through the
+// module: without it, `id -> Dyn id` had to go
+// `module.view(id).as_dyn().id()` (and for a block, the fallible
+// `to_erased().try_into()?.id()`), which needs a `ModuleRef` an id-holding
+// caller may not have.
+//
+// This is a *spelled* marker erasure between two ids of the same family, not
+// the silent typed -> erased widening the `Into*Value` operand traits forbid:
+// the destination is still a typed id, `Dyn` is a runtime-checked marker
+// rather than the erased [`ValueId`], and the caller had to name `as_dyn` to
+// get it. Ids whose handle has no `as_dyn` ([`IntrinsicInstId`], the phi ids,
+// [`TypedFunctionId`] — which drops its schema through
+// [`as_function`](TypedFunctionId::as_function) instead) deliberately have none
+// either.
+
+/// Mirror a handle's `as_dyn` on the id that resolves to it: retag the single
+/// leading marker to its `Dyn` form, keeping `(tag, slot)`. A pure retag — no
+/// module, no arena access, no fallibility.
+macro_rules! impl_as_dyn_for_id {
+    ($( $name:ident [$mk:ident : $mkb:path => $dyn_mk:ty] ( $handle:literal ) ),+ $(,)?) => { $(
+        impl<$mk: $mkb, B: ModuleBrand> $name<$mk, B> {
+            #[doc = concat!("Erase the marker, mirroring [`", $handle, "`](crate::", $handle, ").")]
+            ///
+            /// A pure retag of the same `(tag, slot)`: no view, no arena
+            /// access. Equivalent to `module.view(id).as_dyn().id()` without
+            /// needing a module in hand.
+            #[inline]
+            pub fn as_dyn(self) -> $name<$dyn_mk, B> {
+                $name::from_raw(self.tag, self.slot)
+            }
+        }
+    )+ };
+}
+
+impl_as_dyn_for_id!(
+    IntValueId[W: IntWidth => IntDyn]("IntValue::as_dyn"),
+    FloatValueId[K: FloatKind => FloatDyn]("FloatValue::as_dyn"),
+    FunctionId[R: ReturnMarker => Dyn]("FunctionValue::as_dyn"),
+    CallInstId[R: ReturnMarker => Dyn]("CallInst::as_dyn"),
+);
+
+impl<Ret: FunctionReturn, B: ModuleBrand> TypedCallInstId<Ret, B> {
+    /// Drop the return *schema*, yielding the marker-erased
+    /// [`CallInstId<Dyn>`](CallInstId) — the id-side mirror of
+    /// [`TypedCallInst::as_dyn`](crate::TypedCallInst::as_dyn), which likewise
+    /// lands on the erased [`CallInst`] rather than a typed one.
+    ///
+    /// A pure retag of the same `(tag, slot)`: no view, no arena access.
+    #[inline]
+    pub fn as_dyn(self) -> CallInstId<Dyn, B> {
+        CallInstId::from_raw(self.tag, self.slot)
+    }
+}
+
+impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> BlockId<R, B, Params> {
+    /// Erase the return-shape *and* parameter markers, yielding the
+    /// runtime-checked [`BlockId<Dyn>`](BlockId) — the id-side mirror of the
+    /// label's erasure, which likewise lands on `BasicBlockLabel<Dyn>`
+    /// (`BlockParamsDyn` included) and until now was the only route:
+    /// `module.view(id).to_erased().try_into()?.id()`.
+    ///
+    /// A pure retag of the same `(tag, slot)`: no view, no arena access, and
+    /// infallible where the label route was not. Both markers go because
+    /// `Dyn` on a block *is* the `<Dyn, BlockParamsDyn>` shape the
+    /// erased CFG surface ([`BasicBlock::successors`](crate::BasicBlock::successors),
+    /// [`InvokeInst::normal_destination`](crate::InvokeInst::normal_destination),
+    /// ...) speaks. Dropping the parameter schema this way is spelled, so it
+    /// cannot happen by accident: a typed [`BlockCall`](crate::BlockCall) edge
+    /// still needs the un-erased id to keep its
+    /// [`CallArgs`](crate::CallArgs) bound.
+    #[inline]
+    pub fn as_dyn(self) -> BlockId<Dyn, B> {
+        BlockId::from_raw(self.tag, self.slot)
+    }
 }
 
 // --------------------------------------------------------------------------

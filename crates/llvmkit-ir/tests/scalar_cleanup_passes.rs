@@ -288,7 +288,7 @@ fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
             SyncScope::System,
             "",
         )?;
-        b.build_call_dyn::<Dyn, _, _, _>(m.view(sink), Vec::<Value>::new(), "")?;
+        b.build_call_dyn::<Dyn, _, _, _, _>(sink, Vec::<Value>::new(), "")?;
         b.build_ret_void()?;
 
         let verified = m.verify()?;

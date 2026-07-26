@@ -35,6 +35,6 @@ fn main() {
         // `IntoCallArg<'_, i32, _>` -- but rustc reports the *root*
         // unsatisfied bound, `IntoIntValue<'_, i32, _>`, not
         // `IntoCallArg` itself.
-        let _ = b.build_call(m.view(callee), (x,), "bad");
+        let _ = b.build_call(callee, (x,), "bad");
     });
 }

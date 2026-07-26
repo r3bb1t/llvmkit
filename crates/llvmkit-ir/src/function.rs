@@ -1155,6 +1155,56 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for FunctionValue<'ctx
     }
 }
 
+mod into_callee_sealed {
+    pub trait Sealed {}
+}
+
+/// Values accepted where a builder names a **direct** function callee — the
+/// `@name` operand of `call` / `invoke` / `callbr`, as opposed to the
+/// function-*pointer* operand of the indirect forms (which take
+/// [`IntoPointerValue`](crate::IntoPointerValue)).
+///
+/// The storable currency at these positions is [`FunctionId`] — that is what
+/// [`Module::add_function_dyn`](crate::Module::add_function_dyn) and the
+/// [`FunctionBuilder`] hand back and what a struct stores. This trait is the
+/// *accepting* bound: it also takes the borrowing [`FunctionValue`] directly,
+/// so an in-scope handle can be called without a round trip through the
+/// module. Resolution is module-checked and fallible, exactly like
+/// [`IntoErasedValue`](crate::IntoErasedValue) at operand positions: a
+/// [`FunctionId`] minted in another module yields
+/// [`IrError::ForeignValueId`] instead of silently naming a same-numbered slot
+/// here.
+///
+/// The return marker `R` rides through unchanged, so the callee still pins the
+/// call's result shape.
+pub trait IntoCallee<'ctx, R: ReturnMarker, B: ModuleBrand>: into_callee_sealed::Sealed {
+    #[doc(hidden)]
+    fn into_callee(self, module: ModuleRef<'ctx, B>) -> IrResult<FunctionValue<'ctx, R, B>>;
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand> into_callee_sealed::Sealed
+    for FunctionValue<'ctx, R, B>
+{
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoCallee<'ctx, R, B>
+    for FunctionValue<'ctx, R, B>
+{
+    #[inline]
+    fn into_callee(self, _module: ModuleRef<'ctx, B>) -> IrResult<FunctionValue<'ctx, R, B>> {
+        Ok(self)
+    }
+}
+
+impl<R: ReturnMarker, B: ModuleBrand> into_callee_sealed::Sealed for FunctionId<R, B> {}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoCallee<'ctx, R, B> for FunctionId<R, B> {
+    #[inline]
+    fn into_callee(self, module: ModuleRef<'ctx, B>) -> IrResult<FunctionValue<'ctx, R, B>> {
+        crate::value_id::ViewIn::resolve_in(self, module).ok_or(IrError::ForeignValueId)
+    }
+}
+
 // --------------------------------------------------------------------------
 // FunctionBuilder
 // --------------------------------------------------------------------------

@@ -7,6 +7,64 @@ tagged release is cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### llvmkit 2.0 — id-first handles (cycle B: builders speak ids)
+
+Every builder and declaration now returns a storable id instead of a borrowing
+handle. Combined with cycle A's id family, an IR value can be kept in a struct
+field, a `HashMap`, or across a suspend/resume boundary — the thing the old
+handle model could not express. Handles remain, as short-lived *views*.
+
+#### Changed (breaking — this is the bulk of the cycle)
+
+- **Builders return ids.** `build_*` yields `IntValueId<W>` / `FloatValueId<K>` /
+  `PointerValueId` / erased `ValueId` per the result kind; `add_function*` yields
+  `FunctionId<R>`; `add_global*` yields `GlobalId`. Reading from a result goes
+  through a view: `b.view(x).ty()`, `m.view(f).param(0)`.
+- **`IRBuilder::view`/`try_view` and `ModuleView::view`/`try_view`** join
+  `Module::view`, so an id can be resolved wherever you are — mid-builder-chain
+  or inside a pass.
+- **Instruction ids.** Builders whose result carries its own API (`call`, the
+  intrinsic call, `atomicrmw`, `cmpxchg`, `freeze`, `va_arg`, the phis) return an
+  id whose view is that opcode handle, so the typed accessors survive:
+  `b.view(call).return_int_value()`.
+- **`BlockId` is the branch-target currency.** `BasicBlockLabel` is now only the
+  view you get from `m.view(block_id)`; `.label()` is gone in favour of `.id()`.
+  `BasicBlockEdge`, `BlockCall` and the SSA block wrapper lost their lifetime
+  parameter as a result. `position_at_end_dyn(BlockId)` is the checked escape for
+  dynamically discovered CFGs; `position_at_end` still takes the linear block
+  token, so building into a terminated block stays impossible.
+- **One `.id()` rule.** `.id()` mints the storable id; `.slot()` is the internal
+  arena index. `IntrinsicInst::id()`'s legacy alias is now `intrinsic_id()`. A
+  void instruction has no value id and so has no `.id()`.
+- **The pass surface speaks ids** — analysis results and context accessors hand
+  out ids for anything a pass would store, with views for reads. Rung tokens, the
+  witnessed `done()`, and the erase-safe cursor are unchanged.
+- **Operands accept ids everywhere.** Cast, comparison, pointer and callee
+  positions that previously demanded a concrete handle now take the same
+  `Into*`-style bounds as the rest, so a returned id feeds straight into the next
+  builder with no rehydration. `IntoErasedValue` covers the positions that are
+  erased by design; `IntoBasicBlockLabel` became module-taking and fallible so
+  `BlockId` satisfies it. Erased `ValueId` is still rejected at typed positions —
+  erasure must be spelled.
+- The phi `Open`/`Closed` typestate is retired: a `Copy` id is re-mintable, so
+  the marker could no longer express "exactly one open capability". A phi is
+  still unobservable mid-construction from outside the crate (its constructors
+  are crate-private), and the genuinely linear terminator states
+  (`switch`/`indirectbr`/`landingpad`/`catchswitch`) are unchanged.
+
+#### Added
+
+- `PhiInst::remove_incoming` (and the other phi flavours) — previously absent.
+  Mirrors upstream's swap-with-last backfill; it does not self-erase an emptied
+  phi (llvmkit's erase consumes a linear handle, which a `Copy` opcode handle
+  cannot express), and `Module::verify` reports the resulting predecessor
+  mismatch.
+
+#### Unchanged
+
+Printed IR is byte-identical across the whole cycle — the byte-locked example
+suites and the parser round-trip corpus pass untouched at every slice.
+
 ### llvmkit 2.0 — id-first handles (cycle A: foundations)
 
 The first cycle of a redesign that replaces the closure-scoped, lifetime-branded

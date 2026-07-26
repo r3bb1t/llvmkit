@@ -212,7 +212,7 @@ fn verify_phi_predecessors_through_callbr_passes() -> Result<(), IrError> {
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .build_callbr(
-                m.view(callee),
+                callee,
                 Vec::<crate::Value>::new(),
                 join_label,
                 [join_label],
@@ -251,7 +251,7 @@ fn verify_phi_predecessors_through_callbr_rejects_missing_edge() -> Result<(), I
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .build_callbr(
-                m.view(callee),
+                callee,
                 Vec::<crate::Value>::new(),
                 join_label,
                 [join_label],

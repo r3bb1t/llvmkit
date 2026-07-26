@@ -63,6 +63,6 @@ fn main() {
         // `IntoCallArg` itself as unsatisfied and its on_unimplemented
         // message fires.
         let bogus = String::from("not a value");
-        let _ = b.build_call(m.view(callee), (bogus, x), "bad");
+        let _ = b.build_call(callee, (bogus, x), "bad");
     });
 }

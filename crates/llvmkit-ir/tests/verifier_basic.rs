@@ -213,7 +213,7 @@ fn intrinsic_declaration_used_as_non_callee_operand_is_rejected() -> Result<(), 
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        b.build_call_dyn(m.view(sink), [m.view(intrinsic).into_erased()], "")?;
+        b.build_call_dyn(sink, [m.view(intrinsic).into_erased()], "")?;
         b.build_ret_void()?;
 
         let err = m
@@ -458,7 +458,7 @@ fn verify_call() -> Result<(), IrError> {
         let bb = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
         let arg: IntValue<i32> = m.view(caller).param(0)?.try_into()?;
-        let inst = b.build_call_dyn(m.view(callee), [arg.into_erased()], "c1")?;
+        let inst = b.build_call_dyn(callee, [arg.into_erased()], "c1")?;
         let one: IntValue<i32> = b
             .view(inst)
             .return_value()

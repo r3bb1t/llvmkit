@@ -234,7 +234,7 @@ fn callbr_cfg_edges_are_default_then_indirect_dests() -> Result<(), IrError> {
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .build_callbr(
-                m.view(callee),
+                callee,
                 Vec::<llvmkit_ir::Value>::new(),
                 dflt_label,
                 [indirect_label],

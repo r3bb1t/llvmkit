@@ -29,7 +29,7 @@ fn call_int_returning_function() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: llvmkit_ir::IntValue<i32> = m.view(caller).param(0)?.try_into()?;
         let y: llvmkit_ir::IntValue<i32> = m.view(caller).param(1)?.try_into()?;
-        let inst = b.build_call_dyn(m.view(callee), [x.into_erased(), y.into_erased()], "r")?;
+        let inst = b.build_call_dyn(callee, [x.into_erased(), y.into_erased()], "r")?;
         // Typed return accessor (Doctrine D4): `R` flows from the callee
         // through `build_call_dyn` into `CallInst<'ctx, i32>`, which directly
         // exposes `return_int_value(): IntValue<i32>` -- no runtime
@@ -61,7 +61,7 @@ fn call_void_returning_function() -> Result<(), IrError> {
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let inst = b.build_call_dyn(m.view(callee), Vec::<llvmkit_ir::Value>::new(), "")?;
+        let inst = b.build_call_dyn(callee, Vec::<llvmkit_ir::Value>::new(), "")?;
         assert!(b.view(inst).return_value().is_none());
         b.build_ret_void()?;
         let text = format!("{m}");
@@ -210,7 +210,7 @@ fn call_to_pointer_returning_function() -> Result<(), IrError> {
         let caller = m.add_function_dyn("g", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let inst = b.build_call_dyn(m.view(callee), Vec::<llvmkit_ir::Value>::new(), "p")?;
+        let inst = b.build_call_dyn(callee, Vec::<llvmkit_ir::Value>::new(), "p")?;
         let p = b.view(inst).return_pointer_value();
         b.build_ret(p)?;
         let text = format!("{m}");
@@ -237,7 +237,7 @@ fn typed_build_call_prints_like_dyn_form() -> Result<(), IrError> {
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let (x, y) = m.view(caller).params();
-        let call = b.build_call(m.view(callee), (x, y), "r")?;
+        let call = b.build_call(callee, (x, y), "r")?;
         let ret_val = b.view(call).result();
         b.build_ret(ret_val)?;
         let text = format!("{m}");
@@ -263,7 +263,7 @@ fn typed_build_call_with_config_threads_calling_convention() -> Result<(), IrErr
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let call = b.build_call_with_config(
-            m.view(callee),
+            callee,
             (),
             llvmkit_ir::CallSiteConfig::new("r").calling_conv(CallingConv::FAST),
         )?;

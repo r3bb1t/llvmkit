@@ -228,7 +228,7 @@ fn build_callbr_caller<'ctx>(
     bnew.build_ret_void();
 
     let b = IRBuilder::new_for::<()>(m).position_at_end(entry);
-    let _ = b.build_callbr(m.view(callee), Vec::<Value>::new(), cont_lbl, [ind_lbl], "")?;
+    let _ = b.build_callbr(callee, Vec::<Value>::new(), cont_lbl, [ind_lbl], "")?;
     Ok((m.view(caller), new_dyn))
 }
 

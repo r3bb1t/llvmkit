@@ -220,10 +220,10 @@ pub use derived_types::{
 pub use dominator_tree::{DominatorTree, DominatorTreeAnalysis, DominatorTreeBlock};
 pub use error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel, VerifierRule};
 pub use fmf::FastMathFlags;
-pub use function::{FunctionBasicBlocks, FunctionBuilder, FunctionValue};
+pub use function::{FunctionBasicBlocks, FunctionBuilder, FunctionValue, IntoCallee};
 pub use function_signature::{
     CallArgs, FunctionParam, FunctionParamList, FunctionReturn, FunctionSignature, IntoCallArg,
-    TypedFunctionValue, TypedVarArgsFunctionValue,
+    IntoTypedCallee, IntoVarArgsCallee, TypedFunctionValue, TypedVarArgsFunctionValue,
 };
 pub use gep_no_wrap_flags::GepNoWrapFlags;
 pub use global_alias::{GlobalAlias, GlobalAliasBuilder};

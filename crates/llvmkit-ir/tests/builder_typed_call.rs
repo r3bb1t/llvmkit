@@ -47,7 +47,7 @@ fn typed_call_result_feeds_int_add_and_ret_with_no_try_into() -> Result<(), IrEr
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
         let (x,) = m.view(caller).params();
         let one = m.i32_type().const_int(1_i32);
-        let call = b.build_call(m.view(callee), (x, one), "r")?;
+        let call = b.build_call(callee, (x, one), "r")?;
         // `b.view(call).result()` is already `IntValue<i32>` -- no `try_into`.
         let r = b.view(call).result();
         let doubled = b.build_int_add::<i32, _, _, _>(r, r, "doubled")?;
@@ -81,7 +81,7 @@ fn typed_call_void_result_is_unit() -> Result<(), IrError> {
         let caller = m.add_typed_function::<(), (), _>("caller", Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        let call = b.build_call(m.view(callee), (), "")?;
+        let call = b.build_call(callee, (), "")?;
         // Runtime-cover the void arm: `result()` really produces `()`,
         // executed (not just type-checked away) via the `let ()` binding.
         let () = b.view(call).result();
@@ -106,7 +106,7 @@ fn typed_call_pointer_result_feeds_ret() -> Result<(), IrError> {
         let caller = m.add_typed_function::<Ptr, (), _>("g", Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Ptr>(&m).position_at_end(entry);
-        let call = b.build_call(m.view(callee), (), "p")?;
+        let call = b.build_call(callee, (), "p")?;
         let p: PointerValue = b.view(call).result();
         b.build_ret(p)?;
         let text = format!("{m}");
@@ -130,7 +130,7 @@ fn typed_call_float_result_feeds_fadd_and_ret() -> Result<(), IrError> {
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<f64>(&m).position_at_end(entry);
         let (x,) = m.view(caller).params();
-        let call = b.build_call(m.view(callee), (x,), "r")?;
+        let call = b.build_call(callee, (x,), "r")?;
         let r = b.view(call).result();
         let sum = b.build_fp_add(r, r, "sum")?;
         b.build_ret(sum)?;
@@ -268,7 +268,7 @@ fn typed_call_full_module_print_equals_dyn_call_full_module_print() -> Result<()
         let entry = m.view(caller).append_basic_block(m, "entry");
         let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
         let (x, y) = m.view(caller).params();
-        let call = b.build_call(m.view(callee), (x, y), "r")?;
+        let call = b.build_call(callee, (x, y), "r")?;
         let ret_val = b.view(call).result();
         b.build_ret(ret_val)?;
         Ok(())
@@ -286,7 +286,7 @@ fn typed_call_full_module_print_equals_dyn_call_full_module_print() -> Result<()
         let x: IntValue<i32> = m.view(caller).param(0)?.try_into()?;
         let y: IntValue<i32> = m.view(caller).param(1)?.try_into()?;
         let inst = b.build_call_dyn(
-            m.view(callee).as_function(),
+            callee.as_function(),
             [x.into_erased(), y.into_erased()],
             "r",
         )?;
@@ -402,7 +402,7 @@ fn build_call_dyn_rejects_wrong_argument_count() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: IntValue<i32> = m.view(caller).param(0)?.try_into()?;
         let err = b
-            .build_call_dyn(m.view(callee), [x.into_erased()], "bad")
+            .build_call_dyn(callee, [x.into_erased()], "bad")
             .expect_err("one argument against a two-parameter callee must be rejected");
         assert_eq!(
             err,
@@ -435,7 +435,7 @@ fn build_call_dyn_rejects_wrong_argument_type() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: llvmkit_ir::FloatValue<f64> = m.view(caller).param(0)?.try_into()?;
         let err = b
-            .build_call_dyn(m.view(callee), [x.into_erased()], "bad")
+            .build_call_dyn(callee, [x.into_erased()], "bad")
             .expect_err("an f64 argument against an i32 parameter must be rejected");
         assert_eq!(
             err,
@@ -518,7 +518,7 @@ fn typed_call_with_config_void_result_is_unit() -> Result<(), IrError> {
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let call = b.build_call_with_config(
-            m.view(callee),
+            callee,
             (),
             CallSiteConfig::new("").calling_conv(llvmkit_ir::CallingConv::FAST),
         )?;

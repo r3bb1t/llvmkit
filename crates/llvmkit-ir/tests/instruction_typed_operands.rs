@@ -47,7 +47,7 @@ fn direct_call_callee_is_direct() -> Result<(), IrError> {
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: IntValue<i32> = m.view(caller).param(0)?.try_into()?;
-        let call = b.build_call_dyn(m.view(callee), [x.into_erased()], "r")?;
+        let call = b.build_call_dyn(callee, [x.into_erased()], "r")?;
 
         match b.view(call).classify_callee() {
             Callee::Direct(function) => {

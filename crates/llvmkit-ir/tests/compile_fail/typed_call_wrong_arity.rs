@@ -24,6 +24,6 @@ fn main() {
         let (x,) = m.view(caller).params();
         // `(x,)` is a 1-tuple; `callee`'s schema is `(i32, i32)` (arity 2).
         // There is no `CallArgs<'_, (i32, i32), _>` impl for `(IntValue<i32>,)`.
-        let _ = b.build_call(m.view(callee), (x,), "bad");
+        let _ = b.build_call(callee, (x,), "bad");
     });
 }

@@ -53,11 +53,11 @@ use super::element::{ElemDyn, StaticVecElem, VecElem, WrapWitness};
 use super::error::{IrError, IrResult, TypeKindLabel};
 use super::float_kind::{FloatDyn, FloatKind, FloatWiderThan, IntoFloatValue};
 use super::fmf::FastMathFlags;
-use super::function::FunctionValue;
+use super::function::{FunctionValue, IntoCallee};
 use super::function_signature::token::ValidatedFunctionParams;
 use super::function_signature::{
-    CallArgs, FunctionParamList, FunctionReturn, FunctionSignature, TypedFunctionValue,
-    TypedVarArgsFunctionValue,
+    CallArgs, FunctionParamList, FunctionReturn, FunctionSignature, IntoTypedCallee,
+    IntoVarArgsCallee, TypedFunctionValue,
 };
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::inline_asm::InlineAsm;
@@ -4536,9 +4536,9 @@ where
     ///
     /// Returns the storable [`TypedCallInstId<Ret, B>`](crate::TypedCallInstId);
     /// view it to reach [`TypedCallInst::result`](crate::TypedCallInst::result).
-    pub fn build_call<Ret, Params, A, Name>(
+    pub fn build_call<Ret, Params, A, Callee, Name>(
         &self,
-        callee: TypedFunctionValue<'ctx, Ret, Params, B>,
+        callee: Callee,
         args: A,
         name: Name,
     ) -> IrResult<TypedCallInstId<Ret, B>>
@@ -4546,9 +4546,12 @@ where
         Ret: FunctionReturn,
         Params: FunctionParamList,
         A: CallArgs<'ctx, Params, B>,
+        Callee: IntoTypedCallee<'ctx, Ret, Params, B>,
         Name: AsRef<str>,
     {
-        let f = callee.as_function();
+        let f = callee
+            .into_typed_callee(ModuleRef::new(self.module))?
+            .as_function();
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let payload = crate::instr_types::CallInstData::new(
             f.slot(),
@@ -4568,9 +4571,9 @@ where
     /// Typed flat call with explicit call-site configuration
     /// (calling convention / attributes), otherwise identical to
     /// [`Self::build_call`].
-    pub fn build_call_with_config<Ret, Params, A>(
+    pub fn build_call_with_config<Ret, Params, A, Callee>(
         &self,
-        callee: TypedFunctionValue<'ctx, Ret, Params, B>,
+        callee: Callee,
         args: A,
         config: CallSiteConfig,
     ) -> IrResult<TypedCallInstId<Ret, B>>
@@ -4578,8 +4581,11 @@ where
         Ret: FunctionReturn,
         Params: FunctionParamList,
         A: CallArgs<'ctx, Params, B>,
+        Callee: IntoTypedCallee<'ctx, Ret, Params, B>,
     {
-        let f = callee.as_function();
+        let f = callee
+            .into_typed_callee(ModuleRef::new(self.module))?
+            .as_function();
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let (name, calling_conv, attrs) = config.into_parts();
         let payload = crate::instr_types::CallInstData::new_with_attrs(
@@ -4602,19 +4608,20 @@ where
     /// [`Self::build_call`], with `tail()` / `must_tail()` / `no_tail()`
     /// / `calling_conv(cc)` / `call_attributes(attrs)` / `name(n)`
     /// accumulated before `.build()` emits the call.
-    pub fn typed_call_builder<Ret, Params, A>(
+    pub fn typed_call_builder<Ret, Params, A, Callee>(
         &self,
-        callee: TypedFunctionValue<'ctx, Ret, Params, B>,
+        callee: Callee,
         args: A,
     ) -> TypedCallBuilder<'_, 'm, 'ctx, B, F, R, Ret, Params, A>
     where
         Ret: FunctionReturn,
         Params: FunctionParamList,
         A: CallArgs<'ctx, Params, B>,
+        Callee: IntoTypedCallee<'ctx, Ret, Params, B>,
     {
         TypedCallBuilder {
             parent: self,
-            callee,
+            callee: callee.into_typed_callee(ModuleRef::new(self.module)),
             args,
             tail_kind: crate::instr_types::TailCallKind::None,
             calling_conv: None,
@@ -4629,9 +4636,9 @@ where
     /// variadic-argument contract (the `...` tail carries no static
     /// type checking — only the fixed prefix does). Mirrors
     /// `IRBuilder::CreateCall` against a variadic `FunctionCallee`.
-    pub fn build_varargs_call<Ret, Params, A, I, V, Name>(
+    pub fn build_varargs_call<Ret, Params, A, I, V, Callee, Name>(
         &self,
-        callee: TypedVarArgsFunctionValue<'ctx, Ret, Params, B>,
+        callee: Callee,
         fixed_args: A,
         varargs: I,
         name: Name,
@@ -4642,9 +4649,12 @@ where
         A: CallArgs<'ctx, Params, B>,
         I: IntoIterator<Item = V>,
         V: IntoErasedValue<'ctx, B>,
+        Callee: IntoVarArgsCallee<'ctx, Ret, Params, B>,
         Name: AsRef<str>,
     {
-        let f = callee.as_function();
+        let f = callee
+            .into_varargs_callee(ModuleRef::new(self.module))?
+            .as_function();
         let mut arg_ids: Vec<ValueSlot> = fixed_args.lower(ModuleRef::new(self.module))?.into_vec();
         for v in varargs {
             arg_ids.push(v.into_erased_value(ModuleRef::new(self.module))?.slot());
@@ -4672,9 +4682,9 @@ where
     /// Returns the storable [`CallInstId<R2, B>`](crate::CallInstId); view it
     /// to reach the marker-gated `return_int_value` / `return_float_value` /
     /// `return_pointer_value` accessors.
-    pub fn build_call_dyn<R2, I, V, Name>(
+    pub fn build_call_dyn<R2, I, V, Callee, Name>(
         &self,
-        callee: FunctionValue<'ctx, R2, B>,
+        callee: Callee,
         args: I,
         name: Name,
     ) -> IrResult<CallInstId<R2, B>>
@@ -4683,7 +4693,9 @@ where
         R2: crate::marker::ReturnMarker,
         I: IntoIterator<Item = V>,
         V: IntoErasedValue<'ctx, B>,
+        Callee: IntoCallee<'ctx, R2, B>,
     {
+        let callee = callee.into_callee(ModuleRef::<B>::new(self.module))?;
         let mut builder = self.call_builder(callee).name(name);
         for arg in args {
             builder = builder.arg(arg);
@@ -7291,9 +7303,9 @@ where
 
     /// Produce `callbr <ret-ty> <callee>(<args>) to label %default
     /// [label %indirect1, ...]`. Mirrors `IRBuilder::CreateCallBr`.
-    pub fn build_callbr<R2, I, V, Default, Indirects, Indirect, Name>(
+    pub fn build_callbr<R2, I, V, Callee, Default, Indirects, Indirect, Name>(
         self,
-        callee: FunctionValue<'ctx, R2, B>,
+        callee: Callee,
         args: I,
         default_dest: Default,
         indirect_dests: Indirects,
@@ -7304,10 +7316,12 @@ where
         R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: IntoErasedValue<'ctx, B>,
+        Callee: IntoCallee<'ctx, R2, B>,
         Default: IntoBasicBlockLabel<'ctx, R, B>,
         Indirects: IntoIterator<Item = Indirect>,
         Indirect: IntoBasicBlockLabel<'ctx, R, B>,
     {
+        let callee = callee.into_callee(ModuleRef::<B>::new(self.module))?;
         self.build_callbr_with_config(
             callee,
             args,
@@ -8533,7 +8547,14 @@ where
     A: CallArgs<'ctx, Params, B>,
 {
     parent: &'a IRBuilder<'m, 'ctx, B, F, Positioned, RP>,
-    callee: TypedFunctionValue<'ctx, Ret, Params, B>,
+    /// The resolved callee, or the error its lift raised. The chain
+    /// constructor [`IRBuilder::typed_call_builder`](crate::IRBuilder::typed_call_builder)
+    /// returns `Self` rather than `IrResult<Self>` to keep the chain
+    /// spellable, so a failed callee lift has nowhere to surface until
+    /// [`build`](TypedCallBuilder::build), which reads it before emitting
+    /// anything. Only a [`TypedFunctionId`](crate::TypedFunctionId) from a
+    /// *foreign* module can set it — the borrowing facade lifts infallibly.
+    callee: IrResult<TypedFunctionValue<'ctx, Ret, Params, B>>,
     args: A,
     tail_kind: crate::instr_types::TailCallKind,
     calling_conv: Option<CallingConv>,
@@ -8587,7 +8608,7 @@ where
     /// Emit the call instruction, named by the storable
     /// [`TypedCallInstId<Ret, B>`](crate::TypedCallInstId).
     pub fn build(self) -> IrResult<TypedCallInstId<Ret, B>> {
-        let f = self.callee.as_function();
+        let f = self.callee?.as_function();
         let arg_ids = self.args.lower(ModuleRef::new(self.parent.module))?;
         let calling_conv = self.calling_conv.unwrap_or_else(|| f.calling_conv());
         let payload = crate::instr_types::CallInstData::new_with_attrs(
@@ -8741,22 +8762,41 @@ pub use select_narrow_token::SelectNarrow;
 /// The narrowing itself is unchanged — only the currency the builder hands
 /// back. Mirrors LangRef's invariant that the two arms must have identical
 /// IR types.
+///
+/// Each category is implemented for **both** the borrowing handle and the
+/// storable id, so chaining two flipped builder results into a select needs no
+/// round trip through the module. An id arm resolves like every other operand
+/// position — module-checked and fallible, yielding
+/// [`IrError::ForeignValueId`] for an id minted elsewhere — which is why
+/// [`arm_value`](Self::arm_value) takes a [`ModuleRef`] and returns
+/// [`IrResult`], exactly as
+/// [`IntoBasicBlockLabel`](crate::IntoBasicBlockLabel) does at branch targets.
+/// `Output` is unchanged by that: an `IntValueId<W, B>` arm yields the same
+/// `IntValueId<W, B>` its handle does, so the two spellings are
+/// interchangeable at the call site *and* at the binding.
 pub trait SelectArm<'ctx, B: ModuleBrand = Brand<'ctx>>: Sized + select_arm_sealed::Sealed {
     type Output;
     #[doc(hidden)]
     fn from_select_value(v: Value<'ctx, B>, narrow: &SelectNarrow<'_>) -> Self::Output;
     #[doc(hidden)]
-    fn arm_value(self) -> Value<'ctx, B>;
+    fn arm_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>>;
 }
 
 mod select_arm_sealed {
-    use super::{FloatKind, FloatValue, IntValue, IntWidth, ModuleBrand, PointerValue};
+    use super::{
+        FloatKind, FloatValue, FloatValueId, IntValue, IntValueId, IntWidth, ModuleBrand,
+        PointerValue, PointerValueId,
+    };
 
     pub trait Sealed {}
 
     impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> Sealed for IntValue<'ctx, W, B> {}
     impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> Sealed for FloatValue<'ctx, K, B> {}
     impl<'ctx, B: ModuleBrand + 'ctx> Sealed for PointerValue<'ctx, B> {}
+
+    impl<W: IntWidth, B: ModuleBrand> Sealed for IntValueId<W, B> {}
+    impl<K: FloatKind, B: ModuleBrand> Sealed for FloatValueId<K, B> {}
+    impl<B: ModuleBrand> Sealed for PointerValueId<B> {}
 }
 
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for IntValue<'ctx, W, B> {
@@ -8766,8 +8806,8 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for IntValue<'
         IntValue::<W, B>::from_value_unchecked(v).id()
     }
     #[inline]
-    fn arm_value(self) -> Value<'ctx, B> {
-        IsValue::into_erased(self)
+    fn arm_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+        Ok(IsValue::into_erased(self))
     }
 }
 
@@ -8778,8 +8818,8 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for FloatValu
         FloatValue::<K, B>::from_value_unchecked(v).id()
     }
     #[inline]
-    fn arm_value(self) -> Value<'ctx, B> {
-        IsValue::into_erased(self)
+    fn arm_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+        Ok(IsValue::into_erased(self))
     }
 }
 
@@ -8790,8 +8830,44 @@ impl<'ctx, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for PointerValue<'ctx, B> {
         PointerValue::from_value_unchecked(v).id()
     }
     #[inline]
-    fn arm_value(self) -> Value<'ctx, B> {
-        IsValue::into_erased(self)
+    fn arm_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+        Ok(IsValue::into_erased(self))
+    }
+}
+
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for IntValueId<W, B> {
+    type Output = IntValueId<W, B>;
+    #[inline]
+    fn from_select_value(v: Value<'ctx, B>, _narrow: &SelectNarrow<'_>) -> Self::Output {
+        IntValue::<W, B>::from_value_unchecked(v).id()
+    }
+    #[inline]
+    fn arm_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+        self.into_erased_value(module)
+    }
+}
+
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for FloatValueId<K, B> {
+    type Output = FloatValueId<K, B>;
+    #[inline]
+    fn from_select_value(v: Value<'ctx, B>, _narrow: &SelectNarrow<'_>) -> Self::Output {
+        FloatValue::<K, B>::from_value_unchecked(v).id()
+    }
+    #[inline]
+    fn arm_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+        self.into_erased_value(module)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for PointerValueId<B> {
+    type Output = PointerValueId<B>;
+    #[inline]
+    fn from_select_value(v: Value<'ctx, B>, _narrow: &SelectNarrow<'_>) -> Self::Output {
+        PointerValue::from_value_unchecked(v).id()
+    }
+    #[inline]
+    fn arm_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+        self.into_erased_value(module)
     }
 }
 
@@ -8820,10 +8896,10 @@ where
         A: SelectArm<'ctx, B> + Copy,
     {
         let c = cond.into_int_value(ModuleRef::new(self.module))?;
-        let true_v = true_arm.arm_value();
-        let true_ty = true_arm.arm_value().ty().id();
-        let false_v = false_arm.arm_value();
-        let false_ty = false_arm.arm_value().ty().id();
+        let true_v = true_arm.arm_value(ModuleRef::new(self.module))?;
+        let true_ty = true_v.ty().id();
+        let false_v = false_arm.arm_value(ModuleRef::new(self.module))?;
+        let false_ty = false_v.ty().id();
         if true_ty != false_ty {
             return Err(IrError::TypeMismatch {
                 expected: true_v.ty().kind_label(),

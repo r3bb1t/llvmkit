@@ -1,8 +1,8 @@
 error[E0277]: the trait bound `FloatValue<'_, f64, Brand<'_>>: IntoIntValue<'_, i32, Brand<'_>>` is not satisfied
-  --> tests/compile_fail/typed_call_wrong_arg_type_lifted.rs:38:47
+  --> tests/compile_fail/typed_call_wrong_arg_type_lifted.rs:38:39
    |
-38 |         let _ = b.build_call(m.view(callee), (x,), "bad");
-   |                   ----------                  ^ the trait `IntoIntValue<'_, i32, Brand<'_>>` is not implemented for `FloatValue<'_, f64, Brand<'_>>`
+38 |         let _ = b.build_call(callee, (x,), "bad");
+   |                   ----------          ^ the trait `IntoIntValue<'_, i32, Brand<'_>>` is not implemented for `FloatValue<'_, f64, Brand<'_>>`
    |                   |
    |                   required by a bound introduced by this call
    |
@@ -21,7 +21,7 @@ error[E0277]: the trait bound `FloatValue<'_, f64, Brand<'_>>: IntoIntValue<'_, 
 note: required by a bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_call`
   --> src/ir_builder.rs
    |
-   |     pub fn build_call<Ret, Params, A, Name>(
+   |     pub fn build_call<Ret, Params, A, Callee, Name>(
    |            ---------- required by a bound in this associated function
 ...
    |         A: CallArgs<'ctx, Params, B>,
